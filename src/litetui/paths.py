@@ -1,7 +1,7 @@
 """The path anchors — ONE owner for where the data lives.
 
-src/litetui/ is TWO levels below the repo root, where the DATA lives — .convos,
-settings.json, skills/. Anchoring too shallow silently re-homes every store
+src/litetui/ is TWO levels below the repo root. Durable data defaults there —
+.agents (owned homes), .convos (read-only archives), settings.json, skills/. Anchoring too shallow silently re-homes every store
 inside the package; test_paths.py proves the anchor by resolution.
 
 🔴 THE DEPTH IS COUNTED BY HAND AND IT HAS ALREADY BEEN WRONG ONCE. When this
@@ -77,13 +77,11 @@ TOOLS_PROMPT_FILE = prompt_file("tools.md")
 #: the mode drops the instruction rather than leaving a stale one in context.
 PLAN_PROMPT_FILE = prompt_file("plan-mode.md")
 
-# ── Conversation persistence ─────────────────────────────────────
-# .convos/<uuid>/
-#     convo.jsonl   append-only transcript
-#     memory.md     INDEX the agent maintains — one line per memory
-#     soul.md       who this agent is; persists across resumes
-#     handoff.md    what is in flight, for whoever picks this up
-#     memories/     the actual notes: i-learned-this.md, uncapped
+# ── Legacy archive reader anchor; never a mutable destination ─────
+# Owned persistence uses AgentSession: .agents/<Name>/ owns settings.json,
+# memory.md, soul.md, handoff.md, memories/; conversations/<uuid>/ owns
+# convo.jsonl and historical conversation settings. This compatibility anchor
+# is only for read-only .convos/<uuid>/ browsing/export.
 CONVO_DIR = data_root() / ".convos"
 MEMORIES_DIR = "memories"
 

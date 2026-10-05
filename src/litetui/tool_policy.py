@@ -23,8 +23,8 @@ from litetui import deny_floor, worktree_scope
 # execution is process_execution, and a command that formats a disk is also
 # destructive_irreversible.
 READ_ONLY = "read_only"
-#: The agent writing ITS OWN STORE — `.convos/<id>/**`: the transcript, the
-#: memory index, soul.md, handoff.md, memories/. Distinct from workspace_write
+#: The agent writing ITS OWN STORE — its owned `.agents/<Name>/` home:
+#: memory index, soul.md, handoff.md, memories/ and conversation children. Distinct from workspace_write
 #: because it is a different ACT, not a smaller one: persisting yourself is not
 #: editing the user's code, and the two were indistinguishable until T083.
 #:

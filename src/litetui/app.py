@@ -1561,13 +1561,19 @@ class LiteTUI(App):
         plan_mode: bool = False,
         convo_id: str | None = None,
         agent_session=None,
+        spawn_identity=None,
         **app_kwargs,
     ):
+        if agent_session is None:
+            from litetui.agent_store import StoreError
+            raise StoreError('Mutable LiteTUI startup requires an owned agent session; launch via litetui CLI')
         self._agent_session = agent_session
         self._owned_registration_lock = asyncio.Lock()
         self._owned_launch_error = None
         if agent_session is not None:
-            agent_session.authority  # child owns agent before mutable startup
+            from litetui.agent_launch_context import validate_execution
+            validate_execution(agent_session, backend=initial_backend, model=initial_model,
+                               thinking_level='off' if initial_thinking == 'none' else initial_thinking)
         super().__init__(**app_kwargs)
         self._rpc = rpc
         self.last_recap = None
@@ -1813,7 +1819,7 @@ class LiteTUI(App):
         # spawned_seat_identity, which consumes the marker. Ryan's own instance
         # (not spawned) is exempt from the fleet floor for the turns HE drives;
         # see seat_authority.floor_applies.
-        self._spawned_marker = os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
+        self._spawned_marker = spawn_identity is not None or os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
         # T1043 finding F: "not spawned" is NOT "Ryan's own" (fleet seats launched by
         # typing `litetui` into a pane carry no marker). Ryan's own launchers set
         # LITETUI_OWNER=1. POPPED, so no shell, tool or child of this process
@@ -1852,7 +1858,7 @@ class LiteTUI(App):
             (os.environ.get("LITEHARNESS_AGENT_NAME") or os.environ.get("LITETUI_SEAT_NAME") or "").strip()
             if self._spawned_marker else ""
         )
-        seat_id, seat_name, seat_tier = harness_mod.spawned_seat_identity(
+        seat_id, seat_name, seat_tier = spawn_identity or harness_mod.spawned_seat_identity(
             (self.settings.seat_name or "").strip() or "LiteTUI"
         )
         if agent_session is not None:
@@ -2215,6 +2221,8 @@ class LiteTUI(App):
                 self.settings.user_name = name
                 self.settings.user_name_asked = True
                 settings_runtime.persist_or_raise(self, self.settings)
+                if getattr(self, '_unchosen_picker_pending', False):
+                    self.call_after_refresh(self._offer_unchosen_model)
 
             self.push_screen(UserNameScreen(), _save_user_name)
         # MCP servers connect AFTER the first frame. See __init__ for why.
@@ -3575,7 +3583,7 @@ class LiteTUI(App):
         waits sees a stale chip for as long as it waits.
         """
         try:
-            tasks_mod.save_by_convo(self.bg_tasks.values())
+            tasks_mod.save_by_convo(self.bg_tasks.values(), agent_session=getattr(self, '_agent_session', None))
         except (tasks_mod.StoreNotBorn, OSError) as e:
             # The task must keep running, so this does not raise - but it is
             # never silent: an accepted row that cannot be kept is the failure
@@ -3620,7 +3628,7 @@ class LiteTUI(App):
         if d is None or not d.is_dir():
             return
         try:
-            tasks_mod.bind(self.bg_tasks, d, paths.data_root())
+            tasks_mod.bind(self.bg_tasks, d, paths.data_root(), agent_session=getattr(self, '_agent_session', None))
         except OSError as e:
             self._report_task_store_error(e)
 
@@ -3836,7 +3844,11 @@ class LiteTUI(App):
             from litetui.claude_backend import close_native
             close_native(self, previous)
         hook_host.leave_conversation(self)
-        self.store.stage(str(uuid.uuid4()))
+        session = getattr(self, '_agent_session', None)
+        initial = getattr(session, 'initial_conversation_id', None)
+        self.store.stage(initial or str(uuid.uuid4()))
+        if initial:
+            session.initial_conversation_id = None
         self._resumed_seat_name = None
         self._refresh_ctx_label()   # the footer names the conversation
         self._sync_seat_identity()
@@ -4169,7 +4181,7 @@ class LiteTUI(App):
             return False
         try:
             self.store.acquire(path.parent)
-        except OSError as exc:
+        except (ValueError, OSError) as exc:
             self._system(f"Conversation is read-only: {exc}")
             return False
         previous = getattr(self, "_backend", None)
@@ -4228,6 +4240,14 @@ class LiteTUI(App):
         # it verbatim tells the model to answer mail as an id nothing can
         # deliver to. Rewrite that one sentence; leave the rest alone.
         self._sync_fleet_identity()
+        from litetui.textfmt import refresh_store_address
+        if self.conversation and self.conversation[0].get('role') == 'system':
+            current = self.conversation[0].get('content')
+            if isinstance(current, str):
+                refreshed = refresh_store_address(current, self.convo_id, self._agent_session.memory_root)
+                if refreshed != current:
+                    self.conversation[0] = {**self.conversation[0], 'content': refreshed}
+                    self._edit(0, 'owned store address refreshed')
         memory_root = (self._agent_session.memory_root
                        if getattr(self, '_agent_session', None) is not None else self.convo_dir)
         (memory_root / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
@@ -4766,9 +4786,11 @@ class LiteTUI(App):
 
     @model_id.setter
     def model_id(self, value: str) -> None:
+        self._remember_for_this_convo("model", value)
+        if getattr(self, "_convo_settings", None) is not None and value:
+            self.retire_cli_model(value)  # only after successful owned publication
         self._model_id = value
         self._resume_connection_error = None
-        self._remember_for_this_convo("model", value)
 
     def retire_cli_model(self, selected: str | None = None) -> None:
         """A deliberate model choice supersedes this process's launch choice.
@@ -4803,6 +4825,10 @@ class LiteTUI(App):
         # and claim; the actual release/unload needs confirmed quiescence and is a
         # separate coordinated slice. Only on a real replacement (different object);
         # a same-object reassignment is a no-op.
+        # Publish home authority before mutating runtime or closing old resources.
+        self._remember_for_this_convo("backend", getattr(value, "name", None))
+        if getattr(self, "_convo_settings", None) is not None:
+            self._cli_initial_backend = None  # a persisted user choice retires launch defaults
         old = getattr(self, "_backend", None)
         if old is not None and old is not value:
             old_session = getattr(old, "_admission_session", None)
@@ -4810,7 +4836,6 @@ class LiteTUI(App):
                 old_session.begin_close()
         self._backend = value
         self._resume_backend_error = None
-        self._remember_for_this_convo("backend", getattr(value, "name", None))
         # An explicitly injected WS3 admission bundle installs on the new
         # backend. Any old session keeps its leases until confirmed teardown.
         # WS3 admission has no production demand resolver yet. Installing its
@@ -4829,10 +4854,10 @@ class LiteTUI(App):
 
     @thinking_level.setter
     def thinking_level(self, value: str | None) -> None:
+        self._remember_for_this_convo("thinking_level", value)
         self._cli_thinking_level = None
         self._cli_effective_thinking = None
         self._thinking_level = value
-        self._remember_for_this_convo("thinking_level", value)
         # the user wrote "think level WHEN ON CODEX" as its own item, and it is a
         # different vocabulary from LM Studio's levels — `model_switch.py:906`
         # stores it under `model_infer_overrides[model]["reasoning_effort"]`.
@@ -4895,9 +4920,26 @@ class LiteTUI(App):
             return
         if getattr(cs, field, None) == value:
             return
+        session = getattr(self, '_agent_session', None)
+        if session is not None and field in ('backend', 'model', 'thinking_level', 'reasoning_effort'):
+            authority = session.authority
+            backend = value if field == 'backend' else authority.backend
+            model = value if field == 'model' else authority.model
+            level = (value or 'default') if field in ('thinking_level', 'reasoning_effort') else authority.thinking_level
+            if model:
+                try:
+                    session.update_execution(backend=backend, model=model, thinking_level=level)
+                except (ValueError, OSError) as exc:
+                    self._owned_launch_error = f'Agent execution save failed: {exc}'
+                    self._system(self._owned_launch_error)
+                    raise
+                from litetui.agent_launch_context import apply_settings
+                apply_settings(session, self.settings)
+                if (self._owned_launch_error or '').startswith('Agent execution save failed:'):
+                    self._owned_launch_error = None
         setattr(cs, field, value)
         try:
-            convo_settings_mod.save(self.convo_dir, cs)
+            convo_settings_mod.save(self.convo_dir, cs, agent_session=self._agent_session)
         except OSError as e:
             runtime_log.record_error(
                 "convo_settings.save_failed",
@@ -4936,6 +4978,12 @@ class LiteTUI(App):
         """
         if self.convo_dir is None:
             return
+        session = getattr(self, '_agent_session', None)
+        if session is not None:
+            from litetui.agent_launch_context import validate_execution
+            validate_execution(session, backend=getattr(self, '_cli_initial_backend', None),
+                               model=getattr(self, '_cli_initial_model', None),
+                               thinking_level=getattr(self, '_cli_thinking_level', None))
         if born:
             from litetui.settings_runtime import without_invocation
             cs = convo_settings_mod.born_from(without_invocation(self, self.settings))
@@ -4969,12 +5017,13 @@ class LiteTUI(App):
                 self._spawned_seat = marker
             self._convo_settings = cs
             try:
-                convo_settings_mod.save(self.convo_dir, cs)
+                convo_settings_mod.save(self.convo_dir, cs, agent_session=self._agent_session)
             except OSError:
                 pass
             return
 
         cs = convo_settings_mod.load(self.convo_dir)
+        snapshot_model = cs.model or cs.execution.get('default_model')
         if getattr(self, '_agent_session', None) is not None:
             from litetui.agent_launch_context import apply_settings
             apply_settings(self._agent_session, self.settings)
@@ -5090,9 +5139,15 @@ class LiteTUI(App):
         # go back into the GLOBAL per-model map because that is what the
         # backends read at load time; the conversation owns the VALUE, the map
         # is just where a backend looks it up.
-        if cs.llama_load and self._model_id:
+        compatible_load = session is None or snapshot_model == self._model_id
+        if not compatible_load and (cs.llama_load or cs.lmstudio_load):
+            self._system(f'Historical load settings for {snapshot_model!r} not applied to owned model {self._model_id!r}.')
+        if compatible_load and cs.llama_load and self._model_id:
             self.settings.llama_load_settings = {
                 **self.settings.llama_load_settings, self._model_id: dict(cs.llama_load)}
+        if compatible_load and cs.lmstudio_load and self._model_id:
+            self.settings.lmstudio_load_settings = {
+                **self.settings.lmstudio_load_settings, self._model_id: dict(cs.lmstudio_load)}
         effort = cs.reasoning_effort
         is_codex = getattr(getattr(self, "_backend", None), "name", None) == "codex"
         if is_codex and not effort:
@@ -5282,6 +5337,27 @@ class LiteTUI(App):
 
     # ── Connection ───────────────────────────────────────────────
 
+    def _offer_unchosen_model(self) -> None:
+        """Do not race onboarding/other modal composition with a second picker."""
+        if (getattr(self, '_owned_storage_released', False) or not self.is_running
+                or self._rpc or getattr(self, '_unchosen_picker_offered', False)):
+            return
+        from litetui.agent_ownership import OwnershipError
+        from litetui.agent_store import StoreError
+        try:
+            if self._agent_session.authority.model is not None:
+                return
+        except (OwnershipError, StoreError):
+            return  # deferred callbacks cannot revive a released/stale capability
+        if not self.available_models:
+            return  # nothing selectable; explicit /model remains available
+        if len(self.screen_stack) > 1:
+            self._unchosen_picker_pending = True
+            return  # onboarding callback retries; other dialogs leave manual /model
+        self._unchosen_picker_pending = False
+        self._unchosen_picker_offered = True
+        self._handle_command('/model')
+
     @work(exclusive=True, group="init")
     async def connect(self) -> None:
         self._gui_connection_success = False
@@ -5343,7 +5419,12 @@ class LiteTUI(App):
                     f"{selection} model {self.model_id!r} is unavailable on {self.backend.name}. "
                     "Sending is blocked; choose a model with /model or retry /reconnect."
                 )
-            if self.available_models:
+            if self.available_models and self._agent_session.authority.model is None:
+                self._model_id = ''
+                self._system('Choose a model with /model before sending; agent model is not chosen.')
+                if not self._rpc:
+                    self.call_after_refresh(self._offer_unchosen_model)
+            elif self.available_models:
                 self._resume_connection_error = None
                 # An explicit invocation model is the active selection for this
                 # process, including reconnects and backend/engine rebuilds. Use
@@ -5740,6 +5821,17 @@ class LiteTUI(App):
             """T507-T1: apply --model, --system-prompt, --prompt after connect."""
             if getattr(self, "_cli_launch_error", None):
                 return
+            session = getattr(self, '_agent_session', None)
+            if session is not None:
+                from litetui.agent_launch_context import validate_execution
+                try:
+                    validate_execution(session, backend=getattr(self, '_cli_initial_backend', None),
+                                       model=getattr(self, '_cli_initial_model', None),
+                                       thinking_level=getattr(self, '_cli_thinking_level', None))
+                except (ValueError, OSError) as exc:
+                    self._cli_launch_error = str(exc)
+                    self._system(str(exc) + '; launch prompt blocked.')
+                    return
             # Wait for connect to populate available_models (up to 10s) — or for
             # connect to have finished without any, which is the same T869 tax on
             # a second waiter: --model has nothing to apply against an empty list.
@@ -8438,6 +8530,8 @@ class LiteTUI(App):
         mid-turn.
         """
         if getattr(self, '_agent_session', None) is not None:
+            if self._agent_session.authority.model is None:
+                raise llm_backend.BackendError('Choose a model with /model before sending; agent model is not chosen')
             if not await self._register_owned_startup():
                 raise llm_backend.BackendError(self._owned_launch_error)
         if getattr(self, "_startup_resume_error", None):
@@ -10523,14 +10617,9 @@ def wants_ansi_fallback() -> bool:
 
 
 def main():
-    from litetui.image_viewer import init_image_backend
-
-    # Pre-run, while we still own the tty: seeds the image cell-size cache
-    # and binds the env-selected render backend (textual-image's own probes
-    # would otherwise fire in-app and leak their terminal replies into the
-    # focused Input).
-    init_image_backend()
-    LiteTUI(ansi_color=wants_ansi_fallback()).run()
+    """Compatibility entry point uses the CLI ownership lifecycle."""
+    from litetui.cli import main as cli_main
+    cli_main()
 
 
 if __name__ == "__main__":

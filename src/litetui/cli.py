@@ -78,12 +78,21 @@ def main() -> None:
         choices=["normal", "plan"],
         help="plan: load ls-plan-w-quizmaster and ask through ask_user_question (T558)",
     )
-    parser.add_argument("--agent", type=str, default=None, help="select authoritative named agent folder")
+    agent_selection = parser.add_mutually_exclusive_group()
+    agent_selection.add_argument("--agent", type=str, default=None, help="select authoritative named agent folder")
+    agent_selection.add_argument("--create-agent", type=str, help="create a new owned named agent home")
+    parser.add_argument("--agent-id", type=str, help="fresh identity; valid only with --create-agent")
     parser.add_argument("--convo", type=str, default=None, help="resume a conversation within the selected agent")
     parser.add_argument("--export-conversation", type=str, help="export a saved convo.jsonl without starting the app")
     parser.add_argument("--export-output", type=str, help="new Markdown file for --export-conversation")
 
     args = parser.parse_args()
+    if args.create_agent:
+        if args.convo or not all((args.agent_id, args.backend, args.model,
+                                 args.reasoning_effort or args.thinking_level)):
+            parser.error("--create-agent requires --agent-id, --backend, --model and thinking level; no --convo")
+    elif args.agent_id:
+        parser.error("--agent-id is valid only with --create-agent")
     try:
         launch_options = from_args(args)
         from litetui.mcp_seat import server_selection
@@ -115,12 +124,49 @@ def main() -> None:
     agent_session = None
     app = None
     try:
-        if args.agent:
-            from litetui.agent_launch_context import acquire
+        if args.convo and not args.agent:
+            from litetui.agent_store import AgentStore, StoreError
             try:
-                agent_session = acquire(data_root(), args.agent, conversation_id=args.convo,
-                                        backend=args.backend, model=args.model,
-                                        thinking_level=args.reasoning_effort or args.thinking_level)
+                store = AgentStore(data_root())
+                directory = store.locate_conversation(args.convo)
+                args.agent = store.find_agent(name=directory.parent.parent.name).name
+            except (StoreError, OSError) as exc:
+                parser.error(
+                    f'Owned conversation lookup refused: {exc}; pass --agent <Name> only for an existing owned child. '
+                    'Legacy archives are read-only. Export without starting the app: '
+                    'litetui --export-conversation <archive/convo.jsonl> --export-output <new.md>. '
+                    'Owned continuation requires operator-approved copy/migration with a hash-pinned manifest/merge receipt '
+                    'and quiet-seat verification before activation; --agent does not migrate an archive. No automatic copy.')
+        spawned_identity = None
+        from litetui import harness as harness_mod
+        if os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == '1':
+            spawned_identity = harness_mod.spawned_seat_identity()
+        if not args.agent and not args.create_agent:
+            from litetui.agent_launch_context import ordinary
+            try:
+                from litetui.shared_state import check_data_version
+                check_data_version(data_root())
+                agent_session = ordinary(data_root(), settings, spawned_identity=spawned_identity,
+                                         backend=args.backend, model=args.model,
+                                         thinking_level=args.reasoning_effort or args.thinking_level,
+                                         notice=lambda text: print(text, file=sys.stderr))
+            except (ValueError, OSError) as exc:
+                parser.error(str(exc))
+        if args.agent or args.create_agent:
+            from litetui.agent_launch_context import acquire, create
+            try:
+                if args.create_agent:
+                    # Version refusal precedes reservation; all writes below belong
+                    # to the child's newly reserved home, never the caller's seat.
+                    from litetui.shared_state import check_data_version
+                    check_data_version(data_root())
+                    agent_session = create(data_root(), args.create_agent, agent_id=args.agent_id,
+                                           backend=args.backend, model=args.model,
+                                           thinking_level=args.reasoning_effort or args.thinking_level)
+                else:
+                    agent_session = acquire(data_root(), args.agent, conversation_id=args.convo,
+                                            backend=args.backend, model=args.model,
+                                            thinking_level=args.reasoning_effort or args.thinking_level)
                 authority = agent_session.authority
                 args.backend, args.model = authority.backend, authority.model
                 args.thinking_level, args.reasoning_effort = authority.thinking_level, None
@@ -167,6 +213,7 @@ def main() -> None:
             plan_mode=args.mode == "plan",
             convo_id=args.convo,
             agent_session=agent_session,
+            spawn_identity=spawned_identity,
             **app_kwargs,
         )
 

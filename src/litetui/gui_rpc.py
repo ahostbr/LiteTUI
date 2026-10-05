@@ -24,7 +24,7 @@ from typing import Literal, get_args, get_origin, get_type_hints
 from litetui import settings_runtime
 from litetui import llm_backend, paths, seat_authority, tasks
 from litetui import settings as settings_mod
-from litetui.shared_state import DATA_VERSION, Lease, OwnershipError, check_data_version
+from litetui.shared_state import DATA_VERSION, check_data_version
 
 PROTOCOL_VERSION = 1
 OPERATION_CONTEXT = ContextVar("gui_management_operation", default=None)
@@ -221,16 +221,12 @@ def _conversations(app, action, cmd):
             result = {"session_id": session_id, "meta": {"id": session_id}, "messages": copy.deepcopy(app.conversation)}
         else:
             result = _read_session(session_id, app)
-        result["read_only"] = False
-        if (getattr(app, '_agent_session', None) is None
-                and session_id != getattr(app, "convo_id", "")):
-            try:
-                with Lease(_session_path(session_id, app).parent / ".session.lease"):
-                    pass
-            except OwnershipError:
-                result["read_only"] = True
-                result["ownership_reason"] = "This conversation is active in another process"
+        result["read_only"] = getattr(app, '_agent_session', None) is None
+        if result["read_only"]:
+            result["ownership_reason"] = "Legacy conversation archive is read-only; no owned agent session"
         return result
+    if getattr(app, '_agent_session', None) is None:
+        raise ValueError("Mutable conversation RPC requires an owned agent session")
     _idle(app)
     if action == "create":
         app._handle_command("/new")
