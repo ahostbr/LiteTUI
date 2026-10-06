@@ -140,7 +140,7 @@ def test_long_speech_uses_file_not_windows_command_line(monkeypatch):
     monkeypatch.setattr(voice.optional_python, 'resolve', lambda *m: sys.executable)
     monkeypatch.setattr(voice.subprocess, 'Popen', launch)
     monkeypatch.setattr(voice.threading, 'Thread', Thread)
-    assert voice.speak('hello ' * 10000, timeout=450)
+    assert voice.speak('hello ' * 10000, timeout=450, litesuite_first=False)
     assert len(captured['args']) == 2
     assert 'hello ' * 9999 in captured['script']
     assert captured['timeout'] == 450

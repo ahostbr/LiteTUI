@@ -13,11 +13,13 @@ from litetui.widgets import AssistantMessage
 async def test_each_response_speaks_own_text_and_stops(monkeypatch):
     active = set()
     spoken = []
+    preferences = []
     monkeypatch.setattr(voice_backend, 'is_playing', lambda owner: owner in active)
     def stop(owner=None):
         active.clear() if owner is None else active.discard(owner)
     def speak(text, **kw):
         spoken.append(text)
+        preferences.append(kw['litesuite_first'])
         active.add(kw['owner'])
         return True
     monkeypatch.setattr(voice_backend, 'stop', stop)
@@ -38,7 +40,9 @@ async def test_each_response_speaks_own_text_and_stops(monkeypatch):
         assert buttons[0] in active
         await pilot.click(buttons[0])
         assert not active
+        pilot.app.settings.tts_litesuite_first = False
         await pilot.click(buttons[1])
+        assert preferences == [True, False]
         assert spoken[-1] == 'second response'
         assert buttons[1] in active
     assert not active
@@ -89,6 +93,7 @@ async def test_speech_text_fallback_and_visibility(monkeypatch, answer, recap, s
             assert await pilot.click(button)
             assert spoken == [(expected, {
                 'engine': 'edge', 'voice': 'voice', 'timeout': 30, 'owner': button,
+                'litesuite_first': True,
             })]
         else:
             # A stale/queued click must not try to speak a blank response.

@@ -528,9 +528,11 @@ class Settings:
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
     #: Show the "♫ Speak" button on each response (the user 2026-09-24: "tts_enabled
     #: should toggle displaying the speach button on responses"). Replies are never
-    #: spoken automatically; off hides the buttons and stops any playback.
+    #: spoken automatically; off hides buttons and stops local playback only.
     tts_enabled: bool = True
-    #: Maximum duration of a speech child, seconds.
+    #: Prefer LiteSuite's selected voice; engine/voice below remain the fallback.
+    tts_litesuite_first: bool = True
+    #: Maximum duration of a local speech child, seconds.
     tts_timeout: int = 300
     #: "pyttsx3" (Windows SAPI direct, offline, no download — the default) or
     #: "edge" (Microsoft cloud neural voices; needs edge-tts + playsound).
