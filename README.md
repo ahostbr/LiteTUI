@@ -466,6 +466,7 @@ initial prompt for a headed launch; avoid putting sensitive text on process argv
 | `llamacpp` | `--server-mode connect` or `--start-server`; optional `--server-executable PATH` and `--base-url URL` | `--load-model --model ID --context-length N`; optional `--model-path GGUF` adds its directory to discovery. |
 | `lmstudio` | `--server-mode connect` or `--start-server` using installed `lms server start` | `--load-model --model ID --context-length N` uses the LM Studio SDK. |
 | `ninfer` | Connect to discovery or `--base-url URL`; `--start-server` uses an allocated port | Startup accepts `--model-path ARTIFACT --context-length N --server-executable PATH`. `--model` must match the served ID. Requires RTX 5090. |
+| `strata` | Connect to the install's port (8080) or `--base-url URL`; `--start-server` runs the install's own server | [Strata](https://github.com/Niko1221/Strata) runs Qwen3.8-Flash-Next on one GPU plus system RAM. `--model-path strata-MODEL.json` picks a prepared model; `--context-length N` with `--start-server` starts it at that size. Install it and download models from LiteSuite's Model Hub, or with Strata's own `START-HERE.bat`. |
 | `codex` | Subscription login; connects using the configured Codex adapter (native app-server is managed by that adapter when enabled) | `--model ID --reasoning-effort LEVEL`. Endpoint, context and output limits belong to Codex; local-server overrides are rejected. |
 
 `--server-mode auto` preserves each backend's existing behavior. `connect` never

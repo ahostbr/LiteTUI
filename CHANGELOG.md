@@ -18,6 +18,14 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+### Added
+- **Strata backend** (`--backend strata`): Qwen3.8-Flash-Next on one GPU plus
+  system RAM, through [Strata](https://github.com/Niko1221/Strata). `/engine
+  start` owns the server the way it does for NInfer and refuses, with the
+  reason, when the model will not fit in free RAM, commit or VRAM. The install
+  folder is the `strata_root` setting, else the one LiteSuite's Model Hub
+  names; installing Strata and downloading models is done in that hub.
+
 ### Changed
 - **Splash tagline** is "a self-evolving, open-source TUI in pure Python", not
   "local-only coding agent": it now runs local, Codex OAuth and free cloud

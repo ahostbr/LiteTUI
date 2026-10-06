@@ -58,9 +58,21 @@ STRATA_VRAM_COMMIT_FRACTION = 0.9
 STRATA_MIN_FREE_VRAM_FRACTION = 0.6
 
 
+def _litesuite_strata_root() -> str:
+    """`strataRoot` from LiteSuite's config.json — the folder its Model Hub installed into
+    or was pointed at — so both apps use one install. "" when unset or unreadable."""
+    try:
+        body = json.loads(ninfer_engine._config_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no file or bad JSON means "LiteSuite chose nothing"
+        return ""
+    val = body.get("strataRoot") if isinstance(body, dict) else None
+    return val.strip() if isinstance(val, str) else ""
+
+
 def strata_root(settings) -> Path:
-    """The install folder: the setting, else where LiteSuite's Model Hub puts it."""
-    chosen = str(getattr(settings, "strata_root", "") or "").strip()
+    """The install folder: the setting, else the one LiteSuite's Model Hub names, else
+    where that hub installs by default."""
+    chosen = str(getattr(settings, "strata_root", "") or "").strip() or _litesuite_strata_root()
     return Path(chosen) if chosen else ninfer_engine.litesuite_llm_dir() / "strata"
 
 

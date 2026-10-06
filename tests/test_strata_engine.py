@@ -25,6 +25,8 @@ def _no_real_process_ops(monkeypatch, tmp_path):
     """Same discipline as test_ninfer_engine: fake pids are never handed to a real kill,
     atexit is faked so no cleanup callback outlives the test, and the wait is bounded."""
     monkeypatch.setattr(eng, "STRATA_START_TIMEOUT_S", 0.3)
+    # `strata_root` falls back to LiteSuite's config.json; never the user's real one.
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path / "llm"))
     monkeypatch.setattr(ninfer_engine, "_kill", lambda proc: None)
     monkeypatch.setattr(eng.atexit, "register", lambda *a, **k: None)
     monkeypatch.setattr(eng.jobkill, "create", lambda: None)
@@ -60,6 +62,20 @@ def _install(tmp_path: Path, *names: str, ctx: int = 32768, port: int = 8080) ->
 
 
 # ── which model ──────────────────────────────────────────────────────────────
+
+def test_the_install_folder_is_the_setting_else_litesuites_else_the_default(tmp_path):
+    settings = _Settings()
+    llm = tmp_path / "llm"
+    assert eng.strata_root(settings) == llm / "strata"
+    llm.mkdir()
+    (llm / "config.json").write_text('{"strataRoot": " F:/Strata "}', encoding="utf-8")
+    assert eng.strata_root(settings) == Path("F:/Strata")
+    settings.strata_root = "D:/mine"
+    assert eng.strata_root(settings) == Path("D:/mine")
+    (llm / "config.json").write_text("not json", encoding="utf-8")
+    settings.strata_root = ""
+    assert eng.strata_root(settings) == llm / "strata"
+
 
 def test_one_prepared_model_is_chosen_and_two_are_not_guessed(tmp_path):
     settings, (only,) = _install(tmp_path, "iq3_xxs")

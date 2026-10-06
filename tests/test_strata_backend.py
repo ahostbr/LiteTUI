@@ -18,6 +18,12 @@ from litetui.strata_backend import STRATA_REASONING_LEVELS, StrataBackend
 from litetui.turn_engine import _resolve_reasoning_effort
 
 
+@pytest.fixture(autouse=True)
+def _no_real_litesuite_config(monkeypatch, tmp_path):
+    """`strata_root` falls back to LiteSuite's config.json; never read the user's real one."""
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path / "llm"))
+
+
 @pytest.fixture
 def server():
     """A Strata-shaped server: /health and /v1/models, with a switchable `loaded`."""
