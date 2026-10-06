@@ -746,7 +746,10 @@ async def _async_dispatch(app, cmd):
         backend = app.backend
         from litetui import llm_backend
         if backend.name not in llm_backend.ENGINE_BACKENDS:
-            raise ValueError("engine operations require the NInfer or Strata backend")
+            from litetui import gpu_gate
+            # T893: NInfer is never named on a box that is not an RTX 5090 (as /engine's own refusal).
+            engines = "NInfer or Strata" if gpu_gate.is_rtx_5090() else "Strata"
+            raise ValueError(f"engine operations require the {engines} backend")
         action = operation.rsplit(".", 1)[1]
         if action == "status":
             return {"status": backend.engine_status()}

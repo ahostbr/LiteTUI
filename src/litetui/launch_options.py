@@ -10,6 +10,9 @@ from urllib.parse import urlsplit
 
 from litetui.llm_backend import BackendError
 
+#: The engine backends by the name a refusal uses: only ever the one that was asked for.
+_ENGINE_LABELS = {'ninfer': 'NInfer', 'strata': 'Strata'}
+
 
 @dataclass
 class LaunchOptions:
@@ -80,7 +83,8 @@ class LaunchOptions:
             if backend in ('llamacpp', 'lmstudio') and not self.load_model:
                 raise ValueError('--context-length requires --load-model for llama.cpp/LM Studio; changing context reloads the model')
             if backend in ('ninfer', 'strata') and self.server_mode != 'start':
-                raise ValueError('NInfer and Strata context is fixed at startup; use --start-server --context-length')
+                # Names the backend that was asked for: a Strata refusal never says NInfer (T893).
+                raise ValueError(f'{_ENGINE_LABELS[backend]} context is fixed at startup; use --start-server --context-length')
             field = {'custom': 'custom_context_length', 'ninfer': 'ninfer_max_context',
                      'strata': 'strata_max_context',
                      'llamacpp': 'default_context_length', 'lmstudio': 'default_context_length'}[backend]
@@ -96,7 +100,7 @@ class LaunchOptions:
         if self.model_path:
             if backend in ('ninfer', 'strata'):
                 if self.server_mode != 'start':
-                    raise ValueError('--model-path for NInfer or Strata requires --start-server')
+                    raise ValueError(f'--model-path for {_ENGINE_LABELS[backend]} requires --start-server')
                 values['ninfer_artifact' if backend == 'ninfer' else 'strata_config'] = self.model_path
             elif backend == 'llamacpp':
                 if not self.load_model:

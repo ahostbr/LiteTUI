@@ -109,6 +109,92 @@ def test_the_engine_command_never_names_ninfer_off_a_5090(monkeypatch):
     assert ("/engine",) in on.names and "NInfer" in on.words[("/engine",)]
 
 
+# The four arms below run the code and read what it SAYS. The arm above reads only the
+# palette and help text, which is how three refusals went on naming NInfer off a 5090 after
+# Strata joined /engine (T0374 post-merge review). Nothing here starts or probes an engine.
+
+class _EngineApp:
+    """Only what `_cmd_engine` touches before a start."""
+    def __init__(self, backend) -> None:
+        self.backend = backend
+        self.said: list[str] = []
+    def system_message(self, msg, *a, **k) -> None:
+        self.said.append(str(msg))
+
+
+def test_engine_run_off_a_5090_never_says_ninfer(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from litetui.plugins import model_switch
+    from litetui.strata_backend import StrataBackend
+
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: False)
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path / "llm"))   # never the user's config
+    monkeypatch.setattr(StrataBackend, "_health_state", staticmethod(lambda host, timeout=2.0: None))
+
+    # On a backend that has no engine: the refusal points at Strata alone.
+    other = _EngineApp(SimpleNamespace(name="lmstudio"))
+    model_switch._cmd_engine(other, "/engine", "status")
+    # On Strata: its real status sentence, then a verb it does not have.
+    strata = _EngineApp(StrataBackend(Settings(backend="strata", strata_host="http://127.0.0.1:9")))
+    model_switch._cmd_engine(strata, "/engine", "status")
+    model_switch._cmd_engine(strata, "/engine", "bogus")
+
+    assert other.said == ["/engine drives the Strata backend — /backend strata first."]
+    assert strata.said[0].startswith("no Strata server at http://127.0.0.1:9.")
+    assert strata.said[1] == "/engine start | stop | status"
+    assert not any("ninfer" in line.lower() for line in other.said + strata.said)
+
+    # On a 5090 the same refusal names both engines.
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: True)
+    both = _EngineApp(SimpleNamespace(name="lmstudio"))
+    model_switch._cmd_engine(both, "/engine", "status")
+    assert "NInfer" in both.said[0] and "Strata" in both.said[0]
+
+
+@pytest.mark.asyncio
+async def test_the_gui_engine_refusal_never_says_ninfer_off_a_5090(monkeypatch):
+    from types import SimpleNamespace
+    from litetui import gui_rpc
+
+    app = SimpleNamespace(backend=SimpleNamespace(name="lmstudio"), _chat_running=lambda: False)
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: False)
+    for action in ("status", "start", "stop"):
+        with pytest.raises(ValueError) as refused:
+            await gui_rpc.async_dispatch(app, {"type": f"gui.engine.{action}"})
+        assert str(refused.value) == "engine operations require the Strata backend"
+
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: True)
+    with pytest.raises(ValueError) as refused:
+        await gui_rpc.async_dispatch(app, {"type": "gui.engine.status"})
+    assert str(refused.value) == "engine operations require the NInfer or Strata backend"
+
+
+def test_a_strata_launch_refusal_names_strata_and_not_ninfer(monkeypatch):
+    from litetui.launch_options import LaunchOptions
+
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: False)
+    with pytest.raises(ValueError) as context:
+        LaunchOptions(context_length=8192).overrides(Settings(), "strata", None)
+    with pytest.raises(ValueError) as model_path:
+        LaunchOptions(model_path="strata-iq3_xxs.json").overrides(Settings(), "strata", None)
+    assert str(context.value) == "Strata context is fixed at startup; use --start-server --context-length"
+    assert str(model_path.value) == "--model-path for Strata requires --start-server"
+    assert "ninfer" not in f"{context.value} {model_path.value}".lower()
+
+
+def test_an_ninfer_launch_refusal_still_names_ninfer_on_a_5090(monkeypatch):
+    from litetui.launch_options import LaunchOptions
+
+    monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: True)
+    with pytest.raises(ValueError) as context:
+        LaunchOptions(context_length=8192).overrides(Settings(), "ninfer", None)
+    with pytest.raises(ValueError) as model_path:
+        LaunchOptions(model_path="a.ninfer").overrides(Settings(), "ninfer", None)
+    # Word for word what they said before Strata existed (55773b3).
+    assert str(context.value) == "NInfer context is fixed at startup; use --start-server --context-length"
+    assert str(model_path.value) == "--model-path for NInfer requires --start-server"
+
+
 @pytest.mark.asyncio
 async def test_the_settings_screen_has_no_ninfer_tab_off_a_5090_and_still_saves(monkeypatch):
     from textual.app import App, ComposeResult
