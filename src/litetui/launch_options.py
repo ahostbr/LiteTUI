@@ -41,6 +41,8 @@ class LaunchOptions:
                 if self.base_url:
                     raise ValueError('NInfer startup allocates its port; use --base-url only when connecting')
                 values['ninfer_host'] = ''
+        if backend == 'strata' and self.server_executable:
+            raise ValueError('Strata has no server executable to name; --model-path takes its strata-<model>.json')
         for name in ('base_url', 'server_executable', 'model_path', 'api_key_env'):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip() or '\x00' in value):
@@ -70,16 +72,17 @@ class LaunchOptions:
         if self.base_url:
             base = api_base(self.base_url)
             field = {'custom': 'custom_base_url', 'llamacpp': 'llama_host',
-                     'lmstudio': 'lm_host', 'ninfer': 'ninfer_host'}[backend]
+                     'lmstudio': 'lm_host', 'ninfer': 'ninfer_host', 'strata': 'strata_host'}[backend]
             values[field] = base if backend == 'custom' else base.removesuffix('/v1')
             if backend == 'llamacpp':
                 values['llama_attach_hosts'] = []
         if self.context_length:
             if backend in ('llamacpp', 'lmstudio') and not self.load_model:
                 raise ValueError('--context-length requires --load-model for llama.cpp/LM Studio; changing context reloads the model')
-            if backend == 'ninfer' and self.server_mode != 'start':
-                raise ValueError('NInfer context is fixed at startup; use --start-server --context-length')
+            if backend in ('ninfer', 'strata') and self.server_mode != 'start':
+                raise ValueError('NInfer and Strata context is fixed at startup; use --start-server --context-length')
             field = {'custom': 'custom_context_length', 'ninfer': 'ninfer_max_context',
+                     'strata': 'strata_max_context',
                      'llamacpp': 'default_context_length', 'lmstudio': 'default_context_length'}[backend]
             values[field] = self.context_length
         if self.max_tokens:
@@ -91,10 +94,10 @@ class LaunchOptions:
                 raise ValueError('Use --server-command JSON for a custom executable and its arguments')
             values['llama_executable' if backend == 'llamacpp' else 'ninfer_executable'] = self.server_executable
         if self.model_path:
-            if backend == 'ninfer':
+            if backend in ('ninfer', 'strata'):
                 if self.server_mode != 'start':
-                    raise ValueError('--model-path for NInfer requires --start-server')
-                values['ninfer_artifact'] = self.model_path
+                    raise ValueError('--model-path for NInfer or Strata requires --start-server')
+                values['ninfer_artifact' if backend == 'ninfer' else 'strata_config'] = self.model_path
             elif backend == 'llamacpp':
                 if not self.load_model:
                     raise ValueError('--model-path requires --load-model for llama.cpp')
@@ -103,7 +106,7 @@ class LaunchOptions:
                     raise ValueError(f'Model file does not exist: {path}')
                 values['llama_models_dirs'] = [*settings.llama_models_dirs, str(path.parent)]
             elif backend != 'custom':
-                raise ValueError('--model-path applies to llama.cpp, NInfer or a custom command')
+                raise ValueError('--model-path applies to llama.cpp, NInfer, Strata or a custom command')
             elif not self.server_command:
                 raise ValueError('--model-path for custom requires --server-command')
         if self.api_key_env:
@@ -127,7 +130,7 @@ def add_arguments(parser):
     parser.add_argument('--context-length', type=int, help='Load/start context tokens; custom: declared client budget (server command must set actual context)')
     parser.add_argument('--max-tokens', type=int, help='Completion token limit for local/custom backends')
     parser.add_argument('--server-executable', help='llama-server or ninfer-serve executable')
-    parser.add_argument('--model-path', help='GGUF file, NInfer artifact, or custom command {model_path}')
+    parser.add_argument('--model-path', help='GGUF file, NInfer artifact, Strata strata-<model>.json, or custom command {model_path}')
     parser.add_argument('--server-command', help='Custom server argv as JSON array; no shell. Placeholders: {model}, {model_path}, {context_length}, {host}, {port}')
     parser.add_argument('--api-key-env', help='Custom server credential environment variable NAME (never the key)')
     parser.add_argument('--server-timeout', type=int, default=600, help='Startup/readiness timeout in seconds')
@@ -183,7 +186,7 @@ async def _prepare(app):
     if getattr(app, '_launch_prepared', False):
         return await backend.ensure_running()
     if options.server_mode == 'start':
-        if backend.name == 'ninfer':
+        if backend.name in ('ninfer', 'strata'):     # llm_backend.ENGINE_BACKENDS
             app._system(await backend.start_engine())
         elif backend.name == 'custom':
             await start_custom(app, options)

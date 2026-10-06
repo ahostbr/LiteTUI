@@ -17,7 +17,7 @@ never invents a reservation itself; it only honours one a caller has verified.
 from dataclasses import dataclass
 
 _HOSTED = 'codex'
-_LOCAL = frozenset({'lmstudio', 'llamacpp', 'ninfer'})
+_LOCAL = frozenset({'lmstudio', 'llamacpp', 'ninfer', 'strata'})
 
 
 @dataclass(frozen=True)

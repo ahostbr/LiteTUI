@@ -55,7 +55,7 @@ OPERATIONS = (
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
-RECONNECT = frozenset({"lm_host", "ninfer_host", "llama_host", "llama_executable", "backend", "default_model", "mcp_enabled", "skills_enabled", "mcp_disabled_servers"})
+RECONNECT = frozenset({"lm_host", "ninfer_host", "strata_host", "llama_host", "llama_executable", "backend", "default_model", "mcp_enabled", "skills_enabled", "mcp_disabled_servers"})
 RESTART = frozenset({"plugins_disabled", "skill_roots"})
 
 
@@ -173,6 +173,8 @@ def _validate(app, patch):
             raise ValueError(f"{name}: expected an http(s) server URL")
         if name == "ninfer_host" and value and not value.startswith(("http://", "https://")):
             raise ValueError("ninfer_host: expected an http(s) server URL, or blank to discover")
+        if name == "strata_host" and value and not value.startswith(("http://", "https://")):
+            raise ValueError("strata_host: expected an http(s) server URL, or blank for the install's port")
     candidate = copy.deepcopy(app.settings)
     for name, value in patch.items():
         setattr(candidate, name, value)
@@ -742,8 +744,9 @@ async def _async_dispatch(app, cmd):
     if operation.startswith("gui.engine."):
         _idle(app)
         backend = app.backend
-        if backend.name != "ninfer":
-            raise ValueError("engine operations require the NInfer backend")
+        from litetui import llm_backend
+        if backend.name not in llm_backend.ENGINE_BACKENDS:
+            raise ValueError("engine operations require the NInfer or Strata backend")
         action = operation.rsplit(".", 1)[1]
         if action == "status":
             return {"status": backend.engine_status()}
@@ -753,7 +756,7 @@ async def _async_dispatch(app, cmd):
         if action == "stop":
             from litetui import agent_preparation
             if not backend.begin_stop():
-                raise ValueError("NInfer engine start/stop is already active")
+                raise ValueError(f"{getattr(backend, 'label', 'NInfer')} engine start/stop is already active")
             try:
                 result = await agent_preparation.await_preparation(backend.stop_engine)
                 return {"result": result, "status": backend.engine_status()}
@@ -783,7 +786,7 @@ async def _async_dispatch(app, cmd):
             raise ValueError("Connection failed; requested connection settings remain deferred")
         if not hasattr(app, "_gui_effective_settings"):
             app._gui_effective_settings = asdict(app.settings)
-        for name in ("lm_host", "ninfer_host", "llama_host", "llama_executable", "backend", "default_model"):
+        for name in ("lm_host", "ninfer_host", "strata_host", "llama_host", "llama_executable", "backend", "default_model"):
             app._gui_effective_settings[name] = getattr(app.settings, name)
         return {"connected": True, "model": app._rpc_model_state(), "settings": _settings(app)}
     if operation in ("gui.models.load", "gui.models.unload", "gui.models.config", "gui.models.configure"):

@@ -919,6 +919,35 @@ class SettingsBody(Widget):
                                 "Pinned system RAM for KV moved off the GPU. Blank uses the engine's 8192.",
                                 placeholder="8192",
                             )
+                with TabPane("Strata", id="tab-strata"):
+                    with VerticalScroll(classes="set-scroll"):
+                        yield self._section_header("strata-engine")
+                        yield from self._text_row(
+                            "strata_host", "Strata host",
+                            "Blank uses the chosen model's own port on this PC (8080). Set it "
+                            "only for a Strata server you started yourself somewhere else.",
+                            placeholder="http://127.0.0.1:8080",
+                        )
+                        yield from self._text_row(
+                            "strata_root", "Strata: install folder",
+                            "Blank uses LiteSuite's install. The folder Strata's setup prepared "
+                            "(it holds .venv, serve/ and one strata-<model>.json per model). "
+                            "Engine and docs: https://github.com/Niko1221/Strata",
+                            placeholder="C:/Users/you/.litesuite/llm/strata",
+                        )
+                        yield from self._text_row(
+                            "strata_config", "Strata: model (strata-<model>.json)",
+                            "Blank uses the one model the install holds; /model picks between "
+                            "several. /engine start serves this.",
+                            placeholder="C:/Users/you/.litesuite/llm/strata/strata-iq3_xxs.json",
+                        )
+                        yield from self._text_row(
+                            "strata_max_context", "Strata: context length (--max-context)",
+                            "Blank keeps what the model was set up with. Up to 262144. A longer "
+                            "context takes VRAM from the expert cache, not system RAM. Applies on "
+                            "the next /engine start.",
+                            placeholder="blank, or tokens such as 131072",
+                        )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
                         yield self._section_header("voice-speak")

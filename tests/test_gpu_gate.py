@@ -84,23 +84,29 @@ def test_the_backend_door_refuses_ninfer_by_name_off_a_5090(monkeypatch):
     assert _Fake.settings.backend != "ninfer"
 
 
-def test_the_engine_command_is_not_registered_off_a_5090(monkeypatch):
+def test_the_engine_command_never_names_ninfer_off_a_5090(monkeypatch):
+    """T893 holds, restated for T0374: `/engine` also drives Strata, which has no 5090
+    gate, so the command is registered everywhere — but off a 5090 none of its words
+    say NInfer."""
     from litetui.plugins import model_switch
 
     class _Ctx:
         def __init__(self) -> None:
             self.names: list[tuple[str, ...]] = []
+            self.words: dict[tuple[str, ...], str] = {}
         def command(self, names, fn, **kw) -> None:
             self.names.append(tuple(names))
+            self.words[tuple(names)] = f"{kw.get('palette', '')} {kw.get('help', '')}"
         def __getattr__(self, item):           # any other registration hook: accept, ignore
             return lambda *a, **k: None
 
     monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: False)
     off = _Ctx(); model_switch._register(off)
-    assert ("/engine",) not in off.names and ("/backend",) in off.names
+    assert ("/engine",) in off.names and ("/backend",) in off.names
+    assert "ninfer" not in off.words[("/engine",)].lower() and "Strata" in off.words[("/engine",)]
     monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: True)
     on = _Ctx(); model_switch._register(on)
-    assert ("/engine",) in on.names
+    assert ("/engine",) in on.names and "NInfer" in on.words[("/engine",)]
 
 
 @pytest.mark.asyncio

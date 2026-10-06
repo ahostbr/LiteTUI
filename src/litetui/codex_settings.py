@@ -140,7 +140,7 @@ def control(backend, name):
         if name in {"autocompact_enabled", "autocompact_at_percent", "clear_screen_after_compact", "wake_after_compact"}:
             return Control("host", "LiteTUI compacts Claude conversations itself (Claude's own autocompact is off): "
                            "Claude writes the summary, and the next message starts a fresh session carrying it.")
-        if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
+        if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith(("ninfer_", "strata_")):
             return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
         return None
     if getattr(backend, "name", None) in ("cline", "free"):
@@ -148,7 +148,7 @@ def control(backend, name):
         # only its endpoint is fixed and remote.
         if name == "thinking_level":
             return CLINE_THINKING
-        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith("ninfer_"):
+        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith(("ninfer_", "strata_")):
             return CLINE_FIXED
         return None
     return CONTROLS.get(name) if native(backend) else None

@@ -110,6 +110,10 @@ def _resolve_reasoning_effort(
             "xhigh": "xhigh",
             "max": "xhigh",
         }.get(level)
+    if backend_name == "strata":
+        # Strata's server accepts none/low/medium/high and answers 400 to anything else, so a
+        # level saved under another backend is folded onto the nearest one it has.
+        return {"minimal": "low", "xhigh": "high", "max": "high", "ultra": "high"}.get(level, level)
     if backend_name != "lmstudio":
         return level
     want = (model_id or "").strip().lower()

@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 from litetui.llm_backend import LlamaCppBackend, LMStudioBackend, _VramGate
 from litetui.ninfer_backend import NInferBackend
+from litetui.strata_backend import StrataBackend
 from litetui.model_resource_session import AdmissionBlocked
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
@@ -43,6 +44,7 @@ _ENDPOINT_ADAPTERS = (
     (LlamaCppBackend, lambda b: b.host()),
     (LMStudioBackend, lambda b: getattr(b, "_host", None)),
     (NInferBackend, lambda b: getattr(b, "_host", None)),
+    (StrataBackend, lambda b: b.host()),
 )
 
 
