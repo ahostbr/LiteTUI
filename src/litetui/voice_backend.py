@@ -1,11 +1,13 @@
-"""Speak the agent's replies aloud — local-first, two engines.
+"""Speak explicit replies through LiteSuite first, with two local fallback engines.
+
+LiteSuite owns accepted remote playback; stop/is_playing track local children only.
 
 the user 2026-09-18: "ship the lightest possible local stt/tts backend ... do both
 pytts and edge support". This is the TTS-out half.
 
     pyttsx3  -> Windows SAPI5 DIRECTLY. No MCI, no playsound, no network, no
                 download — the SAPI voices (David/Zira) are already installed.
-                The default, because it always works offline. Robotic, but real.
+                The default local fallback. Robotic, but works offline.
     edge     -> Microsoft's cloud neural voices (en-GB-SoniaNeural &c): saved to
                 mp3 and played with playsound==1.2.2. Needs network + the two
                 optional deps. The "sounds better" opt-in.
@@ -14,13 +16,14 @@ WHY A DETACHED SUBPROCESS PER UTTERANCE, not an in-process call: the whole
 reason OpenBolt's edge+playsound attempt kept throwing MCI error 263 is that
 playsound/winmm wants its own process and message context; called from the
 app's thread it fails silently. pyttsx3's runAndWait() would likewise block the
-Textual event loop. So every utterance is a fire-and-forget child that owns its
-own audio handle and dies when the clip ends — Popen returns immediately.
+Textual event loop. Each local utterance is a fire-and-forget child that owns
+its audio handle and dies when the clip ends — Popen returns immediately.
+Remote dispatch instead waits briefly for the Voice API acknowledgement.
 """
 from __future__ import annotations
 
 import importlib.util
-from litetui import optional_python
+from litetui import litesuite_tts, optional_python
 import os
 import subprocess
 import sys
@@ -157,15 +160,21 @@ asyncio.run(go())
 """
 
 
-def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeout: int = 300, owner=None) -> bool:
-    """Fire-and-forget one utterance in a detached child. Returns True if a
-    child was launched, False if the text was empty or the engine unavailable.
-    NEVER raises — a failed speak must not break a turn."""
+def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeout: int = 300, owner=None, litesuite_first: bool = True) -> bool:
+    """True means LiteSuite acknowledged dispatch or a local child launched.
+    The Voice API uses short socket timeouts; synthesis/playback is asynchronous.
+    False includes uncertain remote dispatch: callers must not retry automatically.
+    Local-only callers can opt out, e.g. testing their selected fallback voice.
+    """
     if type(timeout) is not int or timeout <= 0:
         return False
     text = clean_for_speech(text, limit=len(text))
     if not text:
         return False
+    if litesuite_first:
+        result = litesuite_tts.speak(text)
+        if result is not None:
+            return result
     executable = optional_python.resolve(*(("edge_tts", "playsound") if engine == "edge" else ("pyttsx3",)))
     if not executable:
         return False

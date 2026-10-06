@@ -33,6 +33,6 @@ def test_speech_uses_resolved_interpreter(monkeypatch):
         captured['source'] = Path(argv[1]).read_text(encoding='utf-8')
         return Process()
     monkeypatch.setattr(v.subprocess, 'Popen', launch)
-    assert v.speak('hello', engine='edge')
+    assert v.speak('hello', engine='edge', litesuite_first=False)
     assert captured['argv'][0] == 'system-python'
     assert 'edge_tts' in captured['source']

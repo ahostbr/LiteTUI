@@ -953,13 +953,19 @@ class SettingsBody(Widget):
                         yield self._section_header("voice-speak")
                         yield Label("Speak — replies read aloud (TTS out)",
                                     classes="set-label")
-                        yield Static("Use Speak / Stop on each response to control playback. Replies are never spoken automatically.")
+                        yield Static("Replies are never spoken automatically. Stop controls LiteTUI playback only; stop queued LiteSuite speech in LiteSuite.")
                         yield from self._switch_row(
                             "tts_enabled", "Show the Speak button on responses",
-                            "Off hides the ♫ Speak button on every response and stops any playback.",
+                            "Off hides the ♫ Speak button and stops LiteTUI-owned playback, not LiteSuite's queue.",
+                        )
+                        yield from self._switch_row(
+                            "tts_litesuite_first", "Prefer LiteSuite speech",
+                            "Use LiteSuite's selected voice when reachable; otherwise use the fallback below. "
+                            "Off uses only the fallback. Health/dispatch socket timeouts are 0.25s/0.75s, "
+                            "not a total deadline; the synchronous check can pause the interface.",
                         )
                         yield from self._select_row(
-                            "tts_engine", "TTS engine",
+                            "tts_engine", "Fallback TTS engine",
                             [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
                              ("edge — Microsoft cloud neural voices (needs install)", "edge")],
                             "pyttsx3 speaks through the built-in Windows voices with "
@@ -976,7 +982,7 @@ class SettingsBody(Widget):
                         if hasattr(self._start, "tts_timeout"):
                             yield from self._text_row(
                                 "tts_timeout", "TTS timeout (seconds)",
-                                "Maximum time a speech request may run before it is stopped.",
+                                "Maximum lifetime of a local speech child; does not control LiteSuite's queue.",
                                 placeholder="300")
                         yield from self._text_row(
                             "tts_edge_voice", "edge voice",
@@ -984,7 +990,7 @@ class SettingsBody(Widget):
                             placeholder="en-GB-SoniaNeural")
                         with Vertical(classes="set-row"):
                             with Horizontal(classes="set-switchline"):
-                                yield Button("Test voice", id="voice-test")
+                                yield Button("Test fallback voice", id="voice-test")
                                 yield Button("Install edge support",
                                              id="voice-install-edge")
                         # ── Dictate (STT in) ──
@@ -1976,7 +1982,8 @@ class SettingsBody(Widget):
                 self.query_one("#voice-status", Static).update(str(exc))
                 return
         ok = voice_backend.speak("This is the LiteTUI voice test.",
-                                 engine=engine, voice=voice or None, timeout=timeout)
+                                 engine=engine, voice=voice or None, timeout=timeout,
+                                 litesuite_first=False)
         self.query_one("#voice-status", Static).update(
             "Sent a test line — you should hear it now." if ok
             else "That engine is not installed — use Install, or pick pyttsx3.")
