@@ -33,7 +33,10 @@ def _available(port: int) -> bool:
     except (OSError, http.client.HTTPException, ValueError):
         pass  # No utterance has been submitted; falling back cannot duplicate it.
     finally:
-        connection.close()
+        try:
+            connection.close()
+        except OSError:
+            _LOG.warning("LiteSuite health connection cleanup failed", exc_info=True)
     _health = (port, time.monotonic() + _HEALTH_TTL, up)
     return up
 
@@ -73,5 +76,9 @@ def speak(text: str) -> bool | None:
     except (OSError, http.client.HTTPException, ValueError):
         _LOG.warning("LiteSuite speech acknowledgement uncertain; not replaying locally", exc_info=True)
     finally:
-        connection.close()
+        try:
+            connection.close()
+        except OSError:
+            # Cleanup must never change dispatch acknowledgement or allow replay.
+            _LOG.warning("LiteSuite speech connection cleanup failed", exc_info=True)
     return False

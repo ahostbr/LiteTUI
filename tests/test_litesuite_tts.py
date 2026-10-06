@@ -20,7 +20,7 @@ class Response:
 def api(monkeypatch):
     state = {"now": 0.0, "calls": [], "health": Response({"ok": True, "app": "LiteSuite"}),
              "speech": Response({"ok": True, "queued": True}), "connect_error": None,
-             "request_error": None, "closed": 0}
+             "request_error": None, "closed": 0, "close_error_at": None}
 
     class Connection:
         def __init__(self, host, port, timeout):
@@ -45,6 +45,8 @@ def api(monkeypatch):
 
         def close(self):
             state["closed"] += 1
+            if state["closed"] == state["close_error_at"]:
+                raise OSError("socket cleanup failed")
 
     monkeypatch.delenv("LITESUITE_VOICE_API_PORT", raising=False)
     monkeypatch.setattr(ls, "_health", None)
@@ -63,6 +65,27 @@ def test_litesuite_first_without_local_dependencies(api):
     assert json.loads(body) == {"text": 'Hello "there"', "summarize": False}
     assert headers["X-LiteSuite-Origin"] == "litetui"
     assert not voice.is_playing(object())  # Acknowledgement is not local playback.
+    assert api["closed"] == 2
+
+
+@pytest.mark.parametrize("up", [True, False])
+def test_health_cleanup_error_preserves_probe_result(api, up):
+    api["close_error_at"] = 1
+    if not up:
+        api["health"] = TimeoutError()
+    assert ls.speak("hello") is (True if up else None)
+    assert [c[0] for c in api["calls"]] == (["GET", "POST"] if up else ["GET"])
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_post_cleanup_error_preserves_outcome_without_local_replay(api, monkeypatch, accepted):
+    api["close_error_at"] = 2
+    api["speech"] = Response({"ok": True, "queued": False}) if accepted else TimeoutError()
+    def unexpected(*args):
+        pytest.fail("POST cleanup failure must not trigger local fallback")
+    monkeypatch.setattr(voice.optional_python, "resolve", unexpected)
+    assert voice.speak("hello") is accepted
+    assert [c[0] for c in api["calls"]] == ["GET", "POST"]
     assert api["closed"] == 2
 
 
