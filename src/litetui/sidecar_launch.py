@@ -90,9 +90,9 @@ class SidecarWindow:
                             self.on_event(frame)
                         else:
                             self.on_rejected_frame("jobs_write_disabled")
-                    elif frame["command"] == "settings_request" and self.on_event is not None:
-                        # Read-only: the page switched to Settings in a window
-                        # opened on another view, which was never sent them.
+                    elif frame["command"] in {"settings_request", "jobs_request"} and self.on_event is not None:
+                        # Read-only: tab entry asks the parent for current data;
+                        # neither projection requires a write grant.
                         self.on_event(frame)
                     else:
                         self.on_rejected_frame("unknown_command")
