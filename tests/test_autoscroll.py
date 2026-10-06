@@ -201,18 +201,6 @@ def test_chat_log_does_not_turn_wheel_motion_into_lock_ownership() -> None:
     assert "on_mouse_scroll_down" not in handlers
 
 
-def test_follow_mode_is_used_never_a_bare_scroll_end():
-    """The app must not bypass its explicit-lock door with a direct scroll."""
-    src = Path(app_mod.__file__).read_text(encoding="utf-8")
-    assert src.count("self._scroll_down()") >= 2
-    body = src.split("def _scroll_down(", 1)[1]
-    others = src.replace(body, "", 1)
-    assert "scroll_end(" not in others, (
-        "something calls scroll_end outside `_scroll_down` — that is a bare "
-        "scroll the explicit lock cannot gate"
-    )
-
-
 # ── ThinkingBlock follows its own body ───────────────────────────────────────
 
 class FakeText:
@@ -434,15 +422,118 @@ def test_lock_off_does_not_claim_the_generation_queue_slot() -> None:
     assert app._scroll_queued is None
 
 
+def _scroll_end_bypasses(src: str) -> list[tuple[int, int]]:
+    """Find explicit scroll calls outside the single door's statement body."""
+    tree = ast.parse(src)
+    apps = [
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "LiteTUI"
+    ]
+    assert len(apps) == 1, "expected exactly one LiteTUI class"
+    doors = [
+        node for node in apps[0].body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_scroll_down"
+    ]
+    assert len(doors) == 1, "expected exactly one LiteTUI._scroll_down door"
+    # The deferred callback is authorized too, but decorators and defaults
+    # execute outside the body and must not acquire its exemption.
+    authorized = {
+        node for statement in doors[0].body for node in ast.walk(statement)
+    }
+    return sorted(
+        (node.lineno, node.col_offset)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "scroll_end"
+        and node not in authorized
+    )
+
+
 def test_every_app_scroll_call_goes_through_the_one_door():
     src = Path(app_mod.__file__).read_text(encoding="utf-8")
     assert "def _scroll_down(self, *, reader_acted: bool = False)" in src
-    body = src.split("def _scroll_down(", 1)[1]
-    others = src.replace(body, "", 1)
-    assert "scroll_end(" not in others, (
-        "something calls scroll_end outside `_scroll_down`, bypassing the lock"
+    bypasses = _scroll_end_bypasses(src)
+    assert not bypasses, (
+        "scroll_end calls outside LiteTUI._scroll_down bypass the lock: "
+        f"{bypasses} (line, column)"
     )
     assert src.count("self._scroll_down()") >= 2
+
+
+_SCROLL_DOOR_SOURCE = """class LiteTUI:
+    def _scroll_down(self, *, reader_acted: bool = False):
+        def scroll_if_current():
+            log.scroll_end(animate=False)
+        log.call_after_refresh(scroll_if_current)
+"""
+
+
+@pytest.mark.parametrize(
+    "src, expected",
+    [
+        pytest.param(_SCROLL_DOOR_SOURCE, [], id="authorized-deferred-callback"),
+        pytest.param(
+            "log.scroll_end()\n" + _SCROLL_DOOR_SOURCE,
+            [(1, 0)], id="before-door",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE + "    def later(self):\n        log.scroll_end()\n",
+            [(7, 8)], id="method-after-door",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE + "log.scroll_end()",
+            [(6, 0)], id="module-eof-no-newline",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE + "class Other:\n    def _scroll_down(self):\n        log.scroll_end()\n",
+            [(8, 8)], id="other-class-same-method-name",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE + "    def later(self):\n        def callback():\n            log.scroll_end()\n",
+            [(8, 12)], id="nested-callback-outside-door",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE + "callback = log.scroll_end\n",
+            [], id="attribute-reference-is-not-call",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE + "log.scroll_end(\n    animate=False\n)\n",
+            [(6, 0)], id="multiline-call",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE + '# log.scroll_end()\ntext = "log.scroll_end()"\n',
+            [], id="comments-and-strings",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE.replace(
+                "    def _scroll_down", "    @log.scroll_end()\n    def _scroll_down"
+            ),
+            [(2, 5)], id="door-decorator-not-exempt",
+        ),
+        pytest.param(
+            _SCROLL_DOOR_SOURCE.replace("reader_acted: bool = False", "reader_acted=log.scroll_end()"),
+            [(2, 43)], id="door-default-not-exempt",
+        ),
+    ],
+)
+def test_source_guard_reports_only_calls_outside_exact_door_body(src, expected):
+    assert _scroll_end_bypasses(src) == expected
+
+
+@pytest.mark.parametrize(
+    "src, message",
+    [
+        ("class Other:\n    def _scroll_down(self):\n        pass\n", "one LiteTUI class"),
+        ("class LiteTUI:\n    pass\n", "one LiteTUI._scroll_down door"),
+        (_SCROLL_DOOR_SOURCE + _SCROLL_DOOR_SOURCE, "one LiteTUI class"),
+        (_SCROLL_DOOR_SOURCE + "    def _scroll_down(self):\n        pass\n", "one LiteTUI._scroll_down door"),
+    ],
+)
+def test_source_guard_fails_closed_without_a_unique_door(src, message):
+    with pytest.raises(AssertionError, match=message):
+        _scroll_end_bypasses(src)
 
 
 def test_every_log_rebuild_invalidates_queued_scroll_work():
