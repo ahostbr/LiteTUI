@@ -188,9 +188,55 @@ def _pick_ninfer_artifact(app) -> None:
          current=str(getattr(app.settings, "ninfer_artifact", "") or ""))
 
 
+def _pick_strata_config(app) -> None:
+    """`/model` on Strata: choose the prepared model the next engine will serve.
+
+    The same door as `_pick_ninfer_artifact`, for the same reason: one model per process,
+    chosen before the server starts. Here the choice is a `strata-<model>.json` in the
+    install — Strata's setup writes one per model it prepared.
+    """
+    from litetui import strata_engine
+
+    chosen = str(getattr(app.settings, "strata_config", "") or "").strip()
+    rows = []
+    for path in strata_engine.list_strata_configs(app.settings):
+        ctx = strata_engine.config_context(strata_engine.read_config(path))
+        size = f"  · {ctx:,} context" if ctx else ""
+        mark = "  · current" if chosen and Path(chosen) == path else ""
+        rows.append((str(path), f"{path.stem.removeprefix('strata-')}{size}{mark}"))
+    if not rows:
+        app.system_message(
+            f"No prepared Strata models in {strata_engine.strata_root(app.settings)} — LiteSuite's "
+            f"Model Hub installs Strata and downloads one ({strata_engine.STRATA_REPO_URL}), or set "
+            "strata_root in /settings."
+        )
+        return
+
+    def _picked(choice: str | None) -> None:
+        if not choice:
+            return
+        import dataclasses
+        candidate = dataclasses.replace(app.settings, strata_config=choice)
+        if getattr(app, 'convo_dir', None) is None:
+            app.settings = candidate        # instance-only, as for the NInfer artifact
+        else:
+            app._on_settings_saved(candidate)
+            result = getattr(app, '_settings_save_result', None)
+            if result is not None and any(not p.saved for p in result.persistence):
+                return
+        app.system_message(
+            f"Strata model set to {Path(choice).stem.removeprefix('strata-')} — /engine start to serve it."
+        )
+
+    pick(app, "Select a Strata model (served on the next /engine start)", rows, _picked, current=chosen)
+
+
 def _cmd_model(app, name: str, arg: str) -> None:
     if not arg and getattr(app.backend, "name", "") == "ninfer":
         _pick_ninfer_artifact(app)
+        return
+    if not arg and getattr(app.backend, "name", "") == "strata":
+        _pick_strata_config(app)
         return
     if arg:
         # Switch by number or name
@@ -251,6 +297,22 @@ def _ninfer_mark(app) -> str:
             else "not installed — LiteSuite's Model Hub installs it")
 
 
+def _strata_mark(app) -> str:
+    from litetui import strata_engine
+    from litetui.strata_backend import StrataBackend
+
+    host = strata_engine.default_host(app.settings)
+    if StrataBackend._health_state(host, timeout=0.5) is not None:
+        return f"server answering at {host}"
+    root = strata_engine.strata_root(app.settings)
+    if not strata_engine.server_python(root).is_file():
+        return "not installed — LiteSuite's Model Hub installs it"
+    count = len(strata_engine.list_strata_configs(app.settings))
+    if not count:
+        return "installed, no model downloaded"
+    return f"installed, {count} model{'' if count == 1 else 's'} — /engine start"
+
+
 def _claude_mark() -> str:
     """Readiness without starting the CLI: SDK importable + subscription login."""
     import importlib.util
@@ -285,11 +347,17 @@ def _set_lanes(app, raw: str) -> str:
 
 
 def _cmd_engine(app, name: str, arg: str) -> None:
-    """/engine start [N]|stop|status|lanes N — the NInfer process LiteTUI may own."""
+    """/engine start [N]|stop|status|lanes N — the NInfer or Strata process LiteTUI may own."""
     backend = app.backend
-    if getattr(backend, "name", "") != "ninfer":
-        app.system_message("/engine drives the NInfer backend — /backend ninfer first.")
+    if getattr(backend, "name", "") not in llm_backend.ENGINE_BACKENDS:
+        from litetui import gpu_gate
+        # T893: NInfer is never named on a box that is not an RTX 5090.
+        if gpu_gate.is_rtx_5090():
+            app.system_message("/engine drives the NInfer or Strata backend — /backend ninfer or /backend strata first.")
+        else:
+            app.system_message("/engine drives the Strata backend — /backend strata first.")
         return
+    is_ninfer = getattr(backend, "name", "") == "ninfer"
     verb, *rest = (arg.strip().lower() or "status").split()
     if verb == "status":
         app.system_message(backend.engine_status())
@@ -307,7 +375,7 @@ def _cmd_engine(app, name: str, arg: str) -> None:
         from litetui import agent_preparation
 
         if not backend.begin_stop():
-            app.system_message("NInfer engine is busy (a start or stop is already running) — try again shortly.")
+            app.system_message(f"{getattr(backend, 'label', 'NInfer')} engine is busy (a start or stop is already running) — try again shortly.")
             return
 
         async def _stop_work(target=backend):
@@ -330,13 +398,14 @@ def _cmd_engine(app, name: str, arg: str) -> None:
         agent_preparation.run_guarded(app, _stop_work(), group="ninfer-engine-stop",
                                       cleanup=backend.end_stop, report=_report)
         return
-    if verb in ("lanes", "concurrency"):
+    if verb in ("lanes", "concurrency") and is_ninfer:
         app.system_message(_set_lanes(app, rest[0] if rest else ""))
         return
     if verb != "start":
-        app.system_message("/engine start [lanes] | stop | status | lanes N")
+        app.system_message("/engine start [lanes] | stop | status | lanes N" if is_ninfer
+                           else "/engine start | stop | status")
         return
-    if rest:
+    if rest and is_ninfer:
         # `/engine start 4` — set the lanes, then start with them.
         said = _set_lanes(app, rest[0])
         app.system_message(said)
@@ -360,7 +429,7 @@ def _cmd_engine(app, name: str, arg: str) -> None:
     def _starting() -> None:
         app.call_from_thread(
             app.system_message,
-            "Starting ninfer-serve — weights take about ten seconds…")
+            getattr(backend, "start_notice", "Starting ninfer-serve — weights take about ten seconds…"))
 
     async def _go():
         try:
@@ -397,6 +466,7 @@ def backend_rows(app) -> list[tuple[str, str]]:
         "lmstudio": lms_mark,
         "llamacpp": llama_mark,
         "ninfer": _ninfer_mark(app),
+        "strata": _strata_mark(app),
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
         "cline": cline_backend.auth_status(),
@@ -619,6 +689,12 @@ def _cmd_load(app, name: str, arg: str) -> None:
         app.system_message(
             "NInfer serves one artifact per process — there is nothing to load. "
             "/model picks the artifact, /engine start serves it."
+        )
+        return
+    if getattr(app.backend, "name", "") == "strata":
+        app.system_message(
+            "Strata serves one model per process — there is nothing to load. "
+            "/model picks the model, /engine start serves it."
         )
         return
 
@@ -1439,11 +1515,21 @@ def _register(ctx) -> None:
     )
     from litetui import gpu_gate
 
-    if gpu_gate.is_rtx_5090():   # T893: the command is not shown, not even as a refusal
+    # T893: NInfer is not named on a box that is not an RTX 5090 — but Strata has no such
+    # gate, so the command is always there and only its words change.
+    if gpu_gate.is_rtx_5090():
         ctx.command(
             ("/engine",), _cmd_engine,
-            palette="NInfer engine",
-            help="Start (optionally with N lanes), stop or check the NInfer engine LiteTUI may own; lanes N sets its --max-concurrency.",
+            palette="Local engine (NInfer, Strata)",
+            help="Start (NInfer: optionally with N lanes), stop or check the NInfer or Strata engine LiteTUI may own; lanes N sets NInfer's --max-concurrency.",
+            group="backend",
+            order=55,
+        )
+    else:
+        ctx.command(
+            ("/engine",), _cmd_engine,
+            palette="Strata engine",
+            help="Start, stop or check the Strata engine LiteTUI may own.",
             group="backend",
             order=55,
         )

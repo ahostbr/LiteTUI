@@ -39,13 +39,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from . import ninfer_engine
-from .llm_backend import BackendError, ModelRow, _VramGate
+from .engine_lifecycle import OwnedEngineLifecycle
+from .llm_backend import BackendError, ModelRow
 
 #: Where LiteSuite keeps the config that names the live engine. The env var is
 #: LiteSuite's own override, honoured so a test (or a second install) points
@@ -253,7 +253,7 @@ NINFER_REASONING_LEVELS = ("none", "low", "medium", "xhigh")
 # ── the backend ──────────────────────────────────────────────────────────────
 
 
-class NInferBackend(_VramGate):
+class NInferBackend(OwnedEngineLifecycle):
     """`ninfer-serve`, attached. One artifact per process, for the life of it.
 
     SHAPE: single-model by construction — there is no `/models/load`, no
@@ -269,44 +269,17 @@ class NInferBackend(_VramGate):
     #: default was the literal string "LM Studio" — so NInfer, and anything
     #: added after that line was written, was announced as LM Studio.
     label = "NInfer"
+    _process_name = "ninfer-serve"
+
+    @property
+    def _engine(self):
+        """The launcher the shared start/stop lifecycle drives (engine_lifecycle.py)."""
+        return ninfer_engine
 
     def __init__(self, settings) -> None:
         self._settings = settings
-        self._host: str | None = None
+        self._init_lifecycle()   # _host, _owned and the start/stop claims
         self._model_id: str | None = None
-        #: The engine WE started via /engine start (the user a-35456da0: "LiteTUI may
-        #: start it"), else None = attached to one somebody else runs.
-        self._owned: ninfer_engine.OwnedEngine | None = None
-        #: Mutually-exclusive lifecycle claims, both set SYNCHRONOUSLY (no await between
-        #: the check and the set) so start and stop can never run concurrently on the
-        #: same backend. _starting is held for the WHOLE spawn — including the
-        #: cancellation JOIN — because a spawn thread outlives a cancelled await, so a
-        #: start that is cancelled must still block a stop until its thread has finished
-        #: (otherwise the stop snapshots none/old state and the late spawn orphans a
-        #: process). _stopping is held for the whole off-loop stop.
-        self._starting = False
-        self._stopping = False
-        #: Serializes every read/write of _starting/_stopping/_owned/_host across the event
-        #: loop AND the spawn/stop worker threads. Held only for SYNC critical sections (no
-        #: await inside), so it never stalls the loop; the long terminate_owned runs OUTSIDE it.
-        self._lifecycle_lock = threading.Lock()
-
-    def begin_stop(self) -> bool:
-        """Claim a stop-in-progress, atomically under the lifecycle lock (no await inside).
-
-        False (reject, do not overlap) if a stop is already running OR a start is in flight
-        (_starting). _starting is a DEDICATED claim held across the spawn's cancellation join,
-        so a cancelled spawn thread still blocks a stop. start_engine is NInfer's only
-        load/start door (load() is frozen), so this covers new loads."""
-        with self._lifecycle_lock:
-            if self._stopping or self._starting:
-                return False
-            self._stopping = True
-            return True
-
-    def end_stop(self) -> None:
-        with self._lifecycle_lock:
-            self._stopping = False
 
     # -- discovery --------------------------------------------------------
 
@@ -377,12 +350,6 @@ class NInferBackend(_VramGate):
         """
         return f"{self._resolve_host() or self.DEAD_HOST}/v1"
 
-    @property
-    def attached(self) -> bool:
-        """True unless /engine start made the process ours. The ownership rule
-        stays: the ONLY engine shutdown() will ever stop is one we started."""
-        return self._owned is None
-
     async def ensure_running(self) -> str:
         return await asyncio.to_thread(self._ensure_running_sync)
 
@@ -420,105 +387,7 @@ class NInferBackend(_VramGate):
         except Exception:
             return False
 
-    def shutdown(self) -> "object":
-        """Stop the engine ONLY if /engine start made it ours; otherwise nothing.
-
-        🔴 A shutdown that killed an engine LiteSuite (or the user, by hand) started
-        would take down a process approved separately, that another client may be
-        using — from a TUI closing a tab. Attached = leave it. Owned = ours to stop.
-        """
-        result = self.shutdown_owned()
-        if not result.owned:         # attached / no owned engine: forget the host (nothing to race)
-            with self._lifecycle_lock:
-                self._host = None
-        return result
-
-    def shutdown_owned(self):
-        """Stop our OWNED engine via the unified ninfer_engine.terminate_owned proof, under
-        the lifecycle lock for the capture and the clear (the long terminate runs OUTSIDE the
-        lock so the loop never stalls).
-
-        Clear self._owned AND self._host TOGETHER, ONLY on a confirmed terminal state AND
-        ONLY while _owned is still the SAME object — so a concurrent replacement is never torn
-        down and its host is never cleared. Any uncertain outcome retains the entire ownership
-        for a retry. Attached engines are never killed (owned=False)."""
-        from .llm_backend import TerminalShutdown
-
-        with self._lifecycle_lock:
-            owned = self._owned
-        if owned is None:
-            return TerminalShutdown(owned=False)
-        result = ninfer_engine.terminate_owned(owned)     # OUTSIDE the lock (bounded but slow)
-        if not result.retained:
-            with self._lifecycle_lock:
-                if self._owned is owned:                  # same object -> clear owned + host together
-                    self._owned = None
-                    self._host = None
-        return result
-
     # -- owning the engine (the user a-35456da0: "LiteTUI may start it") ----------
-
-    async def start_engine(self, *, notice=None) -> str:
-        """Spawn ninfer-serve under LiteTUI's VRAM gate; refuse if any engine is up.
-
-        `notice()` is forwarded to the launcher, which calls it immediately before
-        the spawn and never on a refusal (T865). It runs on the worker thread, so a
-        UI caller must marshal it back itself.
-        """
-        from litetui import agent_preparation
-
-        # Claim _starting SYNCHRONOUSLY, before the first await, and reject a concurrent
-        # start or a stop already in flight. Held (via the finally, which runs only AFTER
-        # the spawn's cancellation JOIN) for the whole spawn, so a stop cannot be admitted
-        # while a possibly-cancelled spawn thread is still running.
-        # Serialized lifecycle gate (all sync, no await between the checks and the claim):
-        # refuse a start while a stop is in flight, while another start is in flight, OR while
-        # an owned engine is still TRACKED — starting a second would overwrite self._owned and
-        # silently lose the handle to the first (its VRAM). Resolve the existing one
-        # (/engine stop) first.
-        with self._lifecycle_lock:
-            if self._stopping:
-                raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
-            if self._starting:
-                raise BackendError("a NInfer engine start is already in progress.")
-            if self._owned is not None:
-                raise BackendError("an owned NInfer engine is already tracked — /engine stop it before starting another.")
-            self._starting = True
-        try:
-            key = "ninfer-serve"
-
-            def _spawn_and_publish():
-                try:
-                    owned = ninfer_engine.start(
-                        self._settings, healthy=self._health, notice=notice)
-                except ninfer_engine.EngineStartFailed as exc:
-                    # A failed start may leave a resident engine whose cleanup was not
-                    # confirmed. PUBLISH the retained OwnedEngine (under the lock) so /engine
-                    # stop can retry it. Unconditional + cannot lose a handle: the entry gate
-                    # refused if _owned was already set, and the _starting claim blocks any
-                    # concurrent start/stop from touching _owned during the spawn.
-                    if exc.retained_owned is not None:
-                        with self._lifecycle_lock:
-                            self._owned = exc.retained_owned
-                            self._host = exc.retained_owned.host
-                    raise
-                # Publish INSIDE the thread, before returning (under the lock): a cancellation
-                # delivered after the join must not lose an engine that actually started.
-                with self._lifecycle_lock:
-                    self._owned = owned
-                    self._host = owned.host
-                return owned
-
-            async with self.vram_guard(key):
-                if self._stopping:   # a stop claimed the backend after our entry check
-                    raise BackendError("the NInfer engine is stopping — wait for it to finish, then /engine start.")
-                # await_preparation runs the blocking spawn off-loop and JOINS the thread
-                # on cancellation (a raw to_thread would orphan it), then re-raises.
-                owned = await agent_preparation.await_preparation(_spawn_and_publish)
-            return f"started ninfer-serve pid {getattr(owned.proc, 'pid', '?')} at {owned.host} ({owned.model_id})"
-        finally:
-            with self._lifecycle_lock:
-                self._starting = False
 
     def stop_engine(self) -> str:
         if self._owned is None:

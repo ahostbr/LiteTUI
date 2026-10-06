@@ -131,6 +131,15 @@ class Settings:
     ninfer_kv_capacity: str = ""
     #: --host-kv-mib (serving.md:786): pinned host RAM for spilled KV. None = engine default 8192.
     ninfer_host_kv_mib: int | None = None
+    #: Strata (https://github.com/Niko1221/Strata): Qwen3.8-Flash-Next on one GPU plus system
+    #: RAM. Blank host = the chosen config's port on loopback (8080). Blank root = LiteSuite's
+    #: install (~/.litesuite/llm/strata). Blank config = the ONE strata-<model>.json there;
+    #: /model picks between several. Context None = what the config was set up with; a number
+    #: is the engine's --max-context on the next /engine start.
+    strata_host: str = ""
+    strata_root: str = ""
+    strata_config: str = ""
+    strata_max_context: int | None = None
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
@@ -563,6 +572,9 @@ ENV_OVERRIDES: dict[str, str] = {
     "ninfer_host": "LITETUI_NINFER_HOST",
     "ninfer_executable": "LITETUI_NINFER_EXE",
     "ninfer_artifact": "LITETUI_NINFER_ARTIFACT",
+    "strata_host": "LITETUI_STRATA_HOST",
+    "strata_root": "LITETUI_STRATA_ROOT",
+    "strata_config": "LITETUI_STRATA_CONFIG",
     "backend": "LITETUI_BACKEND",
     "llama_host": "LITETUI_LLAMA_HOST",
     "tool_iterations": "LM_TOOL_ITERS",

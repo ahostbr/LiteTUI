@@ -89,7 +89,7 @@ def _friendly_label(name: str) -> str:
         return FIELD_LABELS[name]
     words = name.replace("_", " ").split()
     special = {"tts": "Speech", "stt": "Dictation", "mcp": "MCP", "lmstudio": "LM Studio",
-               "lm": "Local model", "ninfer": "NInfer", "llama": "llama.cpp", "api": "API",
+               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "llama": "llama.cpp", "api": "API",
                "hf": "Hugging Face", "kv": "KV", "tps": "tokens per second", "pct": "percentage",
                "s": "seconds", "mib": "MiB", "gguf": "GGUF"}
     return " ".join(special.get(word, word) for word in words).capitalize()
@@ -137,6 +137,10 @@ FIELD_DESCRIPTIONS = {
     "ninfer_kv_dtype": "NInfer cache format; higher precision needs more memory, smaller formats save it.",
     "ninfer_kv_capacity": "Shared NInfer cache capacity: blank follows context, auto fills remaining GPU memory.",
     "ninfer_host_kv_mib": "MiB of pinned system RAM for NInfer cache offloaded from the GPU.",
+    "strata_host": "Address of a Strata server started separately; blank uses the install's own port.",
+    "strata_root": "Folder Strata's setup prepared; blank uses the one LiteSuite's Model Hub installs.",
+    "strata_config": "Prepared model (strata-<model>.json) served at the next Strata engine start.",
+    "strata_max_context": "Context tokens requested at Strata startup; blank keeps the model's set-up value.",
     "tts_enabled": "Show Speak on replies; turning it off also stops playback.",
     "tts_engine": "Use local Windows voices or Microsoft's online neural speech service.",
     "tts_voice": "Windows voice used for spoken replies with the local speech engine.",
@@ -319,6 +323,11 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "ninfer", "NInfer", "ninfer-envelope", "Runtime envelope",
         "The startup flags that shape memory and parallel work.",
         ("ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
+    ),
+    _section(
+        "strata", "Strata", "strata-engine", "Engine",
+        "Qwen3.8-Flash-Next on one GPU plus system RAM (github.com/Niko1221/Strata).",
+        ("strata_host", "strata_root", "strata_config", "strata_max_context"), scope="device", keywords=("Qwen", "Flash-Next", "engine", "RAM", "context"),
     ),
     _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",
