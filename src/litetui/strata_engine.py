@@ -297,6 +297,13 @@ def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
     return argv, root, run_cfg, host
 
 
+def _last_words(fresh: str, limit: int = 400) -> str:
+    """The END of what this spawn printed. `ninfer_engine._log_tail` keeps the first 400
+    characters of the last five lines, and here those begin with the spawn header — a long
+    install path pushed the engine's own reason off the end."""
+    return " ".join(fresh.strip().splitlines()[-3:])[-limit:] or "(it printed nothing)"
+
+
 def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngine:
     """Spawn Strata's server for the chosen config and wait for it to load.
 
@@ -335,6 +342,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file, model_id=model_id,
                         job=job, args=tuple(argv), registered=False)
     deadline = time.monotonic() + STRATA_START_TIMEOUT_S
+    fresh = ""
     while time.monotonic() < deadline:
         try:
             with open(lp, "rb") as f:
@@ -346,10 +354,10 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
             atexit.register(ninfer_engine.stop, owned)
             return owned
         if getattr(proc, "poll", lambda: None)() is not None:
-            ninfer_engine._fail_start(owned, f"Strata exited before it was ready — {ninfer_engine._log_tail(lp)}")
+            ninfer_engine._fail_start(owned, f"Strata exited before it was ready — {_last_words(fresh)}")
         time.sleep(1.0)
     ninfer_engine._fail_start(
-        owned, f"Strata did not become ready in {STRATA_START_TIMEOUT_S}s — {ninfer_engine._log_tail(lp)}")
+        owned, f"Strata did not become ready in {STRATA_START_TIMEOUT_S}s — {_last_words(fresh)}")
 
 
 def request_unload(host: str, timeout: float = 30.0) -> bool:
