@@ -197,6 +197,17 @@ def _gb(n: float) -> str:
     return f"{n / 1e9:.1f} GB"
 
 
+def native_bytes(cfg: dict) -> int:
+    """Size on disk of the config's `--native` shard; 0 when it is not named or not readable.
+
+    Its own function so a test states a size instead of creating a file of that size."""
+    native = _arg_value([str(a) for a in cfg.get("args") or ()], "--native")
+    try:
+        return Path(native).stat().st_size if native else 0
+    except OSError:
+        return 0
+
+
 def memory_refusal(cfg: dict, *, ram_free: int | None, commit_free: int | None,
                    gpu: tuple[int, int] | None) -> str | None:
     """Why this config cannot be loaded into the memory that is free, or None. Pure."""
@@ -206,11 +217,7 @@ def memory_refusal(cfg: dict, *, ram_free: int | None, commit_free: int | None,
     args = [str(a) for a in cfg.get("args") or ()]
     if "--mmap-experts" in args or "--resident-budget-gib" in args:
         return None          # Strata's low-RAM modes read experts from disk; no pin to size
-    native = _arg_value(args, "--native")
-    try:
-        pinned = int(Path(native).stat().st_size * STRATA_PINNED_FRACTION) if native else 0
-    except OSError:
-        pinned = 0
+    pinned = int(native_bytes(cfg) * STRATA_PINNED_FRACTION)
     if not pinned:
         return None
     if ram_free is not None and ram_free < pinned:

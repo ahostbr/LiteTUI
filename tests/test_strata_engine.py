@@ -107,16 +107,18 @@ def test_a_context_past_the_trained_window_is_refused_not_started():
 
 # ── the memory gate ──────────────────────────────────────────────────────────
 
-def _cfg(tmp_path: Path, size: int, *extra: str) -> dict:
-    """A config whose --native shard is `size` bytes long (sparse: nothing is written)."""
-    native = tmp_path / "shard.gguf"
-    with open(native, "wb") as f:
-        f.truncate(size)
-    return {"exe": "x", "args": ["--native", str(native), *extra]}
+def _cfg(monkeypatch, size: int, *extra: str) -> dict:
+    """A config whose --native shard REPORTS `size` bytes. NO FILE IS CREATED.
+
+    🔴 The first version made the file with `truncate(size)`. NTFS does not make that sparse:
+    it wrote 47 GB of zeros to C: (twice) on 2026-10-06 and took the drive from 76 GB free to
+    34 GB. A test never creates anything near model size; it states the number."""
+    monkeypatch.setattr(eng, "native_bytes", lambda cfg: size)
+    return {"exe": "x", "args": ["--native", "not-a-real-file.gguf", *extra]}
 
 
-def test_memory_gate_passes_the_measured_fit_and_names_each_shortfall(tmp_path):
-    cfg = _cfg(tmp_path, 47 * GB)                       # the IQ3_XXS first shard: pins ~42.8 GB
+def test_memory_gate_passes_the_measured_fit_and_names_each_shortfall(monkeypatch):
+    cfg = _cfg(monkeypatch, 47 * GB)                    # the IQ3_XXS first shard: pins ~42.8 GB
     gpu = (31500, 32607)
     assert eng.memory_refusal(cfg, ram_free=45 * GB, commit_free=78 * GB, gpu=gpu) is None
     assert "available" in eng.memory_refusal(cfg, ram_free=40 * GB, commit_free=78 * GB, gpu=gpu)
@@ -124,11 +126,11 @@ def test_memory_gate_passes_the_measured_fit_and_names_each_shortfall(tmp_path):
     assert "holds the card" in eng.memory_refusal(cfg, ram_free=45 * GB, commit_free=78 * GB, gpu=(9000, 32607))
 
 
-def test_memory_gate_does_not_refuse_on_what_it_cannot_measure(tmp_path):
-    cfg = _cfg(tmp_path, 47 * GB)
+def test_memory_gate_does_not_refuse_on_what_it_cannot_measure(monkeypatch):
+    cfg = _cfg(monkeypatch, 47 * GB)
     assert eng.memory_refusal(cfg, ram_free=None, commit_free=None, gpu=None) is None
     # Strata's low-RAM modes read experts from disk: there is no pin to size.
-    mapped = _cfg(tmp_path, 47 * GB, "--mmap-experts")
+    mapped = _cfg(monkeypatch, 47 * GB, "--mmap-experts")
     assert eng.memory_refusal(mapped, ram_free=8 * GB, commit_free=8 * GB, gpu=None) is None
 
 
