@@ -76,7 +76,8 @@ async def test_engine_all_three_shared_owner_arms():
     assert (await gui_rpc.async_dispatch(a, {"type": "gui.engine.stop"}))["result"] == "fake stopped"
     assert a.backend.calls == [("start",), ("begin",), ("stop",), ("end",)]
     a.backend.name = "claude"
-    with pytest.raises(ValueError, match="NInfer"):
+    # "Strata" is in the refusal on every machine; NInfer only on an RTX 5090 (test_gpu_gate).
+    with pytest.raises(ValueError, match="Strata"):
         await gui_rpc.async_dispatch(a, {"type": "gui.engine.start"})
 
 
