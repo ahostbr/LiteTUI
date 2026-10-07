@@ -156,6 +156,7 @@ def test_real_reader_and_dispatcher_keep_jobs_request_readonly_without_grants(tm
     process = PipeProcess()  # in-memory pipe; no subprocess exists
     spawn = Mock(side_effect=AssertionError("Subprocess spawn is forbidden"))
     owner = SidecarWindow(Path("unused.exe"), spawn=spawn, timeout=1)
+    owner.token = "reader-dispatch-fixture"
     owner.process = process
     owner.on_event = SettingsPatchDispatcher(app, owner)
     rejected = []
@@ -183,7 +184,9 @@ def test_real_reader_and_dispatcher_keep_jobs_request_readonly_without_grants(tm
             "command": "jobs_request",
             "payload": valid_patch(app),
         }).encode() + b"\n")
-        assert completed.wait(1)
+        did_complete = completed.wait(1)
+        assert rejected == [], f"reader rejected authenticated fixture: {rejected}"
+        assert did_complete, "reader/dispatcher did not finish the fixture request"
         assert vars(app.settings) == before_settings
         after_saved = app._settings_service.snapshot(app.convo_dir.name)
         assert after_saved.saved == before_saved.saved
