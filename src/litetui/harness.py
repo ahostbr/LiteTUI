@@ -594,12 +594,32 @@ class Seat:
                 self.name = got
                 self.error = None
             else:
-                self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
+                if self._agent_session is not None:
+                    from litetui.registration_diagnostics import (
+                        OWNED_PRESENCE_FAILURE,
+                        record_failure,
+                    )
+                    record_failure(stage='presence-subprocess', returncode=r.returncode,
+                                   stderr=r.stderr or '')
+                    self.error = OWNED_PRESENCE_FAILURE
+                else:
+                    self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
             return self.registered
-        except FileNotFoundError:
+        except FileNotFoundError as e:
+            if self._agent_session is not None:
+                from litetui.registration_diagnostics import record_failure
+                record_failure(stage='presence-registration', exc=e)
             self.error = "liteharness not installed"
         except Exception as e:
-            self.error = f"{type(e).__name__}: {e}"
+            if self._agent_session is not None:
+                from litetui.registration_diagnostics import (
+                    OWNED_PRESENCE_FAILURE,
+                    record_failure,
+                )
+                record_failure(stage='presence-registration', exc=e)
+                self.error = OWNED_PRESENCE_FAILURE
+            else:
+                self.error = f"{type(e).__name__}: {e}"
         return False
 
     def deregister(self) -> None:
