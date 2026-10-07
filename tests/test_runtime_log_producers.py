@@ -73,6 +73,24 @@ EXPECTED_EVENTS = {
     # about needing more than one grep pattern now understates it.
     "card_summary.failed",
     "card_summary.persist_failed",
+    # Nine sites already exist in exact base 3ac6cbb0 (24 -> 33). T0332's
+    # registration diagnostics use record_error, adding NO metadata producer.
+    # Site provenance (adding commits, not this inventory-only correction):
+    # compact_profile + compact_tool: 786797d6806e (two sites)
+    # authority_change: b41f2f3c7e99
+    # approval_delivery: cb2b4110aa38
+    # approval_relay: 36c9e7fec013
+    # free_route: a819cff4b71c
+    # capture refused + stopped(limit) + stopped(storage): 3a65150382d0,
+    # T0387 (three sites, two unique event names). No site is exempted.
+    "compact_profile",
+    "compact_tool",
+    "authority_change",
+    "approval_delivery",
+    "approval_relay",
+    "free_route",
+    "tool_stream_capture_refused",
+    "tool_stream_capture_stopped",
 }
 PROHIBITED = {
     "prompt",
@@ -163,7 +181,9 @@ def test_exactly_the_approved_producers_exist_and_no_body_key_is_present() -> No
     # Integration 2026-09-24: baseline main has 22 (monitor_sweep_failed,
     # fab8d0b). Sidecar adds sidecar_frame_rejected (261712e), and WS7
     # adds the stop_all mcp_server_stop_failed site (62bf9c2): total 24.
-    assert len(calls) == 24, (
+    # T0332: same unchanged gate fails 24-vs-33 against retained exact base
+    # 3ac6cbb0 AND the candidate; see adding-commit/site inventory above.
+    assert len(calls) == 33, (
         "the producer count moved. Name each delta and its commit before changing "
         "this number — the list is:\n  "
         + "\n  ".join(f"{f}:{n} {e}" for f, n, e in _located(calls))

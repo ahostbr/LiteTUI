@@ -2625,14 +2625,25 @@ class LiteTUI(App):
                 session.authority
                 return True
             except (ValueError, OSError) as exc:
-                self._owned_launch_error = 'Owned agent registration blocked: ' + str(exc)
+                from litetui.registration_diagnostics import (
+                    OWNED_PRESENCE_FAILURE,
+                    OWNED_REGISTRATION_FAILURE,
+                    record_failure,
+                )
+                record_failure(stage='owned-startup', exc=exc)
+                self.seat.error = OWNED_PRESENCE_FAILURE
+                self._owned_launch_error = OWNED_REGISTRATION_FAILURE
                 self._cli_launch_error = self._owned_launch_error
-                # A failed child does not retain the agent indefinitely. Drop
-                # conversation capability first; every later owned writer refuses.
-                try:
-                    self.store.release()
-                finally:
-                    session.release()
+                # A hand-launched UI stays alive to show the failure and let
+                # the user navigate. Keep its owned capability until shutdown;
+                # releasing it here makes later conversation staging crash.
+                # Failed RPC/spawned children still release promptly, and the
+                # launch error above continues to block registration/provider use.
+                if getattr(self, '_rpc', True) or getattr(self, '_spawned_marker', True):
+                    try:
+                        self.store.release()
+                    finally:
+                        session.release()
                 return False
 
     @work(exclusive=True, group="inbox")
@@ -2732,11 +2743,20 @@ class LiteTUI(App):
             # fleet. It used to ride in the metadata log as `error=` — but the
             # sanitizer rejects any string with spaces, so that call was ALWAYS
             # silently dropped; record_error is where raw text actually lands.
-            runtime_log.record_error(
-                "harness_registration_failed",
-                detail=self.seat.error or "unknown",
-            )
-            self._system("harness seat OFFLINE — the agent fleet is unreachable.")
+            # Owned failures already have complete sanitized diagnostics.
+            # Never copy their former arbitrary error payload into the raw sink.
+            if getattr(self, '_agent_session', None) is None:
+                runtime_log.record_error(
+                    "harness_registration_failed",
+                    detail=self.seat.error or "unknown",
+                )
+            if getattr(self, '_owned_launch_error', None):
+                self._system(
+                    "Owned agent registration blocked — sending is disabled. "
+                    "See runtime-errors.log for sanitized registration diagnostics; "
+                    "resolve registration and restart.")
+            else:
+                self._system("harness seat OFFLINE — the agent fleet is unreachable.")
             return
         try:
             # A beat every HEARTBEAT_EVERY polls, not every poll: refreshing

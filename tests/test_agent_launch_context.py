@@ -72,7 +72,7 @@ async def test_failed_register_releases_agent_once_and_stays_blocked(owned):
     before = (owned.memory_root / 'settings.json').read_bytes()
     assert not await LiteTUI._register_owned_startup(app)
     assert calls == ['register', 'conversation-release']
-    assert app._cli_launch_error == 'Owned agent registration blocked: fixture refusal'
+    assert app._cli_launch_error == 'Owned agent registration blocked: owned-registration-failed; see runtime-errors.log'
     assert not await LiteTUI._register_owned_startup(app)
     assert calls == ['register', 'conversation-release']
     with agent_launch_context.acquire(owned.store.data_root, 'QuietHelm') as new:
@@ -172,7 +172,7 @@ async def test_later_prompt_is_blocked_after_registration_failure_before_provide
     from litetui.llm_backend import BackendError
     app, calls = registration_host(owned, succeeds=False)
     app._register_owned_startup = lambda: LiteTUI._register_owned_startup(app)
-    with pytest.raises(BackendError, match='fixture refusal'):
+    with pytest.raises(BackendError, match='owned-registration-failed'):
         await LiteTUI._ensure_chat_ready(app)
     assert calls == ['register', 'conversation-release']
 

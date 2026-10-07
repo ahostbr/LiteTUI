@@ -65,7 +65,7 @@ async def test_unchosen_never_executes_and_actual_model_choice_persists(tmp_path
     app._convo_settings = convo_settings.born_from(cfg)
     # Replace only the external fleet transport. The actual startup registration
     # lock and session checks still run; NO_HARNESS otherwise correctly refuses
-    # registration and releases the lease once the inbox worker settles.
+    # registration and blocks provider readiness while the UI keeps ownership.
     def registered():
         app.seat.registered = True
         app.seat.error = None
