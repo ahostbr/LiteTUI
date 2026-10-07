@@ -29,6 +29,9 @@ class SidecarWindow:
         self.process = None
         self.token = ""
         self._next_id = 1
+        # One owner operation includes launch, snapshot delivery and failure cleanup.
+        # Reentrant because snapshots call open(), and failures call close().
+        self._operation_lock = threading.RLock()
         self._exchange_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self.on_event: Callable[[dict], None] | None = None
@@ -144,87 +147,91 @@ class SidecarWindow:
             process.stdin.flush()
 
     def open(self, view: str, *, enabled: bool = True) -> bool:
-        if view not in VIEWS:
-            raise ValueError(f"Unknown sidecar view: {view}")
-        if not enabled:
-            return False
-        if not self.executable.is_file():
-            self.warn(f"Sidecar is not installed: {self.executable}; use Textual instead.")
-            return False
-        if self.process is not None and self.process.poll() is None:
+        with self._operation_lock:
+            if view not in VIEWS:
+                raise ValueError(f"Unknown sidecar view: {view}")
+            if not enabled:
+                return False
+            if not self.executable.is_file():
+                self.warn(f"Sidecar is not installed: {self.executable}; use Textual instead.")
+                return False
+            if self.process is not None and self.process.poll() is None:
+                try:
+                    result = self._exchange("open", {"view": view})
+                    if result.get("opened") == view:
+                        return True
+                    raise ValueError("Sidecar did not open the requested view")
+                except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                    self.warn(f"Sidecar view switch failed: {exc}; use Textual instead.")
+                    self.close()
+                    return False
+            self.token = secrets.token_hex(32)
+            self._next_id = 1
             try:
-                result = self._exchange("open", {"view": view})
-                if result.get("opened") == view:
-                    return True
-                raise ValueError("Sidecar did not open the requested view")
+                env = {**os.environ, "LITETUI_SIDECAR_TOKEN": self.token}
+                self.process = self.spawn([str(self.executable), "--view", view, "--parent-pipe"],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.DEVNULL, close_fds=True, env=env)
+                self._start_reader(self.process)
+                result = self._exchange("hello", {"settings_write": self.settings_write,
+                                                  "jobs_write": self.jobs_write})
+                if result.get("version") != sidecar_protocol.VERSION or result.get("ready") is not True:
+                    raise ValueError("Incompatible sidecar handshake")
             except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
-                self.warn(f"Sidecar view switch failed: {exc}; use Textual instead.")
+                self.warn(f"Sidecar handshake/launch failed: {exc}; use Textual instead.")
                 self.close()
                 return False
-        self.token = secrets.token_hex(32)
-        self._next_id = 1
-        try:
-            env = {**os.environ, "LITETUI_SIDECAR_TOKEN": self.token}
-            self.process = self.spawn([str(self.executable), "--view", view, "--parent-pipe"],
-                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                      stderr=subprocess.DEVNULL, close_fds=True, env=env)
-            self._start_reader(self.process)
-            result = self._exchange("hello", {"settings_write": self.settings_write,
-                                              "jobs_write": self.jobs_write})
-            if result.get("version") != sidecar_protocol.VERSION or result.get("ready") is not True:
-                raise ValueError("Incompatible sidecar handshake")
-        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
-            self.warn(f"Sidecar handshake/launch failed: {exc}; use Textual instead.")
-            self.close()
-            return False
-        return True
+            return True
 
     def open_settings_snapshot(self, snapshot: dict) -> bool:
         """Send parent-owned, read-only settings; never treat a preview as an editor."""
-        if not self.open("settings"):
-            return False
-        try:
-            result = self._exchange("settings_snapshot", snapshot)
-            if result.get("settings_snapshot") is True:
-                return True
-            raise ValueError("Sidecar rejected settings snapshot")
-        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
-            self.warn(f"Sidecar snapshot failed: {exc}; use Textual instead.")
-            self.close()
-            return False
+        with self._operation_lock:
+            if not self.open("settings"):
+                return False
+            try:
+                result = self._exchange("settings_snapshot", snapshot)
+                if result.get("settings_snapshot") is True:
+                    return True
+                raise ValueError("Sidecar rejected settings snapshot")
+            except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                self.warn(f"Sidecar snapshot failed: {exc}; use Textual instead.")
+                self.close()
+                return False
 
     def open_jobs_snapshot(self, view: str, snapshot: dict) -> bool:
         """Show parent-owned jobs without scheduling or editing in the child."""
-        if view not in {"calendar", "job", "timeline"}:
-            raise ValueError(f"Unknown jobs view: {view}")
-        if not self.open(view):
-            return False
-        try:
-            result = self._exchange("jobs_snapshot", snapshot)
-            if result.get("jobs_snapshot") is True:
-                return True
-            raise ValueError("Sidecar rejected jobs snapshot")
-        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
-            self.warn(f"Sidecar jobs snapshot failed: {exc}; use Textual instead.")
-            self.close()
-            return False
+        with self._operation_lock:
+            if view not in {"calendar", "job", "timeline"}:
+                raise ValueError(f"Unknown jobs view: {view}")
+            if not self.open(view):
+                return False
+            try:
+                result = self._exchange("jobs_snapshot", snapshot)
+                if result.get("jobs_snapshot") is True:
+                    return True
+                raise ValueError("Sidecar rejected jobs snapshot")
+            except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                self.warn(f"Sidecar jobs snapshot failed: {exc}; use Textual instead.")
+                self.close()
+                return False
 
     def close(self) -> bool:
-        if self.process is None:
-            return False
-        process = self.process
-        self.process = None
-        self.token = ""
-        try:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=self.timeout)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=self.timeout)
-        finally:
-            for pipe in (process.stdin, process.stdout):
-                if pipe is not None:
-                    pipe.close()
-        return True
+        with self._operation_lock:
+            if self.process is None:
+                return False
+            process = self.process
+            self.process = None
+            self.token = ""
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=self.timeout)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=self.timeout)
+            finally:
+                for pipe in (process.stdin, process.stdout):
+                    if pipe is not None:
+                        pipe.close()
+            return True
