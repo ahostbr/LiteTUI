@@ -24,6 +24,8 @@ DESIGN NOTES
 
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 import json
 
 from copy import deepcopy
@@ -612,7 +614,7 @@ class SettingsBody(Widget):
         )
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
-            yield Input(
+            yield HostedInput(
                 value=shown,
                 placeholder=placeholder or "unset — server default",
                 id=f"f-{name}",
@@ -700,7 +702,7 @@ class SettingsBody(Widget):
                 id="set-sub",
             )
             with Horizontal(id="set-search-row"):
-                yield Input(
+                yield HostedInput(
                     placeholder="Find a setting, help text, or section…",
                     id="set-search",
                 )
@@ -1013,7 +1015,7 @@ class SettingsBody(Widget):
                         with Vertical(classes="set-row"):
                             yield Label("Record hotkey", classes="set-label")
                             with Horizontal(classes="set-switchline"):
-                                yield Input(value=self._start.stt_hotkey,
+                                yield HostedInput(value=self._start.stt_hotkey,
                                             id="f-stt_hotkey", classes="set-input",
                                             placeholder="ctrl+space")
                                 yield Button("Capture key", id="voice-capture")
@@ -1091,7 +1093,7 @@ class SettingsBody(Widget):
                                 value=route.get("backend", ""), id="f-subagent_route", allow_blank=False,
                             )
                             yield Label("Global subagent model", classes="set-label")
-                            yield Input(value=route.get("model", ""), id="subagent-route-model",
+                            yield HostedInput(value=route.get("model", ""), id="subagent-route-model",
                                         placeholder="Exact model id for the selected backend")
                             yield Static("Shared by all instances. Follow parent resets the global route; "
                                          "a conversation override still wins.", classes="set-help")
@@ -1527,7 +1529,7 @@ class SettingsBody(Widget):
             resolved = {}
         with Vertical(classes="set-row"):
             yield Label("New theme name", classes="set-label")
-            yield Input(value="", id="ct-name", placeholder="my-theme")
+            yield HostedInput(value="", id="ct-name", placeholder="my-theme")
         try:
             extras = dict(self.app.current_theme.variables or {})
         except Exception:
@@ -1548,7 +1550,7 @@ class SettingsBody(Widget):
                 # they are absent from the generated colour system -- prefill
                 # them from the theme's own variables instead of leaving the
                 # row blank, which would read as "unset" for a live colour.
-                yield Input(value=str(resolved.get(tok) or extras.get(tok, "")),
+                yield HostedInput(value=str(resolved.get(tok) or extras.get(tok, "")),
                             id=f"ct-{tok}",
                             placeholder="#RRGGBB", classes="ct-hex")
 
