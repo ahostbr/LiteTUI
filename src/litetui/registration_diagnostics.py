@@ -1,26 +1,20 @@
-"""Complete sanitized registration frames, never raw exception payloads.
+"""Trusted local exception frames; external subprocess payload is never captured.
 
-The error sink gets frame locations, chained exception types and numeric OS
-codes. It never gets source lines, locals, arbitrary messages or subprocess
-output. Unparseable external output is an explicit diagnostic, not silence.
+External stderr/stdout cannot authenticate frame/type/message provenance.
+Record only fixed parent-known stage, subprocess status and parse-failed flag;
+there is deliberately NO external-chain parser or child structured protocol.
+Actual in-process exception objects retain their frame locations, chained types
+and numeric OS codes, never source lines, locals or exception messages.
 """
 
 from __future__ import annotations
 
-import re
 from types import TracebackType
 
 from litetui import runtime_log
 
 OWNED_REGISTRATION_FAILURE = "Owned agent registration blocked: owned-registration-failed; see runtime-errors.log"
 OWNED_PRESENCE_FAILURE = "Owned presence registration failed; see runtime-errors.log"
-
-_FRAME = re.compile(r'^\s*File "([^"\r\n]+)", line ([0-9]+), in ([^\r\n]+)$')
-_TYPE = re.compile(r"^((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*)(?::|$)")
-_ERRNO = re.compile(r"\[Errno (-?[0-9]+)\]")
-_WINERROR = re.compile(r"\[WinError (-?[0-9]+)\]")
-_CAUSE = "The above exception was the direct cause of the following exception:"
-_CONTEXT = "During handling of the above exception, another exception occurred:"
 
 
 def _frames(tb: TracebackType | None) -> list[dict]:
@@ -35,7 +29,7 @@ def _frames(tb: TracebackType | None) -> list[dict]:
 
 
 def exception_chain(exc: BaseException) -> list[dict]:
-    """Walk actual traceback objects without reading locals or source lines."""
+    """Walk trusted actual traceback objects without reading locals or source."""
     seen = set()
     chain = []
 
@@ -65,70 +59,30 @@ def exception_chain(exc: BaseException) -> list[dict]:
     return chain
 
 
-def subprocess_chain(stderr: str) -> tuple[list[dict], bool]:
-    """Keep all standard Python frame headers; discard every payload line."""
-    chain = []
-    frames = []
-    relation = "root"
-    parse_failed = False
-    for line in stderr.splitlines():
-        match = _FRAME.fullmatch(line)
-        if match:
-            frames.append(
-                {"file": match[1], "line": int(match[2]), "function": match[3]}
-            )
-            continue
-        match = _TYPE.match(line)
-        if match and frames:
-            item = {"type": match[1], "relation": relation, "frames": frames}
-            frames = []
-            for key, pattern in (("errno", _ERRNO), ("winerror", _WINERROR)):
-                number = pattern.search(line)
-                if number:
-                    item[key] = int(number[1])
-            chain.append(item)
-            relation = "root"
-        elif line == _CAUSE:
-            if chain:
-                chain[-1]["relation"] = "cause"
-            else:
-                parse_failed = True
-        elif line == _CONTEXT:
-            if chain:
-                chain[-1]["relation"] = "context"
-            else:
-                parse_failed = True
-        elif line.strip().startswith(
-            ("File ", "[Previous line repeated", "+ Exception Group")
-        ):
-            parse_failed = True  # unsupported/compressed frame syntax is explicit
-    if frames or not chain:
-        chain.append({"type": "unknown", "relation": "root", "frames": frames})
-        parse_failed = True
-    return chain, parse_failed
-
-
 def record_failure(
     *,
     stage: str,
     returncode: int | None = None,
     exc: BaseException | None = None,
-    stderr: str = "",
 ) -> None:
-    """Structured raw-sink metadata avoids its detail-length truncation.
+    """External payload is not even an argument, never parsed or logged.
 
-    No raw `exc` or `detail` goes to the recorder: those would include arbitrary
-    payloads/source lines. All sanitized frames survive the old 200-char cutoff.
+    Local objects are accurately labeled; their frames do not reconstruct the
+    external child exception. The existing sink supplies the timestamp.
     """
-    if exc is not None:
-        chain, failed = exception_chain(exc), False
+    if exc is None:
+        runtime_log.record_error(
+            "harness_registration_diagnostic",
+            stage=stage,
+            returncode=returncode,
+            parse_failed=True,
+        )
     else:
-        chain, failed = subprocess_chain(stderr)
-    runtime_log.record_error(
-        "harness_registration_diagnostic",
-        stage=stage,
-        returncode=returncode,
-        exceptions=chain,
-        parse_failed=failed,
-        format="complete-sanitized-frames-not-raw-payload",
-    )
+        runtime_log.record_error(
+            "harness_registration_diagnostic",
+            stage=stage,
+            returncode=returncode,
+            exceptions=exception_chain(exc),
+            parse_failed=False,
+            format="trusted-in-process-exception-objects-not-external-chain",
+        )

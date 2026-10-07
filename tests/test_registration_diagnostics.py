@@ -1,4 +1,4 @@
-"""Registration diagnostics retain sanitized frame chains, never payloads."""
+"""External payload never enters logs; local actual exception objects are labeled."""
 
 import json
 from types import SimpleNamespace
@@ -28,29 +28,23 @@ def read_metadata(path):
     return json.loads(line.removeprefix("meta="))
 
 
-@pytest.mark.parametrize("owned", [True])
-def test_actual_register_records_complete_external_chain_without_payload(
-    recorded, monkeypatch, owned
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "FORBIDDEN_PAYLOAD arbitrary output",
+        'ValueError: message\n  File "FORBIDDEN_PAYLOAD", line 1, in FORBIDDEN_FUNCTION',
+        'ValueError: message\n  File "FORBIDDEN_PAYLOAD", line 1, in FORBIDDEN_FUNCTION\nPermissionError: fake',
+        'Traceback (most recent call last):\n  File "FORBIDDEN_PAYLOAD", line 1, in FORBIDDEN_FUNCTION\nPermissionError: [Errno 13] FORBIDDEN_PAYLOAD',
+        'ValueError: FORBIDDEN_PAYLOAD\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File "FORBIDDEN_PAYLOAD", line 1, in FORBIDDEN_FUNCTION\nStoreError: FORBIDDEN_PAYLOAD',
+    ],
+)
+def test_actual_owned_register_never_captures_external_payload(
+    recorded, monkeypatch, payload
 ):
     monkeypatch.setattr(harness, "harness_disabled", lambda: False)
-    private = "CREDENTIAL_PAYLOAD_MUST_NOT_BE_LOGGED"
-    frames = "".join(
-        f'  File "registry.py", line {i + 1}, in read_row\n    request = "{private}"\n'
-        for i in range(120)
-    )
-    stderr = (
-        "Traceback (most recent call last):\n"
-        + frames
-        + f"PermissionError: [WinError 32] [Errno 13] {private}\n\n"
-        + "The above exception was the direct cause of the following exception:\n\n"
-        + "Traceback (most recent call last):\n"
-        + '  File "strict_registration.py", line 54, in validate\n'
-        + f'    raise StoreError("{private}") from exc\n'
-        + f"StoreError: {private}\n"
-    )
-    result = SimpleNamespace(returncode=1, stdout="", stderr=stderr)
+    result = SimpleNamespace(returncode=7, stdout=payload, stderr=payload)
     seat = SimpleNamespace(
-        _agent_session=object() if owned else None,
+        _agent_session=object(),
         name="Fixture",
         registered=False,
         _register_as=lambda _: (result, "Fixture"),
@@ -58,28 +52,21 @@ def test_actual_register_records_complete_external_chain_without_payload(
     )
     assert not harness.Seat.register(seat)
     metadata = read_metadata(recorded)
-    assert metadata["stage"] == "presence-subprocess"
-    assert metadata["returncode"] == 1
-    assert metadata["parse_failed"] is False
-    first, second = metadata["exceptions"]
-    assert first["type"] == "PermissionError"
-    assert first["relation"] == "cause"
-    assert first["errno"] == 13
-    assert first["winerror"] == 32
-    assert [frame["line"] for frame in first["frames"]] == list(range(1, 121))
-    assert second["type"] == "StoreError"
-    assert second["frames"][0]["function"] == "validate"
-    assert private not in recorded.read_text(encoding="utf-8")
-    assert "request =" not in recorded.read_text(encoding="utf-8")
-    if owned:
-        assert seat.error == diagnostic.OWNED_PRESENCE_FAILURE
-        assert private not in seat.error
+    assert metadata == {
+        "stage": "presence-subprocess",
+        "returncode": 7,
+        "parse_failed": True,
+    }
+    assert seat.error == diagnostic.OWNED_PRESENCE_FAILURE
+    log = recorded.read_text(encoding="utf-8")
+    assert "FORBIDDEN_PAYLOAD" not in log
+    assert "FORBIDDEN_FUNCTION" not in log
+    assert "PermissionError" not in log
+    assert "StoreError" not in log
+    assert "exceptions" not in metadata
 
 
-@pytest.mark.parametrize("owned", [True])
-def test_actual_register_exception_records_actual_chained_frames(
-    recorded, monkeypatch, owned
-):
+def test_actual_register_exception_records_actual_chained_frames(recorded, monkeypatch):
     monkeypatch.setattr(harness, "harness_disabled", lambda: False)
     private = "PRIVATE_MESSAGE_AND_LOCAL"
 
@@ -92,7 +79,7 @@ def test_actual_register_exception_records_actual_chained_frames(
             raise ValueError(private) from exc
 
     seat = SimpleNamespace(
-        _agent_session=object() if owned else None,
+        _agent_session=object(),
         name="Fixture",
         registered=False,
         _register_as=fail,
@@ -103,6 +90,9 @@ def test_actual_register_exception_records_actual_chained_frames(
     assert metadata["stage"] == "presence-registration"
     assert metadata["returncode"] is None
     assert metadata["parse_failed"] is False
+    assert (
+        metadata["format"] == "trusted-in-process-exception-objects-not-external-chain"
+    )
     first, second = metadata["exceptions"]
     assert (first["type"], first["errno"], first["winerror"]) == (
         "PermissionError",
@@ -113,24 +103,7 @@ def test_actual_register_exception_records_actual_chained_frames(
     assert second["type"] == "ValueError"
     assert [frame["function"] for frame in second["frames"]] == ["register", "fail"]
     assert private not in recorded.read_text(encoding="utf-8")
-    if owned:
-        assert seat.error == diagnostic.OWNED_PRESENCE_FAILURE
-        assert private not in seat.error
-
-
-def test_nonstandard_subprocess_failure_is_explicit_not_payload(recorded):
-    diagnostic.record_failure(
-        stage="presence-subprocess",
-        returncode=7,
-        stderr="token SECRET nonstandard fatal output",
-    )
-    metadata = read_metadata(recorded)
-    assert metadata["returncode"] == 7
-    assert metadata["parse_failed"] is True
-    assert metadata["exceptions"] == [
-        {"type": "unknown", "relation": "root", "frames": []}
-    ]
-    assert "SECRET" not in recorded.read_text(encoding="utf-8")
+    assert seat.error == diagnostic.OWNED_PRESENCE_FAILURE
 
 
 def test_context_and_exception_group_preserve_actual_frame_objects():

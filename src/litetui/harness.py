@@ -599,8 +599,7 @@ class Seat:
                         OWNED_PRESENCE_FAILURE,
                         record_failure,
                     )
-                    record_failure(stage='presence-subprocess', returncode=r.returncode,
-                                   stderr=r.stderr or '')
+                    record_failure(stage='presence-subprocess', returncode=r.returncode)
                     self.error = OWNED_PRESENCE_FAILURE
                 else:
                     self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
