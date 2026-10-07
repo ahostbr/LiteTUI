@@ -502,6 +502,41 @@ HTTP server failures name the status and retry count rather than blaming login.
 Existing 401 login refresh, 403 access refusal and 429 usage-limit behavior is
 unchanged. Native Codex app-server retry behavior is separate and unchanged.
 
+### Codex tool-argument diagnostics
+
+The OAuth/Responses transport preserves terminal-only function arguments from
+argument-done, item-done and completed events, including expanded parallel
+batches. It appends only the missing suffix, not duplicate JSON. Conflicting
+snapshots fail before pending calls are released. This is a demonstrated protocol
+fix, not a conclusive attribution of historical missing-argument incidents:
+saved conversations retain assembled calls, not the original stream. There is
+no local `multi_tool_use.parallel` unpacker.
+
+`LITETUI_CAPTURE_TOOL_EVENTS=1` enables **metadata-only** diagnostics for a future
+explicitly authorized session (OFF by default; no restart/probe is implied).
+Only a currently leased agent can append to its own conversation's
+`tool-call-stream.jsonl`. Ownership and non-linked paths are checked on every
+append; linked/reparse-point paths, hard-linked files and unowned fallbacks are
+refused. No arbitrary output path or raw-argument mode exists.
+
+Records contain event type, per-request sequence, bounded call ID/tool name, and
+argument/delta **character count** only. No argument content, headers, auth,
+reasoning, output text or tool results are saved: arguments can contain sensitive
+credentials, paths and private text. This instrument shows event order and where
+nonempty fields arrived, but cannot reconstruct a wrapper or validate its JSON.
+
+Retention is one fixed file per conversation, capped at **1 MiB**. At the cap,
+recording stops without rotation, deletion or growth. Missing folders are not
+created. Records append across requests (sequence numbers restart); disabling the
+flag does not remove evidence. Explicit owner cleanup is separate. This uses the
+store's normal lease/path protections, not a sandbox against hostile filesystem
+races. Storage refusal only stops diagnostics, not the model reply.
+
+`parallel_tool_calls` remains `True`. Setting it to `False` would ask the provider
+for at most one function per response, serializing independent tools into extra
+model round trips (latency/token cost). It would neither repair received batches
+nor guarantee provider compliance; no new parallel-disable switch was added.
+
 Examples (PowerShell):
 
 ```powershell
