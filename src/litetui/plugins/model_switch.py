@@ -16,6 +16,8 @@ visibly disabled — the settings screen's doctrine, inherited whole.
 """
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 import difflib
 import json
 import shutil
@@ -652,7 +654,7 @@ def _load_ctx_row(app):
     yield Horizontal(
         Switch(value=bool(saved), id="load-ctx-on"),
         Label("Load with context length", id="load-ctx-label"),
-        Input(value=(str(saved) if saved else ""), placeholder="e.g. 131072",
+        HostedInput(value=(str(saved) if saved else ""), placeholder="e.g. 131072",
               id="load-ctx-val"),
         id="load-ctx-row",
     )
@@ -1123,7 +1125,7 @@ class ModelConfigBody(Widget):
                         # focus from tab or click in the live walk (schema entry
                         # was simply impossible), and a schema is one line of
                         # JSON anyway. Revisit if multiline editing is ever real.
-                        yield Input(
+                        yield HostedInput(
                             value=infer_cfg.get("json_schema") or "",
                             placeholder="paste or type a JSON schema — empty = off",
                             id="mc-json-schema",
@@ -1141,7 +1143,7 @@ class ModelConfigBody(Widget):
                             id="mc-preset-apply",
                             allow_blank=False,
                         )
-                        yield Input(
+                        yield HostedInput(
                             placeholder="save current Load+Inference as preset — type a name, Ctrl+S",
                             id="mc-preset-name",
                         )
@@ -1181,7 +1183,7 @@ class ModelConfigBody(Widget):
             else:
                 shown = "" if current is None else str(current)
                 placeholder = extra if isinstance(extra, str) else ""
-                yield Input(value=shown, placeholder=placeholder or "unset",
+                yield HostedInput(value=shown, placeholder=placeholder or "unset",
                             id=wid, disabled=disabled, classes="set-input")
             if note:
                 yield Static(note, classes="set-help", markup=False)

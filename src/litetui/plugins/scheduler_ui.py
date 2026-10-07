@@ -26,6 +26,7 @@ from textual.widgets.option_list import Option
 from litetui import calendar_view as calview
 from litetui import scheduler as sched_mod
 from litetui import schedule_builder as sb_mod
+from litetui.steady_input import HostedInput
 from litetui.ticker import NumberTicker
 from rich.text import Text
 from litetui import paths
@@ -833,7 +834,7 @@ class JobBody(Widget):
             yield Static("edit job" if j else "new job", id="job-title")
             yield Static("prompt — sent as a user message when it fires",
                          classes="job-cap")
-            yield Input(value=j.prompt if j else "", id="job-prompt")
+            yield HostedInput(value=j.prompt if j else "", id="job-prompt")
             yield Static("when it runs", classes="job-cap")
             yield Select(
                 [(label, pid) for pid, label in sb_mod.PRESETS],
@@ -855,9 +856,9 @@ class JobBody(Widget):
                 yield Static("minutes", classes="job-param-label", id="job-unit")
             yield Static("cron — min hour day month weekday · or @daily @hourly",
                          classes="job-cap", id="job-cron-cap")
-            yield Input(value=j.schedule if j else self._prefill, id="job-schedule")
+            yield HostedInput(value=j.schedule if j else self._prefill, id="job-schedule")
             yield Static("label — short name for lists and cells", classes="job-cap")
-            yield Input(value=j.label if j else "", id="job-label")
+            yield HostedInput(value=j.label if j else "", id="job-label")
             with Horizontal(id="job-switches"):
                 yield Switch(value=j.enabled if j else True, id="job-enabled")
                 yield Static("enabled", classes="job-switchcap")

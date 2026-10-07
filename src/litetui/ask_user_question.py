@@ -53,6 +53,8 @@ a LiteTUI that exits mid-question cannot hang the thread forever
 
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 import asyncio
 import threading
 from uuid import uuid4
@@ -460,7 +462,7 @@ class AskUserQuestionBody(Vertical):
                         id=f"auq-note-{i}",
                         classes="auq-row auq-note-row",
                     )
-        yield Input(placeholder="Type something…", id="auq-note-input", password=self._states[0].secret)
+        yield HostedInput(placeholder="Type something…", id="auq-note-input", password=self._states[0].secret)
         yield SwapButton()
         yield Static("", markup=False, id="auq-progress")
         with Horizontal(id="auq-actions"):

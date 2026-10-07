@@ -16,6 +16,8 @@ a terminal: hsv->hex, hex->hsv, and the click->cell geometry.
 """
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 import colorsys
 
 from rich.style import Style
@@ -331,7 +333,7 @@ class ColorPickerBody(Widget):
                 yield Static(row, id="cp-presets")
             with Horizontal(id="cp-row"):
                 yield Static(Text("      ", Style(bgcolor=self.value)), id="cp-swatch")
-                yield Input(value=self.value, id="cp-hex")
+                yield HostedInput(value=self.value, id="cp-hex")
                 # The hint names WHERE the keys apply now that they work.
                 # "arrows/PgUp/PgDn" alone was true of no focus state at all.
                 yield Label("Enter = use · Esc = cancel · arrows on the field · "
