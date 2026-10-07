@@ -214,6 +214,179 @@ async def test_codex_stream_tool_and_usage(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("final_event,prefix", [
+    ("arguments", ""), ("item", ""), ("completed", ""),
+    ("all", ""), ("all", "partial"), ("all", "full"), ("all", "added"),
+])
+async def test_parallel_batch_terminal_arguments_reach_turn_engine_once(tmp_path, final_event, prefix):
+    from litetui.turn_engine import TurnEngine
+
+    # Synthetic Responses protocol fixture, not a captured incident stream.
+    # Include a non-call output so final fallback must retain output indices.
+    items = [{"type": "reasoning", "id": "rs_fixture", "summary": []}] + [
+        {"type": "function_call", "call_id": "call_read", "name": "read",
+         "arguments": '{"path":"fixture.md","offset":2}'},
+        {"type": "function_call", "call_id": "call_other", "name": "any_tool",
+         "arguments": '{"action":"check","nested":{"value":3}}'},
+    ]
+    events = []
+    for idx, item in enumerate(items[1:], 1):
+        arguments = item["arguments"]
+        events.append({"type": "response.output_item.added", "output_index": idx,
+                       "item": {**item, "arguments": arguments if prefix == "added" else ""}})
+        if prefix in ("partial", "full"):
+            part = arguments[:10] if prefix == "partial" else arguments
+            events.append({"type": "response.function_call_arguments.delta",
+                           "output_index": idx, "delta": part})
+        if final_event in ("arguments", "all"):
+            events.append({"type": "response.function_call_arguments.done",
+                           "output_index": idx, "arguments": arguments})
+        if final_event in ("item", "all"):
+            events.append({"type": "response.output_item.done", "output_index": idx, "item": item})
+    final_items = items if final_event in ("completed", "all") else []
+    events.append({"type": "response.completed", "response": {"output": final_items}})
+    transport = mt.OAuthTransport(
+        "codex", credential_path=auth_file(tmp_path),
+        http_transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, text="".join("data: " + json.dumps(e) + "\n\n" for e in events))),
+    )
+    stream = await transport.create(model="arbitrary-codex-model", messages=[], stream=True)
+    calls = {}
+    async for chunk in stream:
+        for call in chunk.choices[0].delta.tool_calls or []:
+            TurnEngine.accumulate_tool_call(calls, call)
+    assert calls == {idx: {"id": item["call_id"], "name": item["name"],
+                           "arguments": item["arguments"]}
+                     for idx, item in enumerate(items[1:], 1)}
+
+
+@pytest.mark.asyncio
+async def test_conflicting_terminal_arguments_never_release_calls(tmp_path):
+    events = [
+        {"type": "response.output_item.added", "output_index": 0,
+         "item": {"type": "function_call", "call_id": "call_1", "name": "read", "arguments": ""}},
+        {"type": "response.function_call_arguments.delta", "output_index": 0, "delta": '{"path":"a"}'},
+        {"type": "response.function_call_arguments.done", "output_index": 0, "arguments": '{"path":"b"}'},
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    transport = mt.OAuthTransport(
+        "codex", credential_path=auth_file(tmp_path),
+        http_transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, text="".join("data: " + json.dumps(e) + "\n\n" for e in events))),
+    )
+    stream = await transport.create(model="fixture", messages=[], stream=True)
+    released = []
+    with pytest.raises(mt.ProviderError, match="conflicting tool arguments"):
+        async for chunk in stream:
+            released.extend(chunk.choices[0].delta.tool_calls or [])
+    assert released == []
+
+
+@pytest.fixture
+def owned_capture_app(tmp_path):
+    from types import SimpleNamespace
+    from litetui.agent_ownership import AgentSession
+    from litetui.agent_store import AgentStore
+
+    session = AgentSession.create_fresh(
+        AgentStore(tmp_path), name="CaptureFixture",
+        agent_id="11111111-1111-4111-8111-111111111111",
+        backend="codex", model="fixture", thinking_level="high",
+    )
+    try:
+        yield SimpleNamespace(_agent_session=session, convo_id=session.initial_conversation_id)
+    finally:
+        session.release()
+
+
+def test_stream_capture_disabled_by_default_and_unowned_refused(owned_capture_app, monkeypatch):
+    from types import SimpleNamespace
+    from litetui.tool_stream_capture import CAPTURE_ENV, CAPTURE_FILE, ToolStreamCapture
+
+    monkeypatch.delenv(CAPTURE_ENV, raising=False)
+    assert ToolStreamCapture.for_app(owned_capture_app) is None
+    directory = owned_capture_app._agent_session.conversation_directory(owned_capture_app.convo_id)
+    assert not (directory / CAPTURE_FILE).exists()
+    monkeypatch.setenv(CAPTURE_ENV, "1")
+    assert ToolStreamCapture.for_app(SimpleNamespace(convo_id=owned_capture_app.convo_id)) is None
+
+
+@pytest.mark.asyncio
+async def test_real_transport_capture_metadata_only(owned_capture_app, tmp_path, monkeypatch):
+    from litetui.tool_stream_capture import CAPTURE_ENV, CAPTURE_FILE, ToolStreamCapture
+
+    monkeypatch.setenv(CAPTURE_ENV, "1")
+    capture = ToolStreamCapture.for_app(owned_capture_app)
+    payload = '{"password":"DO-NOT-SAVE","path":"sensitive.md"}'
+    item = {"type": "function_call", "call_id": "call_fixture", "name": "read", "arguments": payload}
+    events = [
+        {"type": "response.output_item.added", "output_index": 0, "item": {**item, "arguments": ""}},
+        {"type": "response.output_text.delta", "delta": "PRIVATE-TEXT"},
+        {"type": "response.function_call_arguments.delta", "output_index": 0, "delta": payload[:10]},
+        {"type": "response.function_call_arguments.done", "output_index": 0, "arguments": payload},
+        {"type": "response.output_item.done", "output_index": 0, "item": item},
+        {"type": "response.completed", "response": {"output": [item, {
+            "type": "reasoning", "encrypted_content": "PRIVATE-REASONING"}]}},
+    ]
+    transport = mt.OAuthTransport(
+        "codex", credential_path=auth_file(tmp_path), tool_capture=capture,
+        http_transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, text="".join("data: " + json.dumps(e) + "\n\n" for e in events))),
+    )
+    result = await transport.create(model="fixture", messages=[], stream=False)
+    assert result.choices[0].message.tool_calls[0].function.arguments == payload
+    directory = owned_capture_app._agent_session.conversation_directory(owned_capture_app.convo_id)
+    raw = (directory / CAPTURE_FILE).read_text()
+    rows = [json.loads(line) for line in raw.splitlines()]
+    assert len(rows) == 5
+    assert [r["sequence"] for r in rows] == [1, 2, 3, 4, 5]
+    assert [r["argument_chars"] for r in rows] == [0, 10, len(payload), len(payload), len(payload)]
+    assert all(set(r) == {"type", "sequence", "call_id", "name", "argument_chars"} for r in rows)
+    assert all(r["call_id"] == "call_fixture" and r["name"] == "read" for r in rows)
+    for sensitive in ("DO-NOT-SAVE", "sensitive.md", "PRIVATE-TEXT", "PRIVATE-REASONING", "Authorization"):
+        assert sensitive not in raw
+
+
+def test_capture_cap_and_released_ownership(owned_capture_app, monkeypatch):
+    from litetui import tool_stream_capture as capture_mod
+
+    monkeypatch.setenv(capture_mod.CAPTURE_ENV, "1")
+    capture = capture_mod.ToolStreamCapture.for_app(owned_capture_app)
+    directory = owned_capture_app._agent_session.conversation_directory(owned_capture_app.convo_id)
+    target = directory / capture_mod.CAPTURE_FILE
+    # Existing full capture is retained verbatim; no rotation/deletion/growth.
+    target.write_bytes(b"x" * capture_mod.MAX_BYTES)
+    capture.record({"type": "response.function_call_arguments.done", "arguments": "secret"})
+    assert capture.stopped
+    assert target.stat().st_size == capture_mod.MAX_BYTES
+    target.write_bytes(b"")
+    second = capture_mod.ToolStreamCapture.for_app(owned_capture_app)
+    owned_capture_app._agent_session.release()
+    second.record({"type": "response.function_call_arguments.done", "arguments": "secret"})
+    assert second.stopped
+    assert target.read_bytes() == b""
+
+
+def test_capture_cannot_follow_hardlink_or_cross_conversation(owned_capture_app, tmp_path, monkeypatch):
+    import os
+    from litetui import tool_stream_capture as capture_mod
+
+    monkeypatch.setenv(capture_mod.CAPTURE_ENV, "1")
+    directory = owned_capture_app._agent_session.conversation_directory(owned_capture_app.convo_id)
+    foreign = tmp_path / "foreign.jsonl"
+    foreign.write_bytes(b"unchanged")
+    os.link(foreign, directory / capture_mod.CAPTURE_FILE)
+    capture = capture_mod.ToolStreamCapture.for_app(owned_capture_app)
+    capture.record({"type": "response.function_call_arguments.done", "arguments": "secret"})
+    assert capture.stopped
+    assert foreign.read_bytes() == b"unchanged"
+    invalid = capture_mod.ToolStreamCapture(owned_capture_app._agent_session, "../other-seat")
+    invalid.record({"type": "response.function_call_arguments.done", "arguments": "secret"})
+    assert invalid.stopped
+    assert not (directory.parent / "other-seat").exists()
+
+
+@pytest.mark.asyncio
 async def test_error_body_never_exposed(tmp_path):
     transport = mt.OAuthTransport(
         "codex",

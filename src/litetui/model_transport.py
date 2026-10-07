@@ -466,11 +466,12 @@ def _usage(raw, provider):
 class ResponseStream:
     def __init__(
         self, response, client, provider, model, tools, *, retry=None,
-        secrets=(), hold_calls=False,
+        secrets=(), hold_calls=False, tool_capture=None,
     ):
         self.response, self.client = response, client
         self._retry = retry
         self._hold_calls = hold_calls
+        self._tool_capture = tool_capture
         self._completed = False
         self._secrets = secrets
         self.provider, self.model = provider, model
@@ -554,6 +555,27 @@ class ResponseStream:
     async def _iter_response(self):
         self._completed = False
         usage, blocks = {}, {}
+        calls = {}
+
+        def finish_call(index, arguments, item=None):
+            # Terminal fields are snapshots, NOT deltas. Emit only the missing
+            # suffix, including when an expanded parallel call has no deltas.
+            slot = calls.setdefault(index, {"arguments": "", "id": None, "name": None})
+            call_id = name = None
+            if item is not None:
+                if slot["id"] is None:
+                    call_id, name = item["call_id"], item["name"]
+                    slot.update(id=call_id, name=name)
+                elif (slot["id"], slot["name"]) != (item["call_id"], item["name"]):
+                    raise ProviderError("Codex changed a streamed tool call's identity.")
+            if not isinstance(arguments, str) or not arguments.startswith(slot["arguments"]):
+                # Calls remain held until completion: disagreement must never
+                # run an ambiguous side effect or replay the request.
+                raise ProviderError("Codex returned conflicting tool arguments.")
+            suffix = arguments[len(slot["arguments"]):]
+            slot["arguments"] = arguments
+            return _call(index, call_id, name, suffix) if call_id or suffix else None
+
         # Codex sends reasoning as SEVERAL summary parts per turn; see the
         # comment at response.reasoning_summary_part.added below.
         summary_part_seen = False
@@ -569,6 +591,8 @@ class ResponseStream:
                     if not isinstance(e, dict):
                         raise TypeError("event must be an object")
                     kind = e.get("type", "")
+                    if self.provider == "codex" and self._tool_capture is not None:
+                        self._tool_capture.record(e)
                     if kind in ("error", "response.failed", "response.incomplete"):
                         failure = _stream_failure(self.provider, e, self._secrets)
                         if _is_retryable_stream_failure(self.provider, e):
@@ -610,18 +634,29 @@ class ResponseStream:
                             and e["item"]["type"] == "function_call"
                         ):
                             item = e["item"]
-                            yield _chunk(
-                                call=_call(
-                                    idx,
-                                    item["call_id"],
-                                    item["name"],
-                                    item.get("arguments", ""),
-                                )
-                            )
+                            call = finish_call(idx, item.get("arguments", ""), item)
+                            if call is not None:
+                                yield _chunk(call=call)
                         elif kind == "response.function_call_arguments.delta":
+                            slot = calls.setdefault(idx, {"arguments": "", "id": None, "name": None})
+                            slot["arguments"] += e["delta"]
                             yield _chunk(call=_call(idx, arguments=e["delta"]))
+                        elif kind == "response.function_call_arguments.done":
+                            call = finish_call(idx, e["arguments"])
+                            if call is not None:
+                                yield _chunk(call=call)
+                        elif (kind == "response.output_item.done"
+                              and e["item"]["type"] == "function_call"):
+                            call = finish_call(idx, e["item"].get("arguments", ""), e["item"])
+                            if call is not None:
+                                yield _chunk(call=call)
                         elif kind == "response.completed":
                             response = e["response"]
+                            for index, item in enumerate(response.get("output", [])):
+                                if item["type"] == "function_call":
+                                    call = finish_call(index, item.get("arguments", ""), item)
+                                    if call is not None:
+                                        yield _chunk(call=call)
                             opaque = [
                                 i
                                 for i in response.get("output", [])
@@ -767,7 +802,7 @@ def codex_installation_id() -> str:
 class OAuthTransport:
     def __init__(
         self, provider, *, credential_path=None, http_transport=None, models=None,
-        prompt_cache_key=None, turn_store=None, turn_key=None
+        prompt_cache_key=None, turn_store=None, turn_key=None, tool_capture=None
     ):
         self.provider = provider
         self.credential_path = credential_path
@@ -783,6 +818,7 @@ class OAuthTransport:
         # matching: the turn end is the next turn's start, with no hook in the loop.
         self.turn_store = turn_store
         self.turn_key = turn_key
+        self.tool_capture = tool_capture
 
     def headers(self, credentials, *, model=None, turn_state=None):
         headers = {
@@ -959,6 +995,7 @@ class OAuthTransport:
                 retry=retry_response if self.provider == "codex" else None,
                 secrets=secrets,
                 hold_calls=self.provider == "codex",
+                tool_capture=self.tool_capture if purpose == "turn" else None,
             )
             return result if kwargs.get("stream", False) else await collect(result)
         except BaseException as error:
@@ -1088,8 +1125,10 @@ def for_app(app) -> ModelTransport:
         store = getattr(app, "_codex_turn_state", None)
         if store is None:
             store = app._codex_turn_state = {}
+        from litetui.tool_stream_capture import ToolStreamCapture
         return OAuthTransport(
             app.backend.name, models=app.backend.models,
+            tool_capture=ToolStreamCapture.for_app(app),
             prompt_cache_key=getattr(app, "convo_id", None),
             turn_store=store, turn_key=getattr(app, "_active_turn_started_at", None),
         )
