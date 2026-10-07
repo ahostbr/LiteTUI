@@ -13,12 +13,15 @@ import threading
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from test_sidecar_events import frame
 from test_sidecar_preferred import FIRST_EVENT_ID, _child
 from test_sidecar_reader import PipeProcess
 
 from litetui import app as m
-from litetui import paths, scheduler, seat_authority, sidecar_protocol
+from litetui import paths, scheduler, seat_authority, settings, sidecar_protocol
+from litetui.agent_launch_context import ordinary
 from litetui.plugins import sidecar_plugin
 from litetui.sidecar_dispatch import SettingsPatchDispatcher
 from litetui.sidecar_jobs import create_job, public_jobs
@@ -28,26 +31,44 @@ from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 JOB = {"prompt": "summarise yesterday", "schedule": "0 9 * * 1-5", "label": "brief"}
 
 
-def _app(profile, *, own=False):
-    """conftest clears the owner mark: locked unless `own`."""
-    a = m.LiteTUI()
-    a.available_models = ["a-model"]
-    a.model_id = "a-model"
-    a._connect = lambda: None
-    a.settings.tool_policy_profile = profile
-    a._active_tool_profile = profile
-    a.call_from_thread = lambda fn, *args: fn(*args)
-    a.system_message = lambda *_a, **_k: None
-    if own:
-        a._spawned_seat, a._owner_seat, a._pty_term = False, True, None
-    return a
+@pytest.fixture
+def _app(tmp_path, monkeypatch):
+    """Own isolated sessions; runtime owner marks remain separate from storage."""
+    sessions = []
+
+    def make(profile, *, own=False):
+        cfg = settings.Settings()
+        cfg.backend = "lmstudio"
+        cfg.default_model = "a-model"
+        cfg.thinking_level = "off"
+        cfg.seat_name = f"SidecarJobs-{len(sessions)}"
+        monkeypatch.setattr(settings, "load", lambda: cfg)
+        session = ordinary(tmp_path, cfg)
+        sessions.append(session)
+        a = m.LiteTUI(agent_session=session)
+        a.available_models = ["a-model"]
+        a.model_id = "a-model"
+        a._connect = lambda: None
+        a.settings.tool_policy_profile = profile
+        a._active_tool_profile = profile
+        a.call_from_thread = lambda fn, *args: fn(*args)
+        a.system_message = lambda *_a, **_k: None
+        if own:
+            a._spawned_seat, a._owner_seat, a._pty_term = False, True, None
+        return a
+
+    try:
+        yield make
+    finally:
+        for session in reversed(sessions):
+            session.release()
 
 
 def _replies(owner):
     return [c.args[1] for c in owner.send_event_reply.call_args_list]
 
 
-def test_SC1_the_snapshot_offers_only_the_levels_this_seat_may_record():
+def test_SC1_the_snapshot_offers_only_the_levels_this_seat_may_record(_app):
     jobs = [scheduler.Job(prompt="p", schedule="@daily", tool_profile="scheduled")]
     spawned = public_jobs(jobs, _app(AUTONOMOUS))
     assert (spawned["levels"], spawned["default_level"]) == ([STRICT, INTERACTIVE, AUTONOMOUS], AUTONOMOUS)
@@ -82,7 +103,7 @@ def test_SC2_the_reader_passes_job_create_only_under_the_jobs_write_grant():
         owner.close()
 
 
-def test_SC3_job_create_goes_through_the_one_cron_creation_path():
+def test_SC3_job_create_goes_through_the_one_cron_creation_path(_app):
     a = _app(INTERACTIVE, own=True)
     owner = Mock()
     handler = SettingsPatchDispatcher(a, owner, create_job=create_job)
@@ -104,7 +125,7 @@ def test_SC3_job_create_goes_through_the_one_cron_creation_path():
     assert [j.tool_profile for j in scheduler.load(paths.data_root())] == [STRICT]
 
 
-def test_SC3_spawned_seat_can_create_an_autonomous_job_from_the_sidecar():
+def test_SC3_spawned_seat_can_create_an_autonomous_job_from_the_sidecar(_app):
     a = _app(AUTONOMOUS)
     owner = Mock()
     handler = SettingsPatchDispatcher(a, owner, create_job=create_job)
@@ -123,7 +144,7 @@ def test_SC3_a_window_without_the_create_hook_refuses():
         3, {"saved": False, "error": "Job creation is not available to this window"})
 
 
-def test_SC4_the_plugin_grants_jobs_write_in_hello_and_answers_a_childs_job_create(monkeypatch, tmp_path):
+def test_SC4_the_plugin_grants_jobs_write_in_hello_and_answers_a_childs_job_create(monkeypatch, tmp_path, _app):
     exe = tmp_path / "litetui-sidecar.exe"
     exe.write_bytes(b"")
     written = []
