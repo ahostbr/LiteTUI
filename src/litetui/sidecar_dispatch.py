@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from litetui.sidecar_jobs import public_jobs
 from litetui.sidecar_patch import apply_patch
 
 
@@ -35,8 +36,14 @@ class SettingsPatchDispatcher:
                 if self.create_job is None:
                     raise RuntimeError("Job creation is not available to this window")
                 result = self.app.call_from_thread(self.create_job, self.app, frame["payload"])
-            else:
+            elif frame["command"] == "jobs_request":
+                # Capture current jobs on their owning UI thread; never apply
+                # a readonly request's payload as a settings patch.
+                result = self.app.call_from_thread(lambda: public_jobs(self.app.jobs, self.app))
+            elif frame["command"] == "settings_patch":
                 result = self.app.call_from_thread(self.apply, self.app, frame["payload"])
+            else:
+                raise ValueError(f"Unsupported sidecar event command: {frame['command']}")
         except (ValueError, RuntimeError, OSError) as exc:
             result = {"saved": False, "error": str(exc)}
         self.owner.send_event_reply(request_id, result)
