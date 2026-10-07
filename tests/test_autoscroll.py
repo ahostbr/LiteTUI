@@ -164,10 +164,18 @@ def test_stream_updates_reach_the_single_scroll_door():
         node for node in ast.walk(tree)
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.Attribute)
+        and isinstance(node.test.value, ast.Name)
+        and node.test.value.id == "delta"
         and node.test.attr == "content"
     ]
     assert any(
-        "sink.show(text_full)" in (ast.get_source_segment(src, node) or "")
+        all(
+            call in (ast.get_source_segment(src, node) or "")
+            for call in (
+                "recap_stream.feed(delta.content)",
+                "sink.show(recap_stream.visible)",
+            )
+        )
         for node in content_blocks
     ), "answer deltas no longer update the measured chat content"
 
