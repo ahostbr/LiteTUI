@@ -36,19 +36,22 @@ def pending(tmp_path, monkeypatch):
     return app, notices, sends, noticed
 
 
-async def check_notice(pending, *, expected, outcome):
+async def check_notice(pending, *, expected, outcome, authority_timeout=TIMEOUT,
+                       delivery_timeout=TIMEOUT):
     app, notices, sends, noticed = pending
     future = asyncio.get_running_loop().create_future()
     app._relay_pending = {IDENT: (future, APPROVER)}
-    frozen = authority.create(app, IDENT, approver=APPROVER, route="spawner", timeout=TIMEOUT)
+    frozen = authority.create(app, IDENT, approver=APPROVER, route="spawner", timeout=authority_timeout)
+    # Pin only the display origin; all answer/authority clocks remain real.
+    app._approval_authority_records[IDENT]["created_wall_time"] = 1700000000.0
     task = asyncio.create_task(delivery.wait_for_answer(
         app, future, approver=APPROVER, ident=IDENT, message="sandbox request",
-        timeout=TIMEOUT, created_at=frozen.created_at))
+        timeout=delivery_timeout, created_at=frozen.created_at))
     try:
         await asyncio.wait_for(noticed.wait(), 1.2)
         assert notices == [expected]
         assert not task.done() and not future.done()
-        assert app._relay_answer_deadlines[IDENT] == frozen.deadline
+        assert app._relay_answer_deadlines[IDENT] == frozen.created_at + delivery_timeout
         assert app._approval_authority_records[IDENT]["authority"] is frozen
         assert app._approval_authority_records[IDENT]["outcome"] == "pending"
         state = app.conversation[0]["approval_delivery"][IDENT]
@@ -81,9 +84,25 @@ async def test_no_ancestor_notice_keeps_original_approval_and_deadline(pending, 
     await check_notice(pending, outcome=outcome, expected=(
         f"Approval {IDENT}: nobody above approver {APPROVER} "
         "in this request's escalation chain. "
-        f"Request still waiting for {APPROVER} until the original deadline "
-        "(1.5s from creation)."))
+        f"Request still waiting for {APPROVER} until 2023-11-14T22:13:21.500+00:00."))
     assert pending[2] == [], "no ancestor must not attempt notification transport"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authority_timeout,delivery_timeout,until", [
+    (None, TIMEOUT, "until 2023-11-14T22:13:21.500+00:00"),
+    (TIMEOUT, 3.0, "until 2023-11-14T22:13:21.500+00:00"),
+    (3.0, TIMEOUT, "until 2023-11-14T22:13:21.500+00:00"),
+    (None, float("inf"), "indefinitely (no deadline)"),
+])
+async def test_notice_displays_existing_effective_deadline(
+        pending, authority_timeout, delivery_timeout, until):
+    await check_notice(pending, outcome="approve", authority_timeout=authority_timeout,
+                       delivery_timeout=delivery_timeout, expected=(
+        f"Approval {IDENT}: nobody above approver {APPROVER} "
+        "in this request's escalation chain. "
+        f"Request still waiting for {APPROVER} {until}."))
+    assert pending[2] == []
 
 
 @pytest.mark.asyncio
