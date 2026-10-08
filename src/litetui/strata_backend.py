@@ -173,7 +173,14 @@ class StrataBackend(OwnedEngineLifecycle):
             return []
 
     def subagent_model_states(self) -> dict[str, str]:
-        return {r.key: "loaded" if r.loaded else "unloaded" for r in self._list_sync()}
+        """What the server SAYS, for admission. Unlike `_loaded`, a row without a
+        status value is never read as loaded here: it is "unknown"."""
+        states = {}
+        for entry in self._entries():
+            status = entry.get("status")
+            value = status.get("value") if isinstance(status, dict) else None
+            states[entry["id"]] = value if isinstance(value, str) else "unknown"
+        return states
 
     def _model_info_sync(self, key: str) -> tuple[int | None, str | None, bool] | None:
         """``(window, type, loaded)`` — the three-tuple every caller unpacks.

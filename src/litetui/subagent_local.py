@@ -22,15 +22,13 @@ def resolve_host(host):
     return [info[4][0] for info in socket.getaddrinfo(host, None)]
 
 
-def url_is_local(url):
-    """True unless EVERY address the URL's host has is a public one.
-
-    Local: loopback, private, link-local, unspecified and every other range that
-    is not globally routable; a name that does not resolve; a URL with no host.
-    """
+def _addresses(url):
+    """Every address the URL's host has, or [] when that cannot be known."""
     host = (urlsplit(url).hostname or '').rstrip('.')
-    if not host or host == 'localhost' or host.endswith('.localhost'):
-        return True
+    if not host:
+        return []
+    if host == 'localhost' or host.endswith('.localhost'):
+        host = '127.0.0.1'
     try:
         addresses = [ipaddress.ip_address(host)]
     except ValueError:
@@ -41,10 +39,25 @@ def url_is_local(url):
             try:
                 addresses = [ipaddress.ip_address(found.split('%')[0]) for found in resolve_host(host)]
             except (OSError, ValueError):
-                return True
-    addresses = [address.ipv4_mapped if address.version == 6 and address.ipv4_mapped else address
-                 for address in addresses]
+                return []
+    return [address.ipv4_mapped if address.version == 6 and address.ipv4_mapped else address
+            for address in addresses]
+
+
+def url_is_local(url):
+    """True unless EVERY address the URL's host has is a public one.
+
+    Local: loopback, private, link-local, unspecified and every other range that
+    is not globally routable; a name that does not resolve; a URL with no host.
+    """
+    addresses = _addresses(url)
     return not addresses or not all(address.is_global and not address.is_multicast for address in addresses)
+
+
+def url_is_this_machine(url):
+    """True only when EVERY address the URL's host has is a loopback one."""
+    addresses = _addresses(url)
+    return bool(addresses) and all(address.is_loopback for address in addresses)
 
 
 def require_sole_resident(states, model):
@@ -69,15 +82,18 @@ async def admit_local(backend, model, enabled):
 
 
 def seat_refusal(backend, model):
-    """Why a spawned worker must not send this turn, or None. One read-only query.
+    """Why a spawned worker must not send this request, or None. One read-only query.
 
     Only for an engine that would load `model` if a request named it while it is
     not loaded. A local custom server is such an engine only when it reports a
-    state for every model; one that reports none is left exactly as before.
+    state for every model; one that reports none is left exactly as before. A
+    single-model llama.cpp server is one because it can sleep; a llama.cpp
+    router is not asked here, its own readiness check refuses an unloaded model.
     """
     name = getattr(backend, 'name', None)
     custom = name == 'custom'
-    if not (name in LOADS_ON_REQUEST or (custom and url_is_local(backend.base_url()))):
+    if not (name in LOADS_ON_REQUEST or (custom and url_is_local(backend.base_url()))
+            or (name == 'llamacpp' and getattr(backend, 'single_model', False))):
         return None
     try:
         states = backend.subagent_model_states()
@@ -90,4 +106,4 @@ def seat_refusal(backend, model):
     if states is not None and states.get(model) == 'loaded':
         return None
     return (f'{model!r} is not loaded right now, or its server could not be read, so sending this '
-            'turn could load it. A spawned worker never loads a model: loading needs approval.')
+            'request could load it. A spawned worker never loads a model: loading needs approval.')

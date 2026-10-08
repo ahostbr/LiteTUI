@@ -226,9 +226,10 @@ def _brief(record):
 def _prove_no_load(route):
     """Refuse a route unless launching and using its seat is PROVEN not to load a model.
 
-    A photograph, taken once: the seat repeats it before every turn where the
-    engine loads on a request (subagent_local.seat_refusal). Read-only: at most
-    one state query. Never load, ensure_running, ensure_chat_ready or an SDK call.
+    A photograph, taken once: the seat repeats it before every request where the
+    engine loads on a request (subagent_local.seat_refusal). Read-only: one state
+    query, which is one GET (two to four for llama.cpp, which also reads /props).
+    Never load, ensure_running, ensure_chat_ready or an SDK call.
     """
     name, model = route.backend, route.model
     if name in subagent_local.REMOTE_BACKENDS:
@@ -254,15 +255,17 @@ def _prove_no_load(route):
                              'report which models are loaded')
         subagent_local.require_sole_resident(states, model)
         if name == 'llamacpp' and not backend.single_model:
-            # A single-model server has no load route. A router loads on a request
-            # unless it was started --no-models-autoload, which only ours is known to be.
+            # A single-model server has no load route (asleep reads as unloaded above).
+            # A router loads on a request unless it was started --no-models-autoload,
+            # which only ours is known to be: our record is for a port on THIS machine.
             record = router_record.read()
             if not (record is not None and record.is_mine and router_record.is_live(record)
-                    and record.port == urlsplit(backend.host()).port):
+                    and record.port == urlsplit(backend.host()).port
+                    and subagent_local.url_is_this_machine(backend.host())):
                 raise ValueError('This llama.cpp router was not started by LiteTUI, so it may load a model on a request')
     except (ValueError, BackendError) as exc:
         raise Unavailable(f'Loading needs approval: {exc}') from None
-    except OSError:
+    except Exception:  # noqa: BLE001 - an answer nobody can read proves nothing; never a tool crash
         raise Unavailable('Loading needs approval: the model server could not be read') from None
 
 

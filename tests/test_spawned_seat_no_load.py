@@ -28,9 +28,9 @@ PUBLIC_URL = 'https://openrouter.example.com/api/v1'
 
 class Backend:
     """Recording double. `reached` is the turn getting past the seat's check."""
-    def __init__(self, name, states, *, url=LOCAL_URL):
+    def __init__(self, name, states, *, url=LOCAL_URL, single=False):
         self.touched = []
-        self.name, self.states, self.url = name, states, url
+        self.name, self.states, self.url, self.single_model = name, states, url, single
         self.queries, self.reached = 0, []
 
     def base_url(self):
@@ -56,15 +56,21 @@ STARTS_OR_LOADS = {'load', 'unload', 'ensure_running', 'list_models', 'loaded_mo
                    'apply_load_settings', '_sdk', '_spawn'}
 
 
-def seat(backend, *, spawned=True, tier='worker', cached_loaded=()):
-    """A LiteTUI shell at the point a turn is about to be sent."""
+def seat(backend, *, spawned=True, tier='worker', cached_loaded=(), born_spawned=None):
+    """A LiteTUI shell at the point a turn is about to be sent.
+
+    `spawned`: THIS launch was a spawn (the launcher's marker). `born_spawned`:
+    the conversation was born in a spawned seat, which follows it into a later
+    launch by hand.
+    """
     a = app_mod.LiteTUI.__new__(app_mod.LiteTUI)
     a._rpc = False
     a.model_id = MODEL
     a.backend = backend
     a._agent_session = SimpleNamespace(authority=SimpleNamespace(
         model=MODEL, backend=backend.name, thinking_level='low'))
-    a._spawned_seat = spawned
+    a._spawned_marker = spawned
+    a._spawned_seat = spawned if born_spawned is None else born_spawned
     a.seat = SimpleNamespace(tier=tier, registered=True)
     a.model_rows = {key: be.ModelRow(key, None, 'fixture', loaded=True) for key in cached_loaded}
 
@@ -109,9 +115,12 @@ STATEFUL = {'other-model': 'unloaded'}   # a server that DOES report a state per
     ('strata', be.BackendError('fixture: no server')),
     ('custom', {MODEL: 'unloaded', **STATEFUL}),
     ('custom', STATEFUL),
+    ('llamacpp-single', {MODEL: 'unloaded'}),        # a single-model server that went to sleep
+    ('llamacpp-single', {}),
+    ('llamacpp-single', be.BackendError('fixture: the server did not answer')),
 ])
 async def test_a_spawned_worker_refuses_the_turn_when_its_model_is_not_loaded_now(name, states):
-    backend = Backend(name, states)
+    backend = Backend(name.removesuffix('-single'), states, single=name.endswith('-single'))
     with pytest.raises(be.BackendError, match='not loaded') as refusal:
         await turn(seat(backend))
     assert 'approval' in str(refusal.value)
@@ -132,10 +141,10 @@ async def test_the_connect_time_listing_cannot_see_an_unload_so_the_seat_asks_ag
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('name', ['lmstudio', 'strata', 'custom'])
+@pytest.mark.parametrize('name', ['lmstudio', 'strata', 'custom', 'llamacpp-single'])
 async def test_CONTROL_a_loaded_model_passes_and_is_asked_about_every_turn(name):
     """The positive half: the same harness lets a turn through, twice, on two queries."""
-    backend = Backend(name, {MODEL: 'loaded', **STATEFUL})
+    backend = Backend(name.removesuffix('-single'), {MODEL: 'loaded', **STATEFUL}, single=name.endswith('-single'))
     a = seat(backend)
     await turn(a)
     await turn(a)
@@ -150,7 +159,8 @@ async def test_CONTROL_a_loaded_model_passes_and_is_asked_about_every_turn(name)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('name,states,url', [
-    # Engines that cannot load on a request get no seat check.
+    # Engines that cannot load on a request get no seat check. A llama.cpp ROUTER
+    # is one: its own readiness check refuses an unloaded model before every request.
     ('llamacpp', {}, LOCAL_URL),
     ('ninfer', {}, LOCAL_URL),
     # Remote by construction.
@@ -202,6 +212,113 @@ async def test_CONTROL_only_a_spawned_worker_is_checked(spawned, tier):
     assert backend.queries == 0
 
 
+async def outcome(coroutine):
+    """What a model request did: None when it went ahead, else the refusal sentence."""
+    try:
+        await coroutine
+    except be.BackendError as refusal:
+        return str(refusal)
+    return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tier', ['worker', 'leader', 'thinker', 'reviewer'])
+async def test_a_person_resuming_by_hand_a_conversation_born_in_a_spawned_seat_behaves_as_before(tier):
+    """Born spawned follows the conversation; the check follows THIS launch only.
+    A hand launch also gets tier `worker` by default, so tier cannot tell them apart."""
+    backend = Backend('lmstudio', {})
+    refused = await outcome(turn(seat(backend, spawned=False, born_spawned=True, tier=tier)))
+    assert refused is None, refused
+    assert backend.reached == [MODEL] and backend.queries == 0
+
+
+@pytest.mark.asyncio
+async def test_the_check_respects_the_callers_bound_instead_of_adding_to_it():
+    """Compaction and the launch prompt pass a bound; a server that hangs must not outlast it."""
+    import threading
+    import time
+    release = threading.Event()
+    backend = Backend('lmstudio', {MODEL: 'loaded'})
+    answer = backend.subagent_model_states
+
+    def hung():
+        release.wait(4.0)
+        return answer()
+    backend.subagent_model_states = hung
+    started = time.monotonic()
+    try:
+        refused = await outcome(app_mod.LiteTUI._ensure_chat_ready(seat(backend), timeout=0.3))
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+    assert refused is not None and 'could not be confirmed' in refused, refused
+    assert 'approval' in refused
+    assert elapsed < 2.0, f'the check held the caller for {elapsed:.1f}s past a 0.3s bound'
+    assert backend.reached == []
+
+
+@pytest.mark.asyncio
+async def test_the_bound_covers_the_check_and_the_readiness_wait_together():
+    import asyncio
+    import time
+    backend = Backend('lmstudio', {MODEL: 'loaded'})
+    answer = backend.subagent_model_states
+
+    def slow():
+        time.sleep(1.0)
+        return answer()
+    backend.subagent_model_states = slow
+
+    async def still_loading(key):
+        backend.reached.append(key)
+        await asyncio.sleep(8)
+    backend.ensure_chat_ready = still_loading
+    started = time.monotonic()
+    refused = await outcome(app_mod.LiteTUI._ensure_chat_ready(seat(backend), timeout=1.5))
+    elapsed = time.monotonic() - started
+    assert refused is not None and 'still loading' in refused, refused
+    # One bound for both: about 1.5s. Added together they would be 2.5s.
+    assert 1.4 < elapsed < 2.1, f'1.0s check + readiness wait took {elapsed:.2f}s against a 1.5s bound'
+
+
+# ── what each engine's state query calls "loaded" ───────────────────────────
+
+@pytest.mark.parametrize('props,state', [
+    ({'model_path': 'C:/models/fixture.gguf', 'is_sleeping': True}, 'unloaded'),
+    ({'model_path': 'C:/models/fixture.gguf', 'is_sleeping': False}, 'loaded'),
+    ({'model_path': 'C:/models/fixture.gguf'}, 'loaded'),          # no such field: not sleeping
+    ({'model_path': 'C:/models/fixture.gguf', 'is_sleeping': 1}, 'unloaded'),     # any true value
+])
+def test_a_sleeping_single_model_llamacpp_server_is_not_loaded(monkeypatch, props, state):
+    """llama.cpp "sleeping on idle": weights dropped, the next request reloads them.
+    The field name is from memory of llama.cpp's server documentation, not a live server."""
+    asked = []
+
+    def http(url, body=None, timeout=10.0):
+        asked.append(('GET' if body is None else 'POST', url.rsplit(':7470', 1)[-1]))
+        return props if url.endswith('/props') else {'data': [{'id': MODEL}]}
+    monkeypatch.setattr(be, '_http_json', http)
+    backend = be.LlamaCppBackend(settings.Settings(llama_host='http://127.0.0.1:7470'))
+    assert backend.subagent_model_states() == {MODEL: state}
+    assert {method for method, _ in asked} == {'GET'} and {path for _, path in asked} <= {'/props', '/models'}
+
+
+@pytest.mark.parametrize('row,state', [
+    ({'id': MODEL, 'status': {'value': 'loaded'}}, 'loaded'),
+    ({'id': MODEL, 'status': {'value': 'unloaded'}}, 'unloaded'),
+    ({'id': MODEL}, 'unknown'),                               # no status: never loaded
+    ({'id': MODEL, 'status': {}}, 'unknown'),
+    ({'id': MODEL, 'status': {'value': True}}, 'unknown'),
+    ({'id': MODEL, 'status': 'loaded'}, 'unknown'),
+    ({'id': MODEL, 'status': None}, 'unknown'),
+])
+def test_strata_never_reports_a_row_without_a_status_value_as_loaded(monkeypatch, row, state):
+    from litetui.strata_backend import StrataBackend
+    backend = StrataBackend(settings.Settings(strata_host='http://127.0.0.1:8090'))
+    monkeypatch.setattr(backend, '_get_json', lambda url, timeout=10.0: {'data': [row]})
+    assert backend.subagent_model_states() == {MODEL: state}
+
+
 def test_lmstudio_reports_a_downloaded_model_that_is_not_loaded_as_unloaded(monkeypatch):
     """LM Studio's own word for it is `not-loaded`; the shared predicate knows `unloaded`."""
     backend = be.LMStudioBackend(settings.Settings())
@@ -217,22 +334,24 @@ def test_lmstudio_reports_a_downloaded_model_that_is_not_loaded_as_unloaded(monk
 
 def connected_seat(tmp_path, monkeypatch, session):
     """A real app built from the flags dispatch passes, on the real LM Studio class."""
-    cfg = settings.Settings(default_model=MODEL)
+    cfg = settings.Settings(default_model=MODEL, lmstudio_graded_thinking_models=[MODEL])
     monkeypatch.setattr(settings, 'load', lambda: cfg)
     monkeypatch.setattr(paths, 'data_root', lambda: tmp_path)
     app = app_mod.LiteTUI(agent_session=session, initial_backend='lmstudio', initial_model=MODEL,
                           initial_thinking='low', spawn_identity=(SEAT, 'Gamma-Fixture', 'worker'))
-    seen = SimpleNamespace(requests=[], probes=[], lines=[])
+    seen = SimpleNamespace(requests=[], probes=[], lines=[], loaded=False)
 
     def http(url, body=None, timeout=10.0):
         seen.requests.append(('GET' if body is None else 'POST', url))
-        assert body is None, 'connect POSTed to the model server'
+        assert body is None, 'the seat POSTed to the model server'
         assert url.endswith('/api/v0/models'), url
+        if seen.loaded:
+            return {'data': [{'id': MODEL, 'state': 'loaded', 'loaded_context_length': 8192}]}
         return {'data': [{'id': MODEL, 'state': 'not-loaded'}]}   # downloaded, NOT loaded
 
     monkeypatch.setattr(be, '_http_json', http)
     monkeypatch.setattr(app_mod.thinking_probe, 'get_effective_levels',
-                        lambda *args, **kwargs: seen.probes.append('chat request') or ['off'])
+                        lambda *args, **kwargs: seen.probes.append('chat request') or ['off', 'low'])
     app._probe_thinking = lambda: seen.probes.append('thinking probe')
     app._system = seen.lines.append
     app._update_header = lambda: None
@@ -265,3 +384,88 @@ async def test_a_dispatched_seats_connect_sends_no_chat_request(tmp_path, monkey
                                          for method, url in seen.requests), seen.requests
         finally:
             app.store.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('loaded_at_the_probe,probes', [(False, []), (True, ['chat request'])],
+                         ids=['unloaded-since-connect', 'CONTROL-still-loaded'])
+async def test_the_launch_thinking_probe_is_not_sent_for_a_model_unloaded_since_connect(
+        tmp_path, monkeypatch, loaded_at_the_probe, probes):
+    """The launch path, driven: connect, then `_apply_cli_args`. With a thinking
+    level (dispatch always passes one) it sends chat requests naming the model to
+    learn its thinking levels. The listing from connect says loaded; the server
+    may have unloaded the model since. The control shows the stub can fire."""
+    with create(tmp_path, 'Gamma-Fixture', agent_id=SEAT, backend='lmstudio',
+                model=MODEL, thinking_level='low') as session:
+        app, seen = connected_seat(tmp_path, monkeypatch, session)
+        try:
+            seen.loaded = True
+            await app_mod.LiteTUI.connect.__wrapped__(app)
+            assert app._gui_connection_success is True, seen.lines
+            assert app.model_rows[MODEL].loaded is True
+            seen.loaded = loaded_at_the_probe
+            app.seat.registered = True
+            app._first_prompt = None
+            app._materialise_convo()
+            await app_mod.LiteTUI._apply_cli_args.__wrapped__(app)
+            assert seen.probes == probes, seen.lines
+            if loaded_at_the_probe:
+                assert app._cli_launch_error is None, app._cli_launch_error
+            else:
+                assert app._cli_launch_error and 'not loaded' in app._cli_launch_error
+                assert any('launch prompt blocked' in line.lower() for line in seen.lines), seen.lines
+            assert all(method == 'GET' for method, _ in seen.requests), seen.requests
+        finally:
+            app.store.release()
+
+
+# ── the tool-summary side call inside a turn ────────────────────────────────
+
+BIG = 'x' * 5000 + '\nline two\n'
+
+
+def folding_seat(tmp_path, monkeypatch, backend, **kwargs):
+    """A seat about to fold a large tool result through a model side call."""
+    a = seat(backend, **kwargs)
+    a.store = SimpleNamespace(convo_dir=tmp_path)
+    a.conversation = [{'role': 'user', 'content': 'find the bug in run_all'}]
+    a.settings = SimpleNamespace(tool_context_mode='llm-tool-summ', tool_context_threshold_chars=2000,
+                                 compact_max_tokens=4096, lmstudio_graded_thinking_models=(),
+                                 tool_summary_model=None)
+    sent = []
+
+    class Transport:
+        async def create(self, **request):
+            sent.append(request)
+            reply = SimpleNamespace(content='the folded summary')
+            return SimpleNamespace(choices=[SimpleNamespace(message=reply)])
+    monkeypatch.setattr(app_mod.model_transport, 'for_app', lambda app: Transport())
+    return a, sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('name', ['lmstudio', 'strata', 'llamacpp-single'])
+async def test_a_spawned_worker_masks_a_tool_result_instead_of_folding_through_an_unloaded_model(
+        tmp_path, monkeypatch, name):
+    """A long tool run, the server unloads the idle model, and the fold would reload it."""
+    backend = Backend(name.removesuffix('-single'), {MODEL: 'unloaded'}, single=name.endswith('-single'))
+    a, sent = folding_seat(tmp_path, monkeypatch, backend)
+    out = await app_mod.LiteTUI._contextualise_tool_result(a, 'bash', BIG)
+    assert sent == [], 'the side call went out for a model that is not loaded'
+    assert 'masked' in out and 'tool-raw' in out, out[:200]
+    assert backend.queries == 1
+    assert not STARTS_OR_LOADS & set(backend.touched), backend.touched
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('spawned,states,queries', [
+    (True, {MODEL: 'loaded'}, 1),     # loaded: the fold goes out, after asking
+    (False, {MODEL: 'unloaded'}, 0),  # not spawned by this launch: exactly as before
+])
+async def test_CONTROL_the_fold_still_goes_out(tmp_path, monkeypatch, spawned, states, queries):
+    backend = Backend('lmstudio', states)
+    a, sent = folding_seat(tmp_path, monkeypatch, backend, spawned=spawned)
+    out = await app_mod.LiteTUI._contextualise_tool_result(a, 'bash', BIG)
+    assert len(sent) == 1 and sent[0]['model'] == MODEL and sent[0]['purpose'] == 'tool-summary'
+    assert 'the folded summary' in out
+    assert backend.queries == queries

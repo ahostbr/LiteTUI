@@ -80,8 +80,10 @@ answer is `unavailable` with `Loading needs approval:` and a sentence saying
 why. A refused route launches nothing and reserves nothing.
 
 The check is one read-only question to the model server ("which models are
-loaded right now?"). It is taken when you dispatch, from the saved settings file
-a new worker reads at startup, not from the leader's live session.
+loaded right now?"): one GET request for LM Studio, Strata, NInfer and a custom
+server, two to four GET requests for llama.cpp (it also reads the server's
+properties). It is taken when you dispatch, from the saved settings file a new
+worker reads at startup, not from the leader's live session.
 
 | Backend in the route | Accepted when | Refused when |
 |---|---|---|
@@ -89,46 +91,83 @@ a new worker reads at startup, not from the leader's live session.
 | `custom`, server at a public address | always; the server is not asked anything | no URL saved, or the URL is not valid |
 | `custom`, server on this machine or a private network | the server reports a state for every model, this exact model is loaded, no other model is loaded and none is loading | it reports no state, or any other state below |
 | `lmstudio` | this exact model is loaded, no other model is loaded and none is loading | any other state below |
-| `strata` | same as LM Studio | any other state below |
+| `strata` | same as LM Studio; a model row with no status is never read as loaded | any other state below |
 | `ninfer` | the running engine serves this exact model | any other state below |
-| `llamacpp`, a server started with one model | it serves this exact model | any other state below |
-| `llamacpp`, a router LiteTUI started | this exact model is loaded, no other model is loaded and none is loading | any other state below |
-| `llamacpp`, a router LiteTUI did not start | never: it may load a model when asked | always |
+| `llamacpp`, a server started with one model | it serves this exact model and does not report that it is sleeping | any other state below |
+| `llamacpp`, a router LiteTUI started on this machine | this exact model is loaded, no other model is loaded and none is loading | any other state below |
+| `llamacpp`, any other router (LiteSuite's, a hand-started one, one on another machine) | never: it may load a model when asked | always |
 
 "Any other state" means: the model is not loaded, the model is still loading,
-a different model is loaded, the server reports a state it does not recognise,
-the server answers with an error, or the server cannot be reached.
+a different model is loaded, the server reports a state it does not recognise
+or a listing that cannot be read, the server answers with an error, or the
+server cannot be reached. Every one of these is the same `unavailable` answer.
 
 A custom address counts as public only when every address its name resolves to
 is public. `localhost`, `127.1`, `[::1]`, `0.0.0.0`, a home or office network
 address, a name that resolves to any of those, and a name that does not resolve
 at all are treated as this machine.
 
-### The worker checks again before every turn
+### The worker checks again before every model request
 
-Dispatch looks once; the worker runs for a long time, and LM Studio, Strata and
-some custom servers unload an idle model and load it again when the next request
-arrives. So a spawned worker seat on LM Studio, on Strata, or on a local custom
-server that reports a state per model asks the same read-only question before
-every turn, and refuses the turn with a sentence when its model is not loaded.
-Other seats are unchanged: a seat a person started, and spawned leaders,
-thinkers and reviewers, still load on their first turn as before. llama.cpp and
-NInfer need no such check because they cannot load on a request.
+Dispatch looks once; the worker runs for a long time. LM Studio, Strata and some
+custom servers unload an idle model and load it again when the next request
+arrives, and a llama.cpp server started with one model can be set to sleep when
+idle and reload on the next request. So a worker seat that was launched as a
+spawn, on LM Studio, on Strata, on a llama.cpp server started with one model, or
+on a local custom server that reports a state per model, asks the same read-only
+question and refuses with a sentence when its model is not loaded. It asks:
+
+- before every model round of a turn (a turn that calls tools has several
+  rounds, and each one asks again, not only the first);
+- before the thinking-level probe it sends once at launch, on LM Studio;
+- before it folds a large tool result through the model. On a refusal the
+  result is masked instead, as it already is when that side call fails.
+
+Where the caller sets a time limit for readiness (compaction, the launch
+prompt), the question spends that limit; it does not add to it. Otherwise it
+costs one request per round (two on llama.cpp): up to 5 seconds on LM Studio
+and 10 on the others if the server hangs, and then the round is refused.
+
+Other seats are unchanged: a seat a person started, a conversation born in a
+spawned seat that a person later resumes by hand, and spawned leaders, thinkers
+and reviewers still load on their first turn as before. A llama.cpp router and
+NInfer get no such question: a router's own readiness check already refuses an
+unloaded model before every request, and NInfer cannot unload.
 
 ### What is NOT proven
 
 - **A gap of milliseconds.** Between the worker's check and its request the
   server can still unload the model, and the request would then load it. Only
-  the server can close that gap.
+  the server can close that gap. The one-line summary a worker writes on its
+  answer card right after a reply is sent without asking again: it falls in
+  this same gap.
 - **What a real server does.** Tests use stand-ins. They do not show that a real
   LM Studio, Strata or router reports "loaded" only for a model that is in
-  memory, that LM Studio calls an unloaded model `not-loaded`, or that a router
-  LiteTUI started still refuses to load on a request. That needs one approved
-  run against a model that is already loaded.
+  memory, that LM Studio calls an unloaded model `not-loaded`, that a sleeping
+  llama.cpp server says `is_sleeping` in its properties (both words are from
+  memory of those products' documentation, not read from a running server), or
+  that a router LiteTUI started still refuses to load on a request. That needs
+  one approved run against a model that is already loaded.
+- **A sleeping model behind a router.** A local custom server that is a
+  llama.cpp router started by hand with an idle-sleep setting can report a
+  model as loaded while its weights are dropped. Only the one-model server's
+  own "sleeping" flag is read. LiteTUI's own router is started without that
+  setting.
+- **A stale ownership record.** "A router LiteTUI started" is read from a small
+  record file plus a check that the recorded process number is alive. A record
+  left by a LiteTUI that was killed, a reused process number and a hand-started
+  router on the same port would pass. That router's own readiness check still
+  refuses an unloaded model before each request.
+- **A public name that is really this machine.** A tunnel (ngrok, cloudflared),
+  a port forwarded by the home router, or this machine's own public IPv6
+  address reads as public, so the server is accepted and never asked.
+- **A name that is public now and private later** (a VPN that changes what a
+  name resolves to). The worker resolves the name again before each round, but
+  it stands down if the server it then finds reports no state.
 - **That the worker reads the same settings.** The check reads this process's
   saved settings. A worker started with a different data folder or different
-  `LITETUI_*_HOST` variables may talk to another server; its own per-turn check
-  is then the only guard, and llama.cpp and NInfer seats have none.
+  `LITETUI_*_HOST` variables may talk to another server; its own check before
+  each request is then the only guard, and router and NInfer seats have none.
 - **A llama.cpp server that stops after the check.** The new worker then starts
   its own llama.cpp router when it connects, as any LiteTUI seat does. That
   starts a process and loads no model; the worker's turns fail until one is
@@ -138,8 +177,9 @@ NInfer need no such check because they cannot load on a request.
 - **The worker's own tools.** A worker with a shell can still contact a local
   model server itself. This check is about the worker's model requests only.
 - **Changing the thinking level in a worker, then reconnecting**, makes an LM
-  Studio seat send one probing chat request at connect. A dispatched worker is
-  told not to change it; nothing enforces that.
+  Studio seat send its probing chat requests at connect, without asking first.
+  (At launch the same probe does ask first.) A dispatched worker is told not to
+  change the level; nothing enforces that.
 
 ## Durable states and return receipt
 

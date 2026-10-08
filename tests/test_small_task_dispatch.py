@@ -541,11 +541,12 @@ def resolver(table):
 
 class ReadOnlyBackend:
     """Recording stub: the state query and three facts are allowed, nothing else."""
-    def __init__(self, name, states, *, single=False):
-        self.name, self.single_model, self.calls, self._states = name, single, [], states
+    def __init__(self, name, states, *, single=False, host='http://127.0.0.1:7470'):
+        self.touched = []
+        self.name, self.single_model, self.calls, self._states, self._host = name, single, [], states, host
 
     def host(self):
-        return 'http://127.0.0.1:7470'
+        return self._host
 
     def subagent_model_states(self):
         self.calls.append('subagent_model_states')
@@ -554,14 +555,16 @@ class ReadOnlyBackend:
         return dict(self._states)
 
     def __getattr__(self, name):
+        # Recorded, not only raised: the proof turns any error into a refusal.
+        self.touched.append(name)
         raise AssertionError(f'dispatch touched backend.{name}: only the read-only state query is allowed')
 
 
-def stub_backends(monkeypatch, states, *, single=False):
+def stub_backends(monkeypatch, states, *, single=False, host='http://127.0.0.1:7470'):
     built = []
 
     def make(settings):
-        backend = ReadOnlyBackend(settings.backend, states, single=single)
+        backend = ReadOnlyBackend(settings.backend, states, single=single, host=host)
         built.append(backend)
         return backend
     monkeypatch.setattr(dispatch, 'make_backend', make, raising=False)
@@ -611,7 +614,12 @@ KINDS = {
     'llamacpp-own-router': ('llamacpp', {}, False, 'litetui'),
     'llamacpp-litesuite-router': ('llamacpp', {}, False, 'litesuite'),
     'llamacpp-unrecorded-router': ('llamacpp', {}, False, None),
+    'llamacpp-own-record-other-machine': ('llamacpp', {}, False, 'litetui'),
+    'llamacpp-own-record-other-port': ('llamacpp', {}, False, 'litetui'),
 }
+# Where the stub router answers. The record above is for THIS machine's port 7470.
+ROUTER_HOSTS = {'llamacpp-own-record-other-machine': 'http://192.168.1.50:7470',
+                'llamacpp-own-record-other-port': 'http://127.0.0.1:7471'}
 NEVER_ASKED = {'claude', 'codex', 'cline', 'free', 'custom-public'}
 ACCEPTED_WHEN_LOADED = {'custom-local', 'lmstudio', 'strata', 'ninfer', 'llamacpp-single', 'llamacpp-own-router'}
 
@@ -623,7 +631,8 @@ def test_accept_refuse_table_by_backend_and_state(owned, cheap_request, sealed, 
     name, saved, single, owner = KINDS[kind]
     app.settings.small_task_route = {**ROUTE, 'backend': name, 'model': MODEL}
     save_child_settings(**saved)
-    built = stub_backends(monkeypatch, STATES[state], single=single)
+    built = stub_backends(monkeypatch, STATES[state], single=single,
+                          host=ROUTER_HOSTS.get(kind, 'http://127.0.0.1:7470'))
     own_router(monkeypatch, owner)
     monkeypatch.setattr(subagent_local, 'resolve_host',
                         resolver({'openrouter.example.com': [PUBLIC_ADDRESS]}), raising=False)
@@ -644,6 +653,7 @@ def test_accept_refuse_table_by_backend_and_state(owned, cheap_request, sealed, 
     queries = [query for backend in built for query in backend.calls]
     assert queries == ([] if kind in NEVER_ASKED else ['subagent_model_states']), queries
     assert len(built) == (0 if kind in NEVER_ASKED else 1)
+    assert [backend.touched for backend in built if backend.touched] == []
     assert sealed == []
 
 
@@ -874,6 +884,28 @@ REAL = [
     ('ninfer-serving-another-model', 'ninfer', {'ninfer_host': 'http://127.0.0.1:8091'}, None,
      {'/v1/models': {'data': [{'id': 'other-model', 'max_model_len': 8192}]}}, False, {'/v1/models'}),
     ('ninfer-not-running', 'ninfer', {'ninfer_host': 'http://127.0.0.1:8091'}, None, {}, False, {'/v1/models'}),
+    # Review round: "loaded" must mean in memory, and a listing nobody can read is a refusal.
+    ('llamacpp-single-model-asleep', 'llamacpp', {}, None,
+     {'/props': {'model_path': 'C:/models/fixture.gguf', 'is_sleeping': True}, '/models': {'data': [{'id': MODEL}]}},
+     False, {'/props', '/models'}),
+    ('llamacpp-single-model-says-awake', 'llamacpp', {}, None,
+     {'/props': {'model_path': 'C:/models/fixture.gguf', 'is_sleeping': False}, '/models': {'data': [{'id': MODEL}]}},
+     True, {'/props', '/models'}),
+    ('llamacpp-own-record-router-on-another-machine', 'llamacpp', {'llama_host': 'http://192.168.1.50:7470'}, 'litetui',
+     {'/props': ROUTER_PROPS, '/models': {'data': [{'id': MODEL, 'status': {'value': 'loaded'}}]}},
+     False, {'/props', '/models'}),
+    ('strata-row-without-a-status', 'strata', {'strata_host': 'http://127.0.0.1:8090'}, None,
+     {'/v1/models': {'data': [{'id': MODEL}]}}, False, {'/v1/models'}),
+    ('strata-status-without-a-value', 'strata', {'strata_host': 'http://127.0.0.1:8090'}, None,
+     {'/v1/models': {'data': [{'id': MODEL, 'status': {}}]}}, False, {'/v1/models'}),
+    ('strata-status-value-not-a-string', 'strata', {'strata_host': 'http://127.0.0.1:8090'}, None,
+     {'/v1/models': {'data': [{'id': MODEL, 'status': {'value': True}}]}}, False, {'/v1/models'}),
+    ('custom-local-status-is-a-string', 'custom', {'custom_base_url': 'http://127.0.0.1:7470'}, None,
+     {'/v1/models': {'data': [{'id': MODEL, 'status': 'loaded'}]}}, False, {'/v1/models'}),
+    ('lmstudio-row-is-not-an-object', 'lmstudio', {}, None,
+     {'/api/v0/models': {'data': ['oops']}}, False, {'/api/v0/models'}),
+    ('llamacpp-own-router-row-without-an-id', 'llamacpp', {}, 'litetui',
+     {'/props': ROUTER_PROPS, '/models': {'data': [{'status': {'value': 'loaded'}}]}}, False, {'/props', '/models'}),
 ]
 
 
@@ -887,7 +919,10 @@ def test_real_backend_classes_prove_by_reads_alone(owned, cheap_request, sealed,
     own_router(monkeypatch, owner)
     monkeypatch.setattr(subagent_local, 'resolve_host', resolver({}), raising=False)
     server = serve(monkeypatch, sealed, routes)
-    result = call(app, request=cheap_request)
+    try:
+        result = call(app, request=cheap_request)
+    except Exception as exc:  # noqa: BLE001 - a crash is a result here, and the wrong one
+        result = {'state': 'CRASHED', 'detail': repr(exc)}
     if accepted:
         assert result['state'] == 'dispatched', result
         assert len(calls) == 1 and journal_rows(app) == 1
