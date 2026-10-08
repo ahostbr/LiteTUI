@@ -8534,15 +8534,6 @@ class LiteTUI(App):
             authority = self._agent_session.authority
             if getattr(self.backend, 'name', None) != authority.backend:
                 raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
-            builder = getattr(self, '_effective_request_overrides', None)
-            overrides = builder() if builder is not None else {}
-            effective_level = overrides.get('reasoning_effort') or getattr(self, '_thinking_level', None)
-            from litetui.turn_engine import TurnEngine
-            graded = getattr(getattr(self, 'settings', None), 'lmstudio_graded_thinking_models', ())
-            expected_wire = TurnEngine.resolve_reasoning_effort(authority.thinking_level,
-                authority.backend, authority.model, graded)
-            actual_wire = TurnEngine.resolve_reasoning_effort(effective_level,
-                authority.backend, authority.model, graded)
             if authority.backend == 'claude':
                 from litetui.claude_turn import effort_for
                 from types import SimpleNamespace
@@ -8550,6 +8541,16 @@ class LiteTUI(App):
                     thinking_level=authority.thinking_level,
                     settings=SimpleNamespace(model_infer_overrides={}))
                 expected_wire, actual_wire = effort_for(expected), effort_for(self)
+            else:
+                builder = getattr(self, '_effective_request_overrides', None)
+                overrides = builder() if builder is not None else {}
+                effective_level = overrides.get('reasoning_effort') or getattr(self, '_thinking_level', None)
+                from litetui.turn_engine import TurnEngine
+                graded = getattr(getattr(self, 'settings', None), 'lmstudio_graded_thinking_models', ())
+                expected_wire = TurnEngine.resolve_reasoning_effort(authority.thinking_level,
+                    authority.backend, authority.model, graded)
+                actual_wire = TurnEngine.resolve_reasoning_effort(effective_level,
+                    authority.backend, authority.model, graded)
             if actual_wire != expected_wire:
                 raise llm_backend.BackendError('Effective request effort disagrees with owned agent authority')
             if self.model_id != authority.model:

@@ -67,21 +67,24 @@ def seeded_append(seed):
 #: The CLI's initialize metadata is its own curated picker (five rows on CLI
 #: 2.1.281: default, opus[1m], claude-fable-5-1[1m], sonnet, haiku), so the
 #: queried list comes first and this fills in the rest. [1m] only where the CLI
-#: offers it: Opus 5.5, Fable 5.1 and Sonnet 5; Haiku 4.5 has no 1M window (the
-#: CLI refuses it with "doesn't have a 1M context window").
-# ponytail: static list, refresh when the CLI pin (CLI_VERSION) moves.
+#: offers it: Opus 5.5, Fable 5.1 and Sonnet 5; Haiku has no 1M variant here.
+#: Haiku 5.5's ID and effort levels were read from installed CLI 2.1.293's
+#: initialize metadata; its explicit ID also served a native turn on bundled
+#: CLI 2.1.281. The bundled `haiku` alias still resolves to Haiku 4.5.
+# ponytail: static list, refresh from authoritative CLI metadata.
 STATIC_MODELS = (
     "default", "opus", "opus[1m]", "fable", "fable[1m]", "sonnet", "sonnet[1m]", "haiku",
     "claude-opus-5-5", "claude-opus-5-5[1m]",
     "claude-fable-5-1", "claude-fable-5-1[1m]",
     "claude-sonnet-5-5", "claude-sonnet-5-5[1m]",
     "claude-sonnet-5", "claude-sonnet-5[1m]",
-    "claude-haiku-4-5-20251001",
+    "claude-haiku-5-5", "claude-haiku-4-5-20251001",
 )
 #: Effort levels for a STATIC_MODELS row the CLI did not describe. Every
-#: queried Opus/Fable/Sonnet row on CLI 2.1.281 reports exactly these; its
-#: Haiku row reports none (supportsEffort absent).
+#: queried Opus/Fable/Sonnet row on CLI 2.1.281 reports exactly these, as does
+#: Haiku 5.5 on CLI 2.1.293. Haiku 4.5 (and the bundled alias) reports none.
 STATIC_EFFORT = ("low", "medium", "high", "xhigh", "max")
+STATIC_NO_EFFORT_MODELS = ("haiku", "claude-haiku-4-5-20251001")
 
 
 def cache_env(environ=None):
@@ -326,13 +329,13 @@ class ClaudeBackend:
 
     def reasoning_levels(self, key):
         """The CLI's supportedEffortLevels for this model; the static set for a
-        catalogue row it did not describe; [] for an unknown model or Haiku."""
+        catalogue row it did not describe; [] for an unknown model or Haiku 4.5."""
         meta = self.models.get(key)
         if meta is None:
             return []
         if "resolvedModel" in meta:          # queried: the CLI's word is final
             return list(meta.get("supportedEffortLevels") or [])
-        return [] if "haiku" in key else list(STATIC_EFFORT)
+        return [] if key in STATIC_NO_EFFORT_MODELS else list(STATIC_EFFORT)
 
     async def load(self, key, **kwargs):
         raise BackendError("Claude runs remotely. Use /model; local loading is unsupported.")
