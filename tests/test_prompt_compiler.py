@@ -60,7 +60,14 @@ def test_composed_prompt_contains_no_unresolved_root_placeholder(
     authored = tmp_path / "systemprompt.md"
     authored.write_text("source: <root>/src", encoding="utf-8")
     monkeypatch.setattr(paths, "SYSTEM_PROMPT_FILE", authored)
-    app = app_mod.LiteTUI()
-    composed = app._system_prompt_text()
-    assert "<root>" not in composed
-    assert f"{paths.ROOT}" in composed
+    from litetui import settings
+    from litetui.agent_launch_context import ordinary
+
+    session = ordinary(tmp_path, settings.load())
+    try:
+        app = app_mod.LiteTUI(agent_session=session)
+        composed = app._system_prompt_text()
+        assert "<root>" not in composed
+        assert f"{paths.ROOT}" in composed
+    finally:
+        session.release()

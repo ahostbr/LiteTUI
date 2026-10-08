@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 from pathlib import Path
 
 import json
@@ -137,8 +138,9 @@ def _label_for(d: Path) -> str:
 def resolve_roots(patterns) -> list[Path]:
     """Expand `~` and globs to existing directories, in order, deduped.
 
-    A glob resolves to its NEWEST match (mtime), so a versioned plugin path
-    follows the plugin instead of pinning one release.
+    A glob of `<major.minor.patch>/skills` directories resolves to the highest
+    numeric version, not the most recently touched old install. Other globs
+    retain their newest-mtime selection. Literal roots remain explicit pins.
 
     A pattern that matches nothing is skipped SILENTLY here and reported by
     /skills — an unreadable library and an unconfigured one look identical
@@ -152,7 +154,13 @@ def resolve_roots(patterns) -> list[Path]:
         pat = os.path.expanduser(pat)
         if any(ch in pat for ch in "*?["):
             hits = [Path(p) for p in glob.glob(pat) if Path(p).is_dir()]
-            hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            if hits and all(p.name == SKILLS_DIR_NAME and
+                            re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", p.parent.name)
+                            for p in hits):
+                hits.sort(key=lambda p: tuple(int(n) for n in p.parent.name.split(".")),
+                          reverse=True)
+            else:
+                hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             cand = hits[:1]
         else:
             cand = [Path(pat)] if Path(pat).is_dir() else []
@@ -255,12 +263,21 @@ def cache_path(root: Path) -> Path:
     return root / SKILLS_DIR_NAME / INDEX_CACHE_NAME
 
 
-def write_cache(root: Path, skills: list[Skill]) -> Path | None:
-    """Persist the index. Best-effort: a cache that cannot be written must
-    never stop the app from having skills -- discovery already succeeded."""
+def _cache_roots(root: Path, extra) -> list[str]:
+    """Ordered discovery inputs, including libraries with no skills yet."""
+    return [str((root / SKILLS_DIR_NAME).resolve())] + [
+        str(d) for d in resolve_roots(DEFAULT_EXTRA_ROOTS if extra is None else extra)
+    ]
+
+
+def write_cache(root: Path, skills: list[Skill], extra=None) -> Path | None:
+    """Persist the index and selected roots. Pass the same extra roots used for
+    discovery. Best-effort: a cache that cannot be written must never stop the
+    app from having skills -- discovery already succeeded."""
     p = cache_path(root)
     payload = {
         "generated": time.time(),
+        "roots": _cache_roots(root, extra),
         "count": len(skills),
         "skills": [
             {
@@ -285,8 +302,13 @@ def write_cache(root: Path, skills: list[Skill]) -> Path | None:
         return None
 
 
-def read_cache(root: Path) -> tuple[list[Skill], float] | None:
-    """Load the cached index, or None when there is nothing usable.
+def read_cache(root: Path, extra=None) -> tuple[list[Skill], float] | None:
+    """Load an index only while its ordered discovery roots still match.
+
+    An upgraded plugin or changed library selection invalidates the cache,
+    even when every old SKILL.md still exists. Legacy indexes without roots
+    are rediscovered once. Added/edited skills within an unchanged root still
+    use the explicit /skills refresh path.
 
     An entry whose SKILL.md has since been deleted is DROPPED rather than
     returned: load() would fail on it later with a file error, which reads as
@@ -297,6 +319,8 @@ def read_cache(root: Path) -> tuple[list[Skill], float] | None:
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict) or raw.get("roots") != _cache_roots(root, extra):
         return None
     rows = raw.get("skills")
     if not isinstance(rows, list):

@@ -9767,7 +9767,7 @@ class LiteTUI(App):
         """
         before = {s.name for s in self.skills}
         found = skills_mod.discover_all(paths.data_root(), self.settings.skill_roots)
-        skills_mod.write_cache(paths.data_root(), found)
+        skills_mod.write_cache(paths.data_root(), found, self.settings.skill_roots)
         self.skills = found
         self.skills_cached_at = 0.0
         after = {s.name for s in found}
