@@ -9,6 +9,7 @@ the local creation clock regardless of delivery or model receipt.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import re
 import time
@@ -173,9 +174,21 @@ async def wait_for_answer(app, future, *, approver: str, ident: str,
             if target in (approver, getattr(app.seat, "agent_id", None)):
                 target = None
             if target is None:
+                # Display the existing effective limit; do not create a new timer.
+                deadline = (min(answer_deadline, frozen.deadline)
+                            if frozen and frozen.deadline is not None else answer_deadline)
+                if deadline == float("inf"):
+                    wait_until = "indefinitely (no deadline)"
+                elif authority_record:
+                    wall_deadline = authority_record["created_wall_time"] + (deadline - frozen.created_at)
+                    until = datetime.fromtimestamp(wall_deadline, timezone.utc).isoformat(timespec="milliseconds")
+                    wait_until = f"until {until}"
+                else:
+                    wait_until = f"until the deadline ({max(0, deadline - time.monotonic()):.0f}s remaining)"
                 visible_state(app, ident, "escalation_absent",
-                              f"Approval delivery failure ({ident}): no frozen escalation recipient. "
-                              "Request remains gated.")
+                              f"Approval {ident}: nobody above approver {approver} "
+                              "in this request's escalation chain. "
+                              f"Request still waiting for {approver} {wait_until}.")
                 continue
             notice = (f"Frozen ancestor may answer at {ESCALATE_AFTER_S * (index + 1):.0f}s from creation; "
                       if frozen else "Notification only; reply authority remains with original approver; ")
