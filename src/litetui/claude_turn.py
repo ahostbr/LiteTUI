@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import tempfile
 import time
+from pathlib import Path
 
 from rich.text import Text
 
@@ -49,6 +52,35 @@ CLAUDE_FLEET_LINE_RE = re.compile(
 )
 
 
+#: One prompt file per conversation, overwritten when a session opens. argv carries only its
+#: path: a ~60 KB prompt on argv overflows CreateProcess's 32767-character limit (WinError 206).
+SYSTEM_PROMPT_FILE = "system-prompt.md"
+
+
+def system_prompt_file(convo_dir, text):
+    """Write `text` to the conversation's prompt file: temp file plus one `os.replace`, under the write lease."""
+    from litetui.shared_state import coordinated_write
+
+    convo_dir = Path(convo_dir)
+    convo_dir.mkdir(parents=True, exist_ok=True)
+    path = convo_dir / SYSTEM_PROMPT_FILE
+    with coordinated_write(path):
+        fd, tmp = tempfile.mkstemp(dir=str(convo_dir), prefix=".system-prompt-", suffix=".md")
+        try:
+            # Binary, not text: text mode turns "\n" into "\r\n" on Windows, so the bytes
+            # would differ from the recorded prompt.
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(text.encode("utf-8"))
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    return path
+
+
 def system_prompt_for(app, segment):
     """The system prompt a Claude session of `segment` runs under: LiteTUI's, not Claude Code's.
 
@@ -77,7 +109,10 @@ def system_prompt_for(app, segment):
     if segment.get("session_id"):
         return None
     tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
-    parts = [app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
+    # The launch block (tier preamble + cognitive file, from --system-prompt-file/--cognitive-file)
+    # leads a new native segment; without it the role and method never reach Claude's prompt.
+    launch = getattr(app, "_cli_system_prompt", None)
+    parts = [launch, app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
     parts.append(appsvc.index_block(app, cwd=segment["workspace"]).strip())
     parts.append(appsvc.store_block(app).strip())
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
@@ -430,6 +465,10 @@ async def session_for(app, backend, segment, effort):
         # fixed for this session; changed inventory requires /claude new.
         # The prompt first: it may wait for the seat, and the inventory is read after it.
         system_prompt = await prompt_for_new_session(app, segment)
+        if system_prompt:
+            # The frozen prompt goes to the SDK by path, not on argv (see SYSTEM_PROMPT_FILE).
+            path = system_prompt_file(ledger_for(app).dir, system_prompt)
+            system_prompt = {"type": "file", "path": str(path)}
         session = await backend.open_session(segment, app.model_id, effort=effort,
                                              system_prompt=system_prompt, **bridge.sdk_options())
         return session, bridge, normalizer

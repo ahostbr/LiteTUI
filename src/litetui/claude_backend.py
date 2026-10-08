@@ -285,8 +285,9 @@ class ClaudeBackend:
         if self.session is None:
             self.segment_id = segment["id"]
             if system_prompt:
-                # LiteTUI's own prompt (claude_turn.system_prompt_for), a plain
-                # string: no Claude Code preset underneath it.
+                # LiteTUI's own prompt (claude_turn.system_prompt_for), as a file
+                # path (claude_turn.system_prompt_file) or a plain string: no Claude
+                # Code preset underneath it.
                 options["system_prompt"] = system_prompt
             elif segment.get("seed"):
                 options["system_prompt"] = {"type": "preset", "preset": "claude_code",
