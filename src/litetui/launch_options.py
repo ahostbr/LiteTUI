@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,10 +27,15 @@ class LaunchOptions:
     server_command: list[str] | None = None
     api_key_env: str | None = None
     timeout: int = 600
+    codex_engine: str | None = None
 
     def overrides(self, settings, backend, model):
         from litetui.custom_backend import api_base
         values = {}
+        if self.codex_engine is not None:
+            if self.codex_engine not in ('native', 'http'):
+                raise ValueError('codex_engine must be native or http')
+            values['codex_native_engine'] = self.codex_engine == 'native'
         if backend == 'claude' and any((
             self.base_url, self.context_length, self.max_tokens, self.server_executable,
             self.model_path, self.server_command, self.api_key_env, self.load_model,
@@ -126,6 +132,8 @@ class LaunchOptions:
 
 
 def add_arguments(parser):
+    parser.add_argument('--codex-engine', choices=('native', 'http'),
+                        help='Invocation-only Codex loop: native app-server or LiteTUI HTTP; overrides LITETUI_CODEX_ENGINE, then saved setting (default: http)')
     parser.add_argument('--base-url', '--host', dest='base_url', help='Explicit server URL; never fall back to another endpoint')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--server-mode', choices=['auto', 'connect', 'start'], default='auto', help='auto: existing backend behavior; connect: never spawn; start: explicitly start server')
@@ -151,15 +159,22 @@ def from_args(args):
         raise ValueError('--server-command must be a JSON array of arguments') from exc
     if command is not None and not isinstance(command, list):
         raise ValueError('--server-command must be a JSON array of arguments')
+    # Resolve once at the CLI boundary: flag > environment > saved settings.
+    # Both sources use the existing invocation overlay, never a persisted edit.
+    codex_engine = args.codex_engine
+    if codex_engine is None:
+        codex_engine = os.environ.get('LITETUI_CODEX_ENGINE') or None
+        if codex_engine is not None and codex_engine not in ('native', 'http'):
+            raise ValueError('LITETUI_CODEX_ENGINE must be native or http')
     return LaunchOptions(args.base_url, args.server_mode, args.load_model, args.context_length,
                          args.max_tokens, args.server_executable, args.model_path, command,
-                         args.api_key_env, args.server_timeout)
+                         args.api_key_env, args.server_timeout, codex_engine)
 
 
 def to_argv(options):
     """Use the same public arguments for supervised and external agents."""
     args = ['--server-mode', options.server_mode, '--server-timeout', str(options.timeout)]
-    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env'):
+    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine'):
         value = getattr(options, name)
         if value is not None:
             args += ['--' + name.replace('_', '-'), str(value)]

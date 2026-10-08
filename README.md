@@ -469,6 +469,26 @@ initial prompt for a headed launch; avoid putting sensitive text on process argv
 | `strata` | Connect to the install's port (8080) or `--base-url URL`; `--start-server` runs the install's own server | [Strata](https://github.com/Niko1221/Strata) runs Qwen3.8-Flash-Next on one GPU plus system RAM. `--model-path strata-MODEL.json` picks a prepared model; `--context-length N` with `--start-server` starts it at that size. Install it and download models from LiteSuite's Model Hub, or with Strata's own `START-HERE.bat`. |
 | `codex` | Subscription login; connects using the configured Codex adapter (native app-server is managed by that adapter when enabled) | `--model ID --reasoning-effort LEVEL`. Endpoint, context and output limits belong to Codex; local-server overrides are rejected. |
 
+For Codex, `--codex-engine native` selects the official app-server agent loop;
+`--codex-engine http` selects LiteTUI's own loop over the subscription HTTP API.
+Precedence is **CLI flag > `LITETUI_CODEX_ENGINE` > saved conversation/global
+`codex_native_engine` setting > `http` default**. The environment variable is
+resolved at CLI startup and accepts the same lowercase `native`/`http` values;
+an unset or empty variable leaves the saved setting alone. An invalid selected
+value is a startup error (an explicit valid flag supersedes the environment).
+Both inputs are invocation-only, including on resume: unrelated settings saves
+and new conversations do not remember the override. The existing Settings →
+Engine toggle remains the way to save a preference. Neither input selects the
+backend: use `--backend codex` or an already Codex-configured agent.
+
+```powershell
+litetui --backend codex --codex-engine native
+litetui --backend codex --codex-engine http
+$env:LITETUI_CODEX_ENGINE = 'native'
+litetui --backend codex
+Remove-Item Env:LITETUI_CODEX_ENGINE
+```
+
 `--server-mode auto` preserves each backend's existing behavior. `connect` never
 starts an inference server. `--start-server` explicitly authorizes starting one;
 it does not restart or evict a server already running. An explicit llama.cpp URL
