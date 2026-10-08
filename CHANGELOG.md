@@ -31,6 +31,25 @@ fails if this file's top released heading disagrees with it.
   "local-only coding agent": it now runs local, Codex OAuth and free cloud
   models (Ryan, liteask a-b848bb60: "pure python opensource self-evolving TUI").
 
+## [0.25.0] — 2026-10-04
+
+### Added
+- Native Codex steering and Claude delivery persistence retain uncertain inputs
+  rather than retrying external effects blindly.
+- Seat authority, fleet-floor enforcement, and scoped worktree output checks.
+
+### Changed
+- Vendored deny-floor and fleet-policy modules match the canonical LiteHarness
+  0.4.4 release. Goal origins emit owner-neutral labels, with read compatibility
+  for existing conversation ledgers.
+- Conversation search follows the configured LiteTUI data root.
+- This is a source/build release; live host and human acceptance remain separate.
+
+### Changed
+- **Splash tagline** is "a self-evolving, open-source TUI in pure Python", not
+  "local-only coding agent": it now runs local, Codex OAuth and free cloud
+  models (Owner, liteask a-b848bb60: "pure python opensource self-evolving TUI").
+
 ## [0.24.0] — 2026-09-18
 
 NInfer becomes a first-class engine LiteTUI can own, and the TUI grows the two
