@@ -56,7 +56,10 @@ files without escapes, linked ancestors or Git/agent metadata paths. Shared,
 nested, main-checkout, dirty, detached or unverifiable workspaces are unavailable.
 The worktree must already exist; dispatch never creates or removes it. A narrow
 first slice conservatively counts **all additions plus deletions, including test
-changes**, when validating a candidate. Binary changes require owner review.
+changes**, when validating a candidate. Renames are evaluated with rename
+detection disabled: both the source deletion and destination addition must be
+allowed and listed in the receipt, and both count toward the budget. Binary
+changes require owner review.
 
 These checks and the worker brief are a **scope contract, not sandbox enforcement**.
 A worker still runs under the host's existing tool policy and authority. The new
@@ -109,6 +112,8 @@ not independently rerun by the dispatcher. The stored result includes Git numsta
 and the leader recording identity. The receipt is not an authenticated direct
 child callback: its operation/child/worktree binding is checked against the
 journal and the leader remains responsible for verifying the inbox sender.
+Terminal receipt acceptance is atomic: an identical receipt is idempotent, while
+a different concurrent or later receipt cannot overwrite the accepted result.
 No result means merged, released, Done or seen by the human.
 
 ## Unknown outcomes: owner reconciliation, never automatic relaunch
@@ -116,7 +121,10 @@ No result means merged, released, Done or seen by the human.
 Use `{"action":"status","task_id":"T-small-example"}` after interruption or
 restart. The same accepted task returns its record rather than spawning again;
 a different contract/name/worktree collision is refused. Status and receipt
-recording remain available when routing is disabled.
+recording remain available when routing is disabled. Recovery is **agent-wide**,
+not conversation-isolated: the same owned registered leader can inspect and
+record receipts after changing conversations. The original parent conversation
+and return destination remain captured in the immutable dispatch record.
 
 For `unknown`, the owner inspects the ordinary launcher's fleet/name index,
 visible panes and orphan-session diagnostics and contacts any existing named

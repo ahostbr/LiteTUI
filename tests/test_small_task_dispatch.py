@@ -380,3 +380,75 @@ async def test_settings_route_control_roundtrip_and_validation(tmp_path):
         assert control.value == ''
         control.value = json.dumps(ROUTE)
         assert screen._collect().small_task_route == ROUTE
+
+
+@pytest.mark.parametrize('allowed,budget,listed,expected,detail', [
+    (['result.txt'], 10, ['result.txt'], 'unavailable', 'changed files'),
+    (['small.txt', 'result.txt'], 1, ['small.txt', 'result.txt'], 'unavailable', 'budget'),
+    (['small.txt', 'result.txt'], 2, ['small.txt', 'result.txt'], 'candidate-ready', ''),
+])
+def test_review_rename_scope_and_budget(owned, request_data, allowed, budget, listed, expected, detail):
+    app, _ = owned
+    request_data.update(allowed_files=allowed, production_line_budget=budget)
+    record = call(app, request=request_data)
+    root = Path(request_data['worktree'])
+    git(root, 'mv', 'small.txt', 'result.txt')
+    git(root, 'commit', '-m', 'rename fixture')
+    receipt = {'operation_id': record['operation_id'], 'task_id': request_data['task_id'],
+               'agent_id': CHILD, 'worktree': record['worktree'], 'branch': record['branch'],
+               'state': 'candidate-ready', 'commit': git(root, 'rev-parse', 'HEAD'),
+               'changed_files': listed,
+               'checks': [{'command': 'python check.py', 'outcome': 'passed'}], 'limits': []}
+    result = call(app, 'receipt', receipt=receipt)
+    assert result['state'] == expected
+    assert detail in result['detail']
+    if expected == 'candidate-ready':
+        assert set(result['result']['diff_stat'].splitlines()) == {'1\t0\tresult.txt', '0\t1\tsmall.txt'}
+    else:
+        assert call(app, 'status', task_id=request_data['task_id'])['state'] == 'dispatched'
+
+
+@pytest.mark.parametrize('mode', ['different-failures', 'candidate-and-failure', 'identical'])
+def test_review_terminal_receipt_concurrency(owned, request_data, monkeypatch, mode):
+    app, _ = owned
+    first = candidate(app, request_data)
+    if mode != 'candidate-and-failure':
+        first.update(state='failed', commit=None)
+    second = deepcopy(first)
+    if mode != 'identical':
+        second.update(state='failed', commit=None, limits=['different terminal result'])
+    barrier = Barrier(2)
+    original = dispatch.Journal.get
+    def together(journal, task):
+        record = original(journal, task)
+        if record['result'] is None:
+            barrier.wait(timeout=10)
+        return record
+    monkeypatch.setattr(dispatch.Journal, 'get', together)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda receipt: call(app, 'receipt', receipt=receipt), (first, second)))
+    accepted = [result for result in results if result['state'] != 'unavailable']
+    assert len(accepted) == (2 if mode == 'identical' else 1)
+    saved = call(app, 'status', task_id=request_data['task_id'])
+    assert all(saved['result'] == result['result'] for result in accepted)
+    if mode != 'identical':
+        refusal = next(result for result in results if result['state'] == 'unavailable')
+        assert 'receipt' in refusal['detail']
+
+
+@pytest.mark.parametrize('model', ['claude-sonnet-5[1m]', 'claude-fable-5-1[1m]'])
+def test_review_context_qualified_exact_model_is_preserved(owned, request_data, model):
+    app, calls = owned
+    app.settings.small_task_route['model'] = model
+    result = call(app, request=request_data)
+    assert result['state'] == 'dispatched'
+    assert result['route']['model'] == model
+    assert calls[0][calls[0].index('--model') + 1] == model
+
+
+@pytest.mark.parametrize('alias', ['fable', 'fable[1m]', 'opus[1m]', 'sonnet[1m]', 'haiku'])
+def test_review_moving_model_alias_is_rejected(owned, request_data, alias):
+    app, calls = owned
+    app.settings.small_task_route['model'] = alias
+    assert call(app, request=request_data)['state'] == 'unavailable'
+    assert calls == []

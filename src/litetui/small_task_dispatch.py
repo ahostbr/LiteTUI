@@ -60,14 +60,18 @@ class Route:
         if raw is None:
             raise Unavailable('Small-task dispatch is disabled; configure small_task_route')
         _shape(raw, cls.__dataclass_fields__)
-        route = cls(**{key: _token(value, key) for key, value in raw.items()})
+        model = _text(raw['model'], 'model', 128)
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]*(?:\[[0-9]+[km]\])?', model):
+            raise Unavailable('Invalid exact model ID')
+        route = cls(**{key: model if key == 'model' else _token(value, key)
+                       for key, value in raw.items()})
         if route.backend not in ('claude', 'codex'):
             raise Unavailable('Only configured Claude/Codex routes are supported; no local load')
         if route.cognitive.lower().endswith('.md'):
             raise Unavailable('Cognitive profile must be a bare name, not a filename')
         if route.thinking_level not in ('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
             raise Unavailable('Unknown thinking level')
-        if route.model.lower() in ('auto', 'default', 'inherit', 'local-auto', 'haiku', 'sonnet', 'opus'):
+        if route.model.lower().split('[', 1)[0] in ('auto', 'default', 'inherit', 'local-auto', 'haiku', 'sonnet', 'opus', 'fable'):
             raise Unavailable('An exact model ID is required, not an alias')
         return route
 
@@ -187,6 +191,18 @@ class Journal:
         with self.connect() as db:
             db.execute('UPDATE dispatch SET body=? WHERE task=?',
                        (json.dumps(record), record['request']['task_id']))
+
+    def finalize(self, record, expected):
+        """Commit one terminal receipt; a racing different report cannot replace it."""
+        with self.connect() as db:
+            changed = db.execute('UPDATE dispatch SET body=? WHERE task=? AND body=?',
+                                 (json.dumps(record), record['request']['task_id'], expected)).rowcount
+        if changed:
+            return record
+        current = self.get(record['request']['task_id'])
+        if current['result'] == record['result']:
+            return current
+        raise Unavailable('A different receipt already exists; needs owner')
 
 
 def _brief(record):
@@ -318,6 +334,7 @@ class Receipt:
 def _receipt(journal, raw):
     receipt = Receipt.parse(raw)
     record = journal.get(receipt.task_id)
+    expected = json.dumps(record)
     if (receipt.operation_id != record['operation_id'] or receipt.agent_id != record['child_id']
             or receipt.worktree != record['worktree'] or receipt.branch != record['branch']
             or record['state'] not in ('dispatched', 'candidate-ready', 'failed')):
@@ -335,10 +352,10 @@ def _receipt(journal, raw):
         if branch != record['branch'] or not receipt.commit or _git(cwd, 'rev-parse', 'HEAD') != receipt.commit:
             raise Unavailable('Candidate must be committed at the recorded worktree branch HEAD')
         _git(cwd, 'merge-base', '--is-ancestor', record['baseline'], receipt.commit)
-        changed = _git(cwd, 'diff', '--name-only', record['baseline'], receipt.commit).splitlines()
+        changed = _git(cwd, 'diff', '--no-renames', '--name-only', record['baseline'], receipt.commit).splitlines()
         if set(changed) != set(receipt.changed_files):
             raise Unavailable('Receipt changed files disagree with Git')
-        diff_stat = _git(cwd, 'diff', '--numstat', record['baseline'], receipt.commit)
+        diff_stat = _git(cwd, 'diff', '--no-renames', '--numstat', record['baseline'], receipt.commit)
         try:
             lines = sum(int(value) for row in diff_stat.splitlines() for value in row.split('\t')[:2])
         except ValueError:
@@ -351,8 +368,7 @@ def _receipt(journal, raw):
             raise Unavailable('Candidate requires all focused checks reported passed')
     record.update(state=receipt.state, detail='Leader-recorded worker report; not independently tested or merged',
                   result={'receipt': asdict(receipt), 'diff_stat': diff_stat, 'reported_by': request.leader_id})
-    journal.save(record)
-    return record
+    return journal.finalize(record, expected)
 
 
 def run(app, args):
