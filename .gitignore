@@ -2,6 +2,12 @@
 # .convos/<uuid>/ holds actual transcripts plus the agent's memory.md,
 # soul.md and handoff.md. These are Ryan's conversations, not fixtures.
 .convos/
+# Private agent conversations/memory, quarantined or trashed stores, and indexes.
+.agents/
+.agents-quarantine-T0332/
+.agents.catalog.lease
+.conversation-search.db
+.convos-trash/
 
 # ── Never commit: screenshots ────────────────────────────────────
 # A desktop capture can contain anything that was on screen.
