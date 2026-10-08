@@ -1872,6 +1872,8 @@ class LiteTUI(App):
             leaf_id=os.environ.get("LITESUITE_LEAF_ID") if self._spawned_marker else None,
             agent_session=agent_session,
         )
+        # Connections start after mount; bind only the finalized owned seat.
+        self.mcp.agent_id = self.seat.agent_id
         self.seat.spawned_by = self._spawner_id
         self._spawner_errors = spawner_errors.SpawnerErrorReporter()
         self._seat_started = False

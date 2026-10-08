@@ -229,6 +229,24 @@ _SPAWN_IDENTITY_ENV = (
 )
 
 
+def tool_process_env(agent_id: str | None, env=None) -> dict[str, str]:
+    """Attribute ordinary tools to their bound seat, never to inherited IDs.
+
+    This is a copy, not a process-global publication. Launch markers stay
+    consumed: a nested LiteTUI must acquire its own seat rather than adopt
+    the tool's identity. MCP config overrides must be applied BEFORE this.
+    """
+    identity_keys = {*_SPAWN_IDENTITY_ENV, SPAWN_IDENTITY_MARKER, OWNER_MARKER,
+                     "LITESUITE_AGENT_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_COMPANION_SESSION_ID"}
+    # Windows folds environment names; lowercase config keys must not bypass
+    # the scrub when CreateProcess turns them back into resolver/launch IDs.
+    child = {key: value for key, value in (os.environ if env is None else env).items()
+             if key.upper() not in identity_keys}
+    if agent_id:
+        child["LITEHARNESS_AGENT_ID"] = agent_id
+    return child
+
+
 def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]:
     """Consume an explicit spawn identity, preserving standalone defaults.
 

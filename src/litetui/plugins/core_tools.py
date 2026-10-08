@@ -14,10 +14,11 @@ import shutil
 import subprocess
 import time
 import urllib.request
+from functools import partial
 from html.parser import HTMLParser
 from pathlib import Path
 
-from litetui import file_state
+from litetui import file_state, harness
 from litetui import ttyguard
 from litetui import tasks as tasks_mod
 from litetui.fmt import fmt_dur
@@ -210,7 +211,7 @@ PS_WRAPPER = (
 )
 
 
-def _run_shell(argv, *, shell: bool, timeout: int) -> str:
+def _run_shell(argv, *, shell: bool, timeout: int, agent_id: str | None = None) -> str:
     """The shared body: spawn, stay cancellable, report honestly.
 
     bash and powershell differ ONLY in what gets spawned. Two copies of the
@@ -230,6 +231,7 @@ def _run_shell(argv, *, shell: bool, timeout: int) -> str:
             shell=shell,
             stdin=subprocess.DEVNULL,
             cwd=str(Path.cwd()),
+            env=harness.tool_process_env(agent_id),
             # The ONLY caller that opts in. See ttyguard.popen's docstring for
             # why the other three must not.
             kill_on_close=True,
@@ -279,7 +281,7 @@ def _timeout_arg(args: dict) -> int:
         return BASH_DEFAULT_TIMEOUT_S
 
 
-def tool_powershell(args: dict) -> str:
+def tool_powershell(args: dict, *, agent_id: str | None = None) -> str:
     command = (args.get("command") or "").strip()
     if not command:
         return "[error] missing 'command'"
@@ -291,10 +293,11 @@ def tool_powershell(args: dict) -> str:
          PS_WRAPPER.format(command=command)],
         shell=False,
         timeout=_timeout_arg(args),
+        agent_id=agent_id,
     )
 
 
-def tool_bash(args: dict) -> str:
+def tool_bash(args: dict, *, agent_id: str | None = None) -> str:
     command = (args.get("command") or "").strip()
     if not command:
         return "[error] missing 'command'"
@@ -310,8 +313,8 @@ def tool_bash(args: dict) -> str:
     # unchanged. Without a bash this stays what it was: the string via cmd.exe.
     exe = bash_exe()
     if exe is not None:
-        return _run_shell([exe, "-c", command], shell=False, timeout=_timeout_arg(args))
-    return _run_shell(command, shell=True, timeout=_timeout_arg(args))
+        return _run_shell([exe, "-c", command], shell=False, timeout=_timeout_arg(args), agent_id=agent_id)
+    return _run_shell(command, shell=True, timeout=_timeout_arg(args), agent_id=agent_id)
 
 
 def tool_read(args: dict) -> str:
@@ -472,12 +475,13 @@ WEB_FETCH_SPEC = tool_schemas.load("web_fetch")
 
 
 def _register(ctx) -> None:
+    agent_id = getattr(getattr(ctx.app, "seat", None), "agent_id", None)
     # Windows first, and registered BEFORE bash so it leads the offered list.
     # Only when a PowerShell actually exists: a tool that cannot run is worse
     # than an absent one, because the model spends a call finding out.
     if powershell_exe() is not None:
-        ctx.tool(powershell_spec(), tool_powershell, policy=SHELL_POLICY)
-    ctx.tool(BASH_SPEC, tool_bash, policy=SHELL_POLICY)
+        ctx.tool(powershell_spec(), partial(tool_powershell, agent_id=agent_id), policy=SHELL_POLICY)
+    ctx.tool(BASH_SPEC, partial(tool_bash, agent_id=agent_id), policy=SHELL_POLICY)
     ctx.tool(READ_SPEC, tool_read, policy=READ_POLICY)
     ctx.tool(WRITE_SPEC, tool_write, policy=WRITE_POLICY)
     ctx.tool(WEB_FETCH_SPEC, tool_web_fetch, policy=NETWORK_READ_POLICY)

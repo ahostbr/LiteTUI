@@ -42,7 +42,7 @@ import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
-from litetui import runtime_log, ttyguard
+from litetui import harness, runtime_log, ttyguard
 from pathlib import Path
 
 MCP_LOG_NAME = "mcp.log"
@@ -82,8 +82,9 @@ class MCPError(RuntimeError):
 class MCPServer:
     """One stdio MCP server process."""
 
-    def __init__(self, name: str, cfg: dict, cwd: Path, log_handle):
+    def __init__(self, name: str, cfg: dict, cwd: Path, log_handle, *, agent_id: str | None = None):
         self.name = name
+        self.agent_id = agent_id
         self.cfg = cfg
         self.cwd = cwd
         self._log = log_handle
@@ -397,6 +398,7 @@ class MCPServer:
         args = list(self.cfg.get("args") or [])
         env = dict(os.environ)
         env.update({str(k): str(v) for k, v in (self.cfg.get("env") or {}).items()})
+        env = harness.tool_process_env(self.agent_id, env)
         # A child that inherits the console writes over the TUI. stderr is
         # redirected for exactly that reason; see the module docstring.
         self.proc = ttyguard.popen(
@@ -520,8 +522,9 @@ class HTTPMCPServer:
     stop() exists so that code stays transport-blind.
     """
 
-    def __init__(self, name: str, cfg: dict, cwd: Path, log_handle):
+    def __init__(self, name: str, cfg: dict, cwd: Path, log_handle, *, agent_id: str | None = None):
         self.name = name
+        self.agent_id = agent_id
         self.cfg = cfg
         self.cwd = cwd
         self._log = log_handle
@@ -539,19 +542,20 @@ class HTTPMCPServer:
     def _post(self, payload: dict, timeout: float) -> dict:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        headers.update(self.headers)
+        # Config cannot impersonate a seat, even with alternate header casing.
+        headers.update({k: v for k, v in self.headers.items()
+                        if k.lower() != "x-litesuite-agent-id"})
+        req = urllib.request.Request(self.url, data=data, method="POST", headers=headers)
         # Suite-only attribution: never leak seat identity to an unrelated MCP host.
         endpoint = urlparse(self.url)
         if (self.name == "litesuite-tools" and endpoint.scheme == "http"
                 and endpoint.hostname in {"localhost", "127.0.0.1", "::1"}
                 and endpoint.path.rstrip("/") == "/mcp"):
-            agent_id = next((os.environ[k] for k in (
-                "LITEHARNESS_AGENT_ID", "LITESUITE_AGENT_ID", "CLAUDE_CODE_SESSION_ID",
-                "CODEX_COMPANION_SESSION_ID") if os.environ.get(k)), None)
+            agent_id = self.agent_id
             if agent_id and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", agent_id):
-                headers["X-LiteSuite-Agent-Id"] = agent_id
+                # Redirects must not carry local seat authority to another host.
+                req.add_unredirected_header("X-LiteSuite-Agent-Id", agent_id)
             # No name/tier assertions: Suite resolves them from its local registry.
-        req = urllib.request.Request(self.url, data=data, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read()
@@ -785,9 +789,10 @@ class MCPManager:
     """Loads mcp.json / .mcp.json (see config_files), starts each server —
 stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
 
-    def __init__(self, root: Path, *, seat_servers=None, lazy=False):
+    def __init__(self, root: Path, *, seat_servers=None, lazy=False, agent_id: str | None = None):
         from litetui.mcp_cache import ToolCache
         self.seat_servers = seat_servers
+        self.agent_id = agent_id
         self.enabled = lambda name: True
         self.lazy = lazy
         self._lazy_tools: dict[str, list[dict]] = {}
@@ -856,8 +861,8 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         drift into disagreeing about what a config entry means.
         """
         if sc.get("url") and not sc.get("command"):
-            return HTTPMCPServer(name, sc, self.root, self._log())
-        return MCPServer(name, sc, self.root, self._log())
+            return HTTPMCPServer(name, sc, self.root, self._log(), agent_id=self.agent_id)
+        return MCPServer(name, sc, self.root, self._log(), agent_id=self.agent_id)
 
     def _reload_configs_locked(self) -> dict[str, dict]:
         """Body of reload_configs; assumes the caller holds the claim + op_lock

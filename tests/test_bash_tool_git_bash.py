@@ -66,7 +66,7 @@ def test_no_bash_means_cmd_wording_and_the_old_spawn(fresh_resolver, monkeypatch
     desc = ct.bash_spec()["function"]["description"].lower()
     assert "cmd.exe" in desc and "prefer" in desc and "powershell" in desc
     seen = {}
-    monkeypatch.setattr(ct, "_run_shell", lambda argv, *, shell, timeout: seen.update(argv=argv, shell=shell) or "ok")
+    monkeypatch.setattr(ct, "_run_shell", lambda argv, *, shell, timeout, agent_id: seen.update(argv=argv, shell=shell) or "ok")
     ct.tool_bash({"command": "echo hi"})
     assert seen == {"argv": "echo hi", "shell": True}
 
@@ -78,7 +78,7 @@ def test_with_a_bash_the_spawn_is_argv_and_the_description_says_so(fresh_resolve
     assert r"C:\fake\Git\bin\bash.exe" in desc and "sleep, grep, sed" in desc
     assert "PREFER THE `powershell` TOOL" not in desc
     seen = {}
-    monkeypatch.setattr(ct, "_run_shell", lambda argv, *, shell, timeout: seen.update(argv=argv, shell=shell) or "ok")
+    monkeypatch.setattr(ct, "_run_shell", lambda argv, *, shell, timeout, agent_id: seen.update(argv=argv, shell=shell) or "ok")
     ct.tool_bash({"command": "sleep 1 && echo x > f"})
     assert seen == {"argv": [r"C:\fake\Git\bin\bash.exe", "-c", "sleep 1 && echo x > f"], "shell": False}
 
