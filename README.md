@@ -633,19 +633,66 @@ parent-lineage redirect, registry takeover or fallback to a different approver.
 
 ## Tests
 
-```bash
-uv run --locked python tests/run_all.py    # 138 files. THE gate — read its exit code
-uv run --locked pytest -q                  # the 125 pytest-style files only
+### Focused local merge check
+
+Before integrating a candidate, the reviewer names its affected production domain,
+existing neighboring tests, and intentional omissions in a JSON evidence file:
+
+```json
+{
+  "base": "<full target commit ID before integration>",
+  "candidate": "<full reviewed worker commit ID>",
+  "domain": "sidecar jobs and owned app startup",
+  "review": "<reviewer and durable review reference>",
+  "neighbors": ["tests/test_sidecar_jobs_t1082.py", "tests/test_sidecar_reader.py"],
+  "exceptions": []
+}
 ```
 
-**Run `run_all.py`, and believe its exit code rather than a pass count.**
-`tests/` holds two mutually hostile styles: pytest-style files, and script-style
-files whose module body ends in `sys.exit(...)`. A module-level exit fires during
-pytest *collection*, so `pytest -q` cannot collect the script-style half at all —
-it reports a confident green while measuring 125 of 138 files. `run_all.py` runs
-each half with the runner it needs and is the only thing that sees all of them.
+On a **clean, committed integration-preview tree** containing both commits, run:
 
-No network, no TUI, and neither engine required.
+```bash
+python tools/merge_gate.py --base <target-before> --candidate <worker-tip> --review-evidence <review.json> tests/test_new_regression.py
+```
+
+Use the project's existing development interpreter; the final positional test
+files are optional additions. Keep evidence outside the checkout or in an ignored
+scratch directory. The command requires a nonempty domain, review reference and
+neighbor selection; neighbors must already exist at the base commit. Evidence
+must name the exact resolved base/candidate IDs. `exceptions` must be present,
+with reasons for intentional omissions (or `[]`), and cannot bypass required tests.
+
+Every run includes `test_autoscroll.py` and `test_sidecar_jobs_t1082.py`: these two
+files were found red on main by neighboring checks on 2026-10-07. This is a small
+incident-derived floor, **not automatic dependency discovery**. Select additional
+existing neighbors by tracing the changed behavior, not just the new test file.
+The command reuses `run_all`'s inventory and per-file collection accounting, runs
+only the selected files with their proper runner, checks `git diff --check`, and
+fails on errors, zero-item selected files, timeouts, or a changed/dirty tree.
+Inherited `PYTEST_ADDOPTS` and configured pytest `addopts` are deliberately cleared
+so they cannot silently expand the selection. Other pytest configuration remains.
+Its PASS names the exact HEAD tested; rerun if the integrated tree changes.
+
+**Enforced:** evidence shape and commit identity, existing-neighbor selection,
+commit ancestry, clean stable tree, and selected-check exit status.
+**Reviewed by people:** whether the domain and neighbors cover the actual change,
+exceptions are justified, and the review reference is genuine. This command does
+not authenticate the reviewer, install hooks, merge, or enforce GitHub branch
+protection. The merge owner must require it on the actual integration tree before
+accepting that tree; a worker-only green is not integration evidence. Required
+review, current-intent and human-look gates remain separate.
+
+### Full validation (when explicitly requested)
+
+```bash
+uv run --locked python tests/run_all.py
+```
+
+Believe the exit code rather than a pass count. The runner maintains a reviewed
+inventory of pytest files and legacy standalone scripts; bare `pytest` is not a
+substitute for that inventory. CI's full validation is unchanged. Neither engine
+nor network is required by the selected unit tests; no live-service checks are
+included in the focused merge command.
 
 ## Bundled
 
