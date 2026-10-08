@@ -959,8 +959,77 @@ _PS_ASSIGNMENT = re.compile(r"^\s*(\$(?:env:)?[A-Za-z_]\w*)\s*=\s*(.*)$", re.IGN
 _PS_SCALAR = re.compile(r"(?:\$[A-Za-z_]\w*|\$env:[A-Za-z_]\w*|[-+]?\d+(?:\.\d+)?|'(?:[^']|'')*'|\"(?:[^\"`]|`.)*\")", re.DOTALL)
 
 
+def _powershell_json_reads(command: str) -> str:
+    """Represent a closed language of file-backed JSON queries, never evaluate PS.
+
+    Every statement must be a literal file read/JSON assignment or a projection
+    of an earlier JSON binding. Every pipeline stage must match below in full.
+    This provenance matters: arbitrary PS objects can have executable getters.
+    Any unsupported statement leaves the ENTIRE command untouched, including
+    its unknown-shape guard. The deny floor always receives the original input.
+    """
+    name = r"[A-Za-z_][A-Za-z_0-9]*"
+    member = name + r"(?:\." + name + r")*"
+    properties = name + r"(?:\s*,\s*" + name + r")*"
+    literal = _PS_PLAIN_STRING + r"|[-+]?\d+|\$(?:true|false|null)"
+    scalar = r"(?:" + literal + r")"
+    array = r"@\(\s*" + scalar + r"(?:\s*,\s*" + scalar + r")*\s*\)"
+    comparison = (r"\$_\." + member + r"\s+-(?:eq|ne|like|notlike|match|notmatch)\s+" + scalar
+                  + r"|\$_\." + member + r"\s+-(?:in|notin)\s+" + array)
+    predicate = r"(?:" + comparison + r")(?:\s+-(?:and|or)\s+(?:" + comparison + r"))*"
+    stage = re.compile(
+        r"\s*(?:Where-Object\s+\{\s*" + predicate + r"\s*\}"
+        r"|Select-Object\s+(?:(?:-Property\s+)?" + properties
+        + r"|-ExpandProperty\s+" + name + r"|-First\s+\d+)"
+        r"|Sort-Object\s+(?:-Property\s+)?" + properties
+        + r"|ConvertTo-Json(?:\s+-Depth\s+\d+)?(?:\s+-Compress)?"
+        r"|Write-Output)\s*", re.IGNORECASE)
+    # No variable/interpolated paths, provider expressions, or extra parameters.
+    path = r"(?:" + _PS_PLAIN_STRING + r"|[A-Za-z0-9_./\\:][A-Za-z0-9_./\\:-]*)"
+    source = re.compile(
+        r"\s*(?:\$(?P<binding>" + name + r")\s*=\s*)?"
+        r"(?P<read>Get-Content\s+(?:-Raw\s+)?(?:(?:-LiteralPath|-Path)\s+)?"
+        + path + r"(?:\s+-Raw)?\s*\|\s*ConvertFrom-Json)\s*", re.IGNORECASE)
+    projection = re.compile(r"\s*\$(?P<binding>" + name + r")(?:\." + member + r")?\s*")
+    # Split only separators outside plain strings. Delimiters inside a predicate
+    # or any other unsupported expression fail its full grammar match below.
+    tokens = re.compile(_PS_PLAIN_STRING + r"|[;\r\n|]")
+    statements: list[list[str]] = [[]]
+    start = 0
+    for token in tokens.finditer(command):
+        if token[0] not in {";", "\r", "\n", "|"}:
+            continue
+        statements[-1].append(command[start:token.start()])
+        if token[0] != "|":
+            statements.append([])
+        start = token.end()
+    statements[-1].append(command[start:])
+    bindings: set[str] = set()
+    represented: list[str] = []
+    for parts in statements:
+        if len(parts) == 1 and not parts[0].strip():
+            continue
+        # A file source consumes two pipeline stages; everything else must be
+        # a projection of a binding established by such a source in THIS call.
+        read = source.fullmatch("|".join(parts[:2])) if len(parts) >= 2 else None
+        if read:
+            if read["binding"]:
+                bindings.add(read["binding"].lower())
+            represented.append(read["read"])
+            tail = parts[2:]
+        else:
+            project = projection.fullmatch(parts[0])
+            if not project or project["binding"].lower() not in bindings:
+                return command
+            represented.append("Write-Output 'JSON projection'")
+            tail = parts[1:]
+        if any(not stage.fullmatch(part) for part in tail):
+            return command
+    return ";".join(represented) if represented else command
+
+
 def _powershell_parts(command: str) -> tuple[list[dict], bool]:
-    normalized, unknown = _powershell_shape(_powershell_common_literals(command))
+    normalized, unknown = _powershell_shape(_powershell_common_literals(_powershell_json_reads(command)))
     parts = deny_floor.shell_commands(normalized, "powershell")
     result: list[dict] = []
     for part in parts:
