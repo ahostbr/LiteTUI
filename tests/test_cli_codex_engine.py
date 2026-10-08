@@ -1,9 +1,9 @@
 """T0075: engine launch choices are effective-only, not saved preferences."""
 import argparse
-from copy import deepcopy
 import json
 import os
 import sys
+from copy import deepcopy
 from types import SimpleNamespace as NS
 
 import pytest
@@ -113,11 +113,11 @@ def test_programmatic_invalid_engine_is_rejected():
 @pytest.mark.parametrize('source', ['flag', 'environment'])
 @pytest.mark.parametrize('saved', [False, True])
 def test_resume_and_unrelated_save_do_not_persist_engine(tmp_path, monkeypatch, source, saved):
-    from litetui.app import LiteTUI
     from litetui import convo_settings
+    from litetui.agent_launch_context import create
+    from litetui.app import LiteTUI
     from litetui.settings_runtime import capture_invocation, persist_settings
     from litetui.settings_service import SettingsService
-    from litetui.agent_launch_context import create
 
     path = tmp_path / 'settings.json'
     path.write_text(json.dumps({'backend': 'codex', 'codex_native_engine': saved}))
