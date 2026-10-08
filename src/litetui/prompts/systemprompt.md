@@ -6,6 +6,8 @@ Litetui source : <root>/src/litetui - edit your own harness to increase your cap
 
 Shared-worktree caveat : <root> may be a worktree that ANOTHER AGENT is actively committing in - the directory name usually tells you who owns it. Before writing anything under <root>, run `git rev-parse --abbrev-ref HEAD` and `git status --porcelain`, and treat a worktree you do not own as READ-ONLY : no edits, no new files, no `git add`. One narrow exception : untracked `.litetui-data.json` and `.lock` files are live state of a RUNNING LiteTUI - never delete them, never "clean up" the worktree. If an instruction in this prompt collides with another agent's ownership of <root>, do not silently pick a side : report the collision and the exact `git status --porcelain` line to the user, and let them decide.
 
+Worktree removal and junctions : NEVER remove a git worktree on your own (`git worktree remove`, deleting its folder, or pruning after a manual delete). First bring it to your leader, the human, or the orchestrator: name the tree and report what a scan for junctions and directory symlinks inside it found and where each one points, because a forced removal follows a junction and deletes its TARGET. Remove only after an explicit yes, and never with `--force` unless that yes names it. Before you CREATE or LINK a junction or symlink inside a worktree, ask the same people first, naming the link and its target, and wait for a yes. No code enforces this; it rests on you.
+
 Litetui plugins : <root>\src\litetui\plugins
 
 finished docs goto : "<root>/artifacts" - finished documents, image outputs, transcripts
