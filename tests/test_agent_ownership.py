@@ -29,7 +29,7 @@ def agent(root, name='QuietHelm', identity=AID):
     return directory
 
 
-def child_code(root, identity=AID, *, fresh=None):
+def child_code(root, identity=AID, *, fresh=None, observe_wait=False):
     if fresh is None:
         acquire = f"AgentSession.acquire_existing(AgentStore({str(root)!r}), agent_id={identity!r})"
     else:
@@ -38,11 +38,24 @@ def child_code(root, identity=AID, *, fresh=None):
     # The stdlib child runs from a temporary data root under the real interpreter,
     # not pytest's import context. Bind its source to the module actually tested.
     package_root = str(Path(runtime.__file__).resolve().parents[1])
+    # Observe the first real contention retry without replacing kernel locking
+    # or its delay. Parent holds the catalog until both contenders report it.
+    observer = ("import time\n"
+                "original_sleep = time.sleep\n"
+                "waiting = False\n"
+                "def observed_sleep(delay):\n"
+                "    global waiting\n"
+                "    if not waiting:\n"
+                "        print('WAITING', flush=True)\n"
+                "        waiting = True\n"
+                "    original_sleep(delay)\n"
+                "time.sleep = observed_sleep\n") if observe_wait else ""
     return ("import sys\n"
             f"sys.path.insert(0, {package_root!r})\n"
             f"from {PACKAGE}.agent_ownership import AgentSession\n"
             f"from {PACKAGE}.agent_store import AgentStore\n"
             "import sys, os\n"
+            + observer +
             "sys.stdin.readline()\n"
             "try:\n"
             f"    session = {acquire}\n"
@@ -54,11 +67,12 @@ def child_code(root, identity=AID, *, fresh=None):
             "session.release()\n")
 
 
-def launch(root, identity=AID, *, fresh=None):
+def launch(root, identity=AID, *, fresh=None, observe_wait=False):
     # Windows venv redirectors can outlive their Popen wrapper; launch the
     # already-installed real interpreter for these stdlib-only fixture children.
     executable = sys._base_executable if sys.platform == 'win32' else sys.executable
-    return subprocess.Popen([executable, '-u', '-c', child_code(root, identity, fresh=fresh)],
+    code = child_code(root, identity, fresh=fresh, observe_wait=observe_wait)
+    return subprocess.Popen([executable, '-u', '-c', code],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, cwd=root)
 
@@ -77,6 +91,131 @@ def outcome(process):
         assert int(output.split()[1]) == process.pid
         output = 'OWNED'
     return process.returncode, output, errors
+
+
+def read_line(process):
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        future = pool.submit(process.stdout.readline)
+        try:
+            return future.result(timeout=15).strip()
+        except BaseException:
+            process.kill()  # Unblock the reader before joining its thread.
+            raise
+
+
+def test_fresh_creators_wait_for_catalog_and_keep_independent_ownership(tmp_path):
+    catalog = runtime._KernelLease(tmp_path / runtime.CATALOG_LEASE_NAME)
+    children = []
+    try:
+        catalog.acquire()
+        inode = catalog.path.stat().st_ino
+        for identity, name in ((AID, 'QuietHelm'), (BID, 'KindGrid')):
+            children.append(launch(tmp_path, identity, fresh=name, observe_wait=True))
+        for process in children:
+            process.stdin.write('start\n')
+            process.stdin.flush()
+        assert [read_line(process) for process in children] == ['WAITING', 'WAITING']
+        assert not (tmp_path / '.agents').exists()  # No writes without catalog ownership.
+        catalog.release()
+        for process in children:
+            assert read_line(process) == f'OWNED {process.pid}'
+        resolver = store.AgentStore(tmp_path)
+        assert {a.agent_id for a in resolver.list_agents()} == {AID, BID}
+        assert catalog.path.stat().st_ino == inode
+        # Both creators still own their independent seats, even after catalog release.
+        for identity in (AID, BID):
+            with pytest.raises(runtime.OwnershipError):
+                runtime.AgentSession.acquire_existing(resolver, agent_id=identity)
+        for process in children:
+            assert process.communicate('stop\n', timeout=15) == ('', '')
+            assert process.returncode == 0
+        for identity in (AID, BID):
+            with runtime.AgentSession.acquire_existing(resolver, agent_id=identity):
+                pass
+    finally:
+        catalog.release()
+        for process in children:
+            finish(process)
+
+
+def test_catalog_wait_expires_without_stealing_or_leaking_handle(tmp_path, monkeypatch):
+    path = tmp_path / runtime.CATALOG_LEASE_NAME
+    contender = runtime._KernelLease(path, timeout=0.05)
+    clock = [0.0]
+    delays = []
+    handles = []
+    original = runtime.os.fdopen
+    def opened(*args, **kwargs):
+        handle = original(*args, **kwargs)
+        handles.append(handle)
+        return handle
+    def sleep(delay):
+        delays.append(delay)
+        clock[0] += delay
+    with runtime._KernelLease(path) as owner:
+        inode = path.stat().st_ino
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime.time, 'monotonic', lambda: clock[0])
+            patch.setattr(runtime.time, 'sleep', sleep)
+            patch.setattr(runtime.os, 'fdopen', opened)
+            with pytest.raises(runtime.OwnershipError) as failure:
+                contender.acquire()
+        assert isinstance(failure.value.__cause__, OSError)
+        assert sum(delays) == pytest.approx(0.05)
+        assert len(handles) == 1 and handles[0].closed
+        assert contender.handle is None
+        assert path.stat().st_ino == inode
+        owner.handle.seek(0)
+        assert owner.handle.read() == b'\0'
+        with pytest.raises(runtime.OwnershipError):
+            runtime._KernelLease(path).acquire()
+    contender.acquire()
+    contender.release()
+
+
+@pytest.mark.parametrize('failure', ['open', 'kernel', 'interrupt'])
+def test_catalog_wait_fails_closed_and_closes_handle(tmp_path, monkeypatch, failure):
+    import errno
+    path = tmp_path / runtime.CATALOG_LEASE_NAME
+    handles = []
+    original = runtime.os.fdopen
+    def opened(*args, **kwargs):
+        handle = original(*args, **kwargs)
+        handles.append(handle)
+        return handle
+    def denied(*args, **kwargs):
+        raise PermissionError(errno.EACCES, 'fixture open denied')
+    def broken(*args, **kwargs):
+        raise OSError(errno.EIO, 'fixture locking failed')
+    def sleep(_):
+        if failure == 'interrupt':
+            raise KeyboardInterrupt('fixture cancelled wait')
+        pytest.fail('non-contention errors must not wait')
+    with runtime._KernelLease(path):
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime.os, 'fdopen', opened)
+            patch.setattr(runtime.time, 'sleep', sleep)
+            if failure == 'open':
+                patch.setattr(runtime.os, 'open', denied)
+            elif failure == 'kernel':
+                if sys.platform == 'win32':
+                    import msvcrt
+                    patch.setattr(msvcrt, 'locking', broken)
+                else:
+                    import fcntl
+                    patch.setattr(fcntl, 'flock', broken)
+            contender = runtime._KernelLease(path, timeout=10)
+            expected = KeyboardInterrupt if failure == 'interrupt' else runtime.OwnershipError
+            with pytest.raises(expected):
+                contender.acquire()
+            assert contender.handle is None
+        assert len(handles) == (0 if failure == 'open' else 1)
+        assert all(handle.closed for handle in handles)
+        with pytest.raises(runtime.OwnershipError):
+            runtime._KernelLease(path).acquire()
+    with runtime._KernelLease(path):
+        pass
 
 
 def test_absent_agent_acquire_never_materializes_root(tmp_path):
@@ -372,7 +511,7 @@ def test_stdlib_contract_and_canonical_mirror_parity():
     modules.update(alias.name.split('.')[0] for node in ast.walk(tree)
                    if isinstance(node, ast.Import) for alias in node.names)
     assert modules <= {'__future__', 'dataclasses', 'json', 'os', 'pathlib', 'sys',
-                       'typing', 'msvcrt', 'fcntl', 'agent_store', 'uuid', 'copy'}
+                       'typing', 'msvcrt', 'fcntl', 'agent_store', 'uuid', 'copy', 'errno', 'time'}
     counterpart = os.environ.get('T0308_COUNTERPART_AGENT_OWNERSHIP')
     if not counterpart:
         pytest.skip('paired checkout not provided; package contract tested above')
