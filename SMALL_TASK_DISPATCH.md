@@ -125,8 +125,21 @@ question and refuses with a sentence when its model is not loaded. It asks:
 
 Where the caller sets a time limit for readiness (compaction, the launch
 prompt), the question spends that limit; it does not add to it. Otherwise it
-costs one request per round (two on llama.cpp): up to 5 seconds on LM Studio
-and 10 on the others if the server hangs, and then the round is refused.
+costs one request per round, and two on a one-model llama.cpp server. If the
+server hangs the round waits up to 5 seconds on LM Studio, 10 on Strata and a
+custom server, and 15 on a one-model llama.cpp server (5 for its properties,
+then 10 for its model list), and is then refused.
+
+A spawned worker on a one-model llama.cpp server therefore needs both of those
+reads to succeed before every round. Three kinds of round that went through
+before are refused now, all on the safe side:
+
+- the server was restarted with a different model, or under a different name,
+  since the worker connected (before, the server ignored the name it was sent);
+- the model list cannot be read and the name falls back to the server's alias,
+  which can differ from the name the worker holds;
+- the properties or the model list cannot be read in time (before, readiness
+  was assumed for this kind of server without asking anything).
 
 Other seats are unchanged: a seat a person started, a conversation born in a
 spawned seat that a person later resumes by hand, and spawned leaders, thinkers
@@ -153,11 +166,35 @@ unloaded model before every request, and NInfer cannot unload.
   model as loaded while its weights are dropped. Only the one-model server's
   own "sleeping" flag is read. LiteTUI's own router is started without that
   setting.
-- **A stale ownership record.** "A router LiteTUI started" is read from a small
-  record file plus a check that the recorded process number is alive. A record
-  left by a LiteTUI that was killed, a reused process number and a hand-started
-  router on the same port would pass. That router's own readiness check still
-  refuses an unloaded model before each request.
+- **A stale ownership record: the one router case left open.** "A router
+  LiteTUI started" is read from a small record file plus a check that the
+  recorded process number is alive and that the address is this machine. A
+  record left by a LiteTUI that was killed, a reused process number and a
+  hand-started router on the same port would still pass. That router's own
+  readiness check refuses an unloaded model before each request.
+- **A Strata server whose configuration gives its model other names
+  (aliases) can never be dispatched to.** It lists every alias as its own
+  loaded model, so the check sees "a different model is loaded" and refuses.
+  A false refusal, not a load; not fixed here.
+- **Who counts as "launched as a spawn".** The worker's check is switched on by
+  one environment variable, `LITETUI_SPAWN_IDENTITY=1`. Read in LiteSuite: it
+  is set in the launch environment for a LiteTUI seat
+  (`apps/desktop/src/litesuite/services/harness/cli-adapters.ts:159-168`),
+  that environment is given to the LiteTUI program itself, which is started
+  directly as the terminal's process with no shell in between
+  (`harness/spawn-service.ts:191-198` refuses `.cmd`/`.bat` wrappers and
+  `:267-272` names the program and its environment; `services/pty-manager.ts:240-246`
+  and `:303-309`, and `pty-daemon/pty-core.ts:111-120`, start it). So no
+  shell process in the pane holds the variable for a person to type a second
+  launch into. LiteTUI also removes the variable when it reads it and keeps it
+  from its tools' processes (`src/litetui/harness.py:258-262`, `:239-245`).
+  Not read: what the pane does after LiteTUI exits (a shell started there
+  would be a new process with a newly built environment), and every other way
+  a seat can be started. The public `liteharness` launcher's Python
+  code never sets the variable (searched, 0 matches), so a LiteTUI seat it
+  starts without LiteSuite is not treated as spawned and gets no check; and a
+  person who sets the variable by hand, as the consult instructions do, is
+  treated as a spawned worker.
 - **A public name that is really this machine.** A tunnel (ngrok, cloudflared),
   a port forwarded by the home router, or this machine's own public IPv6
   address reads as public, so the server is accepted and never asked.
@@ -176,10 +213,12 @@ unloaded model before every request, and NInfer cannot unload.
   that redirects to this machine, is treated as public.
 - **The worker's own tools.** A worker with a shell can still contact a local
   model server itself. This check is about the worker's model requests only.
-- **Changing the thinking level in a worker, then reconnecting**, makes an LM
-  Studio seat send its probing chat requests at connect, without asking first.
-  (At launch the same probe does ask first.) A dispatched worker is told not to
-  change the level; nothing enforces that.
+- **An LM Studio worker with no thinking level set probes at connect without
+  asking first.** That happens for a spawned worker launched with no thinking
+  level, and for one whose level was changed and which then reconnects. The
+  probe is a chat request naming the model. Dispatch always passes a level, so
+  a dispatched worker reaches this only by changing it, which it is told not
+  to do; nothing enforces that. (The probe at launch does ask first.)
 
 ## Durable states and return receipt
 
