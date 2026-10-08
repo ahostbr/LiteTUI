@@ -174,8 +174,10 @@ async def wait_for_answer(app, future, *, approver: str, ident: str,
                 target = None
             if target is None:
                 visible_state(app, ident, "escalation_absent",
-                              f"Approval delivery failure ({ident}): no frozen escalation recipient. "
-                              "Request remains gated.")
+                              f"Approval {ident}: nobody above approver {approver} "
+                              "in this request's escalation chain. "
+                              f"Request still waiting for {approver} until the original deadline "
+                              f"({timeout:g}s from creation).")
                 continue
             notice = (f"Frozen ancestor may answer at {ESCALATE_AFTER_S * (index + 1):.0f}s from creation; "
                       if frozen else "Notification only; reply authority remains with original approver; ")
