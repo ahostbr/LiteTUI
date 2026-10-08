@@ -1,7 +1,7 @@
 """Fleet model/thinking floor (T1025).
 
 2026-09-26: a Codex seat ran gpt-5.6-sol at medium thinking because the spawner
-read a stale model list and substituted a weaker model. Ryan: "this MUST NEVER
+read a stale model list and substituted a weaker model. the user: "this MUST NEVER
 happen again". So the floor lives in the spawn path, not in prose:
 
   check()            pre-launch: refuse a request below the floor
@@ -29,6 +29,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -44,9 +47,9 @@ DEFAULT_POLICY: dict = {
             "exempt_prefixes": ["gpt-oss-"],
             "models": [
                 "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
-                "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra",
+                "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra",
             ],
-            "min_model": "gpt-6-sol",
+            "min_model": "gpt-6.1-sol",
             "thinking_levels": [
                 "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
             ],
@@ -125,7 +128,7 @@ def _clean(value: str | None) -> str | None:
 
 
 def _add_model_hint(name: str, floor: dict, path: Path | None) -> str:
-    """Sentinel af053094: a new model is ONE EDIT to the policy file, never a code
+    """the orchestrator af053094: a new model is ONE EDIT to the policy file, never a code
     change -- a refusal that reads like a wall gets routed around."""
     path = path or policy_path()
     target = str(path) if path.exists() else f"the built-in default; create {path} to override"
@@ -232,11 +235,64 @@ def codex_sessions_dir() -> Path:
     return (Path(home) if home else Path.home() / ".codex") / "sessions"
 
 
-def _codex_first_turn(rollout: Path) -> tuple[dict | None, dict | None]:
-    """(session_meta payload, first turn_context payload) of a rollout. session_meta
-    carries id/cwd/timestamp; the effective `model` and `effort` are on turn_context,
-    which exists only once the seat has taken a turn."""
-    meta = turn = None
+SPAWN_MARKER_KEY = "LITEHARNESS_SPAWN_ID"
+
+#: codex CLI options, read off `codex --help` (0.158). Anything not listed is unknown to
+#: with_spawn_marker, so a newer codex fails closed instead of being guessed at.
+_CODEX_VALUE_FLAGS = frozenset({
+    "-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env",
+    "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd",
+    "--add-dir", "-a", "--ask-for-approval",
+})
+_CODEX_BOOL_FLAGS = frozenset({
+    "--strict-config", "--oss", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox",
+    "--dangerously-bypass-hook-trust", "--worktree", "--search", "--no-alt-screen", "--no-daemon",
+})
+
+
+def new_spawn_marker() -> str:
+    """A fresh marker for ONE launch: 128 random bits, minted by the spawner. It is the whole
+    first user message of the codex seat, which codex writes into its own rollout."""
+    return f"{SPAWN_MARKER_KEY}={secrets.token_hex(16)}"
+
+
+def with_spawn_marker(exec_cmd: str, marker: str) -> str | None:
+    """`exec_cmd` with `marker` appended as codex's positional PROMPT, or None when that
+    is not unambiguous. The contract is deliberately strict: the program token must be
+    codex itself (no cmd /c, pwsh -c or python -m wrapper, whose quoting we would be
+    guessing at), followed only by options from the two known lists above. A subcommand,
+    a positional prompt already there, an unknown option, a `--`, the variadic `-i/--image`
+    (it would swallow the marker as another file) or a value flag with no value: all None.
+    The caller must refuse the spawn on None; it never launches an unmarked codex."""
+    try:
+        parts = shlex.split(exec_cmd, posix=False)
+    except ValueError:
+        return None
+    if not parts or re.split(r"[\\/]", parts[0].strip("\"'"))[-1].split(".")[0].lower() != "codex":
+        return None
+    i = 1
+    while i < len(parts):
+        flag, has_eq, _ = parts[i].partition("=")
+        if parts[i] in _CODEX_BOOL_FLAGS:
+            i += 1
+        elif flag in _CODEX_VALUE_FLAGS:
+            if has_eq:
+                i += 1
+            elif i + 1 < len(parts) and not parts[i + 1].startswith("-"):
+                i += 2
+            else:
+                return None
+        else:
+            return None
+    return f"{exec_cmd} {marker}"
+
+
+def _marker_hits(rollout: Path, marker: str) -> list[dict]:
+    """Every USER message in this rollout whose whole text IS `marker` (exact, after
+    trimming; a message that merely contains it does not count), as {"sid", "turn_id",
+    "turn"}. `turn` is the turn_context with that SAME turn_id, None while it is not written."""
+    sid, turns, found = rollout.name, {}, []
+    session_cwds = []
     try:
         with open(rollout, encoding="utf-8") as f:
             for line in f:
@@ -244,40 +300,68 @@ def _codex_first_turn(rollout: Path) -> tuple[dict | None, dict | None]:
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                if rec.get("type") == "session_meta" and meta is None:
-                    meta = rec.get("payload") or {}
+                if not isinstance(rec, dict) or not isinstance(rec.get("payload"), dict):
+                    continue
+                payload = rec["payload"]
+                if rec.get("type") == "session_meta":
+                    session_cwds.append(payload.get("cwd"))
+                    if isinstance(payload.get("id"), str) and payload["id"]:
+                        sid = payload["id"]
                 elif rec.get("type") == "turn_context":
-                    turn = rec.get("payload") or {}
-                    break
+                    turn_id = payload.get("turn_id")
+                    if isinstance(turn_id, str) and turn_id:
+                        # Even identical duplicates are ambiguous evidence, never last-wins.
+                        if turn_id in turns:
+                            turns[turn_id] = {"ambiguous": True}
+                        else:
+                            turns[turn_id] = payload
+                elif (rec.get("type") == "response_item" and payload.get("type") == "message"
+                      and payload.get("role") == "user"):
+                    content = payload.get("content")
+                    if (not isinstance(content, list) or not content
+                            or not all(isinstance(c, dict) and isinstance(c.get("text"), str)
+                                       for c in content)):
+                        continue
+                    text = "".join(c["text"] for c in content)
+                    if text.strip() == marker:
+                        meta = payload.get("internal_chat_message_metadata_passthrough")
+                        turn_id = meta.get("turn_id") if isinstance(meta, dict) else None
+                        found.append({"sid": sid, "turn_id": turn_id
+                                      if isinstance(turn_id, str) and turn_id else None})
     except OSError:
-        pass
-    return meta, turn
+        return []
+    for hit in found:
+        hit["turn"] = turns.get(hit["turn_id"]) if hit["turn_id"] else None
+        hit["cwd"] = session_cwds[0] if len(session_cwds) == 1 else None
+    return found
 
 
-def _same_dir(a: object, b: object) -> bool:
-    norm = lambda p: os.path.normcase(os.path.normpath(str(p)))  # noqa: E731
-    return bool(a) and bool(b) and norm(a) == norm(b)
-
-
-def verify_codex_rollout(cwd: str, since: float, expect_model: str | None, expect_effort: str | None,
-                         path: Path | None = None, sessions: Path | None = None, wait: float = 90,
+def verify_codex_rollout(marker: str, expect_model: str | None, expect_effort: str | None,
+                         since: float | None = None, path: Path | None = None,
+                         sessions: Path | None = None, wait: float = 90,
+                         result: dict | None = None,
                          sleep: Callable[[float], None] = time.sleep,
-                         clock: Callable[[], float] = time.monotonic) -> str | None:
-    """DORMANT (T0088): no spawn path calls this. T0088-A enables it once a codex seat can
-    be tied to its own rollout; until then the codex CLI stays refused outright.
+                         clock: Callable[[], float] = time.monotonic,
+                         expect_cwd: str | None = None) -> str | None:
+    """ACTIVATED ON THE T0088-C BRANCH ONLY (cmd_spawn calls it for --split --cli codex); main
+    keeps refusing the codex CLI until this is proven and merged. The spawner launches codex
+    with `new_spawn_marker()` as its whole prompt, via with_spawn_marker. On success, when
+    `result` is given it is filled with sid, model, effort and turn_id of the matched turn.
 
-    Post-launch check of a codex CLI seat: correlated, not identity-proven.
-    Finds the rollouts opened in `cwd` since `since` (epoch seconds), reads the model
-    and effort of their first turn, and fails on a mismatch with what the spawn asked
-    for or on anything below the codex floor. No turn within `wait`, or more than one
-    candidate rollout (which one is ours?), is refused. None means exactly one
-    rollout matched and it ran what was asked; it does NOT prove that rollout is this
-    seat's. Attribution is cwd + time only (a codex process does not hold its rollout
-    open, and the pty daemon returns no pid), so a compliant rollout from another seat
-    in the same cwd, while this seat wrote none or has not yet, is a false pass. Only a
-    spawner-controlled marker that lands in the rollout would close that; it needs a
-    live codex to validate. Launch with the first prompt on the command line so a turn
-    exists to read."""
+    Post-launch check of a codex CLI seat, attributed by that marker: the rollout holding a
+    user message that IS the marker is taken as this seat's, and the model and effort come
+    from the turn_context with THAT message's turn_id. Fails on a mismatch with the ask or
+    anything below the codex floor. Refused: no such message within `wait`; one whose turn
+    is not recorded in time; one with no turn_id to join on; and more than one such message
+    anywhere (two rollouts, or two turns of one). A neighbour's rollout can neither pass nor
+    fail this seat. `since` (epoch seconds) only narrows which files are opened.
+
+    THREAT MODEL, stated as an assumption and not a proof: the token is 128 random bits minted
+    at launch, so an unrelated codex session cannot produce it by accident, which is exactly
+    what cwd + time could not promise. It is visible in the seat's own command line, so
+    another process of the same user could read and repeat it; that is caught only if the copy
+    also reaches a rollout (then two hits). This defends against mis-attribution, not against
+    a deliberate spoof, and nothing here has been run against a live codex."""
     try:
         policy, where = load(path)
     except PolicyError as exc:
@@ -285,35 +369,52 @@ def verify_codex_rollout(cwd: str, since: float, expect_model: str | None, expec
     root = sessions or codex_sessions_dir()
     deadline = clock() + wait
     while True:
-        seen: list[tuple[str, str, str | None, str | None]] = []
+        hits = []
         for rollout in root.rglob("rollout-*.jsonl") if root.exists() else ():
             try:
-                if rollout.stat().st_mtime < since - 5:
+                if since is not None and rollout.stat().st_mtime < since - 5:
                     continue
             except OSError:
                 continue
-            meta, turn = _codex_first_turn(rollout)
-            if not meta or not turn or not _same_dir(meta.get("cwd"), cwd):
-                continue
-            seen.append((rollout.name, meta.get("id") or rollout.name, turn.get("model"), turn.get("effort")))
-        if len(seen) > 1:
-            return (f"SEAT FAILED FLOOR: {len(seen)} codex rollouts opened in {cwd} since the spawn "
-                    f"({', '.join(s[1] for s in seen)}); which one is this seat's cannot be told. Refused.")
-        if seen:
-            for name, sid, model, effort in seen:
-                if ((expect_model and not _same(model, expect_model))
-                        or (expect_effort and not _same(effort, expect_effort))):
-                    return (f"SEAT FAILED MISMATCH: codex session {sid} was asked for model={expect_model or '<any>'} "
-                            f"thinking_level={expect_effort or '<any>'} and ran model={model} effort={effort}. "
-                            f"Policy: {where}.")
-                governed = floor_for(policy, "codex", model)
-                why = below_floor(*governed, model, effort, path) if governed else None
-                if why:
-                    return f"SEAT FAILED FLOOR: codex session {sid} ran model={model} effort={effort}. {why} Policy: {where}."
-            return None
+            hits.extend(_marker_hits(rollout, marker))
+        if len(hits) > 1:
+            return (f"SEAT FAILED FLOOR: {marker} is the whole text of {len(hits)} user messages "
+                    f"(sessions {', '.join(str(h['sid']) for h in hits)}); which one is this seat's cannot be told. Refused.")
+        if hits and hits[0]["turn_id"] is None:
+            return (f"SEAT FAILED FLOOR: codex session {hits[0]['sid']} holds {marker} in a message with no "
+                    "turn_id, so it cannot be tied to a turn and what it ran cannot be read. Unverified is refused.")
+        if hits and hits[0]["turn"] is not None:
+            sid, turn = hits[0]["sid"], hits[0]["turn"]
+            if expect_cwd is not None:
+                # Exact string written by codex session_meta, no substring/URI/alias equivalence.
+                # The launcher already passes its resolved absolute cwd in native OS spelling.
+                if hits[0]["cwd"] != expect_cwd:
+                    return (f"SEAT FAILED MISMATCH: codex session {sid} session_meta.cwd is not the exact "
+                            "requested cwd (missing, duplicate or different metadata). Refused.")
+            if turn.get("ambiguous"):
+                return (f"SEAT FAILED FLOOR: codex session {sid} has duplicate turn_context records for "
+                        f"turn {hits[0]['turn_id']}; attribution is ambiguous. Refused.")
+            model, effort = turn.get("model"), turn.get("effort")
+            if not isinstance(model, str) or not isinstance(effort, str):
+                return f"SEAT FAILED FLOOR: codex session {sid} has malformed model/effort evidence. Refused."
+            if ((expect_model and not _same(model, expect_model))
+                    or (expect_effort and not _same(effort, expect_effort))):
+                return (f"SEAT FAILED MISMATCH: codex session {sid} was asked for model={expect_model or '<any>'} "
+                        f"thinking_level={expect_effort or '<any>'} and ran model={model} effort={effort}. "
+                        f"Policy: {where}.")
+            governed = floor_for(policy, "codex", model)
+            why = below_floor(*governed, model, effort, path) if governed else None
+            if not why and result is not None:
+                result.update(sid=sid, model=model, effort=effort, turn_id=hits[0]["turn_id"])
+            return (f"SEAT FAILED FLOOR: codex session {sid} ran model={model} effort={effort}. "
+                    f"{why} Policy: {where}.") if why else None
         if clock() >= deadline:
-            return (f"SEAT FAILED FLOOR: no codex rollout in {cwd} recorded a turn within {wait:g}s, so the "
-                    "model and effort it ran cannot be read. Unverified is refused.")
+            if hits:
+                return (f"SEAT FAILED FLOOR: codex session {hits[0]['sid']} holds {marker} but did not record turn "
+                        f"{hits[0]['turn_id']} within {wait:g}s, so the model and effort it ran cannot be read. "
+                        "Unverified is refused.")
+            return (f"SEAT FAILED FLOOR: no codex rollout holds {marker} as a user message within {wait:g}s, so this "
+                    "seat's model and effort cannot be read. Unverified is refused.")
         sleep(2)
 
 
