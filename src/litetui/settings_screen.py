@@ -1097,6 +1097,11 @@ class SettingsBody(Widget):
                                         placeholder="Exact model id for the selected backend")
                             yield Static("Shared by all instances. Follow parent resets the global route; "
                                          "a conversation override still wins.", classes="set-help")
+                        yield from self._text_row(
+                            "small_task_route", "Small-task worker route (JSON)",
+                            "Blank/null = off. Exact backend, model, cognitive and thinking_level required; "
+                            "visible named workers only, no inheritance or fallback.",
+                        )
                         yield from self._switch_row(
                             "allow_local_subagents", "Allow local subagents · expert only",
                             "Use only if you know what you're doing: local subagents can run you out of GPU memory. "
@@ -1617,6 +1622,17 @@ class SettingsBody(Widget):
                 continue
 
             t = typemap[name]
+            if name == "small_task_route":
+                try:
+                    raw = str(widget.value).strip()
+                    route = json.loads(raw) if raw else None
+                    if route is not None:
+                        from litetui.small_task_dispatch import Route
+                        Route.parse(route)
+                except ValueError as exc:
+                    raise ValueError(f"small_task_route: {exc}") from exc
+                out.small_task_route = route
+                continue
             if name == "subagent_route":
                 backend = widget.value
                 model = self.query_one("#subagent-route-model", Input).value.strip()
@@ -1826,7 +1842,7 @@ class SettingsBody(Widget):
             if name == "subagent_route":
                 self.query_one("#subagent-route-model", Input).value = (value or {}).get("model", "")
                 value = (value or {}).get("backend", "")
-            elif name == "subagent_route_override":
+            elif name in ("subagent_route_override", "small_task_route"):
                 value = json.dumps(value) if value is not None else ""
             # An optional-string Select's UNSET state is its blank "" option, not
             # a raw None. The mount already knows this (_model_pick_row and the

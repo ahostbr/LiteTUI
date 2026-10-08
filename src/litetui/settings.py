@@ -299,6 +299,9 @@ class Settings:
     subagent_model: str | None = None
     #: One route shared by all instances; null follows the parent backend/model.
     subagent_route: dict | None = None
+    #: Opt-in ordinary named-worker dispatch. None is disabled; no model inheritance.
+    #: Exact keys: backend, model, cognitive (bare profile), thinking_level.
+    small_task_route: dict | None = None
     #: null inherits global, {} explicitly follows parent, route overrides global.
     subagent_route_override: dict | None = None
     #: Expert-only local dispatch; never permits loading a model for a child.
