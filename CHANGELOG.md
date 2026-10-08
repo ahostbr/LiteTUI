@@ -26,10 +26,6 @@ fails if this file's top released heading disagrees with it.
   folder is the `strata_root` setting, else the one LiteSuite's Model Hub
   names; installing Strata and downloading models is done in that hub.
 
-### Changed
-- **Splash tagline** is "a self-evolving, open-source TUI in pure Python", not
-  "local-only coding agent": it now runs local, Codex OAuth and free cloud
-  models (Ryan, liteask a-b848bb60: "pure python opensource self-evolving TUI").
 
 ### Fixed
 - **Published 0.25.0 behaviour restored on main.** A later merge had put older
