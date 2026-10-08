@@ -24,6 +24,8 @@ def test_legacy_transport_and_sidecalls_never_fall_back():
         model_transport.for_app(app)
     with pytest.raises(model_transport.ProviderError, match="sidecalls"):
         model_transport.complete_sidecall(app, {})
+    with pytest.raises(llm_backend.BackendError, match="legacy model requests/sidecalls"):
+        app.backend.request_overrides("claude-haiku-5-5")
 
 
 @pytest.mark.parametrize("values", [
@@ -277,7 +279,11 @@ async def test_catalog_keeps_cli_rows_first_and_adds_every_context_variant(monke
         def __init__(self, options):
             pass
         async def start(self):
-            return {"models": [{"value": v} for v in queried]}
+            models = [{"value": v} for v in queried]
+            for model in models:
+                if model["value"] == "haiku":
+                    model["resolvedModel"] = "claude-haiku-4-5-20251001"
+            return {"models": models}
         async def close(self):
             pass
 
@@ -290,11 +296,16 @@ async def test_catalog_keeps_cli_rows_first_and_adds_every_context_variant(monke
     keys = [row.key for row in await backend.list_models()]
     assert keys[:len(queried)] == queried
     for key in ("claude-opus-5-5", "claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-sonnet-5[1m]",
-                "claude-fable-5-1", "claude-haiku-4-5-20251001", "fable", "opus"):
+                "claude-fable-5-1", "claude-haiku-5-5", "claude-haiku-4-5-20251001", "fable", "opus"):
         assert key in keys
     assert len(keys) == len(set(keys))
     assert "claude-haiku-4-5-20251001[1m]" not in keys and "haiku[1m]" not in keys
     await backend.ensure_chat_ready("claude-sonnet-5[1m]")   # selectable, not refused
+    await backend.ensure_chat_ready("claude-haiku-5-5")
+    assert backend.models["haiku"]["resolvedModel"] == "claude-haiku-4-5-20251001"
+    assert backend.reasoning_levels("claude-haiku-5-5") == list(claude_backend.STATIC_EFFORT)
+    assert backend.reasoning_levels("haiku") == []
+    assert "claude-haiku-5-5[1m]" not in keys
 
 
 def test_effort_levels_come_from_cli_metadata_with_a_static_fallback():
@@ -304,12 +315,18 @@ def test_effort_levels_come_from_cli_metadata_with_a_static_fallback():
         "sonnet": {"value": "sonnet", "resolvedModel": "claude-sonnet-5", "supportedEffortLevels": ["low", "high"]},
         "haiku": {"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001"},
         "claude-opus-5-5": {"value": "claude-opus-5-5"},
+        "claude-haiku-5-5": {"value": "claude-haiku-5-5"},
         "claude-haiku-4-5-20251001": {"value": "claude-haiku-4-5-20251001"},
     }
     assert backend.reasoning_levels("sonnet") == ["low", "high"]
     assert backend.reasoning_levels("haiku") == []
     assert backend.reasoning_levels("claude-opus-5-5") == list(STATIC_EFFORT)
     assert backend.reasoning_levels("claude-haiku-4-5-20251001") == []
+    assert backend.reasoning_levels("claude-haiku-5-5") == list(STATIC_EFFORT)
+    # A newer CLI may resolve its alias differently; queried metadata still wins.
+    backend.models["haiku"] = {"value": "haiku", "resolvedModel": "claude-haiku-5-5",
+                               "supportedEffortLevels": ["low", "high"]}
+    assert backend.reasoning_levels("haiku") == ["low", "high"]
     assert backend.reasoning_levels("nope") == []
 
 

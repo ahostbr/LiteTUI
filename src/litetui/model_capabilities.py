@@ -8,10 +8,10 @@ from pathlib import Path
 
 def offline_capabilities(backend, model, *, cache=None):
     if backend == "claude":
-        from litetui.claude_backend import STATIC_MODELS, STATIC_EFFORT
+        from litetui.claude_backend import STATIC_MODELS, STATIC_EFFORT, STATIC_NO_EFFORT_MODELS
         if model not in STATIC_MODELS:
             raise ValueError("Model is absent from the pinned Claude CLI catalogue")
-        levels = [] if "haiku" in model else list(STATIC_EFFORT)
+        levels = [] if model in STATIC_NO_EFFORT_MODELS else list(STATIC_EFFORT)
         source = "pinned Claude CLI catalogue"
     elif backend == "codex":
         if cache is None:

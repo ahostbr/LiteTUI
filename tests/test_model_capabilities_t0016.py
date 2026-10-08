@@ -6,9 +6,12 @@ import pytest
 from litetui import cli, model_capabilities as capabilities
 
 
-def test_pinned_claude_owner_supports_high_not_haiku():
+def test_pinned_claude_owner_distinguishes_haiku_generations():
     assert "high" in capabilities.offline_capabilities("claude", "sonnet")["thinking"]["levels"]
     assert capabilities.offline_capabilities("claude", "haiku")["thinking"]["levels"] == ["default"]
+    assert capabilities.offline_capabilities("claude", "claude-haiku-4-5-20251001")["thinking"]["levels"] == ["default"]
+    assert capabilities.offline_capabilities("claude", "claude-haiku-5-5")["thinking"]["levels"] == [
+        "default", "low", "medium", "high", "xhigh", "max"]
     with pytest.raises(ValueError, match="absent"):
         capabilities.offline_capabilities("claude", "unknown-model")
 

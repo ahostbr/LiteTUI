@@ -55,6 +55,39 @@ def test_staged_model_choice_survives_first_materialization(tmp_path, monkeypatc
         app_module.LiteTUI._validate_owned_execution(app)
 
 
+def test_native_owned_effort_uses_claude_mapping_without_legacy_requests(tmp_path, monkeypatch):
+    from litetui.claude_backend import ClaudeBackend
+    from litetui.llm_backend import BackendError
+
+    with staged_app(tmp_path, monkeypatch) as (app, session):
+        app.backend = ClaudeBackend(app.settings)
+        app.backend.models = {'claude-haiku-5-5': {'value': 'claude-haiku-5-5'}}
+        app.model_id = 'claude-haiku-5-5'
+        assert session.authority.backend == 'claude'
+        assert session.authority.thinking_level == 'high'
+        app_module.LiteTUI._validate_owned_execution(app)
+        # Runtime per-model override must not silently disagree with owned effort.
+        app.settings.model_infer_overrides = {'claude-haiku-5-5': {'reasoning_effort': 'low'}}
+        with pytest.raises(BackendError, match='Effective request effort'):
+            app_module.LiteTUI._validate_owned_execution(app)
+        app.settings.model_infer_overrides = {}
+        app.backend.models['wrong-model'] = {'value': 'wrong-model'}
+        app._model_id = 'wrong-model'
+        with pytest.raises(BackendError, match='Selected model'):
+            app_module.LiteTUI._validate_owned_execution(app)
+
+
+def test_non_native_owned_effort_still_validates_request_overrides(tmp_path, monkeypatch):
+    from litetui.llm_backend import BackendError
+
+    with staged_app(tmp_path, monkeypatch) as (app, session):
+        app._cli_effective_thinking = None  # no newer CLI choice masking the backend override
+        app.backend.request_overrides = lambda model: {'reasoning_effort': 'low'}
+        with pytest.raises(BackendError, match='Effective request effort'):
+            app_module.LiteTUI._validate_owned_execution(app)
+        assert session.authority.thinking_level == 'high'
+
+
 @pytest.mark.parametrize('materialized', [False, True])
 def test_same_runtime_reselection_repairs_owned_authority(tmp_path, monkeypatch, materialized):
     with staged_app(tmp_path, monkeypatch) as (app, session):
