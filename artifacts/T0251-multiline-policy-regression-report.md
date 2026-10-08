@@ -4,11 +4,11 @@
 
 **The original classification bug is superseded on the current base by T0116.**
 No production fix or mechanical `re.MULTILINE` addition is warranted. Ember
-explicitly selected tests-only resolution. Sentinel and Ryan own final card
+explicitly selected tests-only resolution. Orchestrator and Owner own final card
 and merge disposition; this report does not declare Done.
 
 - Measured base: `8a423871ece357464f2fe7eadcd01e86daa40ee6`.
-- Own worktree: `C:/Projects/.scratch/T0251/LiteTUI`, branch `ember/T0251`.
+- Own worktree: `C:/ExampleProjects/.scratch/T0251/LiteTUI`, branch `ember/T0251`.
 - Regression implementation: `e64af6d926389e757bd9a8cc53020cbd84dc19b2`.
 - Line-ending normalization: `357b4c8` (no behavior change).
 - Fixing ancestry: `git merge-base --is-ancestor 1a34e39 HEAD` exited **0**.
@@ -57,16 +57,16 @@ inputs only: no deletion, extraction, or system command is executed.
 
 No full suite was run. Logs:
 
-- `C:/Projects/LiteTUI/output/tasks/t-8ee4e2a0d8fe4b20a80eb7788d0789ce.log`: baseline 497 passes. Its subsequent standalone Python probe initially failed to import `litetui`; rerunning with `PYTHONPATH=src` resolved the probe environment, without changing code.
-- `C:/Projects/LiteTUI/output/tasks/t-4ab886822d564fc69de2b9d1ce2ccea1.log`: combined 1493 passes and ancestry exit 0.
-- `C:/Projects/LiteTUI/output/tasks/t-7a0cee432b0b4711b17c0012258bb337.log`: initial broader 845 passes / 2 failures.
-- `C:/Projects/LiteTUI/output/tasks/t-de8d8ba43e1f47fb96daf66636b6cbfc.log`: after scope correction, touched expectation + multiline 167 passes; complete focused affected set 1509 passes / 1 remaining fixture failure.
+- `C:/ExampleProjects/LiteTUI/output/tasks/t-8ee4e2a0d8fe4b20a80eb7788d0789ce.log`: baseline 497 passes. Its subsequent standalone Python probe initially failed to import `litetui`; rerunning with `PYTHONPATH=src` resolved the probe environment, without changing code.
+- `C:/ExampleProjects/LiteTUI/output/tasks/t-4ab886822d564fc69de2b9d1ce2ccea1.log`: combined 1493 passes and ancestry exit 0.
+- `C:/ExampleProjects/LiteTUI/output/tasks/t-7a0cee432b0b4711b17c0012258bb337.log`: initial broader 845 passes / 2 failures.
+- `C:/ExampleProjects/LiteTUI/output/tasks/t-de8d8ba43e1f47fb96daf66636b6cbfc.log`: after scope correction, touched expectation + multiline 167 passes; complete focused affected set 1509 passes / 1 remaining fixture failure.
 
 ## Review-requested scope correction and remaining T0251-A
 
 Both initial failures were reproduced while all tracked production and existing
 test files matched the base; only the new multiline regression file was untracked.
-Sentinel subsequently expanded T0251 narrowly to fix the stale launch expectation.
+Orchestrator subsequently expanded T0251 narrowly to fix the stale launch expectation.
 
 - **Corrected within T0251:**
   `tests/test_tool_policy.py::test_argument_sensitive_desktop_and_harness_actions`
@@ -80,7 +80,7 @@ Sentinel subsequently expanded T0251 narrowly to fix the stale launch expectatio
   fixture returning no spawner, preserving stranger confirmation coverage.
 
 Linked card **T0251-A** was updated to cover only the fixture failure, queued,
-tier/thinking unset with a needs-decision note. Ryan must choose both settings.
+tier/thinking unset with a needs-decision note. Owner must choose both settings.
 No follow-up fixture implementation or production code changed.
 
 ## Scope and verification limits
@@ -91,7 +91,7 @@ No follow-up fixture implementation or production code changed.
   affected-contract tests, with explicit failures/unavailable tools above.
 - **Running-product verified:** **NO**. No editor, live app restart/rebuild,
   UI approval path, model load, merge, or push was performed.
-- Card remains **reviewing**, awaiting leader review, Sentinel gate, and human
+- Card remains **reviewing**, awaiting leader review, Orchestrator gate, and human
   intent. No task completion call was made.
 - Tool-generated `tests/test_tool_policy_multiline.py.lock` is untracked and
   excluded from commits; it was not deleted or treated as source.

@@ -54,7 +54,7 @@ ROOT = paths.ROOT
 
 
 def _ryans(app):
-    """T1049: these arms are about RYAN'S OWN instance (owner-marked, not
+    """T1049: these arms are about OWNER'S OWN instance (owner-marked, not
     spawned), the only one that may run autonomous. conftest clears the mark."""
     app._spawned_seat, app._owner_seat, app._pty_term = False, True, None
     return app
@@ -310,11 +310,11 @@ def test_a_path_escaping_the_store_is_not_self_store():
 #      it runs at the scheduled level"                      -> read the job (T1082)
 # Each earlier version was correct when written. (4) is the live one. The 3am
 # question (3) deleted is answered by the routing: a CONFIRM on a scheduled turn
-# never builds a modal (tool_policy.UNATTENDED_SOURCES): in Ryan's own seat it is
+# never builds a modal (tool_policy.UNATTENDED_SOURCES): in Owner's own seat it is
 # refused, and in an agent-spawned seat it goes to the launching agent (T1049-B).
 
 def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
-    """Drive the REAL `_fire_job` in Ryan's own seat and return the profile it
+    """Drive the REAL `_fire_job` in Owner's own seat and return the profile it
     stamped.
 
     `setting` and `job_level` are chosen per arm so the three candidate origins
@@ -344,7 +344,7 @@ def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
 
 
 def test_a_job_recorded_AUTONOMOUS_runs_auto_and_may_write_the_workspace(monkeypatch):
-    """Ryan's own job, recorded autonomous, runs autonomous. It was T085's
+    """Owner's own job, recorded autonomous, runs autonomous. It was T085's
     `test_a_scheduled_turn_runs_AUTO_...` for EVERY job."""
     stamped = _fired_by_a_job(monkeypatch, job_level=AUTONOMOUS)
     assert stamped == AUTONOMOUS

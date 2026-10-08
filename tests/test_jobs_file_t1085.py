@@ -1,4 +1,4 @@
-"""T1085 — jobs.json is Ryan's: only Ryan's own seat may directly write it.
+"""T1085 — jobs.json is Owner's: only Owner's own seat may directly write it.
 
 T1133 removed profile locks and schedule API caps. These arms protect only direct
 file writes, at the shared _authorize_action door, without restoring those caps.

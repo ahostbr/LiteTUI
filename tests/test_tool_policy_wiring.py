@@ -225,7 +225,7 @@ def test_a_cron_turn_runs_at_its_JOBS_recorded_level_whatever_the_conversation_i
     """A scheduled turn resolves to the level its JOB recorded, ignoring both other
     sources.
 
-    📌 T1082 (Ryan, liteask a-a203e2c0: "we need new settings to set this at the
+    📌 T1082 (Owner, liteask a-a203e2c0: "we need new settings to set this at the
     time u create the schedule ... it runs at the scheduled level") RENAMED IT A
     THIRD TIME and supersedes T085's hardcode. The three-distinct-sources premise
     below is what lets the assertion name the new origin: STRICT can only have
@@ -275,7 +275,7 @@ def test_a_cron_turn_runs_at_its_JOBS_recorded_level_whatever_the_conversation_i
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
-        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Ryan's own
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Owner's own
     )
     app_mod.LiteTUI._fire_job(queued, job)
     assert queued._pending_input[0]["tool_profile"] == STRICT
@@ -288,7 +288,7 @@ def test_a_cron_turn_runs_at_its_JOBS_recorded_level_whatever_the_conversation_i
         _user_bubble=lambda *_a, **_k: None,
         _pending_input=[],
         _handle_command=lambda _text: None,
-        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Ryan's own
+        _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Owner's own
         _append=lambda msg: streamed.append(msg),
         _stream=lambda: streamed.append("stream"),
         _active_tool_profile=INTERACTIVE,
@@ -320,7 +320,7 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
     """
     monkeypatch.setattr(app_mod.sched_mod, "save", lambda *_a, **_k: None)
     # T1082: the job's own recorded level decides now, so this job records
-    # autonomous, in Ryan's own seat (T1049: nowhere else runs it).
+    # autonomous, in Owner's own seat (T1049: nowhere else runs it).
     job = scheduler.Job(prompt="inspect", schedule="@daily", tool_profile=AUTONOMOUS)
 
     settings = Settings()

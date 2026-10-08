@@ -1815,17 +1815,17 @@ class LiteTUI(App):
         if self.settings.mcp_enabled:
             self.mcp.reload_configs()
         self._mcp_dispatch = self.mcp.dispatch()
-        # T1043 (Ryan, form 4): was this seat SPAWNED by a launcher? Read BEFORE
-        # spawned_seat_identity, which consumes the marker. Ryan's own instance
+        # T1043 (Owner, form 4): was this seat SPAWNED by a launcher? Read BEFORE
+        # spawned_seat_identity, which consumes the marker. Owner's own instance
         # (not spawned) is exempt from the fleet floor for the turns HE drives;
         # see seat_authority.floor_applies.
         self._spawned_marker = spawn_identity is not None or os.environ.get(harness_mod.SPAWN_IDENTITY_MARKER) == "1"
-        # T1043 finding F: "not spawned" is NOT "Ryan's own" (fleet seats launched by
-        # typing `litetui` into a pane carry no marker). Ryan's own launchers set
+        # T1043 finding F: "not spawned" is NOT "Owner's own" (fleet seats launched by
+        # typing `litetui` into a pane carry no marker). Owner's own launchers set
         # LITETUI_OWNER=1. POPPED, so no shell, tool or child of this process
         # inherits it. PROCESS-ONLY, never saved per conversation: it says who is
         # at the keyboard of THIS process, so a fleet agent that resumes one of
-        # Ryan's conversations is enforced.
+        # Owner's conversations is enforced.
         self._owner_seat = seat_authority.owner_mark_valid(os.environ)
         os.environ.pop(harness_mod.OWNER_MARKER, None)
         # Inside a LiteSuite terminal the mark is also checked for bridge taint,
@@ -2857,7 +2857,7 @@ class LiteTUI(App):
             return
         # T1082 (Dijkstra S1): a seat that cannot grant the job's level says so and
         # returns BEFORE the lease. The tick is 20 s against a one-minute slot, so a
-        # skipping seat that held the lease could make Ryan's last attempt in the
+        # skipping seat that held the lease could make Owner's last attempt in the
         # slot lose it. The in-lease re-check is in _fire_job_owned (the disk row
         # may differ from this candidate).
         why = None if manual else seat_authority.withheld(self, sched_mod.level_of(job.tool_profile))
@@ -2945,7 +2945,7 @@ class LiteTUI(App):
         label = job.label or job.id
         text = job.prompt
         # 🔴 A SCHEDULED TURN RUNS AT THE LEVEL ITS JOB RECORDED WHEN IT WAS CREATED.
-        # T1082, Ryan: "we need new settings to set this at the time u create the
+        # T1082, Owner: "we need new settings to set this at the time u create the
         # schedule ... it runs at the scheduled level". This supersedes T085 ("just
         # change it so schedule only runs auto mode"), which hardcoded AUTONOMOUS here.
         #
@@ -2957,7 +2957,7 @@ class LiteTUI(App):
         #
         # Nobody is at the keyboard when it fires, so the level decides WHICH actions
         # CONFIRM, and `_authorize_action`'s confirm_route decides WHO answers: in
-        # Ryan's own seat they are refused (tool_policy.UNATTENDED_SOURCES); in an
+        # Owner's own seat they are refused (tool_policy.UNATTENDED_SOURCES); in an
         # agent-spawned seat they go to the launching agent (T1049-B).
         #
         # 📌 Inbox mail is NOT a job -- it reads the chat's profile and only
@@ -3096,7 +3096,7 @@ class LiteTUI(App):
 
     async def approve_for_child(self, event) -> bool:
         """T1049-B2: a supervised child's tool_approval_requested, answered by THIS
-        parent's route (plan §5, gate Sentinel d47235da). Ryan's own parent asks
+        parent's route (plan §5, gate Orchestrator d47235da). Owner's own parent asks
         him with NO deadline: his modal, or his GUI host. A locked parent asks its
         spawner by inbox, or its own host when it is itself supervised; a parent
         with no route refuses. Every outcome is logged (operation "child")."""
@@ -3114,7 +3114,7 @@ class LiteTUI(App):
         wait_token = self._begin_wait("host" if self._rpc else "you", "approval")
         try:
             if self._rpc:
-                # 0 = no deadline: Ryan's keypress is never timed out (d47235da).
+                # 0 = no deadline: Owner's keypress is never timed out (d47235da).
                 answer = await tool_approval.approve_over_rpc(
                     self, name, args, decision, timeout=0 if route == "own" else None)
             elif getattr(getattr(self, "backend", None), "owns_native_turns", False):
@@ -3133,7 +3133,7 @@ class LiteTUI(App):
     async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False):
         """Shared policy and approval door for tools and hook processes."""
         # T1085: FIRST, before evaluate, the floor, the relay and the modal. Only
-        # Ryan's own seat may directly write a data root's jobs.json; ownership is
+        # Owner's own seat may directly write a data root's jobs.json; ownership is
         # not a profile cap or a spawner's to APPROVE (T1133 caps stay removed).
         if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy):
             return tool_denied("profile", name=name, reason=why), False
@@ -3193,7 +3193,7 @@ class LiteTUI(App):
             # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
             # refuse this ONE action in words, and let the rest of the turn go on.
             if route != "host" and source in tool_policy.UNATTENDED_SOURCES:
-                if route == "hand":  # Marquee Q1: Ryan's unmarked launch gains the log only
+                if route == "hand":  # Marquee Q1: Owner's unmarked launch gains the log only
                     approval_relay.record(self, "no_spawner", name, source)
                 return tool_denied("profile", name=name, reason=tool_policy.unattended_refusal(decision)), False
             # Sidebar or modal, decided by the setting. `show_dialog` — not
@@ -5015,7 +5015,7 @@ class LiteTUI(App):
             # not a grant, so the file records it — else a resume of a seat
             # launched `--backend claude` ran Codex (.convos/ec62c953, measured).
             # Authority stays T695: a flag's profile is born only when STRICTER
-            # (a restriction is not a grant, Sentinel 0118549d).
+            # (a restriction is not a grant, Orchestrator 0118549d).
             identity = {
                 "backend": getattr(self, "_cli_initial_backend", None),
                 "default_model": getattr(self, "_cli_initial_model", None) and (
@@ -5059,7 +5059,7 @@ class LiteTUI(App):
                             'default_model': authority.model, 'thinking_level': authority.thinking_level}
         self._convo_settings = cs
         # T1043 S1: a conversation born in a spawned seat stays one when it is
-        # relaunched without the marker. Ryan resuming a fleet conversation
+        # relaunched without the marker. Owner resuming a fleet conversation
         # himself is therefore enforced too: it IS a fleet conversation.
         marker = getattr(self, "_spawned_marker", None)
         if marker is not None:

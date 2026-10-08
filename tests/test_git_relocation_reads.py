@@ -40,15 +40,15 @@ def test_relocated_git_reader_and_writer_policy(tmp_path, relocation, verb, refu
 
 
 _KEM_CHAIN = (
-    'git -C E:/SAS/ShadowsAndShurikens/.worktrees/KEMEditorGammaSol-T0321 status --short; '
-    'git -C E:/SAS/ShadowsAndShurikens/.worktrees/KEMEditorGammaSol-T0321 branch --show-current'
+    'git -C E:/ExampleWorkspace/ExampleGame/.worktrees/KEMEditorGammaSol-T0321 status --short; '
+    'git -C E:/ExampleWorkspace/ExampleGame/.worktrees/KEMEditorGammaSol-T0321 branch --show-current'
 )
 _ANCESTRY_CHAIN = (
-    "git -C C:/Projects/LiteSuite log --format='%H %P%n%s%n%b' "
+    "git -C C:/ExampleProjects/LiteSuite log --format='%H %P%n%s%n%b' "
     '3a4e8347b2dbd72b8a4d975b336350d987353957..3b60a4d999886ce48991449c6ff5728a130d418d; '
-    'git -C C:/Projects/LiteSuite diff --stat '
+    'git -C C:/ExampleProjects/LiteSuite diff --stat '
     '3a4e8347b2dbd72b8a4d975b336350d987353957..3b60a4d999886ce48991449c6ff5728a130d418d; '
-    'git -C C:/Projects/LiteSuite merge-base --is-ancestor '
+    'git -C C:/ExampleProjects/LiteSuite merge-base --is-ancestor '
     '3a4e8347b2dbd72b8a4d975b336350d987353957 3b60a4d999886ce48991449c6ff5728a130d418d'
 )
 _OID_A = '3a4e8347b2dbd72b8a4d975b336350d987353957'
@@ -57,10 +57,10 @@ _OID_B = '3b60a4d999886ce48991449c6ff5728a130d418d'
 
 @pytest.mark.parametrize('shell', [None, 'powershell', 'bash'])
 @pytest.mark.parametrize('command,workspace', [
-    (_KEM_CHAIN, 'E:/SAS/ShadowsAndShurikens'),
-    (('pwd; command -v lst; git -C E:/SAS/ShadowsAndShurikens status --porcelain; '
-      'git -C E:/SAS/ShadowsAndShurikens branch --show-current'), 'E:/SAS/ShadowsAndShurikens'),
-    (_ANCESTRY_CHAIN, 'C:/Projects/.scratch/T0343/YouTubeThemeGammaSol/LiteSuite'),
+    (_KEM_CHAIN, 'E:/ExampleWorkspace/ExampleGame'),
+    (('pwd; command -v lst; git -C E:/ExampleWorkspace/ExampleGame status --porcelain; '
+      'git -C E:/ExampleWorkspace/ExampleGame branch --show-current'), 'E:/ExampleWorkspace/ExampleGame'),
+    (_ANCESTRY_CHAIN, 'C:/ExampleProjects/.scratch/T0343/YouTubeThemeGammaSol/LiteSuite'),
 ])
 def test_t0340_exact_relocated_read_chains_are_not_schedule_writes(command, workspace, shell):
     # Inert classifier inputs only: no Git subprocess or foreign workspace I/O.
@@ -75,7 +75,7 @@ def test_t0340_exact_relocated_read_chains_are_not_schedule_writes(command, work
     f'merge-base --is-ancestor {_OID_A.upper()} {_OID_B.upper()}',
 ])
 def test_t0340_finite_new_git_reads_keep_protected_schedule_readable(tmp_path, shell, verb):
-    command = f'git -C C:/Projects/LiteTUI {verb}'
+    command = f'git -C C:/ExampleProjects/LiteTUI {verb}'
     assert deny_floor.jobs_git_refusal(command, tmp_path, shell=shell) is None
 
 
@@ -112,5 +112,5 @@ def test_t0340_finite_new_git_reads_keep_protected_schedule_readable(tmp_path, s
     f'merge-base --is-ancestor {_OID_A} {_OID_B} > jobs.json',
 ])
 def test_t0340_new_git_read_shapes_do_not_waive_writes_or_unknowns(tmp_path, shell, verb):
-    reason = deny_floor.jobs_git_refusal(f'git -C C:/Projects/LiteTUI {verb}', tmp_path, shell=shell)
+    reason = deny_floor.jobs_git_refusal(f'git -C C:/ExampleProjects/LiteTUI {verb}', tmp_path, shell=shell)
     assert reason and 'jobs-file' in reason

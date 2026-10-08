@@ -212,7 +212,7 @@ async def test_correlated_host_tool_completes_and_rejects_late_result(monkeypatc
     from litetui.gui_rpc import async_dispatch, dispatch
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
     app = app_mod.LiteTUI()
-    app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Ryan's own (owner-marked)
+    app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Owner's own (owner-marked)
     spec = {"type": "function", "function": {"name": "roundtrip", "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}}
     await async_dispatch(app, {"type": "gui.host_tools.register", "plugin_id": "fixture", "tools": [spec]})
     requests = []
@@ -350,7 +350,7 @@ def test_gui_midturn_submission_queues_or_interrupts_with_chosen_authority(tmp_p
     from litetui.gui_rpc import dispatch
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
     app = app_mod.LiteTUI()
-    app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Ryan's own (owner-marked)
+    app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Owner's own (owner-marked)
     app.settings.enter_interrupts = enter_interrupts
     app._chat_running = lambda: True
     app._user_bubble = lambda *a, **kw: None

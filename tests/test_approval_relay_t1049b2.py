@@ -1,6 +1,6 @@
 """T1049-B2 — supervised children's CONFIRMs, spawn_agent, stopReason "approval", and K1.
 
-Plan §5/S2 (ab8969c2, approved 5ef7612a). Gate Sentinel d47235da: an OWNER parent's
+Plan §5/S2 (ab8969c2, approved 5ef7612a). Gate Orchestrator d47235da: an OWNER parent's
 child CONFIRM reaches the parent's UI and is approved by a keypress, never inbox and
 never a timeout-deny; CONTROL: a locked parent's child goes to its leader by inbox.
 Dijkstra 79e113ce (3): a child stopped by an approval outcome is reported FAILED with
@@ -334,7 +334,7 @@ async def test_G_an_owner_GUI_parent_asks_its_host_with_NO_deadline(monkeypatch)
 
     monkeypatch.setattr(tool_approval, "approve_over_rpc", host)
     assert await a.approve_for_child(REQUEST) is True
-    assert seen["timeout"] == 0, "0 = no deadline: Ryan's keypress is never timed out"
+    assert seen["timeout"] == 0, "0 = no deadline: Owner's keypress is never timed out"
 
 
 @pytest.mark.asyncio
@@ -473,7 +473,7 @@ async def test_the_supervised_child_is_launched_with_the_host_flag_and_its_deadl
 @pytest.mark.asyncio
 async def test_run_for_app_sets_no_deadline_for_a_human_and_the_relay_for_a_locked_parent(
         monkeypatch, seat, expected):
-    """Dijkstra H1: a keypress is never timed out at Ryan's own parent AND at a
+    """Dijkstra H1: a keypress is never timed out at Owner's own parent AND at a
     hand-launch modal; only a parent that relays to its spawner bounds the child."""
     from litetui import agent_app_runtime
     a = {"own": lambda: _ryans(_seat(spawner=None)), "hand": lambda: _seat(spawner=None),

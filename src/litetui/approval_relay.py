@@ -1,8 +1,8 @@
 """T1049-B: a locked seat's CONFIRM goes to the agent that SPAWNED it, by inbox.
 
-Ryan (a-29047520): "must be handled by their leaders, their clawed leaders".
-Ryan (04169351): "whatever agent spawned the light qi instance should be babysitting it".
-Ryan (6e280dd4): a typed CONFIRM in an agent-launched seat -> "The launching agent";
+Owner (a-29047520): "must be handled by their leaders, their clawed leaders".
+Owner (04169351): "whatever agent spawned the light qi instance should be babysitting it".
+Owner (6e280dd4): a typed CONFIRM in an agent-launched seat -> "The launching agent";
 an agent-launched LiteGUI's CONFIRM -> "No, launching agent".
 
 Initial ancestry is recorded ONLY from the marker envelope

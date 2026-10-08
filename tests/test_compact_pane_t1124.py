@@ -280,7 +280,7 @@ async def test_real_turn_read_tool_finishes_as_compact_row(monkeypatch, initial_
     app._execute_tool = lambda *args, **kwargs: asyncio.sleep(0, result=('README contents', True))
     streams = iter([
         _Stream([_Chunk(tool_calls=[_TC(0, id='read1', name='read')]),
-                 _Chunk(tool_calls=[_TC(0, arguments='{"path":"C:/Projects/LiteTUI/README.md","offset":1,"limit":40}')])]),
+                 _Chunk(tool_calls=[_TC(0, arguments='{"path":"C:/ExampleProjects/LiteTUI/README.md","offset":1,"limit":40}')])]),
         _Stream([_Chunk(content='Read the requested README lines.')]),
     ])
 
@@ -306,7 +306,7 @@ async def test_real_turn_read_tool_finishes_as_compact_row(monkeypatch, initial_
         tool = tools[0]
         assert tool._result is not None
         assert tool.tool_name == 'read'
-        assert json.loads(tool._args) == {'path': 'C:/Projects/LiteTUI/README.md', 'offset': 1, 'limit': 40}
+        assert json.loads(tool._args) == {'path': 'C:/ExampleProjects/LiteTUI/README.md', 'offset': 1, 'limit': 40}
         if initial_width != 46:
             await pilot.resize_terminal(46, 22)
             await pilot.pause(.3)
@@ -328,7 +328,7 @@ async def test_native_codex_item_read_row_is_compact(kind, tool_name, server, as
         await pilot.pause(.2)
         assert app._compact_mode
         ui = CodexToolUI(app, thread_id='thread', turn_id='turn')
-        args = {'path': 'C:/Projects/LiteTUI/README.md', 'offset': 1, 'limit': 40}
+        args = {'path': 'C:/ExampleProjects/LiteTUI/README.md', 'offset': 1, 'limit': 40}
         item = {'type': kind, 'id': 'read1', 'tool': tool_name,
                 'arguments': json.dumps(args) if as_text else args}
         if server:
@@ -372,7 +372,7 @@ async def test_native_codex_read_started_wide_then_resized_compact(resize_while_
         assert not app._compact_mode
         ui = CodexToolUI(app, thread_id='thread', turn_id='turn')
         item = {'type': 'dynamicToolCall', 'id': 'read1', 'tool': 'litetui_read',
-                'arguments': {'path': 'C:/Projects/LiteTUI/README.md', 'offset': 1, 'limit': 40}}
+                'arguments': {'path': 'C:/ExampleProjects/LiteTUI/README.md', 'offset': 1, 'limit': 40}}
         await ui.item(item)
         tool = list(app.query(ToolMessage))[-1]
         if resize_while_running:

@@ -1,7 +1,7 @@
 """T1082 R4 — the sidecar creates a CRON job THROUGH THE PARENT.
 
-Ryan (liteask a-a203e2c0): "we need new settings to set this at the time u create the
-schedule. in litetui and the sidecar." Sentinel e9576f7f (R4): creation goes through
+Owner (liteask a-a203e2c0): "we need new settings to set this at the time u create the
+schedule. in litetui and the sidecar." Orchestrator e9576f7f (R4): creation goes through
 the parent, job_create under a jobs_write grant from hello (the settings_patch
 pattern), cron only. The parent writes through CronService.create, the same path as
 /cron add; the levels offered are capped by the parent, not by the grant (Dijkstra

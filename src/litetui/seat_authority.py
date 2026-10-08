@@ -31,7 +31,7 @@ from pathlib import Path
 from litetui import approval_relay, deny_floor, fleet_policy, tool_policy
 
 #: Turn sources that carry a profile to be narrowed against the seat.
-NARROWING_SOURCES = frozenset({"harness", "child-result", "goal", "goal-ryan"})
+NARROWING_SOURCES = frozenset({"harness", "child-result", "goal", "goal-owner"})
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ def _turn_profile(app, source: str, requested: str | None) -> str:
 
 def confirm_route(app) -> str:
     """Where a CONFIRM goes (T1049-B, plan ab8969c2 §2, approved 5ef7612a).
-      own      Ryan's own seat: UNCHANGED (modal / his GUI host; unattended refused).
+      own      Owner's own seat: UNCHANGED (modal / his GUI host; unattended refused).
       host     a non-owner rpc seat whose host relays: the host, for every source.
       spawner  a non-owner seat with a recorded spawner: inbox to the spawner.
       refuse   agent-launched without a spawner: refused and logged.
@@ -104,20 +104,20 @@ def confirm_route(app) -> str:
 
 # ── T1082 (T1049 phase C): a schedule's level is set when it is created ──────
 #
-# Ryan (liteask a-a203e2c0, lock_cron): "we need new settings to set this at the
+# Owner (liteask a-a203e2c0, lock_cron): "we need new settings to set this at the
 # time u create the schedule. in litetui and the sidecar. loops inherit the setting
 # they were created on ... loops should only be set manually during a live litetui
 # instance never scheduled directly. if a scheduled prompt has a /loop command in it
 # so be it ... it runs at the scheduled level."
 #
 # ⚠️ CEILING (Dijkstra P1): the record is only as trustworthy as the file. An agent
-# that can write jobs.json can schedule autonomous work in Ryan's instance. The
+# that can write jobs.json can schedule autonomous work in Owner's instance. The
 # T1085 file-tool guard below and the hook deny floor protect direct writes.
 # T1133 removed profile locks and schedule API caps; they remain removed. This
-# ownership-only guard does not constrain the profile Ryan manually selects.
+# ownership-only guard does not constrain the profile Owner manually selects.
 
 LOOP_REFUSAL = ("loops are made with /loop in a live LiteTUI, never scheduled directly "
-                "(T1082; Ryan: \"loops should only be set manually during a live litetui "
+                "(T1082; Owner: \"loops should only be set manually during a live litetui "
                 "instance never scheduled directly\").")
 
 
@@ -133,7 +133,7 @@ def schedule_level(app, chosen: str | None = None) -> str:
 
 def loop_level(app) -> str:
     """What a /loop records: the EFFECTIVE LEVEL OF THE TURN it was created in
-    (Sentinel 8cc9ea00 (ii)): the running turn's level, else this seat's. A loop
+    (Orchestrator 8cc9ea00 (ii)): the running turn's level, else this seat's. A loop
     takes no level argument anywhere, so its level is never set directly."""
     running = getattr(app, "_chat_running", None)
     level = getattr(app, "_active_tool_profile", None)
@@ -184,17 +184,17 @@ def _written(value, paths: list, commands: list, depth: int = 0) -> None:
 
 
 def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
-    """T1085: only Ryan's own seat may directly write a data root's jobs.json.
+    """T1085: only Owner's own seat may directly write a data root's jobs.json.
 
     Since T1082 a job's recorded level IS its authority, and jobs.json is the
-    file Ryan's own LiteTUI fires them from, so a written row is authority this
+    file Owner's own LiteTUI fires them from, so a written row is authority this
     seat does not have (Dijkstra f0ae21c1 P1). The target test and the shell
     rule are the floor's own (deny_floor.is_jobs_file / jobs_write_target), so
-    there is one definition. Ryan's own seat is not refused (it may write its
+    there is one definition. Owner's own seat is not refused (it may write its
     schedule, at any selected profile), and scheduler.save is in-process Python, never a tool call.
 
     It is called FIRST in _authorize_action, before evaluate, the floor, the
-    relay and the modal: the rule is Ryan's, not the spawner's to waive, so it is
+    relay and the modal: the rule is Owner's, not the spawner's to waive, so it is
     never relayed for an APPROVE (Dijkstra 0fd0f2d0).
 
     Only after recognizing a protected write do we recheck current ownership.
@@ -237,7 +237,7 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
 
 def _jobs_words(target) -> str:
     return (f"this LiteTUI may not write {target}: LiteTUI fires the jobs in that file at "
-            "each job's recorded level, and this seat cannot establish current Ryan ownership "
+            "each job's recorded level, and this seat cannot establish current owner authority "
             "(T1085). "
             "Schedule with /cron instead")
 
@@ -294,14 +294,14 @@ def resolve(app, source: str = "typed", requested: str | None = None) -> Effecti
 
 # ── T1043: the fleet floor, enforced by the SEAT on every turn ──────────────
 #
-# Ryan (2026-09-26 17:5x): "this MUST NEVER happen again" (a codex seat ran
+# Owner (2026-09-26 17:5x): "this MUST NEVER happen again" (a codex seat ran
 # gpt-5.6-sol at medium). Every spawn-time check is a snapshot: a reconnect onto
 # the pin, a LITETUI_NO_HARNESS seat, a /model or /think after launch. Only the
 # seat sees every turn. The rule set is liteharness's own (fleet_policy.py, a
 # byte-identical copy — scripts/sync_deny_floor.py).
 
 
-#: Turns Ryan drives himself: what he types (held or interrupting), a /skill he
+#: Turns Owner drives himself: what he types (held or interrupting), a /skill he
 #: types, and the wake that follows HIS /compact ("compact-wake" on the host loop,
 #: "compact" for Claude's, submitted through _submit_text), and his reply to a
 #: Codex question ("codex-question", codex_async_questions' human UI). Everything else,
@@ -309,17 +309,17 @@ def resolve(app, source: str = "typed", requested: str | None = None) -> Effecti
 #: Labels are produced ONLY by typed submits: "typed" (_submit_text's default
 #: and the /mark paths), "queued" and "interrupted" (_submit_text, held or
 #: interrupting, where an rpc submit becomes "rpc" instead).
-#: "goal-ryan": every turn of a /goal loop RYAN started (RYAN_GOAL_ORIGINS). Ryan,
+#: "goal-owner": every turn of a /goal loop OWNER started (OWNER_GOAL_ORIGINS). Owner,
 #: liteask a-04692a60 (answer 545c38e9), verbatim: "Exempt it: my /goal is mine".
 #: That flipped the provisional "goal loops meet the floor" (Marquee's ruling (a)).
 #: A goal issued any other way labels its turns "goal" and stays enforced.
 ATTENDED_SOURCES = frozenset({"typed", "queued", "interrupted", "compact-wake", "compact",
-                              "codex-question", "goal-ryan"})
+                              "codex-question", "goal-owner"})
 
-#: Where a /goal was issued (GoalState.started_by) that makes the loop Ryan's.
+#: Where a /goal was issued (GoalState.started_by) that makes the loop Owner's.
 #: "typed": his own TUI; "gui": LiteGUI's composer or Automation panel (an rpc
 #: host that sent gui.hello). "rpc" from a host that did not identify is NOT his.
-RYAN_GOAL_ORIGINS = frozenset({"typed", "gui"})
+OWNER_GOAL_ORIGINS = frozenset({"typed", "gui"})
 
 
 def command_origin(app) -> str:
@@ -335,7 +335,7 @@ def command_origin(app) -> str:
 def goal_source(state) -> str:
     """The source every turn of this goal loop carries. The steering ledger keeps
     "source" (and drops goal_continuation), so the origin survives it."""
-    return "goal-ryan" if getattr(state, "started_by", "") in RYAN_GOAL_ORIGINS else "goal"
+    return "goal-owner" if getattr(state, "started_by", "") in OWNER_GOAL_ORIGINS else "goal"
 
 
 #: Set in a shell an AGENT runs: Claude Code's Bash (CLAUDECODE), LiteTUI's own
@@ -343,10 +343,10 @@ def goal_source(state) -> str:
 #: CODEX_SANDBOX_NETWORK_DISABLED "whenever you use the shell tool", measured =1 in
 #: a recorded session; CODEX_SANDBOX when sandboxed). Under any of them the owner
 #: mark is VOID: a UI-made LiteSuite panel carries the mark to every process in
-#: it, including a Claude or Codex Ryan starts there and THEIR shells.
+#: it, including a Claude or Codex Owner starts there and THEIR shells.
 #: 🔴 MUST MATCH LiteSuite's AGENT_SHELL_ENV (packages/shared/src/agentShellEnv.ts),
 #: the names LiteSuite strips from an owner terminal and from the Frontier chat's
-#: LiteTUI child (T1049 K2). One added here and not there survives into Ryan's own
+#: LiteTUI child (T1049 K2). One added here and not there survives into Owner's own
 #: seats and voids their owner mark (and, with no spawner, makes every CONFIRM a
 #: "refuse"); one added there only is stripped for nothing. Change both together.
 AGENT_SHELL_MARKERS = ("CLAUDECODE", "LITETUI_AGENT_SHELL",
@@ -390,14 +390,14 @@ def pty_taint_clean(term: str, timeout: float = 1.0) -> bool:
 
 
 def is_owner(app) -> bool:
-    """Ryan's own launcher marked this process (LITETUI_OWNER=1, recorded at startup
+    """Owner's own launcher marked this process (LITETUI_OWNER=1, recorded at startup
     as app._owner_seat, void inside an agent's shell). Unknown counts as NOT the
     owner: the floor is the default.
     T1043 finding F (Dijkstra 90a4ba0c): "not spawned" read 102 of 105 convos on
-    disk as Ryan's own, fleet seats typed into panes included.
+    disk as Owner's own, fleet seats typed into panes included.
     Inside a LiteSuite terminal (app._pty_term) the mark also needs that terminal
     to be untainted by the bridge, re-asked each time, because /pty/talk can type
-    into a shell Ryan opened. A taint is permanent: once seen, the mark is gone."""
+    into a shell Owner opened. A taint is permanent: once seen, the mark is gone."""
     if not getattr(app, "_owner_seat", False):
         return False
     term = getattr(app, "_pty_term", None)
@@ -408,7 +408,7 @@ def is_owner(app) -> bool:
 
 
 def is_ryans_own(app, recheck: bool = True) -> bool:
-    """THE one test for "Ryan's own instance": owner-marked and not spawned.
+    """THE one test for "Owner's own instance": owner-marked and not spawned.
     recheck=False skips re-asking LiteSuite about a bridge taint and uses the
     answer as of the last check (T1049's hot-path getter). The floor check in
     accept_prompt re-asks before every turn, so a taint (a bridge write, which
@@ -427,7 +427,7 @@ def is_spawned(app) -> bool:
 def floor_applies(app, source: str) -> bool:
     """Which turns the fleet floor governs.
 
-    RYAN, form 4 (verbatim, via Marquee 1e92852f): "no leave that unchanged no
+    OWNER, form 4 (verbatim, via Marquee 1e92852f): "no leave that unchanged no
     warning nothing". So in HIS OWN instance (owner-marked, LITETUI_OWNER, and not
     spawned; finding F: unmarked is NOT his) the turns he drives
     are exempt, with no refusal and no warning. Every source in a spawned seat,
@@ -443,7 +443,7 @@ def floor_applies(app, source: str) -> bool:
     src/host/supervisor.ts:28). The exemption covers rpc only; inbox, cron, goal
     and child-result turns in the same instance stay enforced."""
     if not is_ryans_own(app):
-        return True   # spawned wins; and only Ryan's own launcher is exempt
+        return True   # spawned wins; and only Owner's own launcher is exempt
     if source == "rpc":
         # ponytail: host claim via gui.hello; a real per-launch host token if anything but LiteGUI speaks it
         return not getattr(app, "_gui_rpc_enabled", False)
@@ -453,8 +453,8 @@ def floor_applies(app, source: str) -> bool:
 def seat_policy(app) -> tuple[dict, str]:
     """(policy, where). ⚠️ ASYMMETRIC WITH THE SPAWN PATH ON PURPOSE (Marquee
     7d1e2cd3): a malformed policy file refuses every SPAWN (fleet_policy.check),
-    but here it falls back to the module's own DEFAULT_POLICY — Ryan's ruled
-    floor — with one loud warning. Refusing every turn would lock Ryan out of his
+    but here it falls back to the module's own DEFAULT_POLICY — Owner's ruled
+    floor — with one loud warning. Refusing every turn would lock Owner out of his
     own LiteTUI, local models included, over a typo in a JSON file."""
     try:
         return fleet_policy.load()
@@ -473,7 +473,7 @@ def warn_if_below_floor(app) -> None:
     unsurprising. A function over `app`, like app._sync_seat_resolution, so
     the many partial test hosts need no stub."""
     if is_ryans_own(app):
-        return  # Ryan, form 4: "no warning nothing" in his own instance
+        return  # Owner, form 4: "no warning nothing" in his own instance
     why = floor_refusal(app)
     say = getattr(app, "_system", None)
     if why is not None and say is not None:
@@ -495,7 +495,7 @@ def floor_refusal(app, source: str = "typed") -> str | None:
     why = fleet_policy.below_floor(name, floor, seat.model, seat.thinking_level)
     if why is None:
         return None
-    if source in ("goal", "goal-ryan"):
+    if source in ("goal", "goal-owner"):
         why += " Goal loops run unattended and meet the fleet floor."
     elif source == "rpc" and not getattr(app, "_gui_rpc_enabled", False):
         why += " (rpc host did not identify)"

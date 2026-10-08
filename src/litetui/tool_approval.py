@@ -32,7 +32,7 @@ from litetui.tool_policy import PolicyDecision, approval_preview
 #: stops being wanted.
 APPROVAL_TIMEOUT_S = 300.0
 #: T1049-B (plan S2, clock C1): set by agent_launcher.start_headless_child on a
-#: supervised child. "0" = no deadline (an OWNER parent's keypress, Sentinel
+#: supervised child. "0" = no deadline (an OWNER parent's keypress, Orchestrator
 #: d47235da: never a timeout-deny); otherwise the parent's relay timeout + 60 s.
 APPROVAL_TIMEOUT_ENV = "LITETUI_APPROVAL_TIMEOUT_S"
 
@@ -389,7 +389,7 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     # in a signature cannot be changed by anything, including an arm that
     # needs the timeout to be short enough to measure.
     # T1049-B: None = this process's deadline (approval_timeout_s); <= 0 = none at
-    # all (an owner parent relaying a child's CONFIRM to Ryan's keypress).
+    # all (an owner parent relaying a child's CONFIRM to Owner's keypress).
     timeout = approval_timeout_s() if timeout is None else (None if timeout <= 0 else timeout)
     approval_id = "appr-" + uuid4().hex[:12]
     fut: asyncio.Future = asyncio.get_running_loop().create_future()

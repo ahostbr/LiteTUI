@@ -19,7 +19,7 @@ PASS = all of:
   (c) no tool_use named CronCreate / ScheduleWakeup / Skill;
   (d) no message at all in the 75 s after the result;
   (e) no .claude/scheduled_tasks.json under the temp cwd.
-Remote only (Claude), CPU only, no model load. setting_sources=[]: Ryan's user hooks
+Remote only (Claude), CPU only, no model load. setting_sources=[]: Owner's user hooks
 never run, so no seat registers.
 
     LITETUI_CLAUDE_LIVE=1 python e2e/claude_loop_probe.py [artifact.json]
@@ -48,7 +48,7 @@ async def control(backend, root: Path) -> dict:
     from claude_agent_sdk import ClaudeSDKClient
     opts = await backend._options(cwd=root, model="haiku")
     # None = the CLI's own defaults (bundled skills such as /loop), NOT "all", which
-    # would also turn setting sources on and run Ryan's user hooks.
+    # would also turn setting sources on and run Owner's user hooks.
     opts.skills = None
     opts.extra_args = {k: v for k, v in opts.extra_args.items() if k != "disable-slash-commands"}
     async with ClaudeSDKClient(opts) as client:

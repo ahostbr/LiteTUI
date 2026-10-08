@@ -100,7 +100,7 @@ def _app(answer, iterations: int = 3):
     a = app_mod.LiteTUI()
     # STRICT, because this file is ABOUT the deny path, which only exists when
     # the probe CONFIRMs. INTERACTIVE stopped confirming ordinary shell in
-    # 5e3c7be (2026-09-19), and Ryan's ruling in 1ed3b84 (2026-09-24) made it
+    # 5e3c7be (2026-09-19), and Owner's ruling in 1ed3b84 (2026-09-24) made it
     # ask only for the danger table, so `git status` never asks there. STRICT
     # still confirms process_execution.
     # BOTH fields: `_execute_tool` reads `_active_tool_profile`, and the fresh

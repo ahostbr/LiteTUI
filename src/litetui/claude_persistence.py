@@ -362,6 +362,11 @@ class ClaudeLedger:
                     f"Claude ledger {self.file} has a malformed segment {id}"
                 )
             for entry in segment["entries"]:
+                # Legacy persisted origin, not a default for new submissions.
+                from litetui.legacy_goal_source import normalize_persisted_goal_source
+
+                if "source" in entry:
+                    entry["source"] = normalize_persisted_goal_source(entry["source"])
                 if entry.get("state") in IN_FLIGHT:
                     entry["uncertain_from"] = entry["state"]
                     entry["state"] = UNCERTAIN

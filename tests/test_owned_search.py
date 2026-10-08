@@ -17,7 +17,7 @@ def engine(tmp_path):
     spec = importlib.util.spec_from_file_location('fixture_convo_search', Path(__file__).parents[1] / 'tools/convo_search.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.ROOT = tmp_path
+    module._DATA_ROOT = tmp_path
     module.DB_PATH = str(tmp_path / 'search.db')
     return module
 

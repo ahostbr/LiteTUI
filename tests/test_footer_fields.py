@@ -165,7 +165,7 @@ async def test_footer_order_is_applied_left_to_right():
         ]
     )
     a._active_tool_profile = "autonomous"
-    a._spawned_seat, a._owner_seat = False, True  # T1049: autonomous is Ryan's own
+    a._spawned_seat, a._owner_seat = False, True  # T1049: autonomous is Owner's own
     async with a.run_test(size=WIDE) as pilot:
         await pilot.pause()
         text = a.ctx_label_text.plain

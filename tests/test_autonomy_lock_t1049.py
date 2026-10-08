@@ -23,7 +23,7 @@ def _app(profile=STRICT, **kw):
 
 
 @pytest.mark.parametrize("seat", ["spawned", "resumed", "owner", "unmarked"])
-def test_ryan_can_always_manually_set_autonomous(monkeypatch, seat):
+def test_owner_can_always_manually_set_autonomous(monkeypatch, seat):
     """please just make that one of the fixes is that I can always manually change to auto mode if I so choose to in Lite UI."""
     a = _app(STRICT, tool_profile=INTERACTIVE)
     a._spawned_seat = seat == "spawned"

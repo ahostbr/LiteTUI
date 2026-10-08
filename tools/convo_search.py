@@ -37,12 +37,15 @@ from litetui.paths import data_root
 from litetui.storage_catalog import conversations
 from litetui.agent_store import StoreError
 
-ROOT = data_root()
-DB_PATH = str(ROOT / '.conversation-search.db')
+# Published 0.25.0 boundary: conversations under .convos/ and the index at
+# tools/convo_search.db, both under the data root (LITETUI_DATA_ROOT when set).
+_DATA_ROOT = data_root()
+ROOT = str(_DATA_ROOT / ".convos")
+DB_PATH = str(_DATA_ROOT / "tools" / "convo_search.db")
 
 
 def catalog_paths():
-    rows = conversations(ROOT, include_archives=True)
+    rows = conversations(_DATA_ROOT, include_archives=True)
     selected = {}
     for row in rows:
         previous = selected.get(row.conversation_id)
@@ -261,6 +264,7 @@ def build_index(force=False):
 
 
 def open_db():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     schema(conn)
     return conn
@@ -437,10 +441,11 @@ def main():
     if not any((args.query, args.show, args.raw, args.stats, args.index, args.reindex)):
         ap.print_help()
         return
-    global ROOT, DB_PATH
+    global _DATA_ROOT, ROOT, DB_PATH
     if args.root is not None:
-        ROOT = args.root.resolve()
-        DB_PATH = str(ROOT / '.conversation-search.db')
+        _DATA_ROOT = args.root.resolve()
+        ROOT = str(_DATA_ROOT / ".convos")
+        DB_PATH = str(_DATA_ROOT / "tools" / "convo_search.db")
     # Every lookup observes the current catalog/source revision, including direct
     # CLI query/show/raw calls. --index plus a query remains one incremental pass.
     build_index(force=args.reindex)

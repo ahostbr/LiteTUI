@@ -1,12 +1,12 @@
 """T1043 — the SEAT enforces the fleet model/thinking floor on EVERY turn.
 
-Ryan (2026-09-26 17:5x): "this MUST NEVER happen again" (a codex seat ran
+Owner (2026-09-26 17:5x): "this MUST NEVER happen again" (a codex seat ran
 gpt-5.6-sol at medium). Every spawn-time check is a snapshot: a reconnect onto
 the pin, a LITETUI_NO_HARNESS seat, a /model or /think after launch. Only the
 seat sees every turn, so the seat refuses a turn below the floor — nothing is
 substituted and nothing is sent.
 
-Rulings: Marquee 7d1e2cd3 (design), aef193e8 (steering), Sentinel a9aa4df0 via
+Rulings: Marquee 7d1e2cd3 (design), aef193e8 (steering), Orchestrator a9aa4df0 via
 5349c9de (the fallback floor IS the module's default).
 conftest points LITESUITE_FLEET_POLICY at an absent file: the built-in default.
 """
@@ -32,7 +32,7 @@ class _Seat:
 
     chosen_tool_profile = LiteTUI.chosen_tool_profile
 
-    def __init__(self, backend="codex", model="gpt-6-sol", thinking="high"):
+    def __init__(self, backend="codex", model="gpt-6.1-sol", thinking="high"):
         self.settings = SimpleNamespace(tool_policy_profile="interactive")
         self._convo_settings = None
         self._cli_tool_profile = None
@@ -213,7 +213,7 @@ def test_a_FORGED_accepted_state_is_not_a_bypass():
 
 def test_a_MALFORMED_policy_file_warns_and_the_seat_keeps_the_default_floor(tmp_path, monkeypatch):
     """Marquee 7d1e2cd3: asymmetric with spawn (which refuses everything) so a
-    JSON typo can never lock Ryan out of his own local LiteTUI."""
+    JSON typo can never lock Owner out of his own local LiteTUI."""
     bad = tmp_path / "fleet-policy.json"
     bad.write_text("{not json", encoding="utf-8")
     monkeypatch.setenv(fleet_policy.POLICY_ENV, str(bad))
@@ -229,7 +229,7 @@ def test_a_MALFORMED_policy_file_warns_and_the_seat_keeps_the_default_floor(tmp_
 
 
 def test_the_fallback_floor_IS_the_modules_default(tmp_path, monkeypatch):
-    """Sentinel a9aa4df0: the same OBJECT, so a future change to the default can
+    """Orchestrator a9aa4df0: the same OBJECT, so a future change to the default can
     never silently loosen the seat."""
     bad = tmp_path / "fleet-policy.json"
     bad.write_text("[]", encoding="utf-8")
@@ -256,7 +256,7 @@ def test_a_policy_file_that_RAISES_the_floor_is_honoured(tmp_path, monkeypatch):
     path = tmp_path / "fleet-policy.json"
     path.write_text(json.dumps(stricter), encoding="utf-8")
     monkeypatch.setenv(fleet_policy.POLICY_ENV, str(path))
-    seat = _Seat(model="gpt-6-sol")
+    seat = _Seat(model="gpt-6.1-sol")
     _typed(seat)
     assert seat.streams == 0 and str(path) in seat.said[-1]
 
@@ -307,14 +307,14 @@ class _Overridden(_Seat):
     _effective_request_overrides = LiteTUI._effective_request_overrides
 
     def __init__(self, override, thinking):
-        super().__init__(model="gpt-6-sol", thinking=thinking)
+        super().__init__(model="gpt-6.1-sol", thinking=thinking)
         self._cli_effective_thinking = None
         self._launch_options = None
         self.backend.request_overrides = lambda key: {"reasoning_effort": override}
 
 
 def test_E1_the_floor_judges_the_effort_the_request_SENDS():
-    """/modelcfg reasoning_effort "medium" + /think high on gpt-6-sol passed the
+    """/modelcfg reasoning_effort "medium" + /think high on gpt-6.1-sol passed the
     floor and SENT medium (chat_request: overrides' effort, else thinking_level)."""
     seat = _Overridden("medium", "high")
     assert seat_authority.effective_thinking(seat) == "medium"
@@ -342,7 +342,7 @@ async def test_Q3_a_refused_child_is_a_FAILED_child_carrying_the_reason():
     never saw why."""
     from litetui.agent_supervisor import AgentProcess
 
-    why = "TURN REFUSED: FLEET FLOOR: model 'gpt-5.6-sol' is below gpt-6-sol."
+    why = "TURN REFUSED: FLEET FLOOR: model 'gpt-5.6-sol' is below gpt-6.1-sol."
     events = [{"type": "turn_end", "stopReason": "fleet_floor", "error": why}]
     child = AgentProcess()
 
@@ -384,12 +384,12 @@ def test_E1_the_fallback_is_UNREACHABLE_in_the_real_app():
     assert callable(getattr(LiteTUI, "_effective_request_overrides", None))
 
 
-# ── scope: Ryan, form 4 (via Marquee 1e92852f): "no leave that unchanged no
+# ── scope: Owner, form 4 (via Marquee 1e92852f): "no leave that unchanged no
 #    warning nothing". His OWN instance (not spawned): the turns he drives are
 #    exempt with no text at all; unattended turns and spawned seats stay enforced.
 
 def _ryans(**kw):
-    """Ryan's own instance: not spawned AND owner-marked (LITETUI_OWNER, finding F)."""
+    """Owner's own instance: not spawned AND owner-marked (LITETUI_OWNER, finding F)."""
     seat = _Seat(model="gpt-5.6-sol", thinking="medium", **kw)
     seat._spawned_seat = False
     seat._owner_seat = True
@@ -401,14 +401,14 @@ def _no_floor_text(seat):
 
 
 @pytest.mark.parametrize("source", sorted(seat_authority.ATTENDED_SOURCES))
-def test_RYAN_his_typed_turn_goes_through_with_NO_floor_text(source):
+def test_OWNER_his_typed_turn_goes_through_with_NO_floor_text(source):
     """Dijkstra cycle 2: EVERY attended source, so dropping one turns this red."""
     seat = _ryans()
     _typed(seat, source=source)
     assert seat.streams == 1 and _no_floor_text(seat), (source, seat.said)
 
 
-def test_RYAN_his_skill_goes_through_with_NO_floor_text(monkeypatch):
+def test_OWNER_his_skill_goes_through_with_NO_floor_text(monkeypatch):
     from litetui.plugins import skills_plugin
     monkeypatch.setattr(skills_plugin.skills_mod, "load", lambda skills, want: "do it")
     seat = _ryans()
@@ -418,7 +418,7 @@ def test_RYAN_his_skill_goes_through_with_NO_floor_text(monkeypatch):
     assert seat.streams == 1 and _no_floor_text(seat), seat.said
 
 
-def test_RYAN_the_wake_after_his_compact_goes_through_with_NO_floor_text():
+def test_OWNER_the_wake_after_his_compact_goes_through_with_NO_floor_text():
     seat = _ryans()
     seat._chat_running = lambda: False
     seat._pending_input, seat._turn_abandoned = [], False
@@ -429,13 +429,13 @@ def test_RYAN_the_wake_after_his_compact_goes_through_with_NO_floor_text():
 
 
 @pytest.mark.parametrize("source", ["harness", "scheduled", "rpc", "child-result"])
-def test_RYAN_an_UNATTENDED_turn_in_his_own_instance_is_still_REFUSED(source):
+def test_OWNER_an_UNATTENDED_turn_in_his_own_instance_is_still_REFUSED(source):
     seat = _ryans()
     _typed(seat, "mail", source=source)
     assert seat.streams == 0 and "TURN REFUSED" in seat.said[-1]
 
 
-def test_RYAN_a_goal_continuation_in_his_own_instance_is_still_REFUSED():
+def test_OWNER_a_goal_continuation_in_his_own_instance_is_still_REFUSED():
     seat = _ryans()
     seat._chat_running = lambda: False
     seat._user_bubble = lambda *a, **k: None
@@ -463,16 +463,16 @@ def test_the_connect_warning_is_said_in_a_SPAWNED_seat_and_NOT_in_ryans():
 
 def test_the_app_records_spawned_BEFORE_the_marker_is_consumed(monkeypatch):
     """spawned_seat_identity pops LITETUI_SPAWN_IDENTITY, so the app must read it
-    first; otherwise every seat would look like Ryan's own instance."""
+    first; otherwise every seat would look like Owner's own instance."""
     from litetui import harness
     monkeypatch.setenv(harness.SPAWN_IDENTITY_MARKER, "1")
     spawned = LiteTUI()
     assert spawned._spawned_seat is True
     assert harness.SPAWN_IDENTITY_MARKER not in os.environ, "CONTROL: the marker was consumed"
-    assert LiteTUI()._spawned_seat is False, "Ryan's own launch read as spawned"
+    assert LiteTUI()._spawned_seat is False, "Owner's own launch read as spawned"
 
 
-def test_RYAN_an_UNLABELLED_item_in_his_own_instance_is_REFUSED():
+def test_OWNER_an_UNLABELLED_item_in_his_own_instance_is_REFUSED():
     """Marquee f1e1c415: "queued" must come only from a typed submit. An item with
     no source is "unlabelled" (hook_host._turn_source), which is unattended."""
     seat = _ryans()
@@ -481,7 +481,7 @@ def test_RYAN_an_UNLABELLED_item_in_his_own_instance_is_REFUSED():
 
 
 @pytest.mark.asyncio
-async def test_RYAN_a_goal_continuation_STEERED_through_the_ledger_is_REFUSED():
+async def test_OWNER_a_goal_continuation_STEERED_through_the_ledger_is_REFUSED():
     """The steering ledger copies content/text/source/tool_profile/operation_id and
     DROPS goal_continuation, so a steered goal item used to arrive as "queued"."""
     from litetui.codex_steering import HostSteering
@@ -503,14 +503,14 @@ async def test_RYAN_a_goal_continuation_STEERED_through_the_ledger_is_REFUSED():
     assert sent == []
 
 
-def test_RYAN_a_typed_item_steered_through_the_ledger_stays_ATTENDED():
+def test_OWNER_a_typed_item_steered_through_the_ledger_stays_ATTENDED():
     """CONTROL: the label that survives the ledger is the one a typed submit set."""
     seat = _ryans()
     assert seat_authority.floor_refusal(seat, hook_host._turn_source({"source": "queued"})) is None
 
 
-def test_RYAN_his_reply_to_a_codex_question_goes_through_with_NO_floor_text():
-    """codex_async_questions' "shared human UI": Ryan typed the answer."""
+def test_OWNER_his_reply_to_a_codex_question_goes_through_with_NO_floor_text():
+    """codex_async_questions' "shared human UI": Owner typed the answer."""
     seat = _ryans()
     _typed(seat, "yes, go", source="codex-question")
     assert seat.streams == 1 and _no_floor_text(seat), seat.said
@@ -573,7 +573,7 @@ def _resumed(tmp_path, monkeypatch, marker):
     monkeypatch.setattr(_app_mod.llm_backend, "make_backend", lambda s: SimpleNamespace(name=s.backend))
     host = _BornHost(_st.Settings(backend="codex"), tmp_path, "codex")
     host._spawned_marker = marker
-    host._owner_seat = True          # resumed by Ryan's own (owner-marked) process
+    host._owner_seat = True          # resumed by Owner's own (owner-marked) process
     host._adopt_convo_settings(born=False)
     host._model_id, host._thinking_level = "gpt-5.6-sol", "medium"
     return host
@@ -581,7 +581,7 @@ def _resumed(tmp_path, monkeypatch, marker):
 
 def test_S1_a_convo_BORN_spawned_resumed_WITHOUT_the_marker_is_REFUSED(tmp_path, monkeypatch):
     """The SpawnSmith case: `litetui --convo <id>` typed in a pane, /pty/talk,
-    fleet.py send. It is also what happens when Ryan resumes a fleet seat's
+    fleet.py send. It is also what happens when Owner resumes a fleet seat's
     conversation himself: it IS a fleet conversation, so it stays enforced."""
     assert _born(tmp_path, True)._spawned_seat is True
     assert _cs.load(tmp_path).seat_spawned is True
@@ -611,7 +611,7 @@ def test_S1_a_malformed_seat_spawned_is_a_diagnostic_not_a_value(tmp_path):
     assert loaded.seat_spawned is None and loaded._diagnostics
 
 
-# ── test gap: a message Ryan types while a turn runs is held, then flushed ────
+# ── test gap: a message Owner types while a turn runs is held, then flushed ────
 
 def _below_floor_backend():
     return SimpleNamespace(name="codex", owns_native_turns=False,
@@ -619,7 +619,7 @@ def _below_floor_backend():
 
 
 @pytest.mark.asyncio
-async def test_RYAN_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES(monkeypatch):
+async def test_OWNER_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES(monkeypatch):
     """Drives the real _submit_text (held as "queued") and _flush_pending_input."""
     monkeypatch.setenv("LITETUI_OWNER", "1")
     app = LiteTUI()
@@ -645,7 +645,7 @@ async def test_RYAN_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES(m
 
 
 @pytest.mark.asyncio
-async def test_RYAN_a_mark_taken_while_BUSY_is_held_as_typed_then_PASSES(tmp_path, monkeypatch):
+async def test_OWNER_a_mark_taken_while_BUSY_is_held_as_typed_then_PASSES(tmp_path, monkeypatch):
     """The queued /mark item (app._mark_wait) is labelled "typed", so it is his."""
     import json
     handoff = tmp_path / "mark.json"
@@ -704,7 +704,7 @@ def test_the_effective_thinking_EXCEPT_branch_matches_the_no_builder_branch():
     assert seat_authority.effective_thinking(seat) == "high"
 
 
-# ── Ryan, liteask a-04692a60 (answer 545c38e9): "Exempt it: my /goal is mine" ──
+# ── Owner, liteask a-04692a60 (answer 545c38e9): "Exempt it: my /goal is mine" ──
 
 def _goal_seat(**kw):
     seat = _ryans(**kw)
@@ -716,28 +716,28 @@ def _ryans_goal():
     return goal_loop.GoalState(objective="ship it", started_by="typed")
 
 
-def test_GOAL_a_ryan_started_goal_TURN_1_passes_with_NO_floor_text():
+def test_GOAL_a_owner_started_goal_TURN_1_passes_with_NO_floor_text():
     seat = _goal_seat()
     seat._chat_running = lambda: False
     goal_loop._deliver_goal_turn(seat, _ryans_goal(), "start")
     assert seat.streams == 1 and _no_floor_text(seat), seat.said
 
 
-def test_GOAL_a_ryan_started_goal_TURN_2_continuation_passes():
+def test_GOAL_a_owner_started_goal_TURN_2_continuation_passes():
     """Every continuation, not just turn 1: the queued item carries the loop's
-    origin in its SOURCE ("goal-ryan")."""
+    origin in its SOURCE ("goal-owner")."""
     seat = _goal_seat()
     seat._chat_running = lambda: True
     seat._pending_input = []
     goal_loop._deliver_goal_turn(seat, _ryans_goal(), "continue")
     [item] = seat._pending_input
-    assert item["source"] == "goal-ryan"
+    assert item["source"] == "goal-owner"
     hook_host.start_prompt(seat, item)
     assert seat.streams == 1 and _no_floor_text(seat), seat.said
 
 
 @pytest.mark.asyncio
-async def test_GOAL_a_ryan_continuation_STEERED_through_the_ledger_passes():
+async def test_GOAL_a_owner_continuation_STEERED_through_the_ledger_passes():
     """The ledger keeps "source" and drops goal_continuation; the origin survives."""
     from litetui.codex_steering import HostSteering
 
@@ -753,7 +753,7 @@ async def test_GOAL_a_ryan_continuation_STEERED_through_the_ledger_passes():
 
     steering = HostSteering(seat, SimpleNamespace(request=request), "thread", "turn", {}, lambda: None)
     entry = steering.ledger.enqueue(item, "thread", "turn")
-    assert entry["item"]["source"] == "goal-ryan" and "goal_continuation" not in entry["item"]
+    assert entry["item"]["source"] == "goal-owner" and "goal_continuation" not in entry["item"]
     allowed, context = await steering.admit(entry["item"])
     assert allowed, context
 
@@ -769,7 +769,7 @@ def test_GOAL_CONTROL_a_goal_in_a_SPAWNED_seat_is_refused_at_TURN_1_with_the_tex
 
 
 @pytest.mark.parametrize("started_by", ["", "rpc", "unknown"])
-def test_GOAL_a_goal_NOT_started_by_ryan_is_refused_in_his_instance(started_by):
+def test_GOAL_a_goal_NOT_started_by_owner_is_refused_in_his_instance(started_by):
     """A goal saved before started_by existed (""), or issued by an rpc host that
     did not identify, is not his."""
     seat = _goal_seat()
@@ -801,7 +801,7 @@ def test_GOAL_goal_command_records_the_origin(monkeypatch):
     seat._command_source = "typed"
     goal_loop.goal_command(seat, "ship it")
     assert saved[-1].started_by == "typed"
-    assert seat._pending_input[-1]["source"] == "goal-ryan"
+    assert seat._pending_input[-1]["source"] == "goal-owner"
 
 
 @pytest.mark.asyncio
@@ -817,7 +817,7 @@ async def test_GOAL_submit_scopes_the_command_origin_to_its_dispatch():
 
 
 # ── finding F (Dijkstra 90a4ba0c): POSITIVE owner identification ─────────────
-#    "not spawned" is not "Ryan's own": 102 of 105 convos on disk carry no marker,
+#    "not spawned" is not "Owner's own": 102 of 105 convos on disk carry no marker,
 #    fleet seats launched by typing `litetui` into a pane included.
 
 def test_F_an_unmarked_NON_OWNER_instances_typed_turn_is_REFUSED():
@@ -856,23 +856,23 @@ def test_F_OWNER_marked_AND_spawned_is_REFUSED_spawned_wins():
 
 
 def test_F_an_OWNER_marked_instance_keeps_every_exemption(monkeypatch):
-    """typed/queued/interrupted/wakes/codex-question/goal-ryan (the parametrized arm
+    """typed/queued/interrupted/wakes/codex-question/goal-owner (the parametrized arm
     covers each ATTENDED source), and here: hello'd rpc and /goal turn 2."""
     seat = _ryans()
     seat._gui_rpc_enabled = True
     _typed(seat, "gui", source="rpc")
-    _typed(seat, "turn 2", source="goal-ryan")
+    _typed(seat, "turn 2", source="goal-owner")
     assert seat.streams == 2 and _no_floor_text(seat), seat.said
 
 
 def test_F_the_app_CONSUMES_the_owner_mark(monkeypatch):
-    """Read once and popped: no shell, tool or child of Ryan's process inherits it."""
+    """Read once and popped: no shell, tool or child of Owner's process inherits it."""
     from litetui import harness
     monkeypatch.setenv(harness.OWNER_MARKER, "1")
     app = LiteTUI()
     assert app._owner_seat is True
     assert harness.OWNER_MARKER not in os.environ
-    assert LiteTUI()._owner_seat is False, "a launch without the mark read as Ryan's"
+    assert LiteTUI()._owner_seat is False, "a launch without the mark read as Owner's"
 
 
 def test_F_the_owner_mark_does_NOT_leak_into_a_managed_child(monkeypatch):
@@ -884,7 +884,7 @@ def test_F_the_owner_mark_does_NOT_leak_into_a_managed_child(monkeypatch):
 
 
 def test_F_the_owner_mark_is_PROCESS_ONLY_not_a_conversation_fact(tmp_path, monkeypatch):
-    """A fleet agent resuming one of Ryan's conversations is enforced: nothing about
+    """A fleet agent resuming one of Owner's conversations is enforced: nothing about
     ownership is written to .convos/<id>/settings.json."""
     host = _BornHost(_st.Settings(backend="codex"), tmp_path, "codex")
     host._spawned_marker, host._owner_seat = False, True
@@ -892,12 +892,12 @@ def test_F_the_owner_mark_is_PROCESS_ONLY_not_a_conversation_fact(tmp_path, monk
     raw = _cs.path_for(tmp_path).read_text(encoding="utf-8")
     assert "owner" not in raw.lower()
     fleet = _resumed(tmp_path, monkeypatch, False)
-    fleet._owner_seat = False            # a fleet process, not Ryan's launcher
+    fleet._owner_seat = False            # a fleet process, not Owner's launcher
     assert seat_authority.floor_refusal(fleet, "typed") is not None
 
 
 def test_F_run_bat_marks_RYANS_launch_and_scopes_it():
-    """Ryan named run.bat as his launcher (Marquee 7048cfff). setlocal keeps the mark
+    """Owner named run.bat as his launcher (Marquee 7048cfff). setlocal keeps the mark
     from outliving the script in a console that runs it (a later `litetui`, the
     same shim fleet agents type, would read as his). It is set after `uv sync` and
     immediately before `uv run`, and the file stays CRLF (cmd.exe)."""
@@ -913,7 +913,7 @@ def test_F_run_bat_marks_RYANS_launch_and_scopes_it():
 
 
 
-# ── consumption side (Marquee 1b8a423e / 68aec657, Sentinel 3d610d15) ─────────
+# ── consumption side (Marquee 1b8a423e / 68aec657, Orchestrator 3d610d15) ─────────
 #    The mark is VOID inside an agent's shell, and inside a LiteSuite terminal it
 #    also needs that terminal untainted by the bridge.
 
@@ -930,7 +930,7 @@ def test_VOID_the_owner_mark_inside_an_agents_shell(marker):
 
 def test_VOID_claude_in_a_UI_panel_launching_litetui_is_ENFORCED(monkeypatch):
     """A UI-made panel carries LITETUI_OWNER to Claude Code started in it; its
-    Bash (CLAUDECODE=1) launching litetui must not inherit Ryan's exemption."""
+    Bash (CLAUDECODE=1) launching litetui must not inherit Owner's exemption."""
     monkeypatch.setenv("LITETUI_OWNER", "1")
     monkeypatch.setenv("CLAUDECODE", "1")
     assert LiteTUI()._owner_seat is False
@@ -939,7 +939,7 @@ def test_VOID_claude_in_a_UI_panel_launching_litetui_is_ENFORCED(monkeypatch):
 def test_VOID_a_litetui_tool_shell_launching_litetui_is_ENFORCED(monkeypatch):
     from litetui import harness
     monkeypatch.setenv("LITETUI_OWNER", "1")
-    LiteTUI()                                   # Ryan's own: exports the marker
+    LiteTUI()                                   # Owner's own: exports the marker
     assert os.environ.get(harness.AGENT_SHELL_MARKER) == "1"
     monkeypatch.setenv("LITETUI_OWNER", "1")    # a tool shell of it, relaunching
     assert LiteTUI()._owner_seat is False
@@ -955,7 +955,7 @@ def test_TAINT_is_checked_only_inside_a_LiteSuite_terminal(monkeypatch):
 
 
 def test_TAINT_a_bridge_typed_UI_shell_LOSES_the_mark_for_good(monkeypatch):
-    """/pty/talk typed `litetui` into a shell Ryan opened: the bridge recorded the
+    """/pty/talk typed `litetui` into a shell Owner opened: the bridge recorded the
     taint BEFORE writing, so the owner mark is gone, and stays gone."""
     answers = [False]
     monkeypatch.setattr(seat_authority, "pty_taint_clean", lambda term, timeout=1.0: answers[0])

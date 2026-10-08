@@ -135,7 +135,7 @@ def test_the_chat_defaults_to_autonomous_and_a_job_keeps_the_level_it_recorded(t
     It was `..._conversations_are_interactive_and_jobs_are_narrow_by_default`,
     then `test_every_turn_defaults_to_autonomous_and_the_job_knob_is_dead`. The
     conversation default is still `autonomous` ("b default to auto"). But a job's
-    own `tool_profile` is read again when it fires (T1082, Ryan: "we need new
+    own `tool_profile` is read again when it fires (T1082, Owner: "we need new
     settings to set this at the time u create the schedule ... it runs at the
     scheduled level"), so the knob is live and what it records must survive the
     round-trip.

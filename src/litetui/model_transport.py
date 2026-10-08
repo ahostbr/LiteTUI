@@ -909,7 +909,7 @@ class OAuthTransport:
             ceiling = _CODEX_RETRY_DELAYS[retries]
             # Full jitter, uniform over [ceiling/2, ceiling], so clients do not
             # synchronise. The 2/4/8/16/32 s ceilings and ~5 attempts are the
-            # T1019 card's spec (Sentinel f43c6985), not the 0.154 reference's.
+            # T1019 card's spec (Orchestrator f43c6985), not the 0.154 reference's.
             delay = random.uniform(ceiling / 2, ceiling)
             retries += 1
             if retry_notice is not None:

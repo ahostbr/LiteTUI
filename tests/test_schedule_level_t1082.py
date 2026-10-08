@@ -1,20 +1,20 @@
 """T1082 (T1049 phase C) — a schedule's level is set when it is created.
 
-Ryan (liteask a-a203e2c0, lock_cron), asked whether cron and /loop turns in an agent
+Owner (liteask a-a203e2c0, lock_cron), asked whether cron and /loop turns in an agent
 seat stay hardcoded autonomous: "we need new settings to set this at the time u
 create the schedule. in litetui and the sidecar. loops inherit the setting they were
 created on ... loops should only be set manually during a live litetui instance never
 scheduled directly. if a scheduled prompt has a /loop command in it so be it ... it
 runs at the scheduled level."
 
-Rulings: Sentinel 8cc9ea00 (no /loop dispatch; a loop records the effective level of
+Rulings: Orchestrator 8cc9ea00 (no /loop dispatch; a loop records the effective level of
 the turn it was created in), f4d49382 (C5 SKIP, not downgrade), e9576f7f (R1 skip
 above a flag ceiling, R2 "scheduled" -> interactive, R3 a locked seat's delete of an
 autonomous job is refused, R4 the sidecar creates through the parent), Dijkstra
 f0ae21c1 (P1 the file ceiling, S1 skip before the lease).
 
 conftest clears the owner mark, so an app or double built here is LOCKED unless an
-arm marks it Ryan's own with _ryans().
+arm marks it Owner's own with _owners().
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _app(profile=AUTONOMOUS, **kw):
 
 
 def _ryans(a):
-    """Ryan's own instance: owner-marked by his launcher, not spawned."""
+    """Owner's own instance: owner-marked by his launcher, not spawned."""
     a._spawned_seat = False
     a._owner_seat = True
     a._pty_term = None
@@ -103,7 +103,7 @@ def test_C3_spawned_seat_records_autonomous_by_choice_and_default():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("own, stored, want, offered_auto", [
     (False, AUTONOMOUS, AUTONOMOUS, True),
-    (True, INTERACTIVE, INTERACTIVE, True),    # CONTROL: Ryan's own, his level, all offered
+    (True, INTERACTIVE, INTERACTIVE, True),    # CONTROL: Owner's own, his level, all offered
 ])
 async def test_C5_the_job_form_starts_at_the_seats_level(own, stored, want, offered_auto):
     from textual.widgets import Select
@@ -215,7 +215,7 @@ def test_L2_spawned_seats_loop_keeps_autonomous():
 
 
 def test_L3_a_loop_created_DURING_a_scheduled_fire_records_the_jobs_level():
-    """Sentinel 8cc9ea00 (ii): the effective level of the turn it was created in."""
+    """Orchestrator 8cc9ea00 (ii): the effective level of the turn it was created in."""
     a = _ryans(_app(AUTONOMOUS))
     _said(a)
     a._chat_running = lambda: True
@@ -261,7 +261,7 @@ def test_F3_the_removed_scheduled_level_runs_interactive_and_is_named_once():
 
 
 def test_S1_a_skipping_seat_never_takes_the_scheduler_lease(monkeypatch):
-    """Dijkstra S1: a skipping seat holding the lease could cost Ryan's instance its
+    """Dijkstra S1: a skipping seat holding the lease could cost Owner's instance its
     last attempt in the slot."""
     taken = []
     real = shared_state.Lease

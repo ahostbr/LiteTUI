@@ -213,7 +213,7 @@ def new_agent_id() -> str:
 
 
 SPAWN_IDENTITY_MARKER = "LITETUI_SPAWN_IDENTITY"
-#: T1043 finding F: set to "1" ONLY by Ryan's own launchers. POSITIVE owner
+#: T1043 finding F: set to "1" ONLY by Owner's own launchers. POSITIVE owner
 #: identification: an instance without it meets the fleet floor on every turn.
 #: Consumed at startup (app.__init__) so no shell or child inherits it.
 OWNER_MARKER = "LITETUI_OWNER"
@@ -484,7 +484,7 @@ class Seat:
         evicted a holder whose pid was ALIVE but quiet for 700 s as a "dead
         ghost" (measured against a throwaway registry, 2026-09-26). A plain
         register refuses a live holder and still reclaims a dead-pid corpse,
-        which is all a relaunch needs. Ryan (liteask a-1db0f560): "the agents
+        which is all a relaunch needs. Owner (liteask a-1db0f560): "the agents
         name is supposed to auto change if the name is taken" — so a refusal
         becomes the next suffix; only past -9 does the seat keep the registry's
         generated name. First come keeps it. Worst case is 9 sequential

@@ -131,7 +131,7 @@ class PolicyDecision:
 # T0116: default/interactive asks only for destructive shell actions. Read-only
 # ordinary commands and program launches never ask merely because of their
 # executable's location. Undeclared MCP effects retain their separate gate.
-# Rare/unrepresented shell forms ask (Ryan: "Ship, rare shapes ask").
+# Rare/unrepresented shell forms ask (Owner: "Ship, rare shapes ask").
 # Explicit human-selected strict supervision is deliberately MORE asking.
 INTERACTIVE_PROFILE = ToolProfile(
     INTERACTIVE,
@@ -428,7 +428,7 @@ def evaluate(
                 f"allowed by a standing rule for {key}",
             )
         # T0246: a shell command confined to the seat's OWN worktree needs no human on
-        # `interactive` (Ryan: "cmds inside its worktree that arent removal of the
+        # `interactive` (Owner: "cmds inside its worktree that arent removal of the
         # tree... it should never need approval"). After the floor and the standing
         # rules above, so neither can be bypassed by it; and interactive only.
         if (profile.name == INTERACTIVE and policy.classify_args is classify_shell
@@ -578,7 +578,7 @@ def _unwrap_command_verbs(command: str) -> str:
 #:   `format` now has to be at a command position; a disk wipe is
 #:   `format C:`, never the third word of a script name.
 #:
-#:   T1094, Ryan 1ed3b84: interactive asks only for dangerous commands.
+#:   T1094, Owner 1ed3b84: interactive asks only for dangerous commands.
 #:   Python's `\b` accepts the hyphen in PowerShell Verb-Noun names as an end
 #:   of word: Format-Table, Kill-Process and Del-Item were false prompts.
 #:   Bare command names must end before both word characters AND hyphens.
@@ -1079,7 +1079,7 @@ def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_inter
         parts = deny_floor.shell_commands(command, shell or "bash")
         if shell is None and not any(part.get("heredoc") for part in parts):
             parts += deny_floor.shell_commands(command, "powershell")
-    # Ryan: "Ship, rare shapes ask". ONE explicit fail-closed prompt guard;
+    # Owner: "Ship, rare shapes ask". ONE explicit fail-closed prompt guard;
     # no claim that incomplete stream/operator representation proves inert data.
     # The mandatory jobs floor still runs separately and before this policy.
     view = _command_view(_powershell_shape(command)[0] if shell == "powershell" else command, shell)

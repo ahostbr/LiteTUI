@@ -31,6 +31,18 @@ fails if this file's top released heading disagrees with it.
   "local-only coding agent": it now runs local, Codex OAuth and free cloud
   models (Ryan, liteask a-b848bb60: "pure python opensource self-evolving TUI").
 
+### Fixed
+- **Published 0.25.0 behaviour restored on main.** A later merge had put older
+  code back over parts of that release. Restored: the launcher guard refuses
+  every recognised `run`/`run.bat` spelling instead of one fixed path; output
+  scratch roots are opt-in again (`LITETUI_OUTPUT_SCRATCH_ROOTS` or
+  `~/.litetui/output-roots.json`; an empty variable disables them); goal
+  origins emit `goal-owner` and the older label is still read from existing
+  ledgers; `scripts/readiness_gate.py` requires an explicit `--observer`;
+  conversation search follows `LITETUI_DATA_ROOT` with its index at
+  `tools/convo_search.db`; `docs/release-portability.md` and the owner-neutral
+  wording are back.
+
 ## [0.25.0] — 2026-10-04
 
 ### Added

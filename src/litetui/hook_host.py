@@ -128,12 +128,12 @@ def enter_conversation(app, event):
 
 def _turn_source(item) -> str:
     # T1043: an item with NO source is "unlabelled", never "queued". "queued" is
-    # an ATTENDED label (seat_authority.ATTENDED_SOURCES, exempt in Ryan's own
+    # an ATTENDED label (seat_authority.ATTENDED_SOURCES, exempt in Owner's own
     # instance) and must be earned by a typed submit, not by a producer that
     # forgot to say what it is. The steering ledger's copy, for one, keeps
     # "source" but drops "goal_continuation". Its tool profile is unchanged:
     # turn_profile treats any unlisted source like an attended submit.
-    # T1043: a goal item's source carries its loop's origin ("goal-ryan" /
+    # T1043: a goal item's source carries its loop's origin ("goal-owner" /
     # "goal", goal_loop), so the source wins; goal_continuation alone (a goal item
     # saved before that) is plain "goal".
     if item.get("source"):

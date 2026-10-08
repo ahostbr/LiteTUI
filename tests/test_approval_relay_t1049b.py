@@ -1,7 +1,7 @@
 """T1049-B1 — a locked seat's CONFIRM goes to the agent that spawned it, by inbox.
 
-Ryan (04169351): "whatever agent spawned the light qi instance should be babysitting it".
-Ryan (6e280dd4): typed CONFIRM in an agent-launched seat -> "The launching agent";
+Owner (04169351): "whatever agent spawned the light qi instance should be babysitting it".
+Owner (6e280dd4): typed CONFIRM in an agent-launched seat -> "The launching agent";
 an agent-launched LiteGUI's CONFIRM -> "No, launching agent".
 Plan ab8969c2, approved by Dijkstra 5ef7612a; Marquee da3eb064 (E2, Q1), 26d5b28c.
 
@@ -221,7 +221,7 @@ async def test_ACCIDENT_a_reply_from_another_agent_or_to_an_unknown_id_is_ordina
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["typed", "scheduled", "rpc"])
 async def test_REFUSE_agent_launched_without_a_spawner_stops_and_logs_never_a_human(wire, tmp_path, source):
-    """Ryan 6e280dd4 (b): never the GUI human; typed or rpc, no modal and no host."""
+    """Owner 6e280dd4 (b): never the GUI human; typed or rpc, no modal and no host."""
     a = _seat(spawner=None, agent_launched=True, rpc=(source == "rpc"))
     state = wire(a)
     text, ok = await _door(a, tmp_path, source)
@@ -255,7 +255,7 @@ async def test_CONTROL_HAND_typed_still_gets_the_modal(monkeypatch, tmp_path):
     assert opened == [True]
 
 
-# ── Ryan's own: unchanged, and out of B ─────────────────────────────────────
+# ── Owner's own: unchanged, and out of B ─────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_CONTROL_ryans_own_unattended_is_refused_with_no_relay_no_log_no_stop(wire, tmp_path):
@@ -288,7 +288,7 @@ async def test_HOST_a_supervised_child_asks_its_host_for_every_source_and_logs(m
     assert a._stop_requested == (not answer)
 
 
-# ── Ryan (b): an agent-launched LiteGUI with the envelope ───────────────────
+# ── Owner (b): an agent-launched LiteGUI with the envelope ───────────────────
 
 @pytest.mark.asyncio
 async def test_LITEGUI_an_enveloped_gui_seat_asks_the_launching_agent_not_the_gui(wire, tmp_path):

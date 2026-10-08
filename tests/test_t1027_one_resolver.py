@@ -6,7 +6,7 @@ Card T1027 (Marquee 27bec769, rulings 2b9aed25 + 4b9e7635). What it asks:
      EVERY source (a ceiling); inbox/child mail narrows and never widens.
   2. A flag-launched NEW conversation is born with the flag's backend/model/
      thinking (identity), and with the flag's profile only when it is STRICTER
-     (a restriction is not a grant, Sentinel 0118549d). A resume never switches
+     (a restriction is not a grant, Orchestrator 0118549d). A resume never switches
      backend silently.
   3. A seat whose name is held by a LIVE agent becomes <name>-2, never shares or
      steals it; a dead corpse's name is reclaimed.
@@ -126,7 +126,7 @@ def test_a_cron_fire_is_AUTONOMOUS_without_a_flag_and_capped_by_one(tmp_path: Pa
     gone), here autonomous. The resolver still narrows it under a flag. T1082 R1
     means _fire_job skips such a job before delivery (seat_authority.withheld), so
     this pins the resolver, not the fire path."""
-    # T1049: autonomous exists only in Ryan's own instance (owner-marked, not spawned).
+    # T1049: autonomous exists only in Owner's own instance (owner-marked, not spawned).
     own = _Host("interactive", None, tmp_path)
     own._spawned_seat, own._owner_seat = False, True
     assert _accept(own, "scheduled", "autonomous") == "autonomous"
@@ -262,7 +262,7 @@ def test_a_flag_launched_convo_is_BORN_with_the_flags_identity(tmp_path: Path) -
 
 
 def test_a_STRICTER_flag_profile_is_born_into_the_file(tmp_path: Path) -> None:
-    """Sentinel 0118549d: a restriction is not a grant, so it may outlive the
+    """Orchestrator 0118549d: a restriction is not a grant, so it may outlive the
     invocation."""
     h = _launched_like_AcceptT1031(tmp_path, "interactive", "autonomous")
     h._adopt_convo_settings(born=True)
@@ -377,19 +377,19 @@ def _holder(root: Path, name: str, pid: int, quiet_s: int) -> str:
 
 
 def test_a_second_OpenBolt_becomes_OpenBolt_2_and_the_first_keeps_its_name(registry) -> None:
-    """Ryan (liteask a-1db0f560): "the agents name is supposed to auto change if
+    """Owner (liteask a-1db0f560): "the agents name is supposed to auto change if
     the name is taken ... openbolt is the user choosen default name". The holder
-    is Ryan's own seat: pid alive, quiet for 700 s — past --takeover's 600 s bar,
+    is Owner's own seat: pid alive, quiet for 700 s — past --takeover's 600 s bar,
     well inside the 43200 s bar a plain register uses."""
     sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     try:
-        ryan = _holder(registry, "OpenBolt", sleeper.pid, 700)
+        owner = _holder(registry, "OpenBolt", sleeper.pid, 700)
         seat = harness_mod.Seat(agent_id=str(uuid.uuid4()), name="OpenBolt", model="m")
         assert seat.register(), seat.error
 
         assert seat.name == "OpenBolt-2"
-        assert (registry / "agents" / f"{ryan}.json").exists(), "Ryan's row was evicted"
-        assert (registry / "names" / ryan).read_text(encoding="utf-8") == "OpenBolt"
+        assert (registry / "agents" / f"{owner}.json").exists(), "Owner's row was evicted"
+        assert (registry / "names" / owner).read_text(encoding="utf-8") == "OpenBolt"
     finally:
         sleeper.kill()
 

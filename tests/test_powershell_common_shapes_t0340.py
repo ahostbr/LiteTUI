@@ -67,8 +67,8 @@ def test_near_miss_still_asks(command):
 
 
 def test_existing_run_launcher_floor_is_not_relaxed():
-    owner = Path('C:/Projects/LiteTUI/run.bat')
+    owner = Path('C:/ExampleProjects/LiteTUI/run.bat')
     if not owner.is_file():
         pytest.skip('actual protected owner launcher is absent')
-    for command in ("& 'C:/Projects/LiteTUI/run.bat' @('x')", "C:/Projects/LiteTUI/run.bat x"):
+    for command in ("& 'C:/ExampleProjects/LiteTUI/run.bat' @('x')", "C:/ExampleProjects/LiteTUI/run.bat x"):
         assert decide(command).action == tp.DENY

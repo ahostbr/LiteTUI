@@ -1,7 +1,7 @@
 """T1055 — a mouse WHEEL must not be able to act in LiteTUI.
 
 LiteSuite's AgentBridge lets an agent scroll a terminal pane (`pane/scroll`), and that
-route deliberately does NOT taint the terminal (Sentinel cc022be1). Ryan: "no leave that
+route deliberately does NOT taint the terminal (Orchestrator cc022be1). Owner: "no leave that
 unchanged no warning nothing" — an agent scrolling to READ his pane must not cost him his
 fleet-floor exemption. That decision rests on one fact about THIS app, proved in source
 rather than assumed:
@@ -15,7 +15,7 @@ rather than assumed:
     No built-in widget selects, accepts or submits on a scroll.
   * LiteTUI itself defines no mouse-scroll handler.
 
-So a scroll can move what Ryan SEES, never what the app DOES. This file turns red the
+So a scroll can move what Owner SEES, never what the app DOES. This file turns red the
 moment that stops being true of LiteTUI's own code: a widget that handles a scroll event,
 or a run that turns mouse reporting OFF. With reporting off, xterm turns the wheel into
 arrow keys in the alt screen, and an arrow is a keystroke. If this goes red, do not

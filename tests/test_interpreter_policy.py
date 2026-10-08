@@ -8,17 +8,17 @@ from litetui import settings
 from litetui import tool_policy as tp
 from litetui import trusted_executables as te
 
-WORKSPACES = [Path(p) for p in ('E:/SAS/ShadowsAndShurikens', 'C:/Projects/LiteSuite',
-                              'C:/Projects/LiteTUI', 'C:/Projects', 'C:/Users/Ryan')]
-VENV = 'E:/SAS/ShadowsAndShurikens/.venv_mcp312/Scripts/python.exe'
+WORKSPACES = [Path(p) for p in ('E:/ExampleWorkspace/ExampleGame', 'C:/ExampleProjects/LiteSuite',
+                              'C:/ExampleProjects/LiteTUI', 'C:/ExampleProjects', 'C:/Users/TestUser')]
+VENV = 'E:/ExampleWorkspace/ExampleGame/.venv_mcp312/Scripts/python.exe'
 SAMPLES = {
-    'A': 'python C:/Users/Ryan/.claude/skills/ls-conversation-lookup/find_conversation.py --search "x" --mode hybrid -n 8',
-    'B': 'git -C E:/SAS/ShadowsAndShurikens log --oneline -3',
-    'C': r'''"E:/SAS/ShadowsAndShurikens/.venv_mcp312/Scripts/python.exe" -X utf8 -c "import subprocess,os; p=subprocess.run([r'C:/Users/Ryan/AppData/Local/Programs/Python/Python311/python.exe',r'E:/SAS/ShadowsAndShurikens/.worktrees/_scratch/T0182/o/kaginawa_verify_launch.py'],capture_output=True,text=True,encoding='utf-8',errors='replace',env={**os.environ,'PYTHONIOENCODING':'utf-8'},creationflags=subprocess.CREATE_NO_WINDOW,timeout=25); print(p.stdout); print(p.stderr); raise SystemExit(p.returncode)"''',
-    'D': r'''"E:/SAS/ShadowsAndShurikens/.venv_mcp312/Scripts/python.exe" -X utf8 -c "import hashlib; from pathlib import Path; p=Path('E:/SAS/x.uasset'); print(hashlib.sha256(p.read_bytes()).hexdigest())"''',
-    'E': '"C:/Users/Ryan/AppData/Local/Programs/Python/Python311/python.exe" C:/Projects/.scratch/x.py',
+    'A': 'python C:/Users/TestUser/.claude/skills/ls-conversation-lookup/find_conversation.py --search "x" --mode hybrid -n 8',
+    'B': 'git -C E:/ExampleWorkspace/ExampleGame log --oneline -3',
+    'C': r'''"E:/ExampleWorkspace/ExampleGame/.venv_mcp312/Scripts/python.exe" -X utf8 -c "import subprocess,os; p=subprocess.run([r'C:/Users/TestUser/AppData/Local/Programs/Python/Python311/python.exe',r'E:/ExampleWorkspace/ExampleGame/.worktrees/_scratch/T0182/o/kaginawa_verify_launch.py'],capture_output=True,text=True,encoding='utf-8',errors='replace',env={**os.environ,'PYTHONIOENCODING':'utf-8'},creationflags=subprocess.CREATE_NO_WINDOW,timeout=25); print(p.stdout); print(p.stderr); raise SystemExit(p.returncode)"''',
+    'D': r'''"E:/ExampleWorkspace/ExampleGame/.venv_mcp312/Scripts/python.exe" -X utf8 -c "import hashlib; from pathlib import Path; p=Path('E:/ExampleWorkspace/x.uasset'); print(hashlib.sha256(p.read_bytes()).hexdigest())"''',
+    'E': '"C:/Users/TestUser/AppData/Local/Programs/Python/Python311/python.exe" C:/ExampleProjects/.scratch/x.py',
     'F': f'"{VENV}" script.py',
-    'G': '''python -c "from pathlib import Path; p=Path('C:/Projects/liteharness-oss/.worktrees/X/.slot-output'); print(p.exists())"''',
+    'G': '''python -c "from pathlib import Path; p=Path('C:/ExampleProjects/liteharness-oss/.worktrees/X/.slot-output'); print(p.exists())"''',
     'appr-e315ccbbdd6a': f'{VENV} .worktrees/_scratch/T0182/o/compact_graph_evidence.py',
     'appr-c9f82b398b83': f'{VENV} .worktrees/_scratch/T0182/o/contact_rows_summary.py',
 }
@@ -33,7 +33,7 @@ def decision(command, workspace, configured=()):
 @pytest.mark.parametrize('name', SAMPLES)
 def test_reference_matrix_baseline_and_configured(workspace, name, monkeypatch):
     # Stable installed identity fixture; the real host probe measures filesystem/PATH.
-    system = Path('C:/Users/Ryan/AppData/Local/Programs/Python/Python311/python.exe').resolve()
+    system = Path('C:/Users/TestUser/AppData/Local/Programs/Python/Python311/python.exe').resolve()
     monkeypatch.setattr(te, 'is_installed_tool', lambda path: path == system)
     # Corpus fixture only: exact explicit user identity, not a production path rule.
     monkeypatch.setattr(te, '_unlinked_absolute', lambda raw: Path(raw) if raw == VENV else None)
@@ -58,7 +58,6 @@ def test_python_path_data_is_not_a_launch(shell, payload):
     ('python -c "import os; os.system(cmd)"', None),
     ('python -c "import os as o; o.system(cmd)"', None),
     ('python -c "from os import system; system(cmd)"', None),
-    ('python -c "from subprocess import run; run(cmd)"', None),
     ('python -c "import subprocess as s; s.run(cmd)"', None),
     ('python -c "import os; os.execv(target, args)"', None),
     ('python -c "print(\'$(C:/foreign/program.exe)\')"', None),
@@ -78,12 +77,8 @@ def test_payload_mask_never_masks_dangers_or_real_shell_launches(command, label,
     assert decision(command, Path('E:/other')).action == (tp.CONFIRM if label else tp.ALLOW)
 
 
-def test_opaque_python_run_at_existing_owner_cwd_preserves_deny_floor(monkeypatch):
-    from litetui import deny_floor
-    owner = deny_floor._OWNER_LAUNCHER
-    if not owner.is_file():
-        pytest.skip('actual owner launcher is absent on this host')
-    monkeypatch.chdir(owner.parent)
+def test_opaque_python_run_preserves_deny_floor(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     command = 'python -c "from subprocess import run; run(cmd)"'
     assert tp.danger(command, Path('E:/other'), shell='bash') == None
     result = decision(command, Path('E:/other'))

@@ -98,7 +98,7 @@ def _shell(command, profile=tp.INTERACTIVE, shell=None):
 
 
 def test_interactive_allows_read_only_powershell_formatters():
-    # Ryan's 1ed3b84 ruling: interactive asks only for dangerous commands.
+    # Owner's 1ed3b84 ruling: interactive asks only for dangerous commands.
     for formatter in ("Format-Table", "Format-List", "Format-Wide", "Format-Custom", "Format-Hex"):
         command = f"Get-ChildItem | {formatter}"
         assert _shell(command).action == tp.ALLOW, command
@@ -193,31 +193,31 @@ def test_powershell_call_operator_on_quoted_executable_still_prompts():
 
 
 def test_scripts_and_path_runs_are_ordinary_but_chained_deletion_still_asks():
-    lookup = "python C:/Users/Ryan/.claude/skills/ls-conversation-lookup/find_conversation.py --search x --mode all"
-    for workspace in (Path("E:/SAS/ShadowsAndShurikens"), Path("C:/Projects/LiteTUI")):
+    lookup = "python C:/Users/TestUser/.claude/skills/ls-conversation-lookup/find_conversation.py --search x --mode all"
+    for workspace in (Path("E:/ExampleWorkspace/ExampleGame"), Path("C:/ExampleProjects/LiteTUI")):
         assert tp.danger(lookup, workspace) is None
         assert tp.danger("python C:/elsewhere/foreign.py", workspace) is None
         assert tp.danger("powershell -File C:/elsewhere/read.ps1", workspace) is None
         assert tp.danger(lookup + "; rm -rf C:/tmp/x", workspace) == tp.DELETION
     assert tp.danger("Start-Process C:/elsewhere/foreign.py", WS) == None
-    assert tp.danger("& 'C:/Projects/LiteSuite/run.bat'", Path("C:/Projects/LiteTUI")) == None
-    assert tp.danger("& 'C:/Projects/LiteSuite/run.bat'", Path("C:/Projects/LiteSuite")) is None
-    assert tp.danger("& 'C:/Projects/LiteTUI/dist/litetui-sidecar.exe'",
-                     Path("E:/SAS/ShadowsAndShurikens")) == None
-    workspace = Path("C:/Projects/LiteTUI")
+    assert tp.danger("& 'C:/ExampleProjects/LiteSuite/run.bat'", Path("C:/ExampleProjects/LiteTUI")) == None
+    assert tp.danger("& 'C:/ExampleProjects/LiteSuite/run.bat'", Path("C:/ExampleProjects/LiteSuite")) is None
+    assert tp.danger("& 'C:/ExampleProjects/LiteTUI/dist/litetui-sidecar.exe'",
+                     Path("E:/ExampleWorkspace/ExampleGame")) == None
+    workspace = Path("C:/ExampleProjects/LiteTUI")
     assert tp.danger("& ../foreign.exe", workspace) == None
     assert tp.danger(r".\tools\x.exe", workspace) is None
-    assert tp.danger(r"..\tools\x.exe", Path("C:/Projects/LiteTUI")) == None
-    for workspace in (Path("C:/Projects/LiteSuite"), Path("E:/SAS/ShadowsAndShurikens")):
+    assert tp.danger(r"..\tools\x.exe", Path("C:/ExampleProjects/LiteTUI")) == None
+    for workspace in (Path("C:/ExampleProjects/LiteSuite"), Path("E:/ExampleWorkspace/ExampleGame")):
         for exe, args in (("python.exe", "-m pytest tests -q"), ("ruff.exe", "check x")):
-            cmd = f"& 'C:/Projects/LiteTUI/.venv/Scripts/{exe}' {args}"
+            cmd = f"& 'C:/ExampleProjects/LiteTUI/.venv/Scripts/{exe}' {args}"
             assert tp.danger(cmd, workspace) is None
             assert tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY, {"command": cmd}, workspace).action == tp.ALLOW
 
 
 @pytest.mark.parametrize("exe", ["python.exe", "ruff.exe"])
 def test_executable_basename_cannot_spoof_project_tools(exe):
-    workspace = Path("C:/Projects/LiteTUI")
+    workspace = Path("C:/ExampleProjects/LiteTUI")
     for command in (f"& 'E:/untrusted/{exe}' --version", f"E:/untrusted/{exe} --version"):
         assert tp.danger(command, workspace) == None
         assert tp.evaluate(tp.INTERACTIVE, tp.SHELL_POLICY,
@@ -225,8 +225,8 @@ def test_executable_basename_cannot_spoof_project_tools(exe):
 
 
 def test_t0116_executable_identity_alone_does_not_create_a_launch_prompt():
-    workspace = Path("C:/Projects/LiteTUI")
-    assert tp.danger("& 'C:/Projects/LiteTUI/.venv/Scripts/python.exe' -m pytest", WS) is None
+    workspace = Path("C:/ExampleProjects/LiteTUI")
+    assert tp.danger("& 'C:/ExampleProjects/LiteTUI/.venv/Scripts/python.exe' -m pytest", WS) is None
     assert tp.danger("& 'C:/trusted/bin/ruff.exe' check .", workspace) is None
     assert tp.danger("& 'E:/untrusted/.venv/Scripts/python.exe' -m pytest", workspace) == None
     assert tp.danger("& 'E:/untrusted/.venv/Scripts/ruff.exe' check .", workspace) == None
@@ -390,7 +390,7 @@ def test_inbox_mail_keeps_interactive_and_tells_the_model_the_rule():
 
 @pytest.mark.parametrize("shell", ["bash", "powershell"])
 @pytest.mark.parametrize("executable", [
-    "C:/Users/Ryan/AppData/Local/Programs/Python/Python311/Scripts/lst.exe",
+    "C:/Users/TestUser/AppData/Local/Programs/Python/Python311/Scripts/lst.exe",
     "E:/untrusted/lst",
 ])
 @pytest.mark.parametrize("args", [
@@ -438,7 +438,7 @@ def test_t0116_liteharness_launch_is_not_a_danger_class(shell, args):
 @pytest.mark.parametrize("shell", ["bash", "powershell"])
 @pytest.mark.parametrize("executable", ["lst.cmd", "lst.exe.ps1", "lst-other.exe", "other.exe"])
 def test_t0116_harness_cli_names_do_not_create_launch_prompts(shell, executable):
-    path = "C:/Users/Ryan/AppData/Local/Programs/Python/Python311/Scripts/" + executable
+    path = "C:/Users/TestUser/AppData/Local/Programs/Python/Python311/Scripts/" + executable
     command = ("& " if shell == "powershell" else "") + path + " run tasks action=help"
     assert _shell(command, shell=shell).action == tp.ALLOW
 
@@ -537,7 +537,7 @@ def test_autonomous_inbox_mail_gets_no_rule_it_does_not_need():
     from litetui.app import LiteTUI
 
     queued = []
-    # T1049: autonomous exists only in Ryan's own instance (owner-marked, not spawned).
+    # T1049: autonomous exists only in Owner's own instance (owner-marked, not spawned).
     app = SimpleNamespace(settings=SimpleNamespace(tool_policy_profile=tp.AUTONOMOUS), _gui_quitting=False,
                           _spawned_seat=False, _owner_seat=True,
                           _chat_running=lambda: True, _pending_input=queued,
@@ -690,12 +690,12 @@ def test_t0116_review3_finite_stdin_flow_contract(command, action, label):
     "git status || git log",
     "git status 2>&1",
 ])
-def test_t0116_ryan_rare_unrepresented_shapes_ask(command):
+def test_t0116_owner_rare_unrepresented_shapes_ask(command):
     decision = _shell(command, shell="bash")
     assert decision.action == tp.CONFIRM and decision.danger == tp.UNKNOWN_SHAPE
 
 
-def test_t0116_ryan_three_invariants():
+def test_t0116_owner_three_invariants():
     assert _shell("git status", shell="bash").action == tp.ALLOW
     assert _shell("rm old", shell="bash").action == tp.CONFIRM
     assert _shell("cat <<'EOF'\nplain input\nEOF", shell="bash").action == tp.CONFIRM
@@ -706,5 +706,5 @@ def test_t0116_ryan_three_invariants():
     "rg '<<|\\|\\|' notes.txt",
     "Write-Output 'cat <<EOF || bash'",
 ])
-def test_t0116_ryan_unknown_guard_does_not_promote_quoted_prose(command):
+def test_t0116_owner_unknown_guard_does_not_promote_quoted_prose(command):
     assert _shell(command, shell="bash").action == tp.ALLOW

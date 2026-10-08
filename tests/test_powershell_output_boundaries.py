@@ -115,15 +115,13 @@ def test_symlink_escape_not_a_contained_output(paths):
 
 def test_card_scratch_derived_from_own_tree_only(paths, monkeypatch):
     root, _, foreign = paths
-    # Root construction is host-dependent, so test ownership derivation without
-    # creating anything at these production paths.
-    from pathlib import Path
-    card = Path('C:/Projects/.scratch/T0331/LiteTUI')
+    base = root / 'scratch'
+    card = base / 'T0331' / 'LiteTUI'
+    monkeypatch.setenv('LITETUI_OUTPUT_SCRATCH_ROOTS', str(base))
     monkeypatch.setattr(worktree_scope, 'own_roots', lambda *args: [card])
     roots, _ = worktree_scope.output_context(root, None)
-    if card.is_absolute():
-        assert card.parent.resolve() in roots
-        assert Path('C:/Projects/.scratch/T0332').resolve() not in roots
+    assert card.parent.resolve() in roots
+    assert (base / 'T0332').resolve() not in roots
     monkeypatch.setattr(worktree_scope, 'own_roots', lambda *args: [foreign])
     roots, _ = worktree_scope.output_context(root, None)
     assert foreign.parent not in roots

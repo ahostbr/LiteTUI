@@ -50,7 +50,7 @@ class GoalState:
     no_progress_count: int = 0
     tool_profile: str = INTERACTIVE
     #: T1043: who issued the /goal (seat_authority.command_origin): "typed",
-    #: "gui", "rpc", ... Ryan's own loops are exempt from the fleet floor in his
+    #: "gui", "rpc", ... Owner's own loops are exempt from the fleet floor in his
     #: own instance; "" (a goal saved before this field) is enforced.
     started_by: str = ""
 
@@ -493,7 +493,7 @@ def loop_command(app: Any, arg: str) -> None:
         app._system("/loop: a prompt is required after the interval")
         return
     app._materialise_convo()
-    # T1082: a loop inherits the level of the turn it was created in (Ryan: "loops
+    # T1082: a loop inherits the level of the turn it was created in (Owner: "loops
     # inherit the setting they were created on"). /loop takes no level, so a loop's
     # level is never set directly.
     level = seat_authority.loop_level(app)

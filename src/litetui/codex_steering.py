@@ -38,6 +38,14 @@ class SteeringLedger:
     def __init__(self, entries, save):
         self.entries = entries
         self.save = save
+        # Read compatibility for existing conversations only. New enqueues use
+        # goal-owner; the legacy spelling is not an attended-source default.
+        from litetui.legacy_goal_source import normalize_persisted_goal_source
+
+        for entry in self.entries:
+            item = entry.get("item", {})
+            if "source" in item:
+                item["source"] = normalize_persisted_goal_source(item["source"])
 
     def enqueue(self, item, thread_id, turn_id):
         entry = {

@@ -202,7 +202,7 @@ async def test_a_human_decision_landing_after_the_reconnect_finishes_is_not_anno
 @pytest.mark.asyncio
 @pytest.mark.parametrize("script", ["tools", "empty"], ids=["CONTROL_healthy_server", "retry_pending"])
 async def test_a_real_mcp_stop_during_the_retry_backoff_is_served_not_refused(tmp_path, monkeypatch, script):
-    """T0124, Sentinel's characterisation: type the real `/mcp stop` (mcp_manage._cmd_mcp, with
+    """T0124, Orchestrator's characterisation: type the real `/mcp stop` (mcp_manage._cmd_mcp, with
     its own busy gate) while the retry is asleep in its 30 s backoff. The control arm has a
     healthy server, so no retry is pending: it says whether the test app itself is idle."""
     import json

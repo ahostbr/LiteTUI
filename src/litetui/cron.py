@@ -127,7 +127,7 @@ class CronService:
             return
 
         tokens = rest.split()
-        # T1082: the level is chosen HERE, at creation (Ryan: "set this at the time
+        # T1082: the level is chosen HERE, at creation (Owner: "set this at the time
         # u create the schedule"). No --level records this seat's level.
         chosen = None
         if tokens[0] == "--level":

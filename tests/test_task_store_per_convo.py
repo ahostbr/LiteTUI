@@ -313,7 +313,7 @@ def test_a_rebind_does_not_mark_this_instances_own_task_lost(monkeypatch, owned_
 
 
 def test_our_pid_on_a_row_from_another_instance_is_still_a_reused_pid(monkeypatch, owned_session):
-    """The Sentinel 94cedaec rule survives: same pid, different instance = a dead
+    """The Orchestrator 94cedaec rule survives: same pid, different instance = a dead
     predecessor that happened to hold this number."""
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: True)
     c1 = _born("11111111-1111-4111-8111-111111111111", owned_session)

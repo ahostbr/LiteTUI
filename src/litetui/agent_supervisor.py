@@ -13,7 +13,7 @@ from litetui.agent_launcher import LaunchBlocked, validate_handshake, validate_p
 
 _PARENT_SEAT_IDENTITY = {
     "LITETUI_SPAWN_IDENTITY",
-    "LITETUI_OWNER",  # T1043 F: Ryan's owner mark never passes to a child
+    "LITETUI_OWNER",  # T1043 F: Owner's owner mark never passes to a child
     "LITEHARNESS_AGENT_ID",
     "LITEHARNESS_AGENT_NAME",
     "LITEHARNESS_TIER",

@@ -27,24 +27,24 @@ Four rules, all about what the command TARGETS, never about how it is spelled:
                           git repository root (a `.git` DIRECTORY; a worktree's
                           `.git` file is not one), or a folder containing the
                           workspace (the workspace itself only when it is a repo).
-  owner-launcher          executing the existing owner `C:/Projects/LiteTUI/run.bat`
-                          by resolved path identity, including command-position
-                          `run` completed through PATHEXT. Arguments, nonexistent
-                          paths and other checkouts are not the owner launcher. It
-                          sets LITETUI_OWNER=1, the user's floor exemption, and is
-                          guarded only by CLAUDECODE / LITETUI_AGENT_SHELL, which a
-                          Codex seat or a plain subprocess does not carry (T1054;
-                          the user: "Deny floor blocks agents from it"). Every
-                          spelling that names it is refused unless a READER heads
-                          the command (cat, type, Get-Content, git, rg, ...);
-                          another project's run.bat is not this one.
+  owner-launcher          every parser-recognized executable `run` / `run.bat`
+                          launcher is refused, without private path identity.
+                          This includes bare, relative and absolute spellings,
+                          nonexistent files and another checkout's launcher;
+                          resolution, PATH, PATHEXT and environment/configuration
+                          claims do not narrow the refusal. Existing reader and
+                          proven literal-data exclusions remain: mentioning a
+                          launcher is not necessarily executing it. This is a
+                          bounded command recognizer, not a sandbox for arbitrary
+                          scripts, variables, aliases or custom launcher names.
+                          Agents use `liteharness spawn` for managed seats.
   jobs-file               writing a LiteTUI data root's `jobs.json`: the file
                           whose rows LiteTUI fires at their RECORDED level, so
                           since T1082 a written row is authority (T1085; Dijkstra
                           f0ae21c1 P1). The target is a file named jobs.json whose
                           folder holds `src/litetui` (a checkout: the default data
                           root), or `.litetui-data.json` (the marker every data root
-                          gets on launch, check_data_version; Ryan's LiteGUI root
+                          gets on launch, check_data_version; the user's LiteGUI root
                           is not a checkout), or is $LITETUI_DATA_ROOT. A redirect,
                           tee / Out-File / Set-Content / Add-Content / New-Item, a
                           copy ONTO it, any move or rename of it, a delete, an
@@ -118,8 +118,7 @@ HOME_VARIABLES = frozenset({
     "%userprofile%", "%home%", "%homedrive%%homepath%",
 })
 HARNESS_DIRS = (".claude", ".codex", ".liteharness", ".litesuite")
-#: The user's actual launcher, not any folder with a LiteTUI-shaped tree.
-_OWNER_LAUNCHER = Path("C:/Projects/LiteTUI/run.bat")
+#: Launcher recognition is identity-free: no environment/config may hide a launcher.
 
 #: A delete verb at a word boundary. `find` counts only with -delete / -exec rm.
 _VERB = re.compile(
@@ -885,12 +884,11 @@ def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = Non
         if match.re in (_LAUNCH, _CODE_LAUNCH):
             if in_data:
                 continue
-            launcher = _owner_launch(command, match, launcher_base, home, shell=shell)
-            if launcher:
+            if _owner_launch(command, match, launcher_base, home, shell=shell):
                 return _say("owner-launcher",
-                            f"it runs {launcher}, LiteTUI's owner launcher, which marks "
-                            "the user's own instance (LITETUI_OWNER=1); agents launch "
-                            "LiteTUI seats through the spawn service",
+                            "it executes an owner-capable run/run.bat launcher; private "
+                            "launcher identity is unavailable, so every recognized "
+                            "executable spelling is denied, including other absolute paths",
                             "Launch a seat with `liteharness spawn` instead.")
             continue
         if _GIT_VERB.search(command[:match.start()]):
@@ -1032,32 +1030,36 @@ def _owner_command_position(words: list[str]) -> list[str]:
 
 
 def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
-                  *, shell: str | None = None) -> Path | None:
-    """The LiteTUI run.bat this `run` / `run.bat` word runs, or None when it
-    names something else, is only read, or cannot be resolved."""
+                  *, shell: str | None = None) -> bool:
+    """Recognize executable run/run.bat without caller-controlled identity.
+
+    Deliberately conservative: another absolute run.bat is denied too. Existing
+    parser/data guards remain; no existence, PATH or configuration can grant
+    an exception. This bounded command recognizer is not a shell sandbox.
+    """
     start = match.start()
     if _launcher_quoted_argument(command, start):
-        return None
+        return False
     # Leading non-nested comments can precede argv0. Only a trusted PowerShell
     # context may excuse a match IN the comment; unknown shells keep scanning.
     comments = re.match(r"[ \t]*(?:<#(?:(?!<#|#>).)*#>[ \t]*)+", command, re.DOTALL)
     if comments:
         if start < comments.end() and shell == "powershell":
-            return None
+            return False
         if start >= comments.end():
             command = " " * comments.end() + command[comments.end():]
     prefix = _PATH_TAIL.search(command[:start]).group(0)
     prefix_length = len(prefix)
     if prefix.startswith("-"):   # -FilePath:.\run.bat names the path after the colon
         if ":" not in prefix:
-            return None
+            return False
         prefix = prefix.partition(":")[2]
     if prefix and prefix[-1] not in "\\/":
-        return None   # `rerun`, `myrun.bat`: another name
+        return False   # `rerun`, `myrun.bat`: another name
     if match.re is _CODE_LAUNCH:
         # No new general brace boundary: only anchored richer interpreter CODE
-        # mentioning the launcher takes this D1 branch, with normal identity.
-        return _existing_owner_launcher(prefix + match.group(0), base, home)
+        # mentioning the launcher takes this D1 branch, without identity narrowing.
+        return True
     # The head is judged PER SEGMENT: `echo x & run.bat` runs run.bat. A `(`
     # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
     # echo `run.bat`), so it starts a segment too. A `)` ends one: in
@@ -1086,7 +1088,7 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
     if token_index is not None and re.match(r"[A-Za-z_][\w]*=", tokens[token_index].group()):
         preceding = [_unquote(token.group()).lower() for token in tokens[:token_index]]
         if not _owner_command_position(preceding):
-            return None
+            return False
     # A clearly quoted function / array argument is data, not argv0. Bare
     # words after an identifier+( remain ambiguous and are scanned fail-closed.
     function_head = re.search(r"[\w.-]+\Z", command[:boundary]) if boundary > 0 else None
@@ -1095,13 +1097,23 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
             command[boundary - 1].isalnum() or command[boundary - 1] in "_@.") and (
             re.fullmatch(r"[ \t]*[\"']", command[boundary + 1:start])) and (
             command[start:].startswith(match.group() + command[start - 1])):
-        return None
+        return False
     before = segment[:-prefix_length] if prefix_length else segment
     expression = re.match(r"[ \t]*(?:\$[A-Za-z_][\w]*[ \t]*=[ \t]*|return[ \t]+)", before, re.IGNORECASE)
     if expression:
         before = before[expression.end():]
         if before.lstrip().startswith(("'", '"')):
-            return None   # assignment/return of a string is not a command
+            return False   # assignment/return of a string is not a command
+    # Literal PowerShell argument arrays launching cmd: only /c (optionally
+    # preceded by /d) places the following launcher at cmd's executable head.
+    # Do not peel echo/type, arbitrary switches, variables, or string operands.
+    cmd_wrapper = re.fullmatch(
+        r"[ \t]*(?:start-process|saps)[ \t]+(?:-filepath[ \t]+)?"
+        r"(?:cmd(?:\.exe)?|'cmd(?:\.exe)?'|\"cmd(?:\.exe)?\")[ \t]+"
+        r"-argumentlist[ \t]+(?:(?:/d|'/d'|\"/d\")[ \t]*,[ \t]*)?"
+        r"(?:/c|'/c'|\"/c\")[ \t]*,[ \t]*[\"']?", before, re.IGNORECASE)
+    if cmd_wrapper:
+        before = ""
     before = before.strip(" \t\"'")
     before = re.sub(r"\d?[<>]{1,2}&?[^\s<>&|]+", "", before)
     position = re.findall(r"[^\s\"'`]+", before.lower())
@@ -1110,7 +1122,7 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
     position = [w.lstrip("@^") for w in position if w.lstrip("@^")]
     position = _owner_command_position(position)
     if position[:1] and position[0] in _READERS:
-        return None
+        return False
     # Narrow command positions: direct invocations and cmd's bounded if
     # conditions. Do not turn a later subcommand/argument into argv0.
     if position and position[0] in ("&", "do", "else"):
@@ -1128,25 +1140,8 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
                      for w in position[1:])
              and ("-filepath" not in position[1:] or position[-1] == "-filepath"))
             or (position[0] in ("invoke-item", "ii") and not position[1:])):
-        return None
-    return _existing_owner_launcher(prefix + match.group(0), base, home)
-
-
-def _existing_owner_launcher(raw: str, base: Path | None, home: Path) -> Path | None:
-    """Resolve the same literal identity for normal command and D1 code arms."""
-    target = _resolve(raw, base, home)
-    if target is None:
-        return None
-    if target.name.lower() == "run":
-        # cmd searches PATHEXT in order; a preceding run.exe is not run.bat.
-        extensions = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
-        target = next((candidate for ext in extensions if ext
-                       for candidate in [target.with_suffix(ext.lower())]
-                       if candidate.is_file()), None)
-    owner = _OWNER_LAUNCHER.resolve()
-    if target is None or not target.is_file() or not owner.is_file():
-        return None
-    return target if os.path.normcase(str(target.resolve())) == os.path.normcase(str(owner)) else None
+        return False
+    return True
 
 
 def _unquote(word: str) -> str:
