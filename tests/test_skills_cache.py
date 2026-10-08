@@ -15,11 +15,24 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from litetui import app as app_mod
 from litetui import paths
 from litetui import skills as skills_mod
+from litetui.plugin_reload_provenance import capture_skills_baseline
 from litetui.plugins.skills_plugin import _cmd_skills, _cmd_refresh
+
+
+@pytest.fixture(autouse=True)
+def _isolated_idle_refresh(monkeypatch):
+    # Only substitute external activity sources; retain the real refresh gates.
+    from litetui import ttyguard
+    monkeypatch.setitem(ttyguard.CANCELLABLE, "proc", None)
+    monkeypatch.setattr("litetui.plugins.skills_plugin.children_pending", lambda *a: False)
 
 
 def _make_skill(base: Path, folder: str, name: str, desc: str = "does things") -> Path:
@@ -48,6 +61,12 @@ class _StubApp:
         self.skills_cached_at = 0.0
         self.said: list[str] = []
         self.pushed: list = []
+        self.backend = SimpleNamespace(name="lmstudio")
+        self.convo_id = "cache-test"
+        self.workers = []
+        self.store = SimpleNamespace(loading=False)
+        self.screen_stack = [object()]
+        capture_skills_baseline(self)
 
     def system_message(self, text):
         self.said.append(text)
@@ -59,7 +78,6 @@ class _StubApp:
         self.pushed.append((screen, callback))
 
     def refresh_skills(self):
-        from litetui import app as app_mod
         return app_mod.LiteTUI.refresh_skills(self)
 
 
@@ -84,11 +102,11 @@ def test_write_then_read_round_trips(tmp_path: Path) -> None:
     found = skills_mod.discover_all(tmp_path, [])
     assert found, "nothing discovered to cache"
 
-    written = skills_mod.write_cache(tmp_path, found)
+    written = skills_mod.write_cache(tmp_path, found, [])
     assert written == skills_mod.cache_path(tmp_path)
     assert written.is_file(), "the cache was not written where /skills says it is"
 
-    got = skills_mod.read_cache(tmp_path)
+    got = skills_mod.read_cache(tmp_path, [])
     assert got is not None
     cached, generated = got
     assert [s.name for s in cached] == [s.name for s in found]
@@ -107,10 +125,10 @@ def test_a_deleted_skill_is_dropped_from_the_cache_on_read(tmp_path: Path) -> No
     base = tmp_path / skills_mod.SKILLS_DIR_NAME
     _make_skill(base, "alpha", "alpha")
     gone = _make_skill(base, "beta", "beta")
-    skills_mod.write_cache(tmp_path, skills_mod.discover_all(tmp_path, []))
+    skills_mod.write_cache(tmp_path, skills_mod.discover_all(tmp_path, []), [])
 
     gone.unlink()
-    cached, _ = skills_mod.read_cache(tmp_path)
+    cached, _ = skills_mod.read_cache(tmp_path, [])
     assert [s.name for s in cached] == ["alpha"], "a deleted skill survived in the cache"
 
 
@@ -118,10 +136,10 @@ def test_a_corrupt_cache_is_ignored_rather_than_fatal(tmp_path: Path) -> None:
     p = skills_mod.cache_path(tmp_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("{not json", encoding="utf-8")
-    assert skills_mod.read_cache(tmp_path) is None
+    assert skills_mod.read_cache(tmp_path, []) is None
 
     p.write_text(json.dumps({"skills": "wrong shape"}), encoding="utf-8")
-    assert skills_mod.read_cache(tmp_path) is None
+    assert skills_mod.read_cache(tmp_path, []) is None
 
 
 # ── /skills refresh ──────────────────────────────────────────────────────────

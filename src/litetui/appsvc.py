@@ -71,13 +71,11 @@ STORE_HEADER = "## Your store, loaded once at the start of this conversation"
 
 
 def load_skills(app):
-    """The skill index, from cache when there is one.
+    """The skill index, cached while the selected discovery roots still match.
 
-    Discovery walks every configured library on every boot, which is why a
-    folder added while the app was running never appeared: the answer was
-    computed once at startup and nothing could ask again. The cache does not
-    change that -- it makes the recomputation an explicit, cheap act
-    (/skills refresh) instead of a restart.
+    Plugin upgrades and configured-root changes trigger a scan at startup.
+    Changes inside an unchanged library use /skills refresh instead of a
+    restart; an already running app retains its index until that refresh.
 
     Returns (skills, generated_at). generated_at is 0.0 for a fresh scan,
     which is how /skills knows whether it is showing cached data and how old
@@ -85,11 +83,11 @@ def load_skills(app):
     """
     if not app.settings.skills_enabled:
         return ([], 0.0)
-    cached = skills_mod.read_cache(paths.data_root())
+    cached = skills_mod.read_cache(paths.data_root(), app.settings.skill_roots)
     if cached is not None:
         return cached
     found = skills_mod.discover_all(paths.data_root(), app.settings.skill_roots)
-    skills_mod.write_cache(paths.data_root(), found)
+    skills_mod.write_cache(paths.data_root(), found, app.settings.skill_roots)
     return (found, 0.0)
 
 def load_image_file(app, path: Path) -> str | None:
