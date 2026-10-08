@@ -24,8 +24,9 @@ other settings):
 
 This is a user choice/example, not a runtime model default. Use the exact model,
 bare cognitive profile and thinking level supported by your configured provider
-and installed launcher; a chosen Codex route uses `"backend": "codex"` and its
-exact model ID. The settings location is the existing path returned by
+and installed launcher. `backend` may be any name LiteTUI lists under `/backend`;
+none is refused by name (see "Which routes are accepted" below). The settings
+location is the existing path returned by
 `litetui.settings.settings_path()`, not a new routing file. An absent/null
 `small_task_route` means off. The accepted operation keeps its configuration
 snapshot even if settings change later. Existing auth/provider settings are
@@ -66,9 +67,79 @@ A worker still runs under the host's existing tool policy and authority. The new
 tool declares full delegated capabilities rather than pretending to be read-only.
 The external launcher owns profile/provider/model/auth/bridge checks, persistent
 name freshness and fleet admission. It must not be replaced with a headless or
-one-shot adapter. Existing names are not resumed or retasked. Local backends,
-automatic worktree lifecycle and idle-seat reuse are deliberately unsupported.
+one-shot adapter. Existing names are not resumed or retasked. Automatic worktree
+lifecycle and idle-seat reuse are deliberately unsupported.
 The requested visible pane goes through the ordinary launcher's placement policy.
+
+## Which routes are accepted: any backend, and nothing is ever loaded
+
+Dispatch never loads a model, never starts a server and never asks one to load.
+Before it reserves or launches anything it must be able to show that starting
+the worker and letting it work cannot load a model. If it cannot show that, the
+answer is `unavailable` with `Loading needs approval:` and a sentence saying
+why. A refused route launches nothing and reserves nothing.
+
+The check is one read-only question to the model server ("which models are
+loaded right now?"). It is taken when you dispatch, from the saved settings file
+a new worker reads at startup, not from the leader's live session.
+
+| Backend in the route | Accepted when | Refused when |
+|---|---|---|
+| `claude`, `codex`, `cline`, `free` | always (fixed public services) | never by this check |
+| `custom`, server at a public address | always; the server is not asked anything | no URL saved, or the URL is not valid |
+| `custom`, server on this machine or a private network | the server reports a state for every model, this exact model is loaded, no other model is loaded and none is loading | it reports no state, or any other state below |
+| `lmstudio` | this exact model is loaded, no other model is loaded and none is loading | any other state below |
+| `strata` | same as LM Studio | any other state below |
+| `ninfer` | the running engine serves this exact model | any other state below |
+| `llamacpp`, a server started with one model | it serves this exact model | any other state below |
+| `llamacpp`, a router LiteTUI started | this exact model is loaded, no other model is loaded and none is loading | any other state below |
+| `llamacpp`, a router LiteTUI did not start | never: it may load a model when asked | always |
+
+"Any other state" means: the model is not loaded, the model is still loading,
+a different model is loaded, the server reports a state it does not recognise,
+the server answers with an error, or the server cannot be reached.
+
+A custom address counts as public only when every address its name resolves to
+is public. `localhost`, `127.1`, `[::1]`, `0.0.0.0`, a home or office network
+address, a name that resolves to any of those, and a name that does not resolve
+at all are treated as this machine.
+
+### The worker checks again before every turn
+
+Dispatch looks once; the worker runs for a long time, and LM Studio, Strata and
+some custom servers unload an idle model and load it again when the next request
+arrives. So a spawned worker seat on LM Studio, on Strata, or on a local custom
+server that reports a state per model asks the same read-only question before
+every turn, and refuses the turn with a sentence when its model is not loaded.
+Other seats are unchanged: a seat a person started, and spawned leaders,
+thinkers and reviewers, still load on their first turn as before. llama.cpp and
+NInfer need no such check because they cannot load on a request.
+
+### What is NOT proven
+
+- **A gap of milliseconds.** Between the worker's check and its request the
+  server can still unload the model, and the request would then load it. Only
+  the server can close that gap.
+- **What a real server does.** Tests use stand-ins. They do not show that a real
+  LM Studio, Strata or router reports "loaded" only for a model that is in
+  memory, that LM Studio calls an unloaded model `not-loaded`, or that a router
+  LiteTUI started still refuses to load on a request. That needs one approved
+  run against a model that is already loaded.
+- **That the worker reads the same settings.** The check reads this process's
+  saved settings. A worker started with a different data folder or different
+  `LITETUI_*_HOST` variables may talk to another server; its own per-turn check
+  is then the only guard, and llama.cpp and NInfer seats have none.
+- **A llama.cpp server that stops after the check.** The new worker then starts
+  its own llama.cpp router when it connects, as any LiteTUI seat does. That
+  starts a process and loads no model; the worker's turns fail until one is
+  loaded by a person.
+- **Proxies and redirects.** A public address reached through a proxy, or one
+  that redirects to this machine, is treated as public.
+- **The worker's own tools.** A worker with a shell can still contact a local
+  model server itself. This check is about the worker's model requests only.
+- **Changing the thinking level in a worker, then reconnecting**, makes an LM
+  Studio seat send one probing chat request at connect. A dispatched worker is
+  told not to change it; nothing enforces that.
 
 ## Durable states and return receipt
 
@@ -141,5 +212,6 @@ Focused tests exercise real isolated Git fixtures and owned AgentSession storage
 with a fake external process boundary. They prove argv, state/identity binding,
 validation, concurrency and no-retry behavior—not provider availability, visible
 placement, cognitive-profile adoption or successful worker execution. Those need
-an independently reviewed, leader-owned live scratch probe. No all-backend claim
-is made. Human merge and human-look gates remain outside this tool.
+an independently reviewed, leader-owned live scratch probe. The accept/refuse
+table above is proven against stand-in servers only; see "What is NOT proven".
+Human merge and human-look gates remain outside this tool.

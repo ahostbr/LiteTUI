@@ -8602,6 +8602,15 @@ class LiteTUI(App):
             loaded = {r.key for r in getattr(self, 'model_rows', {}).values() if r.loaded}
             if loaded and self._agent_session.authority.model not in loaded:
                 raise llm_backend.BackendError('Selected agent model is not loaded; no identity fallback is permitted')
+            if getattr(self, '_spawned_seat', False) and getattr(getattr(self, 'seat', None), 'tier', None) == 'worker':
+                # T0408-I: `loaded` above is the listing from connect, so it cannot see a
+                # model the server has unloaded since, and an empty listing passed. A
+                # spawned worker asks the server again, read-only, before every turn.
+                from litetui import subagent_local
+                why = await asyncio.to_thread(subagent_local.seat_refusal, self.backend,
+                                              self._agent_session.authority.model)
+                if why:
+                    raise llm_backend.BackendError(why)
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam

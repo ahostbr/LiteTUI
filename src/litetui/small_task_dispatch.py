@@ -13,10 +13,13 @@ import subprocess
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 from uuid import uuid4
 
-from litetui import harness
+from litetui import harness, router_record, subagent_local
+from litetui import settings as settings_mod
 from litetui.agent_store import StoreError, _unlinked, valid_id, valid_name
+from litetui.llm_backend import BACKEND_NAMES, BackendError, make_backend
 
 
 class Unavailable(ValueError):
@@ -65,8 +68,9 @@ class Route:
             raise Unavailable('Invalid exact model ID')
         route = cls(**{key: model if key == 'model' else _token(value, key)
                        for key, value in raw.items()})
-        if route.backend not in ('claude', 'codex'):
-            raise Unavailable('Only configured Claude/Codex routes are supported; no local load')
+        # No backend is refused by name: _prove_no_load decides, at dispatch, by what is running.
+        if route.backend not in BACKEND_NAMES:
+            raise Unavailable('Unknown backend; use a name LiteTUI lists under /backend')
         if route.cognitive.lower().endswith('.md'):
             raise Unavailable('Cognitive profile must be a bare name, not a filename')
         if route.thinking_level not in ('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
@@ -219,6 +223,49 @@ def _brief(record):
             'No merge, Done, retry launch, seat closure or new delegation. Human merge authority remains intact.')
 
 
+def _prove_no_load(route):
+    """Refuse a route unless launching and using its seat is PROVEN not to load a model.
+
+    A photograph, taken once: the seat repeats it before every turn where the
+    engine loads on a request (subagent_local.seat_refusal). Read-only: at most
+    one state query. Never load, ensure_running, ensure_chat_ready or an SDK call.
+    """
+    name, model = route.backend, route.model
+    if name in subagent_local.REMOTE_BACKENDS:
+        return
+    # What a fresh seat reads at startup (app.py: settings_mod.load()), not this seat's live values.
+    settings = settings_mod.load()
+    settings.backend, settings.default_model = name, model
+    if name == 'custom':
+        from litetui.custom_backend import api_base
+        if not settings.custom_base_url:
+            raise Unavailable('No custom server URL is saved for a worker to use')
+        try:
+            remote = not subagent_local.url_is_local(api_base(settings.custom_base_url))
+        except ValueError as exc:
+            raise Unavailable(str(exc)) from None
+        if remote:
+            return
+    try:
+        backend = make_backend(settings)
+        states = backend.subagent_model_states()
+        if name == 'custom' and isinstance(states, dict) and 'unknown' in states.values():
+            raise ValueError('This custom server is on this machine or a private network and does not '
+                             'report which models are loaded')
+        subagent_local.require_sole_resident(states, model)
+        if name == 'llamacpp' and not backend.single_model:
+            # A single-model server has no load route. A router loads on a request
+            # unless it was started --no-models-autoload, which only ours is known to be.
+            record = router_record.read()
+            if not (record is not None and record.is_mine and router_record.is_live(record)
+                    and record.port == urlsplit(backend.host()).port):
+                raise ValueError('This llama.cpp router was not started by LiteTUI, so it may load a model on a request')
+    except (ValueError, BackendError) as exc:
+        raise Unavailable(f'Loading needs approval: {exc}') from None
+    except OSError:
+        raise Unavailable('Loading needs approval: the model server could not be read') from None
+
+
 def _context(app):
     session = getattr(app, '_agent_session', None)
     seat = getattr(app, 'seat', None)
@@ -250,6 +297,8 @@ def _dispatch(app, journal, raw):
     cwd, branch, baseline = _workspace(request, Path.cwd())
     if harness.harness_disabled() or harness._liteharness_exe() is None:
         raise Unavailable('Ordinary liteharness launcher unavailable or disabled')
+    # Before the reservation: a refused route launches nothing and reserves nothing.
+    _prove_no_load(route)
     # The external launcher atomically checks persistent name ownership, provider,
     # fleet policy and bridge/owned launch. Never resume/takeover or replace it here.
     if (app._agent_session is not session or app.convo_id != parent['conversation_id']

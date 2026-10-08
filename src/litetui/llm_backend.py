@@ -1956,7 +1956,8 @@ class LMStudioBackend(_VramGate):
             state = row.get('state') or (row.get('status') or {}).get('value')
             if state is None:
                 state = 'loaded' if row.get('loaded_context_length') else 'unknown'
-            states[key] = state
+            # LM Studio's word for a downloaded model that is not resident.
+            states[key] = 'unloaded' if state == 'not-loaded' else state
         return states
 
     def loaded_models(self) -> list[str]:

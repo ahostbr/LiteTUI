@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "small_task",
-    "description": "Explicit bounded ordinary named-worker dispatch for registered owned leaders. Off until small_task_route is configured. No routing inference, fallback or automatic retry. Provide a fresh persistent worker name, visible pane and a clean separate prepared Git worktree. Scope is a handoff contract, NOT sandbox enforcement or merge permission. Actions: dispatch, status, receipt (leader records worker inbox result; never merged/Done). Local backends and idle reuse unsupported.",
+    "description": "Explicit bounded ordinary named-worker dispatch for registered owned leaders. Off until small_task_route is configured. No routing inference, fallback or automatic retry. Provide a fresh persistent worker name, visible pane and a clean separate prepared Git worktree. Scope is a handoff contract, NOT sandbox enforcement or merge permission. Actions: dispatch, status, receipt (leader records worker inbox result; never merged/Done). Any configured backend; a local one is accepted only when its exact model is already loaded, and dispatch never loads a model. Idle reuse unsupported.",
     "parameters": {
       "type": "object",
       "additionalProperties": false,
