@@ -216,38 +216,48 @@ def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
     construction: the same loop and the floor's same recognizer, asked about this
     name. settings.save is in-process Python, never a tool call.
 
-    What is refused is a write that NAMES the file, to the floor's stated bound.
-    A conversation's own settings.json holds the rules that conversation actually
-    runs under; it is a different file and is not judged here."""
-    return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words)
+    The same holds for every settings.json below the data root's `.agents`
+    folder, at any depth: a conversation's own file (the tool profile and the
+    allow and deny rules that conversation runs under) and an agent's home file
+    (the backend, model and thinking level it starts with). A seat that is not
+    Owner's is refused for its OWN conversation's file too: it saves that file
+    in-process (convo_settings.save), never through a tool.
+
+    What is refused is a write that NAMES the file, to the floor's stated bound."""
+    return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words,
+                               unders=(None, ".agents"))
 
 
-def _owned_file_refusal(app, args, workspace, policy, name, words) -> str | None:
+def _owned_file_refusal(app, args, workspace, policy, name, words, unders=(None,)) -> str | None:
     """Why this seat may not make this tool call, which would write a data root's
-    `name`; None when it would not, or when the seat is Owner's own."""
+    `name` (directly in the root, or below one of its `unders` folders); None
+    when it would not, or when the seat is Owner's own."""
     # T1133 removed autonomy/profile locks and schedule API gates. This guard
     # protects file ownership only; a read-only tool's path is not a write.
     if policy is not None and policy.classify_args is None and policy.capabilities <= {
             tool_policy.READ_ONLY, tool_policy.NETWORK}:
         return None
-    found = _protected_write(args, workspace, name)
+    found = _protected_write(args, workspace, name, unders)
     # The owner recheck costs a bridge call: only a recognized write pays it.
     if found is None or is_ryans_own(app, recheck=True):
         return None
     return words(*found)
 
 
-def _protected_write(args, workspace, name) -> tuple | None:
-    """(target, the floor's Git reason) when the call would write a data root's
-    `name`: one of the two is None. The floor's own questions, asked with `name`."""
+def _protected_write(args, workspace, name, unders) -> tuple | None:
+    """(target, the floor's Git reason, the folder the file sits below) when the
+    call would write a data root's `name`: one of the first two is None. The
+    floor's own questions, asked with `name`, once for each of `unders` (None:
+    the file directly in the data root)."""
     paths: list[str] = []
     commands: list[str] = []
     _written(args, paths, commands)
     if not paths and not commands:
         return None
     for command in commands:
-        if reason := deny_floor.jobs_git_refusal(command, workspace, name=name):
-            return None, reason
+        for under in unders:
+            if reason := deny_floor.jobs_git_refusal(command, workspace, name=name, under=under):
+                return None, reason, under
     bases = [Path(workspace), Path.cwd()]
     if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
         bases.append(Path(workspace) / args["cwd"])
@@ -260,15 +270,17 @@ def _protected_write(args, workspace, name) -> tuple | None:
                 target = (path if path.is_absolute() else base / path).resolve()
             except (OSError, ValueError, RuntimeError):
                 continue
-            if deny_floor.is_jobs_file(target, name):
-                return target, None
+            for under in unders:
+                if deny_floor.is_jobs_file(target, name, under):
+                    return target, None, under
         for command in commands:
-            if target := deny_floor.jobs_write_target(command, base, name=name):
-                return target, None
+            for under in unders:
+                if target := deny_floor.jobs_write_target(command, base, name=name, under=under):
+                    return target, None, under
     return None
 
 
-def _jobs_words(target, git_reason=None) -> str:
+def _jobs_words(target, git_reason=None, under=None) -> str:
     return git_reason or (
         f"this LiteTUI may not write {target}: LiteTUI fires the jobs in that file at "
         "each job's recorded level, and this seat cannot establish current owner authority "
@@ -276,8 +288,16 @@ def _jobs_words(target, git_reason=None) -> str:
         "Schedule with /cron instead")
 
 
-def _settings_words(target, git_reason=None) -> str:
+def _settings_words(target, git_reason=None, under=None) -> str:
     # The floor's Git sentence names the schedule file, so this file gets its own.
+    if under is not None:
+        doing = (f"write {target}" if git_reason is None else
+                 "run a Git command that writes a conversation's or an agent's own settings.json")
+        return (f"this LiteTUI may not {doing}: that file is a conversation's or an agent's "
+                "own settings (its tool profile, its allow and deny rules, the backend and "
+                "model it runs), and this seat cannot establish current owner authority "
+                "(T0306). They are changed with /settings, /model or /think in that "
+                "conversation's own LiteTUI")
     doing = (f"write {target}" if git_reason is None else
              "run a Git command that writes, or that from another folder may write, "
              "a data root's settings.json")

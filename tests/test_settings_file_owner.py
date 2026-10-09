@@ -24,7 +24,8 @@ are neither hooked agents nor LiteTUI seats".
 
 Every test of the schedule-file rule (tests/test_jobs_file_t1085.py) is run a
 second time here under a mirror: whatever it asks its rule is also asked of the
-settings rule, the name substituted. At this commit 107 of those 111 tests ask
+settings rule, the name substituted, and asked once more with the file moved
+below `.agents` (an agent's home settings file in the same data root). At this commit 107 of those 111 tests ask
 their rule something and so are mirrored; 4 ask it nothing and pass whatever the
 settings rule does (named at ASKS_NOTHING, and pinned). A case added to that
 file later is mirrored without an edit here.
@@ -41,22 +42,67 @@ NOT covered, by this rule or by the schedule file's (they share every one):
   judge this file at all (only a LiteTUI seat does).
 A delete or a garbled file is not a lesser case of those: the file then loads as
 its defaults, which are the autonomous profile with no deny rules.
-Each conversation's own settings.json, which holds the allow and deny rules and
-the profile that conversation actually runs under, and a per-agent home's, are
-different files by the folder test and are NOT covered. The rule brings the
-device settings.json level with jobs.json. It does not make a seat a sandbox.
+The rule brings the device settings.json level with jobs.json. It does not make
+a seat a sandbox.
+
+THE FILES BELOW `.agents` (the second half of this file). The same rule, the
+same loop and the same recognizer also refuse a write that names ANY
+settings.json at any depth below the data root's `.agents` folder:
+  <root>/.agents/<Name>/conversations/<id>/settings.json   a conversation's own
+      tool profile, allow and deny rules, hosts and program paths;
+  <root>/.agents/<Name>/settings.json                      an agent's home file:
+      its identity and the backend, model and thinking level it starts with.
+A seat that is not the owner's is refused for its OWN conversation's file too;
+it saves that file in-process (convo_settings.save, the agent's execution
+update), which never passes the door. "Any depth" over-blocks any other
+settings.json a tool might write below `.agents`; that is fail-safe.
+
+When such a file takes effect, MEASURED on temp roots (the tests named
+`test_measured_*`), because the limits below are worded from it:
+- at an open or a resume, everything in it: the profile, the allow list, hosts;
+- in a RUNNING conversation, at its next save of a conversation setting
+  through the settings service (the settings screen, or a command that saves a
+  setting), the profile: the file is re-read after the save, and the
+  conversation's chosen profile, which a typed turn carries, is what it says;
+- in a running conversation, at a reconnect, the hosts, the skill roots and the
+  other reconnect-time keys;
+- a save from the seat's memory (a profile or model change in that seat)
+  rewrites every known field and so erases a planted one;
+- an agent's home file decides the backend and model at that agent's next
+  launch; changed under a RUNNING seat it stops that seat's saves until it is
+  reopened; garbled, it stops the agent from starting and, for as long as it
+  is garbled, fails the ownership check of EVERY seat on the data root;
+- the legacy copy, <root>/.convos/<id>/settings.json, is never loaded: a seat
+  refuses to resume a transcript outside its own agent. It is not in the rule.
+
+NOT covered for the files below `.agents`, beyond everything listed above:
+- a file of that name COPIED OR MOVED INTO the folder (`cp other/settings.json
+  <folder>/`): the name is in the source word only. Pinned as a known limit by
+  one test here; it holds for the device file and the schedule file too;
+- a folder spelled with a stream suffix in a SHELL command
+  (`.agents::$INDEX_ALLOCATION/...`): the `$` makes the recognizer read the path
+  as holding a variable. The write and edit tools are judged (tested here);
+- the file's own 8.3 short name in an argument word (`rm <folder>/SETTIN~1.JSO`);
+- a delete of the conversation's or the agent's whole folder, or of the file
+  through a wildcard. A conversation whose file is missing or unreadable falls
+  back to the device defaults, which are the autonomous profile;
+- the transcript (convo.jsonl), the catalog and an agent's memory files, which
+  lie in the same tree and are other files.
 """
 from __future__ import annotations
 
 import json
 import re
 import types
+from copy import deepcopy
+from dataclasses import asdict
 
 import pytest
 
 import test_jobs_file_t1085 as jobs_tests
 
-from litetui import agent_ownership, agent_store, claude_tools, seat_authority, tool_policy
+from litetui import agent_ownership, agent_store, claude_tools, convo_settings, seat_authority
+from litetui import settings_runtime, tool_policy
 from litetui import app as m
 from litetui import settings as settings_mod
 from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
@@ -218,7 +264,7 @@ def test_a_windows_alias_of_the_name_is_refused_too(app, tmp_path, monkeypatch, 
 
 def test_another_folders_settings_json_passes(app, tmp_path, monkeypatch):
     a, _ = _agent(app, monkeypatch)
-    for folder in ("elsewhere", ".vscode", ".agents/Name"):
+    for folder in ("elsewhere", ".vscode", "sub/.agents/Name"):
         other = tmp_path / folder
         other.mkdir(parents=True)
         assert seat_authority.settings_file_refusal(
@@ -331,7 +377,7 @@ async def test_a_shell_reader_stays_allowed(app, tmp_path, monkeypatch, shell, t
 
 
 @pytest.mark.parametrize("target", ["mysettings.json", "settings.json.bak", "app.settings.json",
-                                    ".vscode/settings.json", ".agents/Probe/settings.json"])
+                                    ".vscode/settings.json", "sub/.agents/Probe/settings.json"])
 def test_a_shell_write_to_a_look_alike_passes(app, tmp_path, monkeypatch, target):
     a, _ = _agent(app, monkeypatch)
     (tmp_path / ".vscode").mkdir()
@@ -410,6 +456,406 @@ def test_a_folder_whose_name_holds_the_text_is_judged_as_the_folder_it_is(
     assert rule(a, {"command": f"echo x > {plain.as_posix()}/{name}"}, tmp_path) is None
 
 
+# ── every settings.json below the data root's `.agents` folder: a conversation's
+#    own file and an agent's home file. The same rule, asked a second time inside
+#    the same loop with the folder the file may sit below. ──
+
+PLACES = ["this seat's own conversation", "another agent's conversation",
+          "this agent's home", "another agent's home"]
+BELOW_WORDS = "a conversation's or an agent's own settings"
+DEVICE_WORDS = "dispatch routes"
+
+
+def _place(a, root, place):
+    """The settings file of `place`. Only this agent's home file is on disk."""
+    return {
+        PLACES[0]: a.convo_dir,
+        PLACES[1]: root / ".agents" / "Other" / "conversations" / "c1",
+        PLACES[2]: root / ".agents" / "Probe",
+        PLACES[3]: root / ".agents" / "Other",
+    }[place] / SETTINGS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("place", PLACES)
+@pytest.mark.parametrize("index", range(6))
+async def test_a_seat_that_is_not_the_owners_may_not_write_a_settings_file_below_agents(
+        app, tmp_path, monkeypatch, profile, place, index):
+    a, sent = _agent(app, monkeypatch, profile)
+    target = _place(a, tmp_path, place)
+    name, args, policy = _calls(target)[index]
+    result = await a._authorize_action(name, args, policy, workspace=tmp_path)
+    assert result, (name, profile, place, "the write was allowed")
+    text = result[0]
+    assert "may not write" in text and str(target) in text and "T0306" in text, text
+    assert BELOW_WORDS in text and DEVICE_WORDS not in text, "the device file's words were used"
+    assert "/settings" in text
+    assert sent == [], "the write was relayed to the spawner for an APPROVE"
+    assert a._active_tool_profile == profile, "the file guard must not change the profile"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("place", [PLACES[0], PLACES[3]])
+@pytest.mark.parametrize("shell, template", SHELL_WRITERS)
+async def test_a_shell_write_below_agents_is_refused(
+        app, tmp_path, monkeypatch, profile, place, shell, template):
+    a, sent = _agent(app, monkeypatch, profile)
+    target = _place(a, tmp_path, place)
+    command = template.format(root=target.parent.as_posix()).replace("NAME", SETTINGS)
+    denied = await _door(a, shell, command, tmp_path)
+    assert denied, (command, "the write was allowed")
+    assert "T0306" in denied[0] and "may not" in denied[0] and BELOW_WORDS in denied[0], denied[0]
+    assert JOBS not in denied[0] and DEVICE_WORDS not in denied[0], denied[0]
+    # A Git write is refused by the floor's Git question, which names no path.
+    said = "run a Git command that writes" if command.startswith("git ") else f"write {target}"
+    assert said in denied[0], denied[0]
+    assert sent == [], "the write was relayed to the spawner for an APPROVE"
+    # CONTROL: the schedule file's rule is asked about the data root itself only.
+    assert seat_authority.jobs_file_refusal(
+        a, {"command": command.replace(SETTINGS, JOBS)}, tmp_path) is None
+    assert seat_authority.settings_file_refusal(_owners(a), {"command": command}, tmp_path) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", PROFILES)
+async def test_a_relative_path_below_agents_is_judged_against_its_folder(
+        app, tmp_path, monkeypatch, profile):
+    a, sent = _agent(app, monkeypatch, profile)
+    a.convo_dir.mkdir(parents=True)
+    (tmp_path / "work").mkdir()
+    # The rule also tries the process's own folder as a base, and the tests run
+    # from a checkout, which is a data root: stand somewhere that is not one.
+    monkeypatch.chdir(tmp_path / "work")
+    by_workspace = await a._authorize_action("write", {"path": SETTINGS, "content": "{}"},
+                                             tool_policy.WRITE_POLICY, workspace=a.convo_dir)
+    by_cwd = await a._authorize_action(
+        "bash", {"command": f"echo x > {SETTINGS}", "cwd": str(a.convo_dir)},
+        tool_policy.SHELL_POLICY, workspace=tmp_path / "work")
+    by_cd = await _door(a, "bash", f"cd {a.convo_dir.as_posix()} && echo x > {SETTINGS}", tmp_path / "work")
+    for result in (by_workspace, by_cwd, by_cd):
+        assert result and BELOW_WORDS in result[0], result
+    assert sent == []
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("place", PLACES)
+def test_the_owners_own_seat_is_not_refused_below_agents(app, tmp_path, place, profile):
+    a = _owners(app)
+    a.settings.tool_policy_profile = profile
+    a._active_tool_profile = profile
+    for _name, args, policy in _calls(_place(a, tmp_path, place)):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path, policy) is None, args
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("place", [PLACES[0], PLACES[3]])
+async def test_the_owners_own_seat_passes_the_door_below_agents(app, tmp_path, monkeypatch, place):
+    a, sent = _agent(app, monkeypatch, AUTONOMOUS)
+    _owners(a)
+    name, args, policy = _calls(_place(a, tmp_path, place))[0]
+    assert await a._authorize_action(name, args, policy, workspace=tmp_path) is None
+    assert sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("place", [PLACES[0], PLACES[3]])
+@pytest.mark.parametrize("shell, template", SHELL_READERS)
+async def test_a_reader_below_agents_stays_allowed(app, tmp_path, monkeypatch, place, shell, template):
+    a, sent = _agent(app, monkeypatch)
+    target = _place(a, tmp_path, place)
+    command = template.format(root=target.parent.as_posix()).replace("NAME", SETTINGS)
+    assert await _door(a, shell, command, tmp_path) is None, command
+    assert await a._authorize_action("read", {"path": str(target)}, tool_policy.READ_POLICY,
+                                     workspace=tmp_path) is None
+    assert sent == []
+
+
+@pytest.mark.parametrize("folder", ["plain/.agents/Seat", "plain/.agents/Seat/conversations/c1",
+                                    "sub/.agents/Seat", ".agents2/Seat", "agents/Seat", "x.agents/Seat"])
+def test_a_settings_json_below_another_folder_passes(app, tmp_path, monkeypatch, folder):
+    """`.agents` of a folder that is not a data root (plain/, sub/: no marker, no
+    checkout, not the environment's root), and a folder of another name."""
+    a, _ = _agent(app, monkeypatch)
+    target = tmp_path / folder / SETTINGS
+    for args in ({"path": str(target), "content": "{}"},
+                 {"command": f"echo x > {target.as_posix()}"}, {"command": f"rm {target.as_posix()}"}):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
+
+
+@pytest.mark.parametrize("name", ["convo.jsonl", "memory.md", "memories/note.md", "soul.md", "handoff.md",
+                                  "settings.json.bak", "mysettings.json", "settings.local.json"])
+def test_other_files_below_agents_pass(app, tmp_path, monkeypatch, name):
+    """The transcript, the memory files and look-alike names are other files:
+    this rule says nothing about them (and so does not protect them)."""
+    a, _ = _agent(app, monkeypatch)
+    for folder in (a.convo_dir, tmp_path / ".agents" / "Probe"):
+        target = folder / name
+        for args in ({"path": str(target), "content": "x"},
+                     {"command": f"echo x > {target.as_posix()}"}, {"command": f"rm {target.as_posix()}"}):
+            assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
+
+
+@pytest.mark.parametrize("folder", [".AGENTS", ".agents.", ".agents::$INDEX_ALLOCATION",
+                                    ".agents:$I30:$INDEX_ALLOCATION"])
+@pytest.mark.parametrize("name", [SETTINGS, "settings.json::$DATA", "SETTINGS.JSON", "settings.json."])
+def test_a_windows_alias_of_the_folder_or_the_name_is_refused_by_the_write_tool(
+        app, tmp_path, monkeypatch, folder, name):
+    """Windows opens each of these as the agent's home file (the folder aliases
+    measured on NTFS). The write and edit tools resolve the path themselves, so
+    the stream suffix on the FOLDER, which a shell command is not judged for
+    (see the header), is judged here."""
+    a, _ = _agent(app, monkeypatch)
+    spelled = f"{tmp_path}\\{folder}\\Probe\\{name}"
+    why = seat_authority.settings_file_refusal(a, {"path": spelled, "content": "{}"}, tmp_path)
+    assert why and BELOW_WORDS in why, spelled
+
+
+def test_the_folders_short_name_is_followed_when_the_volume_gives_one(app, tmp_path, monkeypatch):
+    import ctypes
+    import os
+    if os.name != "nt":
+        pytest.skip("short names are a Windows volume feature")
+    buffer = ctypes.create_unicode_buffer(600)
+    ctypes.windll.kernel32.GetShortPathNameW(str(tmp_path / ".agents"), buffer, 600)
+    short = buffer.value.replace("\\", "/").rsplit("/", 1)[-1]
+    if not short or short.lower() == ".agents":
+        pytest.skip("this volume gives the folder no short name")
+    a, _ = _agent(app, monkeypatch)
+    spelled = f"{tmp_path.as_posix()}/{short}/Probe/{SETTINGS}"
+    for args in ({"path": spelled, "content": "{}"}, {"command": f"echo x > {spelled}"},
+                 {"command": f"rm {spelled}"}):
+        why = seat_authority.settings_file_refusal(a, args, tmp_path)
+        assert why and BELOW_WORDS in why, args
+
+
+def test_known_limit_a_same_named_file_copied_into_the_folder_is_not_refused_today(
+        app, tmp_path, monkeypatch):
+    """KNOWN LIMIT, PINNED ON PURPOSE. A copy or a move whose destination is the
+    FOLDER carries the file's name in its source word only, and the recognizer
+    looks at words that hold the name and resolve to the protected file. So this
+    replaces the file and is not refused, for a file below `.agents`, for the
+    device file and for the schedule file alike. A fix must change this test
+    knowingly; until then it says what is true."""
+    a, _ = _agent(app, monkeypatch)
+    forms = ("cp other/NAME {dir}/", "mv other/NAME {dir}", "cp -t {dir} other/NAME",
+             "Copy-Item other/NAME -Destination {dir}", "cd {dir} && cp ../other/NAME .")
+    asked = [(SETTINGS, seat_authority.settings_file_refusal, folder)
+             for folder in (tmp_path, a.convo_dir, tmp_path / ".agents" / "Probe")]
+    asked.append((JOBS, seat_authority.jobs_file_refusal, tmp_path))
+    for name, rule, folder in asked:
+        # CONTROL: the same rule does refuse a copy ONTO the file in that folder.
+        assert rule(a, {"command": f"cp other/{name} {folder.as_posix()}/{name}"}, tmp_path)
+        for form in forms:
+            command = form.format(dir=folder.as_posix()).replace("NAME", name)
+            assert rule(a, {"command": command}, tmp_path) is None, (
+                command, "now refused: the limit is closed, change this test and the header")
+
+
+def _born(a):
+    """Give `a` a conversation of its own on disk, as a new conversation gets."""
+    a.convo_dir.mkdir(parents=True, exist_ok=True)
+    a._adopt_convo_settings(born=True)
+    return a.convo_dir / SETTINGS
+
+
+def test_a_seat_that_is_not_the_owners_still_saves_its_own_settings_in_process(
+        app, tmp_path, monkeypatch):
+    """The in-process saves take no part in the door, so the rule cannot fail
+    them: this shows only that each still WORKS in such a seat, and that the
+    same seat is refused the same file through a tool. The three saves: the
+    conversation file from the seat's memory, the app's own write-through of
+    one field, and the agent's execution update of its home file."""
+    a, _ = _agent(app, monkeypatch)
+    session = a._agent_session
+    try:
+        mine = _born(a)
+        assert json.loads(mine.read_text(encoding="utf-8"))["tool_policy_profile"] == AUTONOMOUS
+        written = convo_settings.save(a.convo_dir, convo_settings.ConvoSettings(tool_policy_profile=STRICT),
+                                      agent_session=session)
+        assert written == mine and json.loads(mine.read_text(encoding="utf-8"))["tool_policy_profile"] == STRICT
+        a._remember_for_this_convo("tool_policy_profile", INTERACTIVE)
+        assert json.loads(mine.read_text(encoding="utf-8"))["tool_policy_profile"] == INTERACTIVE
+        home = tmp_path / ".agents" / "Probe" / SETTINGS
+        session.update_execution(backend="codex", model="fixture-2", thinking_level="high")
+        assert json.loads(home.read_text(encoding="utf-8"))["execution"]["model"] == "fixture-2"
+        for path in (mine, home):
+            assert seat_authority.settings_file_refusal(a, {"path": str(path), "content": "{}"}, tmp_path)
+    finally:
+        a.store.release()
+
+
+# ── MEASURED: when such a file takes effect. These do not test the rule; they pin
+#    the facts the limits in the header are worded from. "Plant" = the file is
+#    changed on disk behind the seat's back, as a tool write would change it. ──
+
+PLANTED_ALLOW = ["shell(rm *)"]
+PLANTED_HOST = "http://planted.invalid:1"
+
+
+def _plant(path, **execution):
+    """Plant the autonomous profile, and `execution` keys, in a conversation's file."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["tool_policy_profile"] = AUTONOMOUS
+    raw["execution"]["tool_policy_profile"] = AUTONOMOUS
+    raw["execution"].update(execution)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _on_disk(path):
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return raw["tool_policy_profile"], raw["execution"].get("tool_always_allow"), raw["execution"].get("lm_host")
+
+
+def test_measured_a_resume_adopts_the_planted_profile_and_allow_row(app, tmp_path, monkeypatch):
+    """The real _resume, with only its redraw and its backend connect stubbed
+    (neither reads the file; both need a mounted screen)."""
+    a, _ = _agent(app, monkeypatch, STRICT)
+    monkeypatch.setattr(m.LiteTUI, "_render_resumed", lambda self, path: None)
+    monkeypatch.setattr(m.LiteTUI, "connect", lambda self, *_a, **_k: None)
+    try:
+        a._materialise_convo()
+        a._append({"role": "user", "content": "saved"})
+        assert a.chosen_tool_profile == STRICT and a.settings.tool_always_allow == []
+        _plant(a.convo_dir / SETTINGS, tool_always_allow=PLANTED_ALLOW)
+        assert a.chosen_tool_profile == STRICT, "CONTROL: a plant alone changes nothing in a running seat"
+        assert a._resume(a.convo_path)
+        assert a.chosen_tool_profile == AUTONOMOUS and a._active_tool_profile == AUTONOMOUS
+        assert a.settings.tool_always_allow == PLANTED_ALLOW
+    finally:
+        a.store.release()
+
+
+def test_measured_a_save_from_the_seats_memory_erases_a_plant(app, tmp_path, monkeypatch):
+    a, _ = _agent(app, monkeypatch, STRICT)
+    try:
+        path = _born(a)
+        _plant(path, tool_always_allow=PLANTED_ALLOW, lm_host=PLANTED_HOST)
+        assert _on_disk(path) == (AUTONOMOUS, PLANTED_ALLOW, PLANTED_HOST)
+        a._remember_for_this_convo("seat_tier", "leader")     # any write-through of one field
+        assert _on_disk(path) == (STRICT, [], a.settings.lm_host) and a.settings.lm_host != PLANTED_HOST
+        assert a.chosen_tool_profile == STRICT
+    finally:
+        a.store.release()
+
+
+@pytest.mark.parametrize("by", ["the settings screen", "a command that saves a setting"])
+def test_measured_a_running_conversation_adopts_a_planted_profile_at_its_next_settings_save(
+        app, tmp_path, monkeypatch, by):
+    """One unrelated conversation setting is saved through the settings service
+    and the file is re-read. The settings screen fills its form from the file on
+    disk; a command saves the seat's own settings, of which only the changed key
+    is written. Either way the plant stays in the file, and the conversation's
+    chosen profile, which a typed turn carries, is then the planted one. The
+    allow list in force is not re-read here."""
+    a, _ = _agent(app, monkeypatch, STRICT)
+    try:
+        path = _born(a)
+        _plant(path, tool_always_allow=PLANTED_ALLOW)
+        if by == "the settings screen":
+            form = settings_runtime.snapshot_with_launch(a, a.convo_dir.name).effective
+            assert form.tool_policy_profile == AUTONOMOUS and form.tool_always_allow == PLANTED_ALLOW
+            candidate = deepcopy(form)
+            candidate.temperature = 0.5
+            result = settings_runtime.persist_settings(a, candidate)
+            settings_runtime.apply_saved_result(a, candidate, result)
+        else:
+            # A settled seat: what it holds in memory is what it last saved.
+            object.__setattr__(a.settings, "_baseline", asdict(a.settings))
+            a.settings.temperature = 0.5
+            result = settings_runtime.persist_or_raise(a, a.settings)
+        assert [outcome.fields for outcome in result.persistence if outcome.saved] == [("temperature",)]
+        assert _on_disk(path)[:2] == (AUTONOMOUS, PLANTED_ALLOW), "the plant survived the save"
+        assert a.chosen_tool_profile == AUTONOMOUS
+        assert seat_authority.turn_profile(a, "typed", a.chosen_tool_profile) == AUTONOMOUS
+        assert a._active_tool_profile == STRICT, "the turn in flight is not changed"
+        assert a.settings.tool_always_allow == [], "the allow list in force is not re-read by a save"
+    finally:
+        a.store.release()
+
+
+def test_measured_a_reconnect_adopts_the_planted_hosts_and_skill_roots(app, tmp_path, monkeypatch):
+    a, _ = _agent(app, monkeypatch, STRICT)
+    try:
+        path = _born(a)
+        _plant(path, lm_host=PLANTED_HOST, skill_roots=["/planted/skills"], tool_always_allow=PLANTED_ALLOW)
+        assert a.settings.lm_host != PLANTED_HOST
+        settings_runtime.prepare_reconnect(a)
+        assert a.settings.lm_host == PLANTED_HOST and a.settings.skill_roots == ["/planted/skills"]
+        assert a.settings.tool_always_allow == [] and a.chosen_tool_profile == STRICT, (
+            "a reconnect takes the reconnect-time keys only")
+    finally:
+        a.store.release()
+
+
+def test_measured_an_agents_home_file_decides_its_next_launch_and_stops_a_running_seat(
+        app, tmp_path, monkeypatch):
+    a, _ = _agent(app, monkeypatch)
+    session = a._agent_session
+    store = agent_store.AgentStore(tmp_path)
+    other_id = "22222222-2222-4222-8222-222222222222"
+    other = tmp_path / ".agents" / "Other"
+    other.mkdir()
+    (other / SETTINGS).write_text(json.dumps({
+        "schema_version": 1, "name": "Other", "agent_id": other_id,
+        "execution": {"backend": "lmstudio", "model": "planted-model", "thinking_level": "high"},
+    }), encoding="utf-8")
+    planted = (other / SETTINGS).read_text(encoding="utf-8")
+    # An agent that is not running: its next launch reads the file, nothing else.
+    with agent_ownership.AgentSession.acquire_existing(store, agent_id=other_id) as launched:
+        assert (launched.authority.backend, launched.authority.model) == ("lmstudio", "planted-model")
+    assert session.authority.model == "fixture", "CONTROL: this seat is untouched so far"
+    # Garbled, it cannot start; and while it is garbled EVERY seat on the data
+    # root fails its ownership check, because that check reads every agent's file.
+    (other / SETTINGS).write_text("{not json", encoding="utf-8")
+    with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
+        agent_ownership.AgentSession.acquire_existing(store, agent_id=other_id)
+    with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
+        session.authority
+    (other / SETTINGS).write_text(planted, encoding="utf-8")
+    assert session.authority.model == "fixture", "CONTROL: repaired, this seat works again"
+    # A RUNNING seat's own home file, changed behind it: the seat does not take
+    # the new backend; every use of its ownership fails until it is reopened.
+    home = tmp_path / ".agents" / "Probe" / SETTINGS
+    raw = json.loads(home.read_text(encoding="utf-8"))
+    raw["execution"].update(backend="lmstudio", model="planted-model")
+    home.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(agent_store.StoreError, match="authority changed"):
+        session.authority
+    with pytest.raises(agent_store.StoreError, match="authority changed"):
+        convo_settings.save(a.convo_dir, convo_settings.ConvoSettings(), agent_session=session)
+
+
+def test_measured_the_legacy_copy_is_never_loaded(app, tmp_path, monkeypatch):
+    """<root>/.convos/<id>/settings.json: a seat refuses to resume a transcript
+    outside its own agent, at a /resume and at startup, and its settings service
+    reads its own agent's conversations folder only. So the legacy copy is not in
+    the rule. (The legacy file says strict and carries an allow row; the device
+    default is another profile, so a read of it would show.)"""
+    a, _ = _agent(app, monkeypatch, INTERACTIVE)
+    said: list = []
+    a._system = lambda text, *_a, **_k: said.append(text)
+    legacy = tmp_path / ".convos" / "33333333-3333-4333-8333-333333333333"
+    legacy.mkdir(parents=True)
+    (legacy / "convo.jsonl").write_text("".join(json.dumps(row) + "\n" for row in (
+        {"type": "meta", "id": legacy.name},
+        {"type": "msg", "message": {"role": "user", "content": "old"}})), encoding="utf-8")
+    (legacy / SETTINGS).write_text(json.dumps({
+        "tool_policy_profile": STRICT, "execution": {"tool_always_allow": PLANTED_ALLOW}}), encoding="utf-8")
+    mine = a.convo_dir
+    assert a._resume(legacy / "convo.jsonl") is False
+    a._cli_convo_id = legacy.name
+    assert a._resume_cli_conversation() is False
+    assert any("outside the selected agent" in text for text in said), said
+    assert a.convo_dir == mine and a.chosen_tool_profile == INTERACTIVE
+    assert a.settings.tool_always_allow == []
+    service = settings_runtime.service_for(a)
+    assert service.conversation_root == mine.parent
+    seen = service.snapshot(legacy.name).effective
+    assert seen.tool_always_allow == [] and seen.tool_policy_profile != STRICT
+
+
 # ── the mirror: every schedule-file test run again; what it asks its rule is
 #    asked of this rule too (107 of the 111 ask something, see ASKS_NOTHING) ──
 
@@ -425,15 +871,20 @@ ASKS_NOTHING = frozenset({
 })
 
 
-def _renamed(value):
+def _renamed(value, to=SETTINGS):
     """`value` with the schedule file's name replaced by the settings file's."""
     if isinstance(value, str):
-        return re.sub(r"(?i)jobs\.json", SETTINGS, value)
+        return re.sub(r"(?i)jobs\.json", to, value)
     if isinstance(value, dict):
-        return {key: _renamed(item) for key, item in value.items()}
+        return {key: _renamed(item, to) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return type(value)(_renamed(item) for item in value)
+        return type(value)(_renamed(item, to) for item in value)
     return value
+
+
+#: The same question moved below `.agents`: wherever a test names the schedule
+#: file, an agent's home settings file in the same data root.
+BELOW = ".agents/Seat/" + SETTINGS
 
 
 @pytest.fixture
@@ -452,6 +903,10 @@ def _mirror(request, monkeypatch):
         assert bool(twin) == bool(why), (args, "schedule file:", why, "settings file:", twin)
         if twin:
             assert "T0306" in twin and JOBS not in twin, twin
+        below = seat_authority.settings_file_refusal(app, _renamed(args, BELOW), workspace, policy)
+        assert bool(below) == bool(why), (args, "schedule file:", why, "below .agents:", below)
+        if below:
+            assert "T0306" in below and JOBS not in below, below
         return why
 
     monkeypatch.setattr(seat_authority, "jobs_file_refusal", both)
@@ -489,6 +944,19 @@ def test_the_mirror_can_fail(app, tmp_path, monkeypatch, _mirror):
     a, _ = _agent(app, monkeypatch)
     monkeypatch.setattr(seat_authority, "settings_file_refusal", lambda *_a, **_k: None)
     with pytest.raises(AssertionError, match="settings file"):
+        seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / JOBS)}, tmp_path)
+
+
+def test_the_mirror_can_fail_below_agents(app, tmp_path, monkeypatch, _mirror):
+    """CONTROL: with the settings rule asking about the device file only (as it
+    did before the files below `.agents` were added), the second mirrored
+    question must not pass."""
+    a, _ = _agent(app, monkeypatch)
+    monkeypatch.setattr(
+        seat_authority, "settings_file_refusal",
+        lambda app, args, workspace, policy=None: seat_authority._owned_file_refusal(
+            app, args, workspace, policy, SETTINGS, seat_authority._settings_words))
+    with pytest.raises(AssertionError, match="below .agents"):
         seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / JOBS)}, tmp_path)
 
 
