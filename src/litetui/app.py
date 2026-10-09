@@ -3142,6 +3142,8 @@ class LiteTUI(App):
         # not a profile cap or a spawner's to APPROVE (T1133 caps stay removed).
         if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy):
             return tool_denied("profile", name=name, reason=why), False
+        if why := seat_authority.settings_file_refusal(self, args, workspace or paths.ROOT, policy):
+            return tool_denied("profile", name=name, reason=why), False
         decision = tool_policy.evaluate(
             # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
             # this turn holds, the answer is the least authority -- never the

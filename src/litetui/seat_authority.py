@@ -202,19 +202,52 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
     Spawned/unknown seats are not owners; an owner-marked PTY must freshly prove
     it is untainted. Bridge failure refuses this direct write, not scheduler.save.
     T1133's removed profile caps and schedule API gates stay removed."""
+    return _owned_file_refusal(app, args, workspace, policy, "jobs.json", _jobs_words)
+
+
+def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
+    """T0306: only Owner's own seat may directly write a data root's settings.json.
+
+    That file holds the Claude program path, the dispatch routes, the API keys,
+    and the DEFAULTS every new conversation on the data root starts from (its
+    allow and deny rules, its tool profile, the other program paths), and every
+    seat on the data root shares it with Owner's own, so a written key is
+    authority this seat does not have. The twin of jobs_file_refusal by
+    construction: the same loop and the floor's same recognizer, asked about this
+    name. settings.save is in-process Python, never a tool call.
+
+    What is refused is a write that NAMES the file, to the floor's stated bound.
+    A conversation's own settings.json holds the rules that conversation actually
+    runs under; it is a different file and is not judged here."""
+    return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words)
+
+
+def _owned_file_refusal(app, args, workspace, policy, name, words) -> str | None:
+    """Why this seat may not make this tool call, which would write a data root's
+    `name`; None when it would not, or when the seat is Owner's own."""
     # T1133 removed autonomy/profile locks and schedule API gates. This guard
     # protects file ownership only; a read-only tool's path is not a write.
     if policy is not None and policy.classify_args is None and policy.capabilities <= {
             tool_policy.READ_ONLY, tool_policy.NETWORK}:
         return None
+    found = _protected_write(args, workspace, name)
+    # The owner recheck costs a bridge call: only a recognized write pays it.
+    if found is None or is_ryans_own(app, recheck=True):
+        return None
+    return words(*found)
+
+
+def _protected_write(args, workspace, name) -> tuple | None:
+    """(target, the floor's Git reason) when the call would write a data root's
+    `name`: one of the two is None. The floor's own questions, asked with `name`."""
     paths: list[str] = []
     commands: list[str] = []
     _written(args, paths, commands)
     if not paths and not commands:
         return None
     for command in commands:
-        if reason := deny_floor.jobs_git_refusal(command, workspace):
-            return None if is_ryans_own(app, recheck=True) else reason
+        if reason := deny_floor.jobs_git_refusal(command, workspace, name=name):
+            return None, reason
     bases = [Path(workspace), Path.cwd()]
     if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
         bases.append(Path(workspace) / args["cwd"])
@@ -227,19 +260,32 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
                 target = (path if path.is_absolute() else base / path).resolve()
             except (OSError, ValueError, RuntimeError):
                 continue
-            if deny_floor.is_jobs_file(target):
-                return None if is_ryans_own(app, recheck=True) else _jobs_words(target)
+            if deny_floor.is_jobs_file(target, name):
+                return target, None
         for command in commands:
-            if target := deny_floor.jobs_write_target(command, base):
-                return None if is_ryans_own(app, recheck=True) else _jobs_words(target)
+            if target := deny_floor.jobs_write_target(command, base, name=name):
+                return target, None
     return None
 
 
-def _jobs_words(target) -> str:
-    return (f"this LiteTUI may not write {target}: LiteTUI fires the jobs in that file at "
-            "each job's recorded level, and this seat cannot establish current owner authority "
-            "(T1085). "
-            "Schedule with /cron instead")
+def _jobs_words(target, git_reason=None) -> str:
+    return git_reason or (
+        f"this LiteTUI may not write {target}: LiteTUI fires the jobs in that file at "
+        "each job's recorded level, and this seat cannot establish current owner authority "
+        "(T1085). "
+        "Schedule with /cron instead")
+
+
+def _settings_words(target, git_reason=None) -> str:
+    # The floor's Git sentence names the schedule file, so this file gets its own.
+    doing = (f"write {target}" if git_reason is None else
+             "run a Git command that writes, or that from another folder may write, "
+             "a data root's settings.json")
+    return (f"this LiteTUI may not {doing}: that file holds the programs LiteTUI "
+            "launches, the dispatch routes, the keys and the default rules for every seat "
+            "on this data root, and this seat cannot establish current owner "
+            "authority (T0306). "
+            "Settings are changed with /settings in the owner's own LiteTUI")
 
 
 def schedule_note(app, level: str) -> str:
