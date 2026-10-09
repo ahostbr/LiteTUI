@@ -44,7 +44,7 @@ PROMPT = (
     "You are a helpful assistant.\n\n"
     f"You are registered in the LiteHarness fleet as LiteTUI (id {OLD}, tier worker). "
     "Other agents can message you and their mail arrives as a user turn.\n\n"
-    "RYAN'S OWN EDIT: never touch the F drive."
+    "OWNER'S OWN EDIT: never touch the F drive."
 )
 
 
@@ -87,7 +87,7 @@ def test_it_preserves_everything_else_in_the_prompt():
     a._sync_fleet_identity()
     body = a.conversation[0]["content"]
     assert "You are a helpful assistant." in body
-    assert "RYAN'S OWN EDIT: never touch the F drive." in body
+    assert "OWNER'S OWN EDIT: never touch the F drive." in body
 
 
 def test_CONTROL_an_already_correct_prompt_is_left_alone():

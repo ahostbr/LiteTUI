@@ -46,7 +46,7 @@ def test_staged_model_choice_survives_first_materialization(tmp_path, monkeypatc
         assert session.authority.model == app.model_id == app.settings.default_model == 'new-model'
         assert app._convo_settings is None
         assert not (app.convo_dir / 'settings.json').exists()
-        # Same pre-provider guard that refused Ryan's first hello.
+        # Same pre-provider guard that refused Owner's first hello.
         app_module.LiteTUI._validate_owned_execution(app)
         app._materialise_convo()
         snapshot = load(app.convo_dir)

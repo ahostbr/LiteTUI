@@ -171,7 +171,7 @@ async def test_execute_tool_CHOOSES_the_wire_when_rpc_is_set(monkeypatch) -> Non
     assert "denied by user" in text.lower(), (
         "a real Deny on the wire must read as the human refusal it is"
     )
-    assert a._stop_requested, "DENY still stops the turn (Ryan, 2026-08-24)"
+    assert a._stop_requested, "DENY still stops the turn (Owner, 2026-08-24)"
 
 
 @pytest.mark.asyncio
