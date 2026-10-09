@@ -60,10 +60,13 @@ settings.json a tool might write below `.agents`; that is fail-safe.
 When such a file takes effect, MEASURED on temp roots (the tests named
 `test_measured_*`), because the limits below are worded from it:
 - at an open or a resume, everything in it: the profile, the allow list, hosts;
-- in a RUNNING conversation, at its next save of a conversation setting
-  through the settings service (the settings screen, or a command that saves a
-  setting), the profile: the file is re-read after the save, and the
-  conversation's chosen profile, which a typed turn carries, is what it says;
+- in a RUNNING conversation, the profile, when the file is next re-read; the
+  conversation's chosen profile, which a typed turn carries, is then what the
+  file says. The settings dialog re-reads the file after ANY save it makes, a
+  device setting included. A command that saves a setting re-reads it only
+  after it saves a conversation setting. (By reading, not run: the sidecar's
+  settings patch and /subagent call the function the dialog calls.) The allow
+  list in force is not re-read by either;
 - in a running conversation, at a reconnect, the hosts, the skill roots and the
   other reconnect-time keys;
 - a save from the seat's memory (a profile or model change in that seat)
@@ -71,7 +74,11 @@ When such a file takes effect, MEASURED on temp roots (the tests named
 - an agent's home file decides the backend and model at that agent's next
   launch; changed under a RUNNING seat it stops that seat's saves until it is
   reopened; garbled, it stops the agent from starting and, for as long as it
-  is garbled, fails the ownership check of EVERY seat on the data root;
+  is garbled, fails the ownership check of EVERY seat on the data root.
+  THE RULE DOES NOT STAND BETWEEN A SEAT AND THAT STOP: an EMPTY FOLDER made
+  below `.agents`, or the initializing marker put in a seat's home, stops
+  every seat the same way, names no settings file, and the rule says nothing
+  about either (the catalog reads every folder below `.agents`);
 - the legacy copy, <root>/.convos/<id>/settings.json, is never loaded: a seat
   refuses to resume a transcript outside its own agent. It is not in the rule.
 
@@ -85,7 +92,9 @@ NOT covered for the files below `.agents`, beyond everything listed above:
 - the file's own 8.3 short name in an argument word (`rm <folder>/SETTIN~1.JSO`);
 - a delete of the conversation's or the agent's whole folder, or of the file
   through a wildcard. A conversation whose file is missing or unreadable falls
-  back to the device defaults, which are the autonomous profile;
+  back to the device defaults, which are the autonomous profile, AND loses
+  the fact that it was born in a spawned seat: resumed without the spawn
+  marker it is no longer counted as spawned;
 - the transcript (convo.jsonl), the catalog and an agent's memory files, which
   lie in the same tree and are other files.
 """
@@ -94,7 +103,6 @@ from __future__ import annotations
 import json
 import re
 import types
-from copy import deepcopy
 from dataclasses import asdict
 
 import pytest
@@ -105,6 +113,7 @@ from litetui import agent_ownership, agent_store, claude_tools, convo_settings, 
 from litetui import settings_runtime, tool_policy
 from litetui import app as m
 from litetui import settings as settings_mod
+from litetui.settings_ui_adapter import SettingsUiAdapter
 from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
@@ -597,6 +606,52 @@ def test_other_files_below_agents_pass(app, tmp_path, monkeypatch, name):
             assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
 
 
+@pytest.mark.parametrize("where", ["one folder below a conversation's folder",
+                                   "a second .agents inside an agent's home",
+                                   "a data root kept below another .agents folder"])
+def test_any_depth_and_every_agents_folder_on_the_path(app, tmp_path, monkeypatch, where):
+    """ANY depth: a file deeper than a conversation's own, the deepest that
+    exists today. And EVERY `.agents` on the path is tried: with a second one
+    inside a home the outer one is the data root's; with a data root kept below
+    another `.agents` the inner one is."""
+    a, _ = _agent(app, monkeypatch)
+    kept = tmp_path / "plain" / ".agents" / "kept"
+    kept.mkdir(parents=True)
+    (kept / ".litetui-data.json").write_text("{}", encoding="utf-8")
+    target = {
+        "one folder below a conversation's folder": a.convo_dir / "attachments" / SETTINGS,
+        "a second .agents inside an agent's home": tmp_path / ".agents" / "Probe" / ".agents" / "x" / SETTINGS,
+        "a data root kept below another .agents folder": kept / ".agents" / "Seat" / SETTINGS,
+    }[where]
+    for args in ({"path": str(target), "content": "{}"},
+                 {"command": f"echo x > {target.as_posix()}"}, {"command": f"rm {target.as_posix()}"}):
+        why = seat_authority.settings_file_refusal(a, args, tmp_path)
+        assert why and BELOW_WORDS in why and "T0306" in why, args
+    # CONTROL: two `.agents` on the path and no data root directly above either.
+    neither = tmp_path / "plain" / ".agents" / "other" / ".agents" / "Seat" / SETTINGS
+    assert seat_authority.settings_file_refusal(a, {"path": str(neither), "content": "{}"}, tmp_path) is None
+
+
+def test_a_relative_path_is_judged_from_the_processs_own_folder_below_agents(
+        app, tmp_path, monkeypatch):
+    """The rule tries the process's own folder as a base, as the schedule-file
+    rule does. Standing inside the tree with the workspace elsewhere, a bare
+    relative name is the conversation's own file."""
+    a, _ = _agent(app, monkeypatch)
+    a.convo_dir.mkdir(parents=True)
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    for args in ({"path": SETTINGS, "content": "{}"}, {"command": f"echo x > {SETTINGS}"},
+                 {"command": f"rm {SETTINGS}"}):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path / "work") is None, (
+            "CONTROL: standing in a plain folder this is no protected file", args)
+    monkeypatch.chdir(a.convo_dir)
+    for args in ({"path": SETTINGS, "content": "{}"}, {"command": f"echo x > {SETTINGS}"},
+                 {"command": f"rm {SETTINGS}"}):
+        why = seat_authority.settings_file_refusal(a, args, tmp_path / "work")
+        assert why and BELOW_WORDS in why and str(a.convo_dir / SETTINGS) in why, args
+
+
 @pytest.mark.parametrize("folder", [".AGENTS", ".agents.", ".agents::$INDEX_ALLOCATION",
                                     ".agents:$I30:$INDEX_ALLOCATION"])
 @pytest.mark.parametrize("name", [SETTINGS, "settings.json::$DATA", "SETTINGS.JSON", "settings.json."])
@@ -740,37 +795,117 @@ def test_measured_a_save_from_the_seats_memory_erases_a_plant(app, tmp_path, mon
         a.store.release()
 
 
-@pytest.mark.parametrize("by", ["the settings screen", "a command that saves a setting"])
-def test_measured_a_running_conversation_adopts_a_planted_profile_at_its_next_settings_save(
-        app, tmp_path, monkeypatch, by):
-    """One unrelated conversation setting is saved through the settings service
-    and the file is re-read. The settings screen fills its form from the file on
-    disk; a command saves the seat's own settings, of which only the changed key
-    is written. Either way the plant stays in the file, and the conversation's
-    chosen profile, which a typed turn carries, is then the planted one. The
-    allow list in force is not re-read here."""
+def _settings_dialog(a):
+    """The /settings dialog's own three bindings for an open conversation, as
+    plugins/settings_ui builds them: the form is filled from the files on disk,
+    a save goes to the settings service's patch, and what was saved is applied
+    by settings_runtime.apply_saved_result."""
+    service = settings_runtime.service_for(a)
+    conversation_id = a.convo_dir.name
+    return SettingsUiAdapter(
+        a.settings,
+        snapshot_provider=lambda: settings_runtime.snapshot_with_launch(a, conversation_id),
+        save_patch=lambda changes, revisions: service.save_patch(conversation_id, changes, revisions),
+        runtime_apply=lambda requested, result: settings_runtime.apply_saved_result(a, requested, result))
+
+
+@pytest.mark.parametrize("by, saved, adopted", [
+    ("the settings dialog", "a conversation setting", True),
+    ("the settings dialog", "a device setting", True),
+    ("a command that saves a setting", "a conversation setting", True),
+    ("a command that saves a setting", "a device setting", False),
+])
+def test_measured_a_running_conversation_adopts_a_planted_profile_when_its_file_is_re_read(
+        app, tmp_path, monkeypatch, by, saved, adopted):
+    """One unrelated setting is saved in a running conversation whose file holds
+    a planted profile. The dialog (on its own bindings) re-reads the
+    conversation's file after ANY save, so even a device setting adopts the
+    plant; a command re-reads it only after it saves a conversation setting.
+    The plant stays in the file either way. Where it is adopted, the
+    conversation's chosen profile, which a typed turn carries, is the planted
+    one; the turn in flight and the allow list in force are not changed."""
     a, _ = _agent(app, monkeypatch, STRICT)
+    field = "temperature" if saved == "a conversation setting" else "show_thinking"
     try:
         path = _born(a)
         _plant(path, tool_always_allow=PLANTED_ALLOW)
-        if by == "the settings screen":
-            form = settings_runtime.snapshot_with_launch(a, a.convo_dir.name).effective
-            assert form.tool_policy_profile == AUTONOMOUS and form.tool_always_allow == PLANTED_ALLOW
-            candidate = deepcopy(form)
-            candidate.temperature = 0.5
-            result = settings_runtime.persist_settings(a, candidate)
-            settings_runtime.apply_saved_result(a, candidate, result)
+        if by == "the settings dialog":
+            dialog = _settings_dialog(a)
+            form = dialog.effective
+            assert form.tool_policy_profile == AUTONOMOUS and form.tool_always_allow == PLANTED_ALLOW, (
+                "the form is filled from the file")
+            setattr(form, field, 0.5 if field == "temperature" else not form.show_thinking)
+            result = dialog.save(form)
         else:
             # A settled seat: what it holds in memory is what it last saved.
             object.__setattr__(a.settings, "_baseline", asdict(a.settings))
-            a.settings.temperature = 0.5
+            setattr(a.settings, field, 0.5 if field == "temperature" else not a.settings.show_thinking)
             result = settings_runtime.persist_or_raise(a, a.settings)
-        assert [outcome.fields for outcome in result.persistence if outcome.saved] == [("temperature",)]
+        assert [outcome.fields for outcome in result.persistence if outcome.saved] == [(field,)]
         assert _on_disk(path)[:2] == (AUTONOMOUS, PLANTED_ALLOW), "the plant survived the save"
-        assert a.chosen_tool_profile == AUTONOMOUS
-        assert seat_authority.turn_profile(a, "typed", a.chosen_tool_profile) == AUTONOMOUS
+        assert a.chosen_tool_profile == (AUTONOMOUS if adopted else STRICT)
+        assert seat_authority.turn_profile(a, "typed", a.chosen_tool_profile) == a.chosen_tool_profile
         assert a._active_tool_profile == STRICT, "the turn in flight is not changed"
         assert a.settings.tool_always_allow == [], "the allow list in force is not re-read by a save"
+    finally:
+        a.store.release()
+
+
+def test_measured_an_empty_folder_below_agents_stops_every_seat_and_the_rule_says_nothing(
+        app, tmp_path, monkeypatch):
+    """NOT the rule's to stop, pinned so the limit is not read wider than it is.
+    The catalog reads every FOLDER below `.agents` and fails on the first it
+    cannot read: an empty folder, or the initializing marker in a seat's own
+    home, fails a running seat's ownership check just as a garbled home file
+    does. Neither names a settings file, so this rule has nothing to judge."""
+    a, _ = _agent(app, monkeypatch)
+    session = a._agent_session
+    agents = tmp_path / ".agents"
+    marker = agents / "Probe" / agent_store.INITIALIZING_NAME
+    for args in ({"command": f"mkdir {(agents / 'x').as_posix()}"},
+                 {"path": str(marker), "content": "x"}, {"command": f"echo x > {marker.as_posix()}"}):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
+    assert session.authority.model == "fixture", "CONTROL: the seat works"
+    (agents / "note.txt").write_text("x", encoding="utf-8")
+    assert session.authority.model == "fixture", "CONTROL: a plain file below `.agents` is not read"
+    (agents / "x").mkdir()
+    with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
+        session.authority
+    with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
+        convo_settings.save(a.convo_dir, convo_settings.ConvoSettings(), agent_session=session)
+    (agents / "x").rmdir()
+    assert session.authority.model == "fixture", "CONTROL: the folder removed, the seat works again"
+    marker.write_text("x", encoding="utf-8")
+    with pytest.raises(agent_store.StoreError):
+        session.authority
+    marker.unlink()
+    assert session.authority.model == "fixture"
+
+
+def test_measured_a_deleted_conversation_file_also_drops_the_born_in_a_spawned_seat_fact(
+        app, tmp_path, monkeypatch):
+    """The conversation's file records that it was born in a spawned seat, and a
+    resume WITHOUT the spawn marker reads that record to keep it one. With the
+    record changed, or the file deleted (a delete this rule does not catch when
+    it does not name the file), the resumed seat is no longer counted as spawned."""
+    a, _ = _agent(app, monkeypatch, STRICT)
+    monkeypatch.setattr(m.LiteTUI, "_render_resumed", lambda self, path: None)
+    monkeypatch.setattr(m.LiteTUI, "connect", lambda self, *_a, **_k: None)
+    try:
+        a._spawned_marker = True                       # born in a spawned seat
+        a._materialise_convo()
+        a._append({"role": "user", "content": "saved"})
+        path = a.convo_dir / SETTINGS
+        assert json.loads(path.read_text(encoding="utf-8"))["seat_spawned"] is True
+        a._spawned_marker = False                      # relaunched without the marker
+        assert a._resume(a.convo_path) and a._spawned_seat is True, "the record keeps it a spawned seat"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["seat_spawned"] = False
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        assert a._resume(a.convo_path) and a._spawned_seat is False, "the record changed"
+        a._spawned_seat = True
+        path.unlink()
+        assert a._resume(a.convo_path) and a._spawned_seat is False, "the file deleted"
     finally:
         a.store.release()
 
