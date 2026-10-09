@@ -5,22 +5,41 @@ profile and the paths of the programs LiteTUI launches, and every seat on that
 data root shares the one file. These arms hold the ownership refusal at the
 shared _authorize_action door, beside the jobs.json one (T1085).
 
-The bound, for a write or edit tool's path: a file whose name Windows opens as
-settings.json (deny_floor.canonical_name, so a stream suffix and a trailing dot
-or space are the same file) in a folder that holds `src/litetui`, or
-`.litetui-data.json`, or is $LITETUI_DATA_ROOT (the floor's own folder test).
+The target: a file whose name Windows opens as settings.json
+(deny_floor.canonical_name, so a stream suffix and a trailing dot or space are
+the same file) in a folder that holds `src/litetui`, or `.litetui-data.json`, or
+is $LITETUI_DATA_ROOT (the floor's own folder test).
 
-NOT covered here: the bash and PowerShell forms; a link or an 8.3 short name to
-the file; a path held in a variable; a write from inside a script file; a
-per-agent home's or a conversation's own settings.json (a different file, by
-the folder test); writers that are not LiteTUI seats. The rule brings
-settings.json level with jobs.json. It does not make a seat a sandbox.
+The bound for a shell command is the floor's, asked with this name. In the
+floor's own words: "A redirect, tee / Out-File / Set-Content / Add-Content /
+New-Item, a copy ONTO it, any move or rename of it, a delete, an editor, sed -i
+or `python -c` are writes; a pure reader (cat, type, Get-Content, rg, a copy
+FROM it, ...) is not." And its ceiling: "a path in a variable, a write from
+inside a script file or through a reader's own exec feature, an 8.3 short name,
+an admin share or a \\\\?\\ prefix, a link made to [the file] BEFORE this rule was
+live, a data root known only to another process's environment, and writers that
+are neither hooked agents nor LiteTUI seats".
+
+Every test of the schedule-file rule (tests/test_jobs_file_t1085.py) is run a
+second time here with its question also asked of the settings rule, the name
+substituted: a case added to that file later is mirrored without an edit here.
+
+NOT covered: everything in the ceiling above; a per-agent home's or a
+conversation's own settings.json (a different file, by the folder test); a seat
+editing the installed source; the Claude Code hook path, which does not judge
+this file at all (only a LiteTUI seat does). The rule brings settings.json level
+with jobs.json. It does not make a seat a sandbox.
 """
 from __future__ import annotations
 
 import json
+import re
+import types
 
 import pytest
+
+import test_jobs_file_t1085 as jobs_tests
+from test_jobs_file_t1085 import _release_owned_sessions  # noqa: F401 - its apps' sessions
 
 from litetui import agent_ownership, agent_store, claude_tools, seat_authority, tool_policy
 from litetui import app as m
@@ -215,3 +234,222 @@ async def test_a_read_tool_path_is_not_a_write(app, tmp_path, monkeypatch):
     assert await a._authorize_action("read", {"path": str(tmp_path / "settings.json")},
                                      tool_policy.READ_POLICY, workspace=tmp_path) is None
     assert sent == []
+
+
+# ── the shell forms: the floor's own recognizer, asked about this name ──────
+
+JOBS, SETTINGS = "jobs.json", "settings.json"
+
+SHELL_WRITERS = [
+    ("bash", "echo x > {root}/NAME"),
+    ("bash", "echo x >> {root}/NAME"),
+    ("bash", "echo x | tee {root}/NAME"),
+    ("powershell", '"x" | Out-File {root}/NAME'),
+    ("powershell", "Set-Content {root}/NAME x"),
+    ("powershell", "Add-Content {root}/NAME x"),
+    ("powershell", "New-Item {root}/NAME -Force"),
+    ("bash", "cp backup.json {root}/NAME"),
+    ("powershell", "Copy-Item backup.json {root}/NAME"),
+    ("powershell", "Copy-Item -Path backup.json -Destination {root}/NAME"),
+    ("bash", "mv {root}/NAME old.json"),
+    ("powershell", "Move-Item {root}/NAME old.json"),
+    ("powershell", "Rename-Item {root}/NAME old.json"),
+    ("bash", "rm {root}/NAME"),
+    ("powershell", "Remove-Item {root}/NAME"),
+    ("bash", "sed -i s/a/b/ {root}/NAME"),
+    ("bash", "git restore -- {root}/NAME"),
+    ("bash", "git checkout HEAD -- {root}/NAME"),
+    ("bash", "git rm -- {root}/NAME"),
+    ("bash", "git mv -- {root}/NAME backup.json"),
+    ("bash", "git clean -fx -- {root}/NAME"),
+]
+SHELL_READERS = [
+    ("bash", "cat {root}/NAME"),
+    ("powershell", "Get-Content {root}/NAME"),
+    ("bash", "rg allow {root}/NAME"),
+    ("bash", "cp {root}/NAME backup.json"),
+    ("powershell", "Copy-Item -Destination backup.json -Path {root}/NAME"),
+    ("bash", "git diff -- {root}/NAME"),
+    ("bash", "git log -- {root}/NAME"),
+    ("bash", "git show HEAD:{root}/NAME"),
+]
+
+
+async def _door(a, shell, command, workspace):
+    return await a._authorize_action(shell, {"command": command}, tool_policy.SHELL_POLICY,
+                                     workspace=workspace)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("shell, template", SHELL_WRITERS)
+async def test_a_shell_write_is_refused_as_the_schedule_files_is(
+        app, tmp_path, monkeypatch, profile, shell, template):
+    a, sent = _agent(app, monkeypatch, profile)
+    command = template.format(root=tmp_path.as_posix())
+    mine = await _door(a, shell, command.replace("NAME", SETTINGS), tmp_path)
+    theirs = await _door(a, shell, command.replace("NAME", JOBS), tmp_path)
+    assert mine and theirs, (command, mine, theirs)
+    assert "T0306" in mine[0] and "may not" in mine[0] and SETTINGS in mine[0], mine[0]
+    assert JOBS not in mine[0], "the settings refusal named the schedule file"
+    assert sent == [], "a settings.json write was relayed to the spawner for an APPROVE"
+    assert seat_authority.settings_file_refusal(
+        _owners(a), {"command": command.replace("NAME", SETTINGS)}, tmp_path) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shell, template", SHELL_READERS)
+async def test_a_shell_reader_stays_allowed(app, tmp_path, monkeypatch, shell, template):
+    a, sent = _agent(app, monkeypatch)
+    command = template.format(root=tmp_path.as_posix())
+    for name in (SETTINGS, JOBS):
+        assert await _door(a, shell, command.replace("NAME", name), tmp_path) is None, (name, command)
+    assert sent == []
+
+
+@pytest.mark.parametrize("target", ["mysettings.json", "settings.json.bak", "app.settings.json",
+                                    ".vscode/settings.json", ".agents/Probe/settings.json"])
+def test_a_shell_write_to_a_look_alike_passes(app, tmp_path, monkeypatch, target):
+    a, _ = _agent(app, monkeypatch)
+    (tmp_path / ".vscode").mkdir()
+    for command in (f"echo x > {tmp_path.as_posix()}/{target}", f"rm {tmp_path.as_posix()}/{target}"):
+        assert seat_authority.settings_file_refusal(a, {"command": command}, tmp_path) is None, command
+
+
+# A spelling the floor decodes before it matches: a rename of the name in the raw
+# command text would miss every one of these (measured, 8 of 8).
+DECODED = [
+    ("bash empty quote pair", 'rm {root}/{a}""{b}'),
+    ("bash single quote pair", "rm {root}/{a}''{b}"),
+    ("bash quoted tail", 'rm {root}/{stem}."json"'),
+    ("bash backslash", "rm {root}/{a}\\{b}"),
+    ("bash ANSI-C hex", "rm $'{root}/\\x{first:02x}{rest}'"),
+    ("redirect onto a quote pair", 'echo x > {root}/{a}""{b}'),
+    ("powershell backtick", "Set-Content {root}/{a}`{b} x"),
+    ("cmd caret", "del {native}\\{a}^{b}"),
+]
+
+
+def _spelled(template, name, root):
+    return template.format(root=root.as_posix(), native=str(root), a=name[:2], b=name[2:],
+                           stem=name.rsplit(".", 1)[0], first=ord(name[0]), rest=name[1:])
+
+
+@pytest.mark.parametrize("label, template", DECODED)
+def test_a_decoded_spelling_is_refused_as_the_schedule_files_is(
+        app, tmp_path, monkeypatch, label, template):
+    a, _ = _agent(app, monkeypatch)
+    mine = _spelled(template, SETTINGS, tmp_path)
+    assert SETTINGS not in mine, "CONTROL: the name must not be contiguous in the raw text"
+    assert seat_authority.jobs_file_refusal(a, {"command": _spelled(template, JOBS, tmp_path)}, tmp_path)
+    why = seat_authority.settings_file_refusal(a, {"command": mine}, tmp_path)
+    assert why and "T0306" in why, (label, mine)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command, written", [
+    (f"cp {SETTINGS} {JOBS}", JOBS),
+    (f"cp {JOBS} {SETTINGS}", SETTINGS),
+    (f"cat {JOBS} > {SETTINGS}", SETTINGS),
+    (f"cat {SETTINGS} > {JOBS}", JOBS),
+])
+async def test_a_command_naming_both_files_is_refused_for_the_one_it_writes(
+        app, tmp_path, monkeypatch, command, written):
+    a, sent = _agent(app, monkeypatch)
+    rules = {JOBS: seat_authority.jobs_file_refusal, SETTINGS: seat_authority.settings_file_refusal}
+    read = SETTINGS if written == JOBS else JOBS
+    assert rules[read](a, {"command": command}, tmp_path) is None, "the file it only reads refused it"
+    why = rules[written](a, {"command": command}, tmp_path)
+    assert why and str(tmp_path / written) in why, why
+    denied = await _door(a, "bash", command, tmp_path)
+    assert denied and str(tmp_path / written) in denied[0] and str(tmp_path / read) not in denied[0]
+    assert sent == []
+
+
+@pytest.mark.parametrize("name, other", [(SETTINGS, JOBS), (JOBS, SETTINGS)])
+def test_a_folder_whose_name_holds_the_text_is_judged_as_the_folder_it_is(
+        app, tmp_path, monkeypatch, name, other):
+    """The folder test runs on the folder the command names, whatever that
+    folder is called: a data root under a folder named with the text is
+    protected, and a plain folder is not, even beside a data root whose path
+    differs only by the other file's name."""
+    a, _ = _agent(app, monkeypatch)
+    rule = {JOBS: seat_authority.jobs_file_refusal, SETTINGS: seat_authority.settings_file_refusal}[name]
+    under = tmp_path / "a" / f"{name}.d"
+    under.mkdir(parents=True)
+    (under / ".litetui-data.json").write_text("{}")
+    assert rule(a, {"command": f"echo x > {under.as_posix()}/{name}"}, tmp_path)
+    plain = tmp_path / "b" / f"{name}.d"
+    plain.mkdir(parents=True)
+    twin = tmp_path / "b" / f"{other}.d"
+    twin.mkdir()
+    (twin / ".litetui-data.json").write_text("{}")
+    assert rule(a, {"command": f"echo x > {plain.as_posix()}/{name}"}, tmp_path) is None
+
+
+# ── the mirror: every schedule-file test, its question asked of this rule too ──
+
+MIRRORED: list = []
+
+
+def _renamed(value):
+    """`value` with the schedule file's name replaced by the settings file's."""
+    if isinstance(value, str):
+        return re.sub(r"(?i)jobs\.json", SETTINGS, value)
+    if isinstance(value, dict):
+        return {key: _renamed(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_renamed(item) for item in value)
+    return value
+
+
+@pytest.fixture
+def _mirror(monkeypatch):
+    """Whatever a test asks the schedule-file rule, ask the settings rule the same
+    thing with the name substituted, at the same moment, and require the same
+    verdict. The original answer is returned, so the test itself is unchanged."""
+    ask = seat_authority.jobs_file_refusal
+
+    def both(app, args, workspace, policy=None):
+        why = ask(app, args, workspace, policy)
+        assert JOBS not in str(workspace).lower(), "CONTROL: the rename must not touch a folder"
+        twin = seat_authority.settings_file_refusal(app, _renamed(args), workspace, policy)
+        MIRRORED.append(bool(why))
+        assert bool(twin) == bool(why), (args, "schedule file:", why, "settings file:", twin)
+        if twin:
+            assert "T0306" in twin and JOBS not in twin, twin
+        return why
+
+    monkeypatch.setattr(seat_authority, "jobs_file_refusal", both)
+
+
+def _mirrored(test):
+    """A copy of `test` that runs under the mirror. A copy: marking the original
+    would make the schedule-file module ask for a fixture it does not have."""
+    copy = types.FunctionType(test.__code__, test.__globals__, test.__name__,
+                              test.__defaults__, test.__closure__)
+    copy.__kwdefaults__ = test.__kwdefaults__
+    copy.__dict__.update({key: (list(item) if key == "pytestmark" else item)
+                          for key, item in test.__dict__.items()})
+    return pytest.mark.usefixtures("_mirror")(copy)
+
+
+for _name, _test in list(vars(jobs_tests).items()):
+    if _name.startswith("test_") and callable(_test):
+        globals()["test_mirror_of_" + _name[len("test_"):]] = _mirrored(_test)
+
+
+def test_the_mirror_can_fail(app, tmp_path, monkeypatch, _mirror):
+    """CONTROL: with the settings rule silenced, a mirrored refusal must not pass."""
+    a, _ = _agent(app, monkeypatch)
+    monkeypatch.setattr(seat_authority, "settings_file_refusal", lambda *_a, **_k: None)
+    with pytest.raises(AssertionError, match="settings file"):
+        seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / JOBS)}, tmp_path)
+
+
+def test_zz_the_mirror_asked_refusals_and_passes():
+    """Last in the file: the mirrored tests above asked both kinds of question."""
+    if not MIRRORED:
+        pytest.skip("no mirrored test ran in this session")
+    print(f"\nMIRROR questions={len(MIRRORED)} refused={sum(MIRRORED)} allowed={len(MIRRORED) - sum(MIRRORED)}")
+    assert any(MIRRORED) and not all(MIRRORED)

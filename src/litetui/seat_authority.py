@@ -202,19 +202,47 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
     Spawned/unknown seats are not owners; an owner-marked PTY must freshly prove
     it is untainted. Bridge failure refuses this direct write, not scheduler.save.
     T1133's removed profile caps and schedule API gates stay removed."""
+    return _owned_file_refusal(app, args, workspace, policy, "jobs.json", _jobs_words)
+
+
+def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
+    """T0306: only Owner's own seat may directly write a data root's settings.json.
+
+    That file holds the device's standing allow and deny rules, its tool profile
+    and the paths of the programs LiteTUI launches, and every seat on the data
+    root shares it with Owner's own, so a written key is authority this seat does
+    not have. The twin of jobs_file_refusal by construction: the same loop and the
+    floor's same recognizer, asked about this name. settings.save is in-process
+    Python, never a tool call."""
+    return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words)
+
+
+def _owned_file_refusal(app, args, workspace, policy, name, words) -> str | None:
+    """Why this seat may not make this tool call, which would write a data root's
+    `name`; None when it would not, or when the seat is Owner's own."""
     # T1133 removed autonomy/profile locks and schedule API gates. This guard
     # protects file ownership only; a read-only tool's path is not a write.
     if policy is not None and policy.classify_args is None and policy.capabilities <= {
             tool_policy.READ_ONLY, tool_policy.NETWORK}:
         return None
+    found = _protected_write(args, workspace, name)
+    # The owner recheck costs a bridge call: only a recognized write pays it.
+    if found is None or is_ryans_own(app, recheck=True):
+        return None
+    return words(*found)
+
+
+def _protected_write(args, workspace, name) -> tuple | None:
+    """(target, the floor's Git reason) when the call would write a data root's
+    `name`: one of the two is None. The floor's own questions, asked with `name`."""
     paths: list[str] = []
     commands: list[str] = []
     _written(args, paths, commands)
     if not paths and not commands:
         return None
     for command in commands:
-        if reason := deny_floor.jobs_git_refusal(command, workspace):
-            return None if is_ryans_own(app, recheck=True) else reason
+        if reason := deny_floor.jobs_git_refusal(command, workspace, name=name):
+            return None, reason
     bases = [Path(workspace), Path.cwd()]
     if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
         bases.append(Path(workspace) / args["cwd"])
@@ -227,65 +255,28 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
                 target = (path if path.is_absolute() else base / path).resolve()
             except (OSError, ValueError, RuntimeError):
                 continue
-            if deny_floor.is_jobs_file(target):
-                return None if is_ryans_own(app, recheck=True) else _jobs_words(target)
+            if deny_floor.is_jobs_file(target, name):
+                return target, None
         for command in commands:
-            if target := deny_floor.jobs_write_target(command, base):
-                return None if is_ryans_own(app, recheck=True) else _jobs_words(target)
+            if target := deny_floor.jobs_write_target(command, base, name=name):
+                return target, None
     return None
 
 
-def _jobs_words(target) -> str:
-    return (f"this LiteTUI may not write {target}: LiteTUI fires the jobs in that file at "
-            "each job's recorded level, and this seat cannot establish current owner authority "
-            "(T1085). "
-            "Schedule with /cron instead")
+def _jobs_words(target, git_reason=None) -> str:
+    return git_reason or (
+        f"this LiteTUI may not write {target}: LiteTUI fires the jobs in that file at "
+        "each job's recorded level, and this seat cannot establish current owner authority "
+        "(T1085). "
+        "Schedule with /cron instead")
 
 
-def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
-    """T0306: only Owner's own seat may directly write a data root's settings.json.
-
-    That file holds the device's standing allow and deny rules, its tool profile
-    and the paths of the programs LiteTUI launches, and every seat on the data
-    root shares it with Owner's own, so a written key is authority this seat does
-    not have. The twin of jobs_file_refusal: called beside it at the door, the
-    same early exit for a read-only tool, the same bases, and the owner recheck
-    only after a protected write is recognized. settings.save is in-process
-    Python, never a tool call.
-
-    A write or edit tool's path only: a shell command's writes are not judged here."""
-    if policy is not None and policy.classify_args is None and policy.capabilities <= {
-            tool_policy.READ_ONLY, tool_policy.NETWORK}:
-        return None
-    paths: list[str] = []
-    _written(args, paths, [])
-    if not paths:
-        return None
-    bases = [Path(workspace), Path.cwd()]
-    if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
-        bases.append(Path(workspace) / args["cwd"])
-    for base in dict.fromkeys(b.resolve() for b in bases):
-        for raw in paths:
-            try:   # dealias first, as the jobs rule does: an alias opens the same file
-                path = Path(deny_floor.dealias(raw.strip().strip("\"'"))).expanduser()
-                target = (path if path.is_absolute() else base / path).resolve()
-            except (OSError, ValueError, RuntimeError):
-                continue
-            if _is_settings_file(target):
-                return None if is_ryans_own(app, recheck=True) else _settings_words(target)
-    return None
-
-
-def _is_settings_file(path: Path) -> bool:
-    """A data root's settings.json: the name Windows opens (the floor's
-    canonical_name), in a folder the floor's own test calls a data root. That test
-    is a property of the folder, so it is asked about the schedule file's name."""
-    return (deny_floor.canonical_name(path.name) == "settings.json"
-            and deny_floor.is_jobs_file(path.with_name("jobs.json")))
-
-
-def _settings_words(target) -> str:
-    return (f"this LiteTUI may not write {target}: that file holds the device's standing "
+def _settings_words(target, git_reason=None) -> str:
+    # The floor's Git sentence names the schedule file, so this file gets its own.
+    doing = (f"write {target}" if git_reason is None else
+             "run a Git command that writes, or that from another folder may write, "
+             "a data root's settings.json")
+    return (f"this LiteTUI may not {doing}: that file holds the device's standing "
             "allow and deny rules, its tool profile and the programs LiteTUI launches, for "
             "every seat on this data root, and this seat cannot establish current owner "
             "authority (T0306). "
