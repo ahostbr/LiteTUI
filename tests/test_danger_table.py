@@ -71,7 +71,7 @@ ORDINARY = {
                    "ii-report -Path x", "Expand-Property -Name x",
                    "Kill-Process -Id 42", "Del-Item file", "Erase-Cache file",
                    "Sc-Config service", "Reg-Query HKCU\\X", "Dd-Inspect -of=destination",
-                   "Get-Item C:\\Projects\\LiteSuite\\node_modules | Format-List FullName,LinkType,Target"],
+                   "Get-Item C:\\ExampleProjects\\LiteSuite\\node_modules | Format-List FullName,LinkType,Target"],
 }
 
 

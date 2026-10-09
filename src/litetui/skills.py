@@ -407,7 +407,7 @@ def bind_skill_dir(text: str, skill_dir: Path) -> str:
     /ls-mark, read the run line for mark.py, and had only the system prompt's
     `<root>/skills` line to go on -- which names where the REPO's own skills
     live, not where this one came from. It guessed
-    `C:/Projects/LiteTUI/skills/ls-mark/mark.py`, missed, and hunted the plugin
+    `C:/ExampleProjects/LiteTUI/skills/ls-mark/mark.py`, missed, and hunted the plugin
     cache by hand before it could run a one-line tool.
 
     The directory was never hard to find: it is `s.path.parent`, already in hand

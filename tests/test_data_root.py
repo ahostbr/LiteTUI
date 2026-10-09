@@ -34,8 +34,8 @@ print(json.dumps(dict(root=str(paths.ROOT), convos=str(paths.CONVO_DIR),
 def test_unset_keeps_literal_live_background_location_without_io(monkeypatch):
     from litetui import paths, tasks
     monkeypatch.delenv("LITETUI_DATA_ROOT", raising=False)
-    monkeypatch.setattr(paths, "ROOT", Path("C:/Projects/LiteTUI"))
-    assert paths.data_root() / tasks.STORE == Path("C:/Projects/LiteTUI/background-tasks.json")
+    monkeypatch.setattr(paths, "ROOT", Path("C:/ExampleProjects/LiteTUI"))
+    assert paths.data_root() / tasks.STORE == Path("C:/ExampleProjects/LiteTUI/background-tasks.json")
 
 
 def test_override_persist_restart_resume(tmp_path):
@@ -80,6 +80,6 @@ def test_runtime_log_default_follows_override(tmp_path, monkeypatch):
 def test_unset_scheduler_and_log_paths_are_unchanged(monkeypatch):
     from litetui import paths, runtime_log, scheduler
     monkeypatch.delenv("LITETUI_DATA_ROOT", raising=False)
-    monkeypatch.setattr(paths, "ROOT", Path("C:/Projects/LiteTUI"))
-    assert scheduler.jobs_path(paths.data_root()) == Path("C:/Projects/LiteTUI/jobs.json")
-    assert runtime_log.default_log_path(paths.data_root()) == Path("C:/Projects/LiteTUI/.logs/runtime.jsonl")
+    monkeypatch.setattr(paths, "ROOT", Path("C:/ExampleProjects/LiteTUI"))
+    assert scheduler.jobs_path(paths.data_root()) == Path("C:/ExampleProjects/LiteTUI/jobs.json")
+    assert runtime_log.default_log_path(paths.data_root()) == Path("C:/ExampleProjects/LiteTUI/.logs/runtime.jsonl")

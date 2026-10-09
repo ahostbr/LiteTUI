@@ -13,7 +13,7 @@ class Demo(App):
 
 
 @pytest.mark.asyncio
-async def test_controls_share_input_border_and_click():
+async def test_controls_share_input_border_and_click(tmp_path):
     from litetui.app import LiteTUI
     class StyledDemo(Demo):
         CSS = LiteTUI.CSS
@@ -36,7 +36,7 @@ async def test_controls_share_input_border_and_click():
         for selector, result in [('#scroll-lock','lock'), ('.mic-button','mic'), ('.pause-button','pause')]:
             assert await pilot.click(selector)
             assert app.clicked == result
-        app.save_screenshot('prompt-controls.svg', path='C:/Projects/LiteTUI/artifacts')
+        app.save_screenshot('prompt-controls.svg', path=str(tmp_path))
 
 
 def test_unlock_rejects_even_reader_acted_scroll():
@@ -174,7 +174,7 @@ async def test_actual_app_prompt_controls(tmp_path, monkeypatch):
         assert app.settings.autoscroll is not initial
         assert await pilot.click('.pause-button')
         assert app.paused
-        app.save_screenshot('actual-app-prompt-controls.svg', path='C:/Projects/LiteTUI/artifacts')
+        app.save_screenshot('actual-app-prompt-controls.svg', path=str(tmp_path))
 
 
 def test_mic_and_pause_tooltips_track_state():

@@ -5,7 +5,7 @@ hung up on litesuites integration"*.
 
 The design step is NOT this card. the user commissioned it on 2026-09-14 and it is
 `Docs/CaseStudies/NInfer_CaseStudy_LiteTUI_5090Backend.md` — 128 lines, every
-claim cited to `E:\\SAS\\REPO_CLONES\\ninfer`. Section 9 is adaptation guidance
+claim cited to the upstream `ninfer` source. Section 9 is adaptation guidance
 and this module is built from it rather than re-derived. Three of its takeaways
 are load-bearing here and none of them is guessable:
 

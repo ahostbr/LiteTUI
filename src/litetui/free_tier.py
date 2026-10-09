@@ -5,8 +5,8 @@ backend we recreate based on that repo"; 2026-09-24: "now thats sick ! we got
 FREE subagents now lol :) on top of frontier and local !" and "yes send
 passlink on the multi-source free tier".
 
-Pure Python, recreated from the freellmapi design (E:/SAS/REPO_CLONES/freellmapi,
-server/src/services/ratelimit.ts, lib/fallback-loop.ts), not copied:
+Pure Python, recreated from the freellmapi design
+(server/src/services/ratelimit.ts, lib/fallback-loop.ts), not copied:
 
 - SOURCES: a static table. Keyless sources (Cline's login, Kilo, OVH, LLM7) are
   live with no setup; keyed ones (Groq ... Gemini, and from T938 Ollama Cloud,

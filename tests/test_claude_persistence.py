@@ -22,7 +22,7 @@ from litetui.claude_persistence import (
     LedgerError,
 )
 
-WORKSPACE = "C:/Projects/LiteTUI"
+WORKSPACE = "C:/ExampleProjects/LiteTUI"
 
 
 @pytest.fixture
@@ -90,9 +90,9 @@ def test_selection_resumes_the_same_segment_and_new_starts_another(convo):
 def test_a_different_workspace_does_not_resume_the_selected_segment(convo):
     ledger = ClaudeLedger(convo)
     first = ledger.select_segment(WORKSPACE)
-    elsewhere = ledger.select_segment("C:/Projects/LiteImage")
+    elsewhere = ledger.select_segment("C:/ExampleProjects/LiteImage")
     assert elsewhere["id"] != first["id"]
-    assert elsewhere["workspace"] == "C:/Projects/LiteImage"
+    assert elsewhere["workspace"] == "C:/ExampleProjects/LiteImage"
 
 
 @pytest.mark.parametrize("reached", [SUBMITTED, ACKNOWLEDGED])

@@ -37,8 +37,8 @@ there are no Select tasks in flight to catch. The state that fails lives inside
 Textual's scheduler and only appears under machine load, which is why the only
 instrument for the PRODUCT's timing is the seven-file reproducer:
 
-    cd C:/Projects/LiteTUI/.worktrees/silverbolt-t596
-    PYTHONUTF8=1 C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest -q \\
+    cd C:/ExampleProjects/LiteTUI/.worktrees/silverbolt-t596
+    PYTHONUTF8=1 C:/ExampleProjects/LiteTUI/.venv/Scripts/python.exe -m pytest -q \\
       tests/test_hooks_ui.py tests/test_hook_boundaries.py \\
       tests/test_lifecycle_hooks.py tests/test_settings.py \\
       tests/test_settings_live.py tests/test_theme_extra_tokens.py \\
