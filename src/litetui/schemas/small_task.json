@@ -1,0 +1,57 @@
+{
+  "type": "function",
+  "function": {
+    "name": "small_task",
+    "description": "Explicit bounded ordinary named-worker dispatch for registered owned leaders. Off until small_task_route is configured. No routing inference, fallback or automatic retry. Provide a fresh persistent worker name, visible pane and a clean separate prepared Git worktree. Scope is a handoff contract, NOT sandbox enforcement or merge permission. Actions: dispatch, status, receipt (leader records worker inbox result; never merged/Done). Any configured backend; a local one is accepted only when its exact model is already loaded, and dispatch never loads a model. Idle reuse unsupported.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": {"type": "string", "enum": ["dispatch", "status", "receipt"]},
+        "task_id": {"type": "string", "description": "Status only: accepted task ID"},
+        "request": {
+          "type": "object", "additionalProperties": false,
+          "required": ["task_id", "purpose", "scope", "production_line_budget", "allowed_files", "acceptance_checks", "worktree", "worker_name", "pane", "leader_id"],
+          "properties": {
+            "task_id": {"type": "string"},
+            "purpose": {"type": "string"},
+            "scope": {"type": "string"},
+            "production_line_budget": {"type": "integer", "minimum": 1, "maximum": 100},
+            "allowed_files": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "acceptance_checks": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "worktree": {"type": "string", "description": "Explicit absolute separate clean Git worktree"},
+            "worker_name": {"type": "string", "description": "Fresh persistent name, never resume/replace"},
+            "pane": {"type": "string", "description": "Visible target pane ID, not an implicit placement"},
+            "leader_id": {"type": "string", "description": "Return address, must equal registered caller"}
+          }
+        },
+        "receipt": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation_id", "task_id", "agent_id", "worktree", "branch", "state", "commit", "changed_files", "checks", "limits"],
+          "properties": {
+            "operation_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "agent_id": {"type": "string"},
+            "worktree": {"type": "string"},
+            "branch": {"type": "string"},
+            "state": {"type": "string", "enum": ["candidate-ready", "failed"]},
+            "commit": {"type": ["string", "null"]},
+            "changed_files": {"type": "array", "items": {"type": "string"}},
+            "checks": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false, "required": ["command", "outcome"],
+                "properties": {
+                  "command": {"type": "string"},
+                  "outcome": {"type": "string", "enum": ["passed", "failed", "not-run"]}
+                }
+              }
+            },
+            "limits": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    }
+  }
+}

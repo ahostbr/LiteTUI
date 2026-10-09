@@ -1385,7 +1385,14 @@ class LlamaCppBackend(_VramGate):
     def subagent_model_states(self) -> dict[str, str]:
         """Read-only admission evidence; never ensure_running or load."""
         if self._probe_shape() == _SHAPE_SINGLE:
-            return {row.key: 'loaded' if row.loaded else 'unloaded' for row in self._single_rows()}
+            # A server started with --sleep-idle-seconds drops its weights when idle
+            # and reloads them on the next request; /props then says is_sleeping.
+            # (From llama.cpp's server documentation as remembered, NOT read from a
+            # live server.) A server with no such field is not sleeping.
+            state = self._single_state()
+            if state is None:
+                return {}
+            return {state[0]: 'unloaded' if state[1].get('is_sleeping') else 'loaded'}
         return {key: info.get('status', {}).get('value', 'unknown')
                 for key, info in self._server_models().items()}
 
@@ -1956,7 +1963,8 @@ class LMStudioBackend(_VramGate):
             state = row.get('state') or (row.get('status') or {}).get('value')
             if state is None:
                 state = 'loaded' if row.get('loaded_context_length') else 'unknown'
-            states[key] = state
+            # LM Studio's word for a downloaded model that is not resident.
+            states[key] = 'unloaded' if state == 'not-loaded' else state
         return states
 
     def loaded_models(self) -> list[str]:

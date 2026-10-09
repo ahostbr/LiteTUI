@@ -3041,6 +3041,11 @@ class LiteTUI(App):
             self._last_fold_note = fold_note
             self._system(f"[llm-tool-summ] {fold_note}")
         try:
+            # T0408-I: a long tool run can outlast the server's idle unload. The fold
+            # must not be the request that loads the model back; fall to the mask.
+            refusal = await LiteTUI._spawned_worker_refusal(self, fold_model)
+            if refusal:
+                raise llm_backend.BackendError(refusal)
             resp = await model_transport.for_app(self).create(
                 purpose="tool-summary",
                 model=fold_model,
@@ -5907,6 +5912,13 @@ class LiteTUI(App):
             level = getattr(self, '_cli_thinking_level', None)
             if level is not None and not self._cli_launch_error:
                 if self.backend.name == 'lmstudio' and level != 'default':
+                    # T0408-I: the probe below is a chat request naming the model, and the
+                    # listing it was checked against above is from connect.
+                    why = await LiteTUI._spawned_worker_refusal(self, self.model_id)
+                    if why:
+                        self._cli_launch_error = why
+                        self._system(f'[cli] {why} Launch prompt blocked; nothing was sent.')
+                        return
                     self._model_thinking_levels = await asyncio.to_thread(
                         thinking_probe.get_effective_levels, self.settings.lm_host, self.model_id,
                         self.settings.lmstudio_graded_thinking_models)
@@ -8558,6 +8570,24 @@ class LiteTUI(App):
             if self.model_id != authority.model:
                 raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
 
+    async def _spawned_worker_refusal(self, model, timeout: float | None = None) -> str | None:
+        """T0408-I: why a worker THIS launch spawned must not send a request naming
+        `model` right now, or None. One read-only state question, never a load.
+
+        Keyed on the launch marker, not on the conversation: a person who resumes
+        a spawned seat's conversation by hand keeps the behaviour they had.
+        """
+        if not (getattr(self, '_spawned_marker', False)
+                and getattr(getattr(self, 'seat', None), 'tier', None) == 'worker'):
+            return None
+        from litetui import subagent_local
+        ask = asyncio.to_thread(subagent_local.seat_refusal, self.backend, model)
+        try:
+            return await (ask if timeout is None else asyncio.wait_for(ask, timeout))
+        except asyncio.TimeoutError:
+            return (f'{model!r} could not be confirmed loaded within {timeout:g}s. A spawned worker '
+                    'never sends a request that could load a model: loading needs approval.')
+
     async def _ensure_chat_ready(self, *, timeout: float | None = None) -> None:
         """Ask, in plain words, whether model_id can serve a turn RIGHT NOW.
 
@@ -8602,6 +8632,16 @@ class LiteTUI(App):
             loaded = {r.key for r in getattr(self, 'model_rows', {}).values() if r.loaded}
             if loaded and self._agent_session.authority.model not in loaded:
                 raise llm_backend.BackendError('Selected agent model is not loaded; no identity fallback is permitted')
+            # T0408-I: `loaded` above is the listing from connect, so it cannot see a
+            # model the server has unloaded since, and an empty listing passed. A
+            # spawned worker asks the server again, read-only, before every request.
+            # The question spends the caller's bound; it does not add to it.
+            asked_at = time.monotonic()
+            why = await LiteTUI._spawned_worker_refusal(self, self._agent_session.authority.model, timeout)
+            if why:
+                raise llm_backend.BackendError(why)
+            if timeout is not None:
+                timeout = max(0.0, timeout - (time.monotonic() - asked_at))
         # T594: the headless gate runs FIRST, because refusing has to happen
         # before anything that could name a cold id reaches LM Studio.
         if getattr(self, "_rpc", False):   # doubles predate this seam
