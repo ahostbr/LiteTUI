@@ -150,8 +150,18 @@ def test_corrupt_cache_is_ignored_not_fatal(clean_env, monkeypatch, tmp_path):
 
 # ── The live UI path ─────────────────────────────────────────────────────────
 
+@pytest.fixture()
+def owned_update_session(tmp_path):
+    """Use the CLI's owned-session contract, isolated from the running app."""
+    from litetui.agent_launch_context import ordinary
+    from litetui.settings import Settings
+
+    with ordinary(tmp_path, Settings()) as session:
+        yield session
+
+
 @pytest.mark.asyncio
-async def test_notice_reaches_the_chat_log(clean_env, monkeypatch):
+async def test_notice_reaches_the_chat_log(clean_env, monkeypatch, owned_update_session):
     """The end-to-end proof: boot the real app, fake a newer PyPI version,
     and require the [update] line in the chat log — the port of the desktop
     app's UPDATE_STATUS broadcast, one system line instead of a broadcast
@@ -162,12 +172,11 @@ async def test_notice_reaches_the_chat_log(clean_env, monkeypatch):
 
     # Collapse the 15 s startup delay and point the fetch at a canned
     # "newer" version.
-    monkeypatch.setenv("LITETUI_DATA_ROOT", "/tmp/litetui-update-check-test")
     monkeypatch.setattr(update_check, "STARTUP_DELAY_SECONDS", 0.2)
     monkeypatch.setattr(update_check, "fetch_latest_version", lambda: "99.99.99")
     monkeypatch.setattr(update_check, "_started", False)
 
-    a = LiteTUI()
+    a = LiteTUI(agent_session=owned_update_session)
     found = False
     async with a.run_test(size=(100, 30)) as pilot:
         for _ in range(60):  # ~3 s worst case at the app's pause cadence
