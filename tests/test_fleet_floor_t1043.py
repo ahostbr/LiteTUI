@@ -466,10 +466,10 @@ def test_the_app_records_spawned_BEFORE_the_marker_is_consumed(monkeypatch):
     first; otherwise every seat would look like Owner's own instance."""
     from litetui import harness
     monkeypatch.setenv(harness.SPAWN_IDENTITY_MARKER, "1")
-    spawned = LiteTUI()
+    spawned = owned_app()
     assert spawned._spawned_seat is True
     assert harness.SPAWN_IDENTITY_MARKER not in os.environ, "CONTROL: the marker was consumed"
-    assert LiteTUI()._spawned_seat is False, "Owner's own launch read as spawned"
+    assert owned_app()._spawned_seat is False, "Owner's own launch read as spawned"
 
 
 def test_OWNER_an_UNLABELLED_item_in_his_own_instance_is_REFUSED():
@@ -560,6 +560,7 @@ from litetui import app as _app_mod  # noqa: E402
 from litetui import convo_settings as _cs  # noqa: E402
 from litetui import settings as _st  # noqa: E402
 from test_t1027_one_resolver import _BornHost  # noqa: E402
+from _owned_seat import owned_app
 
 
 def _born(tmp_path, marker):
@@ -622,7 +623,7 @@ def _below_floor_backend():
 async def test_OWNER_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES(monkeypatch):
     """Drives the real _submit_text (held as "queued") and _flush_pending_input."""
     monkeypatch.setenv("LITETUI_OWNER", "1")
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     assert app._spawned_seat is False
     async with app.run_test(size=(110, 40)):
@@ -653,7 +654,7 @@ async def test_OWNER_a_mark_taken_while_BUSY_is_held_as_typed_then_PASSES(tmp_pa
                                    "png": str(tmp_path / "fixture.png")}))
     monkeypatch.setattr("litetui.app.appsvc.load_image_file", lambda *a: "fixture-image")
     monkeypatch.setenv("LITETUI_OWNER", "1")
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     async with app.run_test(size=(110, 40)):
         real = app._backend
@@ -806,7 +807,7 @@ def test_GOAL_goal_command_records_the_origin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_GOAL_submit_scopes_the_command_origin_to_its_dispatch():
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     seen = []
     async with app.run_test(size=(110, 40)):
@@ -869,10 +870,10 @@ def test_F_the_app_CONSUMES_the_owner_mark(monkeypatch):
     """Read once and popped: no shell, tool or child of Owner's process inherits it."""
     from litetui import harness
     monkeypatch.setenv(harness.OWNER_MARKER, "1")
-    app = LiteTUI()
+    app = owned_app()
     assert app._owner_seat is True
     assert harness.OWNER_MARKER not in os.environ
-    assert LiteTUI()._owner_seat is False, "a launch without the mark read as Owner's"
+    assert owned_app()._owner_seat is False, "a launch without the mark read as Owner's"
 
 
 def test_F_the_owner_mark_does_NOT_leak_into_a_managed_child(monkeypatch):
@@ -933,25 +934,25 @@ def test_VOID_claude_in_a_UI_panel_launching_litetui_is_ENFORCED(monkeypatch):
     Bash (CLAUDECODE=1) launching litetui must not inherit Owner's exemption."""
     monkeypatch.setenv("LITETUI_OWNER", "1")
     monkeypatch.setenv("CLAUDECODE", "1")
-    assert LiteTUI()._owner_seat is False
+    assert owned_app()._owner_seat is False
 
 
 def test_VOID_a_litetui_tool_shell_launching_litetui_is_ENFORCED(monkeypatch):
     from litetui import harness
     monkeypatch.setenv("LITETUI_OWNER", "1")
-    LiteTUI()                                   # Owner's own: exports the marker
+    owned_app()                                   # Owner's own: exports the marker
     assert os.environ.get(harness.AGENT_SHELL_MARKER) == "1"
     monkeypatch.setenv("LITETUI_OWNER", "1")    # a tool shell of it, relaunching
-    assert LiteTUI()._owner_seat is False
+    assert owned_app()._owner_seat is False
 
 
 def test_TAINT_is_checked_only_inside_a_LiteSuite_terminal(monkeypatch):
     monkeypatch.setenv("LITETUI_OWNER", "1")
-    assert LiteTUI()._pty_term is None, "outside a LiteSuite pty nothing is asked"
+    assert owned_app()._pty_term is None, "outside a LiteSuite pty nothing is asked"
     monkeypatch.setenv("LITETUI_OWNER", "1")
     monkeypatch.setenv("LITESUITE_PTY_TERM", "pty-1-1")
     monkeypatch.delenv("LITETUI_AGENT_SHELL", raising=False)
-    assert LiteTUI()._pty_term == "pty-1-1"
+    assert owned_app()._pty_term == "pty-1-1"
 
 
 def test_TAINT_a_bridge_typed_UI_shell_LOSES_the_mark_for_good(monkeypatch):

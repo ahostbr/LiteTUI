@@ -400,6 +400,20 @@ def _never_dial_out_from_a_constructor(request, monkeypatch):
     monkeypatch.setattr(mcp_client.MCPManager, "connect", _refuse)
 
 
+@pytest.fixture(autouse=True)
+def _release_owned_test_seats():
+    """Give back every seat `_owned_seat.owned_app` opened during this test.
+
+    Here and not beside the helper's callers: a module-level fixture releases
+    only for tests in its own module, and a test may build its app through a
+    helper that lives in another one. One mechanism for the whole session, one
+    release per test."""
+    yield
+    import _owned_seat
+
+    _owned_seat.release_all()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",

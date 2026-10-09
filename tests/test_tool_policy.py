@@ -24,6 +24,7 @@ from litetui.tool_policy import (
     WRITE_POLICY,
     evaluate,
 )
+from _owned_seat import owned_app
 
 
 def decide(profile, policy, args=None, root=None):
@@ -121,7 +122,7 @@ def test_unknown_profiles_and_undeclared_mcp_effects_fail_closed(tmp_path):
 
 
 def test_every_first_party_registered_tool_has_explicit_policy():
-    tui = app.LiteTUI()
+    tui = owned_app()
     assert tui.plugins.tools
     unknown = [entry.name for entry in tui.plugins.tools if entry.policy is MCP_UNKNOWN_POLICY]
     assert unknown == [], f"first-party tools missing policy metadata: {unknown}"

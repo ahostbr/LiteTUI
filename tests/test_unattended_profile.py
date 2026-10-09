@@ -49,6 +49,7 @@ from litetui.tool_policy import (
     WRITE_POLICY,
     evaluate,
 )
+from _owned_seat import owned_app
 
 ROOT = paths.ROOT
 
@@ -69,7 +70,7 @@ def _mail_app(profile_name: str, *, route: str | None = None):
     whether anything calls it that way -- the green-that-cannot-run this
     codebase already paid for once in T079.
     """
-    app = _ryans(LiteTUI())
+    app = _ryans(owned_app())
     if route == "spawner":
         app._owner_seat = False
         app._spawned_seat = True
@@ -196,7 +197,7 @@ async def test_an_unattended_CONFIRM_is_refused_in_words_never_a_modal(
         raise AssertionError(f"{name}/{source} opened a modal nobody can answer")
 
     monkeypatch.setattr(app_mod, "show_dialog", _no_modal)
-    app = _ryans(LiteTUI())
+    app = _ryans(owned_app())
     app._active_tool_profile = name
     app._hook_source = source
     refusal = await app._authorize_action(
@@ -239,7 +240,7 @@ def test_spawnerless_inbox_keeps_refusal_guidance():
 
 
 def test_hosted_inbox_turn_names_host_relay():
-    app = _ryans(LiteTUI())
+    app = _ryans(owned_app())
     app._owner_seat = False
     app._spawned_seat = True
     app._agent_launched = True
@@ -324,7 +325,7 @@ def _fired_by_a_job(monkeypatch, *, setting=INTERACTIVE, job_level=None):
     from litetui import scheduler
     from litetui import app as app_mod
 
-    app = _ryans(LiteTUI())
+    app = _ryans(owned_app())
     app._connect = lambda: None
     app.settings.tool_policy_profile = setting
     app._chat_running = lambda: False

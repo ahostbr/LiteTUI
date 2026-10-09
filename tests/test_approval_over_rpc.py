@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import app as m  # noqa: E402
 from litetui import harness, textfmt, tool_approval, tool_policy  # noqa: E402
+from _owned_seat import owned_app
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +47,7 @@ def _registered_parent(a, parent):
 
 
 def make_app(rpc: bool = False):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

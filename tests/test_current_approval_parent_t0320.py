@@ -18,6 +18,7 @@ from litetui import (
     tool_policy,
 )
 from litetui.app import LiteTUI
+from _owned_seat import owned_app
 
 OLD = "old-parent"
 NEW = "new-parent"
@@ -32,7 +33,7 @@ def arm(tmp_path, monkeypatch):
     monkeypatch.setattr(harness, "INBOX_ROOT", tmp_path / "inbox")
     for parent in (OLD, NEW):
         (agents / f"{parent}.json").write_text(json.dumps({"agent_id": parent, "spawned_by": None}), encoding="utf-8")
-    app = LiteTUI()
+    app = owned_app()
     app._owner_seat = False
     app._spawned_seat = app._agent_launched = True
     app._spawner_id = OLD

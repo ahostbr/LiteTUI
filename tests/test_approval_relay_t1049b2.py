@@ -21,6 +21,7 @@ from litetui import approval_relay, harness, runtime_log, seat_authority, tool_a
 from litetui.agent_launcher import LaunchBlocked, validate_request
 from litetui.agent_supervisor import AgentProcess, child_process_env
 from litetui.tool_policy import INTERACTIVE
+from _owned_seat import owned_app
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 DESTRUCTIVE = {"command": "rm -rf ./build"}
@@ -40,7 +41,7 @@ def _registered_parent(a, parent):
 
 
 def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
-    a = m.LiteTUI()
+    a = owned_app()
     a.settings.tool_policy_profile = INTERACTIVE
     a._active_tool_profile = INTERACTIVE
     a._spawned_seat = bool(spawner)

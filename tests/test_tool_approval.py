@@ -14,6 +14,7 @@ from litetui.tool_approval import (
 )
 from litetui.textfmt import tool_denied
 from litetui.tool_policy import SHELL_POLICY, STRICT, approval_preview, evaluate
+from _owned_seat import owned_app
 
 
 def _decision(tmp_path):
@@ -37,7 +38,7 @@ def _probe_app(monkeypatch):
     developer's own settings.json, so an unpatched run of this suite would
     rewrite live configuration as a side effect of a test.
     """
-    tui = LiteTUI()
+    tui = owned_app()
     tui._connect = lambda: None
     # STRICT, stated rather than inherited: the CONFIRM machinery for shell
     # lives there (PROCESS_EXECUTION is in its confirm set), and that is the
@@ -190,7 +191,7 @@ async def test_deny_button_denies(tmp_path):
 
 @pytest.mark.asyncio
 async def test_real_worker_waits_for_the_modal_before_execution():
-    tui = LiteTUI()
+    tui = owned_app()
     tui._connect = lambda: None
     # STRICT, stated rather than inherited: this test is about the CONFIRM
     # machinery -- the modal must appear BEFORE the sensitive call executes.

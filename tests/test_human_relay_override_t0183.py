@@ -6,6 +6,7 @@ import pytest
 
 from litetui import app as app_mod, approval_relay, harness, runtime_log, tool_policy
 from litetui.tool_policy import INTERACTIVE
+from _owned_seat import owned_app
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 
@@ -14,7 +15,7 @@ def seat(monkeypatch, tmp_path):
     import json
     monkeypatch.setattr(harness, "AGENTS_DIR", tmp_path)
     (tmp_path / f"{SPAWNER}.json").write_text(json.dumps({"agent_id": SPAWNER}))
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app.settings.tool_policy_profile = INTERACTIVE
     app._active_tool_profile = INTERACTIVE
     app._spawned_seat = True
