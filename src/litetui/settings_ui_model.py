@@ -175,6 +175,7 @@ FIELD_DESCRIPTIONS = {
     "tool_deny": "Tool:authority refusals checked before any allow rule or profile.",
     "tool_trusted_interpreters": "One exact absolute path per line for this conversation. Empty adds no trust. Skips only foreign-program confirmation, not danger or deny rules; linked or invalid paths grant no trust.",
     "relay_approval_timeout_s": "Seconds an agent-launched seat waits for its spawner's approval before refusing.",
+    "permission_judge": "Blank is off. The word count logs, for each routed approval, whether the plain-read check would have covered it. Every approval is still asked; nothing is authorized. Shared by every LiteTUI on this machine.",
     "tools_disabled": "Tool names withheld from the model and refused if called anyway.",
     "tool_context_mode": "Put raw, masked, or summarized tool output in context without deleting the original.",
     "tool_context_threshold_chars": "Results shorter than this character count enter context unchanged.",
@@ -380,7 +381,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "agent", "Agent loop", "agent-authority", "Authority & approvals",
         "The host-enforced safety profile and standing decisions.",
-        ("tool_policy_profile", "tool_always_allow", "tool_deny", "tool_trusted_interpreters", "relay_approval_timeout_s"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
+        ("tool_policy_profile", "tool_always_allow", "tool_deny", "tool_trusted_interpreters", "relay_approval_timeout_s", "permission_judge"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
     ),
     _section(
         "agent", "Agent loop", "agent-tools", "Tool surface",

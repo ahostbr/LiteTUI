@@ -3178,6 +3178,17 @@ class LiteTUI(App):
             # here is `_hook_source` (Dijkstra D1).
             source = getattr(self, "_hook_source", None)
             route = seat_authority.confirm_route(self)
+            # T0408-L, the ONE reserved insertion. Stage 1 only COUNTS and answers False.
+            # No failure in it, an import error included, may alter the route below.
+            try:
+                from litetui import permission_judge
+                stood_in = await permission_judge.stands_in(
+                    self, name, args, decision, policy=policy, workspace=workspace,
+                    route=route, source=source, hook_test=hook_test)
+            except Exception:  # noqa: BLE001
+                stood_in = False
+            if stood_in:
+                return None
             if route in ("spawner", "refuse"):
                 status = ("no_spawner" if route == "refuse" else
                           await approval_relay.ask_spawner(self, name, args, decision, source))

@@ -1207,6 +1207,14 @@ class SettingsBody(Widget):
                             "seconds the turn stops and the refusal is logged (T1049).",
                             placeholder="600",
                         )
+                        yield from self._text_row(
+                            "permission_judge", "Count approvals a plain-read check would cover",
+                            "Blank = off. Write count to log, for each approval this LiteTUI "
+                            "routes, whether the plain-read check would have covered it. Every "
+                            "approval is still asked; nothing is authorized and no model is "
+                            "called. Shared by every LiteTUI on this machine.",
+                            placeholder="unset: off",
+                        )
                         yield self._section_header("agent-tools")
                         yield from self._text_row(
                             "tools_disabled", "Tools switched off",
@@ -1736,6 +1744,9 @@ class SettingsBody(Widget):
             raise ValueError(
                 f"tool_policy_profile: must be one of {', '.join(tool_policy.PROFILE_NAMES)}"
             )
+        if out.permission_judge not in (None, "count"):
+            # A misspelt word would read as off, and a count of zero would then be a lie.
+            raise ValueError("permission_judge: leave blank (off) or write count")
         if out.compact_max_tokens < 256:
             raise ValueError("compact_max_tokens: below 256 no summary can fit")
         if out.tool_context_threshold_chars < 0:

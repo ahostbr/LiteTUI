@@ -291,6 +291,10 @@ class Settings:
     #: [APPROVAL] inbox message before the turn stops and is logged (Marquee
     #: f4d49382: 600 s, no answer = deny). Read by approval_relay.timeout_s.
     relay_approval_timeout_s: int = 600
+    #: T0408-L, stage 1. None is off. The one word "count" makes the approval door LOG,
+    #: for each approval it routes, whether the plain-read check would have covered it
+    #: (permission_judge.py). It authorizes nothing, skips no approval, calls no model.
+    permission_judge: str | None = None
     #: T538 — the model the subagent tool sends its child to when the call names
     #: none. None = the parent's own model. the user 2026-09-08 21:4x: "run it with
     #: the 27b using the 2B Q4 as its subagents" — a small model loaded beside
