@@ -242,6 +242,56 @@ def _jobs_words(target) -> str:
             "Schedule with /cron instead")
 
 
+def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
+    """T0306: only Owner's own seat may directly write a data root's settings.json.
+
+    That file holds the device's standing allow and deny rules, its tool profile
+    and the paths of the programs LiteTUI launches, and every seat on the data
+    root shares it with Owner's own, so a written key is authority this seat does
+    not have. The twin of jobs_file_refusal: called beside it at the door, the
+    same early exit for a read-only tool, the same bases, and the owner recheck
+    only after a protected write is recognized. settings.save is in-process
+    Python, never a tool call.
+
+    A write or edit tool's path only: a shell command's writes are not judged here."""
+    if policy is not None and policy.classify_args is None and policy.capabilities <= {
+            tool_policy.READ_ONLY, tool_policy.NETWORK}:
+        return None
+    paths: list[str] = []
+    _written(args, paths, [])
+    if not paths:
+        return None
+    bases = [Path(workspace), Path.cwd()]
+    if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
+        bases.append(Path(workspace) / args["cwd"])
+    for base in dict.fromkeys(b.resolve() for b in bases):
+        for raw in paths:
+            try:   # dealias first, as the jobs rule does: an alias opens the same file
+                path = Path(deny_floor.dealias(raw.strip().strip("\"'"))).expanduser()
+                target = (path if path.is_absolute() else base / path).resolve()
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if _is_settings_file(target):
+                return None if is_ryans_own(app, recheck=True) else _settings_words(target)
+    return None
+
+
+def _is_settings_file(path: Path) -> bool:
+    """A data root's settings.json: the name Windows opens (the floor's
+    canonical_name), in a folder the floor's own test calls a data root. That test
+    is a property of the folder, so it is asked about the schedule file's name."""
+    return (deny_floor.canonical_name(path.name) == "settings.json"
+            and deny_floor.is_jobs_file(path.with_name("jobs.json")))
+
+
+def _settings_words(target) -> str:
+    return (f"this LiteTUI may not write {target}: that file holds the device's standing "
+            "allow and deny rules, its tool profile and the programs LiteTUI launches, for "
+            "every seat on this data root, and this seat cannot establish current owner "
+            "authority (T0306). "
+            "Settings are changed with /settings in the owner's own LiteTUI")
+
+
 def schedule_note(app, level: str) -> str:
     """One line for every creation surface: the recorded level and who answers the
     CONFIRMs its runs raise (confirm_route, T1049-B)."""
