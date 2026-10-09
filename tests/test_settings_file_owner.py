@@ -1,9 +1,11 @@
 """T0306 — the device settings file is Owner's: only Owner's own seat may write it.
 
-A data root's settings.json holds the standing allow and deny rules, the tool
-profile and the paths of the programs LiteTUI launches, and every seat on that
-data root shares the one file. These arms hold the ownership refusal at the
-shared _authorize_action door, beside the jobs.json one (T1085).
+A data root's settings.json holds the paths of the programs LiteTUI launches,
+the dispatch route, the API keys, and the DEFAULT allow and deny rules and tool
+profile a new conversation starts from, and every seat on that data root shares
+the one file. These arms hold the ownership refusal at the shared
+_authorize_action door, beside the jobs.json one (T1085). What is refused is a
+write that NAMES that file.
 
 The target: a file whose name Windows opens as settings.json
 (deny_floor.canonical_name, so a stream suffix and a trailing dot or space are
@@ -21,14 +23,28 @@ live, a data root known only to another process's environment, and writers that
 are neither hooked agents nor LiteTUI seats".
 
 Every test of the schedule-file rule (tests/test_jobs_file_t1085.py) is run a
-second time here with its question also asked of the settings rule, the name
-substituted: a case added to that file later is mirrored without an edit here.
+second time here under a mirror: whatever it asks its rule is also asked of the
+settings rule, the name substituted. At this commit 107 of those 111 tests ask
+their rule something and so are mirrored; 4 ask it nothing and pass whatever the
+settings rule does (named at ASKS_NOTHING, and pinned). A case added to that
+file later is mirrored without an edit here.
 
-NOT covered: everything in the ceiling above; a per-agent home's or a
-conversation's own settings.json (a different file, by the folder test); a seat
-editing the installed source; the Claude Code hook path, which does not judge
-this file at all (only a LiteTUI seat does). The rule brings settings.json level
-with jobs.json. It does not make a seat a sandbox.
+NOT covered, by this rule or by the schedule file's (they share every one):
+- everything in the ceiling above;
+- a wildcard or a brace in the name (`settings.jso?`, `*.json`, `{settings,x}.json`);
+- a whole-folder copy, extract or clean that never names the file;
+- the data root's marker removed first, for a root known only by its marker;
+- a PowerShell expression that carries the path in a .NET call;
+- a path under an argument key the rule does not read (it reads `path`,
+  `file_path`, `notebook_path`, a `command`, and a patch's file headers);
+- a seat editing the installed source; the Claude Code hook path, which does not
+  judge this file at all (only a LiteTUI seat does).
+A delete or a garbled file is not a lesser case of those: the file then loads as
+its defaults, which are the autonomous profile with no deny rules.
+Each conversation's own settings.json, which holds the allow and deny rules and
+the profile that conversation actually runs under, and a per-agent home's, are
+different files by the folder test and are NOT covered. The rule brings the
+device settings.json level with jobs.json. It does not make a seat a sandbox.
 """
 from __future__ import annotations
 
@@ -39,7 +55,6 @@ import types
 import pytest
 
 import test_jobs_file_t1085 as jobs_tests
-from test_jobs_file_t1085 import _release_owned_sessions  # noqa: F401 - its apps' sessions
 
 from litetui import agent_ownership, agent_store, claude_tools, seat_authority, tool_policy
 from litetui import app as m
@@ -183,7 +198,10 @@ def test_an_unprotected_write_never_asks_who_owns_the_seat(app, tmp_path, monkey
         a, {"path": str(tmp_path / "notes.md"), "content": "x"}, tmp_path) is None
 
 
-def test_the_settings_screens_own_save_is_untouched(app, tmp_path, monkeypatch):
+def test_settings_save_works_in_a_seat_that_is_not_the_owners(app, tmp_path, monkeypatch):
+    """`settings.save` is in-process and takes no part in the door, so the rule
+    cannot fail this: it shows only that saving still works in such a seat. It
+    does not show that the settings screen's path avoids the door."""
     a, _ = _agent(app, monkeypatch)
     written = settings_mod.save(a.settings, tmp_path)
     assert written == tmp_path / "settings.json" and written.is_file()
@@ -257,6 +275,11 @@ SHELL_WRITERS = [
     ("bash", "rm {root}/NAME"),
     ("powershell", "Remove-Item {root}/NAME"),
     ("bash", "sed -i s/a/b/ {root}/NAME"),
+    # Code handed to an interpreter: the floor rebuilds the path from the name it
+    # was asked about. With that line asking about the schedule file's name
+    # instead, these two rows are the ones that fail.
+    ("bash", "python -c \"open('{root}/NAME','w').write('x')\""),
+    ("bash", "node -e \"require('fs').writeFileSync('{root}/NAME','x')\""),
     ("bash", "git restore -- {root}/NAME"),
     ("bash", "git checkout HEAD -- {root}/NAME"),
     ("bash", "git rm -- {root}/NAME"),
@@ -387,9 +410,19 @@ def test_a_folder_whose_name_holds_the_text_is_judged_as_the_folder_it_is(
     assert rule(a, {"command": f"echo x > {plain.as_posix()}/{name}"}, tmp_path) is None
 
 
-# ── the mirror: every schedule-file test, its question asked of this rule too ──
+# ── the mirror: every schedule-file test run again; what it asks its rule is
+#    asked of this rule too (107 of the 111 ask something, see ASKS_NOTHING) ──
 
 MIRRORED: list = []
+#: Schedule-file tests that never ask their rule a question, so their copies here
+#: pass whatever the settings rule does. Pinned by the mirror: a copy that asks
+#: nothing and is not named here fails, and so does a named one that starts asking.
+ASKS_NOTHING = frozenset({
+    "ryans_manual_autonomy_choice_is_not_capped",       # drives a key press, no tool call
+    "ryans_scheduler_save_and_edit_remain_untouched",   # scheduler.save, in process
+    "scheduler_save_is_untouched_in_an_agent_seat",     # scheduler.save, in process
+    "the_litetui_floor_leaves_jobs_to_the_seat",        # asks tool_policy's floor, not the rule
+})
 
 
 def _renamed(value):
@@ -404,11 +437,12 @@ def _renamed(value):
 
 
 @pytest.fixture
-def _mirror(monkeypatch):
+def _mirror(request, monkeypatch):
     """Whatever a test asks the schedule-file rule, ask the settings rule the same
     thing with the name substituted, at the same moment, and require the same
     verdict. The original answer is returned, so the test itself is unchanged."""
     ask = seat_authority.jobs_file_refusal
+    before = len(MIRRORED)
 
     def both(app, args, workspace, policy=None):
         why = ask(app, args, workspace, policy)
@@ -421,6 +455,17 @@ def _mirror(monkeypatch):
         return why
 
     monkeypatch.setattr(seat_authority, "jobs_file_refusal", both)
+    yield
+    # A copy builds its app through the schedule-file module's helper, whose own
+    # release fixture runs only for tests of that module: give its sessions back
+    # here. (Absent once that module takes its seat from a shared fixture.)
+    held = getattr(jobs_tests, "_SESSIONS", [])
+    while held:
+        held.pop().release()
+    name = request.node.originalname.removeprefix("test_mirror_of_")
+    asked_nothing = len(MIRRORED) == before
+    assert asked_nothing == (name in ASKS_NOTHING), (
+        name, "asked its rule nothing" if asked_nothing else "now asks its rule: unpin it")
 
 
 def _mirrored(test):

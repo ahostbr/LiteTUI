@@ -208,12 +208,17 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
 def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
     """T0306: only Owner's own seat may directly write a data root's settings.json.
 
-    That file holds the device's standing allow and deny rules, its tool profile
-    and the paths of the programs LiteTUI launches, and every seat on the data
-    root shares it with Owner's own, so a written key is authority this seat does
-    not have. The twin of jobs_file_refusal by construction: the same loop and the
-    floor's same recognizer, asked about this name. settings.save is in-process
-    Python, never a tool call."""
+    That file holds the Claude program path, the dispatch routes, the API keys,
+    and the DEFAULTS every new conversation on the data root starts from (its
+    allow and deny rules, its tool profile, the other program paths), and every
+    seat on the data root shares it with Owner's own, so a written key is
+    authority this seat does not have. The twin of jobs_file_refusal by
+    construction: the same loop and the floor's same recognizer, asked about this
+    name. settings.save is in-process Python, never a tool call.
+
+    What is refused is a write that NAMES the file, to the floor's stated bound.
+    A conversation's own settings.json holds the rules that conversation actually
+    runs under; it is a different file and is not judged here."""
     return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words)
 
 
@@ -276,9 +281,9 @@ def _settings_words(target, git_reason=None) -> str:
     doing = (f"write {target}" if git_reason is None else
              "run a Git command that writes, or that from another folder may write, "
              "a data root's settings.json")
-    return (f"this LiteTUI may not {doing}: that file holds the device's standing "
-            "allow and deny rules, its tool profile and the programs LiteTUI launches, for "
-            "every seat on this data root, and this seat cannot establish current owner "
+    return (f"this LiteTUI may not {doing}: that file holds the programs LiteTUI "
+            "launches, the dispatch routes, the keys and the default rules for every seat "
+            "on this data root, and this seat cannot establish current owner "
             "authority (T0306). "
             "Settings are changed with /settings in the owner's own LiteTUI")
 
