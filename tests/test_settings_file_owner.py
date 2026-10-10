@@ -257,6 +257,7 @@ def test_an_unprotected_write_never_asks_who_owns_the_seat(app, tmp_path, monkey
         raise AssertionError("the bridge was asked about a write that is not protected")
 
     monkeypatch.setattr(seat_authority, "pty_taint_clean", asked)
+    monkeypatch.setattr(seat_authority, "pty_taint_state", asked)
     assert seat_authority.settings_file_refusal(
         a, {"path": str(tmp_path / "notes.md"), "content": "x"}, tmp_path) is None
 
@@ -722,7 +723,10 @@ def test_a_same_named_file_copied_into_the_folder_is_refused(app, tmp_path, monk
 
 #: (command, the file it writes): ROOT a data root, OTHER a plain folder, NAME the file.
 MORE_WRITES = [
-    "cp OTHER/NAME ROOT/", "mv OTHER/NAME ROOT", "robocopy OTHER ROOT NAME", "rsync OTHER/NAME ROOT/",
+    "cp OTHER/NAME ROOT/", "mv OTHER/NAME ROOT",
+    "cp --target=ROOT OTHER/NAME", "cp -tROOT OTHER/NAME", "env cp OTHER/NAME ROOT/",
+    "timeout 20 cp OTHER/NAME ROOT/", "Copy-Item OTHER/NAME,OTHER/x.json ROOT",
+    "cp --li ROOT/NAME OTHER/alias",
     'echo x > "ROOT::$INDEX_ALLOCATION/NAME"', 'rm "ROOT:$I30:$INDEX_ALLOCATION/NAME"',
     "dd if=/dev/null of=ROOT/NAME", "cp -l ROOT/NAME OTHER/alias", "cp --link ROOT/NAME OTHER/alias",
     "[IO.File]::WriteAllText('ROOT/NAME','x')", '[System.IO.File]::Delete("ROOT/NAME")',
@@ -852,6 +856,85 @@ def test_a_marker_in_a_folder_that_is_no_data_root_passes(app, tmp_path, monkeyp
                  {"path": str(plain / MARKER), "content": "{}"},
                  {"command": f"rm {tmp_path.as_posix()}/{MARKER}.bak"}):
         assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
+
+
+# ── T0306-S fix 1 (review R2): the owner's own seat and a bridge that does not answer ──
+
+#: (args, does the rule before T0306-S see it): ROOT the data root (the workspace).
+OWNER_ROWS = [
+    ({"command": "echo x > ROOT/settings.json"}, True),
+    ({"path": "ROOT/settings.json", "content": "{}"}, True),
+    ({"command": "cp OTHER/settings.json ROOT/"}, False),             # MORE: copy-into
+    ({"command": "env cp OTHER/settings.json ROOT/"}, False),
+    ({"path": "notes.md", "content": "settings.json"}, False),         # F: a value under any key
+    ({"files": ["settings.json"]}, False),
+    ({"query": ".litetui-data.json"}, False),                          # D: the marker
+    ({"command": "rm ROOT/.litetui-data.json ROOT/settings.json"}, True),
+]
+
+
+def _rows(tmp_path):
+    other = tmp_path / "other"
+    other.mkdir(exist_ok=True)
+    for args, before in OWNER_ROWS:
+        yield json.loads(json.dumps(args).replace("ROOT", tmp_path.as_posix())
+                         .replace("OTHER", other.as_posix())), before
+
+
+def _owner_in_a_terminal(a, monkeypatch, answer):
+    """The owner's own seat in a LiteSuite terminal; the bridge answers `answer`
+    (True tainted, False untainted, None no answer). Every recheck is counted."""
+    _owners(a)
+    a._pty_term = "owner-terminal"
+    asked = []
+    monkeypatch.setattr(seat_authority, "pty_taint_state",
+                        lambda term, timeout=1.0: asked.append(term) or answer)
+    monkeypatch.setattr(seat_authority, "pty_taint_clean",
+                        lambda term, timeout=1.0: asked.append(term) or answer is False)
+    return asked
+
+
+def test_the_owners_seat_with_the_bridge_answering_is_not_refused(app, tmp_path, monkeypatch):
+    a = app
+    asked = _owner_in_a_terminal(a, monkeypatch, False)
+    monkeypatch.chdir(tmp_path)
+    for args, _ in _rows(tmp_path):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
+        assert a._owner_seat is True
+    assert len(asked) == len(OWNER_ROWS), "one recheck per recognized call"
+
+
+def test_a_silent_bridge_refuses_the_call_and_demotes_only_for_what_the_rule_saw_before(
+        app, tmp_path, monkeypatch):
+    """Pick 2: only seats that are not the owner's are refused. A write only the
+    added recognitions see may be refused while the bridge is silent (the
+    fail-safe), but it must not clear the owner mark; a write the rule saw before
+    clears it, as it always did."""
+    a = app
+    monkeypatch.chdir(tmp_path)
+    for args, before in _rows(tmp_path):
+        asked = _owner_in_a_terminal(a, monkeypatch, None)
+        why = seat_authority.settings_file_refusal(a, args, tmp_path)
+        assert why and "T0306" in why, (args, "refused while the bridge is silent")
+        assert a._owner_seat is (not before), (args, "the owner mark")
+        assert len(asked) == 1, (args, "one recheck for the call, the marker and the settings file together")
+
+
+def test_a_tainted_terminal_still_clears_the_mark_for_an_added_recognition(app, tmp_path, monkeypatch):
+    a = app
+    _owner_in_a_terminal(a, monkeypatch, True)
+    other = tmp_path / "other"
+    other.mkdir()
+    why = seat_authority.settings_file_refusal(
+        a, {"command": f"cp {other.as_posix()}/settings.json {tmp_path.as_posix()}/"}, tmp_path)
+    assert why and a._owner_seat is False
+
+
+def test_another_seat_is_refused_every_row(app, tmp_path, monkeypatch):
+    a, _ = _agent(app, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    for args, _ in _rows(tmp_path):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path), args
 
 
 def _born(a):
@@ -1246,7 +1329,7 @@ def test_the_mirror_can_fail_below_agents(app, tmp_path, monkeypatch, _mirror):
     monkeypatch.setattr(
         seat_authority, "settings_file_refusal",
         lambda app, args, workspace, policy=None, **kw: seat_authority._owned_file_refusal(
-            app, args, workspace, policy, SETTINGS, seat_authority._settings_words, **kw))
+            app, args, workspace, policy, ((SETTINGS, seat_authority._settings_words, (None,), False),), **kw))
     with pytest.raises(AssertionError, match="below .agents"):
         seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / JOBS)}, tmp_path)
 

@@ -211,7 +211,7 @@ def jobs_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str |
     Spawned/unknown seats are not owners; an owner-marked PTY must freshly prove
     it is untainted. Bridge failure refuses this direct write, not scheduler.save.
     T1133's removed profile caps and schedule API gates stay removed."""
-    return _owned_file_refusal(app, args, workspace, policy, "jobs.json", _jobs_words, shell=shell)
+    return _owned_file_refusal(app, args, workspace, policy, (("jobs.json", _jobs_words, (None,), False),), shell=shell)
 
 
 def settings_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str | None:
@@ -240,51 +240,62 @@ def settings_file_refusal(app, args, workspace, policy=None, *, shell=None) -> s
     D (T0306-S): the data root's marker is asked about too. A root known only by
     its marker loses every guard once the marker is gone, so removing or
     rewriting it is refused like the settings file."""
-    return (_owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words,
-                                unders=(None, ".agents"), shell=shell)
-            or _owned_file_refusal(app, args, workspace, policy, DATA_MARKER, _marker_words, shell=shell))
+    return _owned_file_refusal(app, args, workspace, policy, (
+        ("settings.json", _settings_words, (None, ".agents"), False),
+        (DATA_MARKER, _marker_words, (None,), True)), shell=shell)
 
 
-def _owned_file_refusal(app, args, workspace, policy, name, words, unders=(None,), *,
-                        shell=None) -> str | None:
-    """Why this seat may not make this tool call, which would write a data root's
-    `name` (directly in the root, or below one of its `unders` folders); None
-    when it would not, or when the seat is Owner's own.
+def _owned_file_refusal(app, args, workspace, policy, files, *, shell=None) -> str | None:
+    """Why this seat may not make this tool call, which would write one of `files`
+    ((name, words, unders, added): a data root's `name`, directly in the root or
+    below one of its `unders` folders; `added` when the whole name is new in
+    T0306-S); None when it would not, or when the seat is Owner's own.
 
-    `shell` is the interpreter the caller PROVED (tool_policy.proven_shell), never
-    a guess: left None, the floor reads every command under all three dialects and
-    a `;`-joined read becomes one malformed write under cmd's."""
+    ONE ownership recheck per call, whichever file it names. A write that only
+    T0306-S's recognitions see (the floor's MORE, F's keys and values, the
+    marker) is rechecked with _still_owner: a bridge that does not answer
+    refuses that call and leaves the owner mark as it was. A write the rule saw
+    before keeps is_ryans_own, which clears the mark on any failed recheck.
+
+    `shell` is the interpreter the caller PROVED (tool_policy.proven_shell),
+    never a guess; None keeps the floor's conservative union of dialects."""
     # T1133 removed autonomy/profile locks and schedule API gates. This guard
     # protects file ownership only; a read-only tool's path is not a write.
     if policy is not None and policy.classify_args is None and policy.capabilities <= {
             tool_policy.READ_ONLY, tool_policy.NETWORK}:
         return None
-    try:
-        found = _protected_write(args, workspace, name, unders, shell)
-    except deny_floor.UnresolvablePath as error:
-        return error.reason  # not an ownership waiver, even for Owner's own seat
-    # The owner recheck costs a bridge call: only a recognized write pays it.
-    if found is None or is_ryans_own(app, recheck=True):
-        return None
-    return words(*found)
+    for name, words, unders, added in files:
+        try:
+            found = _protected_write(args, workspace, name, unders, shell=shell)
+            if found is None:
+                continue
+            only_added = added or _protected_write(
+                args, workspace, name, unders, shell=shell, wide=False) is None
+        except deny_floor.UnresolvablePath as error:
+            return error.reason  # not an ownership waiver, even for Owner's own seat
+        # The owner recheck costs a bridge call: only a recognized write pays it.
+        owner = _still_owner(app) if only_added else is_ryans_own(app, recheck=True)
+        return None if owner else words(*found)
+    return None
 
 
-def _protected_write(args, workspace, name, unders, shell=None) -> tuple | None:
+def _protected_write(args, workspace, name, unders, shell=None, *, wide=True) -> tuple | None:
     """(target, the floor's Git reason, the folder the file sits below) when the
     call would write a data root's `name`: one of the first two is None. The
     floor's own questions, asked with `name`, once for each of `unders` (None:
-    the file directly in the data root), with every recognition the floor can
-    add (MORE): only a seat that is not the owner's is ever refused here.
-    A string under any other key is tried as a path when its last segment is
-    `name` (T0306-S F); read-only tools never reach this (the caller's test)."""
+    the file directly in the data root). `wide` (T0306-S) adds every recognition
+    the floor can add (MORE), the folder keys beside `cwd`, and a string under any
+    other key tried as a path when its last segment is `name` (F); without it the
+    questions are the rule's before T0306-S. Read-only tools never reach this."""
     paths: list[str] = []
     commands: list[str] = []
     values: list[str] = []
     _written(args, paths, commands, values=values)
-    paths += [v for v in values if deny_floor.canonical_name(v.strip().strip("\"'")) == name.lower()]
+    if wide:
+        paths += [v for v in values if deny_floor.canonical_name(v.strip().strip("\"'")) == name.lower()]
     if not paths and not commands:
         return None
-    more = deny_floor.MORE
+    more = deny_floor.MORE if wide else frozenset()
     for command in commands:
         for under in unders:
             if reason := deny_floor.jobs_git_refusal(command, workspace, shell=shell, name=name, under=under, more=more):
@@ -294,7 +305,7 @@ def _protected_write(args, workspace, name, unders, shell=None) -> tuple | None:
     except (OSError, ValueError, RuntimeError) as error:
         raise deny_floor.UnresolvablePath("<current working directory>", error) from error
     bases = [Path(workspace), cwd]
-    for key in _BASE_KEYS:
+    for key in (_BASE_KEYS if wide else ("cwd",)):
         if isinstance(args, dict) and isinstance(args.get(key), str) and args[key]:
             bases.append(Path(workspace) / args[key])
     for base in dict.fromkeys(deny_floor.resolve_path(b) for b in bases):
@@ -480,6 +491,12 @@ def pty_taint_clean(term: str, timeout: float = 1.0) -> bool:
     (/pty/talk, /pty/write, MCP terminal writes; the taint is recorded BEFORE the
     write). Only a clear "untainted" keeps the mark: no answer, a timeout, an error
     or a tainted terminal all mean NOT the owner (fail-safe)."""
+    return pty_taint_state(term, timeout) is False
+
+
+def pty_taint_state(term: str, timeout: float = 1.0) -> bool | None:
+    """LiteSuite's answer for this terminal: True tainted, False untainted, None
+    when there is no answer (no token, a timeout, an error, a reply without it)."""
     import json
     import os
     import urllib.parse
@@ -490,15 +507,16 @@ def pty_taint_clean(term: str, timeout: float = 1.0) -> bool:
         try:
             token = (Path.home() / ".litesuite" / "bridge-token").read_text(encoding="utf-8").strip()
         except OSError:
-            return False
+            return None
     url = f"{BRIDGE}/pty/owner-ok?term={urllib.parse.quote(term)}"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             answer = json.loads(response.read().decode("utf-8"))
-    except Exception:  # noqa: BLE001 - any failure to verify is "not the owner"
-        return False
-    return answer.get("tainted") is False
+    except Exception:  # noqa: BLE001 - any failure to verify is no answer
+        return None
+    tainted = answer.get("tainted") if isinstance(answer, dict) else None
+    return tainted if isinstance(tainted, bool) else None
 
 
 def is_owner(app) -> bool:
@@ -517,6 +535,22 @@ def is_owner(app) -> bool:
         app._owner_seat = False
         return False
     return True
+
+
+def _still_owner(app) -> bool:
+    """is_ryans_own for a write only T0306-S's recognitions see (review R2; pick 2:
+    only seats that are not the owner's are refused). A tainted terminal clears
+    the mark as is_owner does; a bridge that does not answer refuses this one call
+    and leaves the mark as it was."""
+    if is_spawned(app) or not getattr(app, "_owner_seat", False):
+        return False
+    term = getattr(app, "_pty_term", None)
+    if not term:
+        return True
+    tainted = pty_taint_state(term)
+    if tainted is True:
+        app._owner_seat = False
+    return tainted is False
 
 
 def is_ryans_own(app, recheck: bool = True) -> bool:
