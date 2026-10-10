@@ -158,12 +158,19 @@ def withheld(app, level: str) -> str | None:
 #: The file headers of a Codex patch: every path it adds, updates, deletes or moves to.
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$", re.MULTILINE)
 _PATH_KEYS = ("path", "file_path", "notebook_path")
+#: Keys whose value is the folder a call's relative paths and command run from
+#: (T0306-S F: Codex's shell tool says `workdir`).
+_BASE_KEYS = ("cwd", "workdir", "working_directory", "dir")
+#: The marker every data root gets on launch: the floor knows a data root by it,
+#: so removing or rewriting it is a write the owner rules guard (T0306-S D).
+DATA_MARKER = ".litetui-data.json"
 
 
-def _written(value, paths: list, commands: list, depth: int = 0) -> None:
+def _written(value, paths: list, commands: list, depth: int = 0, values: list | None = None) -> None:
     """Every path and command a tool call's arguments carry, whatever the backend
     names them: `path` (LiteTUI write/edit, Claude-native Write/Edit as mapped),
-    `file_path` / `notebook_path`, a `command`, and the file headers of a patch."""
+    `file_path` / `notebook_path`, a `command`, and the file headers of a patch.
+    Every other string value goes to `values`, to be tried as a path."""
     if depth > 4:
         return
     if isinstance(value, dict):
@@ -175,12 +182,14 @@ def _written(value, paths: list, commands: list, depth: int = 0) -> None:
                 commands.append(text)
                 paths.extend(_PATCH_PATH.findall(text))
             else:
-                _written(item, paths, commands, depth + 1)
+                _written(item, paths, commands, depth + 1, values)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _written(item, paths, commands, depth + 1)
+            _written(item, paths, commands, depth + 1, values)
     elif isinstance(value, str):
         paths.extend(_PATCH_PATH.findall(value))
+        if values is not None:
+            values.append(value)
 
 
 def jobs_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str | None:
@@ -223,9 +232,17 @@ def settings_file_refusal(app, args, workspace, policy=None, *, shell=None) -> s
     Owner's is refused for its OWN conversation's file too: it saves that file
     in-process (convo_settings.save), never through a tool.
 
-    What is refused is a write that NAMES the file, to the floor's stated bound."""
-    return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words,
-                               unders=(None, ".agents"), shell=shell)
+    What is refused is a write that NAMES the file, to the floor's stated bound,
+    and (T0306-S) the floor's added recognitions, MORE: a copy INTO the folder, a
+    stream suffix on a folder, a short name, `of=`, a linking copy, pathspec magic
+    and a .NET call's path.
+
+    D (T0306-S): the data root's marker is asked about too. A root known only by
+    its marker loses every guard once the marker is gone, so removing or
+    rewriting it is refused like the settings file."""
+    return (_owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words,
+                                unders=(None, ".agents"), shell=shell)
+            or _owned_file_refusal(app, args, workspace, policy, DATA_MARKER, _marker_words, shell=shell))
 
 
 def _owned_file_refusal(app, args, workspace, policy, name, words, unders=(None,), *,
@@ -256,23 +273,30 @@ def _protected_write(args, workspace, name, unders, shell=None) -> tuple | None:
     """(target, the floor's Git reason, the folder the file sits below) when the
     call would write a data root's `name`: one of the first two is None. The
     floor's own questions, asked with `name`, once for each of `unders` (None:
-    the file directly in the data root)."""
+    the file directly in the data root), with every recognition the floor can
+    add (MORE): only a seat that is not the owner's is ever refused here.
+    A string under any other key is tried as a path when its last segment is
+    `name` (T0306-S F); read-only tools never reach this (the caller's test)."""
     paths: list[str] = []
     commands: list[str] = []
-    _written(args, paths, commands)
+    values: list[str] = []
+    _written(args, paths, commands, values=values)
+    paths += [v for v in values if deny_floor.canonical_name(v.strip().strip("\"'")) == name.lower()]
     if not paths and not commands:
         return None
+    more = deny_floor.MORE
     for command in commands:
         for under in unders:
-            if reason := deny_floor.jobs_git_refusal(command, workspace, shell=shell, name=name, under=under):
+            if reason := deny_floor.jobs_git_refusal(command, workspace, shell=shell, name=name, under=under, more=more):
                 return None, reason, under
     try:
         cwd = Path.cwd()
     except (OSError, ValueError, RuntimeError) as error:
         raise deny_floor.UnresolvablePath("<current working directory>", error) from error
     bases = [Path(workspace), cwd]
-    if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
-        bases.append(Path(workspace) / args["cwd"])
+    for key in _BASE_KEYS:
+        if isinstance(args, dict) and isinstance(args.get(key), str) and args[key]:
+            bases.append(Path(workspace) / args[key])
     for base in dict.fromkeys(deny_floor.resolve_path(b) for b in bases):
         for raw in paths:
             # dealias FIRST (Dijkstra A1): `jobs.json::$DATA` opens jobs.json.
@@ -287,7 +311,7 @@ def _protected_write(args, workspace, name, unders, shell=None) -> tuple | None:
                     return target, None, under
         for command in commands:
             for under in unders:
-                if target := deny_floor.jobs_write_target(command, base, shell=shell, name=name, under=under):
+                if target := deny_floor.jobs_write_target(command, base, shell=shell, name=name, under=under, more=more):
                     return target, None, under
     return None
 
@@ -318,6 +342,16 @@ def _settings_words(target, git_reason=None, under=None) -> str:
             "on this data root, and this seat cannot establish current owner "
             "authority (T0306). "
             "Settings are changed with /settings in the owner's own LiteTUI")
+
+
+def _marker_words(target, git_reason=None, under=None) -> str:
+    doing = (f"write or remove {target}" if git_reason is None else
+             "run a Git command that writes, or that from another folder may write, "
+             "a data root's marker")
+    return (f"this LiteTUI may not {doing}: that file marks the folder as a LiteTUI data root, "
+            "and the schedule and settings files there are guarded because of it, and this "
+            "seat cannot establish current owner authority (T0306). "
+            "The marker is LiteTUI's own; no tool needs to touch it")
 
 
 def schedule_note(app, level: str) -> str:
