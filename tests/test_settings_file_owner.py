@@ -869,6 +869,8 @@ OWNER_ROWS = [
     ({"path": "notes.md", "content": "settings.json"}, False),         # F: a value under any key
     ({"files": ["settings.json"]}, False),
     ({"query": ".litetui-data.json"}, False),                          # D: the marker
+    ({"command": "rm ROOT/.litetui-data.json"}, False),                # D: named, but new in T0306-S
+    ({"command": "echo x > ../settings.json", "workdir": "ROOT/sub"}, False),   # F: a folder key
     ({"command": "rm ROOT/.litetui-data.json ROOT/settings.json"}, True),
 ]
 
@@ -930,9 +932,37 @@ def test_a_tainted_terminal_still_clears_the_mark_for_an_added_recognition(app, 
     assert why and a._owner_seat is False
 
 
+@pytest.mark.parametrize("reply, state", [
+    (b'{"tainted": false}', False), (b'{"tainted": true}', True), (b'{}', None),
+    (b'{"tainted": "no"}', None), (b'not json', None), (OSError("refused"), None),
+])
+def test_the_bridges_answer_is_true_false_or_none(monkeypatch, tmp_path, reply, state):
+    """pty_taint_state tells "no answer" apart from "tainted"; pty_taint_clean is
+    still True only for a clear untainted answer."""
+    import io
+    import urllib.request
+
+    def urlopen(request, timeout):
+        if isinstance(reply, Exception):
+            raise reply
+        return io.BytesIO(reply)
+
+    monkeypatch.setenv("LITESUITE_BRIDGE_TOKEN", "tok")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert seat_authority.pty_taint_state("pty-1-1") is state
+    assert seat_authority.pty_taint_clean("pty-1-1") is (state is False)
+    monkeypatch.delenv("LITESUITE_BRIDGE_TOKEN")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", staticmethod(lambda: tmp_path))   # no token file
+    assert seat_authority.pty_taint_state("pty-1-1") is None
+
+
 def test_another_seat_is_refused_every_row(app, tmp_path, monkeypatch):
     a, _ = _agent(app, monkeypatch)
     monkeypatch.chdir(tmp_path)
+    for args, _ in _rows(tmp_path):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path), args
+    a._owner_seat, a._pty_term = True, None   # owner-marked, but spawned: still not the owner's
     for args, _ in _rows(tmp_path):
         assert seat_authority.settings_file_refusal(a, args, tmp_path), args
 
