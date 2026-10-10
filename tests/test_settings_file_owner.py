@@ -757,7 +757,10 @@ def test_the_short_name_and_the_pathspec_are_refused(app, tmp_path, monkeypatch)
     (tmp_path / "sub").mkdir()
     for name, rule in ((SETTINGS, seat_authority.settings_file_refusal), (JOBS, seat_authority.jobs_file_refusal)):
         for command in (f"git checkout HEAD -- :/{name}", f"git checkout HEAD -- ':(top){name}'"):
-            assert rule(a, {"command": command, "cwd": "sub"}, tmp_path), command
+            why = rule(a, {"command": command, "cwd": "sub"}, tmp_path)
+            assert why, command
+            if name == SETTINGS:   # the floor's Git question answered it, not only the shell's
+                assert "run a Git command that writes" in why, why
         if os.name != "nt":
             continue
         (tmp_path / name).write_text("{}", encoding="utf-8")
@@ -816,7 +819,7 @@ def test_a_string_that_is_not_the_name_is_not_tried(app, tmp_path, monkeypatch):
 
 # ── T0306-S D: the data root's marker is asked about as a third name ──
 
-MARKER = seat_authority.DATA_MARKER
+MARKER = ".litetui-data.json"   # spelled here, not read from the rule: the rule's name is what is tested
 
 
 @pytest.mark.asyncio
