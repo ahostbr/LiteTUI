@@ -56,6 +56,19 @@ LAUNCHES = [
     "rg --pre 'x(run)' pattern file",
     "rg --hostname-bin 'x(run)' pattern file",
     "rg --pre='x(run)' pattern file",
+    # the same option word spelled with quotes: decoded before it is judged
+    "rg \"--pre\" 'x(run)' pattern file",
+    "rg '--pre' 'x(run)' pattern file",
+    "rg --p\"re\" 'x(run)' pattern file",
+    "rg --p're' 'x(run)' pattern file",
+    "rg --\"pre\" 'x(run)' pattern file",
+    "rg \"--hostname-bin\" 'x(run)' pattern file",
+    "rg --hostname-'bin' 'x(run)' pattern file",
+    "rg --pre=\"x\" 'a(run)' pattern file",
+    # a head that needed quotes is a string expression, not a bare pattern head
+    "\"rg\" 'x(run)' file",
+    "'rg' 'x(run)' file",
+    "r\"g\" 'x(run)' file",
     # syntax the small scan does not model restores the full scan
     "rg 'a' f `\n; run.bat",
     "rg 'x(run)' f # c\n; run.bat",
@@ -95,6 +108,12 @@ def test_real_launches_stay_refused_under_proven_powershell(tmp_path, command):
     ("awk 'BEGIN{x}' f", []),       # awk runs its quoted script
     ("'rg' 'a(b)'", []),            # a literal argv0 never spells a head
     ("rg --pre 'a(b)' f", []),
+    ("rg \"--pre\" 'a(b)' f", []),
+    ("rg --p\"re\" 'a(b)' f", []),
+    ("rg '--hostname-bin' 'a(b)' f", []),
+    ("\"rg\" 'a(b)' f", []),
+    ("rg \"-n\" 'a(b)' f", [(8, 14)]),     # a quoted but harmless option is still fine
+    ("rg -e 'a''(b)' f", [(6, 14)]),
     ("rg 'a' f; iex 'b(c)'", [(3, 6)]),
 ])
 def test_only_pattern_head_arguments_are_excused(command, spans):

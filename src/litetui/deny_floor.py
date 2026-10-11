@@ -1037,55 +1037,64 @@ def _pattern_literal_spans(command: str) -> list[tuple[int, int]]:
     a statement boundary, which emptied the command position and made `run` a launch.
     Only a literal after a bare pattern head is excused, in a statement with no
     preprocessor option. Boundaries OUTSIDE quotes still split statements, so
-    `rg 'x' f; run.bat` is refused. This is not a PowerShell parser: unmodelled
-    syntax (backtick, comment, here-string, `$(`, smart quote, `--%`, an unterminated
-    or `$`-expanding double quote) returns no spans and the original scan runs.
+    `rg 'x' f; run.bat` is refused.
+
+    Every word is DECODED before it is judged: bare text, single-quoted text (`''` is
+    one quote) and double-quoted text are joined as PowerShell joins them, so
+    `--pre`, `'--pre'`, `"--pre"` and `--p"re"` are the same option word. A head that
+    needed any quote to be spelled is not a bare head. This is not a PowerShell
+    parser: unmodelled syntax (backtick, comment, here-string, `$(`, smart quote, `--%`,
+    an unterminated or `$`-expanding double quote) returns no spans and the original
+    scan runs.
     """
     if _PATTERN_UNMODELLED.search(command):
         return []
     spans: list[tuple[int, int]] = []
     pending: list[tuple[int, int]] = []
-    state = {"head": None, "word": "", "tainted": False}
+    state = {"head": None, "word": "", "quoted": False, "tainted": False}
 
     def end_word():
         word = state["word"]
-        if word:
+        if state["quoted"] or word:
             if state["head"] is None:
-                state["head"] = word.lower()
+                # `'rg' x` is a string expression, not an rg invocation.
+                state["head"] = "\0" if state["quoted"] else word.lower()
             state["tainted"] |= word.lower().startswith(_PATTERN_EXEC_OPTIONS)
-            state["word"] = ""
+        state.update(word="", quoted=False)
 
     def end_statement():
         end_word()
         if state["head"] in _PATTERN_HEADS and not state["tainted"]:
             spans.extend(pending)
         pending.clear()
-        state.update(head=None, word="", tainted=False)
+        state.update(head=None, word="", quoted=False, tainted=False)
 
     i, n = 0, len(command)
     while i < n:
         ch = command[i]
         if ch == "'":
-            j = i + 1
+            j, body = i + 1, ""
             while True:
                 k = command.find("'", j)
                 if k < 0:
                     return []
+                body += command[j:k]
                 if command[k + 1:k + 2] == "'":
+                    body += "'"
                     j = k + 2
                     continue
                 break
-            body = command[i + 1:k]
             if state["head"] is not None:   # an argument; argv0 is never excused
                 pending.append((i, k + 1))
-            state["tainted"] |= body.lower().startswith(_PATTERN_EXEC_OPTIONS)
-            state["word"] += "\0"           # a literal can never spell a head
+            state["word"] += body
+            state["quoted"] = True
             i = k + 1
         elif ch == '"':
             k = command.find('"', i + 1)
             if k < 0 or "$" in command[i + 1:k] or command[k + 1:k + 2] == '"':
                 return []
-            state["word"] += "\0"
+            state["word"] += command[i + 1:k]
+            state["quoted"] = True
             i = k + 1
         else:
             if ch in ";|&\n(){}":
