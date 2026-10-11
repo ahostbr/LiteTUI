@@ -41,6 +41,7 @@ from litetui import paths
 from litetui import tasks as tasks_mod
 from litetui import prompt_compiler
 from litetui import runtime_log, spawner_errors
+from litetui import owner_mode
 from litetui.friendly_errors import present
 from litetui.conversation import (
     CONVO_SEED_FILES,
@@ -1563,6 +1564,8 @@ class LiteTUI(App):
         convo_id: str | None = None,
         agent_session=None,
         spawn_identity=None,
+        owner_memory_dir=None,
+        owner_notice=None,
         **app_kwargs,
     ):
         if agent_session is None:
@@ -1585,6 +1588,12 @@ class LiteTUI(App):
         self._compact_resize_timer = None
         self._first_prompt = first_prompt
         self._cli_system_prompt = system_prompt
+        # Owner mode (`--owner NAME --memory DIR`): a validated absolute folder or
+        # None. Set once from the launch flag, per launch, never saved anywhere.
+        self._owner_memory_dir = Path(owner_memory_dir) if owner_memory_dir is not None else None
+        # One line shown at startup in owner mode (a stale lock taken over); None otherwise.
+        self._owner_notice = owner_notice
+        self._owner_reminded = False  # the 70% context reminder has fired for this rise
         self._cli_initial_model = initial_model
         if initial_backend is not None and initial_backend not in llm_backend.BACKEND_NAMES:
             raise ValueError('Unsupported invocation backend')
@@ -1909,8 +1918,10 @@ class LiteTUI(App):
         )
         self.plugins.add_prompt_section(
             "host", _ord["MEMORY"],
-            lambda: memory_prompt(self.convo_id, self._agent_session.memory_root
-                                  if self._agent_session is not None else self.convo_dir),
+            lambda: memory_prompt(self.convo_id, self._owner_memory_dir, owner=True)
+            if self._owner_memory_dir is not None
+            else memory_prompt(self.convo_id, self._agent_session.memory_root
+                               if self._agent_session is not None else self.convo_dir),
             enabled=lambda: self.convo_dir is not None,
         )
         self.plugins.add_prompt_section(
@@ -2183,6 +2194,8 @@ class LiteTUI(App):
             self._system("Hooks disabled by LITETUI_HOOKS=off")
         elif state.error:
             self._system(f"[hooks configuration error] {state.error}")
+        if getattr(self, '_owner_notice', None):
+            self._system(self._owner_notice)
         hook_host.queue_lifecycle(self, "app_start")
         prompt = self.query_one("#message-input", Input)
         # T1013: a host polls this PTY; even a one-cell blink is ~1.5 KB / 10 s
@@ -3163,6 +3176,7 @@ class LiteTUI(App):
             # AgentSession verifies ownership; never read this root from args.
             active_agent_memory_root=(self._agent_session.memory_root
                                       if getattr(self, '_agent_session', None) is not None else None),
+            active_owner_memory_dir=getattr(self, '_owner_memory_dir', None),
             always_allow=frozenset(self.settings.tool_always_allow or ()),
             deny=frozenset(self.settings.tool_deny or ()),
             trusted_interpreters=getattr(self.settings, "tool_trusted_interpreters", ()),
@@ -3776,9 +3790,11 @@ class LiteTUI(App):
         # New conversations borrow existing agent memory before first turn.
         # Legacy staged conversations have no memory yet. Reads never materialise.
         session = getattr(self, "_agent_session", None)
-        if session is None and (self.convo_dir is None or getattr(self, "_convo_pending", False)):
+        owner_dir = getattr(self, "_owner_memory_dir", None)
+        if owner_dir is None and session is None and (self.convo_dir is None or getattr(self, "_convo_pending", False)):
             return ""
-        root = session.memory_root if session is not None else self.convo_dir
+        # Owner mode reads the owner folder, not the agent home.
+        root = owner_dir if owner_dir is not None else session.memory_root if session is not None else self.convo_dir
         p = root / name
         try:
             # errors="replace" ON PURPOSE: a store file that carries a stray
@@ -3790,10 +3806,12 @@ class LiteTUI(App):
         except OSError:
             return ""
         if len(text) > cap:
+            where = (f"Read {p} with the read tool for the rest." if owner_dir is not None
+                     else f"Move detail into {paths.MEMORIES_DIR}/ and leave pointers here.")
             text = (
                 text[:cap]
                 + f"\n\n[... truncated at {cap} chars — {name} is too long to inject "
-                f"in full. Move detail into {paths.MEMORIES_DIR}/ and leave pointers here.]"
+                f"in full. {where}]"
             )
         return text
 
@@ -4288,7 +4306,10 @@ class LiteTUI(App):
         if self.conversation and self.conversation[0].get('role') == 'system':
             current = self.conversation[0].get('content')
             if isinstance(current, str):
-                refreshed = refresh_store_address(current, self.convo_id, self._agent_session.memory_root)
+                owner_dir = getattr(self, '_owner_memory_dir', None)
+                refreshed = (refresh_store_address(current, self.convo_id, owner_dir, owner=True)
+                             if owner_dir is not None
+                             else refresh_store_address(current, self.convo_id, self._agent_session.memory_root))
                 if refreshed != current:
                     self.conversation[0] = {**self.conversation[0], 'content': refreshed}
                     self._edit(0, 'owned store address refreshed')
@@ -4400,13 +4421,17 @@ class LiteTUI(App):
                        if getattr(self, '_agent_session', None) is not None else self.convo_dir)
         mem_dir = memory_root / paths.MEMORIES_DIR
         n_mem = len(list(mem_dir.glob("*.md"))) if mem_dir.exists() else 0
-        store = ", ".join(
-            f for f in CONVO_SEED_FILES if (memory_root / f).exists()
-        ) or "none"
+        owner_dir = getattr(self, '_owner_memory_dir', None)
+        if owner_dir is not None:
+            from litetui.owner_mode import OWNER_FILES
+            names, memories, memory_root = OWNER_FILES, f"owner folder {owner_dir}", owner_dir
+        else:
+            names, memories = CONVO_SEED_FILES, f"{n_mem} file(s) in {paths.MEMORIES_DIR}/"
+        store = ", ".join(f for f in names if (memory_root / f).exists()) or "none"
         self._system(
             f"Resumed {self.convo_id}\n"
             f"  {users} user / {assistants} assistant message(s){note}\n"
-            f"  store: {store} · {n_mem} file(s) in {paths.MEMORIES_DIR}/\n"
+            f"  store: {store} · {memories}\n"
             f"  appending to {self.convo_dir.name}/{path.name}"
         )
         self._scroll_down()
@@ -6474,6 +6499,7 @@ class LiteTUI(App):
         # T645: the host's context meter, fed from the same reactive the TUI's
         # own label reads — so the two can never disagree about the number.
         self._rpc_emit_usage(value)
+        self._owner_context_reminder(value)
         # THE AMBIENT CHANNEL — the brain's base luminance, so a filling window
         # literally brightens it. Silent without ctx_max: "used out of unknown"
         # is not a fraction, and reporting 0.0 would draw an EMPTY window rather
@@ -10000,6 +10026,67 @@ class LiteTUI(App):
             handoff=request.handoff,
         )
 
+    async def _owner_gate(self, t0_ns: int) -> tuple[bool, str]:
+        """Owner mode: (ok, reason) for "NOW.md was rewritten since t0 and owner-handoff committed it".
+
+        The single gate every backend calls AFTER STEP 1 and BEFORE anything is truncated.
+        """
+        session = getattr(self, "_agent_session", None)
+        agent_id = session.authority.agent_id if session is not None else None
+        return await owner_mode.owner_gate(self._owner_memory_dir, t0_ns, agent_id)
+
+    async def _owner_drive_turn(self, text: str) -> bool:
+        """Owner mode: send `text` as ONE normal user turn through the engine and wait for it.
+
+        Runs the real turn loop inline. It cannot start the `_stream` worker: `_compact` is
+        in the same exclusive "chat" group, so starting it would cancel the compaction.
+        False when the turn was not admitted or the user stopped it.
+        """
+        item = {"content": text, "text": text, "source": "compact",
+                "tool_profile": seat_authority.seat_profile(self)}
+        if not hook_host.accept_prompt(self, item):
+            self._system("The owner STEP 1 turn was not admitted; the context was not compacted.")
+            return False
+        await LiteTUI._stream.__wrapped__(self)
+        if self._stop_requested:
+            self._system("Stopped; the context was not compacted.")
+            return False
+        return True
+
+    async def _owner_codex_step_one(self) -> tuple[bool, str | None]:
+        """Owner mode on Codex: STEP 1 as a driven turn, the gate, one retry. (proceed, why-not-committed).
+
+        Codex's own auto-compaction cannot be intercepted (named limit); this runs on a
+        manual /compact, which is why the 70% reminder exists.
+        """
+        owner_dir, t0 = self._owner_memory_dir, self._owner_compact_t0
+        text = owner_mode.compact_prompt(owner_dir, summary=False)
+        why = None
+        for attempt in (1, 2):
+            if attempt == 1:
+                self._system("Owner mode: asking the seat to write NOW.md before Codex compacts…")
+            else:
+                self._system(f"NOW.md was not saved ({why}); asking once more.")
+            if not await self._owner_drive_turn(text):
+                return False, None
+            passed, why = await self._owner_gate(t0)
+            if passed:
+                return True, None
+            text = owner_mode.retry_text(why, owner_dir, summary=False)
+        return True, why
+
+    def _owner_context_reminder(self, value: int | None) -> None:
+        """Owner mode, every backend: one system message each time the context rises through 70%."""
+        if getattr(self, "_owner_memory_dir", None) is None:
+            return
+        crossed = bool(value and self.ctx_max
+                       and value * 100 >= self.ctx_max * owner_mode.REMINDER_AT_PERCENT)
+        if crossed and not self._owner_reminded:
+            self._owner_reminded = True
+            self._system(owner_mode.CONTEXT_REMINDER)
+        elif not crossed:
+            self._owner_reminded = False
+
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
         if getattr(self, '_agent_session', None) is not None:
@@ -10008,6 +10095,9 @@ class LiteTUI(App):
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
                 return
+        # Owner mode: the time STEP 1 begins. The gate (owner_gate) accepts NOW.md only if it
+        # was rewritten at or after this, and runs before anything is truncated.
+        self._owner_compact_t0 = time.time_ns() if getattr(self, '_owner_memory_dir', None) is not None else None
         if getattr(self.backend, "owns_native_turns", False):
             # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.
@@ -10020,6 +10110,13 @@ class LiteTUI(App):
             self._stop_requested = False
             self._stop_reason = None
             self._stop_cause = None
+            owner_failure = None
+            if getattr(self, "_owner_memory_dir", None) is not None:
+                # Codex compacts natively and has no STEP 1, so owner mode drives one
+                # normal turn first (NOW.md and DOMAIN.md), gates it, THEN compacts.
+                proceed, owner_failure = await self._owner_codex_step_one()
+                if not proceed:
+                    return
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()
@@ -10027,6 +10124,8 @@ class LiteTUI(App):
                 self._system(str(error))
             else:
                 self._system("Codex context compacted. The displayed transcript is preserved.")
+            if owner_failure:
+                self._system(owner_mode.not_committed_note(owner_failure))
             return
         # A new operation gets a fresh cancellation latch, not the prior turn's.
         # Keep _turn_abandoned: maintenance must not revive stopped user work.
@@ -10069,10 +10168,18 @@ class LiteTUI(App):
         trigger_tokens = self.ctx_used
         before_chars = self._msg_chars(self.conversation)
         before_count = len(self.conversation)
+        # Owner mode swaps STEP 1 (NOW.md rewrite + DOMAIN.md append in the owner folder).
+        owner_dir = getattr(self, '_owner_memory_dir', None)
+        compact_text = owner_mode.compact_prompt(owner_dir) if owner_dir is not None else COMPACT_PROMPT
+        owner_t0 = getattr(self, '_owner_compact_t0', None) if owner_dir is not None else None
+        owner_failure = None  # why NOW.md was not committed, once the one retry is spent
+        owner_retried = False
+        owner_first_summary = ""
+        owner_retry_gated = False  # the gate has run on the retry's result
         card = CompactionCard(
             plan=(f"{len(head)} messages \u2192 summary \u00b7 keeping the "
                   f"last {len(tail)} verbatim \u00b7 {before_chars:,} chars before"),
-            prompt_text=COMPACT_PROMPT + (f"\n\n{extra}" if extra else ""),
+            prompt_text=compact_text + (f"\n\n{extra}" if extra else ""),
             auto=auto,
         )
         # AWAITED: mount() only schedules composition. The first stream
@@ -10087,7 +10194,7 @@ class LiteTUI(App):
         self._scroll_down()
 
         ask = list(head) + [
-            {"role": "user", "content": COMPACT_PROMPT + (f"\n\n{extra}" if extra else "")}
+            {"role": "user", "content": compact_text + (f"\n\n{extra}" if extra else "")}
         ]
         if system:
             # Merge the live store in, so it can see what memory.md already
@@ -10112,7 +10219,11 @@ class LiteTUI(App):
             # being a spinner and a prayer.
             card.set_status(f"checking {self.model_id} is ready")
             await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
-            for round_no in range(1, self.settings.compact_max_tool_iters + 1):
+            # A counter, not range(): the owner retry gets its OWN budget of rounds (below),
+            # so STEP 1 spending all of compact_max_tool_iters cannot starve the retry.
+            round_no, round_budget = 0, self.settings.compact_max_tool_iters
+            while round_no < round_budget:
+                round_no += 1
                 round_started = time.perf_counter()
                 first_chunk_s = None
                 round_usage = None
@@ -10216,6 +10327,21 @@ class LiteTUI(App):
                 if not tool_acc:
                     card.record_round(timing)
                     summary = text_full.strip()
+                    if owner_t0 is not None and summary:
+                        # The model is done with STEP 1 and STEP 2. Before anything is
+                        # truncated: did NOW.md change, and did owner-handoff commit it?
+                        passed, why = await self._owner_gate(owner_t0)
+                        owner_failure = None if passed else why
+                        owner_retry_gated = owner_retried
+                        if not passed and not owner_retried:
+                            owner_retried = True
+                            owner_first_summary = summary
+                            round_budget = round_no + self.settings.compact_max_tool_iters
+                            self._system(f"NOW.md was not saved ({why}); asking once more.")
+                            card.set_status("NOW.md was not committed; asking once more")
+                            ask.append({"role": "assistant", "content": text_full})
+                            ask.append({"role": "user", "content": owner_mode.retry_text(why, owner_dir)})
+                            continue
                     break
 
                 # The model called tools (persisting durable state before the
@@ -10275,6 +10401,11 @@ class LiteTUI(App):
                     card.fail("stopped — conversation unchanged")
                     self._system(self._stop_reason or "[stopped by you]")
                     return
+            if owner_t0 is not None and owner_retried and not owner_retry_gated:
+                # The retry spent its whole budget on tool calls and never summarised, so no
+                # gate has judged what it wrote. Judge it now, before anything is truncated.
+                passed, why = await self._owner_gate(owner_t0)
+                owner_failure = None if passed else why
         except Exception as e:
             self._autocompact_failed_at = self.ctx_used
             # The repr goes to the sink; card and chat get plain words. A
@@ -10303,6 +10434,10 @@ class LiteTUI(App):
             if hasattr(stream, "close"):
                 await stream.close()
 
+        if not summary and owner_first_summary:
+            # The retry turn produced nothing; the first summary still stands.
+            summary = owner_first_summary
+            owner_failure = owner_failure or "the retry turn produced no summary"
         if not summary:
             card.fail("failed \u2014 no summary produced \u00b7 conversation unchanged")
             self._system(
@@ -10438,6 +10573,10 @@ class LiteTUI(App):
                     " can no longer see.")
             + store_note
         )
+        if owner_failure:
+            # Never a silent skip: the compaction went ahead, and the user is told
+            # NOW.md did not reach git.
+            self._system(owner_mode.not_committed_note(owner_failure))
         if self.settings.clear_screen_after_compact:
             # Everything above this point was just replaced by the summary.
             # Leaving it rendered means the screen and the context disagree.

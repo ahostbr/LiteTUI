@@ -12,6 +12,7 @@ become side effects of the operation they are supposed to guard.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -340,6 +341,7 @@ def evaluate(
     tool_name: str = "",
     active_conversation: Path | None = None,
     active_agent_memory_root: Path | None = None,
+    active_owner_memory_dir: Path | None = None,
     always_allow: frozenset[str] = frozenset(),
     deny: frozenset[str] = frozenset(),
     shell: str | None = None,
@@ -375,7 +377,8 @@ def evaluate(
     if policy.classify_args is classify_write:
         capabilities = frozenset(policy.capabilities) | frozenset(classify_write(
             args or {}, Path(workspace).resolve(), active_conversation=active_conversation,
-            active_agent_memory_root=active_agent_memory_root))
+            active_agent_memory_root=active_agent_memory_root,
+            active_owner_memory_dir=active_owner_memory_dir))
     names = ", ".join(sorted(capabilities))
     # 🔴 THE DENY FLOOR RUNS FIRST: before the profile, before any standing
     # rule, for every turn source. Every turn (typed, inbox, cron, goal loop,
@@ -505,9 +508,41 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+#: The two files an owner-mode seat rewrites at every compaction. SOUL.md is
+#: deliberately absent: the charter changes rarely and on purpose, so it gets no
+#: exemption. It is judged like any write outside the workspace, which means it asks
+#: only on the strict profile (interactive and autonomous allow external writes).
+OWNER_WORKING_FILES = ("NOW.md", "DOMAIN.md")
+
+
+def _owner_working_file(args: Mapping[str, object], workspace: Path, owner_dir: Path) -> bool:
+    """True when args name exactly `<owner_dir>/NOW.md` or `<owner_dir>/DOMAIN.md`.
+
+    Fails closed on a link or reparse point anywhere in the path, a hardlinked
+    file, and any spelling that is not exactly one of the two names directly
+    under the folder (`..`, a subfolder, a sibling, another folder).
+    """
+    from litetui.agent_store import StoreError, _unlinked
+    try:
+        own = _unlinked(Path(owner_dir)).resolve()
+        raw = Path(str(args.get("path") or "")).expanduser()
+        checked = _unlinked(raw if raw.is_absolute() else workspace / raw)
+        try:
+            if checked.lstat().st_nlink > 1:
+                return False
+        except FileNotFoundError:
+            pass
+    except (OSError, StoreError):
+        return False
+    target = _resolve_path(args.get("path"), workspace)
+    return any(os.path.normcase(str(target)) == os.path.normcase(str(own / name))
+               for name in OWNER_WORKING_FILES)
+
+
 def classify_write(args: Mapping[str, object], workspace: Path, *,
                    active_conversation: Path | None = None,
-                   active_agent_memory_root: Path | None = None) -> Iterable[str]:
+                   active_agent_memory_root: Path | None = None,
+                   active_owner_memory_dir: Path | None = None) -> Iterable[str]:
     """Narrow host-owned memory permission, never authority from tool args.
 
     An agent memory root comes only from the host's validated owned AgentSession.
@@ -516,7 +551,13 @@ def classify_write(args: Mapping[str, object], workspace: Path, *,
     agent context preserves the existing legacy conversation behavior.
     Linked/reparse agent memory paths fail closed, including ancestors. Resolution
     and ownership checks are not a TOCTOU filesystem sandbox.
+
+    `active_owner_memory_dir` is the owner-mode folder, set once from the
+    validated launch flag and never from args: exactly its NOW.md and DOMAIN.md
+    are SELF_STORE, in addition to (not instead of) the agent home's own files.
     """
+    if active_owner_memory_dir is not None and _owner_working_file(args, workspace, active_owner_memory_dir):
+        return (SELF_STORE,)
     target = _resolve_path(args.get("path"), workspace)
     if active_agent_memory_root is not None:
         from litetui.agent_store import StoreError, _unlinked

@@ -46,7 +46,9 @@ def _cmd_new(app, name: str, arg: str) -> None:
     app.system_message(
         f"New conversation — {app.convo_id}\n"
         f"  store: {app.convo_dir}\n"
-        f"  memory.md · soul.md · handoff.md · {paths.MEMORIES_DIR}/"
+        + (f"  SOUL.md · NOW.md · DOMAIN.md in {app._owner_memory_dir}"
+           if getattr(app, '_owner_memory_dir', None) is not None
+           else f"  memory.md · soul.md · handoff.md · {paths.MEMORIES_DIR}/")
     )
 
 

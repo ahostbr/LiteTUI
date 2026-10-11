@@ -18,6 +18,21 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+### Added
+- **Owner mode** (`litetui --owner NAME --memory DIR`): a seat whose long memory
+  is a folder it does not own. `DIR` holds `SOUL.md`, `NOW.md` and `DOMAIN.md`;
+  they are injected in place of the agent home's memory files on every backend
+  (caps 8,000 / 6,000 / the new `owner_domain_cap` setting, default 30,000
+  characters), and `NOW.md` and `DOMAIN.md` are writable without a prompt.
+  Per launch only: nothing is saved in the agent's settings. One seat per folder
+  (`DIR/.owner.lock`; a stale lock is taken over, a live one refuses the second
+  launch). A compaction now has the seat rewrite `NOW.md`, checks it changed,
+  commits it with `liteharness owner-handoff`, and only then truncates, with one
+  retry and a visible `NOW.md was NOT committed` message if it still fails. On
+  Codex a manual `/compact` first drives one STEP 1 turn; Codex's own automatic
+  compaction cannot be intercepted. Owner mode also reminds you once each time
+  the context rises through 70%. Needs `liteharness` installed; see the README.
+
 ## [0.25.1] - 2026-10-10
 
 Every launch now opens an agent home under `.agents`, and conversations saved by

@@ -397,6 +397,10 @@ class Settings:
 
     # ── Compaction ───────────────────────────────────────────────────────────
     compact_max_tool_iters: int = 8
+    #: Owner mode (`--owner NAME --memory DIR`): the cap, in characters, on how much of
+    #: DOMAIN.md is injected. DOMAIN.md is long and its newest rows are first, so the
+    #: cut drops the tail. A small local window may need a lower value.
+    owner_domain_cap: int = 30000
     #: 🔴 WAS HARDCODED AT 2048 AND THAT IS WHY /compact PRODUCED NO SUMMARY.
     #: Compact asks for reasoning_effort="none", but a virtual model whose own
     #: level set lacks "none" has the field DROPPED with a 200 (see app.py's

@@ -150,6 +150,12 @@ def _cmd_help(app, name: str, arg: str) -> None:
         "       the agent is told its owned home path in the system prompt\n"
         "footer: live context usage — ctx used / window"
     )
+    owner_dir = getattr(app, '_owner_memory_dir', None)
+    if owner_dir is not None:
+        # Owner mode: the files the agent is told about are the owner folder's.
+        text = text.replace(
+            "store: .agents/<Name>/ holds memory.md, soul.md, handoff.md and memories/\n",
+            f"store: {owner_dir} holds SOUL.md, NOW.md, DOMAIN.md (owner mode)\n")
     present_dialog(app, partial(HelpBody, text), partial(HelpScreen, text))
 
 

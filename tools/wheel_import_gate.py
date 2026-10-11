@@ -224,7 +224,7 @@ for p in (paths.SYSTEM_PROMPT_FILE, paths.TOOLS_PROMPT_FILE):
 
 # Every prompt the first turn reads through textfmt.load_prompt.
 for name in ("compact", "wake-after-compact", "conversation-store",
-             "tool-denied", "harness-capabilities"):
+             "tool-denied", "harness-capabilities", "compact-owner", "owner-store"):
     text = textfmt.load_prompt(name)
     assert text.strip(), f"{name}.md loaded empty"
 

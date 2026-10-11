@@ -64,6 +64,7 @@ CONTROLS = {
             "compact_max_tokens",
             "compact_thinking_level",
             "compact_max_tool_iters",
+            "owner_domain_cap",
             "compact_keep_recent",
             "clear_screen_after_compact",
             "wake_after_compact",

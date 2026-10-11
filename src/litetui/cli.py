@@ -83,10 +83,19 @@ def main() -> None:
     agent_selection.add_argument("--create-agent", type=str, help="create a new owned named agent home")
     parser.add_argument("--agent-id", type=str, help="fresh identity; valid only with --create-agent")
     parser.add_argument("--convo", type=str, default=None, help="resume a conversation within the selected agent")
+    parser.add_argument("--owner", type=str, default=None, metavar="NAME",
+                        help="owner mode: open (or create) the agent home NAME for this launch; needs --memory")
+    parser.add_argument("--memory", type=str, default=None, metavar="DIR",
+                        help="owner mode: absolute folder holding SOUL.md, NOW.md and DOMAIN.md, injected in place "
+                             "of the agent home's memory files and rewritten at every compaction; needs --owner")
     parser.add_argument("--export-conversation", type=str, help="export a saved convo.jsonl without starting the app")
     parser.add_argument("--export-output", type=str, help="new Markdown file for --export-conversation")
 
     args = parser.parse_args()
+    if (args.owner or args.memory) and (args.agent or args.create_agent):
+        # First, so --create-agent's own requirements do not answer for a combination
+        # that is refused for a different reason.
+        parser.error("--owner opens the agent home by its own name; do not combine it with --agent or --create-agent")
     if args.create_agent:
         if args.convo or not all((args.agent_id, args.backend, args.model,
                                  args.reasoning_effort or args.thinking_level)):
@@ -120,10 +129,46 @@ def main() -> None:
             parser.error(str(exc))
         return
 
+    # Owner mode is validated HERE, before any agent home, lock or store exists:
+    # every refusal below leaves the disk exactly as it found it. Per launch only;
+    # nothing about it is saved in the agent's settings.json.
+    owner_name = owner_memory = None
+    if args.owner or args.memory:
+        if not (args.owner and args.memory):
+            parser.error("--owner and --memory must be given together")
+        from litetui import owner_mode
+        try:
+            owner_name = owner_mode.validate_owner_name(args.owner)
+            owner_memory = owner_mode.validate_memory_dir(args.memory)
+            owner_mode.require_handoff()
+        except owner_mode.OwnerModeError as exc:
+            parser.error(str(exc))
+        if args.convo:
+            args.agent = owner_name  # resume inside the named home
+
+    def refused(exc: BaseException) -> None:
+        """End a launch whose agent home could not be opened. A held home under --owner says
+        which flag conflicted and how to fix it; every other launch says what it always did."""
+        from litetui.agent_ownership import OwnershipError
+        if owner_name and isinstance(exc, OwnershipError):
+            parser.error(f"--owner {owner_name}: the agent home {owner_name} is in use by another running "
+                         "LiteTUI. Close that session, or choose a different --owner name")
+        parser.error(str(exc))
+
     from litetui.paths import data_root
     agent_session = None
     app = None
+    owner_lock = None
+    owner_notice = None
     try:
+        if owner_memory is not None:
+            # One seat per memory folder. Taken BEFORE any agent home is opened, so a
+            # refused second launch leaves nothing behind; released in the finally below.
+            owner_lock = owner_mode.OwnerLock(owner_memory)
+            try:
+                owner_notice = owner_lock.acquire()
+            except owner_mode.OwnerModeError as exc:
+                parser.error(str(exc))
         if args.convo and not args.agent:
             from litetui.agent_store import AgentStore, StoreError
             try:
@@ -146,12 +191,21 @@ def main() -> None:
             try:
                 from litetui.shared_state import check_data_version
                 check_data_version(data_root())
-                agent_session = ordinary(data_root(), settings, spawned_identity=spawned_identity,
+                seat_settings = settings
+                if owner_name:
+                    import dataclasses
+                    seat_settings = dataclasses.replace(settings, seat_name=owner_name)
+                    if spawned_identity and spawned_identity[1].casefold() != owner_name.casefold():
+                        parser.error(f"--owner {owner_name} conflicts with the seat name {spawned_identity[1]} this "
+                                     f"launch was spawned under: relaunch with --owner {spawned_identity[1]}, "
+                                     f"or spawn the seat as {owner_name}")
+                agent_session = ordinary(data_root(), seat_settings, spawned_identity=spawned_identity,
                                          backend=args.backend, model=args.model,
                                          thinking_level=args.reasoning_effort or args.thinking_level,
-                                         notice=lambda text: print(text, file=sys.stderr))
+                                         notice=lambda text: print(text, file=sys.stderr),
+                                         strict_name=bool(owner_name))
             except (ValueError, OSError) as exc:
-                parser.error(str(exc))
+                refused(exc)  # under --owner the name is the point: never open another home
         if args.agent or args.create_agent:
             from litetui.agent_launch_context import acquire, create
             try:
@@ -171,12 +225,14 @@ def main() -> None:
                 args.backend, args.model = authority.backend, authority.model
                 args.thinking_level, args.reasoning_effort = authority.thinking_level, None
             except (ValueError, OSError) as exc:
-                parser.error(str(exc))
+                refused(exc)
         from litetui.shared_state import check_data_version
         try:
             check_data_version(data_root())
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
+        if owner_lock is not None:
+            owner_lock.set_agent(agent_session.authority.agent_id)
 
         from litetui.app import LiteTUI, wants_ansi_fallback
 
@@ -214,6 +270,8 @@ def main() -> None:
             convo_id=args.convo,
             agent_session=agent_session,
             spawn_identity=spawned_identity,
+            owner_memory_dir=owner_memory,
+            owner_notice=owner_notice,
             **app_kwargs,
         )
 
@@ -234,13 +292,17 @@ def main() -> None:
         else:
             app.run()
     finally:
-        if agent_session is not None:
-            try:
-                store = getattr(app, 'store', None)
-                if store is not None:
-                    store.release()
-            finally:
-                agent_session.release()
+        try:
+            if agent_session is not None:
+                try:
+                    store = getattr(app, 'store', None)
+                    if store is not None:
+                        store.release()
+                finally:
+                    agent_session.release()
+        finally:
+            if owner_lock is not None:
+                owner_lock.release()
 
 
 if __name__ == "__main__":

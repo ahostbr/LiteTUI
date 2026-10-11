@@ -139,7 +139,14 @@ def store_block(app, live: bool=False) -> str:
     # memory.md is capped hardest ON PURPOSE: it is an index, and an index
     # that needs more than this has stopped being one.
     parts = []
-    for name, cap in (('memory.md', 6000), ('soul.md', 8000), ('handoff.md', 8000)):
+    # Owner mode: the owner folder's SOUL.md, NOW.md, DOMAIN.md stand in for the
+    # agent home's memory.md, soul.md, handoff.md (see litetui.owner_mode).
+    if getattr(app, '_owner_memory_dir', None) is not None:
+        from litetui.owner_mode import store_files
+        files = store_files(app.settings)
+    else:
+        files = (('memory.md', 6000), ('soul.md', 8000), ('handoff.md', 8000))
+    for name, cap in files:
         body = app._read_store_file(name, cap)
         if body:
             parts.append(f'### {name} (current contents)\n\n{body}')

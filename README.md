@@ -520,6 +520,73 @@ custom servers receive the selected value and their template defines support.
 `--max-tokens` sets the output limit for local/custom servers. Use
 `--server-timeout SECONDS` for slow model loads (default 600).
 
+### Owner mode: `--owner NAME --memory DIR`
+
+A seat whose long memory is a folder it does not own, so the same memory carries
+across conversations, compactions and restarts:
+
+```powershell
+litetui --owner Alpha --memory C:\work\widgets-memory
+```
+
+`DIR` must be an absolute path to an existing folder, not a link or junction at
+any level, holding `SOUL.md` (the charter), `NOW.md` (where the seat is right
+now) and `DOMAIN.md` (what it knows; newest rows first). It should sit in a git
+repository: the handoff below is a commit. `NAME` opens (or creates) the agent
+home of that name for this launch. Both flags are per launch only; nothing is
+saved in the agent's `settings.json`, and a busy `NAME`, or a spawned seat named
+differently, is refused with the flag to change rather than opening another home.
+
+- **Injected in place of the home's own files.** `SOUL.md`, `NOW.md` and
+  `DOMAIN.md`, in that order, replace `memory.md`, `soul.md` and `handoff.md` in
+  the snapshot every backend starts a conversation (or a Claude segment) with,
+  capped at 8,000, 6,000 and the `owner_domain_cap` setting (default 30,000)
+  characters. A file cut at its cap says so and names the path to read for the
+  rest. The system prompt names `DIR`, the three files and the `NOW.md` template
+  (headings `Updated`, `Doing now`, `Next 3 steps`, `Waiting on`, `Crew alive`,
+  `Do NOT redo`; at most 60 lines).
+- **One seat per folder.** `DIR/.owner.lock` is created exclusively and records
+  the holder's pid and agent id. A second launch is refused naming the holder; a
+  lock whose process is gone is taken over with a one-line notice; the lock is
+  removed on exit and is never committed by the handoff. Add `.owner.lock` to the
+  memory repository's ignore file so a `git add -A` cannot commit it. The takeover
+  re-reads the file before removing it, which narrows but does not close the window
+  in which two launches both judge the same crashed holder stale; a recycled pid
+  can make a dead holder look alive (the refusal names the file to delete).
+- **Writes.** `NOW.md` and `DOMAIN.md` are the seat's own store: writing them is
+  never asked about, on any tool profile. `SOUL.md` gets no such exemption: it is
+  judged like any other write outside the workspace, so it asks only on the strict
+  profile. Matching follows the filesystem: on Windows `now.md` or `NOW.md.` name
+  the same file and match; a link, a hardlink, a sibling or a subfolder never does.
+- **Compaction rewrites `NOW.md`, then commits it, then truncates.** STEP 1 of the
+  compaction prompt has the seat rewrite `NOW.md` in the template and append
+  anything new to `DOMAIN.md`. Before anything is cut, LiteTUI checks that
+  `NOW.md` changed and runs `liteharness owner-handoff --memory DIR` (a
+  subprocess; LiteTUI checks at launch that it exists) to validate the template
+  and commit both files. If that fails the seat gets one retry turn naming the
+  reason (the retry has its own tool-round budget on the local backends); if it
+  fails again compaction goes ahead and a message in the transcript says
+  `NOW.md was NOT committed: <reason>`, carrying the second reason. It is never
+  skipped silently. If the retry turn itself errors, Claude goes ahead with the
+  first summary and the same message; a local backend aborts the compaction and
+  leaves the conversation unchanged. Pressing Stop during the rewrite runs no
+  check and no retry. The next conversation starts from the rewritten files.
+- **Codex.** Codex compacts natively and has no STEP 1, so a manual `/compact`
+  first sends one ordinary turn asking the seat for STEP 1, runs the same check
+  and commit, and only then asks Codex to compact. **Limit:** Codex's own
+  automatic compaction cannot be intercepted and can still fire without the
+  handoff. To make the manual path the likely one, owner mode shows
+  `context 70%: run /compact to write NOW.md first` once each time the context
+  rises through 70% of the window, on every backend. The reminder says "70%"
+  whatever the first reading was, and a momentary unknown reading re-arms it. If
+  the driven Codex turn is not answered (the engine defers it or refuses it),
+  the check fails, the retry fails, and compaction goes ahead with the
+  `NOW.md was NOT committed` message; a turn that is not admitted at all
+  compacts nothing.
+
+Not covered: the GUI memory pane and sibling-seat launches from the UI do not
+carry the owner folder.
+
 ### Codex HTTP failure handling
 
 The OAuth/Responses transport retries HTTP **500/502/503/504** and selected
