@@ -1018,6 +1018,87 @@ _EXECUTION_SINKS = frozenset({
 })
 
 
+#: Heads whose single-quoted argument is PATTERN TEXT. Not the whole _READERS
+#: set: awk and sed run their quoted script, an editor opens it. None of these
+#: executes an argument except rg's `--pre` / `--hostname-bin`, refused below.
+_PATTERN_HEADS = frozenset({"rg", "grep", "egrep", "findstr", "select-string", "sls"})
+#: Options that make a pattern head RUN a program named by an argument.
+_PATTERN_EXEC_OPTIONS = ("--pre", "--hostname-bin")
+#: Syntax this small scan does not model; any of it restores the original scan.
+_PATTERN_UNMODELLED = re.compile(
+    "[`#\r‘’‚‛“”„]|\\$\\(|@['\"({]|--%")
+
+
+def _pattern_literal_spans(command: str) -> list[tuple[int, int]]:
+    """Single-quoted PowerShell literals that are ARGUMENTS of a pattern-search head.
+
+    Owner-launcher only, and only under a proven PowerShell: `'subprocess\\.(run|Popen)'`
+    is verbatim text handed to rg, yet a `(`, `;`, `|` or `&` inside it was read as
+    a statement boundary, which emptied the command position and made `run` a launch.
+    Only a literal after a bare pattern head is excused, in a statement with no
+    preprocessor option. Boundaries OUTSIDE quotes still split statements, so
+    `rg 'x' f; run.bat` is refused. This is not a PowerShell parser: unmodelled
+    syntax (backtick, comment, here-string, `$(`, smart quote, `--%`, an unterminated
+    or `$`-expanding double quote) returns no spans and the original scan runs.
+    """
+    if _PATTERN_UNMODELLED.search(command):
+        return []
+    spans: list[tuple[int, int]] = []
+    pending: list[tuple[int, int]] = []
+    state = {"head": None, "word": "", "tainted": False}
+
+    def end_word():
+        word = state["word"]
+        if word:
+            if state["head"] is None:
+                state["head"] = word.lower()
+            state["tainted"] |= word.lower().startswith(_PATTERN_EXEC_OPTIONS)
+            state["word"] = ""
+
+    def end_statement():
+        end_word()
+        if state["head"] in _PATTERN_HEADS and not state["tainted"]:
+            spans.extend(pending)
+        pending.clear()
+        state.update(head=None, word="", tainted=False)
+
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "'":
+            j = i + 1
+            while True:
+                k = command.find("'", j)
+                if k < 0:
+                    return []
+                if command[k + 1:k + 2] == "'":
+                    j = k + 2
+                    continue
+                break
+            body = command[i + 1:k]
+            if state["head"] is not None:   # an argument; argv0 is never excused
+                pending.append((i, k + 1))
+            state["tainted"] |= body.lower().startswith(_PATTERN_EXEC_OPTIONS)
+            state["word"] += "\0"           # a literal can never spell a head
+            i = k + 1
+        elif ch == '"':
+            k = command.find('"', i + 1)
+            if k < 0 or "$" in command[i + 1:k] or command[k + 1:k + 2] == '"':
+                return []
+            state["word"] += "\0"
+            i = k + 1
+        else:
+            if ch in ";|&\n(){}":
+                end_statement()
+            elif ch.isspace():
+                end_word()
+            else:
+                state["word"] += ch
+            i += 1
+    end_statement()
+    return spans
+
+
 def _owner_command_position(words: list[str]) -> list[str]:
     """Peel only literal, finite launcher wrappers; unknown operands stay put.
 
@@ -1091,7 +1172,11 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
     # echo `run.bat`), so it starts a segment too. A `)` ends one: in
     # `if 1==2 (echo a) else run.bat` the command is `else`'s, not echo's (P1).
     boundaries = []
-    openings = [*((m.end() - 1, None) for m in _OWNER_BOUNDARY.finditer(command[:start])),
+    # A boundary character INSIDE a literal handed to a pattern-search head is
+    # pattern text, not syntax (trusted PowerShell only; see _pattern_literal_spans).
+    literals = _pattern_literal_spans(command) if shell == "powershell" else []
+    openings = [*((m.end() - 1, None) for m in _OWNER_BOUNDARY.finditer(command[:start])
+                  if not any(a < m.end() - 1 < b for a, b in literals)),
                 *((m.end() - 1, m.start()) for m in _SWITCH_LABEL_BOUNDARY.finditer(command[:start]))]
     for boundary, enclosing in sorted(openings, key=lambda opening: opening[0]):
         # Label candidates are syntax-only shapes, not authoritative shell
