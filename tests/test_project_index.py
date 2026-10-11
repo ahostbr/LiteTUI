@@ -88,7 +88,6 @@ def test_a_resumed_conversation_keeps_its_snapshot(tmp_path, monkeypatch):
     (repo / INDEX_NAME).write_text("# CHANGED\nINDEX-MARKER-0000\n", encoding="utf-8")
     resumed = make_app(monkeypatch, repo)
     resumed.conversation[0] = {"role": "system", "content": saved}
-    resumed._store_injected = False  # flags die with the process; the MARKER carries the snapshot
     out = resumed._request_messages()[0]["content"]
     assert out == saved and "INDEX-MARKER-0000" not in out
 
@@ -98,7 +97,7 @@ def test_index_present_with_an_empty_store_still_injects_and_leaves_the_store_un
     app = make_app(monkeypatch, repo, with_store=False)
     content = app._request_messages()[0]["content"]
     assert "INDEX-MARKER-7741" in content
-    assert app._store_injected is False, "a later memory write must still be picked up"
+    assert appsvc.STORE_HEADER not in content, "an empty store leaves no marker"
     (app.convo_dir / "soul.md").write_text("SOUL-MARKER-1188\n", encoding="utf-8")
     later = app._request_messages()[0]["content"]
     assert "SOUL-MARKER-1188" in later and later.count(appsvc.INDEX_HEADER) == 1

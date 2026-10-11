@@ -148,10 +148,11 @@ MAX_IMAGE_DIM = 1536
 
 
 
-#: Marks an already-injected store block inside the system message. Detection
-#: by MARKER rather than a flag is what makes /resume correct: a flag lives in
-#: memory and dies with the process; the marker is persisted with the message.
-STORE_HEADER = "## Your store, loaded once at the start of this conversation"
+#: Marks an already-injected store block inside the system message. The marker
+#: is the ONLY state: it is persisted with the message, so /resume keeps its
+#: snapshot, and anything that rewrites message 0 (Ctrl+T, plan mode, /new,
+#: compaction) drops it and thereby asks for a fresh one. Defined once, in appsvc.
+STORE_HEADER = appsvc.STORE_HEADER
 
 
 # LM Studio's accepted set, read out of its own 400 body rather than the docs
@@ -1755,7 +1756,6 @@ class LiteTUI(App):
         # at block creation, cleared by _thinking_done when the trace
         # ends (first content token, first tool call, or turn end).
         self._thinking_live: ThinkingBlock | None = None
-        self._store_injected = False  # see STORE_HEADER; once per conversation
         # ONE seam for both engines (LM Studio / our llama-server). The chat
         # client is rebuilt in _connect after ensure_running(), because the
         # llama backend may ATTACH to a different host than it was configured
@@ -3746,11 +3746,13 @@ class LiteTUI(App):
             )
 
     def _system_prompt_text(self) -> str:
-        """systemprompt.md + the store block + the tools block, in that order.
+        """The base prompt: the registry's fold of its PROMPT_ORDER slots.
 
-        Single builder so the tools toggle cannot silently drop the store block
-        — rebuilding it in two places is how one of them goes stale. The fold
-        itself lives in the registry (PROMPT_ORDER slots); host sections are
+        Single builder so the tools toggle, plan mode and /new cannot disagree
+        about the base. It carries NO store or index body: those are appended
+        to message 0 by `_inject_store_once` / `_inject_index_once` on the next
+        request, and found again by their headers, so a rewrite of message 0
+        from this builder is followed by a fresh snapshot. Host sections are
         registered in __init__, the skills index by the skills plugin.
         """
         return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
@@ -3762,15 +3764,13 @@ class LiteTUI(App):
 
     # ── Store injection ──────────────────────────────────────────
     #
-    # memory.md / soul.md / handoff.md are read fresh and merged into the
-    # system message AT REQUEST TIME, not baked into self.conversation.
-    #
-    # Two reasons for that. A memory the agent writes on turn N is visible on
-    # turn N+1 rather than after a restart — telling a model "your notes are
-    # in that file" is an instruction, injecting them is a mechanism. And the
-    # stored transcript keeps ONE stable system message instead of a new
-    # snapshot every turn, so convo.jsonl does not grow a copy of the store
-    # per exchange.
+    # memory.md / soul.md / handoff.md are read from disk and appended to
+    # message 0 as a SNAPSHOT when a request finds no STORE_HEADER there, and
+    # persisted with an `edit` record. They are not re-read per turn (see
+    # appsvc.store_block): a turn after the snapshot sees the files as they
+    # were when it was taken, and the agent reads the file for anything
+    # newer. A new snapshot comes only when message 0 loses its header:
+    # Ctrl+T, plan mode, /new and local compaction all do that.
 
     def _read_store_file(self, name: str, cap: int) -> str:
         # New conversations borrow existing agent memory before first turn.
@@ -3799,29 +3799,28 @@ class LiteTUI(App):
 
 
     def _inject_store_once(self) -> None:
-        """Merge the store into the system message, exactly once per conversation.
+        """Append the store snapshot to message 0 unless it already carries one.
+
+        The state is the header in message 0, not a flag: a flag outlives the
+        content it described, and Ctrl+T, plan mode and /new each replace
+        message 0 with the base prompt. A resumed conversation has the header
+        and keeps its snapshot untouched.
 
         Written INTO self.conversation and persisted with an `edit` record, not
         merged into the outgoing request only: a block that exists solely in the
         request must be rebuilt every turn, which is the cost being removed.
         """
-        if self._store_injected:
-            return
         if not self.conversation or self.conversation[0].get("role") != "system":
             return  # no system message yet; try again next turn
         current = self.conversation[0].get("content", "")
-        if not isinstance(current, str):
-            return
-        if STORE_HEADER in current:
-            self._store_injected = True  # resumed a convo that already has it
+        if not isinstance(current, str) or STORE_HEADER in current:
             return
         block = appsvc.store_block(self, )
         if not block:
             return  # empty store: nothing to inject, and no marker to leave
         self.conversation[0] = {**self.conversation[0], "content": current + block}
-        self._store_injected = True
         if not self._convo_loading:
-            self._edit(0, "store injected once")
+            self._edit(0, "store injected")
 
     def _inject_index_once(self) -> None:
         """Merge the cwd repo's AGENT_INDEX.md into the system message, once.
@@ -3845,7 +3844,7 @@ class LiteTUI(App):
             self._edit(0, "project index injected once")
 
     def _request_messages(self) -> list[dict]:
-        """The conversation as sent. The index and store ride in message 0, injected once."""
+        """The conversation as sent. The index and store ride in message 0, once per message 0."""
         self._inject_index_once()
         self._inject_store_once()
         return list(self.conversation)
@@ -4003,10 +4002,14 @@ class LiteTUI(App):
         current = self.conversation[0].get("content") or ""
         if text in current:
             return                      # idempotent across resume/re-register
-        self.conversation[0] = {
-            **self.conversation[0],
-            "content": current.rstrip() + "\n\n" + text if current else text,
-        }
+        # The store snapshot is always the LAST block (strip_store_block cuts
+        # from its header to the end), so late text goes in front of it.
+        cut = current.find("\n\n" + STORE_HEADER) if isinstance(current, str) else -1
+        if cut >= 0:
+            merged = current[:cut].rstrip() + "\n\n" + text + current[cut:]
+        else:
+            merged = current.rstrip() + "\n\n" + text if current else text
+        self.conversation[0] = {**self.conversation[0], "content": merged}
         if not getattr(self, "_convo_loading", False):
             self._edit(0, "system prompt extended")
 
@@ -4501,8 +4504,8 @@ class LiteTUI(App):
             # exactly the disagreement this change exists to remove.
             self._system("could not save the tools setting — this session only")
         if self.conversation and self.conversation[0].get("role") == "system":
-            # Rebuilt through the single builder. Hand-rolling it here is how
-            # the store block gets dropped on the first Ctrl+T.
+            # Rebuilt through the single builder. The store and index blocks
+            # leave with the old text; the next request appends fresh ones.
             self.conversation[0]["content"] = self._system_prompt_text()
             self._edit(0, "tools toggled")  # one message, not the whole list
         state = "ON (bash, read, write, web_fetch)" if self.tools_enabled else "OFF"
@@ -10324,6 +10327,10 @@ class LiteTUI(App):
         ]
         if handoff is not None:
             pair[0]["content"] += "\n\n[Agent's pre-compaction handoff]\n" + handoff
+        if system and isinstance(system.get("content"), str):
+            # The kept message 0 carries the pre-compaction snapshot. Cut it so
+            # the next request injects the files as they are on disk now.
+            system = {**system, "content": appsvc.strip_store_block(system["content"])}
         rebuilt: list[dict] = ([system] if system else []) + pair + tail
 
         # T832: ONE number for the size this conversation now is. It used to
@@ -10351,6 +10358,9 @@ class LiteTUI(App):
             "summary_chars": len(summary), "store_files": writes, "rounds": rounds,
         })
         self.conversation = rebuilt
+        if system:
+            # Replay must equal memory now, not after the next request.
+            self._edit(0, "store snapshot dropped at compaction")
         # AFTER the swap, so the counts describe what the conversation now IS.
         self._emit_compaction("compacted",
                               tokens_before=trigger_tokens,

@@ -154,6 +154,20 @@ def store_block(app, live: bool=False) -> str:
     # quietly stopped being true is worse than no instruction at all.
     return '\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n' + '\n\n'.join(parts) + '\n'
 
+def strip_store_block(content: str) -> str:
+    """`content` without its trailing store block; unchanged when it has none.
+
+    INVARIANT: the store block is the LAST thing in message 0, so everything
+    from the blank line before STORE_HEADER onward is the snapshot. The index
+    block, if any, sits before it and stays (found again by its own header).
+    `_inject_store_once` appends it last, and `LiteTUI._append_to_system`
+    inserts any later text in front of it; anything else that extends message 0
+    after the store is injected must do the same or this cut will take it too.
+    """
+    cut = content.find('\n\n' + STORE_HEADER)
+    return content if cut < 0 else content[:cut]
+
+
 def append_tps_into(app, t: Text, sep: str) -> None:
     """The generation-stats field: output tokens, then tok/s.
 
