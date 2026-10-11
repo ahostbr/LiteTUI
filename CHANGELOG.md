@@ -18,6 +18,12 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-10-10
+
+A second local engine, a way to hand small work to a worker seat, and tighter
+rules about which seat may change settings. Two new features ship switched off:
+small-task dispatch and the permission judge change nothing until configured.
+
 ### Added
 - **Strata backend** (`--backend strata`): Qwen3.8-Flash-Next on one GPU plus
   system RAM, through [Strata](https://github.com/Niko1221/Strata). `/engine
@@ -25,19 +31,104 @@ fails if this file's top released heading disagrees with it.
   reason, when the model will not fit in free RAM, commit or VRAM. The install
   folder is the `strata_root` setting, else the one LiteSuite's Model Hub
   names; installing Strata and downloading models is done in that hub.
+- **Small-task dispatch, off by default.** A leader seat can hand a small,
+  bounded change to a named worker on a configured route. Nothing happens
+  until the device setting `small_task_route` is set (it is `null` by
+  default). The route needs an exact model id; aliases such as `haiku`,
+  `sonnet`, `opus`, `auto` or `default` are refused. Any of LiteTUI's backends
+  can be named. A local engine is used only when that exact model is already
+  loaded and no other model is loaded or loading; otherwise the route is
+  refused with "Loading needs approval: <reason>" and nothing is launched.
+  See `SMALL_TASK_DISPATCH.md`.
+- **Permission judge, stage 1, off by default.** The device setting
+  `permission_judge` is `null` by default and changes nothing. Set to `count`,
+  it writes one log row for each approval request a seat sends to its spawner:
+  counted (a plain read inside the seat's own folder, from LiteTUI's own bash
+  or PowerShell tool on the interactive profile), not eligible, or excluded
+  (native shell tools of other backends). It authorizes nothing and calls no model: every approval is asked
+  exactly as before.
+- **`--codex-engine native|http`** and `LITETUI_CODEX_ENGINE` choose the Codex
+  loop for one launch; the flag wins over the variable, and nothing is saved.
+- **`--mcp-servers all|none|name,name`** chooses which project MCP servers a
+  seat gets, and host stdio servers now start lazily (`--mcp-start
+  lazy|eager`, default lazy): `tool_search` starts the matching server when it
+  is needed. Unknown names warn instead of disabling everything. A native
+  Codex app-server still starts the servers selected for it when the thread
+  opens.
+- **Speech through LiteSuite first.** When LiteSuite's voice service answers
+  its health check, LiteTUI speaks through it; otherwise its own engine speaks
+  as before. Text LiteSuite has accepted is never spoken twice. Setting
+  `tts_litesuite_first`, on by default.
+- **Claude Haiku 5.5** (`claude-haiku-5-5`) is on the Claude backend's model
+  list. The alias `haiku` still resolves to Haiku 4.5 with the bundled CLI;
+  choose Haiku 5.5 by its id.
+- **User messages fold** like assistant messages, by a click on the border and
+  automatically once they scroll offscreen. Queued messages have an **✕** to
+  cancel them; a message already being delivered says so instead.
+- `LITETUI_CAPTURE_TOOL_EVENTS=1`: an off-by-default capture of Codex tool-call
+  stream events for diagnosis. It records event type, sequence, call id, tool
+  name and argument length only (no argument text, credentials, reasoning or
+  output), capped at 1 MiB.
+- `tools/merge_gate.py` (source checkout): runs the neighbouring tests on the
+  exact tree about to be merged. It merges nothing.
 
+### Changed
+- **A spawned worker seat never loads a local model.** A worker launched as a
+  spawn on LM Studio, Strata, a single-model llama.cpp server, or a local
+  custom server that reports per-model state, refuses a model request with a
+  sentence when that model is not loaded at that moment, instead of loading
+  it. This covers every model round of a turn, the thinking probe at launch
+  and the tool-summary side call. Spawned thinkers, reviewers and leaders, and
+  a person resuming such a conversation by hand, behave as before.
+- **Settings files belong to the owner's seat.** The device settings file, each
+  conversation's own settings file and each agent's home settings file (any
+  `settings.json` under `.agents`) can be written with LiteTUI's tools (write,
+  edit, bash, PowerShell) only from the owner's own seat; any other seat is
+  refused on every tool profile. Reading them, and saving settings inside the
+  app, are unchanged. The vendored `deny_floor.py` gains the matching `name`
+  and `under` keywords.
+- **Agent storage under `.agents`.** Writing conversation and agent state
+  requires an owned agent session; the legacy `.convos` folder is read as a
+  read-only archive. Opening a legacy conversation by id explains how to
+  export it (`--export-conversation`) instead of failing bare.
+- A small, fixed set of read-only PowerShell JSON reads no longer asks for
+  approval on the interactive profile; anything outside that set still asks,
+  and the deny floor still runs first.
+- `/engine` is available on every machine, so Strata users can start and stop
+  their server; off an RTX 5090 its text never names NInfer, and NInfer still
+  cannot be selected there.
+- The system prompt asks a seat to bring any worktree removal to its leader,
+  the human or the orchestrator first, and to ask before creating or linking a
+  junction or symlink inside a worktree. This is an instruction, not a code
+  guard.
+- The package page shows the README as its description.
 
 ### Fixed
-- **Published 0.25.0 behaviour restored on main.** A later merge had put older
-  code back over parts of that release. Restored: the launcher guard refuses
-  every recognised `run`/`run.bat` spelling instead of one fixed path; output
-  scratch roots are opt-in again (`LITETUI_OUTPUT_SCRATCH_ROOTS` or
-  `~/.litetui/output-roots.json`; an empty variable disables them); goal
-  origins emit `goal-owner` and the older label is still read from existing
-  ledgers; `scripts/readiness_gate.py` requires an explicit `--observer`;
-  conversation search follows `LITETUI_DATA_ROOT` with its index at
-  `tools/convo_search.db`; `docs/release-portability.md` and the owner-neutral
-  wording are back.
+- **Claude backend:** a first turn no longer fails with "Claude owns native
+  turns; legacy model requests/sidecalls are unsupported."
+- **Claude backend:** a seat keeps the tier role and cognitive profile it was
+  launched with, and its system prompt reaches the SDK through a file. Prompts
+  longer than the Windows command-line limit (32,767 characters) no longer
+  fail with WinError 206 shown as "Claude Code not found".
+- **Codex (OAuth Responses):** tool-call arguments delivered across several
+  stream snapshots are reconciled, so a tool no longer fails with "missing
+  'path'" and loops. Conflicting snapshots now raise a clear error.
+- Tools a seat launches (shell tools and MCP servers) carry that seat's own
+  owner id, never one inherited from the environment. An HTTP MCP server gets
+  it only at the named loopback endpoint, and not on a redirect.
+- Two seats starting in the same second no longer lose the catalog lock.
+- A hand-launched LiteTUI keeps its seat when registration fails, and shows the
+  failure as fixed diagnostics instead of crashing.
+- A model chosen before the first turn no longer fails with "Selected model
+  disagrees with owned agent authority".
+- The approval notice names who is asked and the effective deadline, instead
+  of "no frozen escalation recipient. Request remains gated."
+- Skills come from the newest plugin version in the skill cache, not an older
+  one.
+- Sidecar: the parent answers a `jobs_request` with its current jobs, an
+  unknown command is refused instead of being applied as a settings change,
+  and sidecar open and close run one at a time per owner.
+- Settings and modal inputs keep a steady cursor on hosted seats.
 
 ## [0.25.0] — 2026-10-04
 
