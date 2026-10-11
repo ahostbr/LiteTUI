@@ -109,18 +109,20 @@ def _run_checks():
     # simulate a resume: a fresh object whose system message already carries the block
     a3 = make_app()
     a3.conversation[0] = {"role": "system", "content": saved}
-    a3._store_injected = False          # the flag dies with the process; the MARKER must carry it
     out = a3._request_messages()
     chk("resumed convo is not re-injected", out[0]["content"].count(m.STORE_HEADER) == 1)
     chk("resumed convo content unchanged", out[0]["content"] == saved)
-    chk("flag was set from the marker alone", a3._store_injected is True)
+    chk("a second request leaves it alone too", a3._request_messages()[0]["content"] == saved)
 
     print("\n=== an empty store injects nothing, and leaves no marker ===")
     b = make_app(with_store=False)
     msgs = b._request_messages()
     chk("no marker for an empty store", m.STORE_HEADER not in msgs[0]["content"])
     chk("still returns the conversation", msgs and msgs[0]["role"] == "system")
-    chk("not latched, so a later write can still be picked up", b._store_injected is False)
+    (b._agent_session.memory_root / "soul.md").write_text("Written after the first request.\n", encoding="utf-8")
+    later = b._request_messages()[0]["content"]
+    chk("nothing latched, so a later write is still picked up", "Written after the first request." in later)
+    chk("and the marker appears exactly once", later.count(m.STORE_HEADER) == 1)
 
     print("\n=== compaction still gets the LIVE view ===")
     c = make_app()
