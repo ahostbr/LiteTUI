@@ -3153,9 +3153,10 @@ class LiteTUI(App):
         # T1085: FIRST, before evaluate, the floor, the relay and the modal. Only
         # Owner's own seat may directly write a data root's jobs.json; ownership is
         # not a profile cap or a spawner's to APPROVE (T1133 caps stay removed).
-        if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy):
+        shell = tool_policy.proven_shell(name, policy)
+        if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy, shell=shell):
             return tool_denied("profile", name=name, reason=why), False
-        if why := seat_authority.settings_file_refusal(self, args, workspace or paths.ROOT, policy):
+        if why := seat_authority.settings_file_refusal(self, args, workspace or paths.ROOT, policy, shell=shell):
             return tool_denied("profile", name=name, reason=why), False
         decision = tool_policy.evaluate(
             # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority

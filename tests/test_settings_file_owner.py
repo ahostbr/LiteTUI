@@ -1030,15 +1030,16 @@ def _mirror(request, monkeypatch):
     ask = seat_authority.jobs_file_refusal
     before = len(MIRRORED)
 
-    def both(app, args, workspace, policy=None):
-        why = ask(app, args, workspace, policy)
+    def both(app, args, workspace, policy=None, *, shell=None):
+        why = ask(app, args, workspace, policy, shell=shell)
         assert JOBS not in str(workspace).lower(), "CONTROL: the rename must not touch a folder"
-        twin = seat_authority.settings_file_refusal(app, _renamed(args), workspace, policy)
+        twin = seat_authority.settings_file_refusal(app, _renamed(args), workspace, policy, shell=shell)
         MIRRORED.append(bool(why))
         assert bool(twin) == bool(why), (args, "schedule file:", why, "settings file:", twin)
         if twin:
             assert "T0306" in twin and JOBS not in twin, twin
-        below = seat_authority.settings_file_refusal(app, _renamed(args, BELOW), workspace, policy)
+        below = seat_authority.settings_file_refusal(app, _renamed(args, BELOW), workspace, policy,
+                                                     shell=shell)
         assert bool(below) == bool(why), (args, "schedule file:", why, "below .agents:", below)
         if below:
             assert "T0306" in below and JOBS not in below, below
@@ -1089,8 +1090,8 @@ def test_the_mirror_can_fail_below_agents(app, tmp_path, monkeypatch, _mirror):
     a, _ = _agent(app, monkeypatch)
     monkeypatch.setattr(
         seat_authority, "settings_file_refusal",
-        lambda app, args, workspace, policy=None: seat_authority._owned_file_refusal(
-            app, args, workspace, policy, SETTINGS, seat_authority._settings_words))
+        lambda app, args, workspace, policy=None, **kw: seat_authority._owned_file_refusal(
+            app, args, workspace, policy, SETTINGS, seat_authority._settings_words, **kw))
     with pytest.raises(AssertionError, match="below .agents"):
         seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / JOBS)}, tmp_path)
 

@@ -332,6 +332,18 @@ def rule_key(tool_name: str, capabilities: Iterable[str]) -> str:
     return f"{tool_name}:{caps}"
 
 
+def proven_shell(tool_name: str, policy: ToolPolicy) -> str | None:
+    """The interpreter a command is KNOWN to run under, or None.
+
+    Only the core PowerShell command route proves it. An MCP name or an
+    agent-supplied shell field must never gain this: an unproven command is
+    parsed under every dialect, and cmd's reading (`;` is data, `'` is not a
+    quote) turns a compound read into one malformed write. Every guard that
+    asks the deny floor about a shell command passes this, not its own guess.
+    """
+    return "powershell" if tool_name == "powershell" and policy is SHELL_POLICY else None
+
+
 def evaluate(
     profile_name: str,
     policy: ToolPolicy,
@@ -387,8 +399,7 @@ def evaluate(
     # typed turn can disagree on it) and adds no prompt: it only refuses.
     # Only the core PowerShell command route proves its interpreter. An MCP
     # name / agent-supplied shell field must never gain this exemption.
-    floor_shell = "powershell" if tool_name == "powershell" and policy is SHELL_POLICY else None
-    if floor := _floor(args, workspace, shell=floor_shell):
+    if floor := _floor(args, workspace, shell=proven_shell(tool_name, policy)):
         return PolicyDecision(DENY, profile_name, capabilities, floor, danger=DELETION)
     if profile is None:
         return PolicyDecision(
