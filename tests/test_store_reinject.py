@@ -12,6 +12,7 @@ from test_compaction_ui import _Chunk, _run, _scripted_create, _seed, _settle, o
 
 from litetui import app as app_mod
 from litetui import appsvc, settings
+from litetui.conversation import ConversationRepository
 from litetui.agent_launch_context import ordinary
 from litetui.plugins import convo
 from litetui.settings import Settings
@@ -120,7 +121,7 @@ def test_resumed_snapshot_is_not_reinjected(make_app):
 
 # (d) local compaction rebuild
 
-def test_compaction_does_not_carry_the_stale_snapshot_forward(make_app, monkeypatch):
+def _bypass_owned_seat(monkeypatch) -> None:
     # Owned-seat authority and startup registration are not under test here;
     # the fixture app is rebound to a custom backend the fixture seat does not own.
     async def ready(self, *, timeout=None):
@@ -129,12 +130,20 @@ def test_compaction_does_not_carry_the_stale_snapshot_forward(make_app, monkeypa
     monkeypatch.setattr(app_mod.LiteTUI, "_validate_owned_execution", lambda self: None)
     monkeypatch.setattr(app_mod.LiteTUI, "_ensure_chat_ready", ready)
 
+
+def _compact_app(make_app) -> app_mod.LiteTUI:
+    app = make_app()
+    app.settings = Settings(clear_screen_after_compact=False, compact_keep_recent=2,
+                            wake_after_compact=False)
+    return off_local_lm_studio(app)
+
+
+def test_compaction_does_not_carry_the_stale_snapshot_forward(make_app, monkeypatch):
+    _bypass_owned_seat(monkeypatch)
+
     async def body():
         create, _ = _scripted_create([[_Chunk(content="a summary")]])
-        app = make_app()
-        app.settings = Settings(clear_screen_after_compact=False, compact_keep_recent=2,
-                                wake_after_compact=False)
-        off_local_lm_studio(app)
+        app = _compact_app(make_app)
         async with app.run_test(size=(120, 40)) as pilot:
             _seed(app)
             assert OLD in _system_text(app)
@@ -147,6 +156,48 @@ def test_compaction_does_not_carry_the_stale_snapshot_forward(make_app, monkeypa
             text = _system_text(app)
             assert text.count(appsvc.STORE_HEADER) == 1
             assert NEW in text and OLD not in text
+    _run(body())
+
+
+FLEET = "FLEET-IDENTITY-LINE-9001 and the harness capabilities text"
+
+
+def _replayed_system(app: app_mod.LiteTUI) -> str:
+    return ConversationRepository.read(app.convo_dir / "convo.jsonl")[1][0]["content"]
+
+
+@pytest.mark.parametrize("registered_first", [True, False])
+def test_late_registration_text_survives_compaction(make_app, monkeypatch, registered_first):
+    """The fleet text is appended to message 0 when registration lands. It can
+    land after the first request (the store is already there) or before it."""
+    _bypass_owned_seat(monkeypatch)
+
+    async def body():
+        create, _ = _scripted_create([[_Chunk(content="a summary")]])
+        app = _compact_app(make_app)
+        async with app.run_test(size=(120, 40)) as pilot:
+            if registered_first:
+                app._append_to_system(FLEET)
+                _system_text(app)
+            else:
+                _system_text(app)
+                app._append_to_system(FLEET)
+            for i, role in enumerate(("user", "assistant", "user", "assistant")):
+                app._append({"role": role, "content": f"turn {i}"})
+            assert FLEET in app.conversation[0]["content"]
+            assert FLEET in _replayed_system(app)
+            app.client.chat.completions.create = create
+            app._compact()
+            await _settle(app, pilot)
+            assert app.conversation[1]["content"].startswith("[Summary of earlier conversation")
+            assert FLEET in app.conversation[0]["content"]
+            assert appsvc.STORE_HEADER not in app.conversation[0]["content"]
+            assert _replayed_system(app) == app.conversation[0]["content"]
+            _soul(app, NEW)
+            text = _system_text(app)
+            assert FLEET in text and NEW in text and text.count(appsvc.STORE_HEADER) == 1
+            assert text.index(FLEET) < text.index(appsvc.STORE_HEADER)
+            assert _replayed_system(app) == text
     _run(body())
 
 

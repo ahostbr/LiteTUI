@@ -3768,8 +3768,9 @@ class LiteTUI(App):
     # message 0 as a SNAPSHOT when a request finds no STORE_HEADER there, and
     # persisted with an `edit` record. They are not re-read per turn (see
     # appsvc.store_block): a turn after the snapshot sees the files as they
-    # were when it was taken, and the agent reads the file for anything newer. A new snapshot comes only when message 0 loses its
-    # header: Ctrl+T, plan mode, /new and local compaction all do that.
+    # were when it was taken, and the agent reads the file for anything
+    # newer. A new snapshot comes only when message 0 loses its header:
+    # Ctrl+T, plan mode, /new and local compaction all do that.
 
     def _read_store_file(self, name: str, cap: int) -> str:
         # New conversations borrow existing agent memory before first turn.
@@ -4001,10 +4002,14 @@ class LiteTUI(App):
         current = self.conversation[0].get("content") or ""
         if text in current:
             return                      # idempotent across resume/re-register
-        self.conversation[0] = {
-            **self.conversation[0],
-            "content": current.rstrip() + "\n\n" + text if current else text,
-        }
+        # The store snapshot is always the LAST block (strip_store_block cuts
+        # from its header to the end), so late text goes in front of it.
+        cut = current.find("\n\n" + STORE_HEADER) if isinstance(current, str) else -1
+        if cut >= 0:
+            merged = current[:cut].rstrip() + "\n\n" + text + current[cut:]
+        else:
+            merged = current.rstrip() + "\n\n" + text if current else text
+        self.conversation[0] = {**self.conversation[0], "content": merged}
         if not getattr(self, "_convo_loading", False):
             self._edit(0, "system prompt extended")
 
@@ -10353,6 +10358,9 @@ class LiteTUI(App):
             "summary_chars": len(summary), "store_files": writes, "rounds": rounds,
         })
         self.conversation = rebuilt
+        if system:
+            # Replay must equal memory now, not after the next request.
+            self._edit(0, "store snapshot dropped at compaction")
         # AFTER the swap, so the counts describe what the conversation now IS.
         self._emit_compaction("compacted",
                               tokens_before=trigger_tokens,
