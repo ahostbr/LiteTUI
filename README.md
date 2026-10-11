@@ -30,7 +30,7 @@ or non-NInfer engine operations are errors, not successful no-ops. Positive
 model/engine operations require separate runtime authorization and validation.
 
 A terminal chat client and agent harness for **local** LLMs. Textual TUI,
-streaming, tool use, vision, per-conversation memory, and compaction.
+streaming, tool use, vision, per-agent memory, and compaction.
 
 **Two engines, one seam** (`src/litetui/llm_backend.py`): [LM Studio](https://lmstudio.ai)'s
 desktop server, or LiteTUI's own `llama-server` from llama.cpp. Switch between
@@ -219,16 +219,28 @@ C:\shots\screen.png what is the error in this dialog?
 
 ## Conversations
 
-Every conversation gets a directory:
+Every launch opens an **agent home**, and every conversation lives inside one:
 
 ```
-.convos/<uuid>/
-    convo.jsonl    append-only transcript
+.agents/<Name>/
+    settings.json  the agent's backend, model and thinking level
     memory.md      an INDEX the agent maintains
     soul.md        who it is here: preferences, standing corrections
     handoff.md     in flight / owed / absent-by-decision / caveats
     memories/      the memories themselves, one file per idea
+    conversations/<uuid>/
+        convo.jsonl    append-only transcript
+        settings.json  this conversation's contextual settings
 ```
+
+A plain `litetui` launch opens the agent named `LiteTUI` by default (your seat
+name, when you have set one); if that home is busy, the launch gets its own,
+`LiteTUI-<8 hex>`. `/resume` picks an agent first. Memory, soul and handoff
+belong to the agent and are shared by all of its conversations.
+
+Upgrading from 0.25.0: conversations saved under `.convos/<uuid>/` stay on disk
+as a **read-only archive**. They are not migrated and cannot be continued;
+`litetui --convo <old id>` explains how to export one (`--export-conversation`).
 
 The agent is told its own uuid and absolute path in the system prompt, and
 `memory.md`, `soul.md` and `handoff.md` are injected **once**, into the system
@@ -262,8 +274,8 @@ raw history stays on disk behind the marker.
 |---|---|
 | `/new` `/clear` | start a new conversation (new folder on disk) |
 | `/system <text>` | set the system prompt |
-| `/model [n\|name]` | show or switch this conversation's model; startup defaults stay unchanged |
-| `/backend [--default] [name]` | switch this conversation's backend; only `--default` also changes the startup default |
+| `/model [n\|name]` | show or switch the agent's model; startup defaults stay unchanged |
+| `/backend [--default] [name]` | switch the agent's backend; only `--default` also changes the startup default |
 | `/load` `/unload` | put a model into memory, or free it |
 | `/modelcfg` | per-model Info / Load / Inference screen (see below) |
 | `/think [level]` | `off · minimal · low · medium · high · xhigh · unset` |
@@ -395,20 +407,25 @@ resident stops and asks first:
 live session — which includes LiteSuite's headless children, because they load
 models too.
 
-### Each conversation remembers its own setup
+### The agent remembers its own setup
 
-A conversation carries its own `.convos/<id>/settings.json`: backend, model,
-thinking level (and the codex reasoning effort, which is a separate vocabulary),
-the llama.cpp or LM Studio load settings for *its* model, and the seat that owned
-it. Switching model or engine inside one conversation changes that conversation
-only — the other one you have open does not move, and the global `settings.json`
-keeps being the **defaults** a new conversation is born from, plus the app-wide
-knobs (theme, seat name, dialog style).
+An agent's backend, model and thinking level are saved in its home,
+`.agents/<Name>/settings.json`. Switching model or engine publishes there first,
+so the agent keeps its choice across launches; another agent you have open does
+not move. A conversation's own `settings.json` keeps the contextual knobs (the
+codex reasoning effort, which is a separate vocabulary, and the llama.cpp or LM
+Studio load settings for the model in use), and the global `settings.json` keeps
+being the **defaults** a new agent is born from, plus the app-wide knobs (theme,
+seat name, dialog style).
 
-Opening or `/resume`-ing a conversation restores its provider, model and thinking
-level and automatically reconnects, including when the provider is unchanged.
-A pinned global model does not replace the resumed selection. Explicit launch
-and environment overrides still take precedence. Reconnecting does not request
+Resuming a conversation does **not** restore the backend, model or thinking
+level it was saved with: the agent's home decides, and a saved load setting for a
+different model is reported as not applied. A new agent home with no default
+model asks you to choose one with `/model` before the first send. A launch flag
+(`--backend`, `--model`, a thinking level) that differs from the agent's saved
+setting is refused with an explanation, and `LITETUI_MODEL`, `LITETUI_THINKING`
+and `LITETUI_BACKEND` only seed a new agent home; change a saved agent with
+`/model`, `/backend` and `/think`. Reconnecting does not request
 a local model load. If the saved model/provider is unavailable or connection
 fails, sending is blocked with an explanation; choose an available model/provider
 or retry `/reconnect` rather than silently falling back to another model.
@@ -424,10 +441,10 @@ save: the file records what you *chose*, so unsetting a variable must not
 silently revert the knob.
 
 ⚠️ **`background-tasks.json` no longer lives in the data root.** Each conversation
-keeps its own at `.convos/<id>/background-tasks.json`, so two windows only meet in
-a store when they share a conversation (which the session lease forbids). The old
-shared file is read, never written, and a conversation copies its rows out of it
-when it is resumed; task output logs still live in `output/tasks/`.
+keeps its own `background-tasks.json` in its conversation folder, so two windows
+only meet in a store when they share a conversation (which the session lease
+forbids). The old shared file is neither read nor written, and its rows are not copied
+into a conversation; task output logs still live in `output/tasks/`.
 
 ⚠️ **The model ceiling is shared too.** The llama.cpp router holds at most
 `--models-max` models and that limit belongs to whichever instance started it, so
@@ -442,16 +459,17 @@ Give one its own root before it starts:
 LITETUI_DATA_ROOT=~/.litetui-b litetui
 ```
 
-That instance gets its own `settings.json`, `.convos/`, tasks and jobs — and,
-being a separate data root, no shared anything. Finer knobs exist for one field
-at a time: `LITETUI_SEAT_NAME`, `LITETUI_MODEL`, `LITETUI_THINKING`,
-`LITETUI_BACKEND`.
+That instance gets its own `settings.json`, `.agents/`, tasks and jobs — and,
+being a separate data root, no shared anything. `LITETUI_SEAT_NAME` names the
+default agent; `LITETUI_MODEL`, `LITETUI_THINKING` and `LITETUI_BACKEND` seed a
+new agent home and do not change a saved one.
 
 ## Launching backends from a terminal or another agent
 
 Run `litetui --help` (or `python -m litetui.cli --help`) for the complete argument
-contract. Unknown flags are errors. Options apply to this invocation, including
-when resuming a conversation; they do not overwrite saved defaults.
+contract. Unknown flags are errors. Options apply to this invocation and do not
+overwrite saved defaults; on an existing agent, a backend, model or thinking
+level that differs from the agent's saved one is refused.
 
 Normal launches open the TUI in the current terminal. Add `--rpc` for JSONL over
 stdio. Agents must wait for the `ready` event with `launch_status: "ready"` and
