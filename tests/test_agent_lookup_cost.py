@@ -1,4 +1,10 @@
-"""Filesystem work for an owned home must not scale with its siblings."""
+"""Filesystem work for an owned home must not scale with its siblings.
+
+Counts cover Python filesystem calls, not native/subprocess I/O, fsync latency, scheduling or network stalls.
+Printed times are informational, not timing assertions; settings baseline/final residency stubs differ.
+Profile uses its setter and thinking/settings use command dispatch, not complete live-input or timer benchmarks.
+Own-home safety cases cover identity/reparse failures, not every invalid-schema, deletion or half-write case.
+"""
 import builtins
 import io
 import json
