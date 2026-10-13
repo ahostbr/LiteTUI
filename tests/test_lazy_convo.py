@@ -66,11 +66,23 @@ async def test_the_first_user_message_creates_exactly_one(make_app):
     d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
+        transcript = a.convo_path
+        assert a._convo_pending is True and not transcript.exists()
+        pending_messages = list(a.conversation)
+        a._materialise_convo()
+        assert transcript.is_file(), "materialization did not create the transcript"
+        assert a._convo_pending is False
+        assert _count(d) == 1
+        materialized = transcript.read_bytes()
+        records = [json.loads(line) for line in materialized.decode("utf-8").splitlines()]
+        meta = [record for record in records if record.get("type") == "meta"]
+        snapshots = [record for record in records if record.get("type") == "snapshot"]
+        assert len(meta) == 1 and meta[0]["id"] == a.convo_id
+        assert len(snapshots) == 1 and snapshots[0]["messages"] == pending_messages
+        # Idempotent — neither another directory nor duplicate records.
         a._materialise_convo()
         assert _count(d) == 1
-        # Idempotent — a second call must not mint another.
-        a._materialise_convo()
-        assert _count(d) == 1
+        assert transcript.read_bytes() == materialized
 
 
 @pytest.mark.asyncio
