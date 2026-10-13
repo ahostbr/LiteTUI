@@ -132,7 +132,8 @@ async def test_saved_native_prompt_is_checked_even_when_message_zero_matches(tmp
     first._request_messages()
     ledger = ledger_for(first)
     segment = ledger.select_segment(str(Path.cwd()))
-    ledger.fix_system_prompt(segment["id"], memory_prompt(first.convo_id, memory, owner=True))
+    ledger.fix_system_prompt(segment["id"], memory_prompt(first.convo_id, memory, owner=True),
+                             store_identity={"version": 1, "mode": "owner", "folder": str(memory)})
     path = save(first, "lmstudio")
     before = ledger.file.read_bytes()
     resumed = build(None)
@@ -143,6 +144,80 @@ async def test_saved_native_prompt_is_checked_even_when_message_zero_matches(tmp
         assert not resumed._resume(path)
         assert len(said) == 1 and "Store mismatch" in said[0]
         assert "--memory" in said[0]
+    assert ledger.file.read_bytes() == before
+
+
+@pytest.mark.parametrize("owner", [False, True], ids=["ordinary", "owner"])
+def test_new_prompts_record_store_identity_as_data(tmp_path, build, owner):
+    from litetui.conversation import ConversationRepository
+
+    memory = folder(tmp_path, "widgets") if owner else None
+    app = build(memory)
+    expected = {"version": 1, "mode": "owner" if owner else "home",
+                "folder": str(memory or app._agent_session.memory_root)}
+    app._materialise_convo()
+    meta, _ = ConversationRepository.read(app.convo_path)
+    assert meta.get("store_identity") == expected, "transcript has no recorded store identity"
+    import json
+    records = [json.loads(line) for line in app.convo_path.read_text(encoding="utf-8").splitlines()]
+    snapshot = next(record for record in records if record["type"] == "snapshot")
+    assert snapshot["store_identity"] == expected
+    assert snapshot["messages"][0] == app.conversation[0]
+    assert "store_identity" not in records[0], "provenance must accompany prompt, not a separate meta write"
+    ledger = ledger_for(app)
+    segment = ledger.select_segment(str(Path.cwd()))
+    system_prompt_for(app, segment)
+    assert ledger.selected.get("store_identity") == expected
+
+
+def _index_example(tmp_path, monkeypatch, owner):
+    from litetui.appsvc import STORE_HEADER
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+    heading = "memory.md" if owner else "NOW.md"
+    text = f"# Widgets index\n\n```markdown\n{STORE_HEADER}\n### {heading} (current contents)\n```\n"
+    (repo / "AGENT_INDEX.md").write_bytes(text.encode("utf-8"))
+    monkeypatch.chdir(repo)
+    return text.strip()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True], ids=["ordinary", "owner"])
+@pytest.mark.parametrize("backend", ["lmstudio", "claude"])
+async def test_index_example_cannot_change_same_store_identity(tmp_path, monkeypatch, build, owner, backend):
+    example = _index_example(tmp_path, monkeypatch, owner)
+    memory = folder(tmp_path, "widgets") if owner else None
+    first = build(memory, backend)
+    path = save(first, backend)
+    saved = first.conversation[0]["content"]
+    assert example in saved
+    resumed = build(memory, backend)
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+        assert resumed._resume(path, startup=True)
+        assert resumed._request_messages()[0]["content"] == saved
+        if backend == "claude":
+            ledger = ledger_for(resumed)
+            before = ledger.file.read_bytes()
+            prompt = ledger.selected["system_prompt"]
+            assert example in prompt
+            assert system_prompt_for(resumed, ledger.selected) == prompt
+            assert ledger.file.read_bytes() == before
+
+
+@pytest.mark.parametrize("owner", [False, True], ids=["ordinary", "owner"])
+def test_index_example_cannot_change_recorded_native_prompt(tmp_path, monkeypatch, build, owner):
+    example = _index_example(tmp_path, monkeypatch, owner)
+    app = build(folder(tmp_path, "widgets") if owner else None)
+    app._materialise_convo()
+    ledger = ledger_for(app)
+    segment = ledger.select_segment(str(Path.cwd()))
+    prompt = system_prompt_for(app, segment)
+    before = ledger.file.read_bytes()
+    assert example in prompt
+    assert system_prompt_for(app, segment) == prompt
     assert ledger.file.read_bytes() == before
 
 
@@ -187,19 +262,84 @@ def test_recorded_claude_prompt_treats_heading_examples_as_file_contents(tmp_pat
     assert ledger.file.read_bytes() == before
 
 
-@pytest.mark.parametrize("malformed", ["missing-address", "conflicting-addresses", "mixed-snapshot"])
-def test_ambiguous_stored_identity_refuses_without_guessing(tmp_path, malformed):
-    from litetui.appsvc import STORE_HEADER
+@pytest.mark.parametrize("malformed", [None, {"version": 2, "mode": "home", "folder": "/widgets"},
+                                       {"version": 1, "mode": "owner", "folder": "relative"}])
+def test_invalid_recorded_identity_refuses_without_text_fallback(build, malformed):
     from litetui.store_identity import require_store_match
-    from litetui.textfmt import memory_prompt
 
-    root = tmp_path / "widgets"
-    prompt = memory_prompt("saved", root, owner=True)
-    if malformed == "missing-address":
-        prompt = "## Your conversation store (owner memory folder)\nunknown"
-    elif malformed == "conflicting-addresses":
-        prompt += memory_prompt("saved", tmp_path / "other", owner=True)
-    else:
-        prompt += f"\n\n{STORE_HEADER}\n### memory.md (current contents)\nhome"
-    with pytest.raises(owner_mode.OwnerModeError, match="omit --convo"):
-        require_store_match(prompt, root, agent_name="Alpha", convo_id="saved")
+    app = build(None)
+    with pytest.raises(owner_mode.OwnerModeError, match="recorded store provenance.*omit --convo"):
+        require_store_match(app, malformed, prompt=app._system_prompt_text(), convo_id=app.convo_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True], ids=["ordinary", "owner"])
+@pytest.mark.parametrize("backend", ["lmstudio", "claude"])
+async def test_legacy_host_slot_preserves_same_store_with_arbitrary_file_examples(
+        tmp_path, monkeypatch, build, owner, backend):
+    import json
+
+    _index_example(tmp_path, monkeypatch, owner)
+    memory = folder(tmp_path, "widgets") if owner else None
+    first = build(memory, backend)
+    _write_heading_example(first, memory, True)
+    path = save(first, backend)
+    # Construct an old-format fixture. Product code must never backfill it.
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for record in records:
+        record.pop("store_identity", None)
+    path.write_bytes(("\n".join(json.dumps(r) for r in records) + "\n").encode())
+    native_path = path.parent / "claude_ledger.json"
+    if backend == "claude":
+        raw = json.loads(native_path.read_text(encoding="utf-8"))
+        for segment in raw["segments"].values():
+            segment.pop("store_identity", None)
+        native_path.write_bytes(json.dumps(raw).encode())
+    before = path.read_bytes()
+    native_before = native_path.read_bytes() if native_path.exists() else None
+    resumed = build(memory, backend)
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+        assert resumed._resume(path, startup=True)
+        if backend == "claude":
+            ledger = ledger_for(resumed)
+            assert system_prompt_for(resumed, ledger.selected) == ledger.selected["system_prompt"]
+    assert path.read_bytes() == before
+    if native_before is not None:
+        assert native_path.read_bytes() == native_before
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_unknown_legacy_prefix_refuses_without_searching_later_file_bodies(build, native):
+    from litetui.store_identity import require_store_match
+
+    app = build(None)
+    prompt = "custom prefix\n" + app._system_prompt_text()
+    with pytest.raises(owner_mode.OwnerModeError, match="legacy prompt has no verifiable host store slot.*omit --convo"):
+        require_store_match(app, prompt=prompt, convo_id=app.convo_id, native=native)
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("change", ["ordinary-to-owner", "owner-to-ordinary", "other-folder"])
+def test_legacy_known_slot_still_refuses_real_store_mismatch(tmp_path, build, native, change):
+    from litetui.store_identity import require_store_match
+
+    original = None if change == "ordinary-to-owner" else folder(tmp_path, "widgets")
+    target = None if change == "owner-to-ordinary" else folder(tmp_path, "gadgets")
+    app = build(original)
+    prompt = app._system_prompt_text()
+    app._owner_memory_dir = target
+    with pytest.raises(owner_mode.OwnerModeError, match="saved conversation and launch use different memory stores"):
+        require_store_match(app, prompt=prompt, convo_id=app.convo_id, native=native)
+
+
+def test_legacy_native_requires_same_launch_prefix(build):
+    from litetui.store_identity import require_store_match
+
+    app = build(None)
+    app._cli_system_prompt = "Launch role and method"
+    prompt = app._cli_system_prompt + "\n\n" + app._system_prompt_text()
+    assert require_store_match(app, prompt=prompt, convo_id=app.convo_id, native=True)["mode"] == "home"
+    app._cli_system_prompt = "Different launch role"
+    with pytest.raises(owner_mode.OwnerModeError, match="no verifiable host store slot"):
+        require_store_match(app, prompt=prompt, convo_id=app.convo_id, native=True)

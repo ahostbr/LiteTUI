@@ -3770,6 +3770,8 @@ class LiteTUI(App):
         from this builder is followed by a fresh snapshot. Host sections are
         registered in __init__, the skills index by the skills plugin.
         """
+        from litetui.store_identity import capture
+        self._prompt_store_identity = capture(self)
         return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
 
     def _load_system_prompt(self) -> None:
@@ -4033,12 +4035,14 @@ class LiteTUI(App):
             self._edit(0, "system prompt extended")
 
     def _snapshot(self, reason: str = "") -> None:
-        self.store.record_snapshot(self.conversation, reason)
+        self.store.record_snapshot(self.conversation, reason,
+                                   store_identity=getattr(self, "_prompt_store_identity", None))
 
     def _edit(self, index: int, reason: str = "") -> None:
         if not (0 <= index < len(self.conversation)):
             return self._snapshot(reason)  # shouldn't happen; degrade safely
-        self.store.record_edit(index, self.conversation[index], reason)
+        self.store.record_edit(index, self.conversation[index], reason,
+                               store_identity=getattr(self, "_prompt_store_identity", None) if index == 0 else None)
 
     def _truncate(self, keep_from: int, prepend: list[dict], reason: str = "",
                   *, measurements: dict | None = None) -> None:
@@ -4244,18 +4248,18 @@ class LiteTUI(App):
             return False
         from litetui.claude_persistence import ClaudeLedger, LedgerError, path_for
         from litetui.owner_mode import OwnerModeError
-        from litetui.store_identity import require_store_match
-        owner_dir = getattr(self, '_owner_memory_dir', None)
-        session = getattr(self, '_agent_session', None)
-        name = session.authority.name if session is not None else (meta.get('agent_name') or 'LiteTUI')
-        identity = {"agent_name": name, "convo_id": path.parent.name}
+        from litetui.store_identity import UNRECORDED, require_store_match
         try:
             prompt = msgs[0].get('content', '') if msgs[0].get('role') == 'system' else ''
-            require_store_match(prompt if isinstance(prompt, str) else '', owner_dir, **identity)
+            saved_identity = require_store_match(
+                self, meta.get('store_identity', UNRECORDED),
+                prompt=prompt if isinstance(prompt, str) else '', convo_id=path.parent.name)
             if path_for(path.parent).exists():
                 segment = ClaudeLedger(path.parent).selected
                 if segment and (segment.get('system_prompt') or segment.get('session_id')):
-                    require_store_match(segment.get('system_prompt') or '', owner_dir, **identity)
+                    require_store_match(self, segment.get('store_identity', UNRECORDED),
+                                        prompt=segment.get('system_prompt') or '',
+                                        convo_id=path.parent.name, native=True)
         except (OwnerModeError, LedgerError) as exc:
             if startup:
                 raise ValueError(str(exc)) from None
@@ -4275,6 +4279,7 @@ class LiteTUI(App):
             close_native(self, previous)
         hook_host.leave_conversation(self)
         self.conversation = msgs
+        self._prompt_store_identity = saved_identity
         # The staged conversation is abandoned WITHOUT being written — that is
         # the whole point of staging. Clearing the flag before reassigning the
         # paths also stops a later write from materialising the RESUMED store as

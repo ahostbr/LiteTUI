@@ -543,6 +543,14 @@ mode, dropping owner flags, or changing its owner folder is refused before the
 conversation is adopted. The refusal gives the matching launch command. Ambiguous
 saved addresses require a new conversation without `--convo`; stored snapshots
 and recorded Claude segment prompts are never rewritten to migrate stores.
+New transcript snapshots/system edits and native segment records carry optional
+store provenance (version, mode, folder) in the same record as the prompt, not in settings. Older readers ignore
+this extra field. For older records without it, compatibility requires the complete
+generated address at its original slot immediately after an exactly recognized
+host base/plan prefix (and the same supplied native launch prefix, if any). File
+bodies are not searched. Changed templates or custom prefixes that cannot identify
+that slot refuse with `legacy prompt has no verifiable host store slot` and a
+command to start a new conversation without `--convo`; old files are not backfilled.
 
 - **Injected in place of the home's own files.** `SOUL.md`, `NOW.md` and
   `DOMAIN.md`, in that order, replace `memory.md`, `soul.md` and `handoff.md` in

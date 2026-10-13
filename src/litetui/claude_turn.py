@@ -101,12 +101,10 @@ def system_prompt_for(app, segment):
     from litetui.textfmt import load_prompt
 
     segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
+    from litetui.store_identity import UNRECORDED, capture, require_store_match
     if segment.get("system_prompt") or segment.get("session_id"):
-        from litetui.store_identity import require_store_match
-        session = getattr(app, "_agent_session", None)
-        name = session.authority.name if session is not None else "LiteTUI"
-        require_store_match(segment.get("system_prompt") or "", getattr(app, "_owner_memory_dir", None),
-                            agent_name=name, convo_id=app.convo_id)
+        require_store_match(app, segment.get("store_identity", UNRECORDED),
+                            prompt=segment.get("system_prompt") or "", convo_id=app.convo_id, native=True)
     if segment.get("system_prompt"):
         if getattr(getattr(app, "seat", None), "registered", False):
             return ledger_for(app).refresh_system_prompt_identity(
@@ -114,6 +112,7 @@ def system_prompt_for(app, segment):
         return segment["system_prompt"]
     if segment.get("session_id"):
         return None
+    store_identity = capture(app)
     tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
     # The launch block (tier preamble + cognitive file, from --system-prompt-file/--cognitive-file)
     # leads a new native segment; without it the role and method never reach Claude's prompt.
@@ -126,7 +125,7 @@ def system_prompt_for(app, segment):
     parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
     parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
     text = "\n\n".join(p for p in parts if p)
-    return ledger_for(app).fix_system_prompt(segment["id"], text)
+    return ledger_for(app).fix_system_prompt(segment["id"], text, store_identity=store_identity)
 
 
 #: The CLI's own words for a context that no longer fits (read out of CLI 2.1.281).

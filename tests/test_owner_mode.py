@@ -384,7 +384,7 @@ async def test_same_owner_resume_keeps_the_stanza_at_the_owner_folder(make_app, 
     import json
     app = make_app()
     home = app._agent_session.memory_root
-    saved = "BASE\n" + memory_prompt("old-id", owner_dir, owner=True) + "\nuser prose\n"
+    saved = refresh_store_address(app._system_prompt_text(), "old-id", owner_dir, owner=True) + "\nuser prose\n"
     path = app.convo_dir / "convo.jsonl"
     path.write_text(json.dumps({"type": "meta", "v": 3, "id": app.convo_dir.name}) + "\n"
                     + json.dumps({"type": "snapshot", "messages": [{"role": "system", "content": saved}]}) + "\n",

@@ -50,6 +50,9 @@ class ConversationRepository:
                     candidate = rec.get("messages")
                     if isinstance(candidate, list) and all(isinstance(m, dict) and isinstance(m.get('role'), str) for m in candidate):
                         msgs = list(candidate)
+                        meta.pop("store_identity", None)
+                        if "store_identity" in rec:
+                            meta["store_identity"] = rec["store_identity"]
                 elif kind == "rename":
                     # APPEND-ONLY, like every other record here. The name is not
                     # patched into the meta line -- rewriting a JSONL record in
@@ -67,6 +70,10 @@ class ConversationRepository:
                         rec.get("message"), dict
                     ):
                         msgs[i] = rec["message"]
+                        if i == 0:
+                            meta.pop("store_identity", None)
+                            if "store_identity" in rec:
+                                meta["store_identity"] = rec["store_identity"]
                 elif kind == "truncate":
                     keep_from = rec.get("keep_from")
                     if not isinstance(keep_from, int) or keep_from < 0:
@@ -81,7 +88,10 @@ class ConversationRepository:
                     prepend = [
                         m for m in (rec.get("prepend") or []) if isinstance(m, dict)
                     ]
+                    previous_first = msgs[0] if msgs else None
                     msgs = head + prepend + msgs[keep_from:]
+                    if not msgs or msgs[0] is not previous_first:
+                        meta.pop("store_identity", None)
                 elif kind == "msg" and isinstance(rec.get("message"), dict):
                     msgs.append(rec["message"])
         return meta, msgs
@@ -370,14 +380,15 @@ class ConversationRepository:
             return {}
         return out
 
-    def record_snapshot(self, messages: list[dict], reason: str = "") -> None:
+    def record_snapshot(self, messages: list[dict], reason: str = "", *, store_identity=None) -> None:
         """Full-list record. Kept for readability of older files; prefer edit."""
         self.write_record({
             "type": "snapshot", "ts": time.time(),
             "reason": reason, "messages": messages,
+            **({"store_identity": store_identity} if store_identity is not None else {}),
         })
 
-    def record_edit(self, index: int, message: dict, reason: str = "") -> None:
+    def record_edit(self, index: int, message: dict, reason: str = "", *, store_identity=None) -> None:
         """Record an in-place change to ONE message.
 
         /system and the tools toggle only ever rewrite message 0, which is the
@@ -388,6 +399,7 @@ class ConversationRepository:
         self.write_record({
             "type": "edit", "ts": time.time(), "reason": reason,
             "index": index, "message": message,
+            **({"store_identity": store_identity} if store_identity is not None else {}),
         })
 
     def record_truncate(self, keep_from: int, prepend: list[dict],

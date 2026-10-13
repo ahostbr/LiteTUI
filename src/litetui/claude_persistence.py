@@ -196,7 +196,7 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
-    def fix_system_prompt(self, segment_id: str, text: str) -> str:
+    def fix_system_prompt(self, segment_id: str, text: str, *, store_identity=None) -> str:
         """Record the segment's system prompt the first time, and return the recorded one.
 
         Fixed for the life of the segment, except the process-specific harness identity
@@ -206,6 +206,8 @@ class ClaudeLedger:
         segment = self._require_segment(segment_id)
         if not segment.get("system_prompt"):
             segment["system_prompt"] = text
+            if store_identity is not None:
+                segment["store_identity"] = deepcopy(store_identity)
             self._save()
         return segment["system_prompt"]
 
