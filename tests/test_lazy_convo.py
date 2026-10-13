@@ -12,6 +12,7 @@ resumed conversation being appended to rather than replaced.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -68,7 +69,7 @@ async def test_the_first_user_message_creates_exactly_one(make_app):
         await pilot.pause()
         transcript = a.convo_path
         assert a._convo_pending is True and not transcript.exists()
-        pending_messages = list(a.conversation)
+        pending_messages = deepcopy(a.conversation)
         a._materialise_convo()
         assert transcript.is_file(), "materialization did not create the transcript"
         assert a._convo_pending is False
