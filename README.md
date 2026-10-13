@@ -548,11 +548,12 @@ differently, is refused with the flag to change rather than opening another home
 - **One seat per folder.** `DIR/.owner.lock` is created exclusively and records
   the holder's pid and agent id. A second launch is refused naming the holder; a
   lock whose process is gone is taken over with a one-line notice; the lock is
-  removed on exit and is never committed by the handoff. Add `.owner.lock` to the
-  memory repository's ignore file so a `git add -A` cannot commit it. The takeover
-  re-reads the file before removing it, which narrows but does not close the window
-  in which two launches both judge the same crashed holder stale; a recycled pid
-  can make a dead holder look alive (the refusal names the file to delete).
+  removed on exit and is never committed by the handoff. A kernel lease on the
+  persistent `DIR/.owner.guard` serializes metadata transactions, including stale
+  takeover and release. Never remove the guard file: its inode anchors the lease.
+  Add `.owner.lock` and `.owner.guard` to the memory repository's ignore file so
+  a `git add -A` cannot commit them. A recycled pid can make a dead holder look
+  alive (the refusal names the metadata file to delete).
 - **Writes.** `NOW.md` and `DOMAIN.md` are the seat's own store: writing them is
   never asked about, on any tool profile. `SOUL.md` gets no such exemption: it is
   judged like any other write outside the workspace, so it asks only on the strict
