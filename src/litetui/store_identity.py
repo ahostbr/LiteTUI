@@ -38,10 +38,15 @@ def _identity(prompt: str) -> Path | None:
     if len(keys) > 1:
         raise ValueError("saved prompt names conflicting stores")
     identity = identities[0] if identities else None
-    headings = set(re.findall(r"^### ([^\r\n]+) \(current contents\)$", snapshot, re.MULTILINE))
-    if (headings & _OWNER_HEADINGS and identity is None
-            or headings & _HOME_HEADINGS and identity is not None):
-        raise ValueError("saved address and snapshot identify different stores")
+    # store_block writes a notice, then the first file heading, then raw file
+    # bodies. Only that first heading is unambiguously host-authored framing:
+    # later identical-looking lines can be legal Markdown in those bodies.
+    first = re.search(r"^### ([^\r\n]+) \(current contents\)$", snapshot, re.MULTILINE)
+    if first is not None:
+        heading = first[1]
+        if (heading in _OWNER_HEADINGS and identity is None
+                or heading in _HOME_HEADINGS and identity is not None):
+            raise ValueError("saved address and snapshot identify different stores")
     return identity
 
 

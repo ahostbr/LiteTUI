@@ -146,6 +146,47 @@ async def test_saved_native_prompt_is_checked_even_when_message_zero_matches(tmp
     assert ledger.file.read_bytes() == before
 
 
+def _write_heading_example(app, memory, fenced):
+    heading = "### memory.md (current contents)" if memory else "### NOW.md (current contents)"
+    example = f"```markdown\n{heading}\n```" if fenced else heading
+    path = memory / "DOMAIN.md" if memory else app._agent_session.memory_root / "soul.md"
+    path.write_text(f"Documentation example:\n\n{example}\n", encoding="utf-8")
+    return example
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True], ids=["ordinary", "owner"])
+@pytest.mark.parametrize("fenced", [True, False], ids=["fenced", "unfenced"])
+async def test_same_store_resume_treats_heading_examples_as_file_contents(tmp_path, build, owner, fenced):
+    memory = folder(tmp_path, "widgets") if owner else None
+    first = build(memory)
+    example = _write_heading_example(first, memory, fenced)
+    path = save(first, "lmstudio")
+    saved = first.conversation[0]["content"]
+    assert example in saved
+    resumed = build(memory)
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+        assert resumed._resume(path, startup=True)
+        assert resumed._request_messages()[0]["content"] == saved
+
+
+@pytest.mark.parametrize("owner", [False, True], ids=["ordinary", "owner"])
+@pytest.mark.parametrize("fenced", [True, False], ids=["fenced", "unfenced"])
+def test_recorded_claude_prompt_treats_heading_examples_as_file_contents(tmp_path, build, owner, fenced):
+    memory = folder(tmp_path, "widgets") if owner else None
+    app = build(memory)
+    example = _write_heading_example(app, memory, fenced)
+    app._materialise_convo()
+    ledger = ledger_for(app)
+    segment = ledger.select_segment(str(Path.cwd()))
+    prompt = system_prompt_for(app, segment)
+    before = ledger.file.read_bytes()
+    assert example in prompt
+    assert system_prompt_for(app, segment) == prompt
+    assert ledger.file.read_bytes() == before
+
+
 @pytest.mark.parametrize("malformed", ["missing-address", "conflicting-addresses", "mixed-snapshot"])
 def test_ambiguous_stored_identity_refuses_without_guessing(tmp_path, malformed):
     from litetui.appsvc import STORE_HEADER
