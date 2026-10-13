@@ -1,7 +1,7 @@
 """A conversation is created on the first user message, never at boot.
 
 Reported: "even if im loading the app todo a /resume it will create a convo
-before i can do /resume" â€” so the list you opened /resume to read filled with
+before i can do /resume" — so the list you opened /resume to read filled with
 the debris of opening it.
 
 These assert the ABSENCE of files, which is the whole feature, plus the two
@@ -36,7 +36,7 @@ async def test_booting_creates_nothing(make_app):
     async with a.run_test() as pilot:
         await pilot.pause()
         assert _count(d) == 0, "booting the app wrote a conversation to disk"
-        # â€¦but it is STAGED: the footer and /clear need an id to name.
+        # …but it is STAGED: the footer and /clear need an id to name.
         assert a.convo_id
         assert a.convo_path is not None
         assert a._convo_pending is True
@@ -68,7 +68,7 @@ async def test_the_first_user_message_creates_exactly_one(make_app):
         await pilot.pause()
         a._materialise_convo()
         assert _count(d) == 1
-        # Idempotent â€” a second call must not mint another.
+        # Idempotent — a second call must not mint another.
         a._materialise_convo()
         assert _count(d) == 1
 
@@ -113,7 +113,7 @@ async def test_resume_adopts_without_minting_a_throwaway(make_app):
     a.store.release()
     a._agent_session.release()
     b = _app(make_app)
-    assert b._agent_session.memory_root == a._agent_session.memory_root
+    assert b._agent_session.memory_root == d.parent
     async with b.run_test() as pilot:
         await pilot.pause()
         assert _count(d) == 1, "booting to resume minted a throwaway conversation"
@@ -132,7 +132,7 @@ async def test_resume_adopts_without_minting_a_throwaway(make_app):
 
 @pytest.mark.asyncio
 async def test_reading_the_store_never_creates_it(make_app):
-    """Reads must not have side effects â€” that is how this bug worked."""
+    """Reads must not have side effects — that is how this bug worked."""
     a = _app(make_app)
     d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
