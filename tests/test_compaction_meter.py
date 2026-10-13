@@ -52,13 +52,13 @@ FULL = 30_000
 WINDOW = 32_768
 
 
-def _app(**overrides):
+def _app(make_app, **overrides):
     """A mounted app whose window is nearly full and whose model is LOADED.
 
     `ctx_loaded` is not decoration: `ctx_max` is the model's CEILING until it
     loads, and every consumer of this reactive refuses to divide by a ceiling.
     """
-    a = app_mod.LiteTUI()
+    a = make_app()
     base = dict(clear_screen_after_compact=False, compact_keep_recent=2,
                 wake_after_compact=False)
     base.update(overrides)
@@ -85,12 +85,12 @@ def _compaction(a, reason="compacted"):
 # ── the meter follows the event ──────────────────────────────────────────────
 
 
-def test_the_meter_lands_on_the_number_the_event_published():
+def test_the_meter_lands_on_the_number_the_event_published(make_app):
     """🔴 THE ARM FOR THE MEASURED DEFECT. Before this, the left side of this
     assertion stayed at 30,000 while the right said a few hundred."""
     async def body():
         create, _ = _scripted_create([[_Chunk(content="a summary")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -103,7 +103,7 @@ def test_the_meter_lands_on_the_number_the_event_published():
     _run(body())
 
 
-def test_the_host_is_told_the_new_occupancy_and_only_after_the_compaction():
+def test_the_host_is_told_the_new_occupancy_and_only_after_the_compaction(make_app):
     """🔴 THE OTHER READER, AND THE ORDER. A host (Frontier Chat) draws its ring
     from the `usage` event, so a stale `ctx_used` left ITS meter wrong too — the
     footer was never the only victim.
@@ -113,7 +113,7 @@ def test_the_host_is_told_the_new_occupancy_and_only_after_the_compaction():
     it, never ahead of it."""
     async def body():
         create, _ = _scripted_create([[_Chunk(content="a summary")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -135,12 +135,12 @@ def test_the_host_is_told_the_new_occupancy_and_only_after_the_compaction():
     _run(body())
 
 
-def test_the_footer_readout_stops_showing_the_old_size():
+def test_the_footer_readout_stops_showing_the_old_size(make_app):
     """🔴 THE USER-VISIBLE HALF, asserted on the app's own rendered state rather
     than on a colour constant copied out of the implementation."""
     async def body():
         create, _ = _scripted_create([[_Chunk(content="a summary")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             before = a.ctx_label_text.plain
@@ -159,7 +159,7 @@ def test_the_footer_readout_stops_showing_the_old_size():
 # ── the exits that changed nothing must move nothing ─────────────────────────
 
 
-def test_a_conversation_that_is_already_recent_leaves_the_meter_alone():
+def test_a_conversation_that_is_already_recent_leaves_the_meter_alone(make_app):
     """🔴 THE NEGATIVE ARM THAT KEEPS THE FIX HONEST. `already_recent` did not
     touch the conversation, so the occupancy it reports is still the truth —
     and a decline that silently rewrote the meter to an estimate of an
@@ -168,7 +168,7 @@ def test_a_conversation_that_is_already_recent_leaves_the_meter_alone():
     This is the T827 shape: `_safe_tail` keeps all of a short body, `head` is
     empty, and there is nothing compaction is allowed to remove."""
     async def body():
-        a = _app(compact_keep_recent=10)
+        a = _app(make_app, compact_keep_recent=10)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a._compact()
@@ -179,10 +179,10 @@ def test_a_conversation_that_is_already_recent_leaves_the_meter_alone():
     _run(body())
 
 
-def test_a_conversation_too_short_to_compact_leaves_the_meter_alone():
+def test_a_conversation_too_short_to_compact_leaves_the_meter_alone(make_app):
     """⬜ The same rule at the other decline."""
     async def body():
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             a.conversation = [{"role": "system", "content": "sys"},
                               {"role": "user", "content": "hi"}]
@@ -194,7 +194,7 @@ def test_a_conversation_too_short_to_compact_leaves_the_meter_alone():
     _run(body())
 
 
-def test_a_failed_compaction_leaves_the_meter_alone():
+def test_a_failed_compaction_leaves_the_meter_alone(make_app):
     """🔴 THE ONE THAT WOULD HURT MOST IF IT WERE WRONG. A failure changes
     nothing (`a failed compact must change nothing`, test_compaction_ui), so a
     meter that dropped anyway would report headroom that does not exist — and
@@ -203,7 +203,7 @@ def test_a_failed_compaction_leaves_the_meter_alone():
         async def boom(**kw):
             raise RuntimeError("engine said no")
 
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             before = list(a.conversation)

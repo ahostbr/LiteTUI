@@ -380,11 +380,11 @@ def test_help_is_unchanged_without_owner_mode(make_app, monkeypatch):
 # -- resume in owner mode: the address stanza follows the owner folder ---------------------
 
 @pytest.mark.asyncio
-async def test_resume_in_owner_mode_points_the_stanza_at_the_owner_folder(make_app, owner_dir):
+async def test_same_owner_resume_keeps_the_stanza_at_the_owner_folder(make_app, owner_dir):
     import json
     app = make_app()
     home = app._agent_session.memory_root
-    saved = "BASE\n" + memory_prompt("old-id", home) + "\nuser prose\n"
+    saved = refresh_store_address(app._system_prompt_text(), "old-id", owner_dir, owner=True) + "\nuser prose\n"
     path = app.convo_dir / "convo.jsonl"
     path.write_text(json.dumps({"type": "meta", "v": 3, "id": app.convo_dir.name}) + "\n"
                     + json.dumps({"type": "snapshot", "messages": [{"role": "system", "content": saved}]}) + "\n",
@@ -481,6 +481,8 @@ def test_owner_resumed_snapshot_is_not_reinjected(make_app, owner_dir):
     _now(owner_dir, NEW_NOW)
     resumed = make_app()
     resumed.conversation[0] = {"role": "system", "content": saved}
+    from litetui.conversation import ConversationRepository
+    resumed._store_injected = ConversationRepository.read(first.convo_path)[0]["store_injected"]
     before = _records(resumed)
     out = resumed._request_messages()[0]["content"]
     assert out == saved and out.count(appsvc.STORE_HEADER) == 1 and NOW in out and NEW_NOW not in out

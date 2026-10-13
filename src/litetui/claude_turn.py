@@ -101,26 +101,35 @@ def system_prompt_for(app, segment):
     from litetui.textfmt import load_prompt
 
     segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
+    from litetui.store_identity import UNRECORDED, capture, require_store_match
+    if segment.get("system_prompt") or segment.get("session_id"):
+        require_store_match(app, segment.get("store_identity", UNRECORDED),
+                            prompt=segment.get("system_prompt") or "", convo_id=app.convo_id, native=True)
     if segment.get("system_prompt"):
+        if not isinstance(segment.get("store_injected"), bool):
+            app._ensure_legacy_store_notice(native_unknown=True)
         if getattr(getattr(app, "seat", None), "registered", False):
             return ledger_for(app).refresh_system_prompt_identity(
                 segment["id"], app._fleet_identity_sentence(), CLAUDE_FLEET_LINE_RE)
         return segment["system_prompt"]
     if segment.get("session_id"):
         return None
+    store_identity = capture(app)
     tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
     # The launch block (tier preamble + cognitive file, from --system-prompt-file/--cognitive-file)
     # leads a new native segment; without it the role and method never reach Claude's prompt.
     launch = getattr(app, "_cli_system_prompt", None)
     parts = [launch, app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
     parts.append(appsvc.index_block(app, cwd=segment["workspace"]).strip())
-    parts.append(appsvc.store_block(app).strip())
+    store_block = appsvc.store_block(app).strip()
+    parts.append(store_block)
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
         parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
     parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
     parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
     text = "\n\n".join(p for p in parts if p)
-    return ledger_for(app).fix_system_prompt(segment["id"], text)
+    return ledger_for(app).fix_system_prompt(segment["id"], text, store_identity=store_identity,
+                                            store_injected=bool(store_block))
 
 
 #: The CLI's own words for a context that no longer fits (read out of CLI 2.1.281).
@@ -488,6 +497,13 @@ def _joined(message_texts):
     return "\n\n".join(t for t in message_texts.values() if t)
 
 
+async def _query_with_store_notice(session, ledger, entry_id, content, notice):
+    pending = notice if not ledger.store_notice_delivered else None
+    await session.query(entry_id, pending + "\n\n" + content if pending else content)
+    if pending:
+        ledger.mark_store_notice_delivered()
+
+
 async def stream_turn(app):
     from litetui.claude_backend import settle_close
 
@@ -585,9 +601,10 @@ async def stream_turn(app):
             else:
                 app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, item["content"])
             return
-        ledger.update_delivery(entry_id, "submitted")
+        notice = getattr(app, "_store_notice_text", None) if not ledger.store_notice_delivered else None
+        ledger.update_delivery(entry_id, "submitted", **({"store_notice": notice} if notice else {}))
         submitted = True
-        await session.query(entry_id, item["content"])
+        await _query_with_store_notice(session, ledger, entry_id, item["content"], notice)
         clock = claude_cache.clock_for(app, segment["id"])
         clock.model, clock.effort = app.model_id, effort or "default"
 

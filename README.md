@@ -537,6 +537,46 @@ home of that name for this launch. Both flags are per launch only; nothing is
 saved in the agent's `settings.json`, and a busy `NAME`, or a spawned seat named
 differently, is refused with the flag to change rather than opening another home.
 
+A resume must use the saved conversation's store: supply the same `--owner NAME`
+and `--memory DIR` alongside `--convo ID`. Switching an ordinary conversation to owner
+mode, dropping owner flags, or changing its owner folder is refused before the
+conversation is adopted. The refusal gives the matching launch command. Ambiguous
+saved addresses require a new conversation without `--convo`; stored snapshots
+and recorded Claude segment prompts are never rewritten to migrate stores.
+New transcript snapshots/system edits and native segment records carry optional
+store provenance (version, mode, folder) in the same record as the prompt, not in settings. Older readers ignore
+this extra field. For older records without it, compatibility requires the complete
+generated address at its original slot immediately after an exactly recognized
+host base/plan prefix (and the same supplied native launch prefix, if any). File
+bodies are not searched. Changed templates or custom prefixes that cannot identify
+that slot refuse with `legacy prompt has no verifiable host store slot` and a
+command to start a new conversation without `--convo`; old files are not backfilled.
+The shipped two-message CLI shape is also recognized: message 0 must be the same
+supplied launch text (`--system-prompt`, `--system-prompt-file`, or the combined
+`--cognitive-file` text), optionally followed immediately by the generator's first
+index/store opening; message 1 must contain the complete host prefix and address.
+A fleet extension also qualifies when it begins with the host's exact composition:
+the supplied launch text with trailing whitespace stripped, two newlines, and the
+shared fleet-registration opening. The same joining function writes and recognizes
+that prefix; extra intervening text does not qualify. Only that beginning is verified.
+Everything after the first suffix opening is
+opaque, never parsed for identity, later section order, or a cut. Missing/changed
+launch text, an intervening prefix, or an incomplete host message refuses;
+markers inside the supplied launch text do not disqualify it. No later messages are searched. Native
+preset-only legacy sessions with no recorded prompt remain unverifiable and refuse
+with the same actionable new-conversation notice.
+
+New prompts also carry an injection receipt beside their contents: quoted store
+headers in an index or memory file cannot suppress the real snapshot. A same-store
+legacy resume without that receipt preserves its prompt without guessing whether
+another block is needed. One notice on screen and in the agent's context explains
+that the store may not have loaded, names the exact files to read, and gives the
+explicit rebuild action: run `/new`, then send your next message. This does not
+block the first legacy send. Native Claude receives the notice with its next input,
+not by rewriting its fixed prompt; delivery is recorded only after the query returns.
+A crash between accepted query and receipt persistence can repeat the notice once
+on recovery rather than risk omitting it. Modern conversations get no legacy notice.
+
 - **Injected in place of the home's own files.** `SOUL.md`, `NOW.md` and
   `DOMAIN.md`, in that order, replace `memory.md`, `soul.md` and `handoff.md` in
   the snapshot every backend starts a conversation (or a Claude segment) with,
@@ -548,11 +588,12 @@ differently, is refused with the flag to change rather than opening another home
 - **One seat per folder.** `DIR/.owner.lock` is created exclusively and records
   the holder's pid and agent id. A second launch is refused naming the holder; a
   lock whose process is gone is taken over with a one-line notice; the lock is
-  removed on exit and is never committed by the handoff. Add `.owner.lock` to the
-  memory repository's ignore file so a `git add -A` cannot commit it. The takeover
-  re-reads the file before removing it, which narrows but does not close the window
-  in which two launches both judge the same crashed holder stale; a recycled pid
-  can make a dead holder look alive (the refusal names the file to delete).
+  removed on exit and is never committed by the handoff. A kernel lease on the
+  persistent `DIR/.owner.guard` serializes metadata transactions, including stale
+  takeover and release. Never remove the guard file: its inode anchors the lease.
+  Add `.owner.lock` and `.owner.guard` to the memory repository's ignore file so
+  a `git add -A` cannot commit them. A recycled pid can make a dead holder look
+  alive (the refusal names the metadata file to delete).
 - **Writes.** `NOW.md` and `DOMAIN.md` are the seat's own store: writing them is
   never asked about, on any tool profile. `SOUL.md` gets no such exemption: it is
   judged like any other write outside the workspace, so it asks only on the strict

@@ -105,6 +105,19 @@ def load_image_file(app, path: Path) -> str | None:
 #: Marks an already-injected project index inside the system message; detected
 #: by marker (not a flag) for the same reason as STORE_HEADER: /resume.
 INDEX_HEADER = "## Project index (AGENT_INDEX.md), snapshot at the start of this conversation"
+# Shared with the bounded legacy launch-slot reader; bodies are always opaque.
+INDEX_OPENING = (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it lists. Source: {{where}}. '
+                 'It is NOT re-sent each turn and is not refreshed on resume; read the file for its '
+                 'current contents.\n\n')
+STORE_OPENING = ('\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n')
+
+
+FLEET_OPENING = 'You are registered in the LiteHarness fleet as '
+
+
+def extend_system_text(current: str, text: str) -> str:
+    """The host's exact suffix join, shared with bounded legacy recognition."""
+    return current.rstrip() + '\n\n' + text
 
 
 def index_block(app, cwd=None) -> str:
@@ -130,9 +143,7 @@ def index_block(app, cwd=None) -> str:
         if notify is not None:
             notify(f'warning: {INDEX_NAME} is {total} chars and was truncated at {INDEX_CAP} '
                    f'in the system prompt ({where}). Trim it.')
-    return (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it lists. Source: {where}. '
-            'It is NOT re-sent each turn and is not refreshed on resume; read the file for its '
-            f'current contents.\n\n{text}\n')
+    return INDEX_OPENING.format(where=where) + text + '\n'
 
 
 def store_block(app, live: bool=False) -> str:
@@ -159,7 +170,7 @@ def store_block(app, live: bool=False) -> str:
     # local 27B, where it crowds out the conversation itself. The text
     # below must not promise a per-turn refresh -- an instruction that
     # quietly stopped being true is worse than no instruction at all.
-    return '\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n' + '\n\n'.join(parts) + '\n'
+    return STORE_OPENING + '\n\n'.join(parts) + '\n'
 
 def strip_store_block(content: str) -> str:
     """`content` without its trailing store block; unchanged when it has none.

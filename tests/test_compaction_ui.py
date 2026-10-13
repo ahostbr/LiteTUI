@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import tool_approval
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -99,8 +100,8 @@ def off_local_lm_studio(a):
     return a
 
 
-def _app(**overrides):
-    a = app_mod.LiteTUI()
+def _app(make_app=owned_app, **overrides):
+    a = make_app()
     base = dict(clear_screen_after_compact=False, compact_keep_recent=2,
                 wake_after_compact=False)
     base.update(overrides)
@@ -138,10 +139,10 @@ def _card(a):
 
 # ── the card ───────────────────────────────────────────────────────────────
 
-def test_compaction_mounts_a_card_with_the_plan():
+def test_compaction_mounts_a_card_with_the_plan(make_app):
     async def body():
         create, _ = _scripted_create([[_Chunk(content="a summary")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -155,12 +156,12 @@ def test_compaction_mounts_a_card_with_the_plan():
     _run(body())
 
 
-def test_the_exact_prompt_is_present_and_folded():
+def test_the_exact_prompt_is_present_and_folded(make_app):
     """The prompt users were never allowed to see — present, but folded:
     its default view is the fold line, not a wall of instructions."""
     async def body():
         create, _ = _scripted_create([[_Chunk(content="s")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -179,12 +180,12 @@ def test_the_exact_prompt_is_present_and_folded():
     _run(body())
 
 
-def test_the_summary_streams_into_the_card_and_finalises_as_markdown():
+def test_the_summary_streams_into_the_card_and_finalises_as_markdown(make_app):
     async def body():
         create, _ = _scripted_create([
             [_Chunk(content="part one, "), _Chunk(content="part two")]
         ])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -201,12 +202,12 @@ def test_the_summary_streams_into_the_card_and_finalises_as_markdown():
     _run(body())
 
 
-def test_model_thinking_during_compaction_is_shown_in_a_thinking_block():
+def test_model_thinking_during_compaction_is_shown_in_a_thinking_block(make_app):
     async def body():
         create, _ = _scripted_create([
             [_Chunk(reasoning="weighing what to keep"), _Chunk(content="s")]
         ])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -219,7 +220,7 @@ def test_model_thinking_during_compaction_is_shown_in_a_thinking_block():
     _run(body())
 
 
-def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path, monkeypatch):
+def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path, monkeypatch, make_app):
     """The most interesting part of a compaction is the model deciding what
     is durable and writing it to the store — previously invisible."""
     async def body():
@@ -234,7 +235,7 @@ def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path, monkey
             [_Chunk(content="the distilled summary")],
         ]
         create, calls = _scripted_create(rounds)
-        a = _app()
+        a = _app(make_app)
         records = []
         monkeypatch.setattr(a.store, "write_record", records.append)
         async with a.run_test(size=(120, 40)) as pilot:
@@ -280,12 +281,12 @@ def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path, monkey
     _run(body())
 
 
-def test_failure_is_written_on_the_card_not_swallowed():
+def test_failure_is_written_on_the_card_not_swallowed(make_app):
     async def body():
         async def boom(**kw):
             raise RuntimeError("server fell over")
 
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             before = list(a.conversation)
@@ -301,10 +302,10 @@ def test_failure_is_written_on_the_card_not_swallowed():
     _run(body())
 
 
-def test_no_summary_after_all_rounds_fails_the_card():
+def test_no_summary_after_all_rounds_fails_the_card(make_app):
     async def body():
         create, _ = _scripted_create([[_Chunk(content="")]])
-        a = _app(compact_max_tool_iters=1)
+        a = _app(make_app, compact_max_tool_iters=1)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -315,10 +316,10 @@ def test_no_summary_after_all_rounds_fails_the_card():
     _run(body())
 
 
-def test_autocompact_marks_the_card_automatic():
+def test_autocompact_marks_the_card_automatic(make_app):
     async def body():
         create, _ = _scripted_create([[_Chunk(content="s")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -333,13 +334,13 @@ def test_autocompact_marks_the_card_automatic():
     _run(body())
 
 
-def test_a_manual_compact_after_an_aborted_auto_is_not_marked_auto():
+def test_a_manual_compact_after_an_aborted_auto_is_not_marked_auto(make_app):
     """The flag is read-and-cleared at the METHOD HEAD: an autocompact that
     aborts early (nothing to compact) must not leak its flag onto the next
     manual compact."""
     async def body():
         create, _ = _scripted_create([[_Chunk(content="s")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             a.conversation = [{"role": "user", "content": "hi"}]   # too short
             a.client.chat.completions.create = create
@@ -355,12 +356,12 @@ def test_a_manual_compact_after_an_aborted_auto_is_not_marked_auto():
     _run(body())
 
 
-def test_the_request_actually_streams():
+def test_the_request_actually_streams(make_app):
     """The whole feature rests on stream=True — a silent revert to blocking
     calls would keep the card but kill the glass."""
     async def body():
         create, calls = _scripted_create([[_Chunk(content="s")]])
-        a = _app()
+        a = _app(make_app)
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)
             a.client.chat.completions.create = create
@@ -370,11 +371,11 @@ def test_the_request_actually_streams():
     _run(body())
 
 
-def test_a_local_lm_studio_compaction_is_refused_and_changes_nothing():
+def test_a_local_lm_studio_compaction_is_refused_and_changes_nothing(make_app):
     """Explicit WS3 admission still refuses LM Studio JIT before any request."""
     async def body():
         create, calls = _scripted_create([[_Chunk(content="s")]])
-        a = app_mod.LiteTUI()
+        a = make_app()
         a.settings = Settings(clear_screen_after_compact=False, compact_keep_recent=2,
                               wake_after_compact=False)
         a._connect = lambda: None

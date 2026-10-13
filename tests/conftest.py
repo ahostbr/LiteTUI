@@ -482,3 +482,21 @@ def pytest_configure(config):
 # FAILS LOUDLY -- which is the 2026-08-21 signal, and a better one than a
 # silent skip. `test_collector_integrity.py` still guards the edge that
 # actually bites: a collected file that runs itself at import.
+
+
+@pytest.fixture
+def make_app():
+    """Build apps on real temporary owned sessions; release stores and seats."""
+    from _owned_seat import owned_app
+
+    apps = []
+
+    def make(**kwargs):
+        app = owned_app(**kwargs)
+        apps.append(app)
+        return app
+
+    yield make
+    for app in reversed(apps):
+        app.store.release()
+        app._agent_session.release()

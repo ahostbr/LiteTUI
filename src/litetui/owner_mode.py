@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from contextlib import contextmanager
 
 from litetui.agent_store import StoreError, _unlinked
 
@@ -87,15 +88,15 @@ def require_handoff() -> None:
     """Fail fast, with one message, when `liteharness owner-handoff` is not there.
 
     `owner-handoff` has no --help (it refuses unknown flags). So the probe runs
-    it at a folder that cannot exist and requires BOTH a non-zero exit and its
-    own refusal text: a missing executable, a liteharness without the command
-    ("Unknown command") and a crash all fail this, and only the real command
-    passes it. Nothing is committed: the folder check refuses first.
+    it at a fresh, private empty directory and requires BOTH a non-zero exit
+    and its own refusal text. Missing executables, old commands and crashes
+    fail this. The empty directory has no owner files, so validation refuses
+    before git can run, regardless of any pre-existing paths on disk.
     """
-    missing = Path(tempfile.gettempdir()) / "litetui-owner-probe-does-not-exist"
     try:
-        probe = subprocess.run([*handoff_command(), "owner-handoff", "--memory", str(missing)],
-                               capture_output=True, text=True, timeout=60)
+        with tempfile.TemporaryDirectory(prefix="litetui-owner-probe-") as empty:
+            probe = subprocess.run([*handoff_command(), "owner-handoff", "--memory", empty],
+                                   capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         probe = None
     text = "" if probe is None else (probe.stdout or "") + (probe.stderr or "")
@@ -164,10 +165,10 @@ class OwnerLock:
     person can delete it. Like the agent lease this is not a defence against a
     hostile process, only against two honest launches.
 
-    The takeover of a stale lock is read, compare, unlink: it re-reads the file and
-    removes it only if it is unchanged since it was judged stale, which narrows the
-    window in which two launches both judge the same crashed holder stale, but it is
-    not atomic. In that narrow window both can end up holding the lock.
+    Every metadata transaction holds a kernel lease on a separate persistent
+    guard inode. Stale comparison, removal and replacement are serialized, as
+    are release and agent-id updates. The guard file must never be removed:
+    replacing its inode would split the kernel lock domain.
     """
 
     def __init__(self, directory: Path):
@@ -192,8 +193,25 @@ class OwnerLock:
             time.sleep(0.02)  # the creator may be between create and write
         return raw, None
 
+    @contextmanager
+    def _transaction(self):
+        from litetui.agent_ownership import _KernelLease, OwnershipError
+        lease = _KernelLease(self.path.with_name(".owner.guard"), timeout=2)
+        try:
+            lease.acquire()
+        except OwnershipError as exc:
+            raise OwnerModeError(f"cannot serialize the owner lock {self.path}: {exc}; retry launch") from None
+        try:
+            yield
+        finally:
+            lease.release()
+
     def acquire(self, agent_id: str | None = None) -> str | None:
         """Take the lock. Returns a takeover note, or None; raises OwnerModeError if held."""
+        with self._transaction():
+            return self._acquire(agent_id)
+
+    def _acquire(self, agent_id: str | None) -> str | None:
         import json
         import time
         from datetime import datetime, timezone
@@ -242,24 +260,25 @@ class OwnerLock:
     def set_agent(self, agent_id: str) -> None:
         """Record the agent id once the seat exists (the lock is taken before it does)."""
         import json
-        _raw, data = self._read()
-        if self._mine is None or data is None or (data.get("pid"), data.get("started")) != self._mine:
+        if self._mine is None:
             return
-        data["agent_id"] = agent_id
-        try:
+        with self._transaction():
+            _raw, data = self._read()
+            if data is None or (data.get("pid"), data.get("started")) != self._mine:
+                return
+            data["agent_id"] = agent_id
             self.path.write_text(json.dumps(data), encoding="utf-8")
-        except OSError:
-            pass
 
     def release(self) -> None:
         """Remove the lock if it is still ours; idempotent, never raises."""
         if self._mine is None:
             return
         try:
-            _raw, data = self._read()
-            if data is not None and (data.get("pid"), data.get("started")) == self._mine:
-                self.path.unlink()
-        except OSError:
+            with self._transaction():
+                _raw, data = self._read()
+                if data is not None and (data.get("pid"), data.get("started")) == self._mine:
+                    self.path.unlink()
+        except (OSError, OwnerModeError):
             pass
         self._mine = None
 

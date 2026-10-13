@@ -3766,10 +3766,13 @@ class LiteTUI(App):
         Single builder so the tools toggle, plan mode and /new cannot disagree
         about the base. It carries NO store or index body: those are appended
         to message 0 by `_inject_store_once` / `_inject_index_once` on the next
-        request, and found again by their headers, so a rewrite of message 0
+        request. The store receipt is reset here, so a rewrite of message 0
         from this builder is followed by a fresh snapshot. Host sections are
         registered in __init__, the skills index by the skills plugin.
         """
+        from litetui.store_identity import capture
+        self._prompt_store_identity = capture(self)
+        self._store_injected = False
         return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
 
     def _load_system_prompt(self) -> None:
@@ -3780,11 +3783,11 @@ class LiteTUI(App):
     # ── Store injection ──────────────────────────────────────────
     #
     # memory.md / soul.md / handoff.md are read from disk and appended to
-    # message 0 as a SNAPSHOT when a request finds no STORE_HEADER there, and
-    # persisted with an `edit` record. They are not re-read per turn (see
+    # message 0 as a SNAPSHOT when its recorded injection receipt is false, and
+    # persisted together with that receipt in an `edit` record. They are not re-read per turn (see
     # appsvc.store_block): a turn after the snapshot sees the files as they
     # were when it was taken, and the agent reads the file for anything
-    # newer. A new snapshot comes only when message 0 loses its header:
+    # newer. A new snapshot comes only after the host rebuild resets the receipt:
     # Ctrl+T, plan mode, /new and local compaction all do that.
 
     def _read_store_file(self, name: str, cap: int) -> str:
@@ -3818,26 +3821,23 @@ class LiteTUI(App):
 
 
     def _inject_store_once(self) -> None:
-        """Append the store snapshot to message 0 unless it already carries one.
+        """Append only when this host-composed prompt has a false receipt.
 
-        The state is the header in message 0, not a flag: a flag outlives the
-        content it described, and Ctrl+T, plan mode and /new each replace
-        message 0 with the base prompt. A resumed conversation has the header
-        and keeps its snapshot untouched.
-
-        Written INTO self.conversation and persisted with an `edit` record, not
-        merged into the outgoing request only: a block that exists solely in the
-        request must be rebuilt every turn, which is the cost being removed.
+        A rebuild resets the receipt; resume restores it beside the saved prompt.
+        Unknown legacy state preserves the prompt rather than guessing from text.
         """
+        if getattr(self, "_store_injected", None) is not False:
+            return
         if not self.conversation or self.conversation[0].get("role") != "system":
             return  # no system message yet; try again next turn
         current = self.conversation[0].get("content", "")
-        if not isinstance(current, str) or STORE_HEADER in current:
+        if not isinstance(current, str):
             return
         block = appsvc.store_block(self, )
         if not block:
-            return  # empty store: nothing to inject, and no marker to leave
+            return  # empty store: nothing appended, so the receipt remains false
         self.conversation[0] = {**self.conversation[0], "content": current + block}
+        self._store_injected = True
         if not self._convo_loading:
             self._edit(0, "store injected")
 
@@ -3864,9 +3864,31 @@ class LiteTUI(App):
 
     def _request_messages(self) -> list[dict]:
         """The conversation as sent. The index and store ride in message 0, once per message 0."""
-        self._inject_index_once()
+        if getattr(self, "_store_injected", None) is not None:
+            self._inject_index_once()
         self._inject_store_once()
+        self._ensure_legacy_store_notice()
         return list(self.conversation)
+
+    def _ensure_legacy_store_notice(self, *, native_unknown: bool = False) -> None:
+        if getattr(self, "_store_notice_text", None):
+            return
+        if getattr(self, "_store_injected", None) is not None and not native_unknown:
+            return
+        from litetui.store_identity import capture
+        identity = capture(self)
+        names = (("SOUL.md", "NOW.md", "DOMAIN.md") if identity["mode"] == "owner"
+                 else ("memory.md", "soul.md", "handoff.md"))
+        files = ", ".join(str(Path(identity["folder"]) / name) for name in names)
+        text = ("Legacy store snapshot: the store may not have loaded because this saved prompt "
+                "has no injection receipt. Its bytes are preserved; no second snapshot was injected. "
+                f"Read these files explicitly: {files}. To rebuild with a fresh snapshot, "
+                "run /new, then send your next message in the new conversation.")
+        message = {"role": "user", "content": text}
+        self.conversation.append(message)
+        self.store.record_store_notice(message)
+        self._store_notice_text = text
+        self._system(text)
 
     # \u2500\u2500 Persistence (.convos/<uuid>/convo.jsonl) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     #
@@ -3906,6 +3928,7 @@ class LiteTUI(App):
         session = getattr(self, '_agent_session', None)
         initial = getattr(session, 'initial_conversation_id', None)
         self.store.stage(initial or str(uuid.uuid4()))
+        self._store_notice_text = None
         if initial:
             session.initial_conversation_id = None
         self._resumed_seat_name = None
@@ -4016,7 +4039,10 @@ class LiteTUI(App):
         object have to agree, and `conversation` is read at 48 sites in `src/`.
         """
         if not self.conversation or self.conversation[0].get("role") != "system":
-            self._append({"role": "system", "content": text})
+            self.conversation.append({"role": "system", "content": text})
+            self._store_injected = False
+            if not getattr(self, "_convo_loading", False):
+                self._snapshot("system prompt created")
             return
         current = self.conversation[0].get("content") or ""
         if text in current:
@@ -4025,20 +4051,24 @@ class LiteTUI(App):
         # from its header to the end), so late text goes in front of it.
         cut = current.find("\n\n" + STORE_HEADER) if isinstance(current, str) else -1
         if cut >= 0:
-            merged = current[:cut].rstrip() + "\n\n" + text + current[cut:]
+            merged = appsvc.extend_system_text(current[:cut], text) + current[cut:]
         else:
-            merged = current.rstrip() + "\n\n" + text if current else text
+            merged = appsvc.extend_system_text(current, text) if current else text
         self.conversation[0] = {**self.conversation[0], "content": merged}
         if not getattr(self, "_convo_loading", False):
             self._edit(0, "system prompt extended")
 
     def _snapshot(self, reason: str = "") -> None:
-        self.store.record_snapshot(self.conversation, reason)
+        self.store.record_snapshot(self.conversation, reason,
+                                   store_identity=getattr(self, "_prompt_store_identity", None),
+                                   store_injected=getattr(self, "_store_injected", None))
 
     def _edit(self, index: int, reason: str = "") -> None:
         if not (0 <= index < len(self.conversation)):
             return self._snapshot(reason)  # shouldn't happen; degrade safely
-        self.store.record_edit(index, self.conversation[index], reason)
+        self.store.record_edit(index, self.conversation[index], reason,
+                               store_identity=getattr(self, "_prompt_store_identity", None) if index == 0 else None,
+                               store_injected=getattr(self, "_store_injected", None) if index == 0 else None)
 
     def _truncate(self, keep_from: int, prepend: list[dict], reason: str = "",
                   *, measurements: dict | None = None) -> None:
@@ -4242,6 +4272,24 @@ class LiteTUI(App):
                 and meta.get('id') not in (None, path.parent.name)):
             self._system('Transcript identity disagrees with its owned conversation folder')
             return False
+        from litetui.claude_persistence import ClaudeLedger, LedgerError, path_for
+        from litetui.owner_mode import OwnerModeError
+        from litetui.store_identity import UNRECORDED, launch_message_matches, require_store_match, transcript_store_match
+        try:
+            saved_identity = transcript_store_match(
+                self, meta.get('store_identity', UNRECORDED),
+                messages=msgs, convo_id=path.parent.name)
+            if path_for(path.parent).exists():
+                segment = ClaudeLedger(path.parent).selected
+                if segment and (segment.get('system_prompt') or segment.get('session_id')):
+                    require_store_match(self, segment.get('store_identity', UNRECORDED),
+                                        prompt=segment.get('system_prompt') or '',
+                                        convo_id=path.parent.name, native=True)
+        except (OwnerModeError, LedgerError) as exc:
+            if startup:
+                raise ValueError(str(exc)) from None
+            self._system(str(exc))
+            return False
         try:
             self.store.acquire(path.parent)
         except (ValueError, OSError) as exc:
@@ -4256,6 +4304,10 @@ class LiteTUI(App):
             close_native(self, previous)
         hook_host.leave_conversation(self)
         self.conversation = msgs
+        self._prompt_store_identity = saved_identity
+        receipt = meta.get("store_injected")
+        self._store_injected = receipt if isinstance(receipt, bool) else None
+        self._store_notice_text = meta.get("store_notice")
         # The staged conversation is abandoned WITHOUT being written — that is
         # the whole point of staging. Clearing the flag before reassigning the
         # paths also stops a later write from materialising the RESUMED store as
@@ -4304,21 +4356,26 @@ class LiteTUI(App):
         # deliver to. Rewrite that one sentence; leave the rest alone.
         self._sync_fleet_identity()
         from litetui.textfmt import refresh_store_address
-        if self.conversation and self.conversation[0].get('role') == 'system':
-            current = self.conversation[0].get('content')
+        # Launch text is its own message; refresh the following host address,
+        # never graft a new address into the frozen launch message.
+        host_index = (1 if len(msgs) > 1 and msgs[1].get('role') == 'system'
+                      and launch_message_matches(self, msgs[0].get('content', '')) else 0)
+        if self.conversation and self.conversation[host_index].get('role') == 'system':
+            current = self.conversation[host_index].get('content')
             if isinstance(current, str):
                 owner_dir = getattr(self, '_owner_memory_dir', None)
                 refreshed = (refresh_store_address(current, self.convo_id, owner_dir, owner=True)
                              if owner_dir is not None
                              else refresh_store_address(current, self.convo_id, self._agent_session.memory_root))
                 if refreshed != current:
-                    self.conversation[0] = {**self.conversation[0], 'content': refreshed}
-                    self._edit(0, 'owned store address refreshed')
+                    self.conversation[host_index] = {**self.conversation[host_index], 'content': refreshed}
+                    self._edit(host_index, 'owned store address refreshed')
         memory_root = (self._agent_session.memory_root
                        if getattr(self, '_agent_session', None) is not None else self.convo_dir)
         (memory_root / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
         self._render_resumed(path)
+        self._ensure_legacy_store_notice()
         self._native_history_worker = None
         self._startup_history_path = path
         self._resume_connection_error = "Resumed provider is connecting; retry when connected."
@@ -5982,7 +6039,19 @@ class LiteTUI(App):
             if (getattr(self, '_agent_session', None) is not None
                     and not await self._register_owned_startup()):
                 return
-            if self._cli_system_prompt:
+            if self._cli_convo_id:
+                from litetui.store_identity import launch_message_matches
+                launch_pair = (len(self.conversation) > 1
+                               and self.conversation[0].get("role") == "system"
+                               and self.conversation[1].get("role") == "system")
+                if self._cli_system_prompt or launch_pair:
+                    if not launch_pair or not launch_message_matches(self, self.conversation[0].get("content", "")):
+                        self._cli_launch_error = ("Launch text mismatch: resume with the identical --system-prompt, "
+                                                  "--system-prompt-file and/or --cognitive-file text, or start "
+                                                  "a new conversation (omit --convo). Nothing was sent.")
+                        self._system(self._cli_launch_error)
+                        return
+            elif self._cli_system_prompt:
                 self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
             if self._first_prompt:
                 await self._ensure_chat_ready(timeout=15.0)
@@ -6647,8 +6716,8 @@ class LiteTUI(App):
 
     def _fleet_identity_sentence(self) -> str:
         return (
-            f"You are registered in the LiteHarness fleet as "
-            f"{self.seat.name} (your inbox/sender id (use it for any from=/--from): "
+            appsvc.FLEET_OPENING
+            + f"{self.seat.name} (your inbox/sender id (use it for any from=/--from): "
             f"{self.seat.agent_id}, tier {self.seat.tier}). "
         )
 
@@ -10496,6 +10565,7 @@ class LiteTUI(App):
         self.conversation = rebuilt
         if system:
             # Replay must equal memory now, not after the next request.
+            self._store_injected = False
             self._edit(0, "store snapshot dropped at compaction")
         # AFTER the swap, so the counts describe what the conversation now IS.
         self._emit_compaction("compacted",

@@ -279,9 +279,16 @@ def test_the_cli_refuses_a_lock_path_it_cannot_take(tmp_path, owner_dir, cli_env
     assert not (tmp_path / ".agents").exists()
 
 
-def test_the_takeover_is_documented_as_narrowing_the_race_not_closing_it():
-    doc = OwnerLock.__doc__
-    assert "not atomic" in doc and "cannot delete" not in doc
+def test_metadata_guard_is_persistent_but_released_after_a_transaction(owner_dir):
+    from litetui.agent_ownership import _KernelLease
+    lock = OwnerLock(owner_dir)
+    lock.acquire("Alpha")
+    guard = owner_dir / ".owner.guard"
+    assert guard.is_file()
+    with _KernelLease(guard):
+        pass
+    lock.release()
+    assert guard.is_file() and not lock.path.exists()
 
 
 def test_an_unreadable_lock_file_is_a_refusal(owner_dir, monkeypatch):
@@ -292,3 +299,56 @@ def test_an_unreadable_lock_file_is_a_refusal(owner_dir, monkeypatch):
     monkeypatch.setattr(OwnerLock, "_read", unreadable)
     with pytest.raises(OwnerModeError, match="cannot read the owner lock"):
         OwnerLock(owner_dir).acquire("agent-1")
+
+
+def test_stale_takeover_serializes_the_compare_unlink_window(owner_dir, monkeypatch):
+    from pathlib import Path
+    from threading import Event, Thread, current_thread
+
+    _write_lock(owner_dir, _dead_pid(), "old-holder")
+    checked = Event()
+    second_finished = Event()
+    results = {}
+    locks = {name: OwnerLock(owner_dir) for name in ("Alpha", "Beta")}
+    original_read = Path.read_text
+    reads = 0
+
+    def interleaved_read(path, *args, **kwargs):
+        nonlocal reads
+        raw = original_read(path, *args, **kwargs)
+        if path == owner_dir / LOCK_NAME and current_thread().name == "Alpha":
+            reads += 1
+            if reads == 2:  # stale comparison read, before its unlink
+                checked.set()
+                second_finished.wait(0.3)
+        return raw
+
+    monkeypatch.setattr(Path, "read_text", interleaved_read)
+
+    def take(name):
+        try:
+            locks[name].acquire(name)
+            results[name] = None
+        except OwnerModeError as exc:
+            results[name] = str(exc)
+        finally:
+            if name == "Beta":
+                second_finished.set()
+
+    first = Thread(target=take, args=("Alpha",), name="Alpha")
+    second = Thread(target=take, args=("Beta",), name="Beta")
+    first.start()
+    assert checked.wait(2), "first taker never reached stale comparison"
+    second.start()
+    first.join(5)
+    second.join(5)
+    try:
+        assert not first.is_alive() and not second.is_alive()
+        winners = [name for name, error in results.items() if error is None]
+        assert len(winners) == 1, f"both stale takers acquired: {results}"
+        loser = next(name for name in results if name not in winners)
+        assert winners[0] in results[loser]
+        assert json.loads((owner_dir / LOCK_NAME).read_text())["agent_id"] == winners[0]
+    finally:
+        for lock in locks.values():
+            lock.release()
