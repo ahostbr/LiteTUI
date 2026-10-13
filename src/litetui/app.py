@@ -6036,7 +6036,19 @@ class LiteTUI(App):
             if (getattr(self, '_agent_session', None) is not None
                     and not await self._register_owned_startup()):
                 return
-            if self._cli_system_prompt:
+            if self._cli_convo_id:
+                from litetui.store_identity import launch_message_matches
+                launch_pair = (len(self.conversation) > 1
+                               and self.conversation[0].get("role") == "system"
+                               and self.conversation[1].get("role") == "system")
+                if self._cli_system_prompt or launch_pair:
+                    if not launch_pair or not launch_message_matches(self, self.conversation[0].get("content", "")):
+                        self._cli_launch_error = ("Launch text mismatch: resume with the identical --system-prompt, "
+                                                  "--system-prompt-file and/or --cognitive-file text, or start "
+                                                  "a new conversation (omit --convo). Nothing was sent.")
+                        self._system(self._cli_launch_error)
+                        return
+            elif self._cli_system_prompt:
                 self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
             if self._first_prompt:
                 await self._ensure_chat_ready(timeout=15.0)

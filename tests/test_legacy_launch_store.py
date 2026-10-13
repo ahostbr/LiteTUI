@@ -15,7 +15,7 @@ build = _build
 LAUNCH = "Use short answers"
 
 
-async def apply_launch(app, text):
+async def apply_launch(app, text, *, accepted=True):
     async def registered():
         return True  # mock registration transport; real owned execution guard still runs
 
@@ -29,10 +29,10 @@ async def apply_launch(app, text):
     app._cli_thinking_level = None
     app._cli_system_prompt = text
     await LiteTUI._apply_cli_args.__wrapped__(app)
-    assert not app._cli_launch_error
+    assert bool(app._cli_launch_error) is (not accepted)
 
 
-async def legacy_fixture(tmp_path, monkeypatch, build, owner, backend, suffix, launch=LAUNCH):
+async def legacy_fixture(tmp_path, monkeypatch, build, owner, backend, suffix, launch=LAUNCH, *, legacy=True):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
@@ -62,6 +62,8 @@ async def legacy_fixture(tmp_path, monkeypatch, build, owner, backend, suffix, l
         saved = [dict(message) for message in first.conversation]
     first.store.release()
     first._agent_session.release()
+    if not legacy:
+        return memory, path, saved
     records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     for record in records:
         record.pop("store_identity", None)
@@ -151,3 +153,49 @@ async def test_legacy_launch_never_searches_past_the_two_fixed_slots(tmp_path, m
         await pilot.pause()
         assert not resumed._resume(path)
         assert len(said) == 1 and "Store mismatch" in said[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True], ids=["recorded", "legacy"])
+@pytest.mark.parametrize("backend,suffix", [("lmstudio", "none"), ("lmstudio", "index"),
+                                             ("lmstudio", "store"), ("lmstudio", "both"),
+                                             ("claude", "none")])
+async def test_cli_resume_twice_keeps_message_count_and_receipt(tmp_path, monkeypatch, build, legacy, backend, suffix):
+    memory, path, saved = await legacy_fixture(tmp_path, monkeypatch, build, True, backend, suffix, legacy=legacy)
+    resumed = build(memory, backend)
+    resumed._cli_system_prompt = LAUNCH
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+        resumed._cli_convo_id = path.parent.name
+        for _ in range(2):
+            assert resumed._resume(path, startup=True)
+            before = [dict(message) for message in resumed.conversation]
+            receipt = resumed._store_injected
+            raw = path.read_bytes()
+            await apply_launch(resumed, LAUNCH)
+            assert resumed.conversation == before, "CLI resume stacked another launch message"
+            assert resumed._store_injected is receipt
+            assert path.read_bytes() == raw
+            assert resumed.conversation[:2] == saved[:2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", [None, "Changed launch", LAUNCH + " extra"])
+async def test_cli_recorded_resume_refuses_different_launch_without_inserting(tmp_path, monkeypatch, build, replacement):
+    memory, path, _ = await legacy_fixture(tmp_path, monkeypatch, build, False, "lmstudio", "both", legacy=False)
+    resumed = build(memory)
+    resumed._cli_system_prompt = LAUNCH
+    said = []
+    resumed._system = lambda text, *a, **k: said.append(str(text))
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+        assert resumed._resume(path, startup=True)
+        resumed._cli_convo_id = path.parent.name
+        before = [dict(message) for message in resumed.conversation]
+        receipt = resumed._store_injected
+        raw = path.read_bytes()
+        said.clear()
+        await apply_launch(resumed, replacement, accepted=False)
+        assert resumed.conversation == before and resumed._store_injected is receipt
+        assert path.read_bytes() == raw
+        assert len(said) == 1 and "Launch text mismatch" in said[0] and "omit --convo" in said[0]
