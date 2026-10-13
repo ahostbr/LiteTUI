@@ -34,18 +34,16 @@ figure rather than any number computed here.
 
 from __future__ import annotations
 
-import pytest
+from test_compaction_ui import (
+    _app as _compaction_app,
+)
 from test_compaction_ui import (
     _Chunk,
     _run,
     _scripted_create,
     _seed,
     _settle,
-    off_local_lm_studio,
 )
-
-from litetui import app as app_mod
-from litetui.settings import Settings
 
 #: 91.5% of the window — inside the band the footer paints bold red.
 FULL = 30_000
@@ -58,14 +56,7 @@ def _app(make_app, **overrides):
     `ctx_loaded` is not decoration: `ctx_max` is the model's CEILING until it
     loads, and every consumer of this reactive refuses to divide by a ceiling.
     """
-    a = make_app()
-    base = dict(clear_screen_after_compact=False, compact_keep_recent=2,
-                wake_after_compact=False)
-    base.update(overrides)
-    a.settings = Settings(**base)
-    a._connect = lambda: None
-    a._fetch_ctx_window = lambda: None
-    off_local_lm_studio(a)   # WS3 b5f1f40: see test_compaction_ui.off_local_lm_studio
+    a = _compaction_app(make_app, **overrides)
     a._apply_context_length = lambda: None
     a.emitted = []
     a._rpc_emit = a.emitted.append
