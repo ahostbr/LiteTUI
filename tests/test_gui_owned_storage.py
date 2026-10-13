@@ -52,7 +52,8 @@ def test_gui_owned_list_read_and_memory_use_agent_not_archive(owned, monkeypatch
     assert rows[0]['agent_name'] == 'QuietHelm'
     def forbidden(*args, **kwargs):
         pytest.fail('readonly owned browsing must never acquire legacy session lease')
-    monkeypatch.setattr(gui_rpc, 'Lease', forbidden)
+    from litetui import shared_state
+    monkeypatch.setattr(shared_state.Lease, 'acquire', forbidden)
     read = gui_rpc._conversations(app, 'read', {'session_id': CID})
     assert read['messages'][0]['content'] == 'owned bytes'
     assert not read['read_only']

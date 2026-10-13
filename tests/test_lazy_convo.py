@@ -30,13 +30,29 @@ def _app(make_app):
     return a
 
 
+@pytest.fixture
+def owned_home(make_app):
+    app = make_app()
+    home = app._agent_session.memory_root
+    app.store.release()
+    app._agent_session.release()
+    return home
+
+
+def _directories(root):
+    return {path for path in root.iterdir() if path.is_dir()}
+
+
 @pytest.mark.asyncio
-async def test_booting_creates_nothing(make_app):
+async def test_booting_creates_nothing(make_app, owned_home):
+    before = _directories(owned_home / "conversations")
     a = _app(make_app)
+    assert a._agent_session.memory_root == owned_home
     d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
-        assert _count(d) == 0, "booting the app wrote a conversation to disk"
+        assert _directories(d) == before, "booting the app wrote a conversation to disk"
+        assert not list(d.rglob("convo.jsonl")), "the step created a transcript"
         # …but it is STAGED: the footer and /clear need an id to name.
         assert a.convo_id
         assert a.convo_path is not None
@@ -44,9 +60,11 @@ async def test_booting_creates_nothing(make_app):
 
 
 @pytest.mark.asyncio
-async def test_commands_before_the_first_message_create_nothing(make_app):
+async def test_commands_before_the_first_message_create_nothing(make_app, owned_home):
     """The reported case: launch, look around, resume. Nothing should be born."""
+    before = _directories(owned_home / "conversations")
     a = _app(make_app)
+    assert a._agent_session.memory_root == owned_home
     d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
@@ -58,7 +76,8 @@ async def test_commands_before_the_first_message_create_nothing(make_app):
         await pilot.pause()
         a._handle_command("/clear-screen")
         await pilot.pause()
-        assert _count(d) == 0, "a command created a conversation"
+        assert _directories(d) == before, "a command created a conversation"
+        assert not list(d.rglob("convo.jsonl")), "the step created a transcript"
 
 
 @pytest.mark.asyncio
@@ -144,12 +163,15 @@ async def test_resume_adopts_without_minting_a_throwaway(make_app):
 
 
 @pytest.mark.asyncio
-async def test_reading_the_store_never_creates_it(make_app):
+async def test_reading_the_store_never_creates_it(make_app, owned_home):
     """Reads must not have side effects — that is how this bug worked."""
+    before = _directories(owned_home / "conversations")
     a = _app(make_app)
+    assert a._agent_session.memory_root == owned_home
     d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
         a._read_store_file("memory.md", 1000)
         a._read_store_file("soul.md", 1000)
-        assert _count(d) == 0, "reading the store created it"
+        assert _directories(d) == before, "reading the store created it"
+        assert not list(d.rglob("convo.jsonl")), "the step created a transcript"

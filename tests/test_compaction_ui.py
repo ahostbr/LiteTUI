@@ -101,14 +101,19 @@ def off_local_lm_studio(a):
 
 
 def _app(make_app=owned_app, **overrides):
-    a = make_app()
+    a = make_app(initial_backend="custom", initial_model="fixture")
+    a.model_id = a._agent_session.authority.model
+    a.seat.registered = True  # external registration acknowledged
     base = dict(clear_screen_after_compact=False, compact_keep_recent=2,
                 wake_after_compact=False)
     base.update(overrides)
-    a.settings = Settings(**base)
+    for name, value in base.items():
+        setattr(a.settings, name, value)
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
-    return off_local_lm_studio(a)
+    off_local_lm_studio(a)
+    a.backend._get = lambda path: {"data": [{"id": a.model_id}]}
+    return a
 
 
 def _seed(a):
@@ -375,7 +380,9 @@ def test_a_local_lm_studio_compaction_is_refused_and_changes_nothing(make_app):
     """Explicit WS3 admission still refuses LM Studio JIT before any request."""
     async def body():
         create, calls = _scripted_create([[_Chunk(content="s")]])
-        a = make_app()
+        a = make_app(initial_model="fixture")
+        a.model_id = a._agent_session.authority.model
+        a.seat.registered = True  # external registration acknowledged
         a.settings = Settings(clear_screen_after_compact=False, compact_keep_recent=2,
                               wake_after_compact=False)
         a._connect = lambda: None
@@ -384,6 +391,7 @@ def test_a_local_lm_studio_compaction_is_refused_and_changes_nothing(make_app):
         a._system = lambda msg, *x, **k: said.append(str(msg))
         from litetui.llm_backend import LMStudioBackend
         assert isinstance(a.backend, LMStudioBackend), "premise: the app boots on LM Studio"
+        a.backend._native_models = lambda: [{"id": a.model_id}]
         a.backend.resource_admission = object()  # explicit unfinished WS3 admission
         async with a.run_test(size=(120, 40)) as pilot:
             _seed(a)

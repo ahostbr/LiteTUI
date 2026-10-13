@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import llm_backend, model_transport
 from litetui.claude_backend import ClaudeBackend, settle_close, track_close
@@ -199,11 +200,10 @@ async def test_settle_deadline_retains_cancellation_resistant_cleanup():
 
 def _exit_app(tmp_path, monkeypatch):
     """A real LiteTUI, wired the way the backend-switch suite wires one."""
-    from litetui import app as app_mod
     from litetui import paths
 
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path)
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app.settings = Settings()
     app.connect = lambda: None
     app._connect = lambda: None
@@ -349,10 +349,11 @@ def test_backend_rows_is_the_one_source_for_the_picker_and_the_sidecar(monkeypat
 def _identity_app(monkeypatch, agent_session=None):
     """A real LiteTUI (conftest isolates its data) with a store and a registered seat."""
     from litetui import app as app_mod
-    app = app_mod.LiteTUI(agent_session=agent_session)
+    app = (owned_app() if agent_session is None
+           else app_mod.LiteTUI(agent_session=agent_session))
     app._materialise_convo()
-    (app.convo_dir / "soul.md").write_text("SOUL-MARKER-4471", encoding="utf-8")
-    (app.convo_dir / "handoff.md").write_text("HANDOFF-MARKER-9902", encoding="utf-8")
+    (app._agent_session.memory_root / "soul.md").write_text("SOUL-MARKER-4471", encoding="utf-8")
+    (app._agent_session.memory_root / "handoff.md").write_text("HANDOFF-MARKER-9902", encoding="utf-8")
     real = app._all_tools
     monkeypatch.setattr(app, "_all_tools", lambda: [*real(), {"type": "function", "function": {"name": "harness"}}])
     return app
@@ -376,7 +377,7 @@ def test_claude_is_told_it_is_litetui_not_claude_code(monkeypatch):
     assert isinstance(prompt, str) and first_line[:60] in prompt
     assert "SOUL-MARKER-4471" in prompt and "HANDOFF-MARKER-9902" in prompt
     assert app.seat.agent_id in prompt and COMPACT_MARKER in prompt
-    assert str(app.convo_dir).replace("\\", "/") in prompt, "the store folder is named"
+    assert str(app._agent_session.memory_root).replace("\\", "/") in prompt, "the store folder is named"
     assert "mcp__litetui__" in prompt and "Git Bash" in prompt, "the tool section is Claude's"
     assert "call `subagent`" not in prompt, "LiteTUI's own tool section is swapped out"
     assert "You are Claude Code" not in prompt
@@ -389,7 +390,7 @@ def test_the_prompt_is_fixed_for_the_life_of_the_segment(monkeypatch):
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
     first = system_prompt_for(app, segment)
-    (app.convo_dir / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
+    (app._agent_session.memory_root / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
     again = system_prompt_for(app, ledger.segment(segment["id"]))
     assert again == first, "a resume carries the same prefix (cache)"
     fresh = ledger.select_segment("ws", new=True)
@@ -577,10 +578,11 @@ async def test_resume_refreshes_only_the_recorded_fleet_identity(monkeypatch, id
     modern = stale.replace("(id ", "(your inbox/sender id (use it for any from=/--from): ")
     old = {"missing": "", "stale": stale, "stale-modern": modern,
            "duplicate": app._fleet_identity_sentence() + stale}[identities]
-    recorded = ledger.fix_system_prompt(segment["id"], prefix + old + suffix)
+    recorded = ledger.fix_system_prompt(segment["id"], prefix + old + suffix,
+                                        **_fixture_prompt_facts(app, True))
     before = ledger.segment(segment["id"])
     inventory = []
-    (app.convo_dir / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
+    (app._agent_session.memory_root / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
 
     async def register_late():
         await asyncio.sleep(0.1)
@@ -678,7 +680,8 @@ async def test_resume_does_not_add_an_identity_when_registration_fails(monkeypat
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
     ledger.bind_session(segment["id"], "native-resumed")
-    recorded = ledger.fix_system_prompt(segment["id"], "SAVED USER PROMPT AND TOOL TEXT")
+    recorded = ledger.fix_system_prompt(segment["id"], "SAVED USER PROMPT AND TOOL TEXT",
+                                        **_fixture_prompt_facts(app, True))
     assert await prompt_for_new_session(app, segment) == recorded
     assert ledger.segment(segment["id"])["system_prompt"] == recorded
 
@@ -690,8 +693,20 @@ def test_a_segment_already_bound_under_the_preset_keeps_it(monkeypatch):
     app.seat.registered = True
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
+    frozen = system_prompt_for(app, segment)
     ledger.bind_session(segment["id"], "native-legacy")
-    assert system_prompt_for(app, ledger.segment(segment["id"])) is None
+    assert system_prompt_for(app, ledger.segment(segment["id"])) == frozen
+    assert ledger.segment(segment["id"])["session_id"] == "native-legacy"
+
+
+def test_a_bound_segment_without_a_recorded_prompt_is_refused(monkeypatch):
+    from litetui.claude_turn import ledger_for
+
+    app = _identity_app(monkeypatch)
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    ledger.bind_session(segment["id"], "native-unrecorded")
+    _assert_unrecorded_fixture_refused(app, ledger.segment(segment["id"]))
 
 
 def test_open_session_sends_the_prompt_as_a_plain_string_with_auto_memory_off(monkeypatch):
@@ -752,10 +767,10 @@ async def test_a_resumed_session_waits_for_the_seat_too(monkeypatch, bound):
     app._seat_started = False
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
+    ledger.fix_system_prompt(segment["id"], "PROMPT FIXED BEFORE THE SEAT REGISTERED",
+                             **_fixture_prompt_facts(app, True))
     if bound == "session_id":
         ledger.bind_session(segment["id"], "native-session-1")
-    else:
-        ledger.fix_system_prompt(segment["id"], "PROMPT FIXED BEFORE THE SEAT REGISTERED")
     async def register_late():
         await asyncio.sleep(0.3)
         app._seat_started = True

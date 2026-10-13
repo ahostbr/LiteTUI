@@ -43,9 +43,9 @@ if str(SRC) not in sys.path:
 # name "LiteTUI" from the user's live app and left the roster naming a test
 # process that had already exited.
 #
-# Set BEFORE any test imports app/harness, and never overwritten if the
-# caller already chose a value.
-os.environ.setdefault("LITETUI_NO_HARNESS", "1")
+# Disable live transport before test imports, including an inherited empty value.
+# Transport tests may override this only after installing their own substitutes.
+os.environ["LITETUI_NO_HARNESS"] = "1"
 
 
 def _checkout_root_listing(root):
