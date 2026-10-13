@@ -261,7 +261,7 @@ def _conversations(app, action, cmd):
         if not isinstance(message, str) or not message.strip():
             raise ValueError("message must be nonempty text")
         app.conversation = app.conversation[:index]
-        app.store.record_snapshot(app.conversation, "GUI retry from user message")
+        app._snapshot("GUI retry from user message")
         app._submit_text(message, alt_chord=False, source="rpc")
         return {"session_id": session_id, "accepted": True}
     elif action == "compact":
