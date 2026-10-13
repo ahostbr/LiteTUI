@@ -91,16 +91,13 @@ def launch_message_matches(app, content: str) -> bool:
     """
     from litetui.appsvc import (
         FLEET_OPENING,
-        INDEX_HEADER,
         INDEX_OPENING,
-        STORE_HEADER,
         STORE_OPENING,
         extend_system_text,
     )
 
     launch = getattr(app, "_cli_system_prompt", None)
-    if (not isinstance(launch, str) or not launch or not isinstance(content, str)
-            or STORE_HEADER in launch or INDEX_HEADER in launch):
+    if not isinstance(launch, str) or not launch or not isinstance(content, str):
         return False
     if content.startswith(extend_system_text(launch, FLEET_OPENING)):
         return True

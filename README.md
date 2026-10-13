@@ -561,8 +561,8 @@ shared fleet-registration opening. The same joining function writes and recogniz
 that prefix; extra intervening text does not qualify. Only that beginning is verified.
 Everything after the first suffix opening is
 opaque, never parsed for identity, later section order, or a cut. Missing/changed
-launch text, a launch text containing an index/store marker, an intervening prefix,
-or an incomplete host message refuses; no later messages are searched. Native
+launch text, an intervening prefix, or an incomplete host message refuses;
+markers inside the supplied launch text do not disqualify it. No later messages are searched. Native
 preset-only legacy sessions with no recorded prompt remain unverifiable and refuse
 with the same actionable new-conversation notice.
 

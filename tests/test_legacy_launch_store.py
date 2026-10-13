@@ -118,18 +118,18 @@ async def test_legacy_launch_must_match_supplied_text_exactly(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True], ids=["home", "owner"])
 @pytest.mark.parametrize("marker", [appsvc.STORE_HEADER, appsvc.INDEX_HEADER])
-async def test_legacy_launch_marker_is_ambiguous_even_with_same_text(tmp_path, monkeypatch, build, marker):
+async def test_legacy_launch_marker_with_same_text_resumes_unchanged(tmp_path, monkeypatch, build, owner, marker):
     text = LAUNCH + "\n" + marker
-    memory, path, _ = await legacy_fixture(tmp_path, monkeypatch, build, False, "lmstudio", "none", text)
+    memory, path, saved = await legacy_fixture(tmp_path, monkeypatch, build, owner, "lmstudio", "none", text)
     resumed = build(memory)
     resumed._cli_system_prompt = text
-    said = []
-    resumed._system = lambda message, *a, **k: said.append(str(message))
     async with resumed.run_test() as pilot:
         await pilot.pause()
-        assert not resumed._resume(path)
-        assert len(said) == 1 and "Store mismatch" in said[0]
+        assert resumed._resume(path, startup=True)
+        assert resumed.conversation[:2] == saved[:2]
+        assert ConversationRepository.read(path)[1][:2] == saved[:2]
 
 
 @pytest.mark.asyncio
