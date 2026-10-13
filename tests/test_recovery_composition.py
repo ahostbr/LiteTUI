@@ -334,7 +334,7 @@ async def test_summary_new_segment_reopen_refreshes_one_identity_preserving_pros
             ledger_for(app).bind_session(fresh['id'], native.session_id)
             prompt_file = options[-1]['system_prompt']
             assert prompt_file['type'] == 'file'
-            assert Path(prompt_file['path']).read_text(encoding='utf-8') == expected
+            assert Path(prompt_file['path']).read_bytes() == expected.encode('utf-8')
             assert expected.count(app._fleet_identity_sentence()) == 1
             assert ClaudeLedger(app.convo_dir).selected['seed'] == summary
             assert ClaudeLedger(app.convo_dir).selected['system_prompt'] == expected
