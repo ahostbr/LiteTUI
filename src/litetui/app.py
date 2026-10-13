@@ -4242,6 +4242,25 @@ class LiteTUI(App):
                 and meta.get('id') not in (None, path.parent.name)):
             self._system('Transcript identity disagrees with its owned conversation folder')
             return False
+        from litetui.claude_persistence import ClaudeLedger, LedgerError, path_for
+        from litetui.owner_mode import OwnerModeError
+        from litetui.store_identity import require_store_match
+        owner_dir = getattr(self, '_owner_memory_dir', None)
+        session = getattr(self, '_agent_session', None)
+        name = session.authority.name if session is not None else (meta.get('agent_name') or 'LiteTUI')
+        identity = {"agent_name": name, "convo_id": path.parent.name}
+        try:
+            prompt = msgs[0].get('content', '') if msgs[0].get('role') == 'system' else ''
+            require_store_match(prompt if isinstance(prompt, str) else '', owner_dir, **identity)
+            if path_for(path.parent).exists():
+                segment = ClaudeLedger(path.parent).selected
+                if segment and (segment.get('system_prompt') or segment.get('session_id')):
+                    require_store_match(segment.get('system_prompt') or '', owner_dir, **identity)
+        except (OwnerModeError, LedgerError) as exc:
+            if startup:
+                raise ValueError(str(exc)) from None
+            self._system(str(exc))
+            return False
         try:
             self.store.acquire(path.parent)
         except (ValueError, OSError) as exc:

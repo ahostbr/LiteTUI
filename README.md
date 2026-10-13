@@ -537,6 +537,13 @@ home of that name for this launch. Both flags are per launch only; nothing is
 saved in the agent's `settings.json`, and a busy `NAME`, or a spawned seat named
 differently, is refused with the flag to change rather than opening another home.
 
+A resume must use the saved conversation's store: supply the same `--owner NAME`
+and `--memory DIR` alongside `--convo ID`. Switching an ordinary conversation to owner
+mode, dropping owner flags, or changing its owner folder is refused before the
+conversation is adopted. The refusal gives the matching launch command. Ambiguous
+saved addresses require a new conversation without `--convo`; stored snapshots
+and recorded Claude segment prompts are never rewritten to migrate stores.
+
 - **Injected in place of the home's own files.** `SOUL.md`, `NOW.md` and
   `DOMAIN.md`, in that order, replace `memory.md`, `soul.md` and `handoff.md` in
   the snapshot every backend starts a conversation (or a Claude segment) with,

@@ -380,11 +380,11 @@ def test_help_is_unchanged_without_owner_mode(make_app, monkeypatch):
 # -- resume in owner mode: the address stanza follows the owner folder ---------------------
 
 @pytest.mark.asyncio
-async def test_resume_in_owner_mode_points_the_stanza_at_the_owner_folder(make_app, owner_dir):
+async def test_same_owner_resume_keeps_the_stanza_at_the_owner_folder(make_app, owner_dir):
     import json
     app = make_app()
     home = app._agent_session.memory_root
-    saved = "BASE\n" + memory_prompt("old-id", home) + "\nuser prose\n"
+    saved = "BASE\n" + memory_prompt("old-id", owner_dir, owner=True) + "\nuser prose\n"
     path = app.convo_dir / "convo.jsonl"
     path.write_text(json.dumps({"type": "meta", "v": 3, "id": app.convo_dir.name}) + "\n"
                     + json.dumps({"type": "snapshot", "messages": [{"role": "system", "content": saved}]}) + "\n",

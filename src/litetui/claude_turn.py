@@ -101,6 +101,12 @@ def system_prompt_for(app, segment):
     from litetui.textfmt import load_prompt
 
     segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
+    if segment.get("system_prompt") or segment.get("session_id"):
+        from litetui.store_identity import require_store_match
+        session = getattr(app, "_agent_session", None)
+        name = session.authority.name if session is not None else "LiteTUI"
+        require_store_match(segment.get("system_prompt") or "", getattr(app, "_owner_memory_dir", None),
+                            agent_name=name, convo_id=app.convo_id)
     if segment.get("system_prompt"):
         if getattr(getattr(app, "seat", None), "registered", False):
             return ledger_for(app).refresh_system_prompt_identity(
