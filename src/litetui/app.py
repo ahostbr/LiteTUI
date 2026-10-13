@@ -4271,12 +4271,11 @@ class LiteTUI(App):
             return False
         from litetui.claude_persistence import ClaudeLedger, LedgerError, path_for
         from litetui.owner_mode import OwnerModeError
-        from litetui.store_identity import UNRECORDED, require_store_match
+        from litetui.store_identity import UNRECORDED, launch_message_matches, require_store_match, transcript_store_match
         try:
-            prompt = msgs[0].get('content', '') if msgs[0].get('role') == 'system' else ''
-            saved_identity = require_store_match(
+            saved_identity = transcript_store_match(
                 self, meta.get('store_identity', UNRECORDED),
-                prompt=prompt if isinstance(prompt, str) else '', convo_id=path.parent.name)
+                messages=msgs, convo_id=path.parent.name)
             if path_for(path.parent).exists():
                 segment = ClaudeLedger(path.parent).selected
                 if segment and (segment.get('system_prompt') or segment.get('session_id')):
@@ -4354,16 +4353,20 @@ class LiteTUI(App):
         # deliver to. Rewrite that one sentence; leave the rest alone.
         self._sync_fleet_identity()
         from litetui.textfmt import refresh_store_address
-        if self.conversation and self.conversation[0].get('role') == 'system':
-            current = self.conversation[0].get('content')
+        # Launch text is its own message; refresh the following host address,
+        # never graft a new address into the frozen launch message.
+        host_index = (1 if len(msgs) > 1 and msgs[1].get('role') == 'system'
+                      and launch_message_matches(self, msgs[0].get('content', '')) else 0)
+        if self.conversation and self.conversation[host_index].get('role') == 'system':
+            current = self.conversation[host_index].get('content')
             if isinstance(current, str):
                 owner_dir = getattr(self, '_owner_memory_dir', None)
                 refreshed = (refresh_store_address(current, self.convo_id, owner_dir, owner=True)
                              if owner_dir is not None
                              else refresh_store_address(current, self.convo_id, self._agent_session.memory_root))
                 if refreshed != current:
-                    self.conversation[0] = {**self.conversation[0], 'content': refreshed}
-                    self._edit(0, 'owned store address refreshed')
+                    self.conversation[host_index] = {**self.conversation[host_index], 'content': refreshed}
+                    self._edit(host_index, 'owned store address refreshed')
         memory_root = (self._agent_session.memory_root
                        if getattr(self, '_agent_session', None) is not None else self.convo_dir)
         (memory_root / paths.MEMORIES_DIR).mkdir(parents=True, exist_ok=True)

@@ -83,6 +83,37 @@ def legacy_identity(app, prompt: str, *, native: bool = False) -> dict:
     raise ValueError("legacy prompt has no verifiable host store slot")
 
 
+def launch_message_matches(app, content: str) -> bool:
+    """Recognize only the supplied launch and its first generated suffix opening.
+
+    This proves only that the message begins as the host composed it. Everything
+    after that opening is opaque, never parsed for identity, section order or cuts.
+    """
+    from litetui.appsvc import INDEX_HEADER, INDEX_OPENING, STORE_HEADER, STORE_OPENING
+
+    launch = getattr(app, "_cli_system_prompt", None)
+    if (not isinstance(launch, str) or not launch or not isinstance(content, str)
+            or STORE_HEADER in launch or INDEX_HEADER in launch or not content.startswith(launch)):
+        return False
+    suffix = content[len(launch):]
+    if not suffix:
+        return True
+    index_opening = re.escape(INDEX_OPENING).replace(re.escape("{where}"), r"[^\r\n]+")
+    if re.match(index_opening, suffix):
+        return True
+    names = (("SOUL.md", "NOW.md", "DOMAIN.md") if getattr(app, "_owner_memory_dir", None) is not None
+             else ("memory.md", "soul.md", "handoff.md"))
+    return any(suffix.startswith(STORE_OPENING + f"### {name} (current contents)\n\n") for name in names)
+
+
+def transcript_store_match(app, recorded=UNRECORDED, *, messages: list[dict], convo_id: str) -> dict:
+    """Read either host slot zero or the exact shipped launch+host pair, never later."""
+    prompt = messages[0].get("content", "") if messages and messages[0].get("role") == "system" else ""
+    if recorded is UNRECORDED and len(messages) > 1 and messages[1].get("role") == "system":
+        prompt = messages[1].get("content", "") if launch_message_matches(app, prompt) else ""
+    return require_store_match(app, recorded, prompt=prompt if isinstance(prompt, str) else "", convo_id=convo_id)
+
+
 def require_store_match(app, recorded=UNRECORDED, *, prompt: str, convo_id: str, native: bool = False) -> dict:
     """Compare data, using the bounded legacy reader only when data is absent."""
     expected = capture(app)
