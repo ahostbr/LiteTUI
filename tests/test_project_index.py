@@ -29,14 +29,15 @@ def make_repo(root: Path, text: str | None = INDEX_TEXT) -> Path:
     return root
 
 
-def make_app(monkeypatch, cwd: Path, with_store: bool = True):
+def indexed_app(make_app, monkeypatch, cwd: Path, with_store: bool = True):
     monkeypatch.chdir(cwd)
-    app = app_mod.LiteTUI()
+    app = make_app()
     app._materialise_convo()
-    for name in ("memory.md", "soul.md", "handoff.md"):  # a fresh convo seeds templates: blank them
-        (app.convo_dir / name).write_text("", encoding="utf-8")
+    root = app._agent_session.memory_root
+    for name in ("memory.md", "soul.md", "handoff.md"):
+        (root / name).write_text("", encoding="utf-8")
     if with_store:
-        (app.convo_dir / "soul.md").write_text("SOUL-MARKER-1188\n", encoding="utf-8")
+        (root / "soul.md").write_text("SOUL-MARKER-1188\n", encoding="utf-8")
     return app
 
 
@@ -67,9 +68,9 @@ def test_no_git_root_means_only_the_cwd_itself_is_consulted(tmp_path):
 # ── the plain (LiteTUI-native) path ────────────────────────────────────
 
 
-def test_index_lands_in_message_zero_once_and_is_persisted(tmp_path, monkeypatch):
+def test_index_lands_in_message_zero_once_and_is_persisted(tmp_path, monkeypatch, make_app):
     repo = make_repo(tmp_path / "repo")
-    app = make_app(monkeypatch, repo)
+    app = indexed_app(make_app, monkeypatch, repo)
     first = app._request_messages()[0]["content"]
     assert appsvc.INDEX_HEADER in first and "INDEX-MARKER-7741" in first
     assert str(repo / INDEX_NAME).replace("\\", "/") in first.replace("\\", "/"), "the path is named"
@@ -80,39 +81,39 @@ def test_index_lands_in_message_zero_once_and_is_persisted(tmp_path, monkeypatch
     assert raw.count("AGENT_INDEX") >= 1 and "INDEX-MARKER-7741" in raw
 
 
-def test_a_resumed_conversation_keeps_its_snapshot(tmp_path, monkeypatch):
+def test_a_resumed_conversation_keeps_its_snapshot(tmp_path, monkeypatch, make_app):
     repo = make_repo(tmp_path / "repo")
-    app = make_app(monkeypatch, repo)
+    app = indexed_app(make_app, monkeypatch, repo)
     app._request_messages()
     saved = app.conversation[0]["content"]
     (repo / INDEX_NAME).write_text("# CHANGED\nINDEX-MARKER-0000\n", encoding="utf-8")
-    resumed = make_app(monkeypatch, repo)
+    resumed = indexed_app(make_app, monkeypatch, repo)
     resumed.conversation[0] = {"role": "system", "content": saved}
     out = resumed._request_messages()[0]["content"]
     assert out == saved and "INDEX-MARKER-0000" not in out
 
 
-def test_index_present_with_an_empty_store_still_injects_and_leaves_the_store_unlatched(tmp_path, monkeypatch):
+def test_index_present_with_an_empty_store_still_injects_and_leaves_the_store_unlatched(tmp_path, monkeypatch, make_app):
     repo = make_repo(tmp_path / "repo")
-    app = make_app(monkeypatch, repo, with_store=False)
+    app = indexed_app(make_app, monkeypatch, repo, with_store=False)
     content = app._request_messages()[0]["content"]
     assert "INDEX-MARKER-7741" in content
     assert appsvc.STORE_HEADER not in content, "an empty store leaves no marker"
-    (app.convo_dir / "soul.md").write_text("SOUL-MARKER-1188\n", encoding="utf-8")
+    (app._agent_session.memory_root / "soul.md").write_text("SOUL-MARKER-1188\n", encoding="utf-8")
     later = app._request_messages()[0]["content"]
     assert "SOUL-MARKER-1188" in later and later.count(appsvc.INDEX_HEADER) == 1
 
 
-def test_no_index_means_no_block_and_no_behaviour_change(tmp_path, monkeypatch):
+def test_no_index_means_no_block_and_no_behaviour_change(tmp_path, monkeypatch, make_app):
     repo = make_repo(tmp_path / "repo", text=None)
-    app = make_app(monkeypatch, repo)
+    app = indexed_app(make_app, monkeypatch, repo)
     content = app._request_messages()[0]["content"]
     assert appsvc.INDEX_HEADER not in content and "SOUL-MARKER-1188" in content
 
 
-def test_oversize_index_is_cut_at_the_cap_and_the_cut_names_the_file(tmp_path, monkeypatch):
+def test_oversize_index_is_cut_at_the_cap_and_the_cut_names_the_file(tmp_path, monkeypatch, make_app):
     repo = make_repo(tmp_path / "repo", text="HEAD-LINE\n" + "x" * (INDEX_CAP + 500))
-    app = make_app(monkeypatch, repo)
+    app = indexed_app(make_app, monkeypatch, repo)
     notices = []
     app._system = notices.append
     content = app._request_messages()[0]["content"]
@@ -125,11 +126,11 @@ def test_oversize_index_is_cut_at_the_cap_and_the_cut_names_the_file(tmp_path, m
 # ── the Claude backend path ────────────────────────────────────────────
 
 
-def test_claude_segment_prompt_carries_the_index_and_stays_fixed(tmp_path, monkeypatch):
+def test_claude_segment_prompt_carries_the_index_and_stays_fixed(tmp_path, monkeypatch, make_app):
     from litetui.claude_turn import ledger_for, system_prompt_for
 
     repo = make_repo(tmp_path / "repo")
-    app = make_app(monkeypatch, repo)
+    app = indexed_app(make_app, monkeypatch, repo)
     ledger = ledger_for(app)
     segment = ledger.select_segment(str(repo))
     prompt = system_prompt_for(app, segment)
@@ -138,11 +139,11 @@ def test_claude_segment_prompt_carries_the_index_and_stays_fixed(tmp_path, monke
     again = system_prompt_for(app, ledger.segment(segment["id"]))
     assert again == prompt, "a resume carries the segment's recorded prefix"
 
-def test_cap_counts_raw_characters_so_a_crlf_file_is_over_the_cap_like_index_check(tmp_path, monkeypatch):
+def test_cap_counts_raw_characters_so_a_crlf_file_is_over_the_cap_like_index_check(tmp_path, monkeypatch, make_app):
     # 4,500 CRLF lines = 13,500 raw chars (9,000 if each CRLF were folded to one char).
     repo = make_repo(tmp_path / "repo", text=None)
     (repo / INDEX_NAME).write_bytes((b"a" + bytes([13, 10])) * 4_500)
-    app = make_app(monkeypatch, repo)
+    app = indexed_app(make_app, monkeypatch, repo)
     notices = []
     app._system = notices.append
     content = app._request_messages()[0]["content"]
