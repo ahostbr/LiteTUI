@@ -216,3 +216,45 @@ async def test_legacy_index_collision_without_loaded_memory_preserves_bytes(tmp_
         notices = [text for text in said if text.startswith("Legacy store snapshot")]
         assert len(notices) == 1
         assert sum(message.get("content") == notices[0] for message in outgoing) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True], ids=["home", "owner"])
+@pytest.mark.parametrize("insert", [False, True], ids=["replace", "insert"])
+async def test_system_command_resets_receipt_and_replay_keeps_fresh_store(tmp_path, build, owner, insert):
+    memory = folder(tmp_path, "widgets") if owner else None
+    app = build(memory)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._materialise_convo()
+        app._request_messages()
+        assert app._store_injected is True
+        provenance = ConversationRepository.read(app.convo_path)[0]["store_identity"]
+        if insert:
+            app.conversation = [{"role": "user", "content": "keep this prior turn"}]
+            app._snapshot("fixture without a leading system message")
+        root = memory or app._agent_session.memory_root
+        (root / ("SOUL.md" if owner else "soul.md")).write_text("FRESH-SYSTEM-STORE", encoding="utf-8")
+        app._handle_command("/system Be concise")
+        assert app.conversation[0] == {"role": "system", "content": "Be concise"}
+        assert app._store_injected is False, "/system kept a receipt for removed content"
+        meta, messages = ConversationRepository.read(app.convo_path)
+        assert meta["store_injected"] is False and meta["store_identity"] == provenance
+        assert messages == app.conversation
+        assert app._resume(app.convo_path, startup=True)
+        assert app._store_injected is False
+        outgoing = app._request_messages()
+        assert outgoing[0]["content"].startswith("Be concise")
+        assert "FRESH-SYSTEM-STORE" in outgoing[0]["content"]
+        assert outgoing[0]["content"].count(appsvc.STORE_HEADER) == 1
+        assert app._store_injected is True
+        meta, messages = ConversationRepository.read(app.convo_path)
+        assert meta["store_injected"] is True and meta["store_identity"] == provenance
+        assert messages == outgoing
+        if insert:
+            assert any(message.get("content") == "keep this prior turn" for message in messages)
+        saved = outgoing[0]["content"]
+        before = app.convo_path.read_bytes()
+        assert app._resume(app.convo_path, startup=True)
+        assert app._request_messages()[0]["content"] == saved
+        assert app.convo_path.read_bytes() == before
