@@ -4039,7 +4039,10 @@ class LiteTUI(App):
         object have to agree, and `conversation` is read at 48 sites in `src/`.
         """
         if not self.conversation or self.conversation[0].get("role") != "system":
-            self._append({"role": "system", "content": text})
+            self.conversation.append({"role": "system", "content": text})
+            self._store_injected = False
+            if not getattr(self, "_convo_loading", False):
+                self._snapshot("system prompt created")
             return
         current = self.conversation[0].get("content") or ""
         if text in current:
