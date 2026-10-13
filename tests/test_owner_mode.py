@@ -481,6 +481,8 @@ def test_owner_resumed_snapshot_is_not_reinjected(make_app, owner_dir):
     _now(owner_dir, NEW_NOW)
     resumed = make_app()
     resumed.conversation[0] = {"role": "system", "content": saved}
+    from litetui.conversation import ConversationRepository
+    resumed._store_injected = ConversationRepository.read(first.convo_path)[0]["store_injected"]
     before = _records(resumed)
     out = resumed._request_messages()[0]["content"]
     assert out == saved and out.count(appsvc.STORE_HEADER) == 1 and NOW in out and NEW_NOW not in out

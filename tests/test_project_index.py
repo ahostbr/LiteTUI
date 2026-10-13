@@ -89,6 +89,8 @@ def test_a_resumed_conversation_keeps_its_snapshot(tmp_path, monkeypatch, make_a
     (repo / INDEX_NAME).write_text("# CHANGED\nINDEX-MARKER-0000\n", encoding="utf-8")
     resumed = indexed_app(make_app, monkeypatch, repo)
     resumed.conversation[0] = {"role": "system", "content": saved}
+    from litetui.conversation import ConversationRepository
+    resumed._store_injected = ConversationRepository.read(app.convo_path)[0]["store_injected"]
     out = resumed._request_messages()[0]["content"]
     assert out == saved and "INDEX-MARKER-0000" not in out
 

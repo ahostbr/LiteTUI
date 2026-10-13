@@ -1,9 +1,7 @@
-"""The store snapshot is derived from message 0, so it survives anything that rewrites it.
+"""The store receipt belongs to the system prompt, not arbitrary body markers.
 
-Ctrl+T, plan mode and /new each replace message 0 with the base prompt. A flag
-that remembered "already injected" outlived that content and kept the store out
-until the process restarted. The marker in message 0 is the only state: absent
-means inject a fresh snapshot from disk, present means leave it alone.
+Ctrl+T, plan mode, /new and compaction reset the receipt with the replaced content.
+Resume restores it with the saved prompt, preserving the original snapshot.
 """
 from __future__ import annotations
 
@@ -112,6 +110,7 @@ def test_resumed_snapshot_is_not_reinjected(make_app):
     saved = _system_text(first)
     resumed = make_app(soul=NEW)
     resumed.conversation[0] = {"role": "system", "content": saved}
+    resumed._store_injected = ConversationRepository.read(first.convo_path)[0]["store_injected"]
     before = _records(resumed)
     out = _system_text(resumed)
     assert out == saved and out.count(appsvc.STORE_HEADER) == 1

@@ -552,6 +552,17 @@ bodies are not searched. Changed templates or custom prefixes that cannot identi
 that slot refuse with `legacy prompt has no verifiable host store slot` and a
 command to start a new conversation without `--convo`; old files are not backfilled.
 
+New prompts also carry an injection receipt beside their contents: quoted store
+headers in an index or memory file cannot suppress the real snapshot. A same-store
+legacy resume without that receipt preserves its prompt without guessing whether
+another block is needed. One notice on screen and in the agent's context explains
+that the store may not have loaded, names the exact files to read, and gives the
+explicit rebuild action: run `/new`, then send your next message. This does not
+block the first legacy send. Native Claude receives the notice with its next input,
+not by rewriting its fixed prompt; delivery is recorded only after the query returns.
+A crash between accepted query and receipt persistence can repeat the notice once
+on recovery rather than risk omitting it. Modern conversations get no legacy notice.
+
 - **Injected in place of the home's own files.** `SOUL.md`, `NOW.md` and
   `DOMAIN.md`, in that order, replace `memory.md`, `soul.md` and `handoff.md` in
   the snapshot every backend starts a conversation (or a Claude segment) with,
