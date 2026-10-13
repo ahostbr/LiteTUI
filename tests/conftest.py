@@ -258,9 +258,20 @@ def _never_write_the_live_task_store(tmp_path, monkeypatch):
     real_save, real_load = tasks_mod.save, tasks_mod.load
     real_finish = tasks_mod.finish
 
-    monkeypatch.setattr(
-        tasks_mod, "save", lambda tasks, root, **kwargs: real_save(tasks, _swap(root), **kwargs)
-    )
+    def save(tasks, root, **kwargs):
+        session = kwargs.get("agent_session")
+        if Path(root) == live and session is not None:
+            tasks = list(tasks)
+            conversations = {task.convo_id for task in tasks}
+            assert len(conversations) == 1, "redirect needs one owned conversation"
+            destination = session.conversation_directory(conversations.pop())
+            assert destination.resolve().is_relative_to(tmp_path.resolve()), (
+                "owned task redirect escaped the per-test directory"
+            )
+            return real_save(tasks, destination, **kwargs)
+        return real_save(tasks, _swap(root), **kwargs)
+
+    monkeypatch.setattr(tasks_mod, "save", save)
     monkeypatch.setattr(tasks_mod, "load", lambda root: real_load(_swap(root)))
     monkeypatch.setattr(
         tasks_mod,
