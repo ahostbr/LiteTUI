@@ -4051,9 +4051,9 @@ class LiteTUI(App):
         # from its header to the end), so late text goes in front of it.
         cut = current.find("\n\n" + STORE_HEADER) if isinstance(current, str) else -1
         if cut >= 0:
-            merged = current[:cut].rstrip() + "\n\n" + text + current[cut:]
+            merged = appsvc.extend_system_text(current[:cut], text) + current[cut:]
         else:
-            merged = current.rstrip() + "\n\n" + text if current else text
+            merged = appsvc.extend_system_text(current, text) if current else text
         self.conversation[0] = {**self.conversation[0], "content": merged}
         if not getattr(self, "_convo_loading", False):
             self._edit(0, "system prompt extended")
@@ -6716,8 +6716,8 @@ class LiteTUI(App):
 
     def _fleet_identity_sentence(self) -> str:
         return (
-            f"You are registered in the LiteHarness fleet as "
-            f"{self.seat.name} (your inbox/sender id (use it for any from=/--from): "
+            appsvc.FLEET_OPENING
+            + f"{self.seat.name} (your inbox/sender id (use it for any from=/--from): "
             f"{self.seat.agent_id}, tier {self.seat.tier}). "
         )
 

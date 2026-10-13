@@ -199,3 +199,60 @@ async def test_cli_recorded_resume_refuses_different_launch_without_inserting(tm
         assert resumed.conversation == before and resumed._store_injected is receipt
         assert path.read_bytes() == raw
         assert len(said) == 1 and "Launch text mismatch" in said[0] and "omit --convo" in said[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change,accepted", [("archive", True), ("trailing-space", True), ("empty", True),
+                                          ("foreign", False), ("opening", False), ("body", False)])
+async def test_real_fleet_extension_prefix(tmp_path, monkeypatch, build, change, accepted):
+    # An anonymized real launch tail and fleet extension; private store bodies omitted.
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "legacy_fleet_launch.json").read_text())
+    launch, content = fixture["launch"], fixture["message"]
+    assert content.startswith(launch + "\nYou are registered")  # real one-newline suffix
+    if change == "empty":
+        content = content[:content.index("You are registered")] + "You are registered in the LiteHarness fleet as "
+    elif change == "trailing-space":
+        launch += "  \t\n"
+    elif change == "foreign":
+        content = content.replace("\n\nYou are registered", "\n\nForeign sentence.\n\nYou are registered", 1)
+    elif change == "opening":
+        content = content.replace("You are registered", "You are Registered", 1)
+    elif change == "body":
+        launch = launch.replace("When", "Then", 1)
+    memory, path, saved = await legacy_fixture(tmp_path, monkeypatch, build, False, "lmstudio", "none", launch)
+    saved[0] = {"role": "system", "content": content}
+    path.write_bytes((json.dumps({"type": "snapshot", "messages": saved}) + "\n").encode())
+    resumed = build(memory)
+    resumed._cli_system_prompt = launch
+    said = []
+    resumed._system = lambda text, *a, **k: said.append(str(text))
+    raw = path.read_bytes()
+    async with resumed.run_test() as pilot:
+        await pilot.pause()
+        assert resumed._resume(path, startup=accepted) is accepted, "real fleet prefix classification differs"
+        if accepted:
+            expected = [dict(message) for message in saved[:2]]
+            expected[0]["content"] = LiteTUI._FLEET_LINE_RE.sub(resumed._fleet_identity_sentence(), content, count=1)
+            assert ConversationRepository.read(path)[1][:2] == expected
+            raw = path.read_bytes()  # resume may refresh fleet identity and persist its one-time notice
+            resumed._cli_convo_id = path.parent.name
+            before = [dict(message) for message in resumed.conversation]
+            await apply_launch(resumed, launch)
+            assert resumed.conversation == before
+        else:
+            assert len(said) == 1 and "Store mismatch" in said[0] and "omit --convo" in said[0]
+        assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("current,expected", [
+    ("", "extension"),
+    ("launch \n", "launch\n\nextension"),
+    ("\n\n" + appsvc.STORE_HEADER, "\n\nextension\n\n" + appsvc.STORE_HEADER),
+    ("launch \n\n" + appsvc.STORE_HEADER, "launch\n\nextension\n\n" + appsvc.STORE_HEADER),
+])
+def test_shared_extension_join_preserves_existing_writer_output(current, expected):
+    from types import SimpleNamespace
+
+    app = SimpleNamespace(conversation=[{"role": "system", "content": current}], _convo_loading=True)
+    LiteTUI._append_to_system(app, "extension")
+    assert app.conversation == [{"role": "system", "content": expected}]

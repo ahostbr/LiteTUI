@@ -555,7 +555,11 @@ The shipped two-message CLI shape is also recognized: message 0 must be the same
 supplied launch text (`--system-prompt`, `--system-prompt-file`, or the combined
 `--cognitive-file` text), optionally followed immediately by the generator's first
 index/store opening; message 1 must contain the complete host prefix and address.
-Only that beginning is verified. Everything after the first suffix opening is
+A fleet extension also qualifies when it begins with the host's exact composition:
+the supplied launch text with trailing whitespace stripped, two newlines, and the
+shared fleet-registration opening. The same joining function writes and recognizes
+that prefix; extra intervening text does not qualify. Only that beginning is verified.
+Everything after the first suffix opening is
 opaque, never parsed for identity, later section order, or a cut. Missing/changed
 launch text, a launch text containing an index/store marker, an intervening prefix,
 or an incomplete host message refuses; no later messages are searched. Native

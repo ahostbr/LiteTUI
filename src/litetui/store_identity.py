@@ -89,11 +89,22 @@ def launch_message_matches(app, content: str) -> bool:
     This proves only that the message begins as the host composed it. Everything
     after that opening is opaque, never parsed for identity, section order or cuts.
     """
-    from litetui.appsvc import INDEX_HEADER, INDEX_OPENING, STORE_HEADER, STORE_OPENING
+    from litetui.appsvc import (
+        FLEET_OPENING,
+        INDEX_HEADER,
+        INDEX_OPENING,
+        STORE_HEADER,
+        STORE_OPENING,
+        extend_system_text,
+    )
 
     launch = getattr(app, "_cli_system_prompt", None)
     if (not isinstance(launch, str) or not launch or not isinstance(content, str)
-            or STORE_HEADER in launch or INDEX_HEADER in launch or not content.startswith(launch)):
+            or STORE_HEADER in launch or INDEX_HEADER in launch):
+        return False
+    if content.startswith(extend_system_text(launch, FLEET_OPENING)):
+        return True
+    if not content.startswith(launch):
         return False
     suffix = content[len(launch):]
     if not suffix:

@@ -112,6 +112,14 @@ INDEX_OPENING = (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it l
 STORE_OPENING = ('\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n')
 
 
+FLEET_OPENING = 'You are registered in the LiteHarness fleet as '
+
+
+def extend_system_text(current: str, text: str) -> str:
+    """The host's exact suffix join, shared with bounded legacy recognition."""
+    return current.rstrip() + '\n\n' + text
+
+
 def index_block(app, cwd=None) -> str:
     """The cwd repo's AGENT_INDEX.md as a prompt section, or '' when it has none.
 
