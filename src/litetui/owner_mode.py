@@ -87,15 +87,15 @@ def require_handoff() -> None:
     """Fail fast, with one message, when `liteharness owner-handoff` is not there.
 
     `owner-handoff` has no --help (it refuses unknown flags). So the probe runs
-    it at a folder that cannot exist and requires BOTH a non-zero exit and its
-    own refusal text: a missing executable, a liteharness without the command
-    ("Unknown command") and a crash all fail this, and only the real command
-    passes it. Nothing is committed: the folder check refuses first.
+    it at a fresh, private empty directory and requires BOTH a non-zero exit
+    and its own refusal text. Missing executables, old commands and crashes
+    fail this. The empty directory has no owner files, so validation refuses
+    before git can run, regardless of any pre-existing paths on disk.
     """
-    missing = Path(tempfile.gettempdir()) / "litetui-owner-probe-does-not-exist"
     try:
-        probe = subprocess.run([*handoff_command(), "owner-handoff", "--memory", str(missing)],
-                               capture_output=True, text=True, timeout=60)
+        with tempfile.TemporaryDirectory(prefix="litetui-owner-probe-") as empty:
+            probe = subprocess.run([*handoff_command(), "owner-handoff", "--memory", empty],
+                                   capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         probe = None
     text = "" if probe is None else (probe.stdout or "") + (probe.stderr or "")
