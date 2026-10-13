@@ -2,11 +2,12 @@
 import asyncio
 import copy
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from test_card_summary import _Chunk, _probe, _Stream
-from test_claude_backend import _identity_app
+from test_claude_backend import _fixture_prompt_facts, _identity_app
 from test_claude_compact import Backend, Session, app_for, summary_events
 from test_claude_turn import _compaction_watch, turn_app
 from test_pause import _agentic_app
@@ -197,6 +198,10 @@ async def test_newer_prompt_during_summary_retains_owner_fifo_and_recovers_once(
 
 @pytest.mark.asyncio
 async def test_local_tool_threshold_summary_wake_never_exposes_held_claude_input(tmp_path, monkeypatch):
+    import test_pause
+    from test_compaction_ui import _app as owned_app
+
+    monkeypatch.setattr(test_pause, "_app", owned_app)
     app = _agentic_app(monkeypatch, tmp_path, on_tool=lambda: None)
     app.settings.autocompact_enabled = True
     app.settings.wake_after_compact = False
@@ -291,47 +296,48 @@ async def test_summary_new_segment_reopen_refreshes_one_identity_preserving_pros
         assert fresh['id'] != old['id'] and fresh['seed'] == summary
         assert app.conversation[0]['content'].startswith('[Summary of earlier conversation')
         assert summary in app.conversation[0]['content']
-    stale = ('You are registered in the LiteHarness fleet as OldSeat '
-             '(id 11111111-1111-1111-1111-111111111111, tier worker). ')
-    prose = f'USER PROSE\nQuoted example: "{stale}"\nDOCUMENTED TOOL INVENTORY\n'
-    saved = prose + stale + app._fleet_identity_sentence() + '\nTRUSTED SEED\n' + summary
-    ledger.fix_system_prompt(fresh['id'], saved)
-    options = []
-    sdk = SimpleNamespace(ClaudeAgentOptions=lambda **kw: options.append(kw) or kw,
-                          HookMatcher=lambda **kw: kw, tool=lambda name, *a: lambda fn: name,
-                          create_sdk_mcp_server=lambda **kw: kw)
-    monkeypatch.setitem(sys.modules, 'claude_agent_sdk', sdk)
-    monkeypatch.setattr(claude_backend, 'sdk_module', lambda: sdk)
+        stale = ('You are registered in the LiteHarness fleet as OldSeat '
+                 '(id 11111111-1111-1111-1111-111111111111, tier worker). ')
+        prose = f'USER PROSE\nQuoted example: "{stale}"\nDOCUMENTED TOOL INVENTORY\n'
+        saved = prose + stale + app._fleet_identity_sentence() + '\nTRUSTED SEED\n' + summary
+        ledger.fix_system_prompt(fresh['id'], saved, **_fixture_prompt_facts(app, True))
+        options = []
+        sdk = SimpleNamespace(ClaudeAgentOptions=lambda **kw: options.append(kw) or kw,
+                              HookMatcher=lambda **kw: kw, tool=lambda name, *a: lambda fn: name,
+                              create_sdk_mcp_server=lambda **kw: kw)
+        monkeypatch.setitem(sys.modules, 'claude_agent_sdk', sdk)
+        monkeypatch.setattr(claude_backend, 'sdk_module', lambda: sdk)
 
-    class ExternalSession:
-        def __init__(self, opts):
-            self.session_id = 'native-new'
-            self.lifecycle = SimpleNamespace(cleanup_errors=[])
+        class ExternalSession:
+            def __init__(self, opts):
+                self.session_id = 'native-new'
+                self.lifecycle = SimpleNamespace(cleanup_errors=[])
 
-        async def start(self):
-            return {'session_id': self.session_id}
+            async def start(self):
+                return {'session_id': self.session_id}
 
-        async def close(self):
-            pass
+            async def close(self):
+                pass
 
-    monkeypatch.setattr(claude_backend, 'ClaudeSession', ExternalSession)
-    backend = claude_backend.ClaudeBackend(app.settings)
-    backend.models = {'sonnet': {'value': 'sonnet'}}
-    app.backend = backend
-    del app._claude_ledger  # Reopen from the actual persisted fresh segment.
-    monkeypatch.setattr(app, '_system', lambda *a, **kw: None)  # Pilot has closed.
-    for reopen in range(2):
-        if reopen:
-            # A subsequent harness registration must replace, not append, its identity.
-            monkeypatch.setattr(app.seat, 'agent_id', '22222222-2222-2222-2222-222222222222')
-        expected = prose + app._fleet_identity_sentence() + '\nTRUSTED SEED\n' + summary
-        native, _, _ = await session_for(app, backend, ledger_for(app).selected, None)
-        # Claude assigns native identity on the first turn, not session-open.
-        ledger_for(app).bind_session(fresh['id'], native.session_id)
-        assert options[-1]['system_prompt'] == expected
-        assert expected.count(app._fleet_identity_sentence()) == 1
-        assert ClaudeLedger(app.convo_dir).selected['seed'] == summary
-        assert ClaudeLedger(app.convo_dir).selected['system_prompt'] == expected
-        await backend.close()
-    assert options[-1]['resume'] == 'native-new'
-    assert options[0]['tools'] == options[1]['tools']
+        monkeypatch.setattr(claude_backend, 'ClaudeSession', ExternalSession)
+        backend = claude_backend.ClaudeBackend(app.settings)
+        backend.models = {'sonnet': {'value': 'sonnet'}}
+        app.backend = backend
+        del app._claude_ledger  # Reopen from the actual persisted fresh segment.
+        for reopen in range(2):
+            if reopen:
+                # A subsequent harness registration must replace, not append, its identity.
+                monkeypatch.setattr(app.seat, 'agent_id', '22222222-2222-2222-2222-222222222222')
+            expected = prose + app._fleet_identity_sentence() + '\nTRUSTED SEED\n' + summary
+            native, _, _ = await session_for(app, backend, ledger_for(app).selected, None)
+            # Claude assigns native identity on the first turn, not session-open.
+            ledger_for(app).bind_session(fresh['id'], native.session_id)
+            prompt_file = options[-1]['system_prompt']
+            assert prompt_file['type'] == 'file'
+            assert Path(prompt_file['path']).read_text(encoding='utf-8') == expected
+            assert expected.count(app._fleet_identity_sentence()) == 1
+            assert ClaudeLedger(app.convo_dir).selected['seed'] == summary
+            assert ClaudeLedger(app.convo_dir).selected['system_prompt'] == expected
+            await backend.close()
+        assert options[-1]['resume'] == 'native-new'
+        assert options[0]['tools'] == options[1]['tools']
