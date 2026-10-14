@@ -45,6 +45,7 @@ import pytest
 
 from litetui import paths, router_record, row_store, tool_policy
 from litetui import tasks as tasks_mod
+from litetui.store_identity import capture
 
 # ── fixtures ────────────────────────────────────────────────────────────
 
@@ -443,7 +444,8 @@ async def test_a_task_that_finishes_after_a_resume_writes_its_originating_store(
         # Move to another (already born) conversation.
         other = _born("55555555-5555-4555-8555-555555555555", owned_session)
         (other / "convo.jsonl").write_text(
-            json.dumps({"type": "meta", "id": "55555555-5555-4555-8555-555555555555"}) + "\n"
+            json.dumps({"type": "meta", "id": "55555555-5555-4555-8555-555555555555",
+                        "store_identity": capture(a)}) + "\n"
             + json.dumps({"type": "msg", "message": {"role": "user", "content": "hi"}}) + "\n",
             encoding="utf-8")
         assert a._resume(other / "convo.jsonl")
@@ -470,11 +472,12 @@ async def test_resume_loads_the_conversations_rows_and_tops_up_from_the_old_file
     before = _fingerprint(legacy)
     d = _born("66666666-6666-4666-8666-666666666666", owned_session)
     (d / tasks_mod.STORE).write_text(json.dumps([old]), encoding="utf-8")
+    a = _app(monkeypatch, owned_session)
     (d / "convo.jsonl").write_text(
-        json.dumps({"type": "meta", "id": "66666666-6666-4666-8666-666666666666"}) + "\n"
+        json.dumps({"type": "meta", "id": "66666666-6666-4666-8666-666666666666",
+                    "store_identity": capture(a)}) + "\n"
         + json.dumps({"type": "msg", "message": {"role": "user", "content": "hi"}}) + "\n",
         encoding="utf-8")
-    a = _app(monkeypatch, owned_session)
     async with a.run_test(size=(100, 30)):
         assert a.bg_tasks == {}, "boot must not load a store: no conversation is bound yet"
         assert a._resume(d / "convo.jsonl")
