@@ -19,7 +19,19 @@ def test_protocol_refuses_unsupported_version():
         dispatch(SimpleNamespace(), {"type": "gui.hello", "protocol_version": 99})
 
 
-def test_settings_inventory_is_complete_and_invalid_patch_does_not_mutate():
+@pytest.fixture
+def supported_gpu(monkeypatch):
+    from litetui import gpu_gate
+
+    gpu_gate.is_rtx_5090.cache_clear()
+    monkeypatch.setattr(gpu_gate, "gpu_names", lambda: ["NVIDIA GeForce RTX 5090"])
+    try:
+        yield
+    finally:
+        gpu_gate.is_rtx_5090.cache_clear()
+
+
+def test_settings_inventory_is_complete_and_invalid_patch_does_not_mutate(supported_gpu):
     from litetui.gui_rpc import dispatch
     app = SimpleNamespace(settings=settings.Settings(), thinking_level="medium")
     result = dispatch(app, {"type": "gui.settings.get"})

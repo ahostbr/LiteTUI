@@ -18,6 +18,7 @@ helper.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from _owned_seat import owned_app
@@ -27,13 +28,18 @@ from litetui.settings import Settings
 
 
 class _Recorder:
-    """Stands in for ttyguard.run and remembers every argv it was handed."""
+    """Record model loads; leave unrelated process queries untouched."""
 
-    def __init__(self) -> None:
+    def __init__(self, run) -> None:
         self.calls: list[list[str]] = []
+        self._run = run
 
     def __call__(self, cmd, **kw):
-        self.calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)])
+        argv = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
+        if not (len(argv) >= 2 and Path(str(argv[0])).stem.lower() == "lms" and argv[1] == "load"):
+            # A load spy must not fabricate success for nvidia-smi or other tools.
+            return self._run(cmd, **kw)
+        self.calls.append(argv)
 
         class _P:
             returncode = 0
@@ -46,7 +52,7 @@ class _Recorder:
     def load_calls(self) -> list:
         argv_loads = [
             c for c in self.calls
-            if len(c) >= 2 and c[0] == "lms" and c[1] == "load"
+            if len(c) >= 2 and Path(str(c[0])).stem.lower() == "lms" and c[1] == "load"
         ]
         return argv_loads + self.backend_loads
 
@@ -56,9 +62,10 @@ def recorder(monkeypatch):
     """Watches BOTH load channels: the legacy `lms load` argv through
     ttyguard, and the dual-backend seam (backend.load). "nothing loads
     unless the user asked" must hold whichever road a load takes."""
-    from litetui import llm_backend
+    from litetui import gpu_gate, llm_backend
 
-    r = _Recorder()
+    gpu_gate.is_rtx_5090.cache_clear()
+    r = _Recorder(app_mod.ttyguard.run)
     r.backend_loads = []
     monkeypatch.setattr(app_mod.ttyguard, "run", r)
 
@@ -67,7 +74,10 @@ def recorder(monkeypatch):
 
     monkeypatch.setattr(llm_backend.LMStudioBackend, "load", _load)
     monkeypatch.setattr(llm_backend.LlamaCppBackend, "load", _load)
-    return r
+    try:
+        yield r
+    finally:
+        gpu_gate.is_rtx_5090.cache_clear()
 
 
 def _app_with_a_context_preference():
