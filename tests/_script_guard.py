@@ -79,17 +79,15 @@ def owned_script_runtime():
     This wraps only the standalone entry point; pytest retains its own fixtures.
     Cleanup runs after Textual/asyncio teardown, including failed checks and exits.
     """
-    from _isolated_home import redirect_cached_home
+    from _isolated_home import isolated_environment, redirect_cached_home
     from _owned_seat import release_all
 
     with tempfile.TemporaryDirectory(prefix="litetui-script-") as directory:
         root = Path(directory)
         home = root / "Users" / "test-profile"
         environment = {
+            **isolated_environment(home),
             "LITETUI_DATA_ROOT": str(root),
-            "HOME": str(home),
-            "USERPROFILE": str(home),
-            "LOCALAPPDATA": str(home / "AppData" / "Local"),
             "LITETUI_NO_HARNESS": "1",
             "LITETUI_TEST_USER_NAME_ASKED": "1",
         }

@@ -84,11 +84,10 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
     # A profile container keeps ordinary scratch siblings from being mistaken
     # for sibling user profiles by the deny floor's real home-parent rule.
     home = str(tmp_path / "Users" / "test-profile")
-    monkeypatch.setenv("HOME", home)
-    monkeypatch.setenv("USERPROFILE", home)
-    monkeypatch.setenv("LOCALAPPDATA", str(Path(home) / "AppData" / "Local"))
-    from _isolated_home import redirect_cached_home
+    from _isolated_home import isolated_environment, redirect_cached_home
 
+    for name, value in isolated_environment(home).items():
+        monkeypatch.setenv(name, value)
     from litetui import listen_tool, paths, seat_guard
 
     # Collection can import these modules before the per-test home exists.
