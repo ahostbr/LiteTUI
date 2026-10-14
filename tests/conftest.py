@@ -80,6 +80,10 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
     from litetui import listen_tool, paths, seat_guard
 
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    # Mounted NowCard reads the board under Path.home(), independently of the
+    # app data root and NO_HARNESS. Keep every default home lookup temporary;
+    # tests of explicit home/board paths can still install their own boundary.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
     monkeypatch.setattr(paths, "LLAMA_DIR", tmp_path / ".llama")
     monkeypatch.setattr(listen_tool, "WORKDIR", tmp_path / "temp-working-dir")

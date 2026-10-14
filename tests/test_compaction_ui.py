@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -22,10 +21,9 @@ from litetui import tool_approval
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-glassbox-"))
+# conftest supplies a per-test temporary conversation root and cleans it up.
 
 
 # ── streaming fakes ────────────────────────────────────────────────────────
