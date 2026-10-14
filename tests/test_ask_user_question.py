@@ -14,7 +14,6 @@ Covers both halves of the feature:
 """
 import asyncio
 import sys
-import tempfile
 import threading
 from pathlib import Path
 
@@ -36,11 +35,10 @@ _script_guard.redirect_live_settings()
 
 # Deliberately a SECOND import block: the env pin and the settings redirect must
 # run BETWEEN these imports, not before or after them.
-from litetui import app as m
-from litetui import ask_user_question as aq
-from litetui import paths
+from _owned_seat import owned_app
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-auq-"))
+from litetui import ask_user_question as aq
+
 ok = []
 #: The labels that FAILED. `ok` is bools, which is all an exit status needed; a
 #: pytest arm has to be able to say WHICH check failed, and a bool cannot.
@@ -76,7 +74,7 @@ ARGS = {"questions": QUESTIONS}
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None          # never touch the network in a test

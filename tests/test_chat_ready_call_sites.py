@@ -36,17 +36,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.llm_backend import BackendError
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-chatready-"))
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ROUTER_ERRORS = json.loads(
@@ -138,7 +135,9 @@ class _Bare:
 # ── app ────────────────────────────────────────────────────────────────────
 
 def _app(backend, **overrides) -> app_mod.LiteTUI:
-    a = app_mod.LiteTUI()
+    a = owned_app(initial_backend=backend.name, initial_model="m1")
+    a.seat.registered = True
+    a._inbox_monitor = lambda: None
     base = dict(
         wake_after_compact=False,
         clear_screen_after_compact=False,
@@ -150,6 +149,9 @@ def _app(backend, **overrides) -> app_mod.LiteTUI:
     a.settings = Settings(**base)
     a.tools_enabled = False
     a.backend = backend
+    from litetui import model_transport
+
+    a._client_binding = model_transport.bind_client(a.client, backend)
     a.model_id = "m1"
     a.said: list[str] = []
     a._system = lambda msg, *x, **k: a.said.append(str(msg))

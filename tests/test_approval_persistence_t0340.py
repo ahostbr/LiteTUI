@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import (
     approval_authority,
@@ -14,8 +15,6 @@ from litetui import (
     tool_approval,
     tool_policy,
 )
-from litetui.app import LiteTUI
-from litetui.conversation import ConversationRepository
 
 
 @pytest.fixture
@@ -25,17 +24,17 @@ def real_app(tmp_path, monkeypatch):
     (harness.AGENTS_DIR / 'leader.json').write_text(json.dumps({'agent_id': 'leader'}))
     monkeypatch.setattr(approval_relay, 'current_spawner', lambda app: 'leader')
     monkeypatch.setattr(seat_authority, 'confirm_route', lambda app: 'own')
-    app = LiteTUI()
+    app = owned_app()
     app.seat.agent_id = 'worker'
     app.conversation = [{'role': 'user', 'content': 'test'}]
-    store = ConversationRepository()
-    store.convo_id = 'origin'
-    store.convo_dir = tmp_path / 'convos' / 'origin'
-    store.convo_path = store.convo_dir / 'convo.jsonl'
-    # Preserve record_edit/write_record/open; fake only lease acquisition for
-    # isolation. Failure arms deliberately replace acquire/open below.
-    monkeypatch.setattr(store, 'acquire', lambda *args: None)
-    app.store = store
+    from uuid import uuid4
+
+    store = app.store
+    store.stage(str(uuid4()))
+    store.convo_dir.mkdir()
+    store.pending = False
+    # Preserve the real owned acquire/write path. Failure arms replace only
+    # their named acquisition or filesystem boundary below.
     app.events = []
     app._rpc_emit = app.events.append
     app._system = lambda *args: None

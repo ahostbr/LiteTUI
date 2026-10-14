@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 from textual.app import App
 
 from litetui.codex_settings import control, loop_description
@@ -53,9 +54,8 @@ async def test_claude_settings_preserve_unsupported_values_and_disable_controls(
 
 def test_claude_recovery_command_is_discoverable_and_routes(monkeypatch):
     from litetui import claude_turn
-    from litetui.app import LiteTUI
 
-    app = LiteTUI()
+    app = owned_app()
     entry = app.plugins.commands["/claude"]
     assert "resolve" in entry.help and "continue" in entry.help
     called = []

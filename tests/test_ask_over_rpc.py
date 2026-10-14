@@ -20,7 +20,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from litetui import app as m  # noqa: E402
+from _owned_seat import owned_app
+
 from litetui import ask_user_question as auq  # noqa: E402
 
 TWO_QUESTIONS = {
@@ -188,7 +189,7 @@ async def test_a_real_headless_app_takes_the_wire_path_not_the_widget():
     that `run` chooses the wire when `_rpc` is set, on the real object, which is
     the thing the reproduction showed going the other way.
     """
-    a = m.LiteTUI()
+    a = owned_app()
     a._rpc = True
     emitted: list[dict] = []
     a._rpc_emit = emitted.append  # type: ignore[method-assign]

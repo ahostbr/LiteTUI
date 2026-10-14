@@ -43,6 +43,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
+from _owned_seat import owned_app
 from litetui import app as m
 from litetui import tool_policy
 from litetui.side_panel import DialogController, SidePanel
@@ -60,7 +61,7 @@ def _ryans(a):
 
 
 def make_app(profile=AUTONOMOUS):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

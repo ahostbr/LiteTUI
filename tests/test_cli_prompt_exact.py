@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui.app import LiteTUI
 from litetui.llm_backend import ModelRow
@@ -62,7 +63,9 @@ def test_prompt_reaches_first_submit_byte_exactly(tmp_path, monkeypatch, prompt)
 )
 async def test_real_app_dispatches_first_prompt_byte_exactly(prompt):
     """Exercise the real app.py first-prompt dispatch, not a CLI class double."""
-    app = LiteTUI(rpc=True, first_prompt=prompt)
+    app = owned_app(rpc=True, first_prompt=prompt,
+                    initial_backend="llamacpp", initial_model="model")
+    app.seat.registered = True  # external registration is acknowledged by the fixture
     app._connect_settled = True
     app.available_models = ["model"]
     app.model_rows = {

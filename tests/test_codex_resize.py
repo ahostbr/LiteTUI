@@ -1,9 +1,9 @@
 """Native lifecycle presentation in the real host layout, without inference."""
 
 import pytest
+from _owned_seat import owned_app
 from textual.widgets import Static
 
-from litetui.app import LiteTUI
 from litetui.codex_app_server import AppServer
 from litetui.codex_tool_ui import CodexToolUI
 from litetui.widgets import ToolMessage
@@ -15,7 +15,7 @@ async def test_native_output_resize_retains_reader_position_and_fold(monkeypatch
         raise AssertionError("UI acceptance must not start inference")
 
     monkeypatch.setattr(AppServer, "start", forbid_start)
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.settings.autoscroll = False
