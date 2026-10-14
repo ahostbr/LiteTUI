@@ -30,17 +30,10 @@ file tests the settings; that file tests the width.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
+from _owned_seat import owned_app
 
-from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-footer-"))
-
 
 #: Wide enough that the width policy drops NOTHING, so a missing field can only
 #: mean its setting hid it. Not a round number for its own sake: at 80 columns
@@ -49,7 +42,7 @@ WIDE = (200, 24)
 
 
 def _app(**overrides):
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None

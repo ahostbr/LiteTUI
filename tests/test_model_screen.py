@@ -9,19 +9,15 @@ saves and applies across models.
 """
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
 import pytest
 from textual.widgets import Input, Select
 
-from litetui import app as app_mod
+from _owned_seat import owned_app
 from litetui import llm_backend
-from litetui import paths
 from litetui.plugins.model_switch import ModelConfigScreen
 from litetui.settings import Settings
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modelscreen-"))
 
 ALL_FLAGS = frozenset(llm_backend.FLAG_FOR.values()) | {"jinja"}
 
@@ -48,7 +44,7 @@ class _StubBackend:
 def _app(monkeypatch, backend_name="llamacpp"):
     monkeypatch.setattr(llm_backend, "installed_flags", lambda: ALL_FLAGS)
     monkeypatch.setattr(llm_backend, "installed_build", lambda: "cuda:test")
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings()
     a._connect = lambda: None
     a.system_message = a._system = lambda *x, **k: None

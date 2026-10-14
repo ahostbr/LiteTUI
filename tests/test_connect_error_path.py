@@ -36,8 +36,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui import app as app_mod
 from litetui import ninfer_backend
 from litetui.llm_backend import BackendError
 from litetui.settings import Settings
@@ -63,7 +63,7 @@ def unregistered(monkeypatch):
 
 
 def _app(backend):
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings(ninfer_host="")
     a.backend = backend
     a.said: list[str] = []

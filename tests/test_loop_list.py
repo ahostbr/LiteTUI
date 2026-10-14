@@ -18,20 +18,15 @@ for once (see project_test_that_constructs_its_own_input).
 """
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
+from _owned_seat import owned_app
 
-from litetui import goal_loop, paths, scheduler
-from litetui.app import LiteTUI
+from litetui import goal_loop, scheduler
 from litetui.loop_list import LoopListBody, loop_rows
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-looplist-"))
 
 
 def _app(monkeypatch, *loops):
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     # `jobs` is a PROPERTY onto the cron manager's live list — shared
     # mutable state by design, so mutate it in place rather than

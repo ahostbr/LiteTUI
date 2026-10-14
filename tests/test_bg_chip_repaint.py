@@ -28,12 +28,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from litetui import app as m  # noqa: E402
+from _owned_seat import owned_app
+
 from litetui import tasks as tasks_mod  # noqa: E402
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -205,8 +206,5 @@ async def test_a_kill_drops_the_chip_too() -> None:
 
 
 def tmp_root(app) -> Path:
-    """A scratch root for `finish`, so the arm never writes the repo's
-    output/tasks/ — the log write is incidental to what is being measured."""
-    import tempfile
-
-    return Path(tempfile.mkdtemp(prefix="litetui-t581-"))
+    """Use this app's per-test managed root; keep the real finish log write."""
+    return app._agent_session.store.data_root

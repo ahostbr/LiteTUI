@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
+
 from litetui import calendar_view as cv
 from litetui import scheduler as sched_mod
 from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
@@ -242,10 +244,9 @@ def _run(coro):
 
 def test_slash_calendar_opens_the_screen():
     """A screen class nobody can reach is not a feature."""
-    from litetui import app as m
 
     async def body():
-        a = m.LiteTUI()
+        a = owned_app()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
         a.jobs[:] = [job(schedule="0 9 * * 1-5", label="standup")]
@@ -267,7 +268,7 @@ def _paint_at(width, height, jobs):
     from litetui import app as m
 
     async def body():
-        a = m.LiteTUI()
+        a = owned_app()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
         a.jobs[:] = jobs
@@ -311,10 +312,9 @@ def test_a_very_narrow_terminal_still_paints():
 
 
 def test_paging_months_changes_what_is_drawn_and_returns():
-    from litetui import app as m
 
     async def body():
-        a = m.LiteTUI()
+        a = owned_app()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
         a.jobs[:] = []
@@ -343,7 +343,7 @@ def test_the_calendar_opens_with_no_jobs_at_all():
     from litetui import app as m
 
     async def body():
-        a = m.LiteTUI()
+        a = owned_app()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
         a.jobs[:] = []
@@ -361,7 +361,7 @@ def test_a_broken_job_does_not_stop_the_calendar_from_painting():
     from litetui import app as m
 
     async def body():
-        a = m.LiteTUI()
+        a = owned_app()
         a._connect = lambda: None
         a._fetch_ctx_window = lambda: None
         a.jobs[:] = [job(schedule="not a cron", label="bad one")]

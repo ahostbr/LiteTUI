@@ -77,9 +77,22 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
     # Set the real configuration seam so tests of explicit overrides and the
     # legacy unset behavior can still exercise paths.data_root itself.
     # No eager mkdir: a test that writes nothing must leave tmp_path empty.
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    # Mounted NowCard reads the board under Path.home(), independently of the
+    # app data root and NO_HARNESS. Use the product's environment resolution so
+    # a test's own HOME/USERPROFILE change or Path.home patch still takes effect.
+    # A profile container keeps ordinary scratch siblings from being mistaken
+    # for sibling user profiles by the deny floor's real home-parent rule.
+    home = str(tmp_path / "Users" / "test-profile")
+    from _isolated_home import isolated_environment, redirect_cached_home
+
+    for name, value in isolated_environment(home).items():
+        monkeypatch.setenv(name, value)
     from litetui import listen_tool, paths, seat_guard
 
-    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    # Collection can import these modules before the per-test home exists.
+    # Share the same cached-default boundary with standalone script guards.
+    redirect_cached_home(home, monkeypatch.setattr)
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
     monkeypatch.setattr(paths, "LLAMA_DIR", tmp_path / ".llama")
     monkeypatch.setattr(listen_tool, "WORKDIR", tmp_path / "temp-working-dir")

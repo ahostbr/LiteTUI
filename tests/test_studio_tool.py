@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui import studio_tool
 
 
@@ -41,7 +41,7 @@ def test_the_studio_tool_is_DEFERRED_not_absent():
     """
     from litetui.plugins import tool_search
 
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     names = [t["function"]["name"] for t in a._all_tools() if "function" in t]
     assert "studio" in tool_search.DEFAULT_DEFERRED, (
@@ -59,7 +59,7 @@ def test_the_dispatcher_resolves_studio_and_injects_the_seat():
     CALLING model's identity in, so generate actions can suspend the very
     seat that ordered them. Identity-checking the function would miss a
     closure that forgot the injection — call it and look."""
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a.model_id = "the-current-seat"
     seen = {}
@@ -131,10 +131,18 @@ def test_sound_job_without_id_is_refused():
 
 @pytest.fixture()
 def _dead_ports(monkeypatch):
-    """Point both apps at a port nothing listens on. Connection refused is
-    immediate on loopback, so these run fast and deterministic."""
-    monkeypatch.setattr(studio_tool, "IMAGE_URL", "http://127.0.0.1:1")
-    monkeypatch.setattr(studio_tool, "SOUND_URL", "http://127.0.0.1:1")
+    """A closed service at the transport boundary, without opening a socket.
+
+    Keep the real request construction, dispatch and error-to-prose path; only
+    urlopen supplies a deterministic connection-refused outcome.
+    """
+    monkeypatch.setattr(studio_tool, "IMAGE_URL", "http://127.0.0.1/image-fixture")
+    monkeypatch.setattr(studio_tool, "SOUND_URL", "http://127.0.0.1/sound-fixture")
+
+    def refused(request, **kwargs):
+        raise studio_tool.urllib.error.URLError(ConnectionRefusedError("fixture service is closed"))
+
+    monkeypatch.setattr(studio_tool.urllib.request, "urlopen", refused)
 
 
 def test_image_down_is_a_sentence_not_a_traceback(_dead_ports):

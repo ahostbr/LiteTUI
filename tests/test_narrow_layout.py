@@ -5,6 +5,7 @@ doing something weird cutton off the bottom input box").
 The pictures are .scratch/t1048/capture.py; the arms here fail if a defect
 comes back.
 """
+from _owned_seat import owned_app
 import pytest
 
 
@@ -18,12 +19,12 @@ async def _real_app(tmp_path, monkeypatch):
     monkeypatch.setattr(LiteTUI, '_mcp_connect', lambda self: None)
     monkeypatch.setattr(plugins, 'activate_plugins', lambda *args: None)
     monkeypatch.setattr(hook_host, 'queue_lifecycle', lambda *args: None)
-    return LiteTUI()
+    return owned_app()
 
 
 @pytest.mark.asyncio
 async def test_cards_fill_the_log_at_narrow_width_and_keep_their_indent_when_wide(tmp_path, monkeypatch):
-    from litetui.widgets import UserMessage, AssistantMessage, ToolMessage
+    from litetui.widgets import AssistantMessage, ToolMessage, UserMessage
     app = await _real_app(tmp_path, monkeypatch)
     async with app.run_test(size=(45, 40)) as pilot:
         await pilot.pause(0.2)

@@ -7,22 +7,17 @@ messages do not.
 """
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
+from _owned_seat import owned_app
 
-from litetui import app as app_mod
-from litetui import llm_backend, paths
+from litetui import llm_backend
 from litetui.plugins.model_switch import _switch_backend
 from litetui.settings import Settings
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-backendswitch-"))
-
 
 def _app():
-    a = app_mod.LiteTUI()
-    a.settings = Settings()
+    a = owned_app(initial_model="fixture")
+    a.settings = Settings(default_model="fixture")
     # The public connect worker is what backend switching invokes (T627).
     a.connect = lambda: None
     a._connect = lambda: None  # legacy startup hook still used at mount

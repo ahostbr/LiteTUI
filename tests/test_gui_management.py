@@ -8,6 +8,7 @@ from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import settings, settings_service
 
@@ -18,7 +19,19 @@ def test_protocol_refuses_unsupported_version():
         dispatch(SimpleNamespace(), {"type": "gui.hello", "protocol_version": 99})
 
 
-def test_settings_inventory_is_complete_and_invalid_patch_does_not_mutate():
+@pytest.fixture
+def supported_gpu(monkeypatch):
+    from litetui import gpu_gate
+
+    gpu_gate.is_rtx_5090.cache_clear()
+    monkeypatch.setattr(gpu_gate, "gpu_names", lambda: ["NVIDIA GeForce RTX 5090"])
+    try:
+        yield
+    finally:
+        gpu_gate.is_rtx_5090.cache_clear()
+
+
+def test_settings_inventory_is_complete_and_invalid_patch_does_not_mutate(supported_gpu):
     from litetui.gui_rpc import dispatch
     app = SimpleNamespace(settings=settings.Settings(), thinking_level="medium")
     result = dispatch(app, {"type": "gui.settings.get"})
@@ -72,7 +85,8 @@ async def test_legacy_rpc_prompt_refuses_foreign_session_then_recovers(tmp_path,
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
     wire = StringIO()
     monkeypatch.setattr(rpc, "_real_stdout", wire)
-    app = app_mod.LiteTUI()
+    app = owned_app()
+    app._connect = lambda: None  # startup discovery is outside this test
     app._stream = lambda: None
     child = None
     try:
@@ -129,7 +143,8 @@ async def test_real_app_management_persists_history_settings_memory_and_jobs(tmp
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
-    app = app_mod.LiteTUI()
+    app = owned_app()
+    app._connect = lambda: None  # startup discovery is outside this test
     app.settings.mcp_enabled = False
     async with app.run_test(size=(100, 35)):
         hello = await async_dispatch(app, {"type": "gui.hello", "protocol_version": 1})
@@ -139,7 +154,7 @@ async def test_real_app_management_persists_history_settings_memory_and_jobs(tmp
         renamed = await async_dispatch(app, {"type": "gui.conversations.rename", "title": "Desktop history"})
         assert renamed["meta"]["name"] == "Desktop history"
         await async_dispatch(app, {"type": "gui.memory.write", "name": "soul.md", "text": "Persisted soul"})
-        assert (tmp_path / ".convos" / session_id / "soul.md").read_text() == "Persisted soul"
+        assert (app._agent_session.memory_root / "soul.md").read_text() == "Persisted soul"
         changed = await async_dispatch(app, {"type": "gui.settings.apply", "patch": {"max_tokens_chat": 1024}})
         assert changed["effective"]["max_tokens_chat"] == 1024
         jobs = await async_dispatch(app, {"type": "gui.jobs.create", "job": {"prompt": "Fixture job", "schedule": "0 9 * * *", "enabled": False}})
@@ -169,7 +184,7 @@ async def test_host_tool_registration_goes_through_authority_and_disposes(tmp_pa
     from litetui.gui_rpc import async_dispatch
 
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._system = lambda *a, **kw: None
     spec = {"type": "function", "function": {"name": "fixture_host", "description": "fixture", "parameters": {"type": "object", "properties": {}}}}
     await async_dispatch(app, {"type": "gui.host_tools.register", "plugin_id": "fixture", "tools": [spec]})
@@ -211,7 +226,8 @@ async def test_correlated_host_tool_completes_and_rejects_late_result(monkeypatc
     from litetui import tool_policy
     from litetui.gui_rpc import async_dispatch, dispatch
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
-    app = app_mod.LiteTUI()
+    app = owned_app()
+    app._connect = lambda: None  # startup discovery is outside this test
     app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Owner's own (owner-marked)
     spec = {"type": "function", "function": {"name": "roundtrip", "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}}
     await async_dispatch(app, {"type": "gui.host_tools.register", "plugin_id": "fixture", "tools": [spec]})
@@ -236,7 +252,7 @@ async def test_model_load_confirmation_is_explicit_and_stale_ids_fail(monkeypatc
 
     from litetui import app as app_mod
     from litetui.gui_rpc import dispatch
-    app = app_mod.LiteTUI(rpc=True)
+    app = owned_app(rpc=True)
     app._gui_rpc_enabled = True
     monkeypatch.setattr(app_mod.harness_mod, "other_live_litetui", lambda *a: "Terminal sibling")
     async def not_loaded(_):
@@ -346,10 +362,9 @@ def test_fresh_active_session_can_be_read_but_unknown_session_cannot(tmp_path, m
 
 @pytest.mark.parametrize("enter_interrupts", [False, True])
 def test_gui_midturn_submission_queues_or_interrupts_with_chosen_authority(tmp_path, monkeypatch, enter_interrupts):
-    from litetui import app as app_mod
     from litetui.gui_rpc import dispatch
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._spawned_seat, app._owner_seat = False, True  # T1049: a LiteGUI host is Owner's own (owner-marked)
     app.settings.enter_interrupts = enter_interrupts
     app._chat_running = lambda: True
@@ -427,11 +442,10 @@ def test_compatibility_refuses_unknown_writer_protocol(tmp_path):
 
 @pytest.mark.asyncio
 async def test_management_and_queued_submission_do_not_retag_active_turn(tmp_path, monkeypatch):
-    from litetui import app as app_mod
     from litetui import rpc
     from litetui.gui_rpc import async_dispatch
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
-    app = app_mod.LiteTUI(rpc=True)
+    app = owned_app(rpc=True)
     app._gui_rpc_enabled = True
     app._gui_operation_id = "prompt-waiting-question"
     app._chat_running = lambda: True

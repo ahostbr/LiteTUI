@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 from textual.app import App
 from textual.widgets import OptionList, Static
 
@@ -68,8 +69,7 @@ async def test_fold_header_and_compaction_plan_are_literal(part):
 
 
 def make_app(monkeypatch):
-    from litetui.app import LiteTUI
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app._inbox_monitor = lambda: None

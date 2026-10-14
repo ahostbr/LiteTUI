@@ -27,22 +27,19 @@ report the pre-fetch state as a result.
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-ctxresync-"))
 
 LOADED, CEILING = 120064, 262144
 
 
 def _app():
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings(default_model="m", default_context_length=120000)
     a.model_id = "m"
     a._connect = lambda: None

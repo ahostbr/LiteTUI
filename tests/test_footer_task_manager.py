@@ -4,15 +4,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui import app as app_mod
 from litetui import footer_telemetry as telemetry
 from litetui.widgets import TaskManagerToggle
 
 
 def make_app(meters_on=True):
     # The meters default OFF (T1115c); these arms test them switched on unless told not to.
-    a = app_mod.LiteTUI()
+    a = owned_app()
     if meters_on is not None:
         a.settings.footer_task_manager = meters_on
     a._connect = lambda: None

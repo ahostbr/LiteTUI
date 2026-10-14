@@ -27,17 +27,13 @@ Properties, each with a control:
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
 
 # Hermetic convo store, the same way test_context_length.py does it.
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-wake-"))
 
 
 # ── fakes ──────────────────────────────────────────────────────────────────
@@ -114,7 +110,9 @@ async def _boom_create(**kw):
 
 
 def _app(**overrides) -> app_mod.LiteTUI:
-    a = app_mod.LiteTUI()
+    from test_compaction_ui import _app as owned_compaction_app
+
+    a = owned_compaction_app()
     base = dict(
         wake_after_compact=True,
         clear_screen_after_compact=False,  # keep the test away from the widget tree
@@ -123,8 +121,7 @@ def _app(**overrides) -> app_mod.LiteTUI:
     base.update(overrides)
     a.settings = Settings(**base)
     a._system = lambda *a, **k: None
-    from test_compaction_ui import off_local_lm_studio
-    return off_local_lm_studio(a)   # WS3 b5f1f40: local LM Studio inference is refused
+    return a
 
 
 def _seed(a: app_mod.LiteTUI) -> None:
@@ -272,6 +269,7 @@ def test_shipped_default_is_off():
 async def test_settings_screen_has_the_wake_switch():
     from textual.app import App, ComposeResult
     from textual.widgets import Switch
+
     from litetui.settings_screen import SettingsScreen
 
     class Host(App):

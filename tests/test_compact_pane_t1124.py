@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui.app import LiteTUI
 from litetui.claude_turn import replay_activity
 from litetui.codex_trace import replay as replay_codex
 from litetui.compact_tools import summary
@@ -17,7 +17,7 @@ from litetui.widgets import AssistantMessage, ToolMessage
 
 
 def app_for_pilot():
-    app = LiteTUI()
+    app = owned_app(initial_model="test")
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.available_models = ["test"]

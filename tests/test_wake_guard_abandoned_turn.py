@@ -39,17 +39,11 @@ Properties, each with a control:
 from __future__ import annotations
 
 import asyncio
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-wakeguard-"))
-
 
 # ── fakes ──────────────────────────────────────────────────────────────────
 
@@ -138,7 +132,9 @@ async def _hanging_create(**kw):
 
 
 def _app(**overrides) -> app_mod.LiteTUI:
-    a = app_mod.LiteTUI()
+    from test_compaction_ui import _app as owned_compaction_app
+
+    a = owned_compaction_app()
     base = dict(
         wake_after_compact=True,
         clear_screen_after_compact=False,
@@ -151,8 +147,7 @@ def _app(**overrides) -> app_mod.LiteTUI:
     a.tools_enabled = False
     a.said: list[str] = []
     a._system = lambda msg, *x, **k: a.said.append(str(msg))
-    from test_compaction_ui import off_local_lm_studio
-    return off_local_lm_studio(a)   # WS3 b5f1f40: local LM Studio inference is refused
+    return a
 
 
 def _seed(a: app_mod.LiteTUI) -> None:

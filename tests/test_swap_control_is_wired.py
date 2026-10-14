@@ -34,7 +34,7 @@ from textual.widgets import Input, OptionList
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui.ask_user_question import (
     AskUserQuestionBody, AskUserQuestionScreen, QuestionState,
 )
@@ -77,7 +77,7 @@ def _question():
 
 
 def make_app(monkeypatch=None):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

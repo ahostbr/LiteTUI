@@ -7,6 +7,7 @@ Baseline measured on the per-token path it replaces (2026-09-25, 500 deltas at
 import asyncio
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
 from litetui.stream_sink import MIN_INTERVAL, StreamSink
@@ -14,7 +15,7 @@ from litetui.widgets import AssistantMessage, ChatMessage
 
 
 def _app() -> app_mod.LiteTUI:
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app.available_models = ["a-model"]
     app.model_id = "a-model"
     app._connect = lambda: None

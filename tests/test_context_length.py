@@ -29,16 +29,13 @@ would never fire and the model would blow its real context instead.
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-ctx-"))
 
 LOADED, CEILING = 120064, 262144
 
@@ -63,10 +60,11 @@ def recorder():
 
 
 def _app(ctx=120000, recorder=None, info=None):
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings(default_model="qwen/qwen3.8-27b", default_context_length=ctx)
     a.model_id = "qwen/qwen3.8-27b"
     a._system = lambda *_a, **_k: None
+    a._connect = lambda: None  # context tests own load/info, not startup discovery
     a._fetch_ctx_window = lambda: None
     if recorder is not None:
         async def _load(key, *, ctx=None):

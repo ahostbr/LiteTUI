@@ -9,7 +9,6 @@ stubbing it proves nothing.
 """
 import asyncio
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,11 +29,10 @@ _script_guard.redirect_live_settings()
 
 # Deliberately a SECOND import block: the env pin and the settings redirect must
 # run BETWEEN these imports, not before or after them.
-from litetui import app as m
-from litetui import paths
+from _owned_seat import owned_app
+
 from litetui import settings as settings_mod
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-settings-"))
 ok = []
 #: The labels that FAILED. `ok` is bools, which is all the script needed for an
 #: exit status; a pytest arm has to be able to say WHICH check failed, and a
@@ -51,7 +49,7 @@ def chk(label, cond):
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model", "b-model"]
     a.model_id = "b-model"
     a._connect = lambda: None          # never touch the network in a test
@@ -184,7 +182,7 @@ async def test_saving_a_backend_setting_keeps_the_backend_on_the_new_object() ->
 
     from litetui import llm_backend
 
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None
@@ -243,7 +241,7 @@ async def test_saving_a_changed_backend_actually_switches_the_engine(_no_setting
 
     from litetui import llm_backend
 
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None
@@ -275,7 +273,7 @@ async def test_saving_with_the_backend_unchanged_does_not_reconnect(_no_settings
 
     from litetui import llm_backend
 
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None
@@ -295,6 +293,7 @@ async def test_saving_with_the_backend_unchanged_does_not_reconnect(_no_settings
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    print(f"\n{sum(ok)}/{len(ok)} passed")
-    sys.exit(0 if all(ok) else 1)
+    with _script_guard.owned_script_runtime():
+        asyncio.run(main())
+        print(f"\n{sum(ok)}/{len(ok)} passed")
+        sys.exit(0 if all(ok) else 1)

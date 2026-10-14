@@ -8,9 +8,9 @@ the Claude SDK session is a fake that replays recorded frame shapes.
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 from test_claude_turn import FakeBackend, FakeSession
 
-from litetui import app as app_mod
 from litetui.claude_events import ClaudeEventStream
 from litetui.claude_turn import prepare_input, stream_turn
 from litetui.widgets import AssistantMessage, ToolMessage
@@ -56,7 +56,7 @@ FRAMES = [
 
 
 def _app():
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app.available_models = ["claude-opus-5-5"]
     app.model_id = "claude-opus-5-5"
     app._connect = lambda: None

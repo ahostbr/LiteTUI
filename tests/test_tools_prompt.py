@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from litetui import app as m
+from _owned_seat import owned_app
+
 from litetui import paths
 
 
@@ -33,7 +34,7 @@ def _prompt() -> str:
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

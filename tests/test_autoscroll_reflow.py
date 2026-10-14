@@ -1,6 +1,7 @@
 """Regression arms for follow-lock rearming after layout shrink and real wheel input."""
 
 import pytest
+from _owned_seat import owned_app
 from textual import events
 
 from litetui import app as app_mod
@@ -8,7 +9,7 @@ from litetui.widgets import ChatMessage, ToolMessage
 
 
 def _app() -> app_mod.LiteTUI:
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app.available_models = ["a-model"]
     app.model_id = "a-model"
     app._connect = lambda: None
