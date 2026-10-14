@@ -27,6 +27,7 @@ from litetui import app as m
 from litetui import paths
 from litetui import appsvc, settings
 from litetui.agent_launch_context import ordinary
+from litetui.conversation import ConversationRepository
 
 _sandboxes = []
 _apps = []
@@ -106,9 +107,14 @@ def _run_checks():
     a2 = make_app()
     a2._request_messages()
     saved = a2.conversation[0]["content"]
-    # simulate a resume: a fresh object whose system message already carries the block
+    saved_meta, saved_messages = ConversationRepository.read(a2.convo_path)
+    chk("saved transcript records the injection receipt", saved_meta.get("store_injected") is True)
+    chk("saved transcript replays the injected prompt", saved_messages[0]["content"] == saved)
+    # Simulate resume's request-boundary state: restore the persisted prompt
+    # AND its receipt, as the real resume path does. Text alone is not a receipt.
     a3 = make_app()
-    a3.conversation[0] = {"role": "system", "content": saved}
+    a3.conversation[0] = saved_messages[0]
+    a3._store_injected = saved_meta["store_injected"]
     out = a3._request_messages()
     chk("resumed convo is not re-injected", out[0]["content"].count(m.STORE_HEADER) == 1)
     chk("resumed convo content unchanged", out[0]["content"] == saved)

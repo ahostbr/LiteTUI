@@ -206,18 +206,26 @@ async def test_host_tool_registration_goes_through_authority_and_disposes(tmp_pa
 
 def test_two_stores_cannot_write_one_session(tmp_path, monkeypatch):
     from litetui import paths
+    from litetui.agent_launch_context import ordinary
     from litetui.conversation import ConversationRepository
     from litetui.shared_state import OwnershipError
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
-    a, b = ConversationRepository(), ConversationRepository()
-    a.stage("same-session")
-    b.stage("same-session")
-    a.acquire()
-    with pytest.raises(OwnershipError):
-        b.acquire()
-    a.release()
-    b.acquire()
-    b.release()
+    convo_id = "33333333-3333-4333-8333-333333333333"
+    with ordinary(tmp_path, settings.Settings()) as session:
+        a = ConversationRepository(agent_session=session)
+        b = ConversationRepository(agent_session=session)
+        try:
+            a.stage(convo_id)
+            b.stage(convo_id)
+            a.acquire()
+            with pytest.raises(OwnershipError):
+                b.acquire()
+            a.release()
+            b.acquire()
+            b.release()
+        finally:
+            a.release()
+            b.release()
 
 
 @pytest.mark.asyncio
@@ -350,14 +358,21 @@ def test_screenshot_output_uses_data_root_without_running_capture(tmp_path, monk
 
 def test_fresh_active_session_can_be_read_but_unknown_session_cannot(tmp_path, monkeypatch):
     from litetui import paths
+    from litetui.agent_launch_context import ordinary
     from litetui.gui_rpc import dispatch
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
-    app = SimpleNamespace(convo_id="fresh", conversation=[{"role": "system", "content": "fixture"}])
-    result = dispatch(app, {"type": "gui.conversations.read", "session_id": "fresh"})
-    assert result["messages"] == app.conversation and not result["read_only"]
-    assert not paths.CONVO_DIR.exists()
-    with pytest.raises(FileNotFoundError):
-        dispatch(app, {"type": "gui.conversations.read", "session_id": "unknown"})
+    fresh = "33333333-3333-4333-8333-333333333333"
+    unknown = "44444444-4444-4444-8444-444444444444"
+    with ordinary(tmp_path, settings.Settings()) as session:
+        app = SimpleNamespace(_agent_session=session, convo_id=fresh,
+            conversation=[{"role": "system", "content": "fixture"}])
+        assert not session.conversation_directory(fresh).exists()
+        result = dispatch(app, {"type": "gui.conversations.read", "session_id": fresh})
+        assert result["messages"] == app.conversation and not result["read_only"]
+        assert not paths.CONVO_DIR.exists()
+        assert not session.conversation_directory(fresh).exists()
+        with pytest.raises(FileNotFoundError):
+            dispatch(app, {"type": "gui.conversations.read", "session_id": unknown})
 
 
 @pytest.mark.parametrize("enter_interrupts", [False, True])
