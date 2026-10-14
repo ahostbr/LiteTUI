@@ -18,17 +18,12 @@ helper.
 from __future__ import annotations
 
 import asyncio
-import tempfile
-from pathlib import Path
 
 import pytest
 from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-noload-"))
 
 
 class _Recorder:
@@ -76,7 +71,7 @@ def recorder(monkeypatch):
 
 
 def _app_with_a_context_preference():
-    a = owned_app()
+    a = owned_app(initial_backend="lmstudio", initial_model="qwen/qwen3.8-27b")
     a._connect = lambda: None  # startup discovery is outside this test
     # The exact real-world configuration that caused it: a saved default model
     # and a saved context length.
@@ -106,19 +101,25 @@ async def test_connecting_loads_no_model(recorder):
     a = _app_with_a_context_preference()
     a._fetch_ctx_window = lambda: None
 
-    class _FakeModels:
-        async def list(self):
-            class _M:
-                data = [type("x", (), {"id": "qwen/qwen3.8-27b"})()]
+    from litetui.llm_backend import ModelRow
 
-            return _M()
+    discovered = []
+    async def list_models():
+        discovered.append(a.backend.name)
+        return [ModelRow(key="qwen/qwen3.8-27b", path=None, source="server", loaded=True)]
 
-    a.client = type("c", (), {"models": _FakeModels()})()
+    a.backend.list_models = list_models
+    a._probe_thinking = lambda: None  # thinking discovery is unrelated to model loading
     async with a.run_test() as pilot:
-        a._connect()
+        # Startup uses the suppressed private alias; drive its real public implementation.
+        connection = a.connect()
+        await connection.wait()
         for _ in range(6):
             await pilot.pause()
             await asyncio.sleep(0.05)
+    assert discovered == ["lmstudio"]
+    assert a._gui_connection_success and a._connect_settled
+    assert a.available_models == ["qwen/qwen3.8-27b"]
     assert recorder.load_calls == [], (
         f"connecting shelled out to lms load: {recorder.load_calls}"
     )
