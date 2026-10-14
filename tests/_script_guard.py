@@ -2,10 +2,10 @@
 
 🔴 WHY THIS FILE EXISTS. `conftest.py:73`'s `_never_write_the_live_settings` is
 an `@pytest.fixture(autouse=True)`. **A conftest fixture cannot reach a test that
-does not run under pytest.** The 13 script-style files run as bare
-`python tests/x.py`, so they have always been outside it — and they are the same
-13 that `pytest -q` cannot collect, so CI never saw the consequence either. One
-population, two independent holes.
+does not run under pytest.** The original script-style files were also outside
+pytest collection. They now expose pytest tests, but their standalone entry
+points still run without conftest. Both routes need a controlled data root and
+home; app-building standalone entry points use `owned_script_runtime` below.
 
 WHAT IT COST, MEASURED 2026-08-28 on main 607e635: `tests/test_input.py` and
 `tests/test_ask_user_question.py` construct a real `LiteTUI()`, which loads the
@@ -47,11 +47,95 @@ as a test by either runner.
 
 from __future__ import annotations
 
+import atexit
 import os
 import tempfile
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+_SANDBOXES: list = []
+
+
+def _managed_directory(prefix):
+    directory = tempfile.TemporaryDirectory(prefix=prefix)
+    _SANDBOXES.append(directory)
+    return Path(directory.name)
+
+
+def _cleanup_directories():
+    while _SANDBOXES:
+        _SANDBOXES.pop().cleanup()
+
+
+atexit.register(_cleanup_directories)
+
+
+@contextmanager
+def owned_script_runtime():
+    """Hold temporary data, profile defaults and real owned stores until exit.
+
+    This wraps only the standalone entry point; pytest retains its own fixtures.
+    Cleanup runs after Textual/asyncio teardown, including failed checks and exits.
+    """
+    from _isolated_home import redirect_cached_home
+    from _owned_seat import release_all
+
+    with tempfile.TemporaryDirectory(prefix="litetui-script-") as directory:
+        root = Path(directory)
+        home = root / "Users" / "test-profile"
+        environment = {
+            "LITETUI_DATA_ROOT": str(root),
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "LOCALAPPDATA": str(home / "AppData" / "Local"),
+            "LITETUI_NO_HARNESS": "1",
+            "LITETUI_TEST_USER_NAME_ASKED": "1",
+        }
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, environment))
+            for name in ("LITETUI_OWNER", "LITETUI_AGENT_SHELL", "CLAUDECODE",
+                         "LITESUITE_PTY_TERM", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"):
+                os.environ.pop(name, None)
+
+            def set_attribute(module, name, value):
+                stack.enter_context(patch.object(module, name, value))
+            redirect_cached_home(home, set_attribute)
+            from litetui import (
+                harness,
+                lifecycle_hooks,
+                listen_tool,
+                paths,
+                seat_guard,
+                settings,
+            )
+
+            original_settings_path = settings.settings_path
+            default_settings = root / settings.SETTINGS_FILENAME
+
+            def settings_path(root=None):
+                if root is not None:
+                    return original_settings_path(root)
+                return default_settings
+
+            set_attribute(settings, "settings_path", settings_path)
+            set_attribute(harness, "AGENTS_DIR", home / ".liteharness" / "agents")
+            set_attribute(paths, "CONVO_DIR", root / ".convos")
+            set_attribute(paths, "LLAMA_DIR", root / ".llama")
+            set_attribute(listen_tool, "WORKDIR", root / "temp-working-dir")
+            set_attribute(listen_tool, "SERVER_LOG", root / "temp-working-dir" / "llama_server.log")
+            set_attribute(seat_guard, "BREADCRUMB", root / "suspended_seat.json")
+            set_attribute(lifecycle_hooks, "config_paths", lambda workspace: (
+                root / "global-hooks.json", root / "project-hooks.json"))
+            assert settings.settings_path().parent == root
+            assert paths.data_root() == root
+            assert Path.home() == home
+            try:
+                yield root
+            finally:
+                release_all()
+
 
 
 def pin_first_boot_env() -> None:
@@ -72,7 +156,7 @@ def pin_first_boot_env() -> None:
     precondition the file never declared.
     """
     os.environ.setdefault("LITETUI_BACKEND", "lmstudio")
-    os.environ.setdefault("LITETUI_NO_HARNESS", "1")
+    os.environ["LITETUI_NO_HARNESS"] = "1"
 
     assert os.environ.get("LITETUI_BACKEND"), "the backend pin did not take"
     assert os.environ.get("LITETUI_NO_HARNESS"), "the harness disable did not take"
@@ -90,7 +174,7 @@ def redirect_live_settings(prefix: str = "litetui-settings-") -> Path:
     """
     from litetui import settings as settings_mod
 
-    sandbox = Path(tempfile.mkdtemp(prefix=prefix))
+    sandbox = _managed_directory(prefix)
     real_settings_path = settings_mod.settings_path
 
     def redirected(root=None):
@@ -119,7 +203,7 @@ def redirect_convo_dir(prefix: str = "litetui-convos-") -> Path:
     """
     from litetui import paths
 
-    sandbox = Path(tempfile.mkdtemp(prefix=prefix))
+    sandbox = _managed_directory(prefix)
     paths.CONVO_DIR = sandbox
 
     assert paths.CONVO_DIR == sandbox, "the .convos redirect did not take"

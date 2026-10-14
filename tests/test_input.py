@@ -6,7 +6,6 @@ because it talks to the OS.
 """
 import asyncio
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,10 +28,9 @@ _script_guard.redirect_live_settings()
 
 # Deliberately a SECOND import block: the env pin and the settings redirect must
 # run BETWEEN these imports, not before or after them.
-from litetui import app as m
-from litetui import paths
+from _owned_seat import owned_app
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-input-"))
+from litetui import app as m
 
 ok = []
 #: The labels that FAILED. `ok` is bools, which is all an exit status needed; a
@@ -50,7 +48,7 @@ def chk(label, cond):
 
 
 def make_app(clip=None):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model", "b-model"]
     a.model_id = "b-model"
     a._connect = lambda: None
@@ -165,6 +163,7 @@ async def test_every_check_in_this_file_passed() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    print(f"\n{sum(ok)}/{len(ok)} passed")
-    sys.exit(0 if all(ok) else 1)
+    with _script_guard.owned_script_runtime():
+        asyncio.run(main())
+        print(f"\n{sum(ok)}/{len(ok)} passed")
+        sys.exit(0 if all(ok) else 1)

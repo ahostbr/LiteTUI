@@ -292,6 +292,7 @@ async def test_every_check_in_this_file_passed() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    print(f"\n{sum(ok)}/{len(ok)} passed")
-    sys.exit(0 if all(ok) else 1)
+    with _script_guard.owned_script_runtime():
+        asyncio.run(main())
+        print(f"\n{sum(ok)}/{len(ok)} passed")
+        sys.exit(0 if all(ok) else 1)

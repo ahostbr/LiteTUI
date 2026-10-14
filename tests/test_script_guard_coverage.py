@@ -58,9 +58,9 @@ def constructs_app(tree: ast.AST) -> bool:
         if not isinstance(node, ast.Call):
             continue
         fn = node.func
-        if isinstance(fn, ast.Name) and fn.id == "LiteTUI":
+        if isinstance(fn, ast.Name) and fn.id in {"LiteTUI", "owned_app"}:
             return True
-        if isinstance(fn, ast.Attribute) and fn.attr == "LiteTUI":
+        if isinstance(fn, ast.Attribute) and fn.attr in {"LiteTUI", "owned_app"}:
             return True
     return False
 

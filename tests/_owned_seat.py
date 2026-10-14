@@ -24,6 +24,7 @@ a persisted conversation (the approval audit does) sets that up itself; see
 from __future__ import annotations
 
 _OPEN: list = []    # the sessions the current test opened
+_APPS: list = []    # stores that must close before a script sandbox is removed
 
 
 def owned_app(*args, **kwargs):
@@ -38,9 +39,18 @@ def owned_app(*args, **kwargs):
     session = ordinary(paths.data_root(), settings.load(), notice=lambda _text: None,
                        backend=kwargs.get("initial_backend"), model=kwargs.get("initial_model"))
     _OPEN.append(session)
-    return app_mod.LiteTUI(*args, agent_session=session, **kwargs)
+    app = app_mod.LiteTUI(*args, agent_session=session, **kwargs)
+    _APPS.append(app)
+    return app
 
 
 def release_all() -> None:
-    while _OPEN:
-        _OPEN.pop().release()
+    try:
+        while _APPS:
+            app = _APPS.pop()
+            store = getattr(app, "store", None)
+            if store is not None:
+                store.release()
+    finally:
+        while _OPEN:
+            _OPEN.pop().release()
