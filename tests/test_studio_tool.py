@@ -136,6 +136,9 @@ def _dead_ports(monkeypatch):
     Keep the real request construction, dispatch and error-to-prose path; only
     urlopen supplies a deterministic connection-refused outcome.
     """
+    monkeypatch.setattr(studio_tool, "IMAGE_URL", "http://127.0.0.1/image-fixture")
+    monkeypatch.setattr(studio_tool, "SOUND_URL", "http://127.0.0.1/sound-fixture")
+
     def refused(request, **kwargs):
         raise studio_tool.urllib.error.URLError(ConnectionRefusedError("fixture service is closed"))
 
