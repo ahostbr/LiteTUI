@@ -3,7 +3,7 @@
 `conftest.py`'s guards are `@pytest.fixture(autouse=True)` — they cannot reach a
 file that does not run under pytest. `_script_guard.py` exists to give the
 script-style half the same protection by hand, and "by hand" is the part that
-rots: nothing has ever checked that the files needing it import it.
+rots: the files needing it must enter its runtime before constructing an app.
 
 🔴 THE RULE IS "CONSTRUCTS AN APP", AND IT WAS MEASURED, NOT ASSUMED. A bare
 `LiteTUI()` reads the repo-root `settings.json` and can write `.convos` — both
@@ -76,6 +76,52 @@ def imports_guard(tree: ast.AST) -> bool:
     return False
 
 
+def enters_runtime(tree: ast.AST) -> bool:
+    """Reject construction/work before, after, or without the runtime boundary.
+
+    Propagate unguarded work through local callables until the finite function
+    set stops growing. A callable that enters the runtime around its work is
+    safe to call from either entry point; importing the guard is not sufficient.
+    """
+    functions = {node.name: node for node in tree.body
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    unsafe_functions = set()
+
+    def runtime_context(node):
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "owned_script_runtime"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "_script_guard")
+
+    def unguarded(node, protected=False):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return False
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            if any(unguarded(item.context_expr, protected) for item in node.items):
+                return True
+            protected = protected or any(runtime_context(item.context_expr) for item in node.items)
+            return any(unguarded(child, protected) for child in node.body)
+        if isinstance(node, ast.Call) and not protected:
+            fn = node.func
+            if ((isinstance(fn, ast.Name) and fn.id in {"LiteTUI", "owned_app"})
+                    or (isinstance(fn, ast.Attribute) and fn.attr in {"LiteTUI", "owned_app"})
+                    or (isinstance(fn, ast.Name) and fn.id in unsafe_functions)):
+                return True
+        return any(unguarded(child, protected) for child in ast.iter_child_nodes(node))
+
+    while True:
+        found = {name for name, node in functions.items()
+                 if any(unguarded(child) for child in node.body)}
+        additional = found - unsafe_functions
+        if not additional:
+            break
+        unsafe_functions.update(additional)
+    used = any(isinstance(node, (ast.With, ast.AsyncWith))
+               and any(runtime_context(item.context_expr) for item in node.items)
+               for node in ast.walk(tree))
+    return used and not unguarded(tree)
+
+
 def test_every_script_file_that_builds_an_app_imports_the_guard():
     """The forward rule, and the one that matters: the NEXT script-style file to
     construct a `LiteTUI()` is the one this catches.
@@ -85,11 +131,11 @@ def test_every_script_file_that_builds_an_app_imports_the_guard():
     the symptom surfaces days later as an unrelated assertion on somebody else's
     machine.
     """
-    _, scripts = run_all.classify()
+    scripts = _script_runnable_files()
     missing = [
         f.name
         for f in scripts
-        if constructs_app(_tree(f)) and not imports_guard(_tree(f))
+        if constructs_app(_tree(f)) and not enters_runtime(_tree(f))
     ]
     assert missing == [], (
         f"script-style file(s) construct a LiteTUI() without _script_guard: "
@@ -173,7 +219,7 @@ def test_the_rule_currently_partitions_the_script_runnable_files_exactly():
     """
     runnable = _script_runnable_files()
     builds = [f.name for f in runnable if constructs_app(_tree(f))]
-    guarded = [f.name for f in runnable if imports_guard(_tree(f))]
+    guarded = [f.name for f in runnable if enters_runtime(_tree(f))]
     assert sorted(builds) == sorted(guarded)
     assert len(builds) == 4, f"expected 4 app-constructing script-runnable files, got {builds}"
 
@@ -201,6 +247,20 @@ def test_the_detector_sees_a_real_call_and_ignores_the_word():
     assert constructs_app(ast.parse("import litetui.app as m\na = m.LiteTUI()\n"))
     assert not constructs_app(ast.parse('"""constructs a LiteTUI() somewhere"""\n'))
     assert not constructs_app(ast.parse("# LiteTUI() is what this would guard\nx = 1\n"))
+
+    assert enters_runtime(ast.parse(
+        "import _script_guard\nwith _script_guard.owned_script_runtime():\n    a = owned_app()\n"))
+    assert not enters_runtime(ast.parse("import _script_guard\na = owned_app()\n"))
+    assert not enters_runtime(ast.parse(
+        "import _script_guard\na = owned_app()\nwith _script_guard.owned_script_runtime():\n    pass\n"))
+    assert not enters_runtime(ast.parse(
+        "import _script_guard\nwith _script_guard.owned_script_runtime():\n    pass\na = owned_app()\n"))
+    assert not enters_runtime(ast.parse(
+        "import _script_guard\ndef work():\n    a = owned_app()\ndef main():\n"
+        "    with _script_guard.owned_script_runtime():\n        pass\n    work()\nmain()\n"))
+    assert enters_runtime(ast.parse(
+        "import _script_guard\ndef work():\n    a = owned_app()\ndef main():\n"
+        "    with _script_guard.owned_script_runtime():\n        work()\nmain()\n"))
 
 
 def test_the_guard_import_detector_sees_both_spellings():
