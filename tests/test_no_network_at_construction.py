@@ -104,7 +104,7 @@ def _poison(monkeypatch, *, raw: bool) -> list[str]:
 
 
 def test_constructing_the_app_opens_no_socket(dials):
-    owned_app()
+    owned_app(real_effects={"thinking", "model_list", "readiness", "updates"})
     assert dials == [], (
         f"LiteTUI.__init__ reached the network: {dials}\n\n"
         "A constructor must not dial out. On this box that call is a ~4.0s wait "
@@ -148,7 +148,8 @@ async def test_MOUNTING_the_app_opens_no_socket_either(http_dials):
     from _settle import settle_until
 
     dials = http_dials
-    a = owned_app()
+    # Keep list/readiness real; thinking/updater are unrelated startup observers.
+    a = owned_app(real_effects={"model_list", "readiness"})
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

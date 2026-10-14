@@ -80,8 +80,9 @@ def recorder(monkeypatch):
         gpu_gate.is_rtx_5090.cache_clear()
 
 
-def _app_with_a_context_preference():
-    a = owned_app(initial_backend="lmstudio", initial_model="qwen/qwen3.8-27b")
+def _app_with_a_context_preference(*, real_effects=()):
+    a = owned_app(initial_backend="lmstudio", initial_model="qwen/qwen3.8-27b",
+                  real_effects=real_effects)
     a._connect = lambda: None  # startup discovery is outside this test
     # The exact real-world configuration that caused it: a saved default model
     # and a saved context length.
@@ -108,7 +109,7 @@ async def test_booting_the_app_loads_no_model(recorder):
 @pytest.mark.asyncio
 async def test_connecting_loads_no_model(recorder):
     """The regression itself: connect used to call _apply_context_length()."""
-    a = _app_with_a_context_preference()
+    a = _app_with_a_context_preference(real_effects={"model_list"})
     a._fetch_ctx_window = lambda: None
 
     from litetui.llm_backend import ModelRow

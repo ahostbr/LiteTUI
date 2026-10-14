@@ -29,7 +29,7 @@ def make_app():
     a.model_id = "b-model"
     # never touch the network in a test
     a._connect = lambda: None
-    a._fetch_ctx_window = lambda: None
+    a.fetch_context_window = a._fetch_ctx_window = lambda: None
     return a
 
 

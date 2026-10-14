@@ -55,7 +55,11 @@ def make_app():
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
-    a._fetch_ctx_window = lambda: None
+    a.fetch_context_window = a._fetch_ctx_window = lambda: None
+    a.applied = []
+    async def apply_load_settings(key, config, *, notice=None):
+        a.applied.append((key, dict(config)))
+    a.backend.apply_load_settings = apply_load_settings
     return a
 
 
@@ -152,6 +156,7 @@ async def test_a_GOOD_value_still_saves():
         assert saved.get("ctx") == 8192, (
             f"a perfectly ordinary context length was refused: {saved!r}"
         )
+        assert a.applied == [("a-model", {"ctx": 8192})]
 
 
 @pytest.mark.asyncio

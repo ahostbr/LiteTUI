@@ -1,37 +1,88 @@
-"""One owned test seat for every test that builds the app.
+"""Real owned temporary seats, with explicit unrelated external-effect controls.
 
-The app's constructor refuses to build without an owned agent session, so a
-test that wrote `LiteTUI()` never reached the code it is there to guard. This
-is the one place a test gets a real seat:
+The constructor, store and session are real. Default fixture observers do not
+probe thinking, discover live LM Studio models/residency, or start an updater
+thread. A test measuring one of those doors opts out with ``real_effects`` and
+supplies its controlled seam before invoking the real subject. Model-info and
+apply/load operations are NOT controlled here: their owning tests control them.
 
-    from _owned_seat import owned_app
-    app = owned_app()                 # was: LiteTUI()
-
-The seat is opened the way the CLI opens it: `agent_launch_context.ordinary`
-over `paths.data_root()` with the settings the app itself would load. conftest
-points the data root at the test's tmp_path, so the seat's home lives there and
-goes away with it. Nothing is patched: the constructor's guard, the store and
-the session are the product's own.
-
-Release is per test, whichever module built the app: `tests/conftest.py` calls
-`release_all()` after every test.
-
-What it does not do: it starts no conversation and persists nothing, as a
-LiteTUI that has not been sent a prompt has not. A test that needs a turn inside
-a persisted conversation (the approval audit does) sets that up itself; see
-`approval_store_fixture_t0340.bind_origin`.
+Controls start before construction and remain until release_all, after pilot
+teardown. All owned apps in one test share that policy; conflicting policies
+fail rather than silently changing another app's measured subject.
 """
 from __future__ import annotations
 
-_OPEN: list = []    # the sessions the current test opened
-_APPS: list = []    # stores that must close before a script sandbox is removed
+from contextlib import ExitStack
+from unittest.mock import patch
+
+_OPEN: list = []
+_APPS: list = []
+_OBSERVER_APPS: list = []
+_EFFECTS: ExitStack | None = None
+_REAL_EFFECTS: frozenset | None = None
+_EFFECT_NAMES = {"thinking", "model_list", "readiness", "updates"}
 
 
-def owned_app(*args, **kwargs):
-    """`LiteTUI(*args, **kwargs)` on an owned test seat in this test's data root.
+def _fixture_rows(backend):
+    from litetui.llm_backend import ModelRow
 
-    A second app in one test finds the default seat held and gets a seat of its
-    own, as a second LiteTUI on one data root does."""
+    # Fixture catalogs describe availability, not implicit resident weights.
+    for app in reversed(_OBSERVER_APPS):
+        if app.backend is backend:
+            rows = getattr(app, "model_rows", {})
+            return [rows.get(key) or ModelRow(key=key, path=None, source="fixture", loaded=False)
+                    for key in app.available_models]
+    return None  # Unrelated backend units retain their real implementation.
+
+
+def control_external_effects(app=None, *, real_effects=()):
+    """Hold unrelated observer controls; opted-out subjects must supply a seam."""
+    global _EFFECTS, _REAL_EFFECTS
+    real = frozenset(real_effects)
+    if real - _EFFECT_NAMES:
+        raise ValueError(f"Unknown external effects: {sorted(real - _EFFECT_NAMES)}")
+    if _EFFECTS is not None:
+        if real != _REAL_EFFECTS:
+            raise ValueError("Owned apps in one runtime must use the same external-effect policy")
+        if app is not None and not any(owner is app for owner in _OBSERVER_APPS):
+            _OBSERVER_APPS.append(app)
+        return
+    from litetui import llm_backend, thinking_probe, update_check
+
+    stack = ExitStack()
+    try:
+        if "thinking" not in real:
+            stack.enter_context(patch.object(thinking_probe, "get_effective_levels", lambda *a, **k: None))
+        if "model_list" not in real:
+            original_listing = llm_backend.LMStudioBackend.list_models
+            async def listing(backend):
+                rows = _fixture_rows(backend)
+                return await original_listing(backend) if rows is None else rows
+            stack.enter_context(patch.object(llm_backend.LMStudioBackend, "list_models", listing))
+        if "readiness" not in real:
+            original_loaded = llm_backend.LMStudioBackend.loaded_models
+            def loaded(backend):
+                rows = _fixture_rows(backend)
+                return original_loaded(backend) if rows is None else [row.key for row in rows if row.loaded]
+            stack.enter_context(patch.object(llm_backend.LMStudioBackend, "loaded_models", loaded))
+        if "updates" not in real:
+            # Do not birth a daemon which reads mutable environment/ROOT later.
+            original_update = update_check.start_background_check
+            def start_update(app):
+                if not any(owner is app for owner in _OBSERVER_APPS):
+                    original_update(app)
+            stack.enter_context(patch.object(update_check, "start_background_check", start_update))
+    except BaseException:
+        stack.close()
+        raise
+    _EFFECTS, _REAL_EFFECTS = stack, real
+    if app is not None:
+        _OBSERVER_APPS.append(app)
+
+
+def owned_app(*args, real_effects=(), **kwargs):
+    """Construct a real owned app; real_effects opts observer subjects out."""
+    control_external_effects(real_effects=real_effects)
     from litetui import app as app_mod
     from litetui import paths, settings
     from litetui.agent_launch_context import ordinary
@@ -41,16 +92,26 @@ def owned_app(*args, **kwargs):
     _OPEN.append(session)
     app = app_mod.LiteTUI(*args, agent_session=session, **kwargs)
     _APPS.append(app)
+    _OBSERVER_APPS.append(app)
     return app
 
 
 def release_all() -> None:
+    global _EFFECTS, _REAL_EFFECTS
     try:
-        while _APPS:
-            app = _APPS.pop()
-            store = getattr(app, "store", None)
-            if store is not None:
-                store.release()
+        try:
+            while _APPS:
+                app = _APPS.pop()
+                store = getattr(app, "store", None)
+                if store is not None:
+                    store.release()
+        finally:
+            while _OPEN:
+                _OPEN.pop().release()
     finally:
-        while _OPEN:
-            _OPEN.pop().release()
+        stack, _EFFECTS, _REAL_EFFECTS = _EFFECTS, None, None
+        try:
+            if stack is not None:
+                stack.close()
+        finally:
+            _OBSERVER_APPS.clear()

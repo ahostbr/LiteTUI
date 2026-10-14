@@ -364,10 +364,14 @@ def test_bind_never_writes_the_old_file(monkeypatch, owned_session):
 
 
 def _app(monkeypatch, owned_session):
+    from _owned_seat import control_external_effects
+
     from litetui import app as app_mod
 
+    control_external_effects()
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
     a = app_mod.LiteTUI(agent_session=owned_session)
+    control_external_effects(a)
     a._connect = lambda: None  # startup discovery is outside this test
     a._fetch_ctx_window = lambda: None
     a._active_tool_profile = tool_policy.AUTONOMOUS
