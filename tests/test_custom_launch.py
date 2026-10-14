@@ -279,7 +279,11 @@ if not allowed:
 print('Folder-owned identity: ' + json.dumps(receipt))
 '''.replace('Path(ROOT)', f'Path({str(root)!r})').replace('open(LOG,', f'open({str(registration_log)!r},'), encoding='utf-8')
     bootstrap = tmp_path / 'owned child bootstrap.py'
-    bootstrap.write_text('''import sys
+    bootstrap.write_text('''import os, sys
+assert os.environ.get('LITETUI_DISABLE_UPDATE_CHECK') == '1'
+assert 'LITETUI_FORCE_UPDATE_CHECK' not in os.environ
+assert all(key not in os.environ for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'))
+assert os.environ.get('NO_PROXY') == os.environ.get('no_proxy') == '127.0.0.1,localhost,::1'
 from litetui import cli, harness
 executable = EXECUTABLE
 original_run = harness.ttyguard.run
@@ -303,6 +307,13 @@ cli.main()
     home.mkdir()
     monkeypatch.setenv('HOME', str(home))
     monkeypatch.setenv('USERPROFILE', str(home))
+    # Child startup must not inherit updater/proxy effects from the test host.
+    monkeypatch.setenv('LITETUI_DISABLE_UPDATE_CHECK', '1')
+    monkeypatch.delenv('LITETUI_FORCE_UPDATE_CHECK', raising=False)
+    for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost,::1')
+    monkeypatch.setenv('no_proxy', '127.0.0.1,localhost,::1')
     monkeypatch.setenv('PYTHONPATH', str(Path(__file__).resolve().parents[1] / 'src'))
     spec = validate_request({'prompt': 'test', 'backend': 'custom', 'model': 'fixture',
         'workspace': str(tmp_path), 'thinking_level': 'off', 'launch': {
