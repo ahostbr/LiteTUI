@@ -167,6 +167,7 @@ async def test_notice_reaches_the_chat_log(clean_env, monkeypatch, owned_update_
     app's UPDATE_STATUS broadcast, one system line instead of a broadcast
     channel. system_message() mounts ChatMessage(Text(...)), so assert on
     the mounted renderable, not on the widget tree's internals."""
+    from _owned_seat import control_external_effects
     from litetui.app import LiteTUI
     from litetui.widgets import ChatMessage
 
@@ -176,7 +177,10 @@ async def test_notice_reaches_the_chat_log(clean_env, monkeypatch, owned_update_
     monkeypatch.setattr(update_check, "fetch_latest_version", lambda: "99.99.99")
     monkeypatch.setattr(update_check, "_started", False)
 
+    # Measure the real updater, not unrelated model discovery/thinking probes.
+    control_external_effects(real_effects={"updates"})
     a = LiteTUI(agent_session=owned_update_session)
+    control_external_effects(a, real_effects={"updates"})
     found = False
     async with a.run_test(size=(100, 30)) as pilot:
         for _ in range(60):  # ~3 s worst case at the app's pause cadence
