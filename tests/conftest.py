@@ -81,9 +81,13 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
 
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
     # Mounted NowCard reads the board under Path.home(), independently of the
-    # app data root and NO_HARNESS. Keep every default home lookup temporary;
-    # tests of explicit home/board paths can still install their own boundary.
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    # app data root and NO_HARNESS. Use the product's environment resolution so
+    # a test's own HOME/USERPROFILE change or Path.home patch still takes effect.
+    # A profile container keeps ordinary scratch siblings from being mistaken
+    # for sibling user profiles by the deny floor's real home-parent rule.
+    home = str(tmp_path / "Users" / "test-profile")
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
     monkeypatch.setattr(paths, "LLAMA_DIR", tmp_path / ".llama")
     monkeypatch.setattr(listen_tool, "WORKDIR", tmp_path / "temp-working-dir")
