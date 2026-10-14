@@ -206,8 +206,5 @@ async def test_a_kill_drops_the_chip_too() -> None:
 
 
 def tmp_root(app) -> Path:
-    """A scratch root for `finish`, so the arm never writes the repo's
-    output/tasks/ — the log write is incidental to what is being measured."""
-    import tempfile
-
-    return Path(tempfile.mkdtemp(prefix="litetui-t581-"))
+    """Use this app's per-test managed root; keep the real finish log write."""
+    return app._agent_session.store.data_root
