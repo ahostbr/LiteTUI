@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
 from litetui import app as m
 from textual.widgets import Select
 from textual.widgets._header import HeaderIcon
@@ -39,7 +40,7 @@ def _never_write_the_live_jobs_file(tmp_path, monkeypatch):
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

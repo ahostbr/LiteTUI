@@ -7,23 +7,19 @@ pins LITETUI_BACKEND so no OTHER test meets this modal).
 """
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 
 import pytest
 
-from litetui import app as app_mod
+from _owned_seat import owned_app
 from litetui import llm_backend
-from litetui import paths
 from litetui.plugins import model_switch as ms
 from litetui.picker import PickerScreen
 from litetui.settings import Settings
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-firstboot-"))
 
 
 def _app():
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings()
     # BOTH NAMES. `_connect` is an ALIAS of `connect`, and an instance attribute
     # shadows ONE NAME, not the object -- stubbing only the private one leaves

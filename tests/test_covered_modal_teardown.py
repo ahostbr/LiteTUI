@@ -32,12 +32,13 @@ from textual.widgets import Static
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
+from _owned_seat import owned_app
 from litetui import app as m
 from litetui.side_panel import DialogController, _ModalHost
 
 
 def make_app() -> "m.LiteTUI":
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

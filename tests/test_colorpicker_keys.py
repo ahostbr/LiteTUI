@@ -35,7 +35,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen, _SVField
 from litetui.side_panel import DialogController, SidePanel
 from textual.widgets import Input
@@ -56,7 +56,7 @@ KEYS = [
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

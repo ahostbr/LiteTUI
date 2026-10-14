@@ -126,9 +126,11 @@ def _conversation_app(messages, keep_recent=4):
     ran `__init__` raises ReactiveError — the pure-emitter arms above get away
     with `__new__` because they touch no reactive at all.
     """
+    from test_compaction_ui import _app as owned_compaction_app
+
     from litetui.settings import Settings
 
-    a = app_mod.LiteTUI()
+    a = owned_compaction_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None
