@@ -88,6 +88,7 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", home)
     monkeypatch.setenv("LOCALAPPDATA", str(Path(home) / "AppData" / "Local"))
     from _isolated_home import redirect_cached_home
+
     from litetui import listen_tool, paths, seat_guard
 
     # Collection can import these modules before the per-test home exists.
