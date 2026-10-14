@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui.picker import PickerBody, PickerScreen, pick
 from litetui.side_panel import DialogController, SidePanel, close_dialog, request_swap
 from textual.widgets import OptionList
@@ -35,7 +35,7 @@ ROWS = [(f"id-{i}", f"row {i}") for i in range(12)]
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

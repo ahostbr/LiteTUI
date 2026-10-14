@@ -31,9 +31,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _owned_seat import owned_app
 from _settle import settle_until  # noqa: E402
 
-from litetui import app as m  # noqa: E402
 from litetui import (
     goal_loop,  # noqa: E402
     side_panel,  # noqa: E402
@@ -42,7 +42,7 @@ from litetui.picker import PickerScreen, pick  # noqa: E402
 
 
 def make_app(rpc: bool = False):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

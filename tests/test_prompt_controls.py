@@ -1,5 +1,6 @@
 import pytest
 from textual.app import App
+from _owned_seat import owned_app
 from litetui.input_controls import PromptBox
 
 
@@ -158,7 +159,7 @@ async def test_actual_app_prompt_controls(tmp_path, monkeypatch):
     monkeypatch.setattr(LiteTUI, '_mcp_connect', lambda self: None)
     monkeypatch.setattr(plugins, 'activate_plugins', lambda *args: None)
     monkeypatch.setattr(hook_host, 'queue_lifecycle', lambda *args: None)
-    app = LiteTUI()
+    app = owned_app()
     async with app.run_test(size=(120, 35)) as pilot:
         await pilot.pause(0.2)
         assert len(app.query(MicButton)) == 1

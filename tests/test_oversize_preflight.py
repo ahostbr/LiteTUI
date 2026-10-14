@@ -24,14 +24,14 @@ measurement runs before reading `compact_keep_recent`. A user has one chat line.
 from __future__ import annotations
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui import app as app_mod
 from litetui.settings import Settings
 
 
 def _app(*, window=32768, loaded=True, tools=False,
          max_chat=8192, max_tools=12288):
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None

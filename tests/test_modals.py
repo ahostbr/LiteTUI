@@ -7,26 +7,24 @@ real DOM, so clicking and key presses are exercised rather than simulated.
 
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
 # The repo root, one level up since the tests moved into tests/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
 from litetui import app as m  # noqa: E402
-from litetui import paths  # noqa: E402
 from litetui.picker import PickerScreen  # noqa: E402
 from litetui.plugins.help_plugin import HelpScreen  # noqa: E402
 from textual.widgets import OptionList  # noqa: E402
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-modal-"))
 
 pytestmark = pytest.mark.asyncio
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model", "b-model", "c-model"]
     a.model_id = "b-model"
     # never touch the network in a test

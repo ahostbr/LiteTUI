@@ -48,7 +48,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from litetui import app as m
+from _owned_seat import owned_app
 
 
 class _DialledOut(RuntimeError):
@@ -104,7 +104,7 @@ def _poison(monkeypatch, *, raw: bool) -> list[str]:
 
 
 def test_constructing_the_app_opens_no_socket(dials):
-    m.LiteTUI()
+    owned_app()
     assert dials == [], (
         f"LiteTUI.__init__ reached the network: {dials}\n\n"
         "A constructor must not dial out. On this box that call is a ~4.0s wait "
@@ -148,7 +148,7 @@ async def test_MOUNTING_the_app_opens_no_socket_either(http_dials):
     from _settle import settle_until
 
     dials = http_dials
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
