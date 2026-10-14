@@ -2,8 +2,9 @@
 import json
 from types import SimpleNamespace
 
+from _owned_seat import owned_app
+
 from litetui import harness
-from litetui.app import LiteTUI
 
 
 def test_heartbeat_adopts_external_name_before_writing_presence(tmp_path, monkeypatch):
@@ -28,7 +29,7 @@ def test_heartbeat_adopts_external_name_before_writing_presence(tmp_path, monkey
 
 
 def test_refreshed_seat_name_is_in_footer(monkeypatch):
-    app = LiteTUI()
+    app = owned_app()
     app.seat.registered = True
     app.seat.name = "NewName"
     assert "NewName" in app.ctx_label_text.plain

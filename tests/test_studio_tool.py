@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui import studio_tool
 
 
@@ -41,7 +41,7 @@ def test_the_studio_tool_is_DEFERRED_not_absent():
     """
     from litetui.plugins import tool_search
 
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     names = [t["function"]["name"] for t in a._all_tools() if "function" in t]
     assert "studio" in tool_search.DEFAULT_DEFERRED, (
@@ -59,7 +59,7 @@ def test_the_dispatcher_resolves_studio_and_injects_the_seat():
     CALLING model's identity in, so generate actions can suspend the very
     seat that ordered them. Identity-checking the function would miss a
     closure that forgot the injection — call it and look."""
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a.model_id = "the-current-seat"
     seen = {}

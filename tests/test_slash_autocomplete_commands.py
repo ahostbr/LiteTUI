@@ -37,6 +37,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
+
 from litetui import app as m
 from litetui import skills as skills_mod
 
@@ -80,7 +82,7 @@ def _skills(tmp_path: Path, *names) -> list:
 
 
 def make_app(tmp_path: Path, *skill_names):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

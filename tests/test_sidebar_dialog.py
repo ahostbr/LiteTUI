@@ -31,7 +31,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui.dialog_demo import DemoDialogBody
 from litetui.settings import Settings
 from litetui.side_panel import (
@@ -44,7 +44,7 @@ from litetui.side_panel import (
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
