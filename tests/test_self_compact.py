@@ -3,15 +3,17 @@ import json
 from types import SimpleNamespace as NS
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui.app import WAKE_AFTER_COMPACT, LiteTUI
+from litetui.app import WAKE_AFTER_COMPACT
 from litetui.plugins.self_compact import CompactionRequest
 from litetui.settings import Settings
 
 
 @pytest.fixture
 def app():
-    a = LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a.settings = Settings(compact_keep_recent=2, autocompact_enabled=False,
                           wake_after_compact=False, clear_screen_after_compact=False)
     a.conversation = [

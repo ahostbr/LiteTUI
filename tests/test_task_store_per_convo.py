@@ -368,6 +368,7 @@ def _app(monkeypatch, owned_session):
 
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
     a = app_mod.LiteTUI(agent_session=owned_session)
+    a._connect = lambda: None  # startup discovery is outside this test
     a._fetch_ctx_window = lambda: None
     a._active_tool_profile = tool_policy.AUTONOMOUS
     a._deliver_inbox = lambda message: None

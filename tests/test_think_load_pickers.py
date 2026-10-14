@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import thinking_probe
 from litetui.picker import PickerScreen
@@ -314,9 +315,9 @@ def test_a_remote_backend_is_untouched(picks):
 
 @pytest.mark.asyncio
 async def test_think_pushes_a_real_picker_screen():
-    from litetui import app as app_mod
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a.convo_dir = None
     a.skills = []
     async with a.run_test() as pilot:
@@ -329,9 +330,9 @@ async def test_think_pushes_a_real_picker_screen():
 
 @pytest.mark.asyncio
 async def test_load_pushes_a_real_picker_screen():
-    from litetui import app as app_mod
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a.convo_dir = None
     a.skills = []
     a.available_models = ["alpha", "beta"]

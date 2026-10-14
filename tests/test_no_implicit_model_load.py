@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
 from litetui import paths
@@ -75,7 +76,8 @@ def recorder(monkeypatch):
 
 
 def _app_with_a_context_preference():
-    a = app_mod.LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     # The exact real-world configuration that caused it: a saved default model
     # and a saved context length.
     a.settings = Settings(

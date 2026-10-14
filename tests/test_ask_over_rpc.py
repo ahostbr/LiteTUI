@@ -190,6 +190,7 @@ async def test_a_real_headless_app_takes_the_wire_path_not_the_widget():
     the thing the reproduction showed going the other way.
     """
     a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a._rpc = True
     emitted: list[dict] = []
     a._rpc_emit = emitted.append  # type: ignore[method-assign]
