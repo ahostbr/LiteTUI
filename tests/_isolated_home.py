@@ -21,8 +21,9 @@ def isolated_environment(home):
         "LMSTUDIO_MODELS": str(home / ".lmstudio" / "models"),
         "LITESUITE_LLM_DIR": str(home / ".litesuite" / "llm"),
         "CLINE_DATA_DIR": str(home / ".cline" / "data"),
-        "CLINE_PROVIDER_SETTINGS_PATH": str(home / ".cline" / "data" / "settings" / "providers.json"),
-        "LITETUI_SIDECAR_EXE": str(home / ".litesuite" / "sidecar" / "litesuite.exe"),
+        # Empty exclusive overrides preserve normal fallback/selection priority.
+        "CLINE_PROVIDER_SETTINGS_PATH": "",
+        "LITETUI_SIDECAR_EXE": "",
         "LITESUITE_FLEET_POLICY": str(home / ".litesuite" / "fleet-policy.json"),
     }
 
