@@ -13,8 +13,8 @@ that only looked at the widgets.
 from __future__ import annotations
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui.app import LiteTUI
 from litetui.side_panel import show_dialog
 from litetui.tool_list import ToolListBody, tool_rows
 from litetui.tool_policy import READ_POLICY, WRITE_POLICY
@@ -32,7 +32,7 @@ def _spec(name, desc="a test tool"):
 
 
 def _app(monkeypatch):
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app.settings.tools_disabled = []
     monkeypatch.setattr("litetui.tool_list.settings_mod.save", lambda s, root=None: None)
