@@ -27,16 +27,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _owned_seat import owned_app
 from _settle import settle_until  # noqa: E402
 from textual.widgets import Static  # noqa: E402
 
-from litetui import app as m  # noqa: E402
 from litetui import task_screens as ts  # noqa: E402
 from litetui import tasks as tasks_mod  # noqa: E402
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app(initial_model="a-model")
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -78,12 +78,18 @@ def test_a_huge_prompt_is_capped_and_says_so():
     assert t.prompt.endswith("…"), "a silent truncation reads as the whole prompt"
 
 
-def test_the_prompt_survives_the_store(tmp_path):
+def test_the_prompt_survives_the_store():
     """The store is rewritten on every transition and re-read at boot. A field
     the panel depends on that does not round-trip is empty after a restart."""
-    t = tasks_mod.new_task("subagent", {"prompt": "line one\nline two"}, "c1")
-    tasks_mod.save([t], tmp_path)
-    back = tasks_mod.load(tmp_path)[t.id]
+    from uuid import uuid4
+
+    a = make_app()
+    convo_id = str(uuid4())
+    destination = a._agent_session.conversation_directory(convo_id)
+    destination.mkdir()
+    t = tasks_mod.new_task("subagent", {"prompt": "line one\nline two"}, convo_id)
+    tasks_mod.save([t], destination, agent_session=a._agent_session)
+    back = tasks_mod.load(destination)[t.id]
     assert back.prompt == "line one\nline two"
 
 
