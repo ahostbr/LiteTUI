@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
 from litetui import goal_loop as goal_mod
@@ -218,7 +219,7 @@ def test_goal_and_loop_are_registered_as_first_party_commands(monkeypatch) -> No
     from litetui.settings import Settings
 
     monkeypatch.setattr(settings_mod, "load", lambda: Settings())
-    app = app_mod.LiteTUI()
+    app = owned_app()
     assert app.plugins.commands["/goal"].owner == "goal-loop"
     assert app.plugins.commands["/loop"].owner == "goal-loop"
     assert len(app.plugins.turn_finalizers) == 1
