@@ -134,25 +134,31 @@ def _run_checks():
     chk("both carry the actual file contents", "Prefers `dir`" in live and "Prefers `dir`" in once)
 
 
-_prior_data_root = os.environ.get("LITETUI_DATA_ROOT")
-_prior_convo_dir = paths.CONVO_DIR
-try:
-    _run_checks()
-finally:
-    try:
-        for app in reversed(_apps):
+def main():
+    ok.clear()
+    failures.clear()
+    _apps.clear()
+    _sandboxes.clear()
+    with _script_guard.owned_script_runtime():
+        _prior_data_root = os.environ.get("LITETUI_DATA_ROOT")
+        _prior_convo_dir = paths.CONVO_DIR
+        try:
+            _run_checks()
+        finally:
             try:
-                app.store.release()
+                for app in reversed(_apps):
+                    try:
+                        app.store.release()
+                    finally:
+                        app._agent_session.release()
             finally:
-                app._agent_session.release()
-    finally:
-        paths.CONVO_DIR = _prior_convo_dir
-        for sandbox in reversed(_sandboxes):
-            sandbox.cleanup()
-        if _prior_data_root is None:
-            os.environ.pop("LITETUI_DATA_ROOT", None)
-        else:
-            os.environ["LITETUI_DATA_ROOT"] = _prior_data_root
+                paths.CONVO_DIR = _prior_convo_dir
+                for sandbox in reversed(_sandboxes):
+                    sandbox.cleanup()
+                if _prior_data_root is None:
+                    os.environ.pop("LITETUI_DATA_ROOT", None)
+                else:
+                    os.environ["LITETUI_DATA_ROOT"] = _prior_data_root
 
 
 # ── the same checks, as a pytest arm (T700) ─────────────────────────────
@@ -165,11 +171,12 @@ finally:
 
 
 def test_every_check_in_this_file_passed() -> None:
+    main()
     assert ok, "no check ran — the body above did not execute"
     assert failures == [], failures
 
 
 if __name__ == "__main__":
-    with _script_guard.owned_script_runtime():
-        print(f"\n{sum(ok)}/{len(ok)} passed")
-        sys.exit(0 if all(ok) else 1)
+    main()
+    print(f"\n{sum(ok)}/{len(ok)} passed")
+    sys.exit(0 if all(ok) else 1)
