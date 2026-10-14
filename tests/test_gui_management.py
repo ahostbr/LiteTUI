@@ -142,7 +142,7 @@ async def test_real_app_management_persists_history_settings_memory_and_jobs(tmp
         renamed = await async_dispatch(app, {"type": "gui.conversations.rename", "title": "Desktop history"})
         assert renamed["meta"]["name"] == "Desktop history"
         await async_dispatch(app, {"type": "gui.memory.write", "name": "soul.md", "text": "Persisted soul"})
-        assert (tmp_path / ".convos" / session_id / "soul.md").read_text() == "Persisted soul"
+        assert (app._agent_session.memory_root / "soul.md").read_text() == "Persisted soul"
         changed = await async_dispatch(app, {"type": "gui.settings.apply", "patch": {"max_tokens_chat": 1024}})
         assert changed["effective"]["max_tokens_chat"] == 1024
         jobs = await async_dispatch(app, {"type": "gui.jobs.create", "job": {"prompt": "Fixture job", "schedule": "0 9 * * *", "enabled": False}})
