@@ -131,10 +131,15 @@ def test_sound_job_without_id_is_refused():
 
 @pytest.fixture()
 def _dead_ports(monkeypatch):
-    """Point both apps at a port nothing listens on. Connection refused is
-    immediate on loopback, so these run fast and deterministic."""
-    monkeypatch.setattr(studio_tool, "IMAGE_URL", "http://127.0.0.1:1")
-    monkeypatch.setattr(studio_tool, "SOUND_URL", "http://127.0.0.1:1")
+    """A closed service at the transport boundary, without opening a socket.
+
+    Keep the real request construction, dispatch and error-to-prose path; only
+    urlopen supplies a deterministic connection-refused outcome.
+    """
+    def refused(request, **kwargs):
+        raise studio_tool.urllib.error.URLError(ConnectionRefusedError("fixture service is closed"))
+
+    monkeypatch.setattr(studio_tool.urllib.request, "urlopen", refused)
 
 
 def test_image_down_is_a_sentence_not_a_traceback(_dead_ports):
