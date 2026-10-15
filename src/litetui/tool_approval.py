@@ -348,8 +348,7 @@ def take_spawner_answer(app, msg: dict) -> bool:
     seat_id = getattr(getattr(app, "seat", None), "agent_id", None)
     if not seat_id or msg.get("to") != seat_id or harness._expired(msg):
         return False
-    text = msg.get("body") or (msg.get("payload") or {}).get("text") or ""
-    match = approval_relay._ANSWER.fullmatch(str(text).strip())
+    match = approval_relay._ANSWER.fullmatch(harness.message_text(msg))
     if match is None:
         return False
     from litetui import approval_authority
