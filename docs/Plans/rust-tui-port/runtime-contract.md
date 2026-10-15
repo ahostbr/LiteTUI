@@ -1,0 +1,170 @@
+# T0565 — P0 Rust Runtime Contract and Isolation Gates
+
+**Disposition: P0 remains open; contract work can proceed offline. Real-runtime integration, full parity, isolation and performance acceptance are not established.**
+
+This synthesis reconciles all ten source audits with the supplied plan and `tests/test_rust_wire_contract.py`. It grants **no new launch, merge, push or cutover authority**. Python remains the runtime, policy, persistence, scheduling and execution authority; Rust is its presentation/protocol client.
+
+## 1. Executive verdict and evidence boundary
+
+The reports establish a usable command seam, GUI negotiation, additive event envelopes and important negative-path semantics. They do **not** establish complete turn correlation, recoverable event ordering, safe owned-child startup or lifetime containment.
+
+Parent verification after synthesis: **18 wire tests passed**, and **42 tests passed** in the focused set including packaging tests and existing terminal-output, approval-type, stream-sink, model-switch and unsupported-version checks. Nine synthetic case bundles were exported from passing executions. The synthesis originally reviewed the first seven tests; separate source review found and prompted the evidence-packaging fixes and malformed-command regression below. These tests retain real reader/dispatcher/serializer functions, an unbound app emitter and real futures, while substituting the host loop, workers and streams. They establish **in-process behavior only**, never actual child isolation.
+
+No audit report’s proposed tests are claimed to have run. Historical Python passes and Rust preview observations remain separately attributed planning evidence.
+
+**Citation discipline:** most audits reference HEAD `15850ed…`; lane9 explicitly guarantees that revision only for its app excerpts. Non-app line numbers were counted independently and sometimes differ between lanes. References below therefore prefer **file/function names**. Inherited app anchors are navigation aids, not newly verified citations. Before freezing fixtures, record actual revisions, source hashes and checked anchors. A child’s missing packet is not a missing repository file.
+
+## 2. Established command, event, identity and authority contract
+
+| Area | Source-established behavior | Required Rust contract / unresolved gate |
+|---|---|---|
+| Transport | `rpc.py:rpc_emit/_reader_loop`: JSONL; emitter uses `json.dumps(default=str)`, newline and flush. Blank input is ignored; reader errors are direct records. EOF schedules exit; output errors can be swallowed. | Incremental UTF-8 decoding across reads; separate stderr drain; bounded frames/queues. Input encoding, concurrent-write integrity, limits and real pipe behavior need proof. No delivery guarantee follows from successful emission. |
+| Negotiation | `gui_rpc.py:dispatch`: `gui.hello` requires integer protocol version `1`, excluding booleans; enables GUI behavior and returns protocol/data versions, capabilities and operations. Prior hello is not server-enforced authorization. | Require successful compatibility negotiation before management controls. Inventory names are not argument/event/completion schemas. Establish the activation boundary under concurrent events, not merely sequential test execution. |
+| Responses | `rpc.py:_respond`: `type`, `ok`, optional correlation `id`, and `result` or string `error`; null/absent IDs are omitted. Commands use top-level fields, not universal `params`. | Separate transport success from nested operation success, persistence success and effective state. Preserve optional fields such as `needs:"terminal"`. |
+| Event representation | `LiteTUI._rpc_emit` emits raw first, then `gui.event` with session, operation and nested event when enabled (`app.py:5730–5748`, inherited). Direct responses/errors remain unwrapped. | Render one authoritative representation after a verified boundary; consume direct responses/errors. Suppress only verified mirrors—not equal deltas generally. Preserve original records diagnostically. |
+| Identity | Command ID, operation ID, session/conversation ID, ask/approval/request IDs, queue/native-entry IDs, task/process/tool-call IDs have different meanings. Management context can override the app’s operation fallback. | Use distinct types and process-generation namespaces. Command IDs are not idempotency keys or proven turn IDs. Never assign an ambiguous event to “latest prompt.” Complete turn/message identity remains blocking. |
+| Admission/completion | Legacy prompt can emit `submit_refused` before returning `turn:"accepted"`. GUI submission returns acceptance plus behavior. Queue input can enter an existing turn. | Model request, admission, queue ownership, execution, turn completion and effective resource state separately. Acceptance, worker success, presentation settlement and abort ACK are not completion. |
+| Cancellation | RPC abort releases waiters before requesting stop. First active stop is soft; another can force cancellation. Tool cancellation and queued-input cancellation are separate paths. | Preserve Python ordering and eligibility checks. Disconnect means interrupted/unknown, not safely cancelled. Old completion must not mutate newer work. |
+| Approval | Dedicated target fields win over legacy `id`; `allow` and optional `remember` require booleans. Python owns frozen authority, expiry, revocation, audit and settlement. | Send independent command and target IDs. Denial-first UI; explicit once/always choices. ACK means decision accepted—not execution or standing-rule persistence. Never replay decisions. |
+| Unknown/failure | No global event sequence, resume cursor or deduplication contract is established. The baseline allowed non-string command types to escape uniform error handling; this checkpoint now rejects those before routing. Other malformed fields remain unaudited; mutations can partially apply before failure. | Preserve unknown payloads bounded and sanitized. Under the retained plan, unknown non-allowlisted events block further mutation pending explicit recovery. Reconcile uncertain outcomes through reads; **never automatically replay side effects**. |
+
+Terminal rates may be null and caller extras can override base `turn_end` fields. Do not invent stop-reason enums, completion identities or exactly-once guarantees.
+
+## 3. Startup and isolation matrix
+
+A temporary data root, headless mode and disabled tool advertising are **not** containment.
+
+| Boundary | Established exposure/control | Required evidence before real-child reliance |
+|---|---|---|
+| Before import | `paths.data_root()` honors `LITETUI_DATA_ROOT`; some constants freeze at import. Home integrations, explicit roots, checkout resources and workspace paths escape that root. | Absolute synthetic data/home/work/temp roots and clean environment before import; deny protected roots; trace migration, locking and explicit-root bypasses. |
+| Owned startup | CLI/session APIs are mandatory; bare mutable app construction refuses. RPC otherwise defaults to autonomous profile. Constructor/mount already perform discovery and service setup. | Explicit valid authority selection **before spawn**; cancellation/missing selection starts nothing. Real create/acquire, collision, ownership, resume and failure-path evidence. Never forge ownership/ancestry markers. |
+| Plugins/hooks | Plugins import before disable checks; registration is not enforced pure; activation occurs on mount. Hook “observe” can execute code; queued snapshots survive later disabling. | Audited import/register/activate seams; hooks off before snapshots; process sentinels through teardown; residue and failure tests. Visibility gates are not authorization. |
+| Fleet/scheduler | Harness disable covers important doors, not every direct registry/presence access. Cron construction loads jobs; activation starts monitoring. | Synthetic fleet/job stores; no live registration/mailbox access; audited constructors, timers and shutdown. Do not fake successful registration to bypass legitimate startup requirements. |
+| MCP/backend/monitor | MCP startup can spawn executables or make HTTP requests; lazy HTTP remains eager. Browser demo still writes. Backend construction alone does not prove a request. | OS-enforced network/process policy plus explicit fixture allowances; record forbidden **attempts**. Audit provider-native configuration and monitor sinks/threads. |
+| Descriptors/terminal | CLI duplicates protocol stdout, redirects normal stdout and runs headless; image initialization occurs earlier. Existing follow-up identifies non-TTY probe guards. | Real no-console test: first stdout bytes parse as JSON, no escape preamble, stderr flood handled; verify cell-size behavior. Corruption is a risk to test, **not established fact**. |
+| Lifetime/Windows | Visible shutdown closes admission and releases repository before session under a registration lock. Some MCP uncertainty is quarantined; descendant cleanup is not universally proven. | Job Object/ownership design, nested jobs/breakaway policy, detached descendants, bounded shutdown and recovery; shared services excluded. EOF/ACK must not imply cleanup. |
+
+Environment switches (`LITETUI_NO_HARNESS`, hooks off, update-check opt-out) are defense-in-depth—not a sandbox. Controls must remain effective through shutdown.
+
+## 4. Prioritized blockers and exact next evidence
+
+### P0-A — Complete correlation and lifecycle contract
+
+**Inspect:** all event producers and consumers of `_gui_next_operation_id`, `_gui_operation_id`, `current_operation`/`OPERATION_CONTEXT`; `_submit_text`, `_stream`, turn-start/end helpers, queue delivery, native ledgers and conversation switching.
+
+**Produce:** versioned event inventory with required fields/nullability; operation-to-turn/message mapping; snapshot/event ordering policy; sanitized traces for refusal-before-ACK, queued mid-turn delivery, interrupt, session switch, late completion and missing terminal events.
+
+**Tests:** reducer cases must reject “latest prompt” attribution, preserve repeated identical deltas and close only identified work. Add identity fields compatibly where repository evidence proves they are missing.
+
+### P0-B — Owned startup and lifetime containment
+
+**Inspect:** `cli.py`, paths/settings precedence, `AgentSession` and launch-context implementation, `ConversationRepository`, migration/coordinated-write helpers, registration polling/writers, prepared-child launch/process/environment code, image/backend initialization and teardown.
+
+**Produce:** complete filesystem/network/process effect inventory from first import through release; approved resolved-root policy; Windows ownership and shared-service exclusion design.
+
+**Tests:** synthetic failure injection at acquisition, constructor, mount, connection and registration; wrong-root negative control; no child without authority selection; collision refusal; graceful shutdown, EOF, forced termination and descendant recovery. In-process mocks cannot discharge this blocker.
+
+### P0-C — Authority and cancellation edge cases
+
+**Inspect:** all approval-waiter creators, standing-rule persistence/matching, permission-judge bypass, parent/child approval bridge and capability/argument binding.
+
+**Produce:** evidence that normal production approvals possess authority records; explicit timeout/abort/revocation outcomes and child identity mapping.
+
+**Tests:** human/agent races, deadlines, store replacement, persistence failure, abort races and restart replay. The current real-future test deliberately has **no authority record**: it proves resolver transport behavior, not policy enforcement. Verify denied side-effect absence with a successful inert control later.
+
+### P0-D — Wire hardening and parity inventory
+
+**Inspect/test:** non-string `type` and command fields, malformed event payloads, concurrent emission, broken stdout, escaped/Unicode data, serialization fallback, partial settings effects and model reconnect completion.
+
+Extend `tests/test_rust_wire_contract.py` only within its declared boundary. Fragmented byte reads, fd ownership and scheduling require separate transport/process tests.
+
+Reconcile `parity.json` against every frontend contribution, including custom plugin specimens, settings timing, images/voice and both hosts. Missing access leaves rows blocked—not waived.
+
+### P0-E — Observable host/performance protocol
+
+Freeze Windows Terminal and LiteSuite launch/control/capture procedures, trace schema, packaging topology, workload manifests and instrumentation boundaries. Proposed runner names are not implemented capabilities.
+
+## 5. Dependency sequence: smallest safe implementation
+
+1. **Pin evidence:** revisions, checked citations, source hashes, fake boundaries and execution records.
+2. **Extend in-process wire evidence:** existing production path, negative tests and optional synthetic serialized captures; validate test sensitivity.
+3. **Freeze schemas and parity rows:** resolve identity/terminal gaps before queue/interrupt reducers.
+4. **Implement offline Rust transport/reducer:** reviewed fixtures, unknown-event blocking, bounded buffering, generation isolation and no replay.
+5. **Prove owned-child containment and host procedures:** only within separately applicable authorization.
+6. **Establish Python baseline**, then obtain approved numerical thresholds.
+7. **Implement real-process vertical path:** hello and narrow read-only management first; then owned mutations, prompts and consequential controls.
+8. Expand to full inventory parity; perform equivalent both-host comparisons and fault acceptance.
+
+A read-only first slice reduces risk; it does not redefine the full-parity goal.
+
+## 6. Performance evidence protocol
+
+Measure actual Python Textual frontend/runtime first—not the Rust demo. Compare later against Rust **plus retained Python runtime and owned descendants**, with equivalent behavior and identical isolation.
+
+For **each host separately**, freeze revisions/build hashes, optimized Rust profile, Python dependencies, hardware/power state, terminal/PTY versions, fonts/DPI, dimensions, theme, fixture hashes and deterministic provider cadence. Do not pool hosts or compare a mock against live inference.
+
+Retain five launches and three steady-state repetitions per frontend/host, with explicit warm/cold definitions. Fresh state is not necessarily cold cache. Interleave later reference runs to detect drift.
+
+Workloads: startup/idle; streaming with typing/paste; 10,000-message history; approval/tool/cancel; streaming resize across compact boundaries; equivalent management/plugins; faults separately. Validate final rendered content and persisted outcomes, not ACK counts.
+
+Record monotonic timestamps and clock alignment for:
+
+- launch, child creation, protocol readiness, first frame and first genuinely editable input;
+- input injection → handling → host-visible update;
+- event arrival → visible update, backlog, streaming gaps and cancellation settlement;
+- resize request → correct visible layout;
+- cumulative CPU and synchronized process-tree memory, including exited descendants.
+
+Report Windows working set/private bytes explicitly; do not sum unrelated peak times. Account for host overhead and shared services separately. A draw/write return is not visible-frame proof.
+
+Retain raw traces, failures and individual runs. **Baseline precedes thresholds.** Measurement mode needs no thresholds; acceptance must fail if approved thresholds or either host’s evidence are missing. Inject render delay to prove gate sensitivity.
+
+## 7. Ten-lane reconciliation and final status
+
+| Lane | Synthesis resolution |
+|---|---|
+| 1 — Events | Its missing `gui_rpc` packet is resolved by lane2; full turn attribution remains unresolved. |
+| 2 — RPC | Establishes negotiation/commands, not complete lifecycle or isolation. |
+| 3 — Approval | Preserves Python authority; universal authority-record presence and child binding remain open. |
+| 4 — Queue/cancel | Establishes distinct ownership/state transitions; omitted cleanup is unknown, not absent. |
+| 5 — Startup | Mandatory owned CLI remains valid; lane6 supplies root details and lane8 some harness details. |
+| 6 — Data | Confirms root routing, not containment; repository code presence is not complete write-set proof. |
+| 7 — Plugins/hooks | Supplies hook behavior missing elsewhere; registration/“active” status is not completed activation. |
+| 8 — Services | Supplies concrete external doors; missing hooks/RPC packets are resolved elsewhere, not all shutdown gaps. |
+| 9 — Harness | Parent implementation follows its production-function boundary; captures remain in-process. |
+| 10 — Performance | Supplies protocol design, not measurements or numerical gates. |
+
+**Implemented:** 18-test in-process wire harness, five packaging tests, nine optional evidence exports, and non-string command-type rejection; offline presentation work as previously recorded.
+**Tested:** parent executed the 18 wire tests and 42-test focused combined set. New-file Ruff and capture-runner mypy passed. `rpc.py` has six Ruff and three mypy findings, all reproduced on its unchanged HEAD blob; no lint/type regression was introduced by the guard. The ten audits and synthesis themselves performed no execution.
+**Live-verified:** no new isolated child, runtime parity, both-host integration or performance evidence established here.
+
+**Retained gate:** P0 open; full parity, Python authority and no side-effect replay remain mandatory.
+
+## 8. Reproduce the implemented evidence
+
+From the owned worktree, using the project Python environment and `PYTHONPATH=src`:
+
+```powershell
+python -m pytest tests/test_rust_wire_contract.py tests/test_rust_wire_capture.py tests/test_rpc_terminal_output.py tests/test_rpc_approval_types.py tests/test_stream_sink.py tests/test_rpc_model_switch.py tests/test_gui_management.py::test_protocol_refuses_unsupported_version -q
+python scripts/capture_rust_wire_contract.py
+python -m ruff check tests/test_rust_wire_contract.py
+```
+
+The runner provisions a fresh `artifacts/rust-tui-port/wire-captures/run-<uuid>/` BEFORE pytest snapshots the checkout root. Cases bind synthetic inputs and actual serialized outputs by SHA256, selected source/isolation files, runtime/dependency identity and explicit fake boundaries. Only a zero-exit pytest process plus hash validation receives atomic `completed.json`. This marker binds listed bytes; it does not independently establish test collection completeness. The retained pytest log explicitly reports 18 passed for this run. A directory without that index is incomplete/diagnostic, not a green run. The published run is `run-499a6635da0a404dbb3c7e46a6495da1`; its index binds all nine case bundles and the pytest log. This is selected-source provenance, not a complete environment lock. Nine cases cover reader errors/EOF, negotiation/mirrors, unsupported protocol, usage/approval cache, approval denial, operation context, refusal-before-ACK in raw/GUI modes, and terminal null rates. Additional tests cover non-RPC silence, serializer fallback, broken output and five malformed type values. Packaging tests reject failed runs, no captures, changed bytes and wrong run identity.
+
+A concrete captured warning: the legacy whitespace-prompt path emits `submit_refused` and can then ACK `turn: accepted`; its GUI wrapper can have a null operation ID. A client cannot safely infer a started turn or correlate every event to the latest command. Repeated identical event payloads are also preserved; content equality is not an event identity.
+
+The harness binds real app methods to an inert host. It never constructs LiteTUI. GUI negotiation does run the real data-version check inside pytest's disposable data root. Thread scheduling, Textual workers, lease acquisition in the refusal probe, and the paint callback are explicitly substituted; pending approval futures are real but have no production authority record. Network/process tripwires are partial and are **not an OS sandbox**. Windows asyncio uses local socket pairs internally, so the harness does not globally forbid every socket `connect` call.
+
+All ten Wave1 agents, synthesis and final test review were explicitly requested as `gpt-6.1-sol` at High. Original lane reports/task IDs are retained locally under `artifacts/rust-tui-port/parallel-wave1/`; they remain source-audit evidence, not verified parity rows. The inventory ledger was not overwritten or promoted to passed.
+
+
+### Review-driven hardening and remaining limits
+
+Five new reader/dispatcher tests initially failed with `AttributeError` on `null`, numeric, boolean, list and object `type` values. A narrow guard in `rpc._dispatch` now emits a correlated failure and returns before any routing; a following valid command still runs. No broader malformed-field safety claim follows.
+
+Evidence export initially depended on a pre-existing artifacts directory and used independent fixed filenames. Review caught both limitations. The explicit runner now pre-creates a unique directory, clears pytest selection addopts, bounds the run, verifies case bytes and publishes the completion index only after teardown succeeds. Original partial captures and failed runs were preserved, not silently cleaned or counted green.
+
+Two Windows harness pitfalls were observed and corrected: globally blocking socket.connect interfered with asyncio's own socket pair; `platform.system()` attempted to spawn `ver` under the process tripwire. Runtime metadata now uses `sys.platform` and `sys.version` without process probes. The runner safely prints Unicode diagnostics under Windows legacy console encodings.
+
+Follow-up review found no blocker in the fixes, but correctly noted that pytest exit zero alone does not prove an unmodified collection inventory. The completion index now states this limitation; collection/plugin-driven skips must be read from the retained pytest log. The five malformed-type cases are covered by that 18-pass log, not separate replay bundles.

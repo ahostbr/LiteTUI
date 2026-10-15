@@ -94,8 +94,11 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     """Route a command on the app loop. T4 will expand this table."""
     cmd_type = cmd.get("type", "")
     cmd_id = cmd.get("id")
+    if not isinstance(cmd_type, str):
+        _respond(cmd_id, ok=False, error="command type must be a string")
+        return
 
-    if isinstance(cmd_type, str) and cmd_type.startswith("gui."):
+    if cmd_type.startswith("gui."):
         from litetui.gui_rpc import async_dispatch
         async def manage():
             try:

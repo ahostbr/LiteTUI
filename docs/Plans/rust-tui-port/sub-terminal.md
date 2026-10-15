@@ -188,3 +188,7 @@ Independent review received 2026-10-15. Authority selection is now explicitly be
 - **External support matrix:** P0 records image capabilities, voice providers/devices and backend access required for each parity row. Missing access blocks the row. Any exclusion requires Ryan's explicit scope change; no implicit parity waiver.
 - **Packaging:** choose configured-system-Python versus bundled runtime in P0 before P1 process assumptions are frozen. P5 validates that selected topology and its licensing, dependency/plugin discovery and update implications; it does not introduce a new topology after testing.
 - **Dark presentation:** Ryan requested dark mode after the first render was bright. All generated plan pages now use actual Oscura CSS with explicit near-black background and `color-scheme: dark`; the browser computed body background is rgb(9,9,11), text rgb(250,250,250). Preserve this presentation preference in future plan renders.
+
+## Implemented P0 wire evidence (2026-10-15)
+
+The planned full frontend/reducer suite remains open. Its implemented in-process subset is `tests/test_rust_wire_contract.py` (18 tests), plus `tests/test_rust_wire_capture.py` (5 packaging tests). `scripts/capture_rust_wire_contract.py` captures production serialization through explicit test doubles, not a CLI child. See [runtime-contract.md](runtime-contract.md) for the merged ten-lane audit, actual evidence boundaries, current malformed-type repair and unresolved identity/isolation gates. No raw/live fixture is copied from user sessions.

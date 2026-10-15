@@ -5,7 +5,7 @@
 ## Provenance
 
 - Created: 2026-10-15.
-- Modified: [2026-10-15 initial plan; 2026-10-15 P0 discovery; 2026-10-15 approved visual-preview direction; 2026-10-15 offline theme integration].
+- Modified: [2026-10-15 initial plan; 2026-10-15 P0 discovery; 2026-10-15 approved visual-preview direction; 2026-10-15 offline theme integration; 2026-10-15 parallel P0 contract audit].
 - Agents: [OpenBolt].
 - Conversations: [83816ba3-d370-4c4f-b0f7-022cc4b4074d].
 - Source revisions: [LiteTUI develop 9ef5337].
@@ -177,3 +177,14 @@ F4 opens a searchable picker. Up/Down selects, Enter applies in memory, Escape c
 Verification: **26 Rust tests passed** (including all 16 existing preview checks), formatting, Clippy with warnings denied, and build. **5 exporter tests passed**, focused Ruff and mypy passed (`MYPYPATH=src`, `--follow-imports=silent`). The existing Python theme suites reported **23 passed, 4 failed** when run alone, unchanged against HEAD: `test_watch_theme_persists_a_change` supplies a non-dataclass settings stub; three tests in `test_theme_extra_tokens.py` construct LiteTUI without an owned agent session. Adding the exporter tests yields 28 passed / the same 4 failures. These fixtures were not repaired or counted green in this slice.
 
 The searchable picker and Ash-to-Matrix switch were observed in Windows Terminal; screenshot crop `artifacts/rust-tui-port/preview-matrix.png` is local/ignored evidence. The preview was returned to Ash. This is not embedded-terminal verification or new human signoff. Lightweight static review found compact header/footer and long-query clipping; these were reproduced with failing buffer tests and repaired. Real runtime, persistence, custom-theme UI and remaining P0 gates are still open.
+
+
+## Parallel P0 contract checkpoint — no live-runtime cutover
+
+Ryan requested max-parallel execution with every child on GPT-6.1 Sol. Ten independent High-reasoning source audits ran in parallel, followed by a Sol synthesis and focused review. Their merged contract and remaining gates are in [runtime-contract.md](runtime-contract.md). Reports are source evidence, not executed parity proofs.
+
+Implemented `tests/test_rust_wire_contract.py`: real JSONL reader, dispatcher, serializer, GUI negotiation, app event helpers and approval futures with explicit inert boundaries. No LiteTUI construction or live provider. **18 wire tests passed; 42 focused tests passed**, including five capture-packaging tests and existing relevant contracts. Nine synthetic serialized cases are exported by `scripts/capture_rust_wire_contract.py` into a unique run; hash-bound `completed.json` is published only after full pytest teardown succeeds. Current completed evidence: `artifacts/rust-tui-port/wire-captures/run-499a6635da0a404dbb3c7e46a6495da1/completed.json`.
+
+The audit found a real malformed-command crash: non-string `type` reached `.startswith`. Five regression cases reproduced it before a narrow RPC guard fixed it; the next valid request still dispatches. This is the only Python product behavior change in the checkpoint. New-file Ruff and capture-runner mypy pass. The existing RPC module retains six Ruff and three mypy findings, independently reproduced against its exact pre-change blob; they were not hidden or repaired as unrelated cleanup.
+
+Captured evidence confirms raw-plus-GUI event mirrors, refusal before accepted ACK, nullable operation identity/rates, separate approval-target and correlation IDs, and stale/duplicate rejection. No full turn identity, real-child isolation, subprocess transport, resource baseline, embedded-host parity or performance claim follows. Next gate: complete producer/queue/native correlation and lifecycle mapping; prove owned-startup containment before launching the real runtime. No inventory/parity rows were automatically promoted.

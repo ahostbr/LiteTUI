@@ -101,9 +101,9 @@ def main():
     args = parser.parse_args()
     css = STYLE.read_text(encoding="utf-8")
     expected = {"inventory.md": inventory()}
-    for name in ("master", "sub-terminal"):
+    for name in ("master", "sub-terminal", "runtime-contract"):
         expected[f"{name}.md"] = (PLAN / f"{name}.md").read_text(encoding="utf-8")
-    for name in ("master", "sub-terminal", "inventory"):
+    for name in ("master", "sub-terminal", "inventory", "runtime-contract"):
         expected[f"{name}.html"] = render(expected[f"{name}.md"], name, css)
     for name, content in expected.items():
         for directory in (PLAN, EXPORT):
@@ -120,7 +120,7 @@ def main():
                 for href in re.findall(r'href="([^"]+)"', (directory / name).read_text(encoding="utf-8")):
                     if ":" not in href and not (directory / href).is_file():
                         raise SystemExit(f"BROKEN LINK: {name}: {href}")
-    print(f"{'CHECKED' if args.check else 'GENERATED'}: 3 Markdown + 3 HTML files in both Docs/Plans and artifacts; links valid.")
+    print(f"{'CHECKED' if args.check else 'GENERATED'}: 4 Markdown + 4 HTML files in both Docs/Plans and artifacts; links valid.")
     print("Documentation-only result; no product verification implied.")
 
 
