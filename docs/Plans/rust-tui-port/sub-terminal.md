@@ -124,7 +124,7 @@ Exit: reviewed parity inventory and fixtures, executable measurement method and 
 
 ### [] P1 — Terminal shell and real-runtime vertical path
 
-Create crate and terminal guard; spawn actual headless runtime with isolated state and explicit authority. Implement hello/state, text submission, stream rendering and graceful exit. Offline fixture mode exists only for tests, clearly labeled; it cannot be the sole integration proof. Version mismatch and child-start failure leave a visible diagnostic and restore the terminal. First implementation test must fail without the binary/runtime integration.
+Before pinning Ratatui, check `ratatui-rgp` version/API compatibility for the recorded later Ratty/RGP target; this does not authorize inline 3D implementation in P0/P1. Create crate and terminal guard; spawn actual headless runtime with isolated state and explicit authority. Implement hello/state, text submission, stream rendering and graceful exit. Offline fixture mode exists only for tests, clearly labeled; it cannot be the sole integration proof. Version mismatch and child-start failure leave a visible diagnostic and restore the terminal. First implementation test must fail without the binary/runtime integration.
 
 ### [] P2 — Complete conversation/input/safety experience
 

@@ -124,4 +124,31 @@ The committed generator uses `markdown_it` from the project Python environment. 
 
 ## Execution authorization update
 
-2026-10-15: Ryan selected Tier 2 and High, then said “i want you to start this plan after compact”. Resume from the seat's native handoff; begin P0 after context compaction. No Rust implementation has been completed yet.
+2026-10-15: Ryan selected Tier 2 and High, then said “i want you to start this plan after compact”. Subsequently “go ahead bud” authorized continuing. **P0 is in progress; no Rust frontend exists yet.**
+
+## P0 checkpoint — reproducible source discovery
+
+Implemented `scripts/rust_frontend_inventory.py` and `tests/test_rust_frontend_inventory.py`. The generator reads exact regular-file blobs at the approved revision with Git `ls-tree` / `cat-file --batch`, never application imports. It fingerprints inputs and the generator, records Python version, source spans and qualified symbols, and reports unsupported discovery forms rather than executing them. Working/untracked files and export-ignore/export-subst cannot alter the selected committed blobs.
+
+Measured discovery: **262 source modules; 84 GUI operations; 15 legacy RPC commands; 33 ordered plugins; 9 backends; 24 BINDINGS declarations; 325 class candidates; 38 direct emitter-call sites; 600 test-file candidates**. All classes are candidates, including non-UI classes: unresolved inheritance is not proof of a complete screen census. Test discovery is not test execution. Prefer this exact-blob JSON for reproducible P0 evidence; the original Markdown inventory remains the earlier heuristic planning view.
+
+```powershell
+python scripts/rust_frontend_inventory.py --output artifacts/rust-tui-port/static-inventory.json
+python scripts/rust_frontend_inventory.py --output artifacts/rust-tui-port/static-inventory.json --check
+# First creation only: refuses any existing parity file.
+python scripts/rust_frontend_inventory.py --output artifacts/rust-tui-port/static-inventory.json --seed-parity artifacts/rust-tui-port/parity.json
+```
+
+Generated JSON remains local/ignored. The parity seed contains **528 blocked discovery rows**, unknown runtime-contract fields, no outcome evidence, and both terminal hosts not run. Reconcile/filter/group these into actual user-facing behaviors before treating them as feature rows. Regeneration never replaces the parity ledger. Static output replacement is atomic and refuses non-static evidence. If seed creation fails after static publication, refreshed static evidence remains and existing parity is untouched; the command reports failure.
+
+Checks measured on Windows: **44 focused tests passed in 25.02 seconds** across `test_rust_frontend_inventory.py`, `test_test_inventory.py`, `test_run_all_classify.py`, `test_explicit_test_inventory.py`; focused Ruff and mypy (`--check-untyped-defs`) passed. The initial missing-module failure and six review-regression failures were observed before implementation/fixes. Independent lightweight code review found no remaining material defects after fixes; this is not the separate blind intent-ledger gate.
+
+**P0 remains open:** no live startup, terminal interaction, performance baseline, Rust build or backend parity is established. A fresh data directory does not isolate hooks, fleet registration, plugin activation or provider traffic. Source `app.py:5730-5749` emits both raw events and correlated `gui.event` wrappers after GUI negotiation; the frontend must avoid double-rendering, and queue/interrupt correlation still needs a complete audit.
+
+## Recorded later target — Ratty/RGP inline 3D
+
+Sentinel relayed Ryan's 2026-10-15 ~20:0x EDT goal: “we had it running fine ! it was sick ... almost like our litesuite canvas now :) was my dream for it”, referring to `orhun/ratty`, a GPU terminal emulator with RGP inline 3D and the `ratatui-rgp` widget crate. This is a **later-phase target, not added P0 implementation or an existing-parity requirement**.
+
+Keep Ratatui dependency choices compatible with `ratatui-rgp`: verify actual supported versions and Windows capability negotiation before locking the frontend dependencies. Do not promise compatibility from crate names alone. Later work should investigate an optional Ratty host path, inline 3D display and graceful unsupported-host fallback while preserving the mandatory LiteSuite embedded-terminal and Windows Terminal acceptance paths. No RGP implementation, clone edits, GPU workload or new UI redesign is authorized by this P0 checkpoint.
+
+Prior-art pointers supplied by Sentinel, not independently reverified here: `E:\SAS\REPO_CLONES\ratty` (Windows ConPTY/RGP work); Ryan's PR #66 reportedly merged upstream and #68 OSC-envelope-for-Windows reportedly closed unmerged on 10-11; conversation search phrase **Ratty LiteCode 3D Terminal Buddies**. Recover that design and measure the current crate/protocol contract before scheduling the later slice.
