@@ -90,6 +90,15 @@ def _target_id(cmd: dict[str, Any], key: str) -> tuple[str, str]:
     return str(cmd.get("id") or ""), "id"
 
 
+# Legacy stdio uses different operation names, but the same hold policy:
+# observation and completion of already-issued callbacks only. Unknown future
+# mutations fail closed instead of inheriting permission from this old protocol.
+_RESTART_SAFE = frozenset({
+    "list_models", "get_settings", "list_commands", "list_skills",
+    "jobs.list", "tasks.list", "tasks.tail", "answer", "approve",
+})
+
+
 def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     """Route a command on the app loop. T4 will expand this table."""
     cmd_type = cmd.get("type", "")
@@ -104,6 +113,12 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             except Exception as exc:  # noqa: BLE001 - isolate malformed management requests at the wire boundary
                 _respond(cmd_id, ok=False, error=str(exc))
         app.run_worker(manage(), group="gui-management", exit_on_error=False)
+        return
+
+    from litetui import restart_checkpoint
+    if ((not isinstance(cmd_type, str) or cmd_type not in _RESTART_SAFE)
+            and restart_checkpoint.is_held(app)):
+        _respond(cmd_id, ok=False, error="Restart checkpoint hold blocks this mutation")
         return
 
     if cmd_type == "shutdown":

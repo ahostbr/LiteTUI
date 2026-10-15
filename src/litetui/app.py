@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from litetui import settings_runtime
-from litetui import win32_input
+from litetui import win32_input, restart_checkpoint
 from litetui import convo_settings as convo_settings_mod
 
 # Textual reads Windows INPUT_RECORDs on its own thread. Install our narrow
@@ -2773,6 +2773,7 @@ class LiteTUI(App):
             else:
                 self._system("harness seat OFFLINE — the agent fleet is unreachable.")
             return
+        self._restart_inbox_ready = True
         try:
             # A beat every HEARTBEAT_EVERY polls, not every poll: refreshing
             # presence costs a subprocess, and `discover` only cares on the
@@ -2790,7 +2791,13 @@ class LiteTUI(App):
                 # chat turn, visible as turn_active on its own.
                 with idle_infra_phase(self):
                     await asyncio.sleep(harness_mod.POLL_SECONDS)
-                    msgs = await asyncio.to_thread(self.seat.poll)
+                    msgs = []
+                    if not restart_checkpoint.is_held(self):
+                        self._restart_poll_inflight = True
+                        try:
+                            msgs = await asyncio.to_thread(self.seat.poll)
+                        finally:
+                            self._restart_poll_inflight = False
                 for m in msgs:
                     self._receive_mail(m)
 
@@ -2813,6 +2820,8 @@ class LiteTUI(App):
                         await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
+        finally:
+            self._restart_inbox_ready = False
 
     def _receive_mail(self, msg: dict) -> None:
         """T1049-B: an answer to a pending [APPROVAL] resumes its turn and is not
@@ -2865,6 +2874,8 @@ class LiteTUI(App):
         hook_host.start_prompt(self, item)
 
     def _fire_job(self, job, *, manual: bool = False) -> None:
+        if restart_checkpoint.is_held(self):
+            return
         from litetui.shared_state import Lease, OwnershipError
         if getattr(self, "_gui_schedules_paused", False):
             return
@@ -2925,6 +2936,8 @@ class LiteTUI(App):
         the failure that produces duplicates is exactly the one you cannot see
         in a log that only records successes.
         """
+        if restart_checkpoint.is_held(self):
+            return
         now = datetime.now()
         # T1082: the level this job RECORDED at creation. Checked before
         # prepare_fire and the stamp, so a skipped job keeps its slot, run_count
@@ -4244,6 +4257,9 @@ class LiteTUI(App):
         return True
 
     def _resume(self, path: Path, *, startup: bool = False) -> bool:
+        if not startup and restart_checkpoint.is_held(self):
+            self._system("Restart hold blocks conversation switching")
+            return False
         if getattr(self, '_agent_session', None) is not None:
             try:
                 expected = self._agent_session.conversation_directory(path.parent.name) / 'convo.jsonl'
@@ -6817,6 +6833,8 @@ class LiteTUI(App):
         compaction request itself to produce a summary, which is the failure it
         exists to prevent.
         """
+        if restart_checkpoint.is_held(self):
+            return
         pct = self._autocompact_due()
         if pct is None:
             return
@@ -7456,6 +7474,8 @@ class LiteTUI(App):
 
     def _kick_card_summary(self, card) -> None:
         """Fire-and-forget the summary for one finished card."""
+        if restart_checkpoint.is_held(self):
+            return
         if getattr(self.backend, "owns_native_turns", False):
             return  # Native context never calls a legacy summary model.
         if card is None or getattr(card, "summary_done", False):
@@ -7500,6 +7520,8 @@ class LiteTUI(App):
         Any failure leaves the model-name header standing. A summary is a
         convenience; it must never be able to break a finished turn.
         """
+        if restart_checkpoint.is_held(self):
+            return
         try:
             levels = (self.backend.reasoning_levels(model)
                       if hasattr(self.backend, "reasoning_levels") else ())
@@ -8312,12 +8334,18 @@ class LiteTUI(App):
 
     @on(Input.Submitted, "#message-input")
     def handle_submit(self, event: Input.Submitted) -> None:
+        if restart_checkpoint.is_held(self):
+            self._refuse_submit("restart-held", "Restart hold retains the draft; reconcile or release it explicitly")
+            return
         value = event.value
         event.input.value = ""
         self._submit_text(value, alt_chord=False)
 
     def action_submit_alt(self) -> None:
         """ctrl+shift+enter — the OTHER end of the mid-turn mapping."""
+        if restart_checkpoint.is_held(self):
+            self._refuse_submit("restart-held", "Restart hold retains the draft; reconcile or release it explicitly")
+            return
         inp = self.query_one("#message-input", Input)
         value = inp.value
         inp.value = ""
@@ -8398,6 +8426,9 @@ class LiteTUI(App):
     def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
         # Keep the re-clickable path local to this submission, including queued
         # and interrupted turns; unrelated bubbles never share attachment state.
+        if restart_checkpoint.is_held(self):
+            self._refuse_submit("restart-held", "Restart hold blocks new input")
+            return
         image_path: str | None = None
         text = value.strip()
         if not text and not self.pending_image:
@@ -8996,7 +9027,7 @@ class LiteTUI(App):
             raise TurnDeferred("mcp dispatch map is stale after reconcile; blocked until rebuild succeeds")
 
     @work(exclusive=True, group="chat")
-    async def _stream(self) -> None:
+    async def _stream(self, *, restart_maintenance=None) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         # 🔴 COMMON MCP-MAINTENANCE GATE. The one point EVERY turn passes through,
@@ -9007,9 +9038,23 @@ class LiteTUI(App):
         # exception would crash the TUI. The sentinel ends the worker SUCCESS
         # (on_worker_state_changed then flushes/retries) and lets a parent wake
         # tell "deferred" from "ran" without finishing a turn that never began.
+        # Preserve native authority refusal before consulting hold state, and
+        # recheck below after the awaited maintenance boundary.
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                LiteTUI._validate_owned_execution(self)
+            except (ValueError, OSError, llm_backend.BackendError) as exc:
+                self._system(str(exc))
+                return
         from litetui.turn_deferral import STREAM_DEFERRED, TurnDeferred
         try:
+            if (restart_checkpoint.is_held(self)
+                    and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
+                raise TurnDeferred("restart checkpoint hold")
             await self._await_mcp_maintenance()
+            if (restart_checkpoint.is_held(self)
+                    and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
+                raise TurnDeferred("restart checkpoint hold")
         except TurnDeferred:
             return STREAM_DEFERRED
         if getattr(self, '_agent_session', None) is not None:
@@ -9837,6 +9882,8 @@ class LiteTUI(App):
         returns out of the worker before this point, so it still ends the turn
         and sends next -- queue and interrupt stay two different verbs.
         """
+        if restart_checkpoint.is_held(self):
+            return False
         if not self._pending_input or self._stop_requested:
             return False
         if self._pending_input[0].get("_codex_entry"):
@@ -9866,6 +9913,8 @@ class LiteTUI(App):
         exclusive in that group, and a flush that streamed now would CANCEL
         whichever is running.
         """
+        if restart_checkpoint.is_held(self):
+            return
         if not self._pending_input:
             return
         if self._chat_running() or getattr(self, "_mcp_maintenance", False):
@@ -10033,6 +10082,8 @@ class LiteTUI(App):
         have claimed the chat group first: that turn wins, and the ping is
         dropped rather than queued behind it.
         """
+        if restart_checkpoint.is_held(self):
+            return
         if self._chat_running():
             return
         if self._pending_input:
@@ -10105,25 +10156,33 @@ class LiteTUI(App):
         agent_id = session.authority.agent_id if session is not None else None
         return await owner_mode.owner_gate(self._owner_memory_dir, t0_ns, agent_id)
 
-    async def _owner_drive_turn(self, text: str) -> bool:
+    async def _owner_drive_turn(self, text: str, *, restart_maintenance=None) -> bool:
         """Owner mode: send `text` as ONE normal user turn through the engine and wait for it.
 
         Runs the real turn loop inline. It cannot start the `_stream` worker: `_compact` is
         in the same exclusive "chat" group, so starting it would cancel the compaction.
         False when the turn was not admitted or the user stopped it.
         """
+        if (restart_checkpoint.is_held(self)
+                and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
+            self._system("Restart hold refused the owner maintenance turn; context was not compacted.")
+            return False
         item = {"content": text, "text": text, "source": "compact",
                 "tool_profile": seat_authority.seat_profile(self)}
-        if not hook_host.accept_prompt(self, item):
+        admission = ({"restart_maintenance": restart_maintenance} if restart_maintenance is not None else {})
+        if not hook_host.accept_prompt(self, item, **admission):
             self._system("The owner STEP 1 turn was not admitted; the context was not compacted.")
             return False
-        await LiteTUI._stream.__wrapped__(self)
+        from litetui.turn_deferral import STREAM_DEFERRED
+        if await LiteTUI._stream.__wrapped__(self, restart_maintenance=restart_maintenance) is STREAM_DEFERRED:
+            self._system("Owner maintenance was deferred; context was not compacted.")
+            return False
         if self._stop_requested:
             self._system("Stopped; the context was not compacted.")
             return False
         return True
 
-    async def _owner_codex_step_one(self) -> tuple[bool, str | None]:
+    async def _owner_codex_step_one(self, *, restart_maintenance=None) -> tuple[bool, str | None]:
         """Owner mode on Codex: STEP 1 as a driven turn, the gate, one retry. (proceed, why-not-committed).
 
         Codex's own auto-compaction cannot be intercepted (named limit); this runs on a
@@ -10137,7 +10196,7 @@ class LiteTUI(App):
                 self._system("Owner mode: asking the seat to write NOW.md before Codex compacts…")
             else:
                 self._system(f"NOW.md was not saved ({why}); asking once more.")
-            if not await self._owner_drive_turn(text):
+            if not await self._owner_drive_turn(text, restart_maintenance=restart_maintenance):
                 return False, None
             passed, why = await self._owner_gate(t0)
             if passed:
@@ -10165,6 +10224,13 @@ class LiteTUI(App):
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
                 return
+        with restart_checkpoint.compaction_scope(self) as restart_maintenance:
+            if restart_maintenance is False:
+                self._emit_compaction("restart-held")
+                return
+            await LiteTUI._compact_body(self, extra, handoff=handoff, restart_maintenance=restart_maintenance)
+
+    async def _compact_body(self, extra: str = "", *, handoff: str | None = None, restart_maintenance=None) -> None:
         # Owner mode: the time STEP 1 begins. The gate (owner_gate) accepts NOW.md only if it
         # was rewritten at or after this, and runs before anything is truncated.
         self._owner_compact_t0 = time.time_ns() if getattr(self, '_owner_memory_dir', None) is not None else None
@@ -10184,9 +10250,13 @@ class LiteTUI(App):
             if getattr(self, "_owner_memory_dir", None) is not None:
                 # Codex compacts natively and has no STEP 1, so owner mode drives one
                 # normal turn first (NOW.md and DOMAIN.md), gates it, THEN compacts.
-                proceed, owner_failure = await self._owner_codex_step_one()
+                proceed, owner_failure = await self._owner_codex_step_one(restart_maintenance=restart_maintenance)
                 if not proceed:
                     return
+            if (restart_checkpoint.is_held(self)
+                    and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
+                self._emit_compaction("restart-held")
+                return
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()
@@ -10890,6 +10960,10 @@ class LiteTUI(App):
         hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": seat_authority.seat_profile(self)})
 
     def _handle_command(self, cmd: str) -> None:
+        if restart_checkpoint.is_held(self) and not (cmd.split(maxsplit=1)[0].lower() == "/compact"
+                and restart_checkpoint.compaction_permitted(self)):
+            self._system("Restart hold blocks commands; use checkpoint status/release or authorized compaction")
+            return
         parts = cmd.split(maxsplit=1)
         name = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""

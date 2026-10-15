@@ -221,6 +221,9 @@ class GoalRuntime:
         self._evaluating = False
 
     async def on_plain_answer(self) -> None:
+        from litetui.restart_checkpoint import is_held
+        if is_held(self.app):
+            return
         if self._evaluating or getattr(self.app, "_gui_quitting", False):
             return
         state = load_goal(getattr(self.app, "convo_dir", None))
@@ -321,6 +324,9 @@ class GoalRuntime:
 
 
 def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
+    from litetui.restart_checkpoint import is_held
+    if is_held(app):
+        return  # durable goal stays selected; no new autonomous turn
     text = f"[goal {state.id}]\nObjective: {state.objective}\n{instruction}"
     if app._chat_running():
         app._user_bubble(text, False, queued=True)
