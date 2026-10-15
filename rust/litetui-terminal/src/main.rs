@@ -43,6 +43,28 @@ fn key(app: &mut Demo, key: KeyEvent) -> bool {
     if app.viewport_too_small {
         if key.code == KeyCode::Esc {
             app.approval_open = false;
+            app.themes_open = false;
+        }
+        return false;
+    }
+    if app.themes_open {
+        match key.code {
+            KeyCode::Esc => app.themes_open = false,
+            KeyCode::Up => app.move_theme(false),
+            KeyCode::Down => app.move_theme(true),
+            KeyCode::Enter => app.choose_theme(),
+            KeyCode::Backspace => {
+                app.theme_query.pop();
+                app.theme_cursor = 0;
+            }
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                app.search_themes(&ch.to_string())
+            }
+            _ => {}
         }
         return false;
     }
@@ -60,6 +82,7 @@ fn key(app: &mut Demo, key: KeyEvent) -> bool {
         return false;
     }
     match key.code {
+        KeyCode::F(4) => app.open_themes(),
         KeyCode::F(5) => app.reset(),
         KeyCode::F(6) => app.open_approval(),
         KeyCode::F(2) => app.toggle_tool(),
@@ -122,13 +145,21 @@ fn run() -> io::Result<()> {
             match event::read()? {
                 Event::Key(event) if key(&mut app, event) => break,
                 Event::Paste(text) if !app.approval_open && !app.viewport_too_small => {
-                    app.insert_text(&text)
+                    if app.themes_open {
+                        app.search_themes(&text);
+                    } else {
+                        app.insert_text(&text);
+                    }
                 }
-                Event::Mouse(mouse) if !app.approval_open => match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll_up(3),
-                    MouseEventKind::ScrollDown => app.scroll_down(3),
-                    _ => {}
-                },
+                Event::Mouse(mouse)
+                    if !app.approval_open && !app.themes_open && !app.viewport_too_small =>
+                {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => app.scroll_up(3),
+                        MouseEventKind::ScrollDown => app.scroll_down(3),
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
@@ -147,7 +178,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — OFFLINE VISUAL PREVIEW\n\nUsage: litetui-rs [--preview]\n\nNo Python child, model, tool execution, file persistence or fleet registration.\nTab: select tool | Ctrl+E/F2: expand | F6: mock approval | F5: replay\nArrows/PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — OFFLINE VISUAL PREVIEW\n\nUsage: litetui-rs [--preview]\n\nNo Python child, model, tool execution, file persistence or fleet registration.\nTab: select tool | Ctrl+E/F2: expand | F4: themes | F6: mock approval | F5: replay\nArrows/PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -160,6 +191,52 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_owns_keys_and_escape_does_not_apply_selection() {
+        let mut app = Demo {
+            input: "draft".into(),
+            ..Demo::default()
+        };
+        for code in [
+            KeyCode::F(4),
+            KeyCode::Char('m'),
+            KeyCode::Down,
+            KeyCode::F(6),
+            KeyCode::F(5),
+        ] {
+            key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        assert!(app.themes_open);
+        assert!(!app.approval_open);
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.theme_query, "m");
+        assert_eq!(app.palette().name, "ash");
+        key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.themes_open);
+        assert_eq!(app.palette().name, "ash");
+        app.open_themes();
+        app.search_themes("matrix");
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.palette().name, "matrix");
+        assert!(app.turns.is_empty());
+    }
+
+    #[test]
+    fn hidden_picker_cannot_apply_and_quit_remains_available() {
+        let mut app = Demo::default();
+        app.open_themes();
+        app.search_themes("matrix");
+        app.viewport_too_small = true;
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.palette().name, "ash");
+        assert!(key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
+        key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.themes_open);
+    }
 
     #[test]
     fn release_events_do_not_duplicate_actions() {

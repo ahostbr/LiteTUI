@@ -30,11 +30,26 @@ pub struct Demo {
     pub approval_allow: bool,
     pub ticks: u64,
     pub notice: String,
+    pub themes: Vec<crate::theme::Theme>,
+    pub theme_index: usize,
+    pub themes_open: bool,
+    pub theme_query: String,
+    pub theme_cursor: usize,
 }
 
 impl Default for Demo {
     fn default() -> Self {
+        let themes = crate::theme::builtin_themes();
+        let theme_index = themes
+            .iter()
+            .position(|theme| theme.name == "ash")
+            .unwrap_or(0);
         Self {
+            themes,
+            theme_index,
+            themes_open: false,
+            theme_query: String::new(),
+            theme_cursor: 0,
             tools: vec![
                 Tool {
                     name: "grep",
@@ -93,6 +108,59 @@ impl Default for Demo {
 }
 
 impl Demo {
+    pub fn palette(&self) -> &crate::theme::Theme {
+        &self.themes[self.theme_index]
+    }
+
+    pub fn filtered_themes(&self) -> Vec<usize> {
+        let query = self.theme_query.to_lowercase();
+        self.themes
+            .iter()
+            .enumerate()
+            .filter(|(_, theme)| theme.name.to_lowercase().contains(&query))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn open_themes(&mut self) {
+        if self.approval_open {
+            return;
+        }
+        self.themes_open = true;
+        self.theme_query.clear();
+        self.theme_cursor = self.theme_index;
+    }
+
+    pub fn search_themes(&mut self, text: &str) {
+        let remaining = 80usize.saturating_sub(self.theme_query.chars().count());
+        self.theme_query
+            .extend(text.chars().filter(|ch| !ch.is_control()).take(remaining));
+        self.theme_cursor = 0;
+    }
+
+    pub fn move_theme(&mut self, forward: bool) {
+        let count = self.filtered_themes().len();
+        if count == 0 {
+            self.theme_cursor = 0;
+            return;
+        }
+        self.theme_cursor = self.theme_cursor.min(count - 1);
+        self.theme_cursor = if forward {
+            (self.theme_cursor + 1) % count
+        } else {
+            (self.theme_cursor + count - 1) % count
+        };
+    }
+
+    pub fn choose_theme(&mut self) {
+        let matches = self.filtered_themes();
+        if let Some(&index) = matches.get(self.theme_cursor.min(matches.len().saturating_sub(1))) {
+            self.theme_index = index;
+            self.themes_open = false;
+            self.notice = format!("Theme: {} · preview only, not saved", self.palette().name);
+        }
+    }
+
     pub fn next_tool(&mut self) {
         self.selected_tool = (self.selected_tool + 1) % self.tools.len();
         self.follow_selection = true;
@@ -117,7 +185,7 @@ impl Demo {
     }
 
     pub fn open_approval(&mut self) {
-        if self.tools[3].state == ToolState::Awaiting {
+        if !self.themes_open && self.tools[3].state == ToolState::Awaiting {
             self.approval_open = true;
             self.approval_allow = false;
         }
@@ -185,6 +253,12 @@ impl Demo {
     }
 
     pub fn reset(&mut self) {
-        *self = Self::default();
+        let themes = std::mem::take(&mut self.themes);
+        let theme_index = self.theme_index;
+        *self = Self {
+            themes,
+            theme_index,
+            ..Self::default()
+        };
     }
 }

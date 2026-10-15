@@ -30,6 +30,8 @@ The binary is at `target/debug/litetui-rs.exe`. Build again after changing sourc
 | Ctrl+B | Previous tool |
 | Up / Down, PgUp / PgDn, mouse wheel | Scroll transcript |
 | Home / End | Start / end of transcript |
+| F4 | Open searchable public dark-theme picker |
+| Up / Down, Enter, Escape (picker) | Select, apply in memory, cancel |
 | F6 | Open the pending mock approval |
 | Tab then Enter, or A / D | Choose an action inside the mock approval |
 | Escape | Close the mock approval without deciding |
@@ -44,7 +46,7 @@ Below 36 columns or 14 rows, the preview asks for a resize and suspends decision
 
 No Python child, model request, tool execution, real approval, fleet registration or application-data persistence exists in this preview. Named paths, commands, test counts and results in the conversation are **fixtures**, not work actually performed. Typed messages are kept only in memory (six turns maximum); quitting discards them. Cargo/launcher build actions are separate developer operations, not mock tool execution.
 
-The terminal uses the source-derived **Ash** palette: borderless amber tool rows on black; rounded gray assistant frames; nested dashed thinking blocks. Ryan accepted this revised visual direction on 2026-10-15 after rejecting the initial generic card redesign. Preserve the layout while wiring runtime events. Ash is only the current preview theme; built-in/custom theming is still required, not replaced by this palette. The terminal uses an explicit dark palette. A cleanup guard restores raw mode, mouse capture, bracketed paste, alternate screen and cursor on normal exit or recoverable errors. Panic handling attempts restoration. Force termination cannot guarantee cleanup.
+The terminal defaults to the source-derived **Ash** palette: borderless amber tool rows on black; rounded gray assistant frames; nested dashed thinking blocks. Ryan accepted this revised visual direction on 2026-10-15 after rejecting the initial generic card redesign. Preserve the layout while wiring runtime events. F4 now offers **36 public dark themes**, generated from LiteTUI and Textual definitions without reading live settings. Search by name, use arrows, then Enter to apply; Escape cancels. F5 replays the fixture without resetting the theme. Semantic tokens drive the same layout across palettes, including resolved thinking/tool/footer overrides. Legacy fixed argument/result grays remain intentional. Selection is in-memory only: real custom-theme editing, runtime catalog loading and saved selection are still required. Synthetic override tests are not custom-theme integration. The terminal uses an explicit dark palette. A cleanup guard restores raw mode, mouse capture, bracketed paste, alternate screen and cursor on normal exit or recoverable errors. Panic handling attempts restoration. Force termination cannot guarantee cleanup.
 
 ## Dependencies and Ratty target
 
@@ -63,4 +65,4 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 ```
 
-Tests cover fixture state, mock decisions, modal input isolation, input bounds/control-character filtering, scrolling, explicit dark cells, compact dialog visibility, and actual `TestBackend` resize sequences. They do not establish real-runtime or full terminal-host parity.
+Tests cover all public palettes, picker search/navigation/input ownership, synthetic custom overrides, narrow layouts, fixture state, mock decisions, modal input isolation, input bounds/control-character filtering, scrolling, explicit dark cells, compact dialog visibility, and actual `TestBackend` resize sequences. They do not establish real-runtime or full terminal-host parity.

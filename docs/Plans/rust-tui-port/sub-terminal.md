@@ -31,7 +31,7 @@ Paths below are relative to this worktree.
 
 ## Proposed source layout
 
-Presentation exception authorized 2026-10-15: `rust/litetui-terminal` now contains an offline preview (`demo.rs`, `ui.rs`, `main.rs`) plus tests and launcher. This does not implement the transport/runtime modules below. Ryan accepted its corrected structural layout, not an Ash-only palette; preserve full theming and use that layout for subsequent UI work. See the master visual checkpoint.
+Presentation exception authorized 2026-10-15: `rust/litetui-terminal` now contains an offline preview (`demo.rs`, `ui.rs`, `main.rs`) plus tests and launcher. This does not implement the transport/runtime modules below. Ryan accepted its corrected structural layout, not an Ash-only palette; preserve full theming and use that layout for subsequent UI work. The semantic palette catalog and F4 picker now cover 36 public dark fixtures; custom editing/persistence/runtime catalog delivery remain open. See the master visual and offline-theme checkpoints.
 
 Create one Rust crate, not a multi-crate framework:
 

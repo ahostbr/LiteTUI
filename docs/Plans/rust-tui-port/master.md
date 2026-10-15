@@ -5,7 +5,7 @@
 ## Provenance
 
 - Created: 2026-10-15.
-- Modified: [2026-10-15 initial plan; 2026-10-15 P0 discovery; 2026-10-15 approved visual-preview direction].
+- Modified: [2026-10-15 initial plan; 2026-10-15 P0 discovery; 2026-10-15 approved visual-preview direction; 2026-10-15 offline theme integration].
 - Agents: [OpenBolt].
 - Conversations: [83816ba3-d370-4c4f-b0f7-022cc4b4074d].
 - Source revisions: [LiteTUI develop 9ef5337].
@@ -163,6 +163,17 @@ Open `rust/litetui-terminal/open-preview.cmd`, or run `rust/litetui-terminal/tar
 
 Measured: Rust 1.92.0; Ratatui 0.30.2; Crossterm 0.29.0; ratatui-core 0.1.2. Upstream Ratty's `widget/Cargo.toml` currently names its widget `ratatui-ratty` 0.4.0 (the earlier plan called it `ratatui-rgp`), depends on core 0.1.2, and uses Ratatui 0.30 / Crossterm 0.29 in examples. This aligns the dependency families; it is not an RGP integration test. No GPU/Ratty dependency is included.
 
-Verification: **16 Rust tests pass**, `cargo fmt --check`, Clippy `--all-targets --locked -- -D warnings`, and build pass. Tests include compact modal visibility, hidden-modal decision suppression, completed-frame dark colors, wide glyphs, actual TestBackend resize sequences and the source-derived tool/thinking visual structure. A compact modal clipping regression was reproduced before repair. The running preview was seen in Windows Terminal; Ryan accepted the revised visual direction. This is not full interaction signoff, embedded-terminal evidence, performance measurement or backend parity. Speech labels are explicitly mock, and real voice behavior remains unimplemented.
+Initial preview verification: **16 Rust tests pass**, `cargo fmt --check`, Clippy `--all-targets --locked -- -D warnings`, and build pass. Tests include compact modal visibility, hidden-modal decision suppression, completed-frame dark colors, wide glyphs, actual TestBackend resize sequences and the source-derived tool/thinking visual structure. A compact modal clipping regression was reproduced before repair. The running preview was seen in Windows Terminal; Ryan accepted the revised visual direction. This is not full interaction signoff, embedded-terminal evidence, performance measurement or backend parity. Speech labels are explicitly mock, and real voice behavior remains unimplemented.
 
 Next: retain this presentation while completing event correlation, sanitized wire fixtures and controlled startup isolation. In particular, choose the negotiated GUI event stream without double-consuming its raw-event mirrors. No real child may launch without explicit authority and isolated test state. The existing P0/P1 gates remain in force for real runtime integration.
+
+
+## Offline theme checkpoint — semantic palettes, not live theme parity
+
+The preview now consumes 36 public dark palettes exported reproducibly from `src/litetui/themes.py` and Textual 8.1.0. `scripts/export_rust_preview_themes.py --check` checks the committed fixture. The exporter never imports LiteTUI/App or reads saved/custom settings. `theme.rs` defines semantic presentation tokens; `theme_catalog.rs` is generated public data. Ash remains the default, not the only supported palette.
+
+F4 opens a searchable picker. Up/Down selects, Enter applies in memory, Escape cancels. Replay preserves the selected palette; picker input cannot submit a mock turn or resolve an approval. Theme selection pauses below the minimum viewport. Narrow layouts retain essential controls/state, and long searches show their display-width-aware tail. Synthetic thinking/tool/footer overrides reach the renderer; actual custom-theme creation/loading/editing and persistence remain runtime parity gates.
+
+Verification: **26 Rust tests passed** (including all 16 existing preview checks), formatting, Clippy with warnings denied, and build. **5 exporter tests passed**, focused Ruff and mypy passed (`MYPYPATH=src`, `--follow-imports=silent`). The existing Python theme suites reported **23 passed, 4 failed** when run alone, unchanged against HEAD: `test_watch_theme_persists_a_change` supplies a non-dataclass settings stub; three tests in `test_theme_extra_tokens.py` construct LiteTUI without an owned agent session. Adding the exporter tests yields 28 passed / the same 4 failures. These fixtures were not repaired or counted green in this slice.
+
+The searchable picker and Ash-to-Matrix switch were observed in Windows Terminal; screenshot crop `artifacts/rust-tui-port/preview-matrix.png` is local/ignored evidence. The preview was returned to Ash. This is not embedded-terminal verification or new human signoff. Lightweight static review found compact header/footer and long-query clipping; these were reproduced with failing buffer tests and repaired. Real runtime, persistence, custom-theme UI and remaining P0 gates are still open.
