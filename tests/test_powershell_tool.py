@@ -102,9 +102,7 @@ def test_both_descriptions_point_windows_at_powershell() -> None:
     ps = ct.powershell_spec()["function"]["description"].lower()
     bash = ct.BASH_SPEC["function"]["description"].lower()
     assert "prefer" in ps and "bash" in ps, "the PS tool does not claim precedence"
-    # T530: with a real bash on the box the tool IS bash and the description
-    # names it; the "prefer powershell" pointer is the cmd.exe-only wording.
-    # Either way it must still name the powershell tool.
+    # Both real Git bash and the cmd.exe fallback point at PowerShell.
     assert "powershell" in bash, "bash does not mention the PowerShell tool"
     if ct.bash_exe() is None:
         assert "prefer" in bash, "bash (cmd.exe) does not point Windows users at PowerShell"
@@ -112,6 +110,7 @@ def test_both_descriptions_point_windows_at_powershell() -> None:
         assert ct.bash_exe().lower() in bash, "bash does not name the shell it runs"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell is only offered on Windows")
 def test_powershell_is_offered_before_bash() -> None:
     """Registration order is the order the model sees them in."""
     seen: list[str] = []
