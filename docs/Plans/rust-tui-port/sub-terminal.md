@@ -4,7 +4,7 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 ## Handoff contract
 
-- Task T0565; one workstream, sequential phases P0–P5. Status: [] planned, no application implementation.
+- Task T0565; one workstream, sequential phases P0–P5. Status: P0 in progress; user-requested offline Rust preview implemented. Real-runtime P1 gate not passed.
 - Created 2026-10-15; modified [2026-10-15]; agents [OpenBolt]; source [9ef5337]; conversation [83816ba3-d370-4c4f-b0f7-022cc4b4074d]. Append future metadata.
 - Work only in `C:\Projects\.worktrees\OpenBolt-rust-tui`, branch `work/rust-tui-OpenBolt`. Public repository: local commits only, no secrets or private transcripts in fixtures.
 - Goal: full baseline UI parity on Windows, verified in LiteSuite's embedded terminal and Windows Terminal. Preserve familiar layout/keys. Python remains installed temporarily. Preserve custom plugin behavior but allow its UI source to change. Use separate fresh data; never reset old state. All backend and authority behavior remains in scope.
@@ -30,6 +30,8 @@ Paths below are relative to this worktree.
 | `src/litetui/tool_approval.py`, `ask_user_question.py`, `seat_authority.py` | Approval/question resolution and seat authority | UI responds to identified pending requests; Python alone grants/denies authority. |
 
 ## Proposed source layout
+
+Presentation exception authorized 2026-10-15: `rust/litetui-terminal` now contains an offline preview (`demo.rs`, `ui.rs`, `main.rs`) plus tests and launcher. This does not implement the transport/runtime modules below. Ryan accepted its corrected structural layout, not an Ash-only palette; preserve full theming and use that layout for subsequent UI work. See the master visual checkpoint.
 
 Create one Rust crate, not a multi-crate framework:
 

@@ -1,0 +1,15 @@
+[package]
+name = "litetui-terminal"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[[bin]]
+name = "litetui-rs"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "crossterm_0_29"] }
+crossterm = "=0.29.0"
+unicode-width = "=0.2.2"

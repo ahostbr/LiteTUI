@@ -1,11 +1,11 @@
 # LiteTUI Rust terminal port
 
-**T0565 · v9 planning · single workstream · implementation not started**
+**T0565 · Tier 2 / High · P0 in progress · offline Rust visual preview available**
 
 ## Provenance
 
 - Created: 2026-10-15.
-- Modified: [2026-10-15 initial plan].
+- Modified: [2026-10-15 initial plan; 2026-10-15 P0 discovery; 2026-10-15 approved visual-preview direction].
 - Agents: [OpenBolt].
 - Conversations: [83816ba3-d370-4c4f-b0f7-022cc4b4074d].
 - Source revisions: [LiteTUI develop 9ef5337].
@@ -124,7 +124,7 @@ The committed generator uses `markdown_it` from the project Python environment. 
 
 ## Execution authorization update
 
-2026-10-15: Ryan selected Tier 2 and High, then said “i want you to start this plan after compact”. Subsequently “go ahead bud” authorized continuing. **P0 is in progress; no Rust frontend exists yet.**
+2026-10-15: Ryan selected Tier 2 and High, then said “i want you to start this plan after compact”. Subsequently “go ahead bud” authorized continuing. **P0 is in progress. An offline Rust presentation preview now exists; the real runtime is not connected.**
 
 ## P0 checkpoint — reproducible source discovery
 
@@ -152,3 +152,17 @@ Sentinel relayed Ryan's 2026-10-15 ~20:0x EDT goal: “we had it running fine ! 
 Keep Ratatui dependency choices compatible with `ratatui-rgp`: verify actual supported versions and Windows capability negotiation before locking the frontend dependencies. Do not promise compatibility from crate names alone. Later work should investigate an optional Ratty host path, inline 3D display and graceful unsupported-host fallback while preserving the mandatory LiteSuite embedded-terminal and Windows Terminal acceptance paths. No RGP implementation, clone edits, GPU workload or new UI redesign is authorized by this P0 checkpoint.
 
 Prior-art pointers supplied by Sentinel, not independently reverified here: `E:\SAS\REPO_CLONES\ratty` (Windows ConPTY/RGP work); Ryan's PR #66 reportedly merged upstream and #68 OSC-envelope-for-Windows reportedly closed unmerged on 10-11; conversation search phrase **Ratty LiteCode 3D Terminal Buddies**. Recover that design and measure the current crate/protocol contract before scheduling the later slice.
+
+## Visual-preview checkpoint — accepted direction, not runtime parity
+
+Ryan explicitly requested an openable GUI even with a mock conversation to inspect tool calls. This authorized an isolated presentation-only slice before the real-runtime P1 gate. The crate now exists at `rust/litetui-terminal`, with a locked Ratatui/Crossterm build, deterministic in-memory fixtures, tool expansion/selection, scrolling, a local mock composer and a mock approval that defaults to Deny. No Python child, provider, tool execution, real authority change, application persistence or fleet registration is present.
+
+Open `rust/litetui-terminal/open-preview.cmd`, or run `rust/litetui-terminal/target/debug/litetui-rs.exe --preview` in an interactive terminal. The launcher builds only if the executable is missing; rebuild with Cargo after edits. The window is explicitly dark and fixture-labeled. `artifacts/rust-tui-port/preview-ash.png` is a local crop of the observed Windows Terminal render.
+
+**Visual reference is the corrected layout, with Ash merely the currently selected theme.** Ryan rejected the initial generic rounded/teal tool cards as unlike LiteTUI, supplied a screenshot, then said “yes way better” and “lets continue with that in mnid as the GUI” after the correction. Preserve this direction: borderless black tool rows, amber names, inline arguments/status/duration/character counts, gray rounded assistant frames, nested dashed thinking blocks, theme-driven colors and familiar composer. Ryan explicitly clarified that LiteTUI has many themes: preserve built-in themes, the picker, custom tokens and custom-theme behavior; do not hardcode Ash as the product palette. Do not redesign the structural layout during runtime wiring. Source anchors: `themes.py:184-229`, `app.py:747-891`, `widgets.py:744-780, 965-1033, 1070-1198`. The current saved theme was read as `ash`; only theme keys were inspected. No live settings were changed.
+
+Measured: Rust 1.92.0; Ratatui 0.30.2; Crossterm 0.29.0; ratatui-core 0.1.2. Upstream Ratty's `widget/Cargo.toml` currently names its widget `ratatui-ratty` 0.4.0 (the earlier plan called it `ratatui-rgp`), depends on core 0.1.2, and uses Ratatui 0.30 / Crossterm 0.29 in examples. This aligns the dependency families; it is not an RGP integration test. No GPU/Ratty dependency is included.
+
+Verification: **16 Rust tests pass**, `cargo fmt --check`, Clippy `--all-targets --locked -- -D warnings`, and build pass. Tests include compact modal visibility, hidden-modal decision suppression, completed-frame dark colors, wide glyphs, actual TestBackend resize sequences and the source-derived tool/thinking visual structure. A compact modal clipping regression was reproduced before repair. The running preview was seen in Windows Terminal; Ryan accepted the revised visual direction. This is not full interaction signoff, embedded-terminal evidence, performance measurement or backend parity. Speech labels are explicitly mock, and real voice behavior remains unimplemented.
+
+Next: retain this presentation while completing event correlation, sanitized wire fixtures and controlled startup isolation. In particular, choose the negotiated GUI event stream without double-consuming its raw-event mirrors. No real child may launch without explicit authority and isolated test state. The existing P0/P1 gates remain in force for real runtime integration.
