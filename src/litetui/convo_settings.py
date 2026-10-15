@@ -99,9 +99,10 @@ def born_from(settings) -> ConvoSettings:
         setattr(cs, own, deepcopy(getattr(settings, global_name, None)))
     from litetui.settings_scope import SETTING_SPECS, SettingScope, validate_registry
     validate_registry()
+    # Legacy model-only defaults must stay inherited, not become sticky overrides.
     cs.execution = {name: deepcopy(getattr(settings, name))
                     for name, spec in SETTING_SPECS.items()
-                    if spec.scope == SettingScope.CONVERSATION}
+                    if spec.scope == SettingScope.CONVERSATION and name != 'subagent_model'}
     return cs
 
 

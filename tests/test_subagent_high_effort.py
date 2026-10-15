@@ -1,5 +1,7 @@
 """Explicit child model + reasoning effort survives schema, runner, and Codex wire."""
 
+import json
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -37,15 +39,18 @@ def _remote_app(levels=("low", "medium", "high")):
     )
 
 
-def test_schema_exposes_explicit_reasoning_effort_and_sol_high_example() -> None:
+def test_schema_uses_configured_model_without_named_model_examples() -> None:
     spec = tool_schemas.load("subagent")["function"]
     props = spec["parameters"]["properties"]
 
-    assert "reasoning_effort" in props
     assert "high" in props["reasoning_effort"]["enum"]
-    description = spec["description"] + props["model"]["description"]
-    assert SOL in description
-    assert "reasoning_effort" in description and "high" in description.lower()
+    assert not re.search(r"gpt-\d|claude-[\w.-]+|\bSol\b", json.dumps(spec))
+    for description in (spec["description"], props["model"]["description"]):
+        assert "configured subagent model" in description
+        assert "conversation override or global setting" in description
+        assert "only when the user explicitly asks" in description
+    assert "reasoning_effort" in spec["description"]
+    assert "high" in spec["description"]
 
 
 def test_runner_passes_explicit_sol_and_high_without_changing_parent() -> None:
