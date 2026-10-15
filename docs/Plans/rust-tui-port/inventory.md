@@ -1,0 +1,545 @@
+# Static source inventory
+
+Baseline: `9ef53373fc222805fa1970a16aa1d6d8887d833f`. Generated from tracked source only; 262 Python source files.
+
+This is discovery evidence, NOT an exhaustive behavioral parity inventory. Dynamic/custom plugins, resolved theme colors, live UI paths and event schemas still require P0. No application modules were imported to generate this file.
+
+Master: [master.md](master.md). Specification: [sub-terminal.md](sub-terminal.md).
+
+## GUI management operations
+
+- [] `gui.hello`
+- [] `gui.state`
+- [] `gui.prompt.submit`
+- [] `gui.settings.get`
+- [] `gui.settings.validate`
+- [] `gui.settings.apply`
+- [] `gui.conversations.list`
+- [] `gui.conversations.read`
+- [] `gui.conversations.open`
+- [] `gui.conversations.create`
+- [] `gui.conversations.rename`
+- [] `gui.conversations.edit`
+- [] `gui.conversations.retry`
+- [] `gui.conversations.compact`
+- [] `gui.models.list`
+- [] `gui.models.discover`
+- [] `gui.models.reconnect`
+- [] `gui.models.select`
+- [] `gui.models.confirm`
+- [] `gui.extensions.list`
+- [] `gui.hooks.get`
+- [] `gui.hooks.validate`
+- [] `gui.hooks.apply`
+- [] `gui.hooks.repair`
+- [] `gui.hooks.test`
+- [] `gui.mcp.list`
+- [] `gui.mcp.connect`
+- [] `gui.mcp.disconnect`
+- [] `gui.mcp.reconnect`
+- [] `gui.mcp.reload`
+- [] `gui.mcp.add`
+- [] `gui.mcp.remove`
+- [] `gui.skills.list`
+- [] `gui.skills.read`
+- [] `gui.skills.use`
+- [] `gui.tools.list`
+- [] `gui.memory.list`
+- [] `gui.memory.read`
+- [] `gui.memory.write`
+- [] `gui.jobs.list`
+- [] `gui.jobs.create`
+- [] `gui.jobs.update`
+- [] `gui.jobs.delete`
+- [] `gui.jobs.pause`
+- [] `gui.jobs.resume`
+- [] `gui.jobs.run`
+- [] `gui.tasks.list`
+- [] `gui.tasks.kill`
+- [] `gui.tasks.tail`
+- [] `gui.goals.get`
+- [] `gui.goals.create`
+- [] `gui.goals.pause`
+- [] `gui.goals.resume`
+- [] `gui.goals.clear`
+- [] `gui.calendar.list`
+- [] `gui.diagnostics.get`
+- [] `gui.host_tools.register`
+- [] `gui.host_tools.unregister`
+- [] `gui.host_tools.result`
+- [] `gui.images.attach`
+- [] `gui.images.clear`
+- [] `gui.screen.mark`
+- [] `gui.subagents.list`
+- [] `gui.subagents.kill`
+- [] `gui.subagents.tail`
+- [] `gui.models.load`
+- [] `gui.models.unload`
+- [] `gui.models.config`
+- [] `gui.models.configure`
+- [] `gui.system.get`
+- [] `gui.system.set`
+- [] `gui.tools.execute`
+- [] `gui.glassbox.get`
+- [] `gui.glassbox.start`
+- [] `gui.glassbox.stop`
+- [] `gui.work.get`
+- [] `gui.work.cancel`
+- [] `gui.thinking.set`
+- [] `gui.context.set`
+- [] `gui.backend.set`
+- [] `gui.models.capabilities`
+- [] `gui.engine.start`
+- [] `gui.engine.stop`
+- [] `gui.engine.status`
+
+## Backends
+
+- [] `custom` — Custom (OpenAI-compatible server)
+- [] `lmstudio` — LM Studio desktop
+- [] `llamacpp` — llama.cpp (our own llama-server)
+- [] `ninfer` — NInfer (NVFP4 5090 engine)
+- [] `strata` — Strata (Qwen3.8-Flash-Next, GPU + system RAM)
+- [] `codex` — Codex (OAuth subscription)
+- [] `claude` — Claude Agent
+- [] `cline` — ClinePass (Cline subscription)
+- [] `free` — Free tier (no-cost models: Cline, Kilo, OVH, + keyed)
+
+## Plugin load order
+
+- [] `litetui.plugins.core_tools`
+- [] `litetui.plugins.file_tools`
+- [] `litetui.plugins.runtime_log_plugin`
+- [] `litetui.plugins.view_image`
+- [] `litetui.plugins.pccontrol`
+- [] `litetui.plugins.chrome`
+- [] `litetui.plugins.ask_user_question`
+- [] `litetui.plugins.studio`
+- [] `litetui.plugins.listen`
+- [] `litetui.plugins.convo_search`
+- [] `litetui.plugins.self_compact`
+- [] `litetui.plugins.skills_plugin`
+- [] `litetui.plugins.harness_plugin`
+- [] `litetui.plugins.mcp_plugin`
+- [] `litetui.plugins.mcp_manage`
+- [] `litetui.plugins.tool_search`
+- [] `litetui.plugins.themes_plugin`
+- [] `litetui.plugins.mark_plugin`
+- [] `litetui.plugins.misc`
+- [] `litetui.plugins.convo`
+- [] `litetui.plugins.model_switch`
+- [] `litetui.plugins.help_plugin`
+- [] `litetui.plugins.settings_ui`
+- [] `litetui.plugins.sidecar_plugin`
+- [] `litetui.plugins.plugin_reload_ui`
+- [] `litetui.plugins.scheduler_plugin`
+- [] `litetui.plugins.monitor_plugin`
+- [] `litetui.plugins.subagent_plugin`
+- [] `litetui.plugins.spawn_agent_plugin`
+- [] `litetui.plugins.small_task_plugin`
+- [] `litetui.plugins.tasks_plugin`
+- [] `litetui.plugins.goal_loop_plugin`
+- [] `litetui.plugins.glassbox_plugin`
+
+## Literal RPC command comparisons
+
+Includes only literal cmd_type comparisons; dynamic dispatch is covered separately by GUI operations.
+
+- [] `abort`
+- [] `answer`
+- [] `approve`
+- [] `get_settings`
+- [] `list_commands`
+- [] `list_models`
+- [] `list_skills`
+- [] `prompt`
+- [] `run_command`
+- [] `set`
+- [] `set_model`
+- [] `set_settings`
+- [] `set_thinking`
+- [] `shutdown`
+- [] `use_skill`
+
+## UI classes and literal Binding calls
+
+Syntactic candidates, not proof each is user-visible. Base classes and tuples may introduce additional bindings. Each row needs reconciliation against runtime navigation.
+
+- [] `src/litetui/app.py:657` — `ChatLog(VerticalScroll)`
+- [] `src/litetui/app.py:691` — `LiteTUI(App)`
+- [] `src/litetui/app.py:1476` — Binding: `escape | stop_turn | Stop turn`
+- [] `src/litetui/app.py:1481` — Binding: `ctrl+shift+enter | submit_alt | Send (swapped)`
+- [] `src/litetui/app.py:1489` — Binding: `ctrl+j | submit_alt | Send (swapped)`
+- [] `src/litetui/app.py:1490` — Binding: `ctrl+q | quit | Quit`
+- [] `src/litetui/app.py:1491` — Binding: `ctrl+o | paste_image | Paste Image`
+- [] `src/litetui/app.py:1504` — Binding: `ctrl+v | paste_text | Paste`
+- [] `src/litetui/app.py:1508` — Binding: `ctrl+shift+c | screen.copy_text | Copy selection`
+- [] `src/litetui/app.py:1510` — Binding: `ctrl+x | clear_image | Clear Image`
+- [] `src/litetui/app.py:1511` — Binding: `ctrl+l | clear_chat | Clear Chat`
+- [] `src/litetui/app.py:1512` — Binding: `ctrl+t | toggle_tools | Tools on/off`
+- [] `src/litetui/app.py:1536` — Binding: `shift+tab | cycle_tool_profile | Authority`
+- [] `src/litetui/app.py:1538` — Binding: `ctrl+p | toggle_plan_mode | Plan`
+- [] `src/litetui/app.py:1539` — Binding: `ctrl+g | toggle_compact_view | Compact view`
+- [] `src/litetui/app.py:1540` — Binding: `ctrl+b | select_previous_tool | Select tool`
+- [] `src/litetui/app.py:1541` — Binding: `ctrl+e | expand_recent_tool | Expand tool`
+- [] `src/litetui/approval_relay.py:47` — `HumanApproval(Static)`
+- [] `src/litetui/ask_user_question.py:247` — `_OptionBody(Vertical)`
+- [] `src/litetui/ask_user_question.py:259` — `AskUserQuestionScreen(ModalScreen[None])`
+- [] `src/litetui/ask_user_question.py:295` — `AskUserQuestionBody(Vertical)`
+- [] `src/litetui/ask_user_question.py:399` — Binding: `left | prev_question | Prev question`
+- [] `src/litetui/ask_user_question.py:400` — Binding: `right | next_question | Next question`
+- [] `src/litetui/ask_user_question.py:401` — Binding: `tab | next_question | Next question`
+- [] `src/litetui/ask_user_question.py:402` — Binding: `shift+tab | prev_question | Prev question`
+- [] `src/litetui/ask_user_question.py:403` — Binding: `up | move_up | Up`
+- [] `src/litetui/ask_user_question.py:404` — Binding: `down | move_down | Down`
+- [] `src/litetui/ask_user_question.py:405` — Binding: `enter | select | Select`
+- [] `src/litetui/ask_user_question.py:406` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/claude_cache.py:176` — `CacheWarningBody(Widget)`
+- [] `src/litetui/claude_cache.py:209` — `CacheWarningScreen(ModalScreen)`
+- [] `src/litetui/colorpicker.py:163` — `_SVField(Static)`
+- [] `src/litetui/colorpicker.py:256` — `ColorPickerBody(Widget)`
+- [] `src/litetui/colorpicker.py:485` — `ColorPickerScreen(ModalScreen[str | None])`
+- [] `src/litetui/colorpicker.py:246` — Binding: `enter | accept | Use color`
+- [] `src/litetui/colorpicker.py:247` — Binding: `up | nudge('up')`
+- [] `src/litetui/colorpicker.py:248` — Binding: `down | nudge('down')`
+- [] `src/litetui/colorpicker.py:249` — Binding: `left | nudge('left')`
+- [] `src/litetui/colorpicker.py:250` — Binding: `right | nudge('right')`
+- [] `src/litetui/colorpicker.py:251` — Binding: `pageup | nudge('hue_up')`
+- [] `src/litetui/colorpicker.py:252` — Binding: `pagedown | nudge('hue_down')`
+- [] `src/litetui/colorpicker.py:214` — Binding: `up | nudge('up') | Lighter`
+- [] `src/litetui/colorpicker.py:215` — Binding: `down | nudge('down') | Darker`
+- [] `src/litetui/colorpicker.py:216` — Binding: `left | nudge('left') | Less saturated`
+- [] `src/litetui/colorpicker.py:217` — Binding: `right | nudge('right') | More saturated`
+- [] `src/litetui/colorpicker.py:218` — Binding: `pageup | nudge('hue_up') | Hue +`
+- [] `src/litetui/colorpicker.py:219` — Binding: `pagedown | nudge('hue_down') | Hue -`
+- [] `src/litetui/colorpicker.py:498` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/dialog_demo.py:39` — `DemoDialogBody(Widget)`
+- [] `src/litetui/hooks_screen.py:34` — `HooksEditor(VerticalScroll)`
+- [] `src/litetui/hooks_screen.py:305` — `HooksBody(VerticalScroll)`
+- [] `src/litetui/hooks_screen.py:325` — `HooksScreen(ModalScreen)`
+- [] `src/litetui/image_viewer.py:313` — `ImageViewerBody(Widget)`
+- [] `src/litetui/input_controls.py:7` — `ScrollLockButton(Static)`
+- [] `src/litetui/loop_list.py:76` — `LoopListBody(Widget)`
+- [] `src/litetui/mcp_list.py:69` — `MCPListBody(Widget)`
+- [] `src/litetui/now_card.py:14` — `NowCard(Static)`
+- [] `src/litetui/picker.py:31` — `PickerBody(Widget)`
+- [] `src/litetui/picker.py:151` — `PickerScreen(ModalScreen[str | None])`
+- [] `src/litetui/picker.py:154` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/plugins/help_plugin.py:22` — `HelpBody(Widget)`
+- [] `src/litetui/plugins/help_plugin.py:89` — `HelpScreen(ModalScreen[None])`
+- [] `src/litetui/plugins/help_plugin.py:47` — Binding: `q | close | Close`
+- [] `src/litetui/plugins/help_plugin.py:100` — Binding: `escape | close | Close`
+- [] `src/litetui/plugins/help_plugin.py:101` — Binding: `q | close | Close`
+- [] `src/litetui/plugins/model_switch.py:904` — `ModelConfigBody(Widget)`
+- [] `src/litetui/plugins/model_switch.py:1405` — `ModelConfigScreen(ModalScreen[None])`
+- [] `src/litetui/plugins/model_switch.py:846` — Binding: `ctrl+s | apply | Apply`
+- [] `src/litetui/plugins/model_switch.py:1408` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/plugins/scheduler_ui.py:93` — `_CalendarGrid(Static)`
+- [] `src/litetui/plugins/scheduler_ui.py:107` — `_CalendarSide(Static)`
+- [] `src/litetui/plugins/scheduler_ui.py:135` — `CalendarBody(Widget)`
+- [] `src/litetui/plugins/scheduler_ui.py:498` — `CalendarScreen(ModalScreen[None])`
+- [] `src/litetui/plugins/scheduler_ui.py:599` — `DayBody(Widget)`
+- [] `src/litetui/plugins/scheduler_ui.py:767` — `DayScreen(ModalScreen[None])`
+- [] `src/litetui/plugins/scheduler_ui.py:787` — `JobBody(Widget)`
+- [] `src/litetui/plugins/scheduler_ui.py:1109` — `JobScreen(ModalScreen)`
+- [] `src/litetui/plugins/scheduler_ui.py:124` — Binding: `q | close | Close`
+- [] `src/litetui/plugins/scheduler_ui.py:125` — Binding: `left,h | prev_month | Prev`
+- [] `src/litetui/plugins/scheduler_ui.py:126` — Binding: `right,l | next_month | Next`
+- [] `src/litetui/plugins/scheduler_ui.py:127` — Binding: `t | today | Today`
+- [] `src/litetui/plugins/scheduler_ui.py:130` — Binding: `q | close | Close`
+- [] `src/litetui/plugins/scheduler_ui.py:131` — Binding: `n | new_job | New job`
+- [] `src/litetui/plugins/scheduler_ui.py:507` — Binding: `escape | close | Close`
+- [] `src/litetui/plugins/scheduler_ui.py:770` — Binding: `escape | close | Close`
+- [] `src/litetui/plugins/scheduler_ui.py:1117` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/response_speech.py:8` — `ResponseSpeakButton(Static)`
+- [] `src/litetui/settings_screen.py:191` — `_Row(Horizontal)`
+- [] `src/litetui/settings_screen.py:195` — `SettingsSectionHeader(Button)`
+- [] `src/litetui/settings_screen.py:313` — `SettingsExitConfirm(ModalScreen[str])`
+- [] `src/litetui/settings_screen.py:419` — `SettingsBody(Widget)`
+- [] `src/litetui/settings_screen.py:2108` — `SettingsScreen(ModalScreen[Settings | None])`
+- [] `src/litetui/settings_screen.py:310` — Binding: `ctrl+s | save | Save`
+- [] `src/litetui/settings_screen.py:323` — Binding: `escape | keep_editing | Keep editing`
+- [] `src/litetui/settings_screen.py:2118` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/side_panel.py:418` — `SidePanel(Widget, _ViewMixin)`
+- [] `src/litetui/side_panel.py:653` — `_ModalHost(ModalScreen, _ViewMixin)`
+- [] `src/litetui/side_panel.py:753` — `SwapButton(Button)`
+- [] `src/litetui/side_panel.py:481` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/side_panel.py:491` — Binding: `tab | focus_next_in_dialog | Next`
+- [] `src/litetui/side_panel.py:492` — Binding: `shift+tab | focus_prev_in_dialog | Previous`
+- [] `src/litetui/side_panel.py:673` — Binding: `escape | cancel | Cancel`
+- [] `src/litetui/splash.py:7` — `Splash(Static)`
+- [] `src/litetui/steady_input.py:7` — `HostedInput(Input)`
+- [] `src/litetui/task_screens.py:118` — `_LiveTaskBody(Widget)`
+- [] `src/litetui/task_screens.py:239` — `_KillRow(Static)`
+- [] `src/litetui/ticker.py:26` — `NumberTicker(Horizontal)`
+- [] `src/litetui/tool_approval.py:89` — `ToolApprovalScreen(ModalScreen[ToolApproval])`
+- [] `src/litetui/tool_approval.py:127` — `ToolApprovalBody(Vertical)`
+- [] `src/litetui/tool_approval.py:98` — Binding: `escape | deny | Deny`
+- [] `src/litetui/tool_list.py:73` — `ToolListBody(Widget)`
+- [] `src/litetui/user_name_dialog.py:13` — `UserNameScreen(ModalScreen[str | None])`
+- [] `src/litetui/vram_dialog.py:25` — `VramWarningBody(Widget)`
+- [] `src/litetui/vram_dialog.py:65` — `VramWarningScreen(ModalScreen)`
+- [] `src/litetui/widgets.py:78` — `SkillAutocomplete(Vertical)`
+- [] `src/litetui/widgets.py:150` — `PromptInput(Input)`
+- [] `src/litetui/widgets.py:273` — `ChatMessage(Static)`
+- [] `src/litetui/widgets.py:279` — `UserMessage(Vertical)`
+- [] `src/litetui/widgets.py:379` — `CancelToolButton(Static)`
+- [] `src/litetui/widgets.py:404` — `ThinkingHeader(Static)`
+- [] `src/litetui/widgets.py:448` — `ThinkingBlock(Vertical)`
+- [] `src/litetui/widgets.py:676` — `AnswerBody(Static)`
+- [] `src/litetui/widgets.py:714` — `_FoldHeader(Static)`
+- [] `src/litetui/widgets.py:741` — `FoldBlock(Vertical)`
+- [] `src/litetui/widgets.py:789` — `CompactionCard(Vertical)`
+- [] `src/litetui/widgets.py:899` — `AssistantMessage(Vertical)`
+- [] `src/litetui/widgets.py:1229` — `ConfirmStopBody(Widget)`
+- [] `src/litetui/widgets.py:1306` — `ConfirmStop(ModalScreen[bool])`
+- [] `src/litetui/widgets.py:1337` — `PauseButton(Static)`
+- [] `src/litetui/widgets.py:1361` — `MicButton(Static)`
+- [] `src/litetui/widgets.py:1424` — `TaskManagerToggle(Static)`
+- [] `src/litetui/widgets.py:1257` — Binding: `escape | answer_no | No`
+- [] `src/litetui/widgets.py:1258` — Binding: `n | answer_no | No`
+- [] `src/litetui/widgets.py:1259` — Binding: `y | answer_yes | Yes`
+- [] `src/litetui/widgets.py:1260` — Binding: `enter | answer_yes | Yes`
+- [] `src/litetui/widgets.py:1321` — Binding: `escape | answer_no | No`
+- [] `src/litetui/widgets.py:1322` — Binding: `n | answer_no | No`
+- [] `src/litetui/widgets.py:1323` — Binding: `y | answer_yes | Yes`
+- [] `src/litetui/widgets.py:1324` — Binding: `enter | answer_yes | Yes`
+
+## Test candidates
+
+Filename discovery only. Determine pytest versus script runner, dependency scope and live-service opt-in before execution.
+
+- [] `e2e/_owned_app.py`
+- [] `e2e/claude_image_smoke.py`
+- [] `e2e/claude_rpc_smoke.py`
+- [] `e2e/cline_instance.py`
+- [] `e2e/sidecar_cline_live.py`
+- [] `e2e/sidecar_free_keys_live.py`
+- [] `e2e/sidecar_instance.py`
+- [] `e2e/sidecar_two_instance_live.py`
+- [] `tests/_owned_seat.py`
+- [] `tests/t0333_cli_sandbox.py`
+- [] `tests/test_agent_admission.py`
+- [] `tests/test_agent_ancestry.py`
+- [] `tests/test_agent_app_runtime.py`
+- [] `tests/test_agent_birth.py`
+- [] `tests/test_agent_capabilities.py`
+- [] `tests/test_agent_completion_wiring.py`
+- [] `tests/test_agent_conversation_storage.py`
+- [] `tests/test_agent_convo_launch.py`
+- [] `tests/test_agent_delivery_service.py`
+- [] `tests/test_agent_history_commit.py`
+- [] `tests/test_agent_inbox_delivery.py`
+- [] `tests/test_agent_launch_budget.py`
+- [] `tests/test_agent_launch_context.py`
+- [] `tests/test_agent_launch_service.py`
+- [] `tests/test_agent_launch_wiring.py`
+- [] `tests/test_agent_launcher.py`
+- [] `tests/test_agent_lookup_cost.py`
+- [] `tests/test_agent_memory_scope.py`
+- [] `tests/test_agent_operations.py`
+- [] `tests/test_agent_ownership.py`
+- [] `tests/test_agent_parent_delivery.py`
+- [] `tests/test_agent_parent_receipts.py`
+- [] `tests/test_agent_parent_wake.py`
+- [] `tests/test_agent_picker_tasks.py`
+- [] `tests/test_agent_preparation.py`
+- [] `tests/test_agent_preparation_async.py`
+- [] `tests/test_agent_receipt_routing.py`
+- [] `tests/test_agent_receipt_wake.py`
+- [] `tests/test_agent_registry.py`
+- [] `tests/test_agent_repository.py`
+- [] `tests/test_agent_rpc_handshake.py`
+- [] `tests/test_agent_runtime.py`
+- [] `tests/test_agent_store.py`
+- [] `tests/test_agent_tool_bridge.py`
+- [] `tests/test_agent_turn_result.py`
+- [] `tests/test_approval_over_rpc.py`
+- [] `tests/test_ask_over_rpc.py`
+- [] `tests/test_authority_footer_and_key.py`
+- [] `tests/test_backend_shutdown_owned.py`
+- [] `tests/test_background_tasks.py`
+- [] `tests/test_calendar.py`
+- [] `tests/test_calendar_ui.py`
+- [] `tests/test_claude_settings.py`
+- [] `tests/test_claude_turn.py`
+- [] `tests/test_claude_turn_order_pilot.py`
+- [] `tests/test_cli.py`
+- [] `tests/test_cli_backend_flag.py`
+- [] `tests/test_cli_codex_engine.py`
+- [] `tests/test_cli_conversation_resume.py`
+- [] `tests/test_cli_convo_startup.py`
+- [] `tests/test_cli_model_flag.py`
+- [] `tests/test_cli_prompt_exact.py`
+- [] `tests/test_cli_system_prompt_file.py`
+- [] `tests/test_cline_backend.py`
+- [] `tests/test_codex_cache_footer.py`
+- [] `tests/test_codex_gui_history.py`
+- [] `tests/test_codex_hook_bridge.py`
+- [] `tests/test_codex_hook_helper.py`
+- [] `tests/test_codex_mcp_scope.py`
+- [] `tests/test_codex_settings.py`
+- [] `tests/test_codex_subagent_global_ui.py`
+- [] `tests/test_codex_tasks.py`
+- [] `tests/test_compaction_busy_input.py`
+- [] `tests/test_conftest_task_guard.py`
+- [] `tests/test_conversation_export.py`
+- [] `tests/test_conversation_record_shapes.py`
+- [] `tests/test_convo_search_plugin.py`
+- [] `tests/test_convo_settings.py`
+- [] `tests/test_deny_stops_the_turn.py`
+- [] `tests/test_e2e_owned_fixture.py`
+- [] `tests/test_footer.py`
+- [] `tests/test_footer_fields.py`
+- [] `tests/test_footer_idle_t1003.py`
+- [] `tests/test_footer_live_work.py`
+- [] `tests/test_footer_nav.py`
+- [] `tests/test_footer_order.py`
+- [] `tests/test_footer_task_manager.py`
+- [] `tests/test_glassbox_plugin.py`
+- [] `tests/test_gui_management.py`
+- [] `tests/test_gui_owned_storage.py`
+- [] `tests/test_hook_boundaries.py`
+- [] `tests/test_hooks_ui.py`
+- [] `tests/test_image_viewer.py`
+- [] `tests/test_inactive_agent_catalog.py`
+- [] `tests/test_input.py`
+- [] `tests/test_input_history.py`
+- [] `tests/test_instance_settings_isolation.py`
+- [] `tests/test_interpreter_settings_ui.py`
+- [] `tests/test_lifecycle_hooks.py`
+- [] `tests/test_local_rpc_presence_t0016.py`
+- [] `tests/test_local_rpc_t0016.py`
+- [] `tests/test_mcp_command.py`
+- [] `tests/test_mcp_command_glue.py`
+- [] `tests/test_mcp_config_writer.py`
+- [] `tests/test_mcp_dialog.py`
+- [] `tests/test_mcp_inventory_probe.py`
+- [] `tests/test_mcp_lazy_seat.py`
+- [] `tests/test_mcp_lifecycle.py`
+- [] `tests/test_mcp_off_the_startup_path.py`
+- [] `tests/test_mcp_reconcile.py`
+- [] `tests/test_mcp_suite_identity.py`
+- [] `tests/test_mcp_timeout_bounds.py`
+- [] `tests/test_mcp_toolless_retry.py`
+- [] `tests/test_mcp_transport.py`
+- [] `tests/test_mcp_transport_bounds.py`
+- [] `tests/test_modal_input_blink_t0081.py`
+- [] `tests/test_monitor_cli.py`
+- [] `tests/test_monitor_plugin.py`
+- [] `tests/test_no_dialog_over_rpc.py`
+- [] `tests/test_oauth_resume_readiness.py`
+- [] `tests/test_ordinary_owned_launch.py`
+- [] `tests/test_owned_app_first_use.py`
+- [] `tests/test_owned_execution_update.py`
+- [] `tests/test_owned_gui_archive.py`
+- [] `tests/test_owned_invocation_boundary.py`
+- [] `tests/test_owned_resume_provenance.py`
+- [] `tests/test_owned_search.py`
+- [] `tests/test_owned_seat.py`
+- [] `tests/test_owned_settings_boundary.py`
+- [] `tests/test_owned_staged_execution.py`
+- [] `tests/test_owned_tool_identity.py`
+- [] `tests/test_owned_unmount_integration.py`
+- [] `tests/test_owned_workflow_acceptance.py`
+- [] `tests/test_owned_write_boundaries.py`
+- [] `tests/test_owner_resume.py`
+- [] `tests/test_plugin_dogfood.py`
+- [] `tests/test_plugin_reload.py`
+- [] `tests/test_plugin_reload_activity.py`
+- [] `tests/test_plugin_reload_children.py`
+- [] `tests/test_plugin_reload_command.py`
+- [] `tests/test_plugin_reload_commit.py`
+- [] `tests/test_plugin_reload_eligibility.py`
+- [] `tests/test_plugin_reload_generation.py`
+- [] `tests/test_plugin_reload_handler.py`
+- [] `tests/test_plugin_reload_native_boundary.py`
+- [] `tests/test_plugin_reload_provenance.py`
+- [] `tests/test_plugin_reload_skills.py`
+- [] `tests/test_plugin_reload_state.py`
+- [] `tests/test_plugin_reload_swap.py`
+- [] `tests/test_plugin_reload_ui.py`
+- [] `tests/test_plugin_schema_reload.py`
+- [] `tests/test_plugin_substrate.py`
+- [] `tests/test_plugins_command.py`
+- [] `tests/test_queued_input_delivery.py`
+- [] `tests/test_resume_backend_refusal.py`
+- [] `tests/test_resume_connection.py`
+- [] `tests/test_resume_identity.py`
+- [] `tests/test_resumed_seat_name.py`
+- [] `tests/test_rpc.py`
+- [] `tests/test_rpc_approval_types.py`
+- [] `tests/test_rpc_isolation.py`
+- [] `tests/test_rpc_jobs.py`
+- [] `tests/test_rpc_model_switch.py`
+- [] `tests/test_rpc_tasks.py`
+- [] `tests/test_rpc_terminal_output.py`
+- [] `tests/test_scheduler.py`
+- [] `tests/test_set_over_rpc.py`
+- [] `tests/test_settings.py`
+- [] `tests/test_settings_apply.py`
+- [] `tests/test_settings_bound_ui.py`
+- [] `tests/test_settings_controls.py`
+- [] `tests/test_settings_dialog_persistence_contract.py`
+- [] `tests/test_settings_dialog_provenance.py`
+- [] `tests/test_settings_draft.py`
+- [] `tests/test_settings_file_owner.py`
+- [] `tests/test_settings_launch_value_not_persisted.py`
+- [] `tests/test_settings_literal_patch.py`
+- [] `tests/test_settings_live.py`
+- [] `tests/test_settings_restore_isolation.py`
+- [] `tests/test_settings_runtime.py`
+- [] `tests/test_settings_scope.py`
+- [] `tests/test_settings_sections_ui.py`
+- [] `tests/test_settings_service_root_ownership.py`
+- [] `tests/test_settings_ui_adapter.py`
+- [] `tests/test_settings_ui_model.py`
+- [] `tests/test_sidecar_dispatch_requests.py`
+- [] `tests/test_sidecar_events.py`
+- [] `tests/test_sidecar_jobs.py`
+- [] `tests/test_sidecar_jobs_reader_request.py`
+- [] `tests/test_sidecar_jobs_t1082.py`
+- [] `tests/test_sidecar_launch.py`
+- [] `tests/test_sidecar_patch.py`
+- [] `tests/test_sidecar_patch_dispatch.py`
+- [] `tests/test_sidecar_plugin.py`
+- [] `tests/test_sidecar_preferred.py`
+- [] `tests/test_sidecar_protocol.py`
+- [] `tests/test_sidecar_reader.py`
+- [] `tests/test_sidecar_settings.py`
+- [] `tests/test_sidecar_snapshot_contract.py`
+- [] `tests/test_sidecar_snapshot_delivery.py`
+- [] `tests/test_sidecar_subagent_routes.py`
+- [] `tests/test_sidecar_write_gate.py`
+- [] `tests/test_small_task_dispatch.py`
+- [] `tests/test_spawn_agent_activation_ownership.py`
+- [] `tests/test_spawn_agent_contract.py`
+- [] `tests/test_spawn_agent_plugin.py`
+- [] `tests/test_stream_sink.py`
+- [] `tests/test_stt_backend.py`
+- [] `tests/test_stt_worker.py`
+- [] `tests/test_subagent.py`
+- [] `tests/test_subagent_child_transports.py`
+- [] `tests/test_subagent_dispatch.py`
+- [] `tests/test_subagent_high_effort.py`
+- [] `tests/test_subagent_local_dispatch.py`
+- [] `tests/test_subagent_local_guard.py`
+- [] `tests/test_subagent_routes.py`
+- [] `tests/test_subagent_set.py`
+- [] `tests/test_t1096_mcp_effects.py`
+- [] `tests/test_task_log_path_is_absolute.py`
+- [] `tests/test_task_owner_identity.py`
+- [] `tests/test_task_screens.py`
+- [] `tests/test_task_store_per_convo.py`
+- [] `tests/test_task_visibility_scope.py`
+- [] `tests/test_tool_approval.py`
+- [] `tests/test_tool_approval_sidebar.py`
+- [] `tests/test_turn_engine.py`
+- [] `tests/test_turn_stop_line.py`
+- [] `tests/test_turnstats_elapsed.py`
+- [] `tests/test_turnstats_eta.py`
+- [] `tests/test_view_image.py`
+- [] `tests/test_voice_backend.py`
+- [] `tests/test_voice_install.py`
+- [] `tests/test_wake_guard_abandoned_turn.py`
+- [] `tests/test_win32_input.py`
