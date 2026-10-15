@@ -7,16 +7,16 @@ All calls run on the app's event loop under its existing AgentSession capability
 """
 from __future__ import annotations
 
-from dataclasses import asdict
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import tempfile
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
-from litetui.agent_store import StoreError, _unlinked, valid_id
+from litetui.agent_store import _unlinked, valid_id
 
 STATE_NAME = 'restart-checkpoint.json'
 BOUNDARY_PREFIX = 'restart-boundary-'
@@ -27,7 +27,7 @@ class CheckpointError(ValueError):
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _json_bytes(value):
@@ -99,8 +99,9 @@ def is_held(app):
         return False
     try:
         runtime = _controller(app)
-        runtime.session.authority
-        return bool(runtime.state and runtime.state['phase'] != 'released')
+        _ = runtime.session.authority
+        return (not runtime.durable or not runtime.record_matches()
+                or bool(runtime.state and runtime.state['phase'] != 'released'))
     except (ValueError, OSError, AttributeError, TypeError):
         return True
 
@@ -129,13 +130,14 @@ def _activity(app):
 
 def inventory(app):
     """Read-only inventory: never answers approvals, replays, kills or wakes."""
+    from litetui import row_store, tasks
     blockers = _activity(app)
     if app._chat_running():
         blockers.append('active-turn')
     for field in ('_pending_input', 'pending_image', '_pending_tool_images', 'rejected_prompts',
                   '_rpc_pending_asks', '_gui_model_pending', '_gui_host_pending', '_hook_lifecycle',
                   '_claude_compact_resume', '_interrupted_compact_resume', '_claude_closing',
-                  '_codex_recovery_pending', '_restart_poll_inflight'):
+                  '_codex_recovery_pending', '_restart_poll_inflight', '_gui_management_busy'):
         if getattr(app, field, None):
             blockers.append(f'unsupported-pending:{field}')
     for field in ('_approval_waiters', '_rpc_approval_spawners', '_approval_authority_records'):
@@ -146,18 +148,27 @@ def inventory(app):
     try:
         if app.query_one('#message-input').value:
             blockers.append('draft-input')
-    except Exception:  # absent/unreadable UI cannot prove it has no draft
+    except Exception:  # noqa: BLE001 - unreadable UI cannot prove it has no draft
         blockers.append('draft-input-unavailable')
     for task in getattr(app, 'bg_tasks', {}).values():
-        if task.state not in ('done', 'failed', 'cancelled'):
+        if task.state not in (tasks.DONE, tasks.FAILED, tasks.KILLED, tasks.LOST):
             blockers.append('background-outcome-unresolved')
+        try:
+            path = _unlinked(app._agent_session.conversation_directory(task.convo_id) / tasks.STORE)
+            rows = [r for r in row_store.rows_on_disk(path) if r.get('id') == task.id]
+            expected = task.to_row()
+            if (len(rows) != 1 or tasks.Task(**{k: v for k, v in rows[0].items()
+                                               if k in expected}).to_row() != expected):
+                blockers.append('task-persistence-not-ready')
+        except (OSError, ValueError, TypeError, AttributeError):
+            blockers.append('task-persistence-not-ready')
     goal = getattr(app, 'goal_runtime', None)
     if goal is not None and getattr(goal, '_evaluating', False):
         blockers.append('goal-evaluation-active')
     store = app.store
     if store.pending or store.loading or not store.owned or store.persist_error:
         blockers.append('conversation-persistence-not-ready')
-    if getattr(app, '_settings_persist_error', None) or getattr(app, '_background_persist_error', None):
+    if getattr(app, '_settings_persist_error', None):
         blockers.append('companion-persistence-failed')
     for message in app.conversation:
         delivery = message.get('codex_delivery')
@@ -176,7 +187,7 @@ def inventory(app):
             segment = ledger.selected
             if segment and ledger.pending(segment['id']):
                 blockers.append('pending-claude-delivery')
-        except Exception:
+        except Exception:  # noqa: BLE001 - unreadable ledger blocks readiness
             blockers.append('claude-ledger-unreadable')
     backend = getattr(app.backend, 'name', '')
     if getattr(app.backend, 'owns_native_turns', False) or hasattr(app.backend, 'app_server'):
@@ -197,6 +208,7 @@ def _walk(directory):
 
 
 def _files(app, *, sync=False):
+    from litetui import tasks
     session, store = app._agent_session, app.store
     authority = session.authority
     expected = session.conversation_directory(app.convo_id)
@@ -211,11 +223,10 @@ def _files(app, *, sync=False):
     for path in _walk(expected):
         if path.name == '.session.lease' or path.name.startswith(BOUNDARY_PREFIX):
             continue
-        if path.name.startswith('.'):
+        if path.name.startswith('.') and path.name != tasks.MIGRATED:
             raise CheckpointError('Unsettled conversation companion file')
         files.add(path)
     files.update(_walk(home / 'memories'))
-    from litetui import tasks
     for task in getattr(app, 'bg_tasks', {}).values():
         if getattr(task, 'convo_id', None) == app.convo_id:
             files.add(tasks.log_path(task, session.store.data_root))
@@ -256,13 +267,27 @@ class RuntimeCheckpoint:
                     or self.state['schema_version'] != 1 or self.state['phase'] not in ('held', 'checkpointed', 'released')
                     or self.state['disposition'] not in ('idle', 'waiting', 'held')):
                 raise CheckpointError('Unsupported or corrupt restart hold')
+            prepared = self.state['prepared_at']
+            if not isinstance(prepared, str) or datetime.fromisoformat(prepared).tzinfo is None:
+                raise CheckpointError('Restart hold requires an aware preparation timestamp')
+            receipt = self.state['receipt']
+            if ((self.state['phase'] == 'checkpointed' and not isinstance(receipt, dict))
+                    or (self.state['phase'] != 'checkpointed' and receipt is not None)):
+                raise CheckpointError('Restart phase and receipt disagree')
             for field in ('checkpoint_id', 'agent_id', 'conversation_id', 'runtime_id'):
                 valid_id(self.state[field])
             if self.state['agent_id'] != session.authority.agent_id:
                 raise CheckpointError('Restart hold belongs to another seat')
 
+    def record_matches(self):
+        try:
+            return (_read(self.path) == self.state if self.path.exists()
+                    else self.state is None)
+        except (OSError, ValueError, TypeError):
+            return False
+
     def persist(self):
-        self.session.authority
+        _ = self.session.authority
         self.durable = False
         _write(self.path, self.state)
         self.durable = True
@@ -273,7 +298,7 @@ class RuntimeCheckpoint:
             raise CheckpointError('Caller does not own this restart hold')
         if self.state['conversation_id'] != app.convo_id:
             raise CheckpointError('Restart hold belongs to another conversation')
-        self.session.authority
+        _ = self.session.authority
 
 
 def prepare(app, checkpoint_id, *, disposition):
@@ -281,6 +306,8 @@ def prepare(app, checkpoint_id, *, disposition):
     if disposition not in ('idle', 'waiting', 'held'):
         raise CheckpointError('Explicit idle/waiting/held disposition required')
     runtime = _controller(app)
+    if runtime.durable and not runtime.record_matches():
+        raise CheckpointError('Restart hold record changed; refusing prepare')
     if runtime.state and runtime.state['phase'] != 'released':
         runtime.require(checkpoint_id, app)
         if not runtime.durable:
@@ -289,10 +316,13 @@ def prepare(app, checkpoint_id, *, disposition):
     valid_id(app.convo_id)
     if app.store.pending or not app.store.owned:
         raise CheckpointError('An owned materialized conversation is required')
+    active = (app._chat_running() or bool(_activity(app))
+              or getattr(app, '_gui_management_busy', False))
     runtime.state = {'schema_version': 1, 'checkpoint_id': checkpoint_id,
         'agent_id': runtime.session.authority.agent_id, 'conversation_id': app.convo_id,
-        'phase': 'held', 'disposition': 'held' if app._chat_running() else disposition,
+        'phase': 'held', 'disposition': 'held' if active else disposition,
         'prepared_at': _now(), 'receipt': None, 'runtime_id': runtime.runtime_id}
+    runtime.compaction_permit = None
     # Memory gate closes BEFORE fsync; a failed write never ACKs preparation.
     runtime.persist()
     return status(app)
@@ -301,14 +331,14 @@ def prepare(app, checkpoint_id, *, disposition):
 def status(app):
     runtime = _controller(app)
     state = runtime.state
-    held = bool(state and state['phase'] != 'released')
+    held = is_held(app)
     blockers = inventory(app)
+    if runtime.durable and not runtime.record_matches():
+        blockers.append('hold-record-changed')
     receipt = state['receipt'] if state else None
     boundary_ready = False
-    if held:
+    if held and state:
         runtime.require(state['checkpoint_id'], app)
-        if runtime.durable and (not runtime.path.exists() or _read(runtime.path) != state):
-            blockers.append('hold-record-changed')
         if not runtime.durable:
             blockers.append('hold-not-durable')
         elif receipt:
@@ -322,7 +352,9 @@ def status(app):
                         or boundary['checkpoint_id'] != state['checkpoint_id']
                         or boundary['agent_id'] != state['agent_id']
                         or boundary['conversation_id'] != app.convo_id
-                        or boundary['runtime_id'] != state['runtime_id']):
+                        or boundary['runtime_id'] != state['runtime_id']
+                        or boundary['source_revision'] != receipt['source_revision']
+                        or boundary['coverage'] != 'litetui-owned-files-only'):
                     raise CheckpointError('Boundary evidence changed')
                 if revision != receipt['source_revision']:
                     blockers.append('boundary-changed')
@@ -342,7 +374,7 @@ def status(app):
     recovery_blockers = [b for b in blockers if not b.startswith(('provider-durability-unsupported:',
                           'boundary-from-previous-runtime', 'boundary-changed'))]
     readiness = 'blocked'
-    if held and connected and identity_ready and getattr(app, '_restart_inbox_ready', False) and not recovery_blockers:
+    if held and state and connected and identity_ready and getattr(app, '_restart_inbox_ready', False) and not recovery_blockers:
         readiness = 'ready-held' if state['disposition'] == 'held' else 'ready-idle'
     return {'schema_version': 1, 'checkpoint_id': state['checkpoint_id'] if state else None,
             'agent_id': authority.agent_id, 'conversation_id': app.convo_id, 'runtime_id': runtime.runtime_id,
@@ -360,7 +392,7 @@ def flush(app, checkpoint_id):
     before = status(app)
     if before['boundary_ready']:
         return before
-    if inventory(app):
+    if inventory(app) or 'hold-record-changed' in before['blockers']:
         return before
     # Lazy dependency: ordinary LiteTUI startup does not require liteharness.
     try:
@@ -375,8 +407,11 @@ def flush(app, checkpoint_id):
         'runtime_id': runtime.runtime_id, 'source_revision': revision, 'observed_at': observed,
         'coverage': 'litetui-owned-files-only', 'files': records}
     if path.exists():
-        boundary = _read(path)  # a retry never rewrites an already published boundary
-        observed = boundary['observed_at']
+        existing = _read(path)  # a retry never rewrites an already published boundary
+        observed = existing.get('observed_at')
+        if not isinstance(observed, str) or existing != {**boundary, 'observed_at': observed}:
+            raise CheckpointError('Existing boundary does not match owned source files')
+        boundary = existing
     else:
         _write(path, boundary)
     if _files(app)[1] != revision or inventory(app):
@@ -393,6 +428,8 @@ def flush(app, checkpoint_id):
 def release(app, checkpoint_id, *, reconciled):
     runtime = _controller(app)
     runtime.require(checkpoint_id, app)
+    if runtime.durable and not runtime.record_matches():
+        raise CheckpointError('Restart hold record changed; refusing release')
     if reconciled is not True:
         raise CheckpointError('Explicit owner reconciliation is required before releasing a hold')
     if runtime.state['phase'] != 'released' or not runtime.durable:
@@ -410,8 +447,9 @@ def authorize_compaction(app, checkpoint_id, handoff_sha256):
     """One explicit maintenance permission; uses the existing compactor unchanged."""
     runtime = _controller(app)
     runtime.require(checkpoint_id, app)
-    if not is_held(app):
-        raise CheckpointError('Compaction permission requires the active checkpoint hold')
+    if (not is_held(app) or not runtime.durable or not runtime.record_matches()
+            or runtime.state['phase'] == 'released'):
+        raise CheckpointError('Compaction permission requires a durable active checkpoint hold')
     blockers = [b for b in inventory(app) if not b.startswith('provider-durability-unsupported:')]
     if blockers:
         raise CheckpointError('Resolve checkpoint blockers before compaction')
@@ -428,11 +466,16 @@ def authorize_compaction(app, checkpoint_id, handoff_sha256):
 def compaction_permitted(app, *, consume=False):
     if not is_held(app):
         return True
-    runtime = _controller(app)
-    permit = getattr(runtime, 'compaction_permit', None)
-    if not permit or permit[:2] != (runtime.state['checkpoint_id'], app.convo_id):
+    try:
+        runtime = _controller(app)
+        permit = getattr(runtime, 'compaction_permit', None)
+        if (not permit or not runtime.state or runtime.state['phase'] == 'released'
+                or not runtime.durable or not runtime.record_matches()
+                or permit[:2] != (runtime.state['checkpoint_id'], app.convo_id)):
+            return False
+        digest = hashlib.sha256(_unlinked(runtime.session.memory_root / 'handoff.md').read_bytes()).hexdigest()
+        if consume:
+            runtime.compaction_permit = None
+        return digest == permit[2]
+    except (OSError, ValueError, TypeError, AttributeError):
         return False
-    digest = hashlib.sha256(_unlinked(runtime.session.memory_root / 'handoff.md').read_bytes()).hexdigest()
-    if consume:
-        runtime.compaction_permit = None
-    return digest == permit[2]

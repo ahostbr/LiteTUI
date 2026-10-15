@@ -1,16 +1,21 @@
 """Synthetic owned runtime: no provider, transport, registry or live fleet."""
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
-import json
-import os
 
 import pytest
 
+from litetui import restart_checkpoint as checkpoint
 from litetui.agent_ownership import AgentSession
 from litetui.agent_store import AgentStore
 from litetui.conversation import ConversationRepository
-from litetui import restart_checkpoint as checkpoint
+
+
+@pytest.fixture
+def checkpoint_contract():
+    """Optional cross-repository contract: absence never becomes a fake receipt."""
+    return pytest.importorskip("liteharness.checkpoint_contract")
 
 
 @pytest.fixture
@@ -41,7 +46,7 @@ def prepare(app, ident=None):
     return checkpoint.prepare(app, ident or str(uuid4()), disposition='idle')
 
 
-def test_idle_hold_flush_and_card_a_receipt(runtime):
+def test_idle_hold_flush_and_card_a_receipt(checkpoint_contract, runtime):
     from liteharness.checkpoint_contract import Receipt, decode
     result = prepare(runtime)
     assert result['held'] and not result['boundary_ready']
@@ -56,7 +61,7 @@ def test_idle_hold_flush_and_card_a_receipt(runtime):
     assert checkpoint.flush(runtime, result['checkpoint_id'])['receipt'] == saved['receipt']
 
 
-def test_mid_turn_holds_new_work_without_cancellation(runtime):
+def test_mid_turn_holds_new_work_without_cancellation(checkpoint_contract, runtime):
     runtime._chat_running = lambda: True
     runtime._stop_requested = False
     hold = prepare(runtime)
@@ -87,7 +92,7 @@ def test_draft_is_not_silently_lost(runtime):
     assert runtime.query_one().value == 'unsent draft'
 
 
-def test_changed_file_invalidates_ack(runtime):
+def test_changed_file_invalidates_ack(checkpoint_contract, runtime):
     hold = prepare(runtime)
     assert checkpoint.flush(runtime, hold['checkpoint_id'])['boundary_ready']
     message = {'role': 'user', 'content': 'later'}
@@ -112,7 +117,7 @@ def test_cancel_ownership_and_no_automatic_resume(runtime):
     assert checkpoint.release(runtime, hold['checkpoint_id'], reconciled=True) == state
 
 
-def test_restart_keeps_gate_but_does_not_reuse_live_ready_ack(runtime):
+def test_restart_keeps_gate_but_does_not_reuse_live_ready_ack(checkpoint_contract, runtime):
     hold = prepare(runtime)
     checkpoint.flush(runtime, hold['checkpoint_id'])
     del runtime._restart_checkpoint
@@ -128,7 +133,7 @@ def test_prepare_failure_has_no_ack_and_stays_held_in_process(runtime, monkeypat
     assert checkpoint.is_held(runtime)
 
 
-def test_failed_flush_never_claims_boundary_ready(runtime, monkeypatch):
+def test_failed_flush_never_claims_boundary_ready(checkpoint_contract, runtime, monkeypatch):
     hold = prepare(runtime)
     monkeypatch.setattr(checkpoint.os, 'fsync', lambda *a: (_ for _ in ()).throw(OSError('disk full')))
     with pytest.raises(OSError):

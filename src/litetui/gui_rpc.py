@@ -268,7 +268,9 @@ def _conversations(app, action, cmd):
     elif action == "compact":
         from litetui import restart_checkpoint
         if restart_checkpoint.is_held(app):
-            restart_checkpoint.authorize_compaction(app, cmd.get("checkpoint_id"), cmd.get("handoff_sha256"))
+            from litetui.plugin_reload_activity import idle_infra_phase
+            with idle_infra_phase(app):
+                restart_checkpoint.authorize_compaction(app, cmd.get("checkpoint_id"), cmd.get("handoff_sha256"))
         app._handle_command("/compact")
         return {"session_id": session_id, "accepted": True}
     else:
@@ -435,9 +437,30 @@ def _memory(app, action, cmd):
     return {"name": name, "text": text}
 
 
+# During a restart hold, reads and completion of already-issued callbacks remain
+# available. New mutations are refused BEFORE their first side effect, including
+# async management operations that do not pass through dispatch().
+_RESTART_SAFE = frozenset({
+    "hello", "state", "checkpoint.prepare", "checkpoint.status", "checkpoint.flush", "checkpoint.release",
+    "settings.get", "settings.validate", "conversations.list", "conversations.read", "conversations.compact",
+    "models.list", "models.capabilities", "models.config", "models.confirm", "extensions.list",
+    "hooks.get", "hooks.validate", "mcp.list", "skills.list", "skills.read", "tools.list",
+    "memory.list", "memory.read", "jobs.list", "tasks.list", "tasks.tail", "goals.get", "calendar.list",
+    "diagnostics.get", "host_tools.result", "subagents.list", "subagents.tail", "system.get",
+    "glassbox.get", "work.get", "engine.status",
+})
+
+
+def _restart_gate(app, operation):
+    from litetui import restart_checkpoint
+    if operation not in _RESTART_SAFE and restart_checkpoint.is_held(app):
+        raise ValueError("Restart checkpoint hold blocks this mutation")
+
+
 def dispatch(app, cmd):
     """Execute nonblocking operations on the existing app loop."""
     operation = str(cmd.get("type", ""))[4:]
+    _restart_gate(app, operation)
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
     if operation == "hello":
@@ -723,6 +746,7 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    _restart_gate(app, operation[4:])
     blocking = operation in {"gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
