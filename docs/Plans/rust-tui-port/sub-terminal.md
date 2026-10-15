@@ -118,7 +118,7 @@ Preserve existing command handlers and authority checks. UI source edits are per
 3. Capture actual sanitized runtime fixtures for golden paths and negative cases using a deterministic backend boundary and real `LiteTUI`/RPC collaborators. Include text, reasoning, tool begin/end, approvals, questions, queueing, abort, errors and state refresh; do not use production transcripts.
 4. Record current terminal appearance and interactions for both hosts; resolved theme palettes and all selected plugin screens. Store terminal dimensions, fonts/DPI, versions and screenshot references.
 5. Benchmark Python baseline: time to first editable input (not first window), input-to-render latency while streaming, scrolling with 10,000 fixture messages, CPU idle/streaming, process-tree memory. Five launches plus three repeated steady-state runs per host; separate warm/cold results. Record hardware, fixture hash, provider boundary, terminal and background load. Shared model services reported separately to avoid counting unrelated server work.
-6. Ask Ryan to approve numeric gates from those measurements. Pin crate versions and frame/queue limits with justification. Resolve T0565 tier/thinking with Ryan before implementation staffing.
+6. Ask Ryan to approve numeric gates from those measurements. Pin crate versions and frame/queue limits with justification. T0565 process selection is resolved: Ryan chose **Tier 2 / High** and authorized execution after compaction.
 
 Exit: reviewed parity inventory and fixtures, executable measurement method and complete specification for the next slice. If private plugin specimens or live access are missing, leave affected rows blocked. Do not assert that this initial planning pass completed P0.
 

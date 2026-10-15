@@ -31,7 +31,7 @@ Ryan chose:
 9. No silent replay of commands/tool side effects after a crash or ambiguous result.
 10. Python remains a required dependency during this phase. A Python-free executable is a later project milestone.
 
-Final assumption check: Ryan selected **All correct**. Next-step authorization: **Plan it**. This document does not claim authorization to publish, push, replace the live installation, or run paid/live backend tests without coordination.
+Final assumption check: Ryan selected **All correct**. Initial next-step authorization: **Plan it**. Subsequently Ryan selected Tier 2 / High and explicitly authorized: **“i want you to start this plan after compact”**. Begin P0 after compaction, without repeating the planning quiz. This document does not claim authorization to publish, push, replace the live installation, or run paid/live backend tests without coordination.
 
 ## Architecture decision
 
@@ -91,7 +91,7 @@ The sub-plan names instruments, conditions, failure demonstrations and expected 
 
 - OpenBolt/implementer: exhaustive live UI inventory, plugin specimen selection, wire schemas and resource baseline.
 - Ryan: approve numerical performance targets after measurement; identify any private custom plugins not present in the committed source; visual acceptance.
-- Ryan: choose task process tier and thinking level before implementation (task board reported both unset). No tier has been inferred.
+- Resolved: Ryan chose **Tier 2 / High**; recorded on T0565. Execution authorized after compaction.
 - Orchestrator: execution staffing/priority and review; SOTS remains the stated fleet priority.
 - Live verification requires available backend credentials/services and terminal access. Missing coverage blocks full parity; skipped tests are not passes.
 - Full buildability gate: **not yet passed for all screens**. Missing dynamic UI/event/plugin specifications are P0 outputs, not license for placeholders.
@@ -121,3 +121,7 @@ After implementation, record which contracts were missing, which failure probes 
 Sentinel confirmed on 2026-10-15 that dark-only was already a standing user requirement, not a new preference. The first light plan render violated it. Root cause: the generator matched a prose `<style>` mention rather than the CSS block. Correction: repository-owned `plan.css`, explicit dark color scheme/background, and computed-style verification. Future pages must be checked offscreen before being shown; a source stylesheet or successful HTML generation alone is not proof of a dark rendered page.
 
 The committed generator uses `markdown_it` from the project Python environment. Run it from the worktree root; generated copies under `artifacts/` remain local.
+
+## Execution authorization update
+
+2026-10-15: Ryan selected Tier 2 and High, then said “i want you to start this plan after compact”. Resume from the seat's native handoff; begin P0 after context compaction. No Rust implementation has been completed yet.
