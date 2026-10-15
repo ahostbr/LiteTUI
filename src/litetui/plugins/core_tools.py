@@ -456,12 +456,10 @@ def bash_spec() -> dict:
         return tool_schemas.load(
             "bash",
             shell_note=f"a real bash ({exe}) on Windows: sleep, grep, sed, pipes and redirection all work; QUOTE Windows paths or write them with forward slashes, an unquoted C:\\dir\\file loses its backslashes",
-            windows_hint="The `powershell` tool is still the right one for Windows-native cmdlets, services and the registry.",
         )
     return tool_schemas.load(
         "bash",
-        shell_note="cmd.exe on Windows, no Git bash found",
-        windows_hint="ON WINDOWS, PREFER THE `powershell` TOOL: this one runs cmd.exe, where sleep, grep, sed and input redirection are all unavailable.",
+        shell_note="cmd.exe on Windows, no Git bash found: sleep, grep, sed and input redirection are unavailable",
     )
 
 
@@ -476,10 +474,9 @@ WEB_FETCH_SPEC = tool_schemas.load("web_fetch")
 
 def _register(ctx) -> None:
     agent_id = getattr(getattr(ctx.app, "seat", None), "agent_id", None)
-    # Windows first, and registered BEFORE bash so it leads the offered list.
-    # Only when a PowerShell actually exists: a tool that cannot run is worse
-    # than an absent one, because the model spends a call finding out.
-    if powershell_exe() is not None:
+    # Windows only, BEFORE bash; Unix keeps bash even when pwsh is installed.
+    # Never offer an unavailable interpreter.
+    if os.name == "nt" and powershell_exe() is not None:
         ctx.tool(powershell_spec(), partial(tool_powershell, agent_id=agent_id), policy=SHELL_POLICY)
     ctx.tool(BASH_SPEC, partial(tool_bash, agent_id=agent_id), policy=SHELL_POLICY)
     ctx.tool(READ_SPEC, tool_read, policy=READ_POLICY)
