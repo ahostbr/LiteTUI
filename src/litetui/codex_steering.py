@@ -161,10 +161,14 @@ class HostSteering:
             captured=context,
         )
         context["reason"] = result.reason
-        return result.allowed and not self.app._stop_requested, context
+        from litetui.restart_checkpoint import is_held
+        return result.allowed and not self.app._stop_requested and not is_held(self.app), context
 
     async def run(self):
+        from litetui.restart_checkpoint import is_held
         while not getattr(self.app, "_stop_requested", False):
+            if is_held(self.app):
+                return
             queue = getattr(self.app, "_pending_input", [])
             if not queue:
                 await asyncio.sleep(0.1)

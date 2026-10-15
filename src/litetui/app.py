@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from litetui import settings_runtime
-from litetui import win32_input
+from litetui import win32_input, restart_checkpoint
 from litetui import convo_settings as convo_settings_mod
 
 # Textual reads Windows INPUT_RECORDs on its own thread. Install our narrow
@@ -2773,6 +2773,7 @@ class LiteTUI(App):
             else:
                 self._system("harness seat OFFLINE — the agent fleet is unreachable.")
             return
+        self._restart_inbox_ready = True
         try:
             # A beat every HEARTBEAT_EVERY polls, not every poll: refreshing
             # presence costs a subprocess, and `discover` only cares on the
@@ -2790,7 +2791,13 @@ class LiteTUI(App):
                 # chat turn, visible as turn_active on its own.
                 with idle_infra_phase(self):
                     await asyncio.sleep(harness_mod.POLL_SECONDS)
-                    msgs = await asyncio.to_thread(self.seat.poll)
+                    msgs = []
+                    if not restart_checkpoint.is_held(self):
+                        self._restart_poll_inflight = True
+                        try:
+                            msgs = await asyncio.to_thread(self.seat.poll)
+                        finally:
+                            self._restart_poll_inflight = False
                 for m in msgs:
                     self._receive_mail(m)
 
@@ -2813,6 +2820,8 @@ class LiteTUI(App):
                         await asyncio.to_thread(self.seat.heartbeat)
         except asyncio.CancelledError:
             raise
+        finally:
+            self._restart_inbox_ready = False
 
     def _receive_mail(self, msg: dict) -> None:
         """T1049-B: an answer to a pending [APPROVAL] resumes its turn and is not
@@ -2865,6 +2874,8 @@ class LiteTUI(App):
         hook_host.start_prompt(self, item)
 
     def _fire_job(self, job, *, manual: bool = False) -> None:
+        if restart_checkpoint.is_held(self):
+            return
         from litetui.shared_state import Lease, OwnershipError
         if getattr(self, "_gui_schedules_paused", False):
             return
@@ -2925,6 +2936,8 @@ class LiteTUI(App):
         the failure that produces duplicates is exactly the one you cannot see
         in a log that only records successes.
         """
+        if restart_checkpoint.is_held(self):
+            return
         now = datetime.now()
         # T1082: the level this job RECORDED at creation. Checked before
         # prepare_fire and the stamp, so a skipped job keeps its slot, run_count
@@ -4244,6 +4257,9 @@ class LiteTUI(App):
         return True
 
     def _resume(self, path: Path, *, startup: bool = False) -> bool:
+        if not startup and restart_checkpoint.is_held(self):
+            self._system("Restart hold blocks conversation switching")
+            return False
         if getattr(self, '_agent_session', None) is not None:
             try:
                 expected = self._agent_session.conversation_directory(path.parent.name) / 'convo.jsonl'
@@ -6817,6 +6833,8 @@ class LiteTUI(App):
         compaction request itself to produce a summary, which is the failure it
         exists to prevent.
         """
+        if restart_checkpoint.is_held(self):
+            return
         pct = self._autocompact_due()
         if pct is None:
             return
@@ -8312,12 +8330,18 @@ class LiteTUI(App):
 
     @on(Input.Submitted, "#message-input")
     def handle_submit(self, event: Input.Submitted) -> None:
+        if restart_checkpoint.is_held(self):
+            self._refuse_submit("restart-held", "Restart hold retains the draft; reconcile or release it explicitly")
+            return
         value = event.value
         event.input.value = ""
         self._submit_text(value, alt_chord=False)
 
     def action_submit_alt(self) -> None:
         """ctrl+shift+enter — the OTHER end of the mid-turn mapping."""
+        if restart_checkpoint.is_held(self):
+            self._refuse_submit("restart-held", "Restart hold retains the draft; reconcile or release it explicitly")
+            return
         inp = self.query_one("#message-input", Input)
         value = inp.value
         inp.value = ""
@@ -8398,6 +8422,9 @@ class LiteTUI(App):
     def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
         # Keep the re-clickable path local to this submission, including queued
         # and interrupted turns; unrelated bubbles never share attachment state.
+        if restart_checkpoint.is_held(self):
+            self._refuse_submit("restart-held", "Restart hold blocks new input")
+            return
         image_path: str | None = None
         text = value.strip()
         if not text and not self.pending_image:
@@ -9009,7 +9036,11 @@ class LiteTUI(App):
         # tell "deferred" from "ran" without finishing a turn that never began.
         from litetui.turn_deferral import STREAM_DEFERRED, TurnDeferred
         try:
+            if restart_checkpoint.is_held(self):
+                raise TurnDeferred("restart checkpoint hold")
             await self._await_mcp_maintenance()
+            if restart_checkpoint.is_held(self):
+                raise TurnDeferred("restart checkpoint hold")
         except TurnDeferred:
             return STREAM_DEFERRED
         if getattr(self, '_agent_session', None) is not None:
@@ -9837,6 +9868,8 @@ class LiteTUI(App):
         returns out of the worker before this point, so it still ends the turn
         and sends next -- queue and interrupt stay two different verbs.
         """
+        if restart_checkpoint.is_held(self):
+            return False
         if not self._pending_input or self._stop_requested:
             return False
         if self._pending_input[0].get("_codex_entry"):
@@ -9866,6 +9899,8 @@ class LiteTUI(App):
         exclusive in that group, and a flush that streamed now would CANCEL
         whichever is running.
         """
+        if restart_checkpoint.is_held(self):
+            return
         if not self._pending_input:
             return
         if self._chat_running() or getattr(self, "_mcp_maintenance", False):
@@ -10033,6 +10068,8 @@ class LiteTUI(App):
         have claimed the chat group first: that turn wins, and the ping is
         dropped rather than queued behind it.
         """
+        if restart_checkpoint.is_held(self):
+            return
         if self._chat_running():
             return
         if self._pending_input:
@@ -10159,6 +10196,9 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
+        if not restart_checkpoint.compaction_permitted(self, consume=True):
+            self._emit_compaction("restart-held")
+            return
         if getattr(self, '_agent_session', None) is not None:
             try:
                 LiteTUI._validate_owned_execution(self)
@@ -10890,6 +10930,10 @@ class LiteTUI(App):
         hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": seat_authority.seat_profile(self)})
 
     def _handle_command(self, cmd: str) -> None:
+        if restart_checkpoint.is_held(self) and not (cmd.split(maxsplit=1)[0].lower() == "/compact"
+                and restart_checkpoint.compaction_permitted(self)):
+            self._system("Restart hold blocks commands; use checkpoint status/release or authorized compaction")
+            return
         parts = cmd.split(maxsplit=1)
         name = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""

@@ -35,6 +35,7 @@ def current_operation(app):
 
 
 OPERATIONS = (
+    "checkpoint.prepare", "checkpoint.status", "checkpoint.flush", "checkpoint.release",
     "hello", "state", "prompt.submit", "settings.get", "settings.validate", "settings.apply",
     "conversations.list", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -265,6 +266,9 @@ def _conversations(app, action, cmd):
         app._submit_text(message, alt_chord=False, source="rpc")
         return {"session_id": session_id, "accepted": True}
     elif action == "compact":
+        from litetui import restart_checkpoint
+        if restart_checkpoint.is_held(app):
+            restart_checkpoint.authorize_compaction(app, cmd.get("checkpoint_id"), cmd.get("handoff_sha256"))
         app._handle_command("/compact")
         return {"session_id": session_id, "accepted": True}
     else:
@@ -483,6 +487,21 @@ def dispatch(app, cmd):
                         "source": "connected backend model metadata"}
         return {"backend": backend, "model": model, "thinking": thinking}
     domain, action = operation.split(".", 1)
+    from litetui import restart_checkpoint
+    if domain == "checkpoint":
+        from litetui.plugin_reload_activity import idle_infra_phase
+        # Exclude this exact control worker, not a group or unrelated task.
+        with idle_infra_phase(app):
+            if action == "prepare":
+                return restart_checkpoint.prepare(app, cmd.get("checkpoint_id"), disposition=cmd.get("disposition"))
+            if action == "status":
+                return restart_checkpoint.status(app)
+            if action == "flush":
+                return restart_checkpoint.flush(app, cmd.get("checkpoint_id"))
+            if action == "release":
+                return restart_checkpoint.release(app, cmd.get("checkpoint_id"), reconciled=cmd.get("reconciled"))
+    if domain == "prompt" and restart_checkpoint.is_held(app):
+        raise ValueError("Restart checkpoint hold blocks new input")
     if domain == "prompt":
         message, behavior = cmd.get("message"), cmd.get("behavior", "normal")
         if not isinstance(message, str) or not message.strip():

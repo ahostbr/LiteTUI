@@ -304,6 +304,9 @@ def hold_input(app, item, refusal):
 
 
 def prepare_input(app, content, profile, source, operation_id=None):
+    from litetui.restart_checkpoint import is_held
+    if is_held(app):
+        raise ValueError("Restart checkpoint hold blocks new native input")
     if not isinstance(content, str):
         raise TypeError("Claude image attachments are not enabled yet; send text instead.")
     ledger = ledger_for(app)
@@ -333,6 +336,9 @@ def prepare_input(app, content, profile, source, operation_id=None):
 
 
 def queue_ready(app, item):
+    from litetui.restart_checkpoint import is_held
+    if is_held(app):
+        return False
     if not item.get("_claude_segment"):
         if not getattr(getattr(app, "backend", None), "owns_native_turns", False):
             return True

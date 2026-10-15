@@ -17,6 +17,7 @@ from pathlib import Path
 MAX_FRAME = 1024 * 1024
 IDLE_TIMEOUT = 30
 OPERATIONS = frozenset({
+    "checkpoint.prepare", "checkpoint.status", "checkpoint.flush", "checkpoint.release",
     "state", "models.load", "models.unload", "models.select", "models.reconnect",
     "thinking.set", "context.set", "backend.set", "engine.start", "engine.stop",
     "engine.status", "conversations.compact", "conversations.read", "prompt.submit",
