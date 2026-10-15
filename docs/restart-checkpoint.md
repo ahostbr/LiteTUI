@@ -44,14 +44,27 @@ check the hold. The stream checks again after awaited MCP maintenance. Native
 approval response paths can settle already-running work; approval *mail* remains
 unread while held and therefore may keep readiness blocked.
 
+The existing legacy stdio dispatcher enforces the same policy before any side
+effect. Held `prompt`, `run_command`, profile/model/thinking/settings and job
+mutations return an explicit failure, not an `accepted`/`ran` receipt for discarded
+input. Read operations and `answer`/`approve` for existing callbacks remain
+available. Unknown future legacy operations fail closed while held.
+
 ### Explicit same-seat compaction
 
 The existing `gui.conversations.compact` operation additionally requires the
 matching `checkpoint_id` and `handoff_sha256` when held. The owner verifies and
 fsyncs its current native `handoff.md`, then grants one in-memory permission to
 the existing compactor. A changed digest, released/corrupt hold, or consumed
-permission refuses it. Permissions do not survive process restart. Automatic
-compaction and its continuation/wake routes stay gated. This operation does not
+permission refuses it. Permissions do not survive process restart. During actual
+execution, an opaque capability is bound to the app, current asyncio task,
+checkpoint/conversation and handoff digest. Only the internal Codex owner STEP 1
+admission and inline stream receive it explicitly; neither a `source=compact`
+label nor a child task can borrow it. The stream rechecks it after its maintenance
+wait and the compactor rechecks it before native compact. Every exit revokes the
+capability. The global hold remains closed throughout; maintenance itself blocks
+boundary readiness. Automatic compaction, continuation/wake routes and new
+post-turn card-summary inference stay gated. This operation does not
 invent a compact-success receipt; the coordinator must observe native completion
 and request a fresh boundary afterwards.
 
@@ -119,9 +132,12 @@ This implementation assigns no executable defaults to them.
 ## Validation
 
 Focused tests are `tests/test_restart_checkpoint.py` and
-`tests/test_restart_checkpoint_integration.py`. They use synthetic real owned
-stores, native entry methods and the authenticated LocalRpc frame handler; no
-live seat registry, provider or restart is exercised. Contract-dependent cases
+`tests/test_restart_checkpoint_integration.py`, and
+`tests/test_restart_checkpoint_review.py`. They use synthetic real owned
+stores, native entry methods and the authenticated LocalRpc frame handler. The
+review tests run the actual mounted Codex compactor worker, owner STEP 1, owner
+file gate, hook and stream, with fake provider transport and owner-handoff
+subprocess effects. No live seat registry, provider or restart is exercised. Contract-dependent cases
 skip if the optional card-A package is absent; admission/failure tests remain
 available, and a missing-contract test verifies refusal rather than fake ACK.
 Run the focused files together with existing conversation storage, resume, inbox,

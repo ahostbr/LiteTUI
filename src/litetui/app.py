@@ -7474,6 +7474,8 @@ class LiteTUI(App):
 
     def _kick_card_summary(self, card) -> None:
         """Fire-and-forget the summary for one finished card."""
+        if restart_checkpoint.is_held(self):
+            return
         if getattr(self.backend, "owns_native_turns", False):
             return  # Native context never calls a legacy summary model.
         if card is None or getattr(card, "summary_done", False):
@@ -7518,6 +7520,8 @@ class LiteTUI(App):
         Any failure leaves the model-name header standing. A summary is a
         convenience; it must never be able to break a finished turn.
         """
+        if restart_checkpoint.is_held(self):
+            return
         try:
             levels = (self.backend.reasoning_levels(model)
                       if hasattr(self.backend, "reasoning_levels") else ())
@@ -9023,7 +9027,7 @@ class LiteTUI(App):
             raise TurnDeferred("mcp dispatch map is stale after reconcile; blocked until rebuild succeeds")
 
     @work(exclusive=True, group="chat")
-    async def _stream(self) -> None:
+    async def _stream(self, *, restart_maintenance=None) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         # 🔴 COMMON MCP-MAINTENANCE GATE. The one point EVERY turn passes through,
@@ -9034,12 +9038,22 @@ class LiteTUI(App):
         # exception would crash the TUI. The sentinel ends the worker SUCCESS
         # (on_worker_state_changed then flushes/retries) and lets a parent wake
         # tell "deferred" from "ran" without finishing a turn that never began.
+        # Preserve native authority refusal before consulting hold state, and
+        # recheck below after the awaited maintenance boundary.
+        if getattr(self, '_agent_session', None) is not None:
+            try:
+                LiteTUI._validate_owned_execution(self)
+            except (ValueError, OSError, llm_backend.BackendError) as exc:
+                self._system(str(exc))
+                return
         from litetui.turn_deferral import STREAM_DEFERRED, TurnDeferred
         try:
-            if restart_checkpoint.is_held(self):
+            if (restart_checkpoint.is_held(self)
+                    and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
                 raise TurnDeferred("restart checkpoint hold")
             await self._await_mcp_maintenance()
-            if restart_checkpoint.is_held(self):
+            if (restart_checkpoint.is_held(self)
+                    and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
                 raise TurnDeferred("restart checkpoint hold")
         except TurnDeferred:
             return STREAM_DEFERRED
@@ -10142,25 +10156,33 @@ class LiteTUI(App):
         agent_id = session.authority.agent_id if session is not None else None
         return await owner_mode.owner_gate(self._owner_memory_dir, t0_ns, agent_id)
 
-    async def _owner_drive_turn(self, text: str) -> bool:
+    async def _owner_drive_turn(self, text: str, *, restart_maintenance=None) -> bool:
         """Owner mode: send `text` as ONE normal user turn through the engine and wait for it.
 
         Runs the real turn loop inline. It cannot start the `_stream` worker: `_compact` is
         in the same exclusive "chat" group, so starting it would cancel the compaction.
         False when the turn was not admitted or the user stopped it.
         """
+        if (restart_checkpoint.is_held(self)
+                and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
+            self._system("Restart hold refused the owner maintenance turn; context was not compacted.")
+            return False
         item = {"content": text, "text": text, "source": "compact",
                 "tool_profile": seat_authority.seat_profile(self)}
-        if not hook_host.accept_prompt(self, item):
+        admission = ({"restart_maintenance": restart_maintenance} if restart_maintenance is not None else {})
+        if not hook_host.accept_prompt(self, item, **admission):
             self._system("The owner STEP 1 turn was not admitted; the context was not compacted.")
             return False
-        await LiteTUI._stream.__wrapped__(self)
+        from litetui.turn_deferral import STREAM_DEFERRED
+        if await LiteTUI._stream.__wrapped__(self, restart_maintenance=restart_maintenance) is STREAM_DEFERRED:
+            self._system("Owner maintenance was deferred; context was not compacted.")
+            return False
         if self._stop_requested:
             self._system("Stopped; the context was not compacted.")
             return False
         return True
 
-    async def _owner_codex_step_one(self) -> tuple[bool, str | None]:
+    async def _owner_codex_step_one(self, *, restart_maintenance=None) -> tuple[bool, str | None]:
         """Owner mode on Codex: STEP 1 as a driven turn, the gate, one retry. (proceed, why-not-committed).
 
         Codex's own auto-compaction cannot be intercepted (named limit); this runs on a
@@ -10174,7 +10196,7 @@ class LiteTUI(App):
                 self._system("Owner mode: asking the seat to write NOW.md before Codex compacts…")
             else:
                 self._system(f"NOW.md was not saved ({why}); asking once more.")
-            if not await self._owner_drive_turn(text):
+            if not await self._owner_drive_turn(text, restart_maintenance=restart_maintenance):
                 return False, None
             passed, why = await self._owner_gate(t0)
             if passed:
@@ -10196,15 +10218,19 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
-        if not restart_checkpoint.compaction_permitted(self, consume=True):
-            self._emit_compaction("restart-held")
-            return
         if getattr(self, '_agent_session', None) is not None:
             try:
                 LiteTUI._validate_owned_execution(self)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
                 return
+        with restart_checkpoint.compaction_scope(self) as restart_maintenance:
+            if restart_maintenance is False:
+                self._emit_compaction("restart-held")
+                return
+            await LiteTUI._compact_body(self, extra, handoff=handoff, restart_maintenance=restart_maintenance)
+
+    async def _compact_body(self, extra: str = "", *, handoff: str | None = None, restart_maintenance=None) -> None:
         # Owner mode: the time STEP 1 begins. The gate (owner_gate) accepts NOW.md only if it
         # was rewritten at or after this, and runs before anything is truncated.
         self._owner_compact_t0 = time.time_ns() if getattr(self, '_owner_memory_dir', None) is not None else None
@@ -10224,9 +10250,13 @@ class LiteTUI(App):
             if getattr(self, "_owner_memory_dir", None) is not None:
                 # Codex compacts natively and has no STEP 1, so owner mode drives one
                 # normal turn first (NOW.md and DOMAIN.md), gates it, THEN compacts.
-                proceed, owner_failure = await self._owner_codex_step_one()
+                proceed, owner_failure = await self._owner_codex_step_one(restart_maintenance=restart_maintenance)
                 if not proceed:
                     return
+            if (restart_checkpoint.is_held(self)
+                    and not restart_checkpoint.maintenance_permitted(self, restart_maintenance)):
+                self._emit_compaction("restart-held")
+                return
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()

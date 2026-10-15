@@ -35,7 +35,7 @@ def runtime(tmp_path):
         bg_tasks={}, _pending_input=[], pending_image=None, _pending_tool_images=[], rejected_prompts=[],
         _chat_running=lambda: False, query_one=lambda *a: SimpleNamespace(value=''),
         backend=SimpleNamespace(name='lmstudio', owns_native_turns=False), model_id='fixture-model',
-        thinking_level='high', _gui_connection_success=True, _restart_inbox_ready=True, is_running=True,
+        thinking_level='high', _thinking_level='high', _system=lambda text: None, _gui_connection_success=True, _restart_inbox_ready=True, is_running=True,
         seat=SimpleNamespace(registered=True, agent_id=session.authority.agent_id, name=session.authority.name))
     yield app
     store.release()

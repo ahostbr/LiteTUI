@@ -7,10 +7,12 @@ All calls run on the app's event loop under its existing AgentSession capability
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -134,6 +136,8 @@ def inventory(app):
     blockers = _activity(app)
     if app._chat_running():
         blockers.append('active-turn')
+    if getattr(getattr(app, '_restart_checkpoint', None), 'maintenance', None) is not None:
+        blockers.append('compaction-maintenance-active')
     for field in ('_pending_input', 'pending_image', '_pending_tool_images', 'rejected_prompts',
                   '_rpc_pending_asks', '_gui_model_pending', '_gui_host_pending', '_hook_lifecycle',
                   '_claude_compact_resume', '_interrupted_compact_resume', '_claude_closing',
@@ -478,4 +482,61 @@ def compaction_permitted(app, *, consume=False):
             runtime.compaction_permit = None
         return digest == permit[2]
     except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+class _CompactionTurn:
+    """Opaque capability: one compactor, one task, one pinned handoff."""
+
+    def __init__(self, app, binding):
+        self.app = app
+        self.binding = binding
+        self.task = asyncio.current_task()
+
+
+@contextmanager
+def compaction_scope(app):
+    """Consume explicit permission and revoke it on every compactor exit.
+
+    The global hold never opens. Only the internal owner-maintenance call chain
+    receives the opaque token; a source label or a child task cannot borrow it.
+    None means ordinary unheld compaction; False means refusal.
+    """
+    if not is_held(app):
+        yield None
+        return
+    try:
+        runtime = _controller(app)
+    except (OSError, ValueError, TypeError, AttributeError):
+        yield False
+        return
+    binding = getattr(runtime, 'compaction_permit', None)
+    allowed = compaction_permitted(app, consume=True)
+    runtime.compaction_permit = None  # every attempted execution consumes its permission
+    if getattr(runtime, 'maintenance', None) is not None or not allowed:
+        yield False
+        return
+    token = _CompactionTurn(app, binding)
+    runtime.maintenance = token
+    try:
+        yield token
+    finally:
+        runtime.maintenance = None
+
+
+def maintenance_permitted(app, token):
+    """Validate the explicit internal turn permit, never a global bypass flag."""
+    if not isinstance(token, _CompactionTurn) or token.app is not app:
+        return False
+    try:
+        runtime = _controller(app)
+        if (getattr(runtime, 'maintenance', None) is not token
+                or token.task is not asyncio.current_task()
+                or not runtime.state or runtime.state['phase'] == 'released'
+                or not runtime.durable or not runtime.record_matches()
+                or token.binding[:2] != (runtime.state['checkpoint_id'], app.convo_id)):
+            return False
+        digest = hashlib.sha256(_unlinked(runtime.session.memory_root / 'handoff.md').read_bytes()).hexdigest()
+        return digest == token.binding[2]
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
         return False

@@ -162,7 +162,7 @@ def refuse_below_floor(app, item) -> bool:
     return True
 
 
-def accept_prompt(app, item, *, native_accepted=False) -> bool:
+def accept_prompt(app, item, *, native_accepted=False, restart_maintenance=None) -> bool:
     """Start this item's turn. False when refused by the floor or held by Claude.
 
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
@@ -170,7 +170,8 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
     refusing it here would leave the transcript and the thread disagreeing. A
     keyword, not item data, so no stored or forged state can reach the skip; and
     accept_steered never starts a stream."""
-    if not native_accepted and restart_checkpoint.retain_prompt(app, item):
+    if (not native_accepted and not restart_checkpoint.maintenance_permitted(app, restart_maintenance)
+            and restart_checkpoint.retain_prompt(app, item)):
         return False
     if not native_accepted and refuse_below_floor(app, item):
         return False
