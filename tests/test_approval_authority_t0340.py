@@ -104,6 +104,50 @@ async def test_one_atomic_answer_and_exact_sender_record(context, channel):
     assert future.result() in (False, tool_approval.DENIED)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('channel', ['relay', 'rpc'])
+@pytest.mark.parametrize('envelope,expected', [
+    ({'body': f'APPROVE {IDENT}'}, True),
+    ({'payload': {'text': f'APPROVE {IDENT}'}}, True),
+    ({'body': ' \n\t', 'payload': {'text': f'APPROVE {IDENT}'}}, True),
+    ({'body': 7, 'payload': {'text': f'APPROVE {IDENT}'}}, True),
+    ({'payload': {'body': f'DENY {IDENT}'}}, False),
+    ({'payload': {'text': '  ', 'body': f'DENY {IDENT}'}}, False),
+    ({'body': f'DENY {IDENT}', 'payload': {'text': f'APPROVE {IDENT}'}}, False),
+    ({'payload': {'text': f'DENY {IDENT}', 'body': f'APPROVE {IDENT}'}}, False),
+    ({'body': f'APPROVE {IDENT}', 'payload': 'malformed'}, True),
+    ({}, None),
+    ({'payload': None}, None),
+    ({'payload': 'malformed'}, None),
+    ({'payload': ['malformed']}, None),
+    ({'payload': 7}, None),
+    ({'body': 7, 'payload': {'text': ['malformed'], 'body': False}}, None),
+    ({'body': 'ordinary mail', 'payload': {'text': f'APPROVE {IDENT}'}}, None),
+])
+async def test_approval_message_envelopes(context, channel, envelope, expected):
+    app, _, _ = context
+    create(app)
+    future = asyncio.get_running_loop().create_future()
+    if channel == 'relay':
+        app._relay_pending = {IDENT: (future, APPROVER)}
+        take = approval_relay.take_answer
+    else:
+        app._approval_waiters = {IDENT: future}
+        take = tool_approval.take_spawner_answer
+    message = {'from': APPROVER, 'to': REQUESTER, **envelope}
+    assert take(app, message) is (expected is not None)
+    audit = app.conversation[0]['approval_delivery'][IDENT]
+    if expected is None:
+        assert not future.done()
+        assert audit['outcome'] == 'pending'
+    else:
+        result = expected if channel == 'relay' else (tool_approval.ONCE if expected else tool_approval.DENIED)
+        assert future.result() is result
+        assert audit['outcome'] == ('approved' if expected else 'denied')
+        assert audit['answerer_id'] == APPROVER
+        assert not take(app, message)
+
+
 def test_address_ttl_name_and_restart_fail_closed(context):
     app, clock, _ = context
     create(app)
