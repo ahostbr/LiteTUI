@@ -230,7 +230,7 @@ def test_plain_answer_is_the_only_stream_site_that_finalizes() -> None:
     import inspect
     import textwrap
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(app_mod.LiteTUI._stream)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(app_mod.LiteTUI._stream_worker)))
     calls = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -269,7 +269,7 @@ def test_wrong_conversation_loop_pauses_without_delivery(
         _handle_command=lambda command: delivered.append(command),
         _user_bubble=lambda *args, **kwargs: delivered.append("bubble"),
         _append=lambda message: delivered.append("append"),
-        _stream=lambda: delivered.append("stream"),
+        _stream=lambda **_kwargs: delivered.append("stream"),
     )
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
     app_mod.LiteTUI._fire_job(app, job)
@@ -345,7 +345,7 @@ def test_goal_command_persists_then_starts_a_goal_owned_turn(tmp_path: Path) -> 
         _chat_running=lambda: False,
         _user_bubble=lambda *args, **kwargs: None,
         _append=appended.append,
-        _stream=lambda: streamed.append(True),
+        _stream=lambda **_kwargs: streamed.append(True),
         _active_tool_profile="",
     )
     goal_mod.goal_command(app, "finish with evidence")

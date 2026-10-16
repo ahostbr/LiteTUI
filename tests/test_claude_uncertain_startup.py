@@ -30,7 +30,7 @@ def resumed_host(tmp_path, reached):
     app._hook_workspace = tmp_path
     app._system = app.notices.append
     app._append = app.appended.append
-    app._stream = lambda: app.streams.append("started")
+    app._stream = lambda **_kwargs: app.streams.append("started")
     app._flush_pending_input = lambda: LiteTUI._flush_pending_input(app)
     return app, old, before
 
@@ -189,7 +189,7 @@ async def test_real_textual_seat_survives_startup_inbox_uncertainty(tmp_path):
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.jobs[:] = []
-    app._stream = lambda: pytest.fail("no Claude turn may start while delivery is uncertain")
+    app._stream = lambda **_kwargs: pytest.fail("no Claude turn may start while delivery is uncertain")
     async with app.run_test(size=(110, 40)) as pilot:
         app.convo_dir = tmp_path
         app.convo_id = "saved"
@@ -350,7 +350,7 @@ async def test_real_local_tool_loop_holds_claude_head_then_allows_explicit_recov
         local_stream = app._stream
         recovered = []
 
-        def complete_native_turn():
+        def complete_native_turn(**_kwargs):
             entry_id = app._claude_active_input["_claude_entry"]["id"]
             recovered.append(entry_id)
             ledger.update_delivery(entry_id, "submitted")

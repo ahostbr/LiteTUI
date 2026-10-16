@@ -139,7 +139,7 @@ async def test_real_round_compacts_after_all_results_and_resumes_with_handoff(ap
         return Stream("Continuing with the fix.")
     monkeypatch.setattr("litetui.app.model_transport.for_app", lambda a: NS(create=create))
     events = []
-    app._rpc_emit = events.append
+    app._rpc_emit = lambda event, **_kwargs: events.append(event)
     async with app.run_test() as pilot:
         app._stream()
         for _ in range(160):

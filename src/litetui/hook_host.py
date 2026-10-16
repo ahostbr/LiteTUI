@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from litetui import lifecycle_hooks as hooks
 from litetui import seat_authority, tool_policy
+from litetui.event_origin import EventOrigin
 from litetui.widgets import _mark_delivered
 
 
@@ -163,15 +165,20 @@ def refuse_below_floor(app, item) -> bool:
 
 
 def accept_prompt(app, item, *, native_accepted=False) -> bool:
-    """Start this item's turn. False when refused by the floor or held by Claude.
+    """Boolean admission contract retained for queued/native callers."""
+    return accept_prompt_origin(app, item, native_accepted=native_accepted) is not None
+
+
+def accept_prompt_origin(app, item, *, native_accepted=False, origin=None) -> EventOrigin | None:
+    """Accept input and return its captured origin, without scheduling execution.
 
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
-    the Codex app-server already holds: it was checked at HostSteering.admit, and
-    refusing it here would leave the transcript and the thread disagreeing. A
-    keyword, not item data, so no stored or forged state can reach the skip; and
-    accept_steered never starts a stream."""
+    the Codex app-server already holds. It is not trusted item metadata.
+    """
+    if origin is None:
+        origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
     if not native_accepted and refuse_below_floor(app, item):
-        return False
+        return None
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
     # T1027: the ONE place a turn's authority is decided, for every source.
@@ -181,11 +188,13 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
         app, _turn_source(item), item.get("tool_profile"))
     app._hooks_suppressed = False
     app._hook_corrections = 0
-    app._hook_turn_id = str(uuid.uuid4())
+    hook_id = str(uuid.uuid4())
+    app._hook_turn_id = hook_id
     app._hook_source = item.get("source", "queued")
     materialise = getattr(app, "_materialise_convo", None)
     if materialise is not None:
         materialise()
+    session_id = getattr(app, "convo_id", None)
     message = {"role": "user", "content": item["content"]}
     if getattr(getattr(app, "backend", None), "owns_native_turns", False):
         from litetui.claude_turn import UncertainDelivery, accept_input, hold_input
@@ -193,7 +202,7 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
             message["claude_delivery"] = accept_input(app, item)
         except UncertainDelivery as exc:
             hold_input(app, item, exc)
-            return False
+            return None
     entry = item.get("_codex_entry")
     if entry:
         message["codex_delivery"] = {"id": entry["id"], "threadId": entry["threadId"],
@@ -212,13 +221,20 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
         approval_delivery.stage(ident, "injected")
     if not entry or entry["state"] == "accepted":
         _mark_delivered(item)
-    return True
+    return replace(origin, session_id=session_id, hook_id=hook_id, execution_id=None)
 
 
-async def admit_prompt(app, item):
+async def admit_prompt(app, item) -> bool:
+    return await admit_prompt_origin(app, item) is not None
+
+
+async def admit_prompt_origin(app, item) -> EventOrigin | None:
+    # Capture input metadata before the first suspension, not from mutable app
+    # fields after hooks or lifecycle work have run.
+    origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
     # T1043: before the prompt_before hooks, so no hook runs for a refused turn.
     if refuse_below_floor(app, item):
-        return False
+        return None
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
     app._stop_requested = False
@@ -228,34 +244,39 @@ async def admit_prompt(app, item):
                             profile=seat_authority.turn_profile(app, _turn_source(item), item.get("tool_profile")),
                             captured=ctx)
     if result.allowed and not app._stop_requested:
-        if not accept_prompt(app, item):
-            return False
+        accepted = accept_prompt_origin(app, item, origin=origin)
+        if accepted is None:
+            return None
         app._hook_turn_id = ctx["turn_id"]
+        accepted = replace(accepted, hook_id=ctx["turn_id"])
         await drain_lifecycle(app)
-        return True
+        return accepted
     app.rejected_prompts.append({**item, "reason": result.reason})
     app._system(f"[prompt rejected; retained in /hooks] {result.reason}")
     app._rpc_emit({"type": "turn_end", "stopReason": "hook_denied"})
-    return False
+    return None
 
 
 def start_prompt(app, item):
     entry = item.get("_codex_entry")
     if entry and entry.get("state") in ("admitted", "next_turn"):
-        if not accept_prompt(app, item):
+        accepted = accept_prompt_origin(app, item)
+        if accepted is None:
             return
         app._hook_turn_id = entry.get("admission", {}).get("turn_id", app._hook_turn_id)
-        app._stream()
+        app._stream(origin=replace(accepted, hook_id=app._hook_turn_id))
         return
     state = snapshot(app)
     if not state.hooks and not state.error:
-        if accept_prompt(app, item):
-            app._stream()
+        accepted = accept_prompt_origin(app, item)
+        if accepted is not None:
+            app._stream(origin=accepted)
         return
 
     async def deliver():
-        if await admit_prompt(app, item):
-            app._stream()
+        accepted = await admit_prompt_origin(app, item)
+        if accepted is not None:
+            app._stream(origin=accepted)
     app.run_worker(deliver(), group="chat", exclusive=True, exit_on_error=False)
 
 

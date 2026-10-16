@@ -418,6 +418,51 @@ fn additive_envelope_ids_survive_decoding_without_becoming_a_dedup_policy() {
 }
 
 #[test]
+fn explicit_execution_origin_survives_without_filling_unknown_input_identity() {
+    use litetui_terminal::protocol::JsonlDecoder;
+
+    let mut c = client(1);
+    ready(&mut c, 1);
+    let event = json!({"type":"fixture_event","text":"same"});
+    let mut decoder = JsonlDecoder::new(2048).unwrap();
+    // Only explicitly participating Python producers supply these fields.
+    // This transport preserves them; it neither infers nor validates execution
+    // ownership and must not borrow identity from a preceding frame.
+    for fields in [
+        json!({"execution_id":"b4d5db8b-9827-42de-983e-1b7ac183ba49",
+               "operation_id":"A","hook_id":"hook-A","source":"typed"}),
+        json!({"execution_id":"ef78dd70-b2a2-46d3-a325-e45d9c31b330",
+               "operation_id":null,"hook_id":null,"source":null}),
+        json!({"operation_id":"legacy"}),
+    ] {
+        let mut frame = json!({"type":"gui.event","session_id":"session","event":event});
+        frame
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        let wire = format!("{event}\n{frame}\n");
+        let mut notices = Vec::new();
+        for byte in wire.as_bytes() {
+            decoder
+                .push(&[*byte], |value| notices.push(c.ingest(1, value)))
+                .unwrap();
+        }
+        assert_eq!(
+            notices,
+            vec![
+                Notice::IgnoredMirror(event.clone()),
+                Notice::Event {
+                    frame,
+                    event: event.clone()
+                }
+            ]
+        );
+    }
+    decoder.finish().unwrap();
+    assert!(c.ready_for_reads());
+}
+
+#[test]
 fn delivery_policy_and_capacity_are_explicit_and_unambiguous() {
     assert!(matches!(
         WireClient::new(1, 0, []),

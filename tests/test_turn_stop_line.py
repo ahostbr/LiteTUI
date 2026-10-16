@@ -152,7 +152,7 @@ def test_force_stop_settles_before_cancelling_the_worker() -> None:
 
 def test_stream_settles_only_after_completion_gate_and_finalizers() -> None:
     """A retried/rejected draft is not a completed turn and gets no line."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(app_mod.LiteTUI._stream)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(app_mod.LiteTUI._stream_worker)))
     plain_answer = next(
         node
         for node in ast.walk(tree)
@@ -183,7 +183,7 @@ def test_stream_settles_only_after_completion_gate_and_finalizers() -> None:
 
 def test_eta_learning_keeps_a_per_request_clock() -> None:
     """Whole-turn display timing must not corrupt prompt-evaluation learning."""
-    source = textwrap.dedent(inspect.getsource(app_mod.LiteTUI._stream))
+    source = textwrap.dedent(inspect.getsource(app_mod.LiteTUI._stream_worker))
     tree = ast.parse(source)
     learn = next(
         node

@@ -64,7 +64,7 @@ class FlushDouble(SimpleNamespace):
     def _append(self, m):
         self.appended.append(m)
 
-    def _stream(self):
+    def _stream(self, **_kwargs):
         self.streamed += 1
 
 
@@ -138,7 +138,7 @@ class InboxDouble(SimpleNamespace):
     def _append(self, m):
         self.appended.append(m)
 
-    def _stream(self):
+    def _stream(self, **_kwargs):
         self.streamed += 1
 
 

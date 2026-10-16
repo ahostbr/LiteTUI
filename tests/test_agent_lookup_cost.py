@@ -107,7 +107,7 @@ async def test_headless_action_cost(tmp_path, monkeypatch, operation):
             app._apply_context_length = lambda **kwargs: None
             patch.setattr(app.backend, "loaded_models", list)
             streamed = []
-            app._stream = lambda streamed=streamed: streamed.append(True)
+            app._stream = lambda streamed=streamed, **_kwargs: streamed.append(True)
             async with app.run_test(size=(120, 45)) as pilot:
                 await pilot.pause()
                 with filesystem_calls() as calls:

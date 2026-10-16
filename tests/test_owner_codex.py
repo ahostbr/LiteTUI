@@ -312,7 +312,7 @@ def test_an_unknown_window_never_reminds(make_app):
 
 def test_a_refused_admission_of_the_driven_turn_runs_no_turn_and_no_compaction(make_app, owner_dir, monkeypatch):
     from litetui import hook_host
-    monkeypatch.setattr(hook_host, "accept_prompt", lambda app, item: False)
+    monkeypatch.setattr(hook_host, "accept_prompt_origin", lambda app, item: None)
     app = make_app()
     handoff = Handoff([])
     events, calls, system = _drive(app, (True,), owner_dir, monkeypatch, handoff)

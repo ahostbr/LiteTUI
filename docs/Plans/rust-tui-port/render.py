@@ -98,9 +98,12 @@ def render(source, name, css):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--preserve-inventory", action="store_true",
+                        help="Render the existing inventory without refreshing historical discovery evidence")
     args = parser.parse_args()
     css = STYLE.read_text(encoding="utf-8")
-    expected = {"inventory.md": inventory()}
+    expected = {"inventory.md": (PLAN / "inventory.md").read_text(encoding="utf-8")
+                if args.preserve_inventory else inventory()}
     for name in ("master", "sub-terminal", "runtime-contract"):
         expected[f"{name}.md"] = (PLAN / f"{name}.md").read_text(encoding="utf-8")
     for name in ("master", "sub-terminal", "inventory", "runtime-contract"):

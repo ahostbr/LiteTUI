@@ -510,7 +510,9 @@ async def test_actual_native_entry_refuses_authority_before_provider(owned, monk
         app.backend.name = 'wrong-backend'
     elif backend_name == 'claude':
         app.settings.model_infer_overrides = {'fixture': {'reasoning_effort': 'low'}}
-    operation = LiteTUI._stream.__wrapped__(app) if route.startswith('stream') else LiteTUI._compact.__wrapped__(app)
+    app.convo_id = 'fixture-session'
+    app._stream_worker = lambda origin: LiteTUI._stream_worker(app, origin)
+    operation = LiteTUI._stream_inline(app) if route.startswith('stream') else LiteTUI._compact.__wrapped__(app)
     await operation
     assert calls == []
     assert len(said) == 1 and 'authority' in said[0]

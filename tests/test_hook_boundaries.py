@@ -55,7 +55,7 @@ async def test_mark_image_prompt_uses_conversation_profile(app, tmp_path, monkey
         app._convo_settings = ConvoSettings(tool_policy_profile=tool_policy.INTERACTIVE)
         app.settings.tool_policy_profile = tool_policy.AUTONOMOUS
         assert app.chosen_tool_profile == tool_policy.INTERACTIVE
-        app._stream = lambda: None
+        app._stream = lambda **_kwargs: None
         app._chat_running = lambda: queued
         await app._mark_wait(handoff, None).wait()
         if queued:
@@ -158,7 +158,7 @@ async def test_actual_compact_caller_bypasses_hooks(app, tmp_path, monkeypatch):
         await worker.wait()
         assert calls == [1]
         assert not app.hook_results
-        app._stream = lambda: None
+        app._stream = lambda **_kwargs: None
         app.settings.wake_after_compact = True
         app._wake_after_compact()
         assert app._hooks_suppressed
@@ -314,7 +314,7 @@ async def test_real_stream_rejected_completion_never_finalizes(app, tmp_path, mo
         finalized.append(1)
     app.plugins.finalize_turn = finalize
     emitted = []
-    app._rpc_emit = emitted.append
+    app._rpc_emit = lambda event, **_kwargs: emitted.append(event)
     async with app.run_test(size=(110, 40)) as pilot:
         hook_host.start_prompt(app, {"content": "go", "source": "typed", "tool_profile": "autonomous"})
         for _ in range(120):

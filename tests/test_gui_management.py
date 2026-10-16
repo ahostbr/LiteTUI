@@ -87,7 +87,7 @@ async def test_legacy_rpc_prompt_refuses_foreign_session_then_recovers(tmp_path,
     monkeypatch.setattr(rpc, "_real_stdout", wire)
     app = owned_app()
     app._connect = lambda: None  # startup discovery is outside this test
-    app._stream = lambda: None
+    app._stream = lambda **_kwargs: None
     child = None
     try:
         async with app.run_test(size=(100, 35)):

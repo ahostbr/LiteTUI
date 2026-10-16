@@ -40,7 +40,7 @@ async def test_startup_resolution_then_threshold_keeps_new_input_unsent(tmp_path
     app._hook_workspace = tmp_path
     app._pending_input = []
     started = []
-    app._stream = lambda: started.append(app._claude_active_input)
+    app._stream = lambda **_kwargs: started.append(app._claude_active_input)
     app._flush_pending_input = lambda: LiteTUI._flush_pending_input(app)
     hook_host.start_prompt(app, {'content': 'NEW startup instruction', 'source': 'harness'})
     command(app, 'continue')
@@ -145,7 +145,7 @@ async def test_newer_prompt_during_summary_retains_owner_fifo_and_recovers_once(
     callbacks, delivered = [], []
     app.call_after_refresh = callbacks.append
 
-    def native_execution():
+    def native_execution(**_kwargs):
         item = app._claude_active_input
         delivered.append((item['content'], item['_claude_segment'], item['_claude_entry']['id']))
         ledger.update_delivery(item['_claude_entry']['id'], 'submitted')

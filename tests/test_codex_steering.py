@@ -40,7 +40,7 @@ async def test_live_transport_steers_while_host_tool_waits_and_retains_rejected_
         hook_config=object(),
         _system=lambda text: None,
         rejected_prompts=[],
-        _stream=lambda: launched.append(True),
+        _stream=lambda **_kwargs: launched.append(True),
     )
 
     async def dispatch(app, event, data, **kwargs):

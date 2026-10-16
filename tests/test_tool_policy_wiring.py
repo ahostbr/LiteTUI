@@ -290,7 +290,7 @@ def test_a_cron_turn_runs_at_its_JOBS_recorded_level_whatever_the_conversation_i
         _handle_command=lambda _text: None,
         _spawned_seat=False, _owner_seat=True,  # T1049: autonomous is Owner's own
         _append=lambda msg: streamed.append(msg),
-        _stream=lambda: streamed.append("stream"),
+        _stream=lambda **_kwargs: streamed.append("stream"),
         _active_tool_profile=INTERACTIVE,
     )
     app_mod.LiteTUI._fire_job(idle, job)
@@ -334,7 +334,7 @@ async def test_a_cron_turn_asks_NOBODY_even_when_the_conversation_is_ask_first(m
         _pending_input=[],
         _handle_command=lambda _text: None,
         _append=lambda _msg: None,
-        _stream=lambda: None,
+        _stream=lambda **_kwargs: None,
         _active_tool_profile=INTERACTIVE,
         _spawned_seat=False, _owner_seat=True,
     )

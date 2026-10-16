@@ -96,7 +96,7 @@ def _stream_loop() -> ast.For:
                if isinstance(n, ast.ClassDef) and n.name == "LiteTUI")
     fn = next(n for n in cls.body
               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-              and n.name == "_stream")
+              and n.name == "_stream_worker")
     loops = [n for n in ast.walk(fn)
              if isinstance(n, ast.For)
              and isinstance(n.target, ast.Name) and n.target.id == "_iteration"]

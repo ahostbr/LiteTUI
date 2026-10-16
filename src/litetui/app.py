@@ -27,6 +27,7 @@ from litetui import second_instance
 from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
 from functools import partial
+from litetui.event_origin import EventOrigin
 
 from litetui import settings as settings_mod
 from litetui.settings import Settings
@@ -5727,7 +5728,7 @@ class LiteTUI(App):
 
     _connect = connect          # arrival alias (PLAN §2b)
 
-    def _rpc_emit(self, data: dict) -> None:
+    def _rpc_emit(self, data: dict, *, origin: EventOrigin | None = None) -> None:
         """Emit one JSON event on stdout (no-op outside --rpc)."""
         if data.get("type") == "turn_start":
             self._now_turn_active_at = self._active_turn_started_at
@@ -5747,9 +5748,11 @@ class LiteTUI(App):
             # Allocate once at production, BEFORE either sink. This identifies
             # an emission, not a turn, admission, successful write or execution.
             # Keep legacy payloads unchanged; their own IDs are a separate domain.
+            identity = (origin.envelope_fields() if origin is not None else {
+                "session_id": self.convo_id, "operation_id": current_operation(self),
+            })
             envelope = {"type": "gui.event", "event_id": str(uuid.uuid4()),
-                        "session_id": self.convo_id,
-                        "operation_id": current_operation(self), "event": data}
+                        **identity, "event": data}
         rpc_emit(data)
         if envelope is not None:
             rpc_emit(envelope)
@@ -8922,7 +8925,7 @@ class LiteTUI(App):
         })
 
     def _emit_turn_end(self, stop_reason: str, tps: float | None,
-                       tps_source: str | None = None, **extra) -> None:
+                       tps_source: str | None = None, *, origin: EventOrigin | None = None, **extra) -> None:
         """One door for `turn_end`, so the event and the stop line agree.
 
         🔴 THE SETTLED tok/s REACHED THE TUI AND NOTHING ELSE (T806).
@@ -8950,8 +8953,12 @@ class LiteTUI(App):
         """
         self._now_turn_active_at = None
         self._paint_now()
-        self._rpc_emit({"type": "turn_end", "stopReason": stop_reason,
-                        "tps": tps, "tpsSource": tps_source, **extra})
+        event = {"type": "turn_end", "stopReason": stop_reason,
+                 "tps": tps, "tpsSource": tps_source, **extra}
+        if origin is None:
+            self._rpc_emit(event)
+        else:
+            self._rpc_emit(event, origin=origin)
 
     async def _await_mcp_maintenance(self) -> None:
         """Block a turn while an MCP reconcile is in flight, then let it proceed.
@@ -9002,8 +9009,19 @@ class LiteTUI(App):
             # failed: defer rather than run this turn over a stale map.
             raise TurnDeferred("mcp dispatch map is stale after reconcile; blocked until rebuild succeeds")
 
-    @work(exclusive=True, group="chat")
-    async def _stream(self) -> None:
+    def _stream(self, *, origin: EventOrigin | None = None):
+        """Capture one invocation BEFORE Textual can start its asynchronous body."""
+        captured = (origin or EventOrigin(session_id=self.convo_id)).scheduled()
+        return self.run_worker(
+            partial(self._stream_worker, captured), name="_stream", group="chat",
+            exclusive=True, exit_on_error=True, thread=False, description="_stream()")
+
+    def _stream_inline(self, *, origin: EventOrigin | None = None):
+        """Capture now, return an unscheduled coroutine for driven compaction."""
+        captured = (origin or EventOrigin(session_id=self.convo_id)).scheduled()
+        return self._stream_worker(captured)
+
+    async def _stream_worker(self, origin: EventOrigin) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
         feed results back, and stream again until a plain answer arrives."""
         # 🔴 COMMON MCP-MAINTENANCE GATE. The one point EVERY turn passes through,
@@ -9029,6 +9047,8 @@ class LiteTUI(App):
             from litetui.claude_turn import stream_turn
             await stream_turn(self)
             return
+        emit = partial(self._rpc_emit, origin=origin)
+        end = partial(self._emit_turn_end, origin=origin)
         # Stamp before setup/probing: waiting for the turn's first request is
         # part of the turn, not free time before it.
         turn_started_at = time.monotonic()
@@ -9064,7 +9084,7 @@ class LiteTUI(App):
         # also the right moment — LM Studio JIT-loads on the previous turn's
         # first request, so by now the real window exists to be read.
         self._resync_ctx_if_stale()
-        self._rpc_emit({"type": "turn_start", "model": self.model_id, "thinking_level": self.thinking_level})
+        emit({"type": "turn_start", "model": self.model_id, "thinking_level": self.thinking_level})
         # One clock and one final generation rate span the WHOLE agent turn,
         # including all tool rounds. The footer intentionally retains its last
         # rate; this local starts empty so a no-rate turn cannot reuse it.
@@ -9233,7 +9253,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=True,
                 )
-                self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
+                end("error", final_turn_tps, final_turn_tps_source,
                                      error=takeover or _plain_backend_error(e, self.backend))
                 return
 
@@ -9347,7 +9367,7 @@ class LiteTUI(App):
                             self.tps = rate
                         self._glassbox_rate("thinking")
                         reasoning += token
-                        self._rpc_emit({"type": "reasoning_delta", "text": token})
+                        emit({"type": "reasoning_delta", "text": token})
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
                             self._thinking_live = thinking
@@ -9389,7 +9409,7 @@ class LiteTUI(App):
                         text_full += delta.content
                         visible_delta = recap_stream.feed(delta.content)
                         if visible_delta:
-                            self._rpc_emit({"type": "text_delta", "text": visible_delta})
+                            emit({"type": "text_delta", "text": visible_delta})
                         sink.show(recap_stream.visible)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
@@ -9490,7 +9510,7 @@ class LiteTUI(App):
                 # T526: the open-failure branch above emits this; this branch
                 # did not, so an rpc client (LiteSuite's LiteTuiAdapter) that
                 # saw turn_start waited forever on a mid-stream 400.
-                self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
+                end("error", final_turn_tps, final_turn_tps_source,
                                      error=takeover or _plain_backend_error(e, self.backend))
                 return
             finally:
@@ -9510,7 +9530,7 @@ class LiteTUI(App):
                 # reasoning would describe work the card never shows.
                 final_delta = recap_stream.finish()
                 if final_delta:
-                    self._rpc_emit({"type": "text_delta", "text": final_delta})
+                    emit({"type": "text_delta", "text": final_delta})
                 sink.finish(recap_stream.visible)
                 # The completion hook may reject this draft or this may be a
                 # tool round. Keep recap pending until the terminal acceptance gate.
@@ -9582,7 +9602,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=True,
                 )
-                self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+                end("cancelled", final_turn_tps, final_turn_tps_source)
                 self.call_after_refresh(self._maybe_autocompact)
                 return
 
@@ -9591,7 +9611,7 @@ class LiteTUI(App):
                 if verdict == "retry":
                     continue
                 if verdict == "pause":
-                    self._emit_turn_end("hook_denied", final_turn_tps, final_turn_tps_source)
+                    end("hook_denied", final_turn_tps, final_turn_tps_source)
                     return
                 # Only an answer accepted by the completion gate is terminal.
                 # Retried and paused drafts deliberately never receive a line.
@@ -9609,7 +9629,7 @@ class LiteTUI(App):
                     final_tps=final_turn_tps,
                     stopped=False,
                 )
-                self._emit_turn_end("stop", final_turn_tps, final_turn_tps_source)
+                end("stop", final_turn_tps, final_turn_tps_source)
                 self.call_after_refresh(self._resync_ctx_if_stale)
                 self.call_after_refresh(self._maybe_autocompact)
                 return  # plain answer — agent loop done
@@ -9728,7 +9748,7 @@ class LiteTUI(App):
 
         if self_compact_request is not None:
             self._system(f"[agent requested compaction: {self_compact_request.reason}]")
-            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            end("cancelled", final_turn_tps, final_turn_tps_source)
             self.call_after_refresh(self._run_self_compaction, self_compact_request)
             return
 
@@ -9740,7 +9760,7 @@ class LiteTUI(App):
                 if pct is not None
                 else "[pausing to compact between tool iterations]"
             )
-            self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+            end("cancelled", final_turn_tps, final_turn_tps_source)
             self._interrupted_compact_resume = (self.backend, self.convo_id, self._active_turn_started_at)
             self.call_after_refresh(self._maybe_autocompact)
             return
@@ -9763,10 +9783,10 @@ class LiteTUI(App):
             # stopReason carrying the reason, so a parent reports a FAILED child with
             # it, never a bare "cancelled". An Esc stays "cancelled".
             if getattr(self, "_stop_cause", None) == "approval":
-                self._emit_turn_end("approval", final_turn_tps, final_turn_tps_source,
+                end("approval", final_turn_tps, final_turn_tps_source,
                                     error=self._stop_reason)
             else:
-                self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
+                end("cancelled", final_turn_tps, final_turn_tps_source)
             return
 
         self._settle_turn_stop_line(
@@ -9775,7 +9795,7 @@ class LiteTUI(App):
             final_tps=final_turn_tps,
             stopped=True,
         )
-        self._emit_turn_end("tools_cap", final_turn_tps, final_turn_tps_source)
+        end("tools_cap", final_turn_tps, final_turn_tps_source)
         self._system(
             f"[stopped \u2014 reached {self.settings.tool_iterations} tool iterations in one turn — raise it in /settings]"
         )
@@ -10121,10 +10141,11 @@ class LiteTUI(App):
         """
         item = {"content": text, "text": text, "source": "compact",
                 "tool_profile": seat_authority.seat_profile(self)}
-        if not hook_host.accept_prompt(self, item):
+        accepted = hook_host.accept_prompt_origin(self, item)
+        if accepted is None:
             self._system("The owner STEP 1 turn was not admitted; the context was not compacted.")
             return False
-        await LiteTUI._stream.__wrapped__(self)
+        await self._stream_inline(origin=accepted)
         if self._stop_requested:
             self._system("Stopped; the context was not compacted.")
             return False

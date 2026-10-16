@@ -53,7 +53,7 @@ class _Seat:
     def _rpc_emit(self, event):
         self.emitted.append(event)
 
-    def _stream(self):
+    def _stream(self, **_kwargs):
         self.streams += 1
 
 
@@ -632,7 +632,7 @@ async def test_OWNER_a_message_typed_while_BUSY_is_held_then_flushed_and_PASSES(
         app._model_id, app._thinking_level = "gpt-5.6-sol", "medium"
         said, streams = [], []
         app._system = said.append
-        app._stream = lambda: streams.append(1)
+        app._stream = lambda **_kwargs: streams.append(1)
         app._chat_running = lambda: True
         try:
             app._submit_text("while you work", alt_chord=False)
@@ -662,7 +662,7 @@ async def test_OWNER_a_mark_taken_while_BUSY_is_held_as_typed_then_PASSES(tmp_pa
         app._model_id, app._thinking_level = "gpt-5.6-sol", "medium"
         said, streams = [], []
         app._system = said.append
-        app._stream = lambda: streams.append(1)
+        app._stream = lambda **_kwargs: streams.append(1)
         app._chat_running = lambda: True
         try:
             await app._mark_wait(handoff, None).wait()
