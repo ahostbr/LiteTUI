@@ -1,6 +1,26 @@
 # LiteTUI Rust terminal port
 
-**T0565 · Tier 2 / High · P0 in progress · offline Rust visual preview available**
+**T0565 · Tier 2 / High · P0 CLOSED · P1 first live vertical path in progress**
+
+## P0 exit — Ryan-directed phase closure
+
+Ryan directed this closure through Sentinel after observing that P0 had absorbed more than twelve hours of later-phase implementation. **P0 is closed now. It is not a gate for further offline expansion.**
+
+Completed P0 evidence:
+- Reproducible committed-blob source inventory and fingerprints: `scripts/rust_frontend_inventory.py`, its tests and static inventory/parity seed. The measured baseline includes 262 source modules, 84 GUI operations, 15 legacy RPC commands, 33 ordered plugins and nine backends. Candidate discovery is not full UI acceptance.
+- In-process wire fixtures and nine Python-produced output captures / 31 records, with provenance and original SHA-256 pins.
+- Rust byte-split replay of those literal captures without reserialization or ID rebinding; focused source/contract tests and recorded baseline failures.
+
+**One P0 item remains unmeasured: the Python performance baseline. It moves explicitly to P4.** Reason: a meaningful comparative baseline needs a fixed live workload and both Rust and Python process-tree measurements. Blocking the first live path on that measurement has inverted the plan. P4 must measure the Python baseline and combined implementation under matched conditions, then obtain Ryan's numerical targets before any performance or parity-release claim. No speed/resource improvement is claimed now.
+
+Reclassification of work already done:
+- **P1:** wire decoder/client, identity and execution-origin plumbing, owned/mounted runtime fixtures, replay integration, and bounded raw ingress (`0bf9faf`). These are transport foundations, not completed live integration.
+- **P2:** offline composer/footer/theme/modal behavior, assistant/thinking rendering, and grouped generic-tool projection (`44ed4d4`). These are partial chat/UI implementations, not parity acceptance.
+- **P3/P4:** dynamic screen/plugin/backend contract completion, all-host behavior, fault/cleanup evidence and performance measurement remain later-phase obligations. Their incompleteness does not reopen P0.
+
+**Immediate P1 acceptance:** the Rust binary starts the real Python LiteTUI runtime as an owned child with isolated data, sends one prompt, and renders the real streamed reply in the terminal. Ryan can launch it and watch the reply. No further offline-only increment may precede that end-to-end path. The prior no-live-launch restriction is superseded for this specifically authorized path; publishing, merge/cutover, worktree removal and unrelated live-state mutation remain unauthorized. Stay on Astra; Ryan controls backend switching.
+
+The uncommitted session-owner work is carried into this live path, not checkpointed as another offline-only milestone. Historical sections below preserve evidence and earlier status, not the current phase gate.
 
 ## Provenance
 
