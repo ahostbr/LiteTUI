@@ -1,4 +1,5 @@
 //! Deterministic, in-memory fixtures. Nothing in this module performs I/O.
+use crate::completion::{Completion, CompletionKind, CompletionPicker};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolState {
     Success,
@@ -21,6 +22,8 @@ pub struct Demo {
     pub tools: Vec<Tool>,
     pub selected_tool: usize,
     pub composer: crate::composer::Composer,
+    pub completion: CompletionPicker,
+    pub completion_candidates: Vec<Completion>,
     pub turns: Vec<String>,
     pub scroll: usize,
     pub max_scroll: usize,
@@ -94,6 +97,14 @@ impl Default for Demo {
             ],
             selected_tool: 1,
             composer: crate::composer::Composer::new(500, 100),
+            completion: CompletionPicker::default(),
+            completion_candidates: [
+                ("preview-help", "Fixture command; no dispatch", CompletionKind::Command),
+                ("preview-replay", "Fixture command; no dispatch", CompletionKind::Command),
+                ("preview-skill", "Fixture skill; never executed", CompletionKind::Skill),
+            ].into_iter().map(|(name, description, kind)| Completion {
+                name: name.into(), description: description.into(), kind,
+            }).collect(),
             turns: Vec::new(),
             scroll: 0,
             max_scroll: 0,
@@ -221,8 +232,28 @@ impl Demo {
         }
     }
 
+    pub fn sync_completion(&mut self) {
+        self.completion
+            .refilter(&self.completion_candidates, self.composer.text());
+    }
+    pub fn accept_completion(&mut self) {
+        let Some(name) = self
+            .completion
+            .current()
+            .map(|candidate| candidate.name.clone())
+        else {
+            return;
+        };
+        self.composer.clear();
+        self.insert_text(&format!("/{name} "));
+        self.completion.dismiss();
+    }
     pub fn insert_text(&mut self, text: &str) {
+        let before = self.composer.text().to_owned();
         self.composer.insert(text);
+        if self.composer.text() != before {
+            self.sync_completion();
+        }
     }
 
     pub fn submit(&mut self) {
@@ -236,6 +267,7 @@ impl Demo {
             self.turns.remove(0);
         }
         self.composer.clear();
+        self.sync_completion();
         self.scroll = usize::MAX;
         self.notice = "Local demo turn added. No model was contacted.".into();
     }

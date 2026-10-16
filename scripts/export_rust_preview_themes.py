@@ -29,6 +29,7 @@ def resolved_colors(theme: Theme) -> dict[str, tuple[int, int, int]]:
     values = {
         "background": variables["background"],
         "surface": variables["surface"],
+        "primary": variables["primary"],
         "panel": variables["panel"],
         "tool_background": variables["surface-darken-2"],
         "foreground": variables["foreground"],

@@ -1,11 +1,15 @@
-use crate::demo::{Demo, ToolState};
+use crate::{
+    completion::CompletionKind,
+    demo::{Demo, ToolState},
+};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // Legacy ToolMessage argument/result gray is fixed in the Python widget too.
@@ -19,6 +23,16 @@ fn clip(text: &str, width: usize) -> String {
     text.chars()
         .take_while(|ch| {
             used += ch.width().unwrap_or(0);
+            used <= width
+        })
+        .collect()
+}
+fn clip_completion_name(text: &str, width: usize) -> String {
+    let safe: String = text.chars().filter(|ch| !ch.is_control()).collect();
+    let mut used = 0;
+    safe.graphemes(true)
+        .take_while(|glyph| {
+            used += glyph.width();
             used <= width
         })
         .collect()
@@ -325,6 +339,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     );
     app.viewport_too_small = area.width < 36 || area.height < 14;
     if app.viewport_too_small {
+        app.completion.hide();
         frame.render_widget(Paragraph::new(if app.themes_open {
             "LOCAL PREVIEW\nTHEME PICKER PAUSED\nResize to 36 x 14.\nEsc closes dialog.\nCtrl+Q exits."
         } else if app.approval_open {
@@ -354,11 +369,18 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         .style(style(t.tool_text, t.background)),
         areas[1],
     );
+    let picker_height = if app.completion.is_open() && !app.themes_open && !app.approval_open {
+        (app.completion.matches().len() + 2)
+            .min(12)
+            .min(areas[2].height as usize) as u16
+    } else {
+        0
+    };
     let viewport = Rect::new(
         areas[2].x + 1,
         areas[2].y,
         areas[2].width.saturating_sub(2),
-        areas[2].height,
+        areas[2].height.saturating_sub(picker_height),
     );
     let (lines, selected) = transcript(app, viewport.width as usize);
     let height = viewport.height as usize;
@@ -383,6 +405,65 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         .style(style(t.foreground, t.background)),
         viewport,
     );
+    if picker_height >= 3 {
+        let picker_area = Rect::new(
+            areas[2].x + 2,
+            areas[2].bottom() - picker_height,
+            areas[2].width.saturating_sub(4),
+            picker_height,
+        );
+        let name_width = (picker_area.width.saturating_sub(2 + 11) as usize).min(26);
+        let rows: Vec<_> = app
+            .completion
+            .matches()
+            .iter()
+            .map(|candidate| {
+                let name = clip_completion_name(&candidate.name, name_width);
+                let tag = match candidate.kind {
+                    CompletionKind::Command => "[command]",
+                    CompletionKind::Skill => "[skill]",
+                };
+                let safe_description: String = candidate
+                    .description
+                    .chars()
+                    .map(|ch| if ch.is_control() { ' ' } else { ch })
+                    .collect();
+                let description: String = safe_description
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(40)
+                    .collect();
+                ListItem::new(format!(
+                    "{name}{}{tag:<11}{description}",
+                    " ".repeat(name_width.saturating_sub(name.width()))
+                ))
+            })
+            .collect();
+        let list = List::new(rows)
+            .style(style(t.foreground, t.surface))
+            .highlight_style(style(t.title, t.panel).add_modifier(Modifier::BOLD))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(style(t.primary, t.surface)),
+            );
+        let mut selection = ListState::default().with_selected(Some(app.completion.selected()));
+        frame.render_stateful_widget(list, picker_area, &mut selection);
+        app.completion.record_view(
+            Rect::new(
+                picker_area.x + 1,
+                picker_area.y + 1,
+                picker_area.width.saturating_sub(2),
+                picker_area.height.saturating_sub(2),
+            ),
+            selection.offset(),
+        );
+    } else {
+        app.completion.hide();
+    }
     frame.render_widget(
         Paragraph::new(format!(
             " {} · scroll {}/{}",
@@ -392,7 +473,6 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         areas[3],
     );
     let input_width = areas[4].width.saturating_sub(2).max(1) as usize;
-    use unicode_segmentation::UnicodeSegmentation;
     // Some clusters (e.g. repeated Hangul leading jamo) exceed an entire row.
     // Keep the logical text intact but draw one replacement cell until it fits.
     let graphemes: Vec<_> = app

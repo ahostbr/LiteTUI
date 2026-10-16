@@ -2,7 +2,8 @@ use crossterm::{
     cursor::Show,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -38,7 +39,7 @@ impl Drop for TerminalGuard {
 
 /// Retain ownership of a modal-closing physical key until its release or next
 /// press. Terminals without release events still recover on the next press.
-/// Only Enter, Escape and the approval letter shortcuts can enter this set.
+/// Modal confirmation keys and completion Tab/Escape cannot leak repeats.
 #[derive(Default)]
 struct KeyRouter {
     closing_keys: std::collections::HashSet<KeyCode>,
@@ -61,8 +62,17 @@ impl KeyRouter {
             KeyEventKind::Repeat => {}
         }
         let modal_was_open = app.approval_open || app.themes_open;
+        let completion_was_open = app.completion.is_open();
+        let before = app.composer.text().to_owned();
         let quit = key(app, event);
-        if modal_was_open && !(app.approval_open || app.themes_open) {
+        if before != app.composer.text() {
+            app.sync_completion();
+        }
+        if (modal_was_open && !(app.approval_open || app.themes_open))
+            || (completion_was_open
+                && !app.completion.is_open()
+                && matches!(event.code, KeyCode::Tab | KeyCode::Esc))
+        {
             self.closing_keys.insert(physical);
         }
         quit
@@ -86,6 +96,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         if key.code == KeyCode::Esc {
             app.approval_open = false;
             app.themes_open = false;
+            app.completion.dismiss();
         }
         return false;
     }
@@ -139,6 +150,24 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         }
         return false;
     }
+    if app.completion.is_open() && key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Tab => {
+                if key.kind == KeyEventKind::Press {
+                    app.accept_completion();
+                }
+            }
+            KeyCode::Up => app.completion.move_by(-1),
+            KeyCode::Down => app.completion.move_by(1),
+            KeyCode::Esc => app.completion.dismiss(),
+            _ => return composer_or_preview_key(app, key),
+        }
+        return false;
+    }
+    composer_or_preview_key(app, key)
+}
+
+fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::F(4) => app.open_themes(),
         KeyCode::F(5) => app.reset(),
@@ -227,6 +256,26 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     false
 }
 
+fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.approval_open || app.themes_open || app.viewport_too_small {
+        app.completion.hide();
+        return;
+    }
+    match event.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            app.completion.pointer_down(event.column, event.row)
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if app.completion.pointer_up(event.column, event.row) {
+                app.accept_completion();
+            }
+        }
+        MouseEventKind::ScrollUp => app.scroll_up(3),
+        MouseEventKind::ScrollDown => app.scroll_down(3),
+        _ => {}
+    }
+}
+
 fn run() -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
@@ -263,15 +312,8 @@ fn run() -> io::Result<()> {
                         app.insert_text(&text);
                     }
                 }
-                Event::Mouse(mouse)
-                    if !app.approval_open && !app.themes_open && !app.viewport_too_small =>
-                {
-                    match mouse.kind {
-                        MouseEventKind::ScrollUp => app.scroll_up(3),
-                        MouseEventKind::ScrollDown => app.scroll_down(3),
-                        _ => {}
-                    }
-                }
+                Event::Mouse(event) => mouse(&mut app, event),
+
                 _ => {}
             }
         }
@@ -290,7 +332,8 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — OFFLINE VISUAL PREVIEW\n\nUsage: litetui-rs [--preview]\n\nNo Python child, model, tool execution, file persistence or fleet registration.\nTab: select tool | F2: expand | F4: themes | F6: mock approval | F5: replay\nUp/Down: history | Left/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — OFFLINE VISUAL PREVIEW\n\nUsage: litetui-rs [--preview]\n\nNo Python child, model, tool execution, file persistence or fleet registration.\nTab: select tool | F2: expand | F4: themes | F6: mock approval | F5: replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion
+Left/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -318,6 +361,144 @@ mod tests {
             input.handle(&mut app, repeat);
             assert!(app.turns.is_empty());
             assert_eq!(app.composer.text(), "saved draft");
+        }
+    }
+
+    #[test]
+    fn slash_tab_replaces_the_whole_input_without_submitting_or_leaking_repeat() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("/pre");
+        let selected_tool = app.selected_tool;
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        input.handle(&mut app, tab);
+        assert_eq!(app.composer.text(), "/preview-help ");
+        assert_eq!(app.composer.before_cursor(), "/preview-help ");
+        let mut repeat = tab;
+        repeat.kind = KeyEventKind::Repeat;
+        input.handle(&mut app, repeat);
+        assert_eq!(app.selected_tool, selected_tool);
+        assert!(app.turns.is_empty());
+    }
+
+    #[test]
+    fn completion_owns_arrows_not_history_and_preserves_highlight_on_caret_motion() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.composer.push_history("old prompt");
+        app.insert_text("/");
+        input.handle(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.completion.selected(), 1);
+        input.handle(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.completion.selected(), 1);
+        assert_eq!(app.composer.text(), "/");
+        input.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "/preview-replay ");
+        assert!(!app.completion.is_open());
+        input.handle(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "old prompt");
+        input.handle(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "/preview-replay ");
+    }
+
+    #[test]
+    fn escape_stays_dismissed_until_text_changes_and_enter_submits_not_completes() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("/pre");
+        input.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        input.handle(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(!app.completion.is_open());
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(app.completion.is_open());
+        input.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.turns, ["/prev"]);
+        assert!(!app.completion.is_open());
+        app.insert_text("/pre");
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert!(!app.completion.is_open());
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        assert!(app.completion.is_open());
+    }
+
+    #[test]
+    fn hidden_completion_cannot_be_accepted_and_modal_keys_have_priority() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("/");
+        app.viewport_too_small = true;
+        input.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "/");
+        input.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.completion.is_open());
+        app.viewport_too_small = false;
+        app.insert_text("pre");
+        app.open_approval();
+        input.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "/pre");
+        assert!(app.approval_open);
+        input.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "/pre");
+        assert!(app.completion.is_open());
+        assert!(app.turns.is_empty());
+    }
+
+    #[test]
+    fn clicking_a_scrolled_completion_uses_the_rendered_offset_and_never_submits() {
+        use litetui_terminal::completion::{Completion, CompletionKind};
+        use ratatui::backend::TestBackend;
+        for (width, height) in [(80, 24), (36, 14)] {
+            let mut app = Demo {
+                completion_candidates: (0..120)
+                    .map(|n| Completion {
+                        name: format!("pick-{n:03}"),
+                        description: String::new(),
+                        kind: CompletionKind::Skill,
+                    })
+                    .collect(),
+                ..Demo::default()
+            };
+            app.insert_text("/");
+            app.completion.move_by(99);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            let row = (0..height)
+                .find(|&y| {
+                    (0..width)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains("pick-099")
+                })
+                .unwrap();
+            let event = |kind, column| MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            };
+            mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left), 4));
+            assert_eq!(app.composer.text(), "/");
+            mouse(&mut app, event(MouseEventKind::Down(MouseButton::Left), 2));
+            mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left), 2));
+            assert_eq!(app.composer.text(), "/");
+            mouse(&mut app, event(MouseEventKind::Down(MouseButton::Left), 4));
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left), 4));
+            assert_eq!(app.composer.text(), "/pick-099 ");
+            assert_eq!(app.composer.before_cursor(), "/pick-099 ");
+            assert!(app.turns.is_empty());
+            mouse(&mut app, event(MouseEventKind::Down(MouseButton::Left), 4));
+            mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left), 4));
+            assert_eq!(app.composer.text(), "/pick-099 ");
         }
     }
 

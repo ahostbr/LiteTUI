@@ -7,6 +7,7 @@ pub struct Theme {
     pub name: String,
     pub background: Color,
     pub surface: Color,
+    pub primary: Color,
     pub panel: Color,
     pub tool_background: Color,
     pub foreground: Color,
