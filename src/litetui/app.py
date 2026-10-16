@@ -9637,6 +9637,7 @@ class LiteTUI(App):
             # Execute each tool call, display the result, feed it back.
             for i, slot in sorted(tool_acc.items()):
                 name = slot["name"]
+                observation_id = None
                 args_json = slot["arguments"] or "{}"
                 tc_id = slot.get("id") or f"call_{i}"
                 msg = tool_msgs.get(i)
@@ -9650,6 +9651,18 @@ class LiteTUI(App):
                     except Exception as e:
                         result, ok = f"[error] invalid tool arguments: {e}", False
                     else:
+                        # Observe this host invocation, NOT authorization,
+                        # dispatch, or eventual background-task completion.
+                        # Provider call IDs can repeat between rounds.
+                        observation_id = str(uuid.uuid4())
+                        emit({
+                            "type": "generic_tool_requested",
+                            "observation_id": observation_id,
+                            "round": _iteration,
+                            "slot": i,
+                            "provider_call_id": tc_id,
+                            "name": name,
+                        })
                         result, ok = await self._execute_tool(name, args)
                         if ok and name not in {"self_compact", "tool_search"}:
                             self.self_compaction.progress()
@@ -9673,6 +9686,15 @@ class LiteTUI(App):
                 # model — the same string serves both, and a secret on screen is
                 # a secret in the screenshot.
                 result = sanitize.redact_secrets(result)
+                if observation_id is not None:
+                    # Literal host return flag and cleaned result, before
+                    # presentation/context transforms. Never synthesize a pair
+                    # when execution, progress, or hygiene raises/cancels.
+                    emit({
+                        "type": "generic_tool_returned",
+                        "observation_id": observation_id,
+                        "result": result, "ok": ok,
+                    })
                 if not self._stop_requested and (not ok or result.startswith((
                     "[error]", "[denied]", "[hook denied]", "[policy denied]",
                     "[policy denied by user]", "[refused]", "[tool reported an error]",

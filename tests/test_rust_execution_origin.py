@@ -53,9 +53,11 @@ async def test_generic_output_keeps_execution_a_across_queued_admission_b(tmp_pa
         admissions = [doc for doc in runtime.hook_documents if doc["event"] == "prompt_before"]
         assert len(admissions) == 2 and admissions[1]["turn_id"] != initiating_hook
         assert app._hook_turn_id == admissions[1]["turn_id"]
-        # This slice does not infer ownership for tools, native events or usage.
+        # Only explicit generic executor observations also participate; legacy
+        # tools, native events and usage still have no inferred execution owner.
+        attributed = OWNED_TYPES | {"generic_tool_requested", "generic_tool_returned"}
         assert all("execution_id" not in row for row in envelopes
-                   if row["event"]["type"] not in OWNED_TYPES)
+                   if row["event"]["type"] not in attributed)
 
 
 async def test_origin_is_immutable_normalized_and_each_schedule_is_fresh():
