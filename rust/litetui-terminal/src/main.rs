@@ -160,6 +160,12 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.composer.move_cursor(Motion::Home, false)
         }
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.delete(Delete::WordLeft)
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.delete(Delete::WordRight)
+        }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.composer.delete(Delete::ToStart)
         }
@@ -168,6 +174,16 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.composer.delete(Delete::Right)
+        }
+        KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => app.composer.move_cursor(
+            Motion::WordLeft,
+            key.modifiers.contains(KeyModifiers::SHIFT),
+        ),
+        KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.move_cursor(
+                Motion::WordRight,
+                key.modifiers.contains(KeyModifiers::SHIFT),
+            )
         }
         KeyCode::Left => app
             .composer
@@ -303,6 +319,55 @@ mod tests {
             assert!(app.turns.is_empty());
             assert_eq!(app.composer.text(), "saved draft");
         }
+    }
+
+    #[test]
+    fn word_chords_move_select_and_delete_at_source_word_starts() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("alpha 雪_beta...gamma");
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.composer.before_cursor(), "alpha 雪_beta...");
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        );
+        assert_eq!(app.composer.selected_text(), "雪_beta...");
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.composer.text(), "alpha gamma");
+        input.handle(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.composer.text(), "gamma");
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.composer.before_cursor(), "gamma");
+        app.composer.clear();
+        app.insert_text("one two 雪");
+        input.handle(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        for expected in ["one ", "one two "] {
+            input.handle(
+                &mut app,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            );
+            assert_eq!(app.composer.selected_text(), expected);
+        }
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.composer.text(), "雪");
+        assert!(app.turns.is_empty());
     }
 
     #[test]

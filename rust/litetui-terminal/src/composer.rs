@@ -7,6 +7,8 @@ use std::{collections::VecDeque, ops::Range};
 pub enum Motion {
     Left,
     Right,
+    WordLeft,
+    WordRight,
     Home,
     End,
 }
@@ -14,6 +16,8 @@ pub enum Motion {
 pub enum Delete {
     Left,
     Right,
+    WordLeft,
+    WordRight,
     ToStart,
     ToEnd,
 }
@@ -105,11 +109,33 @@ impl Composer {
                 .next()
                 .map_or(0, char::len_utf8)
     }
+    // Textual searches (?<=\W)\w on the prefix/suffix, not the whole line.
+    // A word already starting at the cursor is therefore skipped on Right.
+    fn word_starts(text: &str) -> impl Iterator<Item = usize> + '_ {
+        text.chars()
+            .zip(text.char_indices().skip(1))
+            .filter(|(previous, (_, next))| {
+                !crate::word_chars::is_word(*previous) && crate::word_chars::is_word(*next)
+            })
+            .map(|(_, (index, _))| index)
+    }
+    fn word_left(&self) -> usize {
+        Self::word_starts(&self.text[..self.cursor])
+            .last()
+            .unwrap_or(0)
+    }
+    fn word_right(&self) -> usize {
+        Self::word_starts(&self.text[self.cursor..])
+            .next()
+            .map_or(self.text.len(), |index| self.cursor + index)
+    }
     pub fn move_cursor(&mut self, motion: Motion, select: bool) {
         let range = self.selection();
         let target = match motion {
             Motion::Left if !select && !range.is_empty() => range.start,
             Motion::Right if !select && !range.is_empty() => range.end,
+            Motion::WordLeft => self.word_left(),
+            Motion::WordRight => self.word_right(),
             Motion::Left => self.left(),
             Motion::Right => self.right(),
             Motion::Home => 0,
@@ -130,6 +156,8 @@ impl Composer {
         let mut range = self.selection();
         if range.is_empty() {
             range = match direction {
+                Delete::WordLeft => self.word_left()..self.cursor,
+                Delete::WordRight => self.cursor..self.word_right(),
                 Delete::Left => self.left()..self.cursor,
                 Delete::Right => self.cursor..self.right(),
                 Delete::ToStart => 0..self.cursor,

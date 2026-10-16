@@ -32,6 +32,8 @@ The binary is at `target/debug/litetui-rs.exe`. Build again after changing sourc
 | Ctrl+Home / Ctrl+End | Start / end of transcript |
 | Left / Right, Home / End | Move composer cursor |
 | Shift+Left / Right / Home / End | Select composer text |
+| Ctrl+Left / Right (+Shift to select) | Move to previous / next word start |
+| Ctrl+W / Ctrl+F | Delete to previous / next word start (selection first) |
 | Ctrl+A / Ctrl+E | Composer start / end (focused-input bindings) |
 | Ctrl+Shift+A | Select all composer text |
 | Up / Down | Recall prompt history / restore original draft |
@@ -50,7 +52,9 @@ Below 36 columns or 14 rows, the preview asks for a resize and suspends decision
 
 The composer edits at Unicode scalar boundaries and replaces selections on insertion. Rendering uses whole graphemes: an internal scalar caret position is displayed at the glyph's trailing edge, and horizontal scrolling preserves complete wide glyphs. A single grapheme wider than the input viewport is displayed as � until it fits again; the underlying text and scalar selection remain intact. History preserves the original draft while browsing and restores it at the end; edits of recalled entries do not change stored history. Preview-only limits are 500 characters per draft and 100 history entries, not production defaults. CR/LF/tab are converted to spaces and other controls are discarded; source paste-event parity remains unverified.
 
-Confirmation requires a key press; reported repeat events cannot confirm a modal or submit a draft. Repeats of a modal-closing letter are suppressed until release or a fresh press, while ordinary typing and cursor repeats still work. Hosts reporting repeated physical keys as fresh presses cannot provide this distinction. Word editing, OS clipboard, autocomplete, footer navigation and runtime submission remain open.
+Confirmation requires a key press; reported repeat events cannot confirm a modal or submit a draft. Repeats of a modal-closing letter are suppressed until release or a fresh press, while ordinary typing and cursor repeats still work. Hosts reporting repeated physical keys as fresh presses cannot provide this distinction. OS clipboard, autocomplete, footer navigation and runtime submission remain open.
+
+Word movement/deletion follows Textual 8.1.0's `(?<=\W)\w` searches on the cursor prefix/suffix, including punctuation and selection behavior. Classification is frozen to **Python 3.11.9 / Unicode 14.0.0**, the inspected source environment—not Rust's broader/current `is_alphanumeric`, and not a guarantee for future Python runtimes. `scripts/export_rust_word_boundaries.py --check` detects stale tables/oracles. Regenerate with the supported source interpreter only; an interpreter/Unicode upgrade changes this compatibility target and needs a reviewed fixture update. The Python tests compare the oracle against actual mounted Textual Input actions; Rust tests replay every fixture cursor with both selection orientations. No runtime Unicode-version negotiation exists yet.
 
 ## Safety and evidence boundary
 

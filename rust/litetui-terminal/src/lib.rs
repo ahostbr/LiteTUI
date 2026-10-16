@@ -4,3 +4,5 @@ pub mod demo;
 pub mod protocol;
 pub mod theme;
 pub mod ui;
+
+mod word_chars;
