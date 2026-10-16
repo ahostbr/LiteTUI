@@ -89,7 +89,7 @@ fn snapshots_replace_without_duplication_and_failure_is_not_completion() {
     chat.observe(Observation::Text("old text".into())).unwrap();
     chat.observe(Observation::Snapshot("replacement".into()))
         .unwrap();
-    assert_eq!(chat.rows[0].answer, "replacement");
+    assert_eq!(chat.rows[0].cards[0].answer, "replacement");
     chat.finish(Some("transport failed".into()));
     assert_eq!(chat.rows[0].state, ReplyState::Incomplete);
     assert!(chat.submit("do not send").is_err());
@@ -183,11 +183,18 @@ fn newline_dense_answers_are_bounded_before_layout_and_never_truncated() {
         app.observe_live(Observation::Text("\n".repeat(65536)))
             .is_err()
     );
-    assert!(app.live.as_ref().unwrap().rows[0].answer.is_empty());
+    assert!(
+        app.live.as_ref().unwrap().rows[0].cards[0]
+            .answer
+            .is_empty()
+    );
     app.observe_live(Observation::Text("\n".repeat(1000)))
         .unwrap();
     let mut terminal = Terminal::new(TestBackend::new(36, 14)).unwrap();
     terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
     assert!(app.max_scroll < 2048);
-    assert_eq!(app.live.as_ref().unwrap().rows[0].answer.len(), 1000);
+    assert_eq!(
+        app.live.as_ref().unwrap().rows[0].cards[0].answer.len(),
+        1000
+    );
 }

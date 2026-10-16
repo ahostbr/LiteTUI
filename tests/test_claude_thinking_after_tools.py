@@ -182,3 +182,28 @@ async def test_a_resumed_conversation_survives_a_think_high_turn(tmp_path) -> No
         log, before, errors = await _turn(app, pilot, tmp_path)
         assert errors == []
         assert _cards(log, before) == IN_STREAM_ORDER
+
+
+@pytest.mark.asyncio
+async def test_late_reasoning_snapshot_updates_its_original_card_not_the_latest(tmp_path) -> None:
+    frames = [
+        *_thinking_round("msg_01", "First trace.", "t1"),
+        *_diverged_round("msg_02", "Second trace.", "Second trace.",
+                         [{"type": "text", "text": "Answer."}]),
+        _assistant("msg_01", [{"type": "thinking", "thinking": "Corrected first trace."}]),
+        {"type": "result", "uuid": "u-res", "session_id": "sess-1", "is_error": False,
+         "subtype": "success", "result": "Answer."},
+    ]
+    app = _app()
+    emitted = []
+    app._rpc_emit = emitted.append
+    async with app.run_test(size=(120, 40)) as pilot:
+        log, before, errors = await _turn(app, pilot, tmp_path, frames)
+        assert errors == []
+        assert _cards(log, before) == [
+            "think:Corrected first trace.|text:", "tool", "think:Second trace.|text:Answer."]
+        correction = [e for e in emitted if e.get("type") == "reasoning_delta"
+                      and e.get("text") == "Corrected first trace."]
+        assert len(correction) == 1
+        assert correction[0]["card_index"] == 0
+        assert correction[0]["reconcile"] == "replace"

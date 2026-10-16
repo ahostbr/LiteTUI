@@ -65,6 +65,17 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 println!("Ready; submit turn 1");
                 runtime.submit("Remember the word ORANGE for this conversation. Reply with exactly ORANGE. Do not use tools.".into()).unwrap();
             }
+            Ok(Observation::Content { card, kind, text }) => {
+                assert_eq!(card, 0, "tools-disabled smoke expects one card");
+                if !kind.reasoning() {
+                    if kind.replaces() {
+                        answer = text;
+                    } else {
+                        answer.push_str(&text);
+                    }
+                }
+            }
+            Ok(Observation::Activity(_)) => panic!("Unexpected tool in tools-disabled smoke"),
             Ok(Observation::Text(text)) => {
                 print!("{text}");
                 std::io::stdout().flush().unwrap();

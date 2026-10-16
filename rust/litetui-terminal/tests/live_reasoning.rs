@@ -118,7 +118,11 @@ fn replacement_reasoning_reaches_the_existing_thinking_card_without_duplication(
         .unwrap();
     app.observe_live(Observation::Reasoning(" tail\u{1b}".into()))
         .unwrap();
-    assert!(app.live.as_ref().unwrap().rows[0].answer.is_empty());
+    assert!(
+        app.live.as_ref().unwrap().rows[0].cards[0]
+            .answer
+            .is_empty()
+    );
     app.observe_live(Observation::Text("actual answer".into()))
         .unwrap();
     app.observe_live(Observation::Complete).unwrap();
@@ -175,7 +179,7 @@ fn reasoning_uses_shared_transcript_budget_and_replacement_releases_retained_uni
         chat.observe(Observation::Reasoning("\n".repeat(65536)))
             .is_err()
     );
-    assert!(chat.rows[0].reasoning.is_empty());
+    assert!(chat.rows[0].cards[0].reasoning.is_empty());
     chat.observe(Observation::Reasoning("\n".repeat(900)))
         .unwrap();
     assert!(chat.observe(Observation::Text("\n".repeat(900))).is_err());

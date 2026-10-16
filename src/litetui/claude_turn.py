@@ -557,8 +557,7 @@ async def stream_turn(app):
     tool_below = False
     tool_cards = {}
     activity_records = []
-    thinking = None
-    thinking_text = ""
+    thinking_by_card = {}  # card -> (block, reconciled text); late snapshots keep their owner
     crossed = False   # LiteTUI's compaction threshold, seen on a usage frame this turn
     app._claude_compact_resume = None
     interrupted_for_compact = False
@@ -618,7 +617,7 @@ async def stream_turn(app):
 
         def card_for(key):
             """The card that shows message `key`, opening one below the tools if due."""
-            nonlocal widget, tool_below, thinking, thinking_text
+            nonlocal widget, tool_below
             for card, keys in cards:
                 if key in keys:
                     return card
@@ -626,15 +625,21 @@ async def stream_turn(app):
                 widget = app._assistant_bubble()
                 app._active_turn_widget = widget
                 cards.append((widget, []))
-                # Thinking snapshots reconcile per native message, so each
-                # round's trace starts fresh in its own card.
-                thinking, thinking_text, tool_below = None, "", False
+                tool_below = False
+                # Even a recap-only/suppressed answer allocates a real card.
+                # Announce ownership before a subsequent tool can refer to it.
+                app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
+                               "message_id": None, "text": "", "card_index": len(cards) - 1})
             cards[-1][1].append(key)
             return widget
 
         def card_text(card):
             keys = next(keys for owner, keys in cards if owner is card)
             return _joined({k: message_texts[k] for k in keys if k in message_texts})
+
+        def card_index(card):
+            # Display ownership within this turn, NOT execution/admission identity.
+            return next(index for index, (owner, _) in enumerate(cards) if owner is card)
 
         def sink_for(card):
             if card not in sinks:
@@ -648,11 +653,11 @@ async def stream_turn(app):
                 stream = recap_streams[card] = RecapStream()
                 stream.feed(answer)
                 app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
-                               "message_id": message_id, "text": stream.visible})
+                               "message_id": message_id, "text": stream.visible, "card_index": card_index(card)})
             else:
                 visible_delta = stream.feed(answer[len(stream.raw):])
                 if visible_delta:
-                    app._rpc_emit({"type": "text_delta", "text": visible_delta})
+                    app._rpc_emit({"type": "text_delta", "text": visible_delta, "card_index": card_index(card)})
             sink_for(card).show(stream.visible)
 
         def stop_live_clocks():
@@ -697,7 +702,8 @@ async def stream_turn(app):
                             show_answer(card, replace=True, message_id=key)
                 elif event.kind in {"thinking_delta", "thinking"}:
                     from litetui.widgets import ThinkingBlock
-                    card_for(event.message_id or "current")
+                    card = card_for(event.message_id or "current")
+                    thinking, thinking_text = thinking_by_card.get(card, (None, ""))
                     # A "replace" snapshot means the deltas and the snapshot
                     # disagree — a delta was lost mid-trace — so the rendered
                     # text is wrong, not merely short. Appending the snapshot
@@ -709,7 +715,8 @@ async def stream_turn(app):
                     # that distinction on the wire as well as in ThinkingBlock;
                     # append-only hosts otherwise display the trace twice.
                     app._rpc_emit({"type": "reasoning_delta", "text": event.text,
-                                   "reconcile": "replace" if snapshot else "append"})
+                                   "reconcile": "replace" if snapshot else "append",
+                                   "card_index": card_index(card)})
                     if stale and thinking is not None:
                         # ThinkingBlock only appends (widgets.py:454) and owns
                         # no setter, so the authoritative trace is rebuilt into
@@ -717,15 +724,16 @@ async def stream_turn(app):
                         # prefix. set_thinking mounts it before removing the old
                         # one, so the trace never blinks out of the transcript.
                         thinking = ThinkingBlock()
-                        app._thinking_live = thinking
-                        widget.set_thinking(thinking)
+                        if card is widget:
+                            app._thinking_live = thinking
+                        card.set_thinking(thinking)
                         thinking.append(thinking_text)
                     elif thinking is None and app.settings.show_thinking:
                         thinking = ThinkingBlock()
-                        app._thinking_live = thinking
-                        # `widget` may be a card card_for opened THIS tick, not yet
-                        # composed (T1031): set_thinking handles both.
-                        widget.set_thinking(thinking)
+                        if card is widget:
+                            app._thinking_live = thinking
+                        # The card may have opened THIS tick, before composition.
+                        card.set_thinking(thinking)
                         # The whole trace, not this one event: a block created
                         # late (show_thinking turned on mid-turn, or a snapshot
                         # arriving with no deltas before it) still owns
@@ -737,10 +745,18 @@ async def stream_turn(app):
                         # An "append" snapshot carries only the tail the deltas
                         # never delivered; "" when the stream was complete.
                         thinking.append(event.text)
+                    thinking_by_card[card] = (thinking, thinking_text)
+                    if thinking is not None and card is not widget:
+                        # Correcting an older card must not steal the live clock
+                        # from the current trace or leave the old cursor blinking.
+                        thinking.finalize()
+                        thinking.freeze_header()
                 elif event.kind in {"tool_use", "tool_result"}:
                     app._rpc_emit({"type": "native_activity", "provider": "claude", "kind": event.kind,
                                    "id": event.tool_id, "name": event.tool_name, "complete": event.complete,
-                                   "input": event.tool_input, "result": event.tool_result})
+                                   "input": event.tool_input, "result": event.tool_result,
+                                   "is_error": event.is_error,
+                                   "card_index": tool_card_index.setdefault(event.tool_id, len(cards) - 1)})
                     # Display records are not executable tool_calls/tool messages.
                     if event.complete or event.kind == "tool_result":
                         activity_records.append({"kind": event.kind, "id": event.tool_id,
@@ -854,7 +870,7 @@ async def stream_turn(app):
         app._thinking_done()
         for sink in sinks.values():
             sink.cancel()   # nothing drawn late over the final answer or a failure
-        if text or activity_records or thinking_text:
+        if text or activity_records or any(trace for _, trace in thinking_by_card.values()):
             card_texts = [_joined({k: message_texts[k] for k in keys if k in message_texts})
                           for _, keys in cards]
             for (card, _), card_answer in zip(cards, card_texts):
@@ -867,10 +883,10 @@ async def stream_turn(app):
                         stream = recap_streams[card] = RecapStream()
                         stream.feed(card_answer)
                         app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
-                                       "message_id": None, "text": stream.visible})
+                                       "message_id": None, "text": stream.visible, "card_index": card_index(card)})
                     final_delta = stream.finish()
                     if final_delta:
-                        app._rpc_emit({"type": "text_delta", "text": final_delta})
+                        app._rpc_emit({"type": "text_delta", "text": final_delta, "card_index": card_index(card)})
                     shown, recap = stream.visible, stream.recap
                 else:
                     shown, recap = split_recap(card_answer, final=True)

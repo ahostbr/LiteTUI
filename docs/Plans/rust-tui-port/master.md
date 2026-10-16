@@ -2,7 +2,13 @@
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
-## Native reasoning checkpoint — current status
+## Native activity display checkpoint — current status
+
+Native tool observations now render between source-owned assistant cards, retaining per-turn native IDs, input snapshots and explicit nullable error outcomes. These are display records, never tool dispatch or permission. Source events add `card_index` (local display ownership, not execution identity) and `is_error`; post-tool card allocation emits an empty indexed snapshot before references, even for recap-only text. Late snapshots update their named card. Python thinking state is now per-card as well: a mounted regression reproduced late old-card thinking corrupting the latest trace, then verified the repair without moving the active card/clock. Pending tools become incomplete on completion/closure; orphan results do not invent a request. Tool bodies, metadata and cards share bounded retained/render-work budgets; escaping and work accounting now use one control-character classification.
+
+Verification: **222 ordinary Rust tests + 10 controlled-process tests**, **114 affected Python tests**, focused Ruff/mypy, Rust fmt/Clippy/build and documentation checks. High review found two producer ownership gaps; both reproduced red and were fixed, with no blockers in follow-up. Controlled child and renderer tests cover interleaved tool events/results, old-card corrections, nullable failures, capacity/identity rejection and incomplete settlement. An earlier real two-turn Claude regression (`output/tasks/t-6046783632d04270b27208fe25686e16.log`) passed with clean whole-job shutdown, **tools disabled**. The latest rerun after the producer fixes (`output/tasks/t-2b883779eec1467e952d8284bdf5f743.log`) failed on turn two with provider `unrecognized_model` / could not confirm `claude-sonnet-5-5`; Rust surfaced the failure and `cleanup=Ok(())`. No fallback or retry. Latest live verification is therefore not green. Native tool rendering evidence is controlled, not a real tool-enabled provider session or desktop acceptance. Tool enablement/approval UI, fold/timing controls and other parity work remain open.
+
+## Native reasoning checkpoint
 
 The live runtime now projects reasoning into the shared source-shaped dashed thinking card. Claude's producer previously emitted divergent authoritative snapshots as indistinguishable `reasoning_delta` text. It now adds `reconcile: append|replace`; Rust requires that distinction for Claude and fails visibly on older ambiguous traces. Generic non-Claude unannotated deltas keep append semantics. A reasoning-only turn cannot satisfy the answer/completion gate. Traces share answer wire/retained byte/display-work limits, including replacement accounting and escaping. No synthetic elapsed time or token counts. Fold controls, preferences and timing remain open.
 
@@ -20,7 +26,7 @@ The existing composer and themed transcript now connect to one owned real Python
 
 Launch: `& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-chat.ps1'` (or double-click `open-chat.cmd`). Fresh isolated data/settings, Claude Sonnet, no local models, tools/MCP off. The one-prompt `open-live.ps1` and offline `open-preview.cmd` remain separate modes.
 
-This is **text-chat progress, not 100% parity**. Native tool/approval views and remaining thinking controls, footer actions/preferences and remaining facts, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
+This is **text-chat progress, not 100% parity**. Native tool enablement/approval UI and remaining tool/thinking controls, footer actions/preferences and remaining facts, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
 
 **Hands-on / desktop acceptance is still pending.** Ryan was gaming during the attempted desktop check; no clicks/keys were sent. Ryan subsequently clarified that visible test windows are allowed; no desktop clicks/keys or focus-stealing while he plays. This supersedes the earlier temporary no-windows restriction. The idle visual-test runtime was stopped by exact owned PID; this forced stop is not graceful-quit evidence. Harness-home isolation is still a known gap even with isolated application data.
 

@@ -1,5 +1,8 @@
 //! Bounded serialized native chat view. Local row order is not a wire execution ID.
-use crate::live::Observation;
+use crate::{
+    live::{ContentKind, Observation},
+    native_activity::{Activity, Tool},
+};
 use std::io;
 use unicode_width::UnicodeWidthChar;
 // Independent display-work budget, not a byte limit. LF pays one full
@@ -11,8 +14,7 @@ fn display_units(text: &str) -> io::Result<usize> {
     text.chars().try_fold(0usize, |total, ch| {
         let cost = if ch == '\n' {
             32
-        } else if ch.is_control() || matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        {
+        } else if crate::display_control(ch) {
             12
         } else {
             ch.width().unwrap_or(0).max(1)
@@ -33,13 +35,24 @@ pub enum ReplyState {
     Complete,
     Incomplete,
 }
-pub struct Row {
-    pub prompt: String,
+#[derive(Default)]
+pub struct Card {
     pub answer: String,
     pub reasoning: String,
-    pub state: ReplyState,
     answer_units: usize,
     reasoning_units: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Item {
+    Card(usize),
+    Tool(usize),
+}
+pub struct Row {
+    pub prompt: String,
+    pub cards: Vec<Card>,
+    pub tools: Vec<Tool>,
+    pub items: Vec<Item>,
+    pub state: ReplyState,
 }
 pub struct Chat {
     pub backend: String,
@@ -102,11 +115,10 @@ impl Chat {
         self.pending = Some(prompt.to_owned());
         self.rows.push(Row {
             prompt: prompt.into(),
-            answer: String::new(),
-            reasoning: String::new(),
+            cards: vec![Card::default()],
+            tools: Vec::new(),
+            items: vec![Item::Card(0)],
             state: ReplyState::Sending,
-            answer_units: 0,
-            reasoning_units: 0,
         });
         self.busy = true;
         self.notice = "Sending prompt (not yet admitted)…".into();
@@ -119,69 +131,22 @@ impl Chat {
         if self.closed {
             return Err(io::Error::other("Observation after live view closed"));
         }
-        let replace = matches!(
-            &observation,
-            Observation::Snapshot(_) | Observation::ReasoningSnapshot(_)
-        );
-        let reasoning = matches!(
-            &observation,
-            Observation::Reasoning(_) | Observation::ReasoningSnapshot(_)
-        );
         match observation {
             Observation::State(update) => self.runtime_state.apply(update),
             Observation::Ready => {
                 self.ready = true;
                 self.notice = "Connected. Enter sends; Ctrl+Q quits. Tools are disabled.".into();
             }
-            Observation::Text(text)
-            | Observation::Snapshot(text)
-            | Observation::Reasoning(text)
-            | Observation::ReasoningSnapshot(text) => {
-                let units = display_units(&text)?;
-                let row = self
-                    .rows
-                    .last_mut()
-                    .filter(|row| matches!(row.state, ReplyState::Sending | ReplyState::Streaming))
-                    .ok_or_else(|| io::Error::other("Content without a pending live row"))?;
-                let (content, content_units) = if reasoning {
-                    (&mut row.reasoning, &mut row.reasoning_units)
-                } else {
-                    (&mut row.answer, &mut row.answer_units)
-                };
-                let retained = self
-                    .retained_bytes
-                    .saturating_sub(if replace { content.len() } else { 0 })
-                    .saturating_add(text.len());
-                if retained > 8 * 1024 * 1024 {
-                    return Err(io::Error::other("Live transcript text limit exceeded"));
-                }
-                let retained_units = self
-                    .retained_units
-                    .saturating_sub(if replace { *content_units } else { 0 })
-                    .saturating_add(units);
-                if retained_units > DISPLAY_UNITS {
-                    return Err(io::Error::other("Live display-line/work limit exceeded"));
-                }
-                self.retained_units = retained_units;
-                *content_units = if replace {
-                    units
-                } else {
-                    content_units.saturating_add(units)
-                };
-                self.retained_bytes = retained;
-                if replace {
-                    *content = text;
-                } else {
-                    content.push_str(&text);
-                }
-                row.state = ReplyState::Streaming;
-                self.notice = if reasoning {
-                    "Receiving reported reasoning…"
-                } else {
-                    "Receiving real model reply…"
-                }
-                .into();
+            Observation::Content { card, kind, text } => self.content(Some(card), kind, text)?,
+            Observation::Text(text) => self.content(None, ContentKind::AnswerDelta, text)?,
+            Observation::Snapshot(text) => self.content(None, ContentKind::AnswerSnapshot, text)?,
+            Observation::Reasoning(text) => {
+                self.content(None, ContentKind::ReasoningDelta, text)?
             }
+            Observation::ReasoningSnapshot(text) => {
+                self.content(None, ContentKind::ReasoningSnapshot, text)?
+            }
+            Observation::Activity(activity) => self.activity(activity)?,
             Observation::Information(info) => {
                 self.notice = info;
             }
@@ -192,10 +157,126 @@ impl Chat {
                     .filter(|row| matches!(row.state, ReplyState::Sending | ReplyState::Streaming))
                     .ok_or_else(|| io::Error::other("Completion without a pending live row"))?;
                 row.state = ReplyState::Complete;
+                for tool in &mut row.tools {
+                    tool.finish();
+                }
                 self.busy = false;
                 self.notice = "Reply completed. Type another prompt; Ctrl+Q quits.".into();
             }
         }
+        Ok(())
+    }
+    fn pending_row(&self) -> io::Result<&Row> {
+        self.rows
+            .last()
+            .filter(|row| matches!(row.state, ReplyState::Sending | ReplyState::Streaming))
+            .ok_or_else(|| io::Error::other("Content without a pending live row"))
+    }
+    fn replace_cost(&mut self, old: (usize, usize), new: (usize, usize)) -> io::Result<()> {
+        let bytes = self
+            .retained_bytes
+            .saturating_sub(old.0)
+            .saturating_add(new.0);
+        let units = self
+            .retained_units
+            .saturating_sub(old.1)
+            .saturating_add(new.1);
+        if bytes > 8 * 1024 * 1024 {
+            return Err(io::Error::other("Live transcript text limit exceeded"));
+        }
+        if units > DISPLAY_UNITS {
+            return Err(io::Error::other("Live display-line/work limit exceeded"));
+        }
+        self.retained_bytes = bytes;
+        self.retained_units = units;
+        Ok(())
+    }
+    fn content(&mut self, index: Option<usize>, kind: ContentKind, text: String) -> io::Result<()> {
+        let units = display_units(&text)?;
+        let row = self.pending_row()?;
+        if index.is_none() && !row.tools.is_empty() {
+            return Err(io::Error::other(
+                "Content without native display ownership after tools",
+            ));
+        }
+        let index = index.unwrap_or(0);
+        if index > row.cards.len() || index >= 100 {
+            return Err(io::Error::other("Invalid native card sequence"));
+        }
+        let new_card = index == row.cards.len();
+        let old = if kind.replaces() {
+            row.cards
+                .get(index)
+                .map(|card| {
+                    if kind.reasoning() {
+                        (card.reasoning.len(), card.reasoning_units)
+                    } else {
+                        (card.answer.len(), card.answer_units)
+                    }
+                })
+                .unwrap_or_default()
+        } else {
+            (0, 0)
+        };
+        self.replace_cost(old, (text.len(), units + if new_card { 320 } else { 0 }))?;
+        let row = self.rows.last_mut().expect("validated");
+        if new_card {
+            row.cards.push(Card::default());
+            row.items.push(Item::Card(index));
+        }
+        let card = &mut row.cards[index];
+        let (body, work) = if kind.reasoning() {
+            (&mut card.reasoning, &mut card.reasoning_units)
+        } else {
+            (&mut card.answer, &mut card.answer_units)
+        };
+        if kind.replaces() {
+            *body = text;
+            *work = units;
+        } else {
+            body.push_str(&text);
+            *work += units;
+        }
+        row.state = ReplyState::Streaming;
+        self.notice = "Receiving real runtime content…".into();
+        Ok(())
+    }
+    fn activity(&mut self, activity: Activity) -> io::Result<()> {
+        let row = self.pending_row()?;
+        let existing = row.tools.iter().position(|tool| tool.id == activity.id);
+        // A first observation mounts after the current card. Later results keep
+        // their original position, even when other cards have since arrived.
+        if activity.card >= row.cards.len()
+            || (existing.is_none() && activity.card + 1 != row.cards.len())
+        {
+            return Err(io::Error::other(
+                "Native tool has invalid display ownership",
+            ));
+        }
+        if existing.is_none() && row.tools.len() >= 100 {
+            return Err(io::Error::other("Native tool count limit exceeded"));
+        }
+        let old = existing.map(|i| &row.tools[i]);
+        let cost = |tool: &Tool| -> io::Result<(usize, usize)> {
+            tool.texts()
+                .iter()
+                .try_fold((0, 320), |(bytes, units), text| {
+                    Ok((bytes + text.len(), units + display_units(text)?))
+                })
+        };
+        let old_cost = old.map(cost).transpose()?.unwrap_or_default();
+        let tool = Tool::updated(old, activity)?;
+        let new_cost = cost(&tool)?;
+        self.replace_cost(old_cost, new_cost)?;
+        let row = self.rows.last_mut().expect("validated");
+        if let Some(index) = existing {
+            row.tools[index] = tool;
+        } else {
+            row.items.push(Item::Tool(row.tools.len()));
+            row.tools.push(tool);
+        }
+        row.state = ReplyState::Streaming;
+        self.notice = "Native tool observation (not an approval or dispatch)".into();
         Ok(())
     }
     pub fn begin_quit(&mut self) {
@@ -208,6 +289,9 @@ impl Chat {
         self.busy = false;
         self.pending = None;
         for row in &mut self.rows {
+            for tool in &mut row.tools {
+                tool.finish();
+            }
             if row.state != ReplyState::Complete {
                 row.state = ReplyState::Incomplete;
             }

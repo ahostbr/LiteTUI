@@ -91,10 +91,31 @@ impl Options {
 
 /// Events are observations of a single isolated legacy turn, NOT invented IDs
 /// or an admission receipt. The prompt ACK alone never completes this state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContentKind {
+    AnswerDelta,
+    AnswerSnapshot,
+    ReasoningDelta,
+    ReasoningSnapshot,
+}
+impl ContentKind {
+    pub fn replaces(self) -> bool {
+        matches!(self, Self::AnswerSnapshot | Self::ReasoningSnapshot)
+    }
+    pub fn reasoning(self) -> bool {
+        matches!(self, Self::ReasoningDelta | Self::ReasoningSnapshot)
+    }
+}
 #[derive(Debug, PartialEq)]
 pub enum Observation {
     State(crate::runtime_state::Update),
     Ready,
+    Content {
+        card: usize,
+        kind: ContentKind,
+        text: String,
+    },
+    Activity(crate::native_activity::Activity),
     Text(String),
     Snapshot(String),
     Reasoning(String),
@@ -109,7 +130,9 @@ pub struct Turn {
     closing: bool,
     sequence: u64,
     command_id: String,
-    visible_answer: bool,
+    visible_answers: std::collections::BTreeSet<usize>,
+    tools_seen: bool,
+    card_count: usize,
     started: bool,
     acknowledged: bool,
     complete: bool,
@@ -141,7 +164,9 @@ impl Turn {
         self.started = false;
         self.acknowledged = false;
         self.complete = false;
-        self.visible_answer = false;
+        self.visible_answers.clear();
+        self.tools_seen = false;
+        self.card_count = 1;
         self.content_bytes = 0;
         Ok(json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":"strict"}))
     }
@@ -204,6 +229,13 @@ impl Turn {
             "text_delta" | "native_text_snapshot" | "reasoning_delta"
                 if self.started && !self.complete =>
             {
+                let card = crate::native_activity::card_index(event)?;
+                if card.is_none() && self.tools_seen {
+                    return Err(fail("Content without native display ownership after tools"));
+                }
+                if card.is_some_and(|index| index > self.card_count) {
+                    return Err(fail("Invalid native card sequence"));
+                }
                 let reasoning = kind == "reasoning_delta";
                 let replace = if reasoning {
                     match event.get("reconcile").and_then(Value::as_str) {
@@ -227,19 +259,49 @@ impl Turn {
                     .checked_add(text.len())
                     .filter(|size| *size <= 4 * FRAME_BYTES)
                     .ok_or_else(|| fail("Live content budget exceeded"))?;
-                if !reasoning {
-                    self.visible_answer = if replace {
-                        !text.is_empty()
-                    } else {
-                        self.visible_answer || !text.is_empty()
-                    };
+                if let Some(index) = card {
+                    self.card_count = self.card_count.max(index + 1);
                 }
-                Ok(match (reasoning, replace) {
-                    (true, true) => Observation::ReasoningSnapshot(text),
-                    (true, false) => Observation::Reasoning(text),
-                    (false, true) => Observation::Snapshot(text),
-                    (false, false) => Observation::Text(text),
+                if !reasoning {
+                    if !text.is_empty() {
+                        self.visible_answers.insert(card.unwrap_or(0));
+                    } else if replace {
+                        self.visible_answers.remove(&card.unwrap_or(0));
+                    }
+                }
+                let content_kind = match (reasoning, replace) {
+                    (true, true) => ContentKind::ReasoningSnapshot,
+                    (true, false) => ContentKind::ReasoningDelta,
+                    (false, true) => ContentKind::AnswerSnapshot,
+                    (false, false) => ContentKind::AnswerDelta,
+                };
+                Ok(if let Some(card) = card {
+                    Observation::Content {
+                        card,
+                        kind: content_kind,
+                        text,
+                    }
+                } else {
+                    match content_kind {
+                        ContentKind::ReasoningSnapshot => Observation::ReasoningSnapshot(text),
+                        ContentKind::ReasoningDelta => Observation::Reasoning(text),
+                        ContentKind::AnswerSnapshot => Observation::Snapshot(text),
+                        ContentKind::AnswerDelta => Observation::Text(text),
+                    }
                 })
+            }
+            "native_activity" if self.started && !self.complete && backend == "claude" => {
+                let activity = crate::native_activity::Activity::from_event(event)?;
+                if activity.card >= self.card_count {
+                    return Err(fail("Native tool has invalid display ownership"));
+                }
+                self.content_bytes = self
+                    .content_bytes
+                    .checked_add(activity.emitted_bytes())
+                    .filter(|n| *n <= 4 * FRAME_BYTES)
+                    .ok_or_else(|| fail("Live content budget exceeded"))?;
+                self.tools_seen = true;
+                Ok(Observation::Activity(activity))
             }
             "turn_end" if self.started && !self.complete => {
                 if self.closing && event["stopReason"] != "stop" {
@@ -248,7 +310,7 @@ impl Turn {
                     ));
                 }
                 if !self.acknowledged
-                    || !self.visible_answer
+                    || self.visible_answers.is_empty()
                     || event["stopReason"] != "stop"
                     || event.get("error").is_some_and(|v| !v.is_null() && v != "")
                 {
@@ -262,7 +324,7 @@ impl Turn {
             // These source-defined observations have no authority in this frontend.
             // Print their kind, rather than silently discarding unsupported state.
             "usage" | "native_usage" | "native_event" => Ok(Observation::Information(kind.into())),
-            // No tool/UI/native-activity implementation is claimed by this slice.
+            // Interactive approval/question requests remain unsupported; never auto-answer.
             _ => Err(fail(&format!(
                 "Unsupported or out-of-order live event: {kind}"
             ))),
@@ -639,6 +701,16 @@ impl Frontend for OneShot {
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
             Observation::State(_) => {} // Read-only footer facts; no one-shot action.
+            Observation::Content { card, kind, text } => writeln!(
+                self.output,
+                "\n[Card {card} {kind:?}] {}",
+                terminal_text(&text)
+            )?,
+            Observation::Activity(activity) => writeln!(
+                self.output,
+                "\n[Native display activity] {}",
+                terminal_text(&format!("{activity:?}"))
+            )?,
             Observation::Ready => {
                 let prompt = self
                     .prompt

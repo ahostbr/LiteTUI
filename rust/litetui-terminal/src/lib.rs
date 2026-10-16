@@ -7,6 +7,7 @@ pub mod footer;
 pub mod live;
 pub mod live_chat;
 mod live_process;
+pub mod native_activity;
 pub mod protocol;
 pub mod runtime_state;
 pub mod session;
@@ -24,4 +25,10 @@ pub(crate) fn rendered_width(text: &str) -> usize {
     text.graphemes(true)
         .map(unicode_width::UnicodeWidthStr::width)
         .sum()
+}
+
+// Shared by display escaping and its pre-layout work budget.
+pub(crate) fn display_control(ch: char) -> bool {
+    ch.is_control()
+        || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }

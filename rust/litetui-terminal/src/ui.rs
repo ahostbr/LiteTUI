@@ -298,9 +298,7 @@ fn display_safe(text: &str) -> String {
         match ch {
             '\n' => safe.push('\n'),
             '\t' => safe.push_str("    "),
-            ch if ch.is_control()
-                || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
-            {
+            ch if crate::display_control(ch) => {
                 safe.push_str(&format!("\\u{{{:x}}}", ch as u32));
             }
             ch => safe.push(ch),
@@ -475,6 +473,77 @@ fn observed_tool(
     lines.push(Line::raw(""));
 }
 
+fn native_tool(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    tool: &crate::native_activity::Tool,
+    width: usize,
+) {
+    use crate::native_activity::ResultState;
+    let metadata = |text: &str| display_safe(text).replace('\n', "\\u{a}");
+    tool_body(
+        t,
+        lines,
+        &format!(
+            "Claude · {}",
+            metadata(tool.name.as_deref().unwrap_or(&tool.id))
+        ),
+        t.tool_text,
+        width,
+    );
+    let (status, color) = match &tool.result {
+        ResultState::Pending => ("Request observed · result pending", t.title),
+        ResultState::Incomplete => ("Incomplete · result unavailable", t.error),
+        ResultState::Returned {
+            is_error: Some(true),
+            ..
+        } => ("Result observed · reported failure", t.error),
+        ResultState::Returned {
+            is_error: Some(false),
+            ..
+        } => ("Result observed · is_error=false", t.title),
+        ResultState::Returned { is_error: None, .. } => {
+            ("Result observed · outcome unknown", t.title)
+        }
+    };
+    tool_body(t, lines, status, color, width);
+    tool_body(
+        t,
+        lines,
+        &format!("Native tool {}", metadata(&tool.id)),
+        MUTED,
+        width,
+    );
+    if !tool.request_seen {
+        tool_body(t, lines, "Request unavailable", MUTED, width);
+    }
+    if let Some(input) = &tool.input {
+        tool_body(
+            t,
+            lines,
+            if tool.input_complete {
+                "Arguments"
+            } else {
+                "Arguments · still streaming"
+            },
+            MUTED,
+            width,
+        );
+        tool_body(t, lines, &display_safe(input), t.tool_text, width);
+    }
+    if let ResultState::Returned { text, .. } = &tool.result {
+        tool_body(
+            t,
+            lines,
+            "Native result (not task completion)",
+            MUTED,
+            width,
+        );
+        tool_body(t, lines, &display_safe(text), color, width);
+    }
+    lines.push(Line::raw(""));
+}
+
 fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) {
     let t = app.palette();
     if let Some(chat) = &app.live {
@@ -496,19 +565,29 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 crate::live_chat::ReplyState::Complete => "Completed · stop",
                 crate::live_chat::ReplyState::Incomplete => "Incomplete · runtime closed or failed",
             };
-            assistant_card(
-                t,
-                &mut lines,
-                &format!("Assistant · {}", display_safe(&chat.model)),
-                &if row.reasoning.is_empty() {
-                    Vec::new()
-                } else {
-                    vec!["▾ Thinking".to_owned(), display_safe(&row.reasoning)]
-                },
-                &display_safe(&row.answer),
-                state,
-                width,
-            );
+            for item in &row.items {
+                match *item {
+                    crate::live_chat::Item::Tool(index) => {
+                        native_tool(t, &mut lines, &row.tools[index], width)
+                    }
+                    crate::live_chat::Item::Card(index) => {
+                        let card = &row.cards[index];
+                        assistant_card(
+                            t,
+                            &mut lines,
+                            &format!("Assistant · {}", display_safe(&chat.model)),
+                            &if card.reasoning.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec!["▾ Thinking".to_owned(), display_safe(&card.reasoning)]
+                            },
+                            &display_safe(&card.answer),
+                            state,
+                            width,
+                        );
+                    }
+                }
+            }
         }
         return (lines, (0, 0));
     }

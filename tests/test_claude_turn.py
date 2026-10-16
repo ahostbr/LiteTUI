@@ -885,6 +885,9 @@ async def test_text_after_a_tool_lands_below_it_and_the_clock_never_overwrites_t
         text("Let me look."),
         assistant("msg_01", [{"type": "text", "text": "Let me look."},
                              {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a"}}]),
+        {"type": "user", "uuid": "u-tool", "session_id": "sess-1",
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                    "content": "reported failure", "is_error": True}]}},
         stream({"type": "message_stop"}),
         stream({"type": "message_start", "message": {"id": "msg_02", "model": "m"}}),
         text("Found it."),
@@ -926,6 +929,12 @@ async def test_text_after_a_tool_lands_below_it_and_the_clock_never_overwrites_t
 
     kinds = [type(w).__name__ for w in transcript]
     assert kinds == ["FakeBubble", "Card", "FakeBubble"], kinds
+    projected = [e for e in app.emitted if e.get("type") in ("text_delta", "native_activity")]
+    assert [(e["type"], e.get("card_index")) for e in projected] == [
+        ("text_delta", 0), ("native_activity", 0), ("native_activity", 0), ("text_delta", 1),
+    ]
+    assert projected[1]["is_error"] is None  # unknown, not invented success
+    assert projected[2]["is_error"] is True
     first, second = transcript[0], transcript[2]
     assert first.answer == "Let me look." and second.answer == "Found it.", (first.answer, second.answer)
     for b in (first, second):
@@ -966,3 +975,24 @@ def test_lengths_that_do_not_add_up_are_refused_not_guessed():
     assert split_card_texts({"card_text_lengths": [3, 3]}, "abc\n\nabcd") is None
     assert split_card_texts({"card_text_lengths": [-1]}, "") is None
     assert split_card_texts({"card_text_lengths": "3"}, "abc") is None
+
+
+@pytest.mark.asyncio
+async def test_recap_only_card_is_announced_before_its_native_tool(tmp_path, monkeypatch):
+    app = turn_app(tmp_path, messages=list(range(6)))
+    app._record_recap = lambda recap: None
+    app._events = [
+        [ClaudeEvent(kind="text_delta", text="Before.", message_id="m1")],
+        [ClaudeEvent(kind="tool_use", tool_id="t1", tool_name="Read", tool_input={}, complete=True)],
+        [ClaudeEvent(kind="text_delta", text="<recap>hidden</recap>", message_id="m2")],
+        [ClaudeEvent(kind="tool_use", tool_id="t2", tool_name="Read", tool_input={}, complete=True)],
+        [ClaudeEvent(kind="text_delta", text="Final.", message_id="m3")],
+        [result_event()],
+    ]
+    monkeypatch.setattr(widgets_mod, "ToolMessage", lambda title: SimpleNamespace(set_args=lambda text: None))
+    app.query_one = lambda selector: SimpleNamespace(mount=lambda card: None)
+    await stream_turn(app)
+    tool = next(i for i, e in enumerate(app.emitted) if e.get("type") == "native_activity" and e.get("id") == "t2")
+    announcements = [e for e in app.emitted[:tool] if e.get("type") == "native_text_snapshot"
+                     and e.get("card_index") == 1 and e.get("text") == ""]
+    assert announcements, "recap suppression must not hide display-card allocation"
