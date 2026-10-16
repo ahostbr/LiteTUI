@@ -1,4 +1,5 @@
-//! Offline presentation preview. There is deliberately no runtime/tool transport.
+//! Offline preview and wire primitives. No runtime process or tool execution.
 pub mod demo;
+pub mod protocol;
 pub mod theme;
 pub mod ui;
