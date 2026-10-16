@@ -15,6 +15,7 @@ import os
 import sys
 from pathlib import Path
 from types import MethodType, SimpleNamespace
+from uuid import UUID
 
 import pytest
 
@@ -34,6 +35,22 @@ class Wire(io.StringIO):
         text = self.getvalue()
         assert not text or text.endswith("\n")
         return [json.loads(line) for line in text.splitlines()]
+
+
+def without_envelope_ids(records):
+    """Validate new metadata without changing legacy/nested payload contracts."""
+    seen = set()
+    result = []
+    for row in records:
+        if row.get("type") == "gui.event":
+            row = dict(row)
+            event_id = row.pop("event_id")
+            parsed = UUID(event_id)
+            assert parsed.version == 4 and str(parsed) == event_id
+            assert event_id not in seen
+            seen.add(event_id)
+        result.append(row)
+    return result
 
 
 class Host:
@@ -171,7 +188,7 @@ async def test_gui_negotiation_is_correlated_and_wrapping_is_not_deduplication(w
     host._rpc_emit(event)  # Producer does not collapse identical consecutive events.
     wrapped = {"type": "gui.event", "session_id": "fixture-session",
                "operation_id": "fixture-turn-command", "event": event}
-    assert wire.records() == [before, response, event, wrapped, event, wrapped]
+    assert without_envelope_ids(wire.records()) == [before, response, event, wrapped, event, wrapped]
     assert gui_rpc.OPERATION_CONTEXT.get() is None
     record_case("negotiated-mirrors", [before, hello, event, event], wire,
                 boundary="real async GUI dispatcher and app emitter; explicit coroutine drain; synthetic host state")
@@ -269,7 +286,7 @@ def test_real_submit_refusal_precedes_accepted_ack_without_starting_a_turn(wire,
                      "result": {"turn": "accepted"}})
     assert acquired == [True]
     assert host._gui_next_operation_id is None
-    assert wire.records() == expected
+    assert without_envelope_ids(wire.records()) == expected
     record_case(f"refusal-before-ack-{'gui' if wrapped else 'raw'}", [command], wire,
                 boundary="real legacy prompt dispatcher and empty-submit/refusal path; lease-acquisition spy; no app or turn")
 
@@ -281,8 +298,9 @@ def test_real_terminal_event_preserves_null_rates_without_an_invented_turn_id(wi
     LiteTUI._emit_turn_end(host, "cancelled", None)
     event = {"type": "turn_end", "stopReason": "cancelled", "tps": None, "tpsSource": None}
     assert painted == [None]
-    assert wire.records() == [event, {"type": "gui.event", "session_id": "fixture-session",
-                                     "operation_id": "fixture-turn-command", "event": event}]
+    assert without_envelope_ids(wire.records()) == [
+        event, {"type": "gui.event", "session_id": "fixture-session",
+                "operation_id": "fixture-turn-command", "event": event}]
     record_case("terminal-null-rates", [{"helper": "_emit_turn_end", "stop_reason": "cancelled", "tps": None}],
                 wire, boundary="real terminal helper and emitter; paint spy; not a real turn or cancellation")
 

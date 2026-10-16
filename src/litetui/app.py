@@ -5741,11 +5741,18 @@ class LiteTUI(App):
             if not hasattr(self, "_gui_approval_details"):
                 self._gui_approval_details = {}
             self._gui_approval_details[data["id"]] = dict(data)
-        rpc_emit(data)
+        envelope = None
         if getattr(self, "_gui_rpc_enabled", False):
             from litetui.gui_rpc import current_operation
-            rpc_emit({"type": "gui.event", "session_id": self.convo_id,
-                      "operation_id": current_operation(self), "event": data})
+            # Allocate once at production, BEFORE either sink. This identifies
+            # an emission, not a turn, admission, successful write or execution.
+            # Keep legacy payloads unchanged; their own IDs are a separate domain.
+            envelope = {"type": "gui.event", "event_id": str(uuid.uuid4()),
+                        "session_id": self.convo_id,
+                        "operation_id": current_operation(self), "event": data}
+        rpc_emit(data)
+        if envelope is not None:
+            rpc_emit(envelope)
 
     def _rpc_model_state(self) -> dict:
         """The model/backend facts a headless host may display and switch.

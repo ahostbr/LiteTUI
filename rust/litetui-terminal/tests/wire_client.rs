@@ -375,6 +375,49 @@ fn explicitly_null_envelope_identity_is_preserved_not_invented() {
 }
 
 #[test]
+fn additive_envelope_ids_survive_decoding_without_becoming_a_dedup_policy() {
+    use litetui_terminal::protocol::JsonlDecoder;
+
+    let mut c = client(1);
+    ready(&mut c, 1);
+    let event = json!({"type":"fixture_event","event_id":"payload-id","text":"same"});
+    let mut decoder = JsonlDecoder::new(2048).unwrap();
+    // Old producers omit the field. New producers supply distinct IDs; replay
+    // may repeat one. This transport layer preserves all three cases verbatim.
+    for id in [
+        None,
+        Some("dc64e516-21be-4f55-97f7-bdd0e0b56e19"),
+        Some("5b9232ef-42d6-4afd-9b21-ddab8bff870d"),
+        Some("5b9232ef-42d6-4afd-9b21-ddab8bff870d"),
+    ] {
+        let mut frame = json!({"type":"gui.event","session_id":"session",
+            "operation_id":null,"event":event});
+        if let Some(id) = id {
+            frame["event_id"] = json!(id);
+        }
+        let wire = format!("{event}\n{frame}\n");
+        let mut notices = Vec::new();
+        for byte in wire.as_bytes() {
+            decoder
+                .push(&[*byte], |value| notices.push(c.ingest(1, value)))
+                .unwrap();
+        }
+        assert_eq!(
+            notices,
+            vec![
+                Notice::IgnoredMirror(event.clone()),
+                Notice::Event {
+                    frame,
+                    event: event.clone()
+                }
+            ]
+        );
+    }
+    decoder.finish().unwrap();
+    assert!(c.ready_for_reads());
+}
+
+#[test]
 fn delivery_policy_and_capacity_are_explicit_and_unambiguous() {
     assert!(matches!(
         WireClient::new(1, 0, []),
