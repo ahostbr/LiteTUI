@@ -1,6 +1,22 @@
-# LiteTUI Rust — offline visual preview
+# LiteTUI Rust — first live path and offline visual preview
 
-This is an **interactive mock conversation**, requested so the terminal layout and tool cards can be inspected before runtime integration. It is not the completed Rust port.
+**P1 first live path works; full parity is not complete.** The explicit `--live` path starts a real owned Python LiteTUI child, sends one prompt to a frontier model, streams its reply, then shuts down. The separate default / `--preview` mode remains an **interactive mock conversation** with no model calls.
+
+## Run the real one-prompt path
+
+From PowerShell, one command (builds current source; requires the existing Python environment and Claude authentication):
+
+```powershell
+& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-live.ps1'
+```
+
+Optionally pass `-Prompt 'Your short prompt'` or `-Python 'path/to/python.exe'`. This uses Claude `claude-sonnet-5-5`; no automatic fallback or retry. Each invocation creates a **new** `C:/Projects/.scratch/T0565/claude-live-<guid>` data root, retained for diagnosis. Its settings contain explicit isolated overrides layered on shipped defaults, never a copy of live settings. Tools and MCP are disabled. This is ordinary owned CLI startup, not a constructor/ownership bypass.
+
+The direct binary interface is `--live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>]`. It also works with redirected stdout. Claude was verified; Codex is not live-verified by this milestone.
+
+This first path is **plain streaming terminal output**, not yet the existing Ratatui composer/transcript. It uses source-defined single-turn legacy RPC, not negotiated GUI events or invented execution identities. Ready must match the requested backend/model; ACK is not completion. Only `turn_end` with `stopReason: stop`, no error and received answer text succeeds. Unknown/interactivity events fail rather than receiving automatic approvals. Native snapshots are explicitly labelled as replacements. Control characters are escaped. Raw frames, channel chunks, stderr tail and emitted answer size have explicit bounds; the runtime has a deadline and graceful shutdown, with owned-tree force termination reported as failure on timeout.
+
+**Measured evidence:** one real Claude prompt returned `Hello`, followed by `turn_end: stop`, successful Python exit, and no remaining `RustLive` agent in a fresh fleet discovery. Smoke log: `C:/Projects/LiteTUI/output/tasks/t-24b0ef83c301422c9037191dd755d13b.log`. The child temporarily registered in the real fleet despite its isolated data root; **liteharness-home isolation remains a known gap**. Process exit alone is not a universal provider-descendant cleanup proof. No local model service was queried or started. Interactive multi-turn submission, native tool views/approvals, full state reconciliation and the rest of the parity plan remain open.
 
 ## Open it on Windows
 

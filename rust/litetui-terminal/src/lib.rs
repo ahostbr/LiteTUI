@@ -1,10 +1,13 @@
-//! Offline preview and wire primitives. No runtime process or tool execution.
+//! Terminal preview, wire primitives and an explicit one-prompt live child path.
 pub mod clipboard;
 pub mod completion;
 pub mod composer;
 pub mod demo;
 pub mod footer;
+pub mod live;
+mod live_process;
 pub mod protocol;
+pub mod session;
 pub mod stream;
 pub mod theme;
 pub mod transport;

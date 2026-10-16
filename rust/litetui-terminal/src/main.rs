@@ -433,18 +433,20 @@ fn run() -> io::Result<()> {
 
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--live") {
+        return litetui_terminal::live::run(litetui_terminal::live::Options::parse(&args[1..])?);
+    }
     match args.as_slice() {
         [] => run(),
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — OFFLINE VISUAL PREVIEW\n\nUsage: litetui-rs [--preview]\n\nNo Python child, model, tool execution, file persistence or fleet registration.\nTab: select tool | F2: expand | F4: themes | F6: mock approval | F5: replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion
-Left/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>]\n\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; tools disabled.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
         _ => Err(io::Error::other(
-            "Unknown option. Use --help. Only the offline preview is implemented.",
+            "Unknown option. Use --help for live and preview modes.",
         )),
     }
 }

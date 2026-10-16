@@ -25,6 +25,7 @@ pub enum IngressError {
     FrameQueueFull { limit: usize },
     ByteQueueFull { limit: usize },
     TruncatedFrame,
+    Aborted,
     Closed,
 }
 
@@ -161,6 +162,19 @@ impl Inbound {
         }
         self.status = IngressStatus::Eof;
         Ok(Push::Accepted)
+    }
+
+    /// Abandon open ingress, clearing partial bytes but preserving the FIFO for
+    /// the owner's explicit cleanup. Existing EOF/fault reasons are not replaced.
+    /// This is local transport abandonment, NOT a provider/tool cancel command.
+    pub fn abort(&mut self, generation: u64) -> Push {
+        if generation != self.generation {
+            return Push::StaleGeneration;
+        }
+        if self.status == IngressStatus::Open {
+            self.fail(IngressError::Aborted);
+        }
+        Push::Accepted
     }
 
     /// Transfer one complete original frame, including LF, in FIFO order.

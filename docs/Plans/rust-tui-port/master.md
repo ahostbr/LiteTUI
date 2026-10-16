@@ -1,6 +1,22 @@
 # LiteTUI Rust terminal port
 
-**T0565 · Tier 2 / High · P0 CLOSED · P1 first live vertical path in progress**
+**T0565 · Tier 2 / High · P0 CLOSED · P1 first live one-prompt path VERIFIED; interactive multi-turn next**
+
+## First live checkpoint — not full parity
+
+The Rust binary now launches the real owned Python CLI child in a new isolated data root, sends one short prompt to Claude `claude-sonnet-5-5`, prints the real streamed reply and shuts down. The first measured run returned `Hello`, `turn_end: stop` and successful Python exit; a fresh fleet discovery showed no remaining `RustLive` seat. Evidence: `C:/Projects/LiteTUI/output/tasks/t-24b0ef83c301422c9037191dd755d13b.log`.
+
+Launch from PowerShell:
+
+```powershell
+& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-live.ps1'
+```
+
+The launcher builds current source and retains a new `C:/Projects/.scratch/T0565/claude-live-<guid>` root. Settings use shipped defaults plus isolated overrides; shared settings are not read or changed. No local model discovery/start/load; tools and MCP disabled. No automatic retry or backend fallback. This explicit `--live` mode uses single-turn legacy native RPC with bounded ingress, output/command queues and deadlines. It is plain terminal streaming, **not yet the existing Ratatui composer/transcript**, GUI reconciliation or full parity. Generic identified-event Session is separately compiled/tested, not misapplied to native Claude's uncorrelated legacy messages.
+
+The first run temporarily registered in the real fleet: data-root isolation is not harness-home isolation. The child disappeared cleanly afterward, but isolating liteharness home remains open. Windows child containment now assigns a suspended process to a private kill-on-close Job Object before resuming it; graceful cleanup waits for all contained processes, not just the venv launcher. Other OS live launching currently refuses; cross-platform cleanup remains P4.
+
+**Next binding milestone (Ryan via Sentinel):** make this interactive using the composer and transcript already built, with multi-turn real replies and clean quit. Short Claude Sonnet development prompts are authorized with isolated data; no local models. The milestone after that is Ryan's hands-on run. P2/P3/P4 parity obligations remain open; this checkpoint does not replace the full parity target.
 
 ## P0 exit — Ryan-directed phase closure
 
