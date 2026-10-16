@@ -18,6 +18,12 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-16
+
+Owner mode, a restart checkpoint that waits for the seat to finish, and a long
+run of fixes to how a saved conversation is resumed against its memory store.
+On Windows the shell tool is now PowerShell.
+
 ### Added
 - **Owner mode** (`litetui --owner NAME --memory DIR`): a seat whose long memory
   is a folder it does not own. `DIR` holds `SOUL.md`, `NOW.md` and `DOMAIN.md`;
@@ -32,6 +38,39 @@ fails if this file's top released heading disagrees with it.
   Codex a manual `/compact` first drives one STEP 1 turn; Codex's own automatic
   compaction cannot be intercepted. Owner mode also reminds you once each time
   the context rises through 70%. Needs `liteharness` installed; see the README.
+- **Restart checkpoint.** A restart now waits for the seat: an idle seat stays
+  idle, a seat mid-work holds until it reaches a safe boundary, and the same
+  seat is compacted after it has written its handoff. The legacy RPC path and
+  scoped compaction are covered too. See `Docs/restart-checkpoint.md`.
+
+### Changed
+- **PowerShell is the default shell tool on Windows**, with bash as the backup;
+  macOS and Linux keep bash alone.
+- **Subagent children use the subagent model you configured**, not a model id
+  hard-coded in the code. A configured route wins over a legacy child model.
+- **Conversation search reads an index snapshot** and never builds the index
+  inline, so a lookup cannot time out on a build; refresh is its own detached
+  command.
+
+### Fixed
+- **A saved conversation resumes only on the memory store it was saved with.**
+  A resume that would change the store is refused. Store identity and injection
+  receipts are recorded atomically with the prompt, and older launch shapes stay
+  readable.
+- **The memory-store snapshot survives Ctrl+T, plan mode, `/new` and
+  compaction.** It is derived from message 0 instead of a flag nothing reset.
+- **An inbox message from the desktop app is shown with its text**, not a blank
+  body: the text is read from `payload.text` when there is no top-level `body`,
+  and both approval readers share the same extraction.
+- **Command policy:** pattern text quoted for a search command is no longer read
+  as an owner-launcher launch, awk and sed programs count as launches, an
+  escaped quote ends the launcher token, and a PowerShell command that only reads
+  no longer trips the two owner-file guards.
+- **Owner mode:** a stale lock is taken over under a kernel lease, so two
+  launches cannot both win it, and the handoff capability probe ignores existing
+  folders.
+- **Ownership:** an action on a running seat's own home no longer walks every
+  agent home.
 
 ## [0.25.1] - 2026-10-10
 
