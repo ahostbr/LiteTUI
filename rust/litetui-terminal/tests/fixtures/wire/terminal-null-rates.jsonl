@@ -1,0 +1,2 @@
+{"type": "turn_end", "stopReason": "cancelled", "tps": null, "tpsSource": null}
+{"type": "gui.event", "session_id": "fixture-session", "operation_id": "fixture-turn-command", "event": {"type": "turn_end", "stopReason": "cancelled", "tps": null, "tpsSource": null}}

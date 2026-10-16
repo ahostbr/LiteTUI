@@ -474,6 +474,7 @@ Filename discovery only. Determine pytest versus script runner, dependency scope
 - [] `tests/test_rpc_model_switch.py`
 - [] `tests/test_rpc_tasks.py`
 - [] `tests/test_rpc_terminal_output.py`
+- [] `tests/test_rust_owned_construction.py`
 - [] `tests/test_scheduler.py`
 - [] `tests/test_set_over_rpc.py`
 - [] `tests/test_settings.py`

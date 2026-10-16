@@ -1,0 +1,4 @@
+{"type": "usage", "usage": {"input_tokens": 4, "output_tokens": 2}}
+{"type": "gui.event", "session_id": "fixture-session", "operation_id": "fixture-turn-command", "event": {"type": "usage", "usage": {"input_tokens": 4, "output_tokens": 2}}}
+{"type": "tool_approval_requested", "id": "fixture-approval", "tool": "fixture_write", "input": {"target": "fixture.txt"}, "profile": "interactive", "why": "synthetic fixture", "timeout_s": 30.0}
+{"type": "gui.event", "session_id": "fixture-session", "operation_id": "fixture-turn-command", "event": {"type": "tool_approval_requested", "id": "fixture-approval", "tool": "fixture_write", "input": {"target": "fixture.txt"}, "profile": "interactive", "why": "synthetic fixture", "timeout_s": 30.0}}

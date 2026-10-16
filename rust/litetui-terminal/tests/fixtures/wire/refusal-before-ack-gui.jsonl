@@ -1,0 +1,3 @@
+{"type": "submit_refused", "reason": "empty", "detail": "nothing to send"}
+{"type": "gui.event", "session_id": "fixture-session", "operation_id": null, "event": {"type": "submit_refused", "reason": "empty", "detail": "nothing to send"}}
+{"type": "response", "ok": true, "id": "fixture-refused-prompt", "result": {"turn": "accepted"}}

@@ -1,0 +1,4 @@
+{"type": "fixture_event", "text": "correlation probe"}
+{"type": "gui.event", "session_id": "fixture-session", "operation_id": "fixture-management-command", "event": {"type": "fixture_event", "text": "correlation probe"}}
+{"type": "fixture_event", "text": "correlation probe"}
+{"type": "gui.event", "session_id": "fixture-session", "operation_id": "fixture-turn-command", "event": {"type": "fixture_event", "text": "correlation probe"}}

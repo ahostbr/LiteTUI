@@ -1,0 +1,5 @@
+{"type": "error", "error": "invalid JSON"}
+{"type": "error", "error": "missing 'type' field"}
+{"type": "error", "error": "missing 'type' field"}
+{"type": "error", "error": "missing 'type' field"}
+{"type": "response", "ok": false, "id": "fixture-command", "error": "unknown command: fixture.unknown"}

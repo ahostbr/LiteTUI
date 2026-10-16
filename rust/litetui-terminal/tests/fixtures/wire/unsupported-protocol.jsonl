@@ -1,0 +1,1 @@
+{"type": "response", "ok": false, "id": "fixture-bad-version", "error": "Unsupported GUI protocol version; expected 1"}

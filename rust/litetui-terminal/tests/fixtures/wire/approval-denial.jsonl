@@ -1,0 +1,4 @@
+{"type": "response", "ok": false, "id": "fixture-malformed", "error": "approve needs boolean `allow` and optional boolean `remember`"}
+{"type": "response", "ok": false, "id": "fixture-stale", "error": "no approval is waiting on approval_id='not-pending' (already answered, or timed out)"}
+{"type": "response", "ok": true, "id": "fixture-deny", "result": {"approved": "fixture-approval", "allow": false, "id_key": "approval_id"}}
+{"type": "response", "ok": false, "id": "fixture-late", "error": "no approval is waiting on approval_id='fixture-approval' (already answered, or timed out)"}
