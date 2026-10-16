@@ -23,13 +23,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _owned_seat import owned_app
+
 from litetui import app as m  # noqa: E402
 from litetui import rpc as rpc_mod  # noqa: E402
 from litetui import tool_policy  # noqa: E402
 
 
 def make_app(**kw):
-    a = m.LiteTUI(**kw)
+    a = owned_app(**kw)
     a.convo_dir = None
     a.skills = []
     a._system = lambda *args, **kwargs: None

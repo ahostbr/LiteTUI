@@ -241,9 +241,9 @@ def take_answer(app, msg: dict) -> bool:
 
     Everything else stays ordinary mail; body prose grants no authority.
     """
-    # Dijkstra SHOULD: LiteSuite's orchestrator writes payload.text, not body.
-    text = msg.get("body") or (msg.get("payload") or {}).get("text") or ""
-    match = _ANSWER.match(str(text))
+    from litetui.harness import message_text
+
+    match = _ANSWER.match(message_text(msg))
     if match is None:
         return False
     entry = _pending(app).get(match.group(2))

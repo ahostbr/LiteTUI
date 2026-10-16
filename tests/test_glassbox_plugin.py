@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
 from litetui.plugins import PluginContext, PluginRegistry
 from litetui.plugins import glassbox_plugin as gb
 from litetui import appsvc
@@ -185,10 +186,9 @@ def test_a_real_app_ends_up_with_a_glassbox_observer() -> None:
     project keeps leaving open: the module exists, it is in the load order, its
     register() runs, AND the running app's registry actually holds the
     observer. Four places; asserting fewer is how half a feature ships."""
-    from litetui import app as app_mod
     from litetui.settings import Settings
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings()
     owners = {o.owner for o in a.plugins.observers}
     assert "glassbox" in owners, (
@@ -199,10 +199,9 @@ def test_a_real_app_ends_up_with_a_glassbox_observer() -> None:
 def test_the_running_app_publishes_a_real_channel_to_the_hub() -> None:
     """And the last link: an app-side _glassbox call reaches the hub a browser
     would be subscribed to. Everything before this proves a component works."""
-    from litetui import app as app_mod
     from litetui.settings import Settings
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings()
     gb._ENABLED = True
     q = gb.HUB.subscribe()

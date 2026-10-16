@@ -15,17 +15,13 @@ tok/s at all.
 from __future__ import annotations
 
 import asyncio
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-native-tps-"))
 
 
 class _AppServer:
@@ -126,7 +122,9 @@ class _Stream:
 
 
 def _app(chunks):
-    a = app_mod.LiteTUI()
+    a = owned_app(initial_backend="codex", initial_model="gpt-6-astra")
+    a.seat.registered = True
+    a._inbox_monitor = lambda: None
     a.settings = Settings(
         tools_enabled=False,
         autocompact_enabled=False,

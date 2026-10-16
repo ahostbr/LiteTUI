@@ -17,17 +17,13 @@ notices when the gate turns off for the wrong reason.
 from __future__ import annotations
 
 import asyncio
-import tempfile
-from pathlib import Path
 
 import pytest
 
-from litetui import app as app_mod
-from litetui import paths
+from _owned_seat import owned_app
 from litetui import chrome_tool
 from litetui import pccontrol_tool
 
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-tools-"))
 
 #: Tools that must be offered on a healthy checkout, with the reason each exists.
 EXPECTED = {
@@ -49,7 +45,7 @@ DEFERRED = {
 
 
 def _app():
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None

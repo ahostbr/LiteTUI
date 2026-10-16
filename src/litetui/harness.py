@@ -774,12 +774,32 @@ def _move(src: Path, dest_dir: Path) -> Path | None:
         return None
 
 
+def message_text(msg: dict) -> str:
+    """The words of an inbox message, whichever producer wrote it.
+
+    Two producers share the maildir: the Python CLI and MCP tool write a top-level `body`; the
+    desktop app's inbox (for example its Orchestrator Chat relay) nests the text as
+    `payload.text` and writes no `body`. Reading only `body` rendered the second kind blank, so a
+    seat woken by one saw a header line and nothing to answer. `body` wins when both exist; only
+    strings count, and a malformed `payload` is empty rather than an error.
+    """
+    body = msg.get("body")
+    if isinstance(body, str) and body.strip():
+        return body.strip()
+    payload = msg.get("payload")
+    if isinstance(payload, dict):
+        for key in ("text", "body"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def format_message(msg: dict) -> str:
     """Render an inbox message for the chat log."""
     frm = str(msg.get("from") or "?")[:8]
     pri = msg.get("priority") or "normal"
-    body = (msg.get("body") or "").strip()
-    return f"[inbox from {frm} · {pri}]\n{body}"
+    return f"[inbox from {frm} · {pri}]\n{message_text(msg)}"
 
 
 # ── Agent-facing tool ────────────────────────────────────────────────────────

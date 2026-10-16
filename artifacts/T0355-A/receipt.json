@@ -1,0 +1,173 @@
+{
+  "task": "T0355-A",
+  "measured_utc": "2026-10-16T03:45:04.803688+00:00",
+  "base_commit": "0bab8f9",
+  "codex_version": "0.159.0",
+  "production_changes": false,
+  "units": "UTF-8 bytes; compact JSON ensure_ascii=False,separators=(comma,colon) for schemas/arrays; literal UTF-8 for prompt text. These are not tokenizer counts.",
+  "catalog": {
+    "counts": {
+      "SOTS_MCP_CORE": 8,
+      "SOTS_BPGEN": 170,
+      "VibeUE": 5
+    },
+    "host_schema_bytes_if_eager": {
+      "SOTS_MCP_CORE": 6701,
+      "SOTS_BPGEN": 129382,
+      "VibeUE": 2746
+    }
+  },
+  "host_mcp": {
+    "cold": {
+      "tool_schema_bytes": {
+        "SOTS_MCP_CORE": 0,
+        "SOTS_BPGEN": 0,
+        "VibeUE": 0
+      },
+      "names_only_index_bytes": 133,
+      "running_servers": []
+    },
+    "warm": {
+      "tool_schema_bytes": {
+        "SOTS_MCP_CORE": 0,
+        "SOTS_BPGEN": 0,
+        "VibeUE": 0
+      },
+      "names_only_index_bytes": 5200,
+      "running_servers": []
+    },
+    "after_search": {
+      "tool_schema_bytes": {
+        "SOTS_MCP_CORE": 212,
+        "SOTS_BPGEN": 0,
+        "VibeUE": 0
+      },
+      "names_only_index_bytes": 5174,
+      "running_servers": [
+        "SOTS_MCP_CORE"
+      ]
+    }
+  },
+  "host_name_line_bytes": {
+    "SOTS_MCP_CORE": 139,
+    "SOTS_BPGEN": 4619,
+    "VibeUE": 113
+  },
+  "host_search": {
+    "query": "select:mcp__SOTS_MCP_CORE__sots_help",
+    "loaded_count": 1,
+    "call_ok": true
+  },
+  "native_code_mode": {
+    "model": "gpt-6.1-sol",
+    "catalog_mode": "code_mode_only",
+    "initial_schema_bytes": {
+      "SOTS_MCP_CORE": 0,
+      "SOTS_BPGEN": 0,
+      "VibeUE": 0
+    },
+    "initial_sots_names_index_bytes": 0,
+    "first_model_request_compact_bytes": 80041,
+    "prewarm_frames": 2,
+    "demand_reflection": "Object.keys(tools).filter(n=>n.startsWith(\"mcp__SOTS\")||n.startsWith(\"mcp__VibeUE\"))",
+    "reflection_count": 183,
+    "reflection_names_array_bytes": 8096,
+    "per_server_name_counts": {
+      "SOTS_MCP_CORE": 8,
+      "SOTS_BPGEN": 170,
+      "VibeUE": 5
+    },
+    "per_server_name_array_bytes": {
+      "SOTS_MCP_CORE": 280,
+      "SOTS_BPGEN": 7655,
+      "VibeUE": 163
+    },
+    "call": "functions.exec -> tools.mcp__SOTS_MCP_CORE__sots_help({})",
+    "is_error": false,
+    "call_ok": true,
+    "native_tool_search_helper_available_in_code_mode": false
+  },
+  "native_direct_mode_control": {
+    "changed_only_model_catalog_fields": {
+      "tool_mode": "direct",
+      "use_responses_lite": false
+    },
+    "initial_schema_bytes": {
+      "SOTS_MCP_CORE": 0,
+      "SOTS_BPGEN": 0,
+      "VibeUE": 0
+    },
+    "search_sources": [
+      "- SOTS_BPGEN",
+      "- SOTS_MCP_CORE",
+      "- VibeUE"
+    ],
+    "sots_source_lines_utf8_bytes": 38,
+    "native_search_description_bytes": 648
+  },
+  "history": {
+    "cutoff_utc": "2026-10-09T03:39:29.449194+00:00",
+    "files_with_sots_terms": 250,
+    "native_thread_metadata_messages": 0,
+    "native_sots_trace_records": 0,
+    "assistant_calls_only": {
+      "mcp__SOTS_MCP_CORE__sots_inbox": 26,
+      "mcp__SOTS_MCP_CORE__sots_rag": 13,
+      "mcp__SOTS_MCP_CORE__sots_run_devtool": 4,
+      "mcp__SOTS_MCP_CORE__sots_view_screenshot": 1,
+      "mcp__SOTS_MCP_CORE__sots_help": 1
+    },
+    "example_source": {
+      "path": "C:\\Projects\\LiteTUI\\.agents\\Carmack-T0571-A\\conversations\\231568b6-5e03-422d-983c-6b2bf03f243a\\convo.jsonl",
+      "line": 27,
+      "metadata_keys": [
+        "items",
+        "model",
+        "provider"
+      ],
+      "provider": "codex",
+      "model": "gpt-6-astra",
+      "app_server_thread_id": null
+    },
+    "qualification": "Counts are actual assistant tool_calls, not tool outputs or textual mentions; current source settings/transport plus missing native thread IDs support classifying these as host calls. Historical metadata invariants were not independently audited. No complete fleet census claimed."
+  },
+  "raw_evidence": [
+    {
+      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-host.json",
+      "bytes": 16958,
+      "sha256": "2ebab29c762639e01f525156980c2da79611a518da544e435f2327357aa184b5"
+    },
+    {
+      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-capture.json",
+      "bytes": 243097,
+      "sha256": "8acea337d1985980fc8bca9e80b836be5fda890804a725c4ed7821cb3e4ee67c"
+    },
+    {
+      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-direct-first.json",
+      "bytes": 177301,
+      "sha256": "ba863e069facb9c064b5f30cbb50dd1897977f2bdeb4b180c965ff5ab2972d19"
+    },
+    {
+      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-native-catalog.json",
+      "bytes": 299259,
+      "sha256": "ff79873a4675f75851061eae37e1a15a88dc493f15c63f21f00eb3b79cb2fc67"
+    },
+    {
+      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-history-routing.json",
+      "bytes": 116903,
+      "sha256": "4986a83aa649675af05e10ec9bc82b37906948e612c948200359c96987ce8032"
+    },
+    {
+      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-code-mode-negative.json",
+      "bytes": 228806,
+      "sha256": "ba2303fec7315a6adb946a6daefef6baeb7c938e3b87b0c1a9166869859a1245"
+    }
+  ],
+  "limitations": [
+    "Native loop used actual installed AppServer process, SOTS cwd/config/servers and cached Sol model metadata, but deterministic loopback mock model responses and a fake API key, not paid inference or a mounted Textual UI.",
+    "Host loop used actual MCP plugins/manager and OpenAITransport/SDK against httpx.MockTransport, not a running non-Codex model.",
+    "Native code_mode can discover and call via exec runtime reflection; its initial prompt contains no SOTS names index and tools.tool_search is not callable. This receipt does not assert automatic LLM discovery.",
+    "No code change, before/after performance improvement, or first-request tokenizer count is claimed.",
+    "Raw captures and scripts are local-only, not merged with this receipt. The merged documents alone cannot independently reproduce/verify them. Hashes identify available files; they do not validate capture contents."
+  ]
+}

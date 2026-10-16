@@ -5,15 +5,15 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import hook_host, tool_policy
-from litetui.app import LiteTUI
 from litetui.lifecycle_hooks import event_document
 
 
 @pytest.fixture
 def app(monkeypatch):
-    a = LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._resync_ctx_if_stale = lambda: None

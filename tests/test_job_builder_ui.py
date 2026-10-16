@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
 from litetui import app as m
 from textual.widgets import Select
 from litetui.plugins.scheduler_ui import CalendarScreen, DayScreen, JobScreen
@@ -50,7 +51,7 @@ def job(prompt="p", schedule="@daily", **kw):
 
 
 def make_app(jobs):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

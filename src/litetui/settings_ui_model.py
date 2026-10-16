@@ -185,6 +185,7 @@ FIELD_DESCRIPTIONS = {
     "compact_max_tokens": "Token budget for the summary; too little may be spent entirely on reasoning.",
     "compact_thinking_level": "Reasoning effort used when generating a compaction summary.",
     "compact_max_tool_iters": "Maximum tool round-trips allowed while compaction writes its summary.",
+    "owner_domain_cap": "Owner mode only: characters of DOMAIN.md injected at the start of a conversation; the oldest rows are cut first.",
     "clear_screen_after_compact": "Clear replaced transcript messages so the screen matches the model's context.",
     "compact_keep_recent": "Number of recent messages kept verbatim alongside the summary.",
     "user_name": "Name included in the assistant's system prompt; blank omits it.",
@@ -401,7 +402,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "compaction", "Compaction", "compact-summary", "Summary budget",
         "Give the summary enough room to be useful and durable.",
-        ("compact_max_tokens", "compact_thinking_level", "compact_max_tool_iters"), scope="conversation", keywords=("summary", "budget", "thinking", "tool rounds"),
+        ("compact_max_tokens", "compact_thinking_level", "compact_max_tool_iters", "owner_domain_cap"), scope="conversation", keywords=("summary", "budget", "thinking", "tool rounds", "owner", "domain"),
     ),
     _section(
         "compaction", "Compaction", "compact-transcript", "Transcript presentation",

@@ -27,6 +27,7 @@ from litetui import app as m
 from litetui import paths
 from litetui import appsvc, settings
 from litetui.agent_launch_context import ordinary
+from litetui.conversation import ConversationRepository
 
 _sandboxes = []
 _apps = []
@@ -106,21 +107,28 @@ def _run_checks():
     a2 = make_app()
     a2._request_messages()
     saved = a2.conversation[0]["content"]
-    # simulate a resume: a fresh object whose system message already carries the block
+    saved_meta, saved_messages = ConversationRepository.read(a2.convo_path)
+    chk("saved transcript records the injection receipt", saved_meta.get("store_injected") is True)
+    chk("saved transcript replays the injected prompt", saved_messages[0]["content"] == saved)
+    # Simulate resume's request-boundary state: restore the persisted prompt
+    # AND its receipt, as the real resume path does. Text alone is not a receipt.
     a3 = make_app()
-    a3.conversation[0] = {"role": "system", "content": saved}
-    a3._store_injected = False          # the flag dies with the process; the MARKER must carry it
+    a3.conversation[0] = saved_messages[0]
+    a3._store_injected = saved_meta["store_injected"]
     out = a3._request_messages()
     chk("resumed convo is not re-injected", out[0]["content"].count(m.STORE_HEADER) == 1)
     chk("resumed convo content unchanged", out[0]["content"] == saved)
-    chk("flag was set from the marker alone", a3._store_injected is True)
+    chk("a second request leaves it alone too", a3._request_messages()[0]["content"] == saved)
 
     print("\n=== an empty store injects nothing, and leaves no marker ===")
     b = make_app(with_store=False)
     msgs = b._request_messages()
     chk("no marker for an empty store", m.STORE_HEADER not in msgs[0]["content"])
     chk("still returns the conversation", msgs and msgs[0]["role"] == "system")
-    chk("not latched, so a later write can still be picked up", b._store_injected is False)
+    (b._agent_session.memory_root / "soul.md").write_text("Written after the first request.\n", encoding="utf-8")
+    later = b._request_messages()[0]["content"]
+    chk("nothing latched, so a later write is still picked up", "Written after the first request." in later)
+    chk("and the marker appears exactly once", later.count(m.STORE_HEADER) == 1)
 
     print("\n=== compaction still gets the LIVE view ===")
     c = make_app()
@@ -132,25 +140,31 @@ def _run_checks():
     chk("both carry the actual file contents", "Prefers `dir`" in live and "Prefers `dir`" in once)
 
 
-_prior_data_root = os.environ.get("LITETUI_DATA_ROOT")
-_prior_convo_dir = paths.CONVO_DIR
-try:
-    _run_checks()
-finally:
-    try:
-        for app in reversed(_apps):
+def main():
+    ok.clear()
+    failures.clear()
+    _apps.clear()
+    _sandboxes.clear()
+    with _script_guard.owned_script_runtime():
+        _prior_data_root = os.environ.get("LITETUI_DATA_ROOT")
+        _prior_convo_dir = paths.CONVO_DIR
+        try:
+            _run_checks()
+        finally:
             try:
-                app.store.release()
+                for app in reversed(_apps):
+                    try:
+                        app.store.release()
+                    finally:
+                        app._agent_session.release()
             finally:
-                app._agent_session.release()
-    finally:
-        paths.CONVO_DIR = _prior_convo_dir
-        for sandbox in reversed(_sandboxes):
-            sandbox.cleanup()
-        if _prior_data_root is None:
-            os.environ.pop("LITETUI_DATA_ROOT", None)
-        else:
-            os.environ["LITETUI_DATA_ROOT"] = _prior_data_root
+                paths.CONVO_DIR = _prior_convo_dir
+                for sandbox in reversed(_sandboxes):
+                    sandbox.cleanup()
+                if _prior_data_root is None:
+                    os.environ.pop("LITETUI_DATA_ROOT", None)
+                else:
+                    os.environ["LITETUI_DATA_ROOT"] = _prior_data_root
 
 
 # ── the same checks, as a pytest arm (T700) ─────────────────────────────
@@ -163,10 +177,12 @@ finally:
 
 
 def test_every_check_in_this_file_passed() -> None:
+    main()
     assert ok, "no check ran — the body above did not execute"
     assert failures == [], failures
 
 
 if __name__ == "__main__":
+    main()
     print(f"\n{sum(ok)}/{len(ok)} passed")
     sys.exit(0 if all(ok) else 1)

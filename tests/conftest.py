@@ -43,9 +43,9 @@ if str(SRC) not in sys.path:
 # name "LiteTUI" from the user's live app and left the roster naming a test
 # process that had already exited.
 #
-# Set BEFORE any test imports app/harness, and never overwritten if the
-# caller already chose a value.
-os.environ.setdefault("LITETUI_NO_HARNESS", "1")
+# Disable live transport before test imports, including an inherited empty value.
+# Transport tests may override this only after installing their own substitutes.
+os.environ["LITETUI_NO_HARNESS"] = "1"
 
 
 def _checkout_root_listing(root):
@@ -77,9 +77,22 @@ def _never_write_the_live_data_root(tmp_path, monkeypatch):
     # Set the real configuration seam so tests of explicit overrides and the
     # legacy unset behavior can still exercise paths.data_root itself.
     # No eager mkdir: a test that writes nothing must leave tmp_path empty.
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    # Mounted NowCard reads the board under Path.home(), independently of the
+    # app data root and NO_HARNESS. Use the product's environment resolution so
+    # a test's own HOME/USERPROFILE change or Path.home patch still takes effect.
+    # A profile container keeps ordinary scratch siblings from being mistaken
+    # for sibling user profiles by the deny floor's real home-parent rule.
+    home = str(tmp_path / "Users" / "test-profile")
+    from _isolated_home import isolated_environment, redirect_cached_home
+
+    for name, value in isolated_environment(home).items():
+        monkeypatch.setenv(name, value)
     from litetui import listen_tool, paths, seat_guard
 
-    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    # Collection can import these modules before the per-test home exists.
+    # Share the same cached-default boundary with standalone script guards.
+    redirect_cached_home(home, monkeypatch.setattr)
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
     monkeypatch.setattr(paths, "LLAMA_DIR", tmp_path / ".llama")
     monkeypatch.setattr(listen_tool, "WORKDIR", tmp_path / "temp-working-dir")
@@ -258,9 +271,20 @@ def _never_write_the_live_task_store(tmp_path, monkeypatch):
     real_save, real_load = tasks_mod.save, tasks_mod.load
     real_finish = tasks_mod.finish
 
-    monkeypatch.setattr(
-        tasks_mod, "save", lambda tasks, root, **kwargs: real_save(tasks, _swap(root), **kwargs)
-    )
+    def save(tasks, root, **kwargs):
+        session = kwargs.get("agent_session")
+        if Path(root) == live and session is not None:
+            tasks = list(tasks)
+            conversations = {task.convo_id for task in tasks}
+            assert len(conversations) == 1, "redirect needs one owned conversation"
+            destination = session.conversation_directory(conversations.pop())
+            assert destination.resolve().is_relative_to(tmp_path.resolve()), (
+                "owned task redirect escaped the per-test directory"
+            )
+            return real_save(tasks, destination, **kwargs)
+        return real_save(tasks, _swap(root), **kwargs)
+
+    monkeypatch.setattr(tasks_mod, "save", save)
     monkeypatch.setattr(tasks_mod, "load", lambda root: real_load(_swap(root)))
     monkeypatch.setattr(
         tasks_mod,
@@ -482,3 +506,21 @@ def pytest_configure(config):
 # FAILS LOUDLY -- which is the 2026-08-21 signal, and a better one than a
 # silent skip. `test_collector_integrity.py` still guards the edge that
 # actually bites: a collected file that runs itself at import.
+
+
+@pytest.fixture
+def make_app():
+    """Build apps on real temporary owned sessions; release stores and seats."""
+    from _owned_seat import owned_app
+
+    apps = []
+
+    def make(**kwargs):
+        app = owned_app(**kwargs)
+        apps.append(app)
+        return app
+
+    yield make
+    for app in reversed(apps):
+        app.store.release()
+        app._agent_session.release()

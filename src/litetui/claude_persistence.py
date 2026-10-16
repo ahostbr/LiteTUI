@@ -196,7 +196,7 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
-    def fix_system_prompt(self, segment_id: str, text: str) -> str:
+    def fix_system_prompt(self, segment_id: str, text: str, *, store_identity=None, store_injected=None) -> str:
         """Record the segment's system prompt the first time, and return the recorded one.
 
         Fixed for the life of the segment, except the process-specific harness identity
@@ -206,6 +206,10 @@ class ClaudeLedger:
         segment = self._require_segment(segment_id)
         if not segment.get("system_prompt"):
             segment["system_prompt"] = text
+            if store_identity is not None:
+                segment["store_identity"] = deepcopy(store_identity)
+            if isinstance(store_injected, bool):
+                segment["store_injected"] = store_injected
             self._save()
         return segment["system_prompt"]
 
@@ -234,6 +238,20 @@ class ClaudeLedger:
             segment["system_prompt"] = fixed
             self._save()
         return fixed
+
+    @property
+    def store_notice_delivered(self) -> bool:
+        return self._data.get("store_notice_delivered") is True
+
+    def mark_store_notice_delivered(self) -> None:
+        # A crash after query acceptance but before this write can repeat the
+        # notice once on retry. Prefer that to a notice that was never delivered.
+        self._data["store_notice_delivered"] = True
+        try:
+            self._save()
+        except BaseException:
+            self._data.pop("store_notice_delivered", None)
+            raise
 
     def note_cache(self, segment_id: str, used_at: float, model: str | None) -> None:
         """Remember when this segment last read or wrote Claude's prompt cache, and

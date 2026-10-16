@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
 from litetui import ask_user_question as auq
@@ -31,7 +32,8 @@ def _no_harness_seat_env(monkeypatch):
 async def test_first_start_name_answer_is_saved_even_when_blank(monkeypatch, name):
     monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    a = app_mod.LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a.settings.user_name = ""
     a.settings.user_name_asked = False
     saved = []
@@ -50,7 +52,8 @@ async def test_first_start_name_answer_is_saved_even_when_blank(monkeypatch, nam
 @pytest.mark.asyncio
 async def test_name_question_does_not_return_after_it_was_answered(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    a = app_mod.LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a.settings.user_name_asked = True
     async with a.run_test() as pilot:
         await pilot.pause()
@@ -72,7 +75,7 @@ async def test_name_question_does_not_return_after_it_was_answered(monkeypatch):
 async def test_automated_entry_points_never_receive_name_modal(monkeypatch, kwargs):
     monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    a = app_mod.LiteTUI(**kwargs)
+    a = owned_app(**kwargs)
     a.settings.user_name_asked = False
     assert not a._should_ask_user_name()
     assert a.settings.user_name_asked is False
@@ -105,7 +108,7 @@ def test_plain_cli_main_builds_an_interactive_name_prompt(monkeypatch):
 def test_plain_cli_launch_options_still_asks_on_a_tty(monkeypatch):
     monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    a = app_mod.LiteTUI(launch_options=LaunchOptions())
+    a = owned_app(launch_options=LaunchOptions())
     a.settings.user_name_asked = False
     assert a._should_ask_user_name()
 
@@ -114,7 +117,7 @@ def test_canvas_seat_environment_never_receives_name_modal(monkeypatch):
     monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
     monkeypatch.setenv("LITESUITE_CANVAS_AGENT", "true")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    a = app_mod.LiteTUI(launch_options=LaunchOptions())
+    a = owned_app(launch_options=LaunchOptions())
     a.settings.user_name_asked = False
     assert not a._should_ask_user_name()
     assert a.settings.user_name_asked is False
@@ -123,7 +126,7 @@ def test_canvas_seat_environment_never_receives_name_modal(monkeypatch):
 def test_non_tty_never_receives_name_modal(monkeypatch):
     monkeypatch.delenv("LITETUI_TEST_USER_NAME_ASKED", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings.user_name_asked = False
     assert not a._should_ask_user_name()
 

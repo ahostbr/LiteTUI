@@ -11,7 +11,7 @@ import pytest
 
 from textual.widgets import Input
 
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui.colorpicker import (
     GRID_H,
     GRID_W,
@@ -192,7 +192,7 @@ async def test_picker_opens_with_the_fields_current_value():
     commented-out line containing that text, is measuring the prose about the
     thing. So it now OPENS the dialog and reads the value off the body.
     """
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = []
     a.model_id = None
     a._connect = lambda: None

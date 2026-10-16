@@ -12,6 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _owned_seat import owned_app
+
 from litetui import app as m  # noqa: E402
 from litetui.plugins import PLUGIN_LOAD_ORDER  # noqa: E402
 
@@ -19,7 +21,7 @@ APP_SRC = Path(m.__file__).read_text(encoding="utf-8")
 
 
 def _app():
-    a = m.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     return a

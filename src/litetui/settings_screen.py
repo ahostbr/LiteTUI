@@ -1289,6 +1289,10 @@ class SettingsBody(Widget):
                             "compact_max_tool_iters", "Compact tool rounds",
                             "How many tool round-trips compaction may take while persisting.",
                         )
+                        yield from self._text_row(
+                            "owner_domain_cap", "Owner DOMAIN.md cap",
+                            "Owner mode only: characters of DOMAIN.md injected at conversation start.",
+                        )
 
                         # ── Capabilities ─────────────────────────────────────────────
                 with TabPane("Capabilities", id="tab-capabilities"):

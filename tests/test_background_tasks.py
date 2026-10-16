@@ -34,7 +34,7 @@ def test_a_killed_task_stays_killed_when_the_child_returns(tmp_path):
     assert t.state == tasks_mod.KILLED and txt.startswith(f"[task {t.id} killed")
 
 
-def test_store_round_trips_and_marks_running_rows_lost(tmp_path, monkeypatch):
+def test_store_round_trips_and_marks_running_rows_lost(make_app, monkeypatch):
     """⚠️ THE `monkeypatch` IS THE SUBJECT, NOT SCAFFOLDING (T689).
 
     This arm used to need nothing: every `running` row was marked LOST at boot,
@@ -45,17 +45,23 @@ def test_store_round_trips_and_marks_running_rows_lost(tmp_path, monkeypatch):
     OWNER is gone, so an arm about LOST has to say whose pid it means. Here it
     is dead; `test_store_lost_update.py` has the live half.
     """
+    from uuid import uuid4
+
     from litetui import router_record
 
+    app = make_app()
+    convo_id = str(uuid4())
+    destination = app._agent_session.conversation_directory(convo_id)
+    destination.mkdir()
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: False)
-    a = tasks_mod.new_task("bash", {"command": "a"}, "")
+    a = tasks_mod.new_task("bash", {"command": "a"}, convo_id)
     a.owner_instance = "a-dead-predecessor"   # T0132: this instance's own rows are alive
-    b = tasks_mod.new_task("bash", {"command": "b"}, "")
-    tasks_mod.finish(b, "ok", True, tmp_path)
-    tasks_mod.save([a, b], tmp_path)
-    rows = json.loads((tmp_path / tasks_mod.STORE).read_text(encoding="utf-8"))
+    b = tasks_mod.new_task("bash", {"command": "b"}, convo_id)
+    tasks_mod.finish(b, "ok", True, destination)
+    tasks_mod.save([a, b], destination, agent_session=app._agent_session)
+    rows = json.loads((destination / tasks_mod.STORE).read_text(encoding="utf-8"))
     assert {r["id"] for r in rows} == {a.id, b.id} and all("proc" not in r for r in rows)
-    back = tasks_mod.load(tmp_path)
+    back = tasks_mod.load(destination)
     assert back[a.id].state == tasks_mod.LOST
     assert back[b.id].state == tasks_mod.DONE
 

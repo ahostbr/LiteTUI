@@ -854,10 +854,10 @@ def test_measured_a_running_conversation_adopts_a_planted_profile_when_its_file_
 def test_measured_an_empty_folder_below_agents_stops_every_seat_and_the_rule_says_nothing(
         app, tmp_path, monkeypatch):
     """NOT the rule's to stop, pinned so the limit is not read wider than it is.
-    The catalog reads every FOLDER below `.agents` and fails on the first it
-    cannot read: an empty folder, or the initializing marker in a seat's own
-    home, fails a running seat's ownership check just as a garbled home file
-    does. Neither names a settings file, so this rule has nothing to judge."""
+    Catalog discovery, launch, adoption or listing still rejects an empty
+    sibling folder. Owned actions check only their own home, where an
+    initializing marker still blocks authority. Neither operation names a
+    settings file, so this rule has nothing to judge."""
     a, _ = _agent(app, monkeypatch)
     session = a._agent_session
     agents = tmp_path / ".agents"
@@ -869,10 +869,15 @@ def test_measured_an_empty_folder_below_agents_stops_every_seat_and_the_rule_say
     (agents / "note.txt").write_text("x", encoding="utf-8")
     assert session.authority.model == "fixture", "CONTROL: a plain file below `.agents` is not read"
     (agents / "x").mkdir()
+    # Owned authority skips sibling damage; next catalog discovery, launch,
+    # adoption or listing still checks it.
+    assert session.authority.model == "fixture"
+    # Owned saves also skip sibling damage; next catalog discovery, launch,
+    # adoption or listing still checks it.
+    assert convo_settings.save(a.convo_dir, convo_settings.ConvoSettings(),
+                               agent_session=session) == a.convo_dir / SETTINGS
     with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
-        session.authority
-    with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
-        convo_settings.save(a.convo_dir, convo_settings.ConvoSettings(), agent_session=session)
+        agent_ownership.AgentSession.acquire_existing(session.store, name="Probe")
     (agents / "x").rmdir()
     assert session.authority.model == "fixture", "CONTROL: the folder removed, the seat works again"
     marker.write_text("x", encoding="utf-8")
@@ -941,13 +946,17 @@ def test_measured_an_agents_home_file_decides_its_next_launch_and_stops_a_runnin
     with agent_ownership.AgentSession.acquire_existing(store, agent_id=other_id) as launched:
         assert (launched.authority.backend, launched.authority.model) == ("lmstudio", "planted-model")
     assert session.authority.model == "fixture", "CONTROL: this seat is untouched so far"
-    # Garbled, it cannot start; and while it is garbled EVERY seat on the data
-    # root fails its ownership check, because that check reads every agent's file.
+    # Garbled sibling metadata still blocks catalog-validated acquisition.
     (other / SETTINGS).write_text("{not json", encoding="utf-8")
     with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
         agent_ownership.AgentSession.acquire_existing(store, agent_id=other_id)
-    with pytest.raises(agent_store.StoreError, match="absent or unreadable"):
-        session.authority
+    # Owned authority skips sibling damage; next catalog discovery, launch,
+    # adoption or listing still checks it.
+    assert session.authority.model == "fixture"
+    # Owned saves also skip sibling damage; next catalog discovery, launch,
+    # adoption or listing still checks it.
+    assert convo_settings.save(a.convo_dir, convo_settings.ConvoSettings(),
+                               agent_session=session) == a.convo_dir / SETTINGS
     (other / SETTINGS).write_text(planted, encoding="utf-8")
     assert session.authority.model == "fixture", "CONTROL: repaired, this seat works again"
     # A RUNNING seat's own home file, changed behind it: the seat does not take
@@ -1030,15 +1039,16 @@ def _mirror(request, monkeypatch):
     ask = seat_authority.jobs_file_refusal
     before = len(MIRRORED)
 
-    def both(app, args, workspace, policy=None):
-        why = ask(app, args, workspace, policy)
+    def both(app, args, workspace, policy=None, *, shell=None):
+        why = ask(app, args, workspace, policy, shell=shell)
         assert JOBS not in str(workspace).lower(), "CONTROL: the rename must not touch a folder"
-        twin = seat_authority.settings_file_refusal(app, _renamed(args), workspace, policy)
+        twin = seat_authority.settings_file_refusal(app, _renamed(args), workspace, policy, shell=shell)
         MIRRORED.append(bool(why))
         assert bool(twin) == bool(why), (args, "schedule file:", why, "settings file:", twin)
         if twin:
             assert "T0306" in twin and JOBS not in twin, twin
-        below = seat_authority.settings_file_refusal(app, _renamed(args, BELOW), workspace, policy)
+        below = seat_authority.settings_file_refusal(app, _renamed(args, BELOW), workspace, policy,
+                                                     shell=shell)
         assert bool(below) == bool(why), (args, "schedule file:", why, "below .agents:", below)
         if below:
             assert "T0306" in below and JOBS not in below, below
@@ -1089,8 +1099,8 @@ def test_the_mirror_can_fail_below_agents(app, tmp_path, monkeypatch, _mirror):
     a, _ = _agent(app, monkeypatch)
     monkeypatch.setattr(
         seat_authority, "settings_file_refusal",
-        lambda app, args, workspace, policy=None: seat_authority._owned_file_refusal(
-            app, args, workspace, policy, SETTINGS, seat_authority._settings_words))
+        lambda app, args, workspace, policy=None, **kw: seat_authority._owned_file_refusal(
+            app, args, workspace, policy, SETTINGS, seat_authority._settings_words, **kw))
     with pytest.raises(AssertionError, match="below .agents"):
         seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / JOBS)}, tmp_path)
 

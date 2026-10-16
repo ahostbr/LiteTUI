@@ -183,7 +183,7 @@ def _written(value, paths: list, commands: list, depth: int = 0) -> None:
         paths.extend(_PATCH_PATH.findall(value))
 
 
-def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
+def jobs_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str | None:
     """T1085: only Owner's own seat may directly write a data root's jobs.json.
 
     Since T1082 a job's recorded level IS its authority, and jobs.json is the
@@ -202,10 +202,10 @@ def jobs_file_refusal(app, args, workspace, policy=None) -> str | None:
     Spawned/unknown seats are not owners; an owner-marked PTY must freshly prove
     it is untainted. Bridge failure refuses this direct write, not scheduler.save.
     T1133's removed profile caps and schedule API gates stay removed."""
-    return _owned_file_refusal(app, args, workspace, policy, "jobs.json", _jobs_words)
+    return _owned_file_refusal(app, args, workspace, policy, "jobs.json", _jobs_words, shell=shell)
 
 
-def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
+def settings_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str | None:
     """T0306: only Owner's own seat may directly write a data root's settings.json.
 
     That file holds the Claude program path, the dispatch routes, the API keys,
@@ -225,26 +225,31 @@ def settings_file_refusal(app, args, workspace, policy=None) -> str | None:
 
     What is refused is a write that NAMES the file, to the floor's stated bound."""
     return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words,
-                               unders=(None, ".agents"))
+                               unders=(None, ".agents"), shell=shell)
 
 
-def _owned_file_refusal(app, args, workspace, policy, name, words, unders=(None,)) -> str | None:
+def _owned_file_refusal(app, args, workspace, policy, name, words, unders=(None,), *,
+                        shell=None) -> str | None:
     """Why this seat may not make this tool call, which would write a data root's
     `name` (directly in the root, or below one of its `unders` folders); None
-    when it would not, or when the seat is Owner's own."""
+    when it would not, or when the seat is Owner's own.
+
+    `shell` is the interpreter the caller PROVED (tool_policy.proven_shell), never
+    a guess: left None, the floor reads every command under all three dialects and
+    a `;`-joined read becomes one malformed write under cmd's."""
     # T1133 removed autonomy/profile locks and schedule API gates. This guard
     # protects file ownership only; a read-only tool's path is not a write.
     if policy is not None and policy.classify_args is None and policy.capabilities <= {
             tool_policy.READ_ONLY, tool_policy.NETWORK}:
         return None
-    found = _protected_write(args, workspace, name, unders)
+    found = _protected_write(args, workspace, name, unders, shell)
     # The owner recheck costs a bridge call: only a recognized write pays it.
     if found is None or is_ryans_own(app, recheck=True):
         return None
     return words(*found)
 
 
-def _protected_write(args, workspace, name, unders) -> tuple | None:
+def _protected_write(args, workspace, name, unders, shell=None) -> tuple | None:
     """(target, the floor's Git reason, the folder the file sits below) when the
     call would write a data root's `name`: one of the first two is None. The
     floor's own questions, asked with `name`, once for each of `unders` (None:
@@ -256,7 +261,7 @@ def _protected_write(args, workspace, name, unders) -> tuple | None:
         return None
     for command in commands:
         for under in unders:
-            if reason := deny_floor.jobs_git_refusal(command, workspace, name=name, under=under):
+            if reason := deny_floor.jobs_git_refusal(command, workspace, shell=shell, name=name, under=under):
                 return None, reason, under
     bases = [Path(workspace), Path.cwd()]
     if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
@@ -275,7 +280,7 @@ def _protected_write(args, workspace, name, unders) -> tuple | None:
                     return target, None, under
         for command in commands:
             for under in unders:
-                if target := deny_floor.jobs_write_target(command, base, name=name, under=under):
+                if target := deny_floor.jobs_write_target(command, base, shell=shell, name=name, under=under):
                     return target, None, under
     return None
 

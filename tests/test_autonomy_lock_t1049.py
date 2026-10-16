@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as m
 from litetui import rpc, seat_authority, tool_policy
@@ -11,7 +12,7 @@ from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 
 
 def _app(profile=STRICT, **kw):
-    a = m.LiteTUI(**kw)
+    a = owned_app(**kw)
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

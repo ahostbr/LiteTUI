@@ -57,24 +57,17 @@ def resolve_route(app, explicit_model=None):
         return {'backend': backend, 'model': explicit_model}
     service = service_for(app)
     directory = getattr(app, 'convo_dir', None)
-    if directory:
-        saved = service.snapshot(directory.name).saved
-        override = saved.subagent_route_override
-        validate_route(override, override=True)
-        if override is not None:
-            return deepcopy(override or parent)
-        if saved.subagent_model:
-            return {'backend': backend, 'model': saved.subagent_model}
-    else:
-        # Tool hosts before conversation materialization still carry legacy
-        # preferences in memory; authoritative conversation reads win once born.
-        override = getattr(app.settings, 'subagent_route_override', None)
-        if override is not None:
-            validate_route(override, override=True)
-            return deepcopy(override or parent)
-        legacy = getattr(app.settings, 'subagent_model', None)
-        if legacy:
-            return {'backend': backend, 'model': legacy}
-    _, route = service.global_value('subagent_route')
+    # Before materialization use in-memory preferences; afterwards read disk.
+    saved = service.snapshot(directory.name).saved if directory else app.settings
+    override = getattr(saved, 'subagent_route_override', None)
+    validate_route(override, override=True)
+    if override is not None:
+        return deepcopy(override or parent)
+    configured, route = service.global_value('subagent_route')
     validate_route(route)
-    return deepcopy(route or parent)
+    if configured:
+        # Old model-only preferences were copied into conversation snapshots.
+        # They must not mask a chosen route, including explicit follow-parent.
+        return deepcopy(route or parent)
+    legacy = getattr(saved, 'subagent_model', None)
+    return {'backend': backend, 'model': legacy} if legacy else parent

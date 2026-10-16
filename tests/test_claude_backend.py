@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import llm_backend, model_transport
 from litetui.claude_backend import ClaudeBackend, settle_close, track_close
@@ -199,11 +200,10 @@ async def test_settle_deadline_retains_cancellation_resistant_cleanup():
 
 def _exit_app(tmp_path, monkeypatch):
     """A real LiteTUI, wired the way the backend-switch suite wires one."""
-    from litetui import app as app_mod
     from litetui import paths
 
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path)
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app.settings = Settings()
     app.connect = lambda: None
     app._connect = lambda: None
@@ -349,10 +349,11 @@ def test_backend_rows_is_the_one_source_for_the_picker_and_the_sidecar(monkeypat
 def _identity_app(monkeypatch, agent_session=None):
     """A real LiteTUI (conftest isolates its data) with a store and a registered seat."""
     from litetui import app as app_mod
-    app = app_mod.LiteTUI(agent_session=agent_session)
+    app = (owned_app() if agent_session is None
+           else app_mod.LiteTUI(agent_session=agent_session))
     app._materialise_convo()
-    (app.convo_dir / "soul.md").write_text("SOUL-MARKER-4471", encoding="utf-8")
-    (app.convo_dir / "handoff.md").write_text("HANDOFF-MARKER-9902", encoding="utf-8")
+    (app._agent_session.memory_root / "soul.md").write_text("SOUL-MARKER-4471", encoding="utf-8")
+    (app._agent_session.memory_root / "handoff.md").write_text("HANDOFF-MARKER-9902", encoding="utf-8")
     real = app._all_tools
     monkeypatch.setattr(app, "_all_tools", lambda: [*real(), {"type": "function", "function": {"name": "harness"}}])
     return app
@@ -376,7 +377,7 @@ def test_claude_is_told_it_is_litetui_not_claude_code(monkeypatch):
     assert isinstance(prompt, str) and first_line[:60] in prompt
     assert "SOUL-MARKER-4471" in prompt and "HANDOFF-MARKER-9902" in prompt
     assert app.seat.agent_id in prompt and COMPACT_MARKER in prompt
-    assert str(app.convo_dir).replace("\\", "/") in prompt, "the store folder is named"
+    assert str(app._agent_session.memory_root).replace("\\", "/") in prompt, "the store folder is named"
     assert "mcp__litetui__" in prompt and "Git Bash" in prompt, "the tool section is Claude's"
     assert "call `subagent`" not in prompt, "LiteTUI's own tool section is swapped out"
     assert "You are Claude Code" not in prompt
@@ -389,7 +390,7 @@ def test_the_prompt_is_fixed_for_the_life_of_the_segment(monkeypatch):
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
     first = system_prompt_for(app, segment)
-    (app.convo_dir / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
+    (app._agent_session.memory_root / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
     again = system_prompt_for(app, ledger.segment(segment["id"]))
     assert again == first, "a resume carries the same prefix (cache)"
     fresh = ledger.select_segment("ws", new=True)
@@ -435,19 +436,42 @@ def test_no_launch_block_leaves_a_fresh_claude_prompt_unchanged(owned_identity_a
     assert "mcp__litetui__" in prompt, "the Claude tool composition is unchanged"
 
 
-def test_a_frozen_claude_prompt_is_not_rewritten_by_a_later_launch_block(owned_identity_app):
+def _fixture_prompt_facts(app, recorded):
+    from litetui.store_identity import capture
+
+    return {"store_identity": capture(app), "store_injected": False} if recorded else {}
+
+
+def _assert_unrecorded_fixture_refused(app, segment):
+    from litetui.claude_turn import ledger_for, system_prompt_for
+    from litetui.owner_mode import OwnerModeError
+
+    ledger = ledger_for(app)
+    before = ledger.file.read_bytes()
+    with pytest.raises(OwnerModeError, match="legacy prompt has no verifiable host store slot.*omit --convo"):
+        system_prompt_for(app, segment)
+    assert ledger.file.read_bytes() == before, "a synthetic legacy prompt is refused, never rewritten"
+
+
+@pytest.mark.parametrize("recorded", [True, False])
+def test_a_frozen_claude_prompt_is_not_rewritten_by_a_later_launch_block(owned_identity_app, recorded):
     from litetui.claude_turn import ledger_for, system_prompt_for
 
     app = owned_identity_app
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
-    frozen = ledger.fix_system_prompt(segment["id"], "FROZEN-PROMPT-MARKER-1190")
+    frozen = ledger.fix_system_prompt(segment["id"], "FROZEN-PROMPT-MARKER-1190",
+                                     **_fixture_prompt_facts(app, recorded))
+    if not recorded:
+        _assert_unrecorded_fixture_refused(app, segment)
+        return
     app._cli_system_prompt = "LAUNCH-ROLE-MARKER-5530"
     assert system_prompt_for(app, ledger.segment(segment["id"])) == frozen
     assert "LAUNCH-ROLE-MARKER-5530" not in frozen
 
 
-def test_a_long_frozen_prompt_reaches_the_sdk_by_path_not_on_argv(owned_identity_app):
+@pytest.mark.parametrize("recorded", [True, False])
+def test_a_long_frozen_prompt_reaches_the_sdk_by_path_not_on_argv(owned_identity_app, recorded):
     """WinError 206: a 60 KB prompt on argv overflows CreateProcess (32767 chars) and the SDK
     reports it as 'Claude Code not found'. The shipped session_for builds the options; the
     real SDK argv builder must then never see the prompt text."""
@@ -465,7 +489,11 @@ def test_a_long_frozen_prompt_reaches_the_sdk_by_path_not_on_argv(owned_identity
     app._seat_started = True
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
-    ledger.fix_system_prompt(segment["id"], "ROLE-METHOD-MARKER-6612 — méthode\n" + "x" * 61000)
+    ledger.fix_system_prompt(segment["id"], "ROLE-METHOD-MARKER-6612 — méthode\n" + "x" * 61000,
+                             **_fixture_prompt_facts(app, recorded))
+    if not recorded:
+        _assert_unrecorded_fixture_refused(app, segment)
+        return
     captured = []
 
     class FakeBackend:
@@ -490,7 +518,8 @@ def test_a_long_frozen_prompt_reaches_the_sdk_by_path_not_on_argv(owned_identity
     assert path.read_bytes() == recorded.encode("utf-8"), "the file bytes are the recorded frozen string's UTF-8"
 
 
-def test_session_open_hands_the_sdk_the_frozen_prompt_file_and_leaves_the_ledger_alone(owned_identity_app):
+@pytest.mark.parametrize("recorded", [True, False])
+def test_session_open_hands_the_sdk_the_frozen_prompt_file_and_leaves_the_ledger_alone(owned_identity_app, recorded):
     from litetui.claude_turn import ledger_for, prompt_for_new_session, session_for
 
     app = owned_identity_app
@@ -498,7 +527,11 @@ def test_session_open_hands_the_sdk_the_frozen_prompt_file_and_leaves_the_ledger
     app._seat_started = True
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
-    frozen = ledger.fix_system_prompt(segment["id"], "FROZEN-ROLE-MARKER-7713\n" + "y" * 40000)
+    frozen = ledger.fix_system_prompt(segment["id"], "FROZEN-ROLE-MARKER-7713\n" + "y" * 40000,
+                                     **_fixture_prompt_facts(app, recorded))
+    if not recorded:
+        _assert_unrecorded_fixture_refused(app, segment)
+        return
     opened = []
 
     class FakeBackend:
@@ -510,13 +543,13 @@ def test_session_open_hands_the_sdk_the_frozen_prompt_file_and_leaves_the_ledger
             return SimpleNamespace(effort=effort)
 
     # The identity refresh may append the seat's sentence once; that repair is persisted first.
-    recorded = asyncio.run(prompt_for_new_session(app, ledger.segment(segment["id"])))
+    opened_prompt = asyncio.run(prompt_for_new_session(app, ledger.segment(segment["id"])))
     before = ledger.file.read_bytes()
     asyncio.run(session_for(app, FakeBackend(), ledger.segment(segment["id"]), None))
     assert opened[0] == {"type": "file", "path": str(app.convo_dir / "system-prompt.md")}
-    assert (app.convo_dir / "system-prompt.md").read_bytes() == recorded.encode("utf-8")
-    assert recorded == ledger.segment(segment["id"])["system_prompt"]
-    assert recorded.startswith(frozen), "the frozen prompt is the head of what the SDK reads"
+    assert (app.convo_dir / "system-prompt.md").read_bytes() == opened_prompt.encode("utf-8")
+    assert opened_prompt == ledger.segment(segment["id"])["system_prompt"]
+    assert opened_prompt.startswith(frozen), "the frozen prompt is the head of what the SDK reads"
     assert ledger.file.read_bytes() == before, "the ledger is not rewritten by opening a session"
     from litetui.claude_turn import system_prompt_file
 
@@ -545,10 +578,11 @@ async def test_resume_refreshes_only_the_recorded_fleet_identity(monkeypatch, id
     modern = stale.replace("(id ", "(your inbox/sender id (use it for any from=/--from): ")
     old = {"missing": "", "stale": stale, "stale-modern": modern,
            "duplicate": app._fleet_identity_sentence() + stale}[identities]
-    recorded = ledger.fix_system_prompt(segment["id"], prefix + old + suffix)
+    recorded = ledger.fix_system_prompt(segment["id"], prefix + old + suffix,
+                                        **_fixture_prompt_facts(app, True))
     before = ledger.segment(segment["id"])
     inventory = []
-    (app.convo_dir / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
+    (app._agent_session.memory_root / "soul.md").write_text("CHANGED-LATER", encoding="utf-8")
 
     async def register_late():
         await asyncio.sleep(0.1)
@@ -575,7 +609,8 @@ async def test_resume_refreshes_only_the_recorded_fleet_identity(monkeypatch, id
 
 
 @pytest.mark.asyncio
-async def test_persisted_identity_repair_reaches_the_resumed_sdk_options(owned_identity_app, monkeypatch):
+@pytest.mark.parametrize("recorded", [True, False])
+async def test_persisted_identity_repair_reaches_the_resumed_sdk_options(owned_identity_app, monkeypatch, recorded):
     import sys
 
     from litetui import claude_backend as cb
@@ -613,7 +648,10 @@ async def test_persisted_identity_repair_reaches_the_resumed_sdk_options(owned_i
     segment = ledger.select_segment("ws")
     ledger.bind_session(segment["id"], "native-resumed")
     original = "USER EDITS — méthode\nSAVED TOOL TEXT"  # non-ASCII and LF: the bytes are checked
-    ledger.fix_system_prompt(segment["id"], original)
+    ledger.fix_system_prompt(segment["id"], original, **_fixture_prompt_facts(app, recorded))
+    if not recorded:
+        _assert_unrecorded_fixture_refused(app, segment)
+        return
     # Simulate a relaunch: read the bound segment and prompt from disk, not that ledger.
     del app._claude_ledger
     backend = cb.ClaudeBackend(Settings(backend="claude"))
@@ -642,7 +680,8 @@ async def test_resume_does_not_add_an_identity_when_registration_fails(monkeypat
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
     ledger.bind_session(segment["id"], "native-resumed")
-    recorded = ledger.fix_system_prompt(segment["id"], "SAVED USER PROMPT AND TOOL TEXT")
+    recorded = ledger.fix_system_prompt(segment["id"], "SAVED USER PROMPT AND TOOL TEXT",
+                                        **_fixture_prompt_facts(app, True))
     assert await prompt_for_new_session(app, segment) == recorded
     assert ledger.segment(segment["id"])["system_prompt"] == recorded
 
@@ -654,8 +693,20 @@ def test_a_segment_already_bound_under_the_preset_keeps_it(monkeypatch):
     app.seat.registered = True
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
+    frozen = system_prompt_for(app, segment)
     ledger.bind_session(segment["id"], "native-legacy")
-    assert system_prompt_for(app, ledger.segment(segment["id"])) is None
+    assert system_prompt_for(app, ledger.segment(segment["id"])) == frozen
+    assert ledger.segment(segment["id"])["session_id"] == "native-legacy"
+
+
+def test_a_bound_segment_without_a_recorded_prompt_is_refused(monkeypatch):
+    from litetui.claude_turn import ledger_for
+
+    app = _identity_app(monkeypatch)
+    ledger = ledger_for(app)
+    segment = ledger.select_segment("ws")
+    ledger.bind_session(segment["id"], "native-unrecorded")
+    _assert_unrecorded_fixture_refused(app, ledger.segment(segment["id"]))
 
 
 def test_open_session_sends_the_prompt_as_a_plain_string_with_auto_memory_off(monkeypatch):
@@ -716,10 +767,10 @@ async def test_a_resumed_session_waits_for_the_seat_too(monkeypatch, bound):
     app._seat_started = False
     ledger = ledger_for(app)
     segment = ledger.select_segment("ws")
+    ledger.fix_system_prompt(segment["id"], "PROMPT FIXED BEFORE THE SEAT REGISTERED",
+                             **_fixture_prompt_facts(app, True))
     if bound == "session_id":
         ledger.bind_session(segment["id"], "native-session-1")
-    else:
-        ledger.fix_system_prompt(segment["id"], "PROMPT FIXED BEFORE THE SEAT REGISTERED")
     async def register_late():
         await asyncio.sleep(0.3)
         app._seat_started = True

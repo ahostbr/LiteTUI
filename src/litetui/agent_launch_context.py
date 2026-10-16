@@ -44,8 +44,12 @@ def create(root: Path, name: str, *, agent_id: str, backend: str,
 
 
 def ordinary(root: Path, settings, *, spawned_identity=None, notice=print,
-             backend=None, model=None, thinking_level=None) -> AgentSession:
-    """Open default owned seat; only standalone contention creates a new name."""
+             backend=None, model=None, thinking_level=None, strict_name: bool = False) -> AgentSession:
+    """Open default owned seat; only standalone contention creates a new name.
+
+    `strict_name` (owner mode) makes the name the point: a busy or contended home
+    raises instead of opening, and creating, a differently named one.
+    """
     from uuid import uuid4
     from litetui.agent_ownership import OwnershipError
     store = AgentStore(root)
@@ -60,7 +64,7 @@ def ordinary(root: Path, settings, *, spawned_identity=None, notice=print,
         try:
             return acquire(root, name, backend=backend, model=model, thinking_level=thinking_level)
         except OwnershipError as exc:
-            if explicit or getattr(exc.__cause__, 'errno', None) not in (13, 11, 36):
+            if explicit or strict_name or getattr(exc.__cause__, 'errno', None) not in (13, 11, 36):
                 raise
     elif store.agent_directory(name).exists():
         raise StoreError('Default home is inactive; operator verification/activation required')
@@ -71,11 +75,11 @@ def ordinary(root: Path, settings, *, spawned_identity=None, notice=print,
                           model=model if model is not None else settings.default_model,
                           thinking_level=thinking_level or settings.thinking_level, allow_unchosen=not explicit)
         except (FileExistsError, OwnershipError):
-            if explicit:
+            if explicit or strict_name:
                 raise
         except StoreError:
             # Another default reservation can win between catalog read and mkdir.
-            if explicit or not store.agent_directory(name).exists():
+            if explicit or strict_name or not store.agent_directory(name).exists():
                 raise
     identity = str(uuid4())
     unique = 'LiteTUI-' + identity[:8]

@@ -46,19 +46,24 @@ def _cmd_new(app, name: str, arg: str) -> None:
     app.system_message(
         f"New conversation — {app.convo_id}\n"
         f"  store: {app.convo_dir}\n"
-        f"  memory.md · soul.md · handoff.md · {paths.MEMORIES_DIR}/"
+        + (f"  SOUL.md · NOW.md · DOMAIN.md in {app._owner_memory_dir}"
+           if getattr(app, '_owner_memory_dir', None) is not None
+           else f"  memory.md · soul.md · handoff.md · {paths.MEMORIES_DIR}/")
     )
 
 
 def _cmd_system(app, name: str, arg: str) -> None:
     if arg:
+        app._store_injected = False  # the replacement contains no host store snapshot
         if app.conversation and app.conversation[0]["role"] == "system":
             app.conversation[0]["content"] = arg
+            app._edit(0, "system prompt changed")
         else:
             app.conversation.insert(
                 0, {"role": "system", "content": arg}
             )
-        app._edit(0, "system prompt changed")
+            # An insertion shifts the old first message; an edit would lose it on replay.
+            app._snapshot("system prompt inserted")
         preview = arg[:80] + ("..." if len(arg) > 80 else "")
         app.system_message(f"System prompt set: {preview}")
     else:

@@ -50,6 +50,12 @@ class ConversationRepository:
                     candidate = rec.get("messages")
                     if isinstance(candidate, list) and all(isinstance(m, dict) and isinstance(m.get('role'), str) for m in candidate):
                         msgs = list(candidate)
+                        meta.pop("store_identity", None)
+                        meta.pop("store_injected", None)
+                        if "store_identity" in rec:
+                            meta["store_identity"] = rec["store_identity"]
+                        if "store_injected" in rec:
+                            meta["store_injected"] = rec["store_injected"]
                 elif kind == "rename":
                     # APPEND-ONLY, like every other record here. The name is not
                     # patched into the meta line -- rewriting a JSONL record in
@@ -67,6 +73,13 @@ class ConversationRepository:
                         rec.get("message"), dict
                     ):
                         msgs[i] = rec["message"]
+                        if i == 0:
+                            meta.pop("store_identity", None)
+                            meta.pop("store_injected", None)
+                            if "store_identity" in rec:
+                                meta["store_identity"] = rec["store_identity"]
+                            if "store_injected" in rec:
+                                meta["store_injected"] = rec["store_injected"]
                 elif kind == "truncate":
                     keep_from = rec.get("keep_from")
                     if not isinstance(keep_from, int) or keep_from < 0:
@@ -81,9 +94,15 @@ class ConversationRepository:
                     prepend = [
                         m for m in (rec.get("prepend") or []) if isinstance(m, dict)
                     ]
+                    previous_first = msgs[0] if msgs else None
                     msgs = head + prepend + msgs[keep_from:]
+                    if not msgs or msgs[0] is not previous_first:
+                        meta.pop("store_identity", None)
+                        meta.pop("store_injected", None)
                 elif kind == "msg" and isinstance(rec.get("message"), dict):
                     msgs.append(rec["message"])
+                    if rec.get("store_notice") is True:
+                        meta["store_notice"] = rec["message"].get("content")
         return meta, msgs
 
     @staticmethod
@@ -321,6 +340,11 @@ class ConversationRepository:
         self.write_record({"type": "msg", "ts": time.time(), "message": msg,
                            **({"usage": usage, "model": model} if usage is not None else {})})
 
+    def record_store_notice(self, message: dict) -> None:
+        # A normal context message for old readers; the receipt is not an API field.
+        self.write_record({"type": "msg", "ts": time.time(), "message": message,
+                           "store_notice": True})
+
     def record_card_summary(self, key: str, summary: str, model: str = "") -> None:
         """Persist one card's one-line summary.
 
@@ -370,14 +394,16 @@ class ConversationRepository:
             return {}
         return out
 
-    def record_snapshot(self, messages: list[dict], reason: str = "") -> None:
+    def record_snapshot(self, messages: list[dict], reason: str = "", *, store_identity=None, store_injected=None) -> None:
         """Full-list record. Kept for readability of older files; prefer edit."""
         self.write_record({
             "type": "snapshot", "ts": time.time(),
             "reason": reason, "messages": messages,
+            **({"store_identity": store_identity} if store_identity is not None else {}),
+            **({"store_injected": store_injected} if isinstance(store_injected, bool) else {}),
         })
 
-    def record_edit(self, index: int, message: dict, reason: str = "") -> None:
+    def record_edit(self, index: int, message: dict, reason: str = "", *, store_identity=None, store_injected=None) -> None:
         """Record an in-place change to ONE message.
 
         /system and the tools toggle only ever rewrite message 0, which is the
@@ -388,6 +414,8 @@ class ConversationRepository:
         self.write_record({
             "type": "edit", "ts": time.time(), "reason": reason,
             "index": index, "message": message,
+            **({"store_identity": store_identity} if store_identity is not None else {}),
+            **({"store_injected": store_injected} if isinstance(store_injected, bool) else {}),
         })
 
     def record_truncate(self, keep_from: int, prepend: list[dict],

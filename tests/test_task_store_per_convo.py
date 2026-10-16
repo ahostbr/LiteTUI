@@ -45,6 +45,7 @@ import pytest
 
 from litetui import paths, router_record, row_store, tool_policy
 from litetui import tasks as tasks_mod
+from litetui.store_identity import capture
 
 # ── fixtures ────────────────────────────────────────────────────────────
 
@@ -363,10 +364,15 @@ def test_bind_never_writes_the_old_file(monkeypatch, owned_session):
 
 
 def _app(monkeypatch, owned_session):
+    from _owned_seat import control_external_effects
+
     from litetui import app as app_mod
 
+    control_external_effects()
     monkeypatch.setattr(app_mod.LiteTUI, "connect", lambda self: None)
     a = app_mod.LiteTUI(agent_session=owned_session)
+    control_external_effects(a)
+    a._connect = lambda: None  # startup discovery is outside this test
     a._fetch_ctx_window = lambda: None
     a._active_tool_profile = tool_policy.AUTONOMOUS
     a._deliver_inbox = lambda message: None
@@ -443,7 +449,8 @@ async def test_a_task_that_finishes_after_a_resume_writes_its_originating_store(
         # Move to another (already born) conversation.
         other = _born("55555555-5555-4555-8555-555555555555", owned_session)
         (other / "convo.jsonl").write_text(
-            json.dumps({"type": "meta", "id": "55555555-5555-4555-8555-555555555555"}) + "\n"
+            json.dumps({"type": "meta", "id": "55555555-5555-4555-8555-555555555555",
+                        "store_identity": capture(a)}) + "\n"
             + json.dumps({"type": "msg", "message": {"role": "user", "content": "hi"}}) + "\n",
             encoding="utf-8")
         assert a._resume(other / "convo.jsonl")
@@ -470,11 +477,12 @@ async def test_resume_loads_the_conversations_rows_and_tops_up_from_the_old_file
     before = _fingerprint(legacy)
     d = _born("66666666-6666-4666-8666-666666666666", owned_session)
     (d / tasks_mod.STORE).write_text(json.dumps([old]), encoding="utf-8")
+    a = _app(monkeypatch, owned_session)
     (d / "convo.jsonl").write_text(
-        json.dumps({"type": "meta", "id": "66666666-6666-4666-8666-666666666666"}) + "\n"
+        json.dumps({"type": "meta", "id": "66666666-6666-4666-8666-666666666666",
+                    "store_identity": capture(a)}) + "\n"
         + json.dumps({"type": "msg", "message": {"role": "user", "content": "hi"}}) + "\n",
         encoding="utf-8")
-    a = _app(monkeypatch, owned_session)
     async with a.run_test(size=(100, 30)):
         assert a.bg_tasks == {}, "boot must not load a store: no conversation is bound yet"
         assert a._resume(d / "convo.jsonl")

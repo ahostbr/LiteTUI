@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from litetui import lifecycle_hooks as hooks
-from litetui import seat_authority, tool_policy
+from litetui import seat_authority, tool_policy, restart_checkpoint
 from litetui.widgets import _mark_delivered
 
 
@@ -162,7 +162,7 @@ def refuse_below_floor(app, item) -> bool:
     return True
 
 
-def accept_prompt(app, item, *, native_accepted=False) -> bool:
+def accept_prompt(app, item, *, native_accepted=False, restart_maintenance=None) -> bool:
     """Start this item's turn. False when refused by the floor or held by Claude.
 
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
@@ -170,6 +170,9 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
     refusing it here would leave the transcript and the thread disagreeing. A
     keyword, not item data, so no stored or forged state can reach the skip; and
     accept_steered never starts a stream."""
+    if (not native_accepted and not restart_checkpoint.maintenance_permitted(app, restart_maintenance)
+            and restart_checkpoint.retain_prompt(app, item)):
+        return False
     if not native_accepted and refuse_below_floor(app, item):
         return False
     if not item.get("_gui_in_turn"):
@@ -216,6 +219,8 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
 
 
 async def admit_prompt(app, item):
+    if restart_checkpoint.retain_prompt(app, item):
+        return False
     # T1043: before the prompt_before hooks, so no hook runs for a refused turn.
     if refuse_below_floor(app, item):
         return False
@@ -240,6 +245,8 @@ async def admit_prompt(app, item):
 
 
 def start_prompt(app, item):
+    if restart_checkpoint.retain_prompt(app, item):
+        return
     entry = item.get("_codex_entry")
     if entry and entry.get("state") in ("admitted", "next_turn"):
         if not accept_prompt(app, item):
@@ -260,6 +267,8 @@ def start_prompt(app, item):
 
 
 async def queued_prompt(app):
+    if restart_checkpoint.is_held(app):
+        return False
     if app._pending_input and app._pending_input[0].get("_codex_entry"):
         return False
     state = snapshot(app)

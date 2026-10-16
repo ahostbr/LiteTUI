@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 
 import pytest
+from _owned_seat import owned_app
 from textual.app import App
 from textual.widgets import Input
 
-from litetui import app as app_mod
 from litetui import settings as settings_mod
 from litetui.settings import Settings
 from litetui.settings_screen import SettingsBody, SettingsScreen
@@ -70,7 +70,7 @@ async def test_historical_default_loads_and_renders_context_first(tmp_path, save
     )
     loaded = settings_mod.load(tmp_path)
     assert loaded.footer_order == list(settings_mod.FOOTER_ORDER_DEFAULT)
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app._apply_context_length = lambda: None

@@ -43,8 +43,8 @@ def test_legacy_read_and_owned_precedence_path_switch_equal_size(tmp_path, capsy
         with search.open_db() as conn:
             assert conn.execute('SELECT COUNT(*) FROM convos').fetchone()[0] == 1
             assert conn.execute('SELECT source_path FROM convos').fetchone()[0] == str(owned)
-            search.do_raw(conn, CID, 'owned-word')
-            assert 'owned-word' in capsys.readouterr().out
+            with pytest.raises(StoreError, match='Refresh does not enable raw access'):
+                search.do_raw(conn, CID, 'owned-word')
             assert conn.execute('SELECT text FROM messages').fetchone()[0] == 'owned-word'
     assert legacy.read_bytes() == before
     assert set(p.name for p in legacy.parent.iterdir()) == {'convo.jsonl'}
@@ -61,28 +61,39 @@ def test_corrupt_owned_catalog_does_not_create_index(tmp_path):
     assert not Path(search.DB_PATH).exists()
 
 
-@pytest.mark.parametrize('verb', ['query', 'show', 'raw', 'plugin-index-query'])
-def test_direct_cli_refreshes_owned_source_once(tmp_path, monkeypatch, capsys, verb):
+@pytest.mark.parametrize('verb', ['query', 'show', 'raw', 'stats', 'messages'])
+def test_direct_cli_reads_snapshot_without_catalog_or_build(tmp_path, monkeypatch, capsys, verb):
     import sys
     search = engine(tmp_path)
     legacy = transcript(tmp_path / '.convos' / CID, 'legacyword')
     search.build_index()
     before = legacy.read_bytes()
+    database_before = Path(search.DB_PATH).read_bytes()
     with create(tmp_path, 'QuietHelm', agent_id=AID, backend='codex', model='fixture', thinking_level='high') as session:
         owned = transcript(session.conversation_directory(CID), 'owned-word')
         os.utime(owned, ns=(legacy.stat().st_atime_ns, legacy.stat().st_mtime_ns))
         assert owned.stat().st_size == legacy.stat().st_size
-        args = {'query': ['owned-word'], 'show': ['--show', CID],
-                'raw': ['--raw', CID, 'owned-word'],
-                'plugin-index-query': ['--index', 'owned-word']}[verb]
+        def forbidden(*args, **kwargs):
+            pytest.fail('lookup must not build or enumerate current ownership')
+        monkeypatch.setattr(search, 'catalog_paths', forbidden)
+        monkeypatch.setattr(search, 'build_index', forbidden)
+        monkeypatch.setattr(search, 'open_db', forbidden)
+        args = {'query': ['legacyword'], 'show': ['--show', CID],
+                'raw': ['--raw', CID, 'owned-word'], 'stats': ['--stats'],
+                'messages': ['legacyword', '--messages']}[verb]
         monkeypatch.setattr(sys, 'argv', ['convo_search', *args])
         capsys.readouterr()
-        search.main()
+        assert search.main() == (1 if verb == 'raw' else 0)
         output = capsys.readouterr()
-        assert 'owned-word' in output.out
-        assert 'legacyword' not in output.out
-        assert 'indexed ' not in output.out
-        assert output.err.count('indexed ') == 1
+        assert output.out.startswith('Last successful refresh UTC: ')
+        assert 'owned-word' not in output.out
+        if verb == 'raw':
+            assert 'Refresh does not enable raw access' in output.out
+        elif verb != 'stats':
+            assert 'legacyword' in output.out
+            assert 'snapshot' in output.out
+        assert not output.err
+    assert Path(search.DB_PATH).read_bytes() == database_before
     assert legacy.read_bytes() == before
     assert {p.name for p in legacy.parent.iterdir()} == {'convo.jsonl'}
 

@@ -28,6 +28,7 @@ not something a test inside that collection can observe.
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -75,7 +76,8 @@ def test_both_files_still_work_as_STANDALONE_SCRIPTS() -> None:
     for rel in CONVERTED:
         proc = subprocess.run(
             [sys.executable, rel],
-            capture_output=True, text=True, timeout=180, cwd=str(HERE.parent), check=False,
+            capture_output=True, text=True, encoding="utf-8", timeout=180,
+            env=dict(os.environ, PYTHONIOENCODING="utf-8"), cwd=str(HERE.parent), check=False,
         )
         assert proc.returncode == 0, f"{rel}:\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
         tally = [ln for ln in proc.stdout.splitlines() if "passed" in ln and "/" in ln]
