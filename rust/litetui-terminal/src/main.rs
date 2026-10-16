@@ -163,6 +163,49 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         }
         return false;
     }
+    // A held navigation key is not fresh intent to abandon a visible or
+    // disappeared chip, even if the terminal reports changed modifiers.
+    if key.code == KeyCode::Down && key.kind == KeyEventKind::Repeat && app.footer.owns_enter() {
+        return false;
+    }
+    if key.code == KeyCode::Enter && app.footer.owns_enter() {
+        if key.kind == KeyEventKind::Press && key.modifiers.is_empty() {
+            let (_, intent) = app.footer.activate();
+            app.notice = match intent {
+                Some(intent) => {
+                    format!("Not applied: {intent:?} (offline).")
+                }
+                None => "Chip disappeared; draft not submitted.".into(),
+            };
+        }
+        return false;
+    }
+    if app.footer.selected().is_some() && key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Left => {
+                app.footer.move_by(-1);
+                return false;
+            }
+            KeyCode::Right => {
+                app.footer.move_by(1);
+                return false;
+            }
+            KeyCode::Up | KeyCode::Esc | KeyCode::Down => {
+                app.footer.leave();
+                return false;
+            }
+            _ => {}
+        }
+    }
+    app.footer.leave();
+    if key.code == KeyCode::Down
+        && key.kind == KeyEventKind::Press
+        && key.modifiers.is_empty()
+        && !app.composer.is_history_browsing()
+        && app.footer.enter()
+    {
+        return false;
+    }
     composer_or_preview_key(app, key)
 }
 
@@ -270,6 +313,9 @@ fn handle_key(
         let copy = code == Some('c') && (control || event.modifiers == KeyModifiers::SUPER);
         let blocked = app.approval_open || app.themes_open || app.viewport_too_small;
         if copy {
+            if !blocked {
+                app.footer.leave();
+            }
             if blocked || app.composer.selected_text().is_empty() {
                 app.notice = "Press Ctrl+Q to quit; Ctrl+C copies selected input.".into();
             } else {
@@ -284,6 +330,7 @@ fn handle_key(
             if blocked {
                 return false;
             }
+            app.footer.leave();
             match clipboard.read_text() {
                 Ok(Some(text)) if !text.is_empty() => {
                     let inserted = app.composer.paste_clipboard(&text);
@@ -718,6 +765,206 @@ mod tests {
         assert_eq!(app.composer.selected_text(), "draft");
         assert!(clipboard.copied.is_empty());
         assert!(app.turns.is_empty());
+    }
+
+    #[test]
+    fn down_then_enter_targets_visible_footer_without_submitting_draft() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        app.insert_text("saved draft");
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        input.handle(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        input.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.turns.is_empty());
+        assert_eq!(app.composer.text(), "saved draft");
+    }
+
+    #[test]
+    fn held_down_does_not_drop_or_reenter_footer_ownership() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("draft");
+        render_footer(&mut app);
+        plain(&mut app, &mut input, KeyCode::Down);
+        input.handle(
+            &mut app,
+            KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Repeat),
+        );
+        plain(&mut app, &mut input, KeyCode::Enter);
+        assert!(app.turns.is_empty());
+        plain(&mut app, &mut input, KeyCode::Down);
+        assert_eq!(app.footer.selected(), None);
+        input.handle(
+            &mut app,
+            KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Repeat),
+        );
+        assert_eq!(app.footer.selected(), None);
+    }
+    #[test]
+    fn down_repeats_preserve_selected_and_stale_ownership_with_any_modifiers() {
+        for stale in [false, true] {
+            for modifiers in [
+                KeyModifiers::NONE,
+                KeyModifiers::SHIFT,
+                KeyModifiers::CONTROL,
+                KeyModifiers::ALT,
+            ] {
+                let mut app = Demo::default();
+                let mut input = KeyRouter::default();
+                app.insert_text("draft");
+                render_footer(&mut app);
+                plain(&mut app, &mut input, KeyCode::Down);
+                if stale {
+                    app.footer_fields.clear();
+                    render_footer(&mut app);
+                }
+                input.handle(
+                    &mut app,
+                    KeyEvent::new_with_kind(KeyCode::Down, modifiers, KeyEventKind::Repeat),
+                );
+                assert!(app.footer.owns_enter(), "stale={stale}, {modifiers:?}");
+                plain(&mut app, &mut input, KeyCode::Enter);
+                assert!(app.turns.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn modified_enter_cannot_submit_from_selected_or_stale_footer() {
+        for stale in [false, true] {
+            for modifiers in [
+                KeyModifiers::SHIFT,
+                KeyModifiers::CONTROL,
+                KeyModifiers::ALT,
+            ] {
+                let mut app = Demo::default();
+                let mut input = KeyRouter::default();
+                app.insert_text("draft");
+                render_footer(&mut app);
+                plain(&mut app, &mut input, KeyCode::Down);
+                if stale {
+                    app.footer_fields.clear();
+                    render_footer(&mut app);
+                }
+                let notice = app.notice.clone();
+                input.handle(&mut app, KeyEvent::new(KeyCode::Enter, modifiers));
+                assert_eq!(app.notice, notice);
+                assert!(app.turns.is_empty(), "stale={stale}, {modifiers:?}");
+                assert!(app.footer.owns_enter());
+            }
+        }
+    }
+
+    fn render_footer(app: &mut Demo) {
+        Terminal::new(ratatui::backend::TestBackend::new(100, 24))
+            .unwrap()
+            .draw(|frame| ui::draw(frame, app))
+            .unwrap();
+    }
+    fn plain(app: &mut Demo, input: &mut KeyRouter, code: KeyCode) {
+        input.handle(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    #[test]
+    fn footer_typing_exits_preserving_caret_then_enter_submits() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("draft");
+        plain(&mut app, &mut input, KeyCode::Left);
+        render_footer(&mut app);
+        plain(&mut app, &mut input, KeyCode::Down);
+        plain(&mut app, &mut input, KeyCode::Right);
+        assert_eq!(app.composer.before_cursor(), "draf");
+        assert_eq!(
+            app.footer.selected(),
+            Some(litetui_terminal::footer::FooterAction::Plan)
+        );
+        plain(&mut app, &mut input, KeyCode::Enter);
+        assert!(app.notice.contains("Not applied:"));
+        assert_eq!(app.footer_fields.last().unwrap().text, "plan:off");
+        plain(&mut app, &mut input, KeyCode::Char('X'));
+        assert_eq!(app.footer.selected(), None);
+        plain(&mut app, &mut input, KeyCode::Enter);
+        assert_eq!(app.turns, ["drafXt"]);
+    }
+    #[test]
+    fn history_restore_requires_another_down_to_enter_footer() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.composer.push_history("old");
+        app.insert_text("draft");
+        render_footer(&mut app);
+        plain(&mut app, &mut input, KeyCode::Up);
+        assert_eq!(app.composer.text(), "old");
+        plain(&mut app, &mut input, KeyCode::Down);
+        assert_eq!(app.composer.text(), "draft");
+        assert_eq!(app.footer.selected(), None);
+        plain(&mut app, &mut input, KeyCode::Down);
+        assert!(app.footer.selected().is_some());
+        plain(&mut app, &mut input, KeyCode::Up);
+        assert_eq!(app.composer.text(), "draft");
+        assert_eq!(app.footer.selected(), None);
+    }
+    #[test]
+    fn completion_owns_down_and_opening_it_cancels_footer_ownership() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        render_footer(&mut app);
+        plain(&mut app, &mut input, KeyCode::Down);
+        assert!(app.footer.selected().is_some());
+        app.insert_text("/pre");
+        assert_eq!(app.footer.selected(), None);
+        plain(&mut app, &mut input, KeyCode::Down);
+        assert_eq!(app.footer.selected(), None);
+        plain(&mut app, &mut input, KeyCode::Enter);
+        assert_eq!(app.turns, ["/pre"]);
+    }
+    #[test]
+    fn removed_footer_chip_consumes_enter_repeats_and_one_fresh_press() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("draft");
+        render_footer(&mut app);
+        plain(&mut app, &mut input, KeyCode::Down);
+        app.footer_fields
+            .retain(|field| field.key != litetui_terminal::footer::FieldKey::Thinking);
+        render_footer(&mut app);
+        input.handle(
+            &mut app,
+            KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Repeat),
+        );
+        assert!(app.turns.is_empty());
+        plain(&mut app, &mut input, KeyCode::Enter);
+        assert!(app.turns.is_empty());
+        assert!(app.notice.contains("disappeared"));
+        plain(&mut app, &mut input, KeyCode::Enter);
+        assert_eq!(app.turns, ["draft"]);
+    }
+    #[test]
+    fn clipboard_and_bracketed_paste_return_footer_ownership_to_draft() {
+        for bracketed in [false, true] {
+            let mut app = Demo::default();
+            let mut input = KeyRouter::default();
+            let mut clipboard = TestClipboard {
+                read: Some("new".into()),
+                ..TestClipboard::default()
+            };
+            render_footer(&mut app);
+            plain(&mut app, &mut input, KeyCode::Down);
+            if bracketed {
+                paste(&mut app, "new");
+            } else {
+                handle_key(
+                    &mut app,
+                    &mut input,
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                    &mut clipboard,
+                );
+            }
+            assert_eq!(app.footer.selected(), None);
+            plain(&mut app, &mut input, KeyCode::Enter);
+            assert_eq!(app.turns, ["new"]);
+        }
     }
 
     #[test]

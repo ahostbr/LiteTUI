@@ -23,6 +23,8 @@ pub struct Demo {
     pub selected_tool: usize,
     pub composer: crate::composer::Composer,
     pub completion: CompletionPicker,
+    pub footer: crate::footer::FooterFocus,
+    pub footer_fields: Vec<crate::footer::FooterField>,
     pub completion_candidates: Vec<Completion>,
     pub turns: Vec<String>,
     pub scroll: usize,
@@ -98,6 +100,14 @@ impl Default for Demo {
             selected_tool: 1,
             composer: crate::composer::Composer::new(500, 100),
             completion: CompletionPicker::default(),
+            footer: crate::footer::FooterFocus::default(),
+            footer_fields: {
+                use crate::footer::{FieldKey as K, FooterField as F};
+                vec![F::new(K::Percent, "12%"), F::new(K::Context, "24k/200k"),
+                     F::new(K::Seat, "no seat"), F::new(K::Conversation, "preview"),
+                     F::new(K::Model, "mock-model"), F::new(K::Thinking, "think:high"),
+                     F::new(K::Plan, "plan:off")]
+            },
             completion_candidates: [
                 ("preview-help", "Fixture command; no dispatch", CompletionKind::Command),
                 ("preview-replay", "Fixture command; no dispatch", CompletionKind::Command),
@@ -134,6 +144,7 @@ impl Demo {
     }
 
     pub fn open_themes(&mut self) {
+        self.footer.leave();
         if self.approval_open {
             return;
         }
@@ -196,6 +207,7 @@ impl Demo {
     }
 
     pub fn open_approval(&mut self) {
+        self.footer.leave();
         if !self.themes_open && self.tools[3].state == ToolState::Awaiting {
             self.approval_open = true;
             self.approval_allow = false;
@@ -235,6 +247,9 @@ impl Demo {
     pub fn sync_completion(&mut self) {
         self.completion
             .refilter(&self.completion_candidates, self.composer.text());
+        if self.completion.is_open() {
+            self.footer.leave();
+        }
     }
     pub fn accept_completion(&mut self) {
         let Some(name) = self
@@ -249,6 +264,7 @@ impl Demo {
         self.completion.dismiss();
     }
     pub fn paste_text(&mut self, text: &str) {
+        self.footer.leave();
         let before = self.composer.text().to_owned();
         self.composer.paste_bracketed(text);
         if self.composer.text() != before {

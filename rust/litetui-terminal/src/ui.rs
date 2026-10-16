@@ -339,6 +339,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     );
     app.viewport_too_small = area.width < 36 || area.height < 14;
     if app.viewport_too_small {
+        app.footer.update_visible(&[]);
         app.completion.hide();
         frame.render_widget(Paragraph::new(if app.themes_open {
             "LOCAL PREVIEW\nTHEME PICKER PAUSED\nResize to 36 x 14.\nEsc closes dialog.\nCtrl+Q exits."
@@ -550,6 +551,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .title_bottom(" F4 themes · F6 approval · Ctrl+Q ")
                 .border_style(style(t.thinking_border, t.surface)),
         );
     frame.render_widget(composer, areas[4]);
@@ -559,29 +561,38 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             areas[4].y + 1,
         ));
     }
+    let footer = crate::footer::FooterLayout::new(
+        &app.footer_fields,
+        areas[5].width.saturating_sub(1) as usize,
+    );
+    app.footer.update_visible(&footer.actions);
+    let footer_style = style(t.footer_foreground, t.footer_background);
+    let row = |row: &crate::footer::FooterRow| {
+        let mut spans = vec![Span::raw(" ")];
+        if row.overflow {
+            spans.push(Span::raw("…"));
+        }
+        for (index, field) in row.fields.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::raw(row.separator));
+            }
+            let selected = field
+                .key
+                .action()
+                .is_some_and(|action| app.footer.selected() == Some(action));
+            spans.push(Span::styled(
+                field.text.clone(),
+                if selected {
+                    footer_style.add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                } else {
+                    footer_style
+                },
+            ));
+        }
+        Line::from(spans)
+    };
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(
-                if area.width < 80 {
-                    "F4 themes · F6 approval · Ctrl+Q quit"
-                } else {
-                    "Tab tool · F2 expand · F4 themes · F6 approval · F5 replay · Ctrl+Q quit"
-                },
-                style(t.footer_foreground, t.footer_background),
-            ),
-            Line::styled(
-                if area.width < 80 {
-                    "Tab tool · F2 expand · F5 replay".to_string()
-                } else {
-                    format!(
-                        "↑↓ history · PgUp PgDn / wheel scroll · {} theme · offline fixture",
-                        t.name
-                    )
-                },
-                style(t.footer_foreground, t.footer_background),
-            ),
-        ])
-        .style(style(t.footer_foreground, t.footer_background)),
+        Paragraph::new(vec![row(&footer.status), row(&footer.permission)]).style(footer_style),
         areas[5],
     );
     if app.approval_open {

@@ -49,6 +49,9 @@ impl Composer {
             draft: String::new(),
         }
     }
+    pub fn is_history_browsing(&self) -> bool {
+        self.history_index.is_some()
+    }
     pub fn text(&self) -> &str {
         &self.text
     }
