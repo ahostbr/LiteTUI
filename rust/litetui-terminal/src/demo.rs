@@ -20,7 +20,7 @@ pub struct Tool {
 pub struct Demo {
     pub tools: Vec<Tool>,
     pub selected_tool: usize,
-    pub input: String,
+    pub composer: crate::composer::Composer,
     pub turns: Vec<String>,
     pub scroll: usize,
     pub max_scroll: usize,
@@ -93,7 +93,7 @@ impl Default for Demo {
                 },
             ],
             selected_tool: 1,
-            input: String::new(),
+            composer: crate::composer::Composer::new(500, 100),
             turns: Vec::new(),
             scroll: 0,
             max_scroll: 0,
@@ -102,7 +102,7 @@ impl Default for Demo {
             approval_open: false,
             approval_allow: false,
             ticks: 0,
-            notice: "Tab selects a tool. Ctrl+E expands it. F6 shows a mock approval.".into(),
+            notice: "Tab selects a tool. F2 expands it. F6 shows a mock approval.".into(),
         }
     }
 }
@@ -222,32 +222,20 @@ impl Demo {
     }
 
     pub fn insert_text(&mut self, text: &str) {
-        let remaining = 500usize.saturating_sub(self.input.chars().count());
-        self.input.extend(
-            text.chars()
-                .filter_map(|ch| {
-                    if ch == '\n' || ch == '\r' || ch == '\t' {
-                        Some(' ')
-                    } else if ch.is_control() {
-                        None
-                    } else {
-                        Some(ch)
-                    }
-                })
-                .take(remaining),
-        );
+        self.composer.insert(text);
     }
 
     pub fn submit(&mut self) {
-        let text = self.input.trim();
+        let text = self.composer.text().trim().to_string();
         if text.is_empty() {
             return;
         }
-        self.turns.push(text.to_string());
+        self.composer.push_history(&text);
+        self.turns.push(text);
         if self.turns.len() > 6 {
             self.turns.remove(0);
         }
-        self.input.clear();
+        self.composer.clear();
         self.scroll = usize::MAX;
         self.notice = "Local demo turn added. No model was contacted.".into();
     }

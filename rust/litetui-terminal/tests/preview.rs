@@ -97,16 +97,16 @@ fn replay_and_mock_progress_are_deterministic() {
 fn input_is_bounded_sanitized_and_only_adds_a_mock_turn() {
     let mut demo = Demo::default();
     demo.insert_text("hello 雪\u{1b}[31m\r\nworld");
-    assert!(!demo.input.contains('\u{1b}'));
-    assert!(!demo.input.contains('\r'));
-    assert!(!demo.input.contains('\n'));
+    assert!(!demo.composer.text().contains('\u{1b}'));
+    assert!(!demo.composer.text().contains('\r'));
+    assert!(!demo.composer.text().contains('\n'));
     demo.submit();
     assert_eq!(demo.turns.len(), 1);
     assert!(demo.turns[0].contains("hello 雪"));
-    assert!(demo.input.is_empty());
+    assert!(demo.composer.text().is_empty());
     for _ in 0..12 {
         demo.insert_text(&"a".repeat(800));
-        assert!(demo.input.chars().count() <= 500);
+        assert!(demo.composer.text().chars().count() <= 500);
         demo.submit();
     }
     assert!(demo.turns.len() <= 6);

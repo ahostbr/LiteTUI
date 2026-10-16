@@ -7,7 +7,11 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use litetui_terminal::{demo::Demo, ui};
+use litetui_terminal::{
+    composer::{Delete, Motion},
+    demo::Demo,
+    ui,
+};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
     io::{self, IsTerminal, stdout},
@@ -32,9 +36,47 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn key(app: &mut Demo, key: KeyEvent) -> bool {
+/// Retain ownership of a modal-closing physical key until its release or next
+/// press. Terminals without release events still recover on the next press.
+/// Only Enter, Escape and the approval letter shortcuts can enter this set.
+#[derive(Default)]
+struct KeyRouter {
+    closing_keys: std::collections::HashSet<KeyCode>,
+}
+impl KeyRouter {
+    fn handle(&mut self, app: &mut Demo, event: KeyEvent) -> bool {
+        let physical = match event.code {
+            KeyCode::Char(ch) => KeyCode::Char(ch.to_ascii_lowercase()),
+            other => other,
+        };
+        match event.kind {
+            KeyEventKind::Release => {
+                self.closing_keys.remove(&physical);
+                return false;
+            }
+            KeyEventKind::Press => {
+                self.closing_keys.remove(&physical);
+            }
+            KeyEventKind::Repeat if self.closing_keys.contains(&physical) => return false,
+            KeyEventKind::Repeat => {}
+        }
+        let modal_was_open = app.approval_open || app.themes_open;
+        let quit = key(app, event);
+        if modal_was_open && !(app.approval_open || app.themes_open) {
+            self.closing_keys.insert(physical);
+        }
+        quit
+    }
+}
+
+fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     if key.kind == KeyEventKind::Release {
         return false;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && let KeyCode::Char(ch) = key.code
+    {
+        key.code = KeyCode::Char(ch.to_ascii_lowercase());
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('q' | 'c'))
     {
@@ -52,7 +94,7 @@ fn key(app: &mut Demo, key: KeyEvent) -> bool {
             KeyCode::Esc => app.themes_open = false,
             KeyCode::Up => app.move_theme(false),
             KeyCode::Down => app.move_theme(true),
-            KeyCode::Enter => app.choose_theme(),
+            KeyCode::Enter if key.kind == KeyEventKind::Press => app.choose_theme(),
             KeyCode::Backspace => {
                 app.theme_query.pop();
                 app.theme_cursor = 0;
@@ -74,9 +116,25 @@ fn key(app: &mut Demo, key: KeyEvent) -> bool {
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
                 app.approval_allow = !app.approval_allow
             }
-            KeyCode::Enter => app.resolve_approval(app.approval_allow),
-            KeyCode::Char('a' | 'A') => app.resolve_approval(true),
-            KeyCode::Char('d' | 'D') => app.resolve_approval(false),
+            KeyCode::Enter if key.kind == KeyEventKind::Press => {
+                app.resolve_approval(app.approval_allow)
+            }
+            KeyCode::Char('a' | 'A')
+                if key.kind == KeyEventKind::Press
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                app.resolve_approval(true)
+            }
+            KeyCode::Char('d' | 'D')
+                if key.kind == KeyEventKind::Press
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                app.resolve_approval(false)
+            }
             _ => {}
         }
         return false;
@@ -88,19 +146,56 @@ fn key(app: &mut Demo, key: KeyEvent) -> bool {
         KeyCode::F(2) => app.toggle_tool(),
         KeyCode::Tab => app.next_tool(),
         KeyCode::BackTab => app.previous_tool(),
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => app.toggle_tool(),
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.move_cursor(Motion::End, false)
+        }
         KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => app.previous_tool(),
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.clear(),
-        KeyCode::Up => app.scroll_up(2),
-        KeyCode::Down => app.scroll_down(2),
+        KeyCode::Char('a')
+            if key
+                .modifiers
+                .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+        {
+            app.composer.select_all()
+        }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.move_cursor(Motion::Home, false)
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.delete(Delete::ToStart)
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.delete(Delete::ToEnd)
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.composer.delete(Delete::Right)
+        }
+        KeyCode::Left => app
+            .composer
+            .move_cursor(Motion::Left, key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::Right => app
+            .composer
+            .move_cursor(Motion::Right, key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::Up => {
+            app.composer.history_previous();
+        }
+        KeyCode::Down => {
+            app.composer.history_next();
+        }
         KeyCode::PageUp => app.scroll_up(12),
         KeyCode::PageDown => app.scroll_down(12),
-        KeyCode::Home => app.scroll = 0,
-        KeyCode::End => app.scroll = app.max_scroll,
-        KeyCode::Enter => app.submit(),
-        KeyCode::Backspace => {
-            app.input.pop();
+        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll = 0,
+        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll = app.max_scroll
         }
+        KeyCode::Home => app
+            .composer
+            .move_cursor(Motion::Home, key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::End => app
+            .composer
+            .move_cursor(Motion::End, key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::Enter if key.kind == KeyEventKind::Press => app.submit(),
+        KeyCode::Backspace => app.composer.delete(Delete::Left),
+        KeyCode::Delete => app.composer.delete(Delete::Right),
         KeyCode::Esc => {
             app.notice = "Offline preview only. F5 replays the mock conversation.".into()
         }
@@ -139,11 +234,12 @@ fn run() -> io::Result<()> {
     terminal.clear()?;
     let mut app = Demo::default();
     let mut tick_at = Instant::now();
+    let mut input = KeyRouter::default();
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(event) if key(&mut app, event) => break,
+                Event::Key(event) if input.handle(&mut app, event) => break,
                 Event::Paste(text) if !app.approval_open && !app.viewport_too_small => {
                     if app.themes_open {
                         app.search_themes(&text);
@@ -178,7 +274,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — OFFLINE VISUAL PREVIEW\n\nUsage: litetui-rs [--preview]\n\nNo Python child, model, tool execution, file persistence or fleet registration.\nTab: select tool | Ctrl+E/F2: expand | F4: themes | F6: mock approval | F5: replay\nArrows/PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — OFFLINE VISUAL PREVIEW\n\nUsage: litetui-rs [--preview]\n\nNo Python child, model, tool execution, file persistence or fleet registration.\nTab: select tool | F2: expand | F4: themes | F6: mock approval | F5: replay\nUp/Down: history | Left/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -193,11 +289,169 @@ mod tests {
     use super::*;
 
     #[test]
+    fn modal_confirmation_repeat_does_not_leak_into_the_preserved_draft() {
+        for code in [KeyCode::Enter, KeyCode::Char('a'), KeyCode::Char('d')] {
+            let mut app = Demo::default();
+            let mut input = KeyRouter::default();
+            app.insert_text("saved draft");
+            app.open_approval();
+            input.handle(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+            assert!(!app.approval_open);
+            let mut repeat = KeyEvent::new(code, KeyModifiers::NONE);
+            repeat.kind = KeyEventKind::Repeat;
+            input.handle(&mut app, repeat);
+            assert!(app.turns.is_empty());
+            assert_eq!(app.composer.text(), "saved draft");
+        }
+    }
+
+    #[test]
+    fn theme_confirmation_repeat_preserves_draft_but_new_press_submits() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("saved draft");
+        app.open_themes();
+        app.search_themes("matrix");
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        input.handle(&mut app, enter);
+        let mut repeat = enter;
+        repeat.kind = KeyEventKind::Repeat;
+        input.handle(&mut app, repeat);
+        assert_eq!(app.palette().name, "matrix");
+        assert!(!app.themes_open);
+        assert_eq!(app.composer.text(), "saved draft");
+        assert!(app.turns.is_empty());
+        input.handle(&mut app, enter);
+        assert_eq!(app.turns, ["saved draft"]);
+    }
+
+    #[test]
+    fn ordinary_repeats_work_while_modal_closing_letter_remains_suppressed() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.open_approval();
+        input.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT),
+        );
+        let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        input.handle(&mut app, x);
+        let mut repeat = x;
+        repeat.kind = KeyEventKind::Repeat;
+        input.handle(&mut app, repeat);
+        repeat.code = KeyCode::Char('a');
+        input.handle(&mut app, repeat);
+        assert_eq!(app.composer.text(), "xx");
+        repeat.code = KeyCode::Left;
+        input.handle(&mut app, repeat);
+        assert_eq!(app.composer.before_cursor(), "x");
+        let a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        input.handle(&mut app, a);
+        repeat.code = KeyCode::Char('a');
+        input.handle(&mut app, repeat);
+        assert_eq!(app.composer.text(), "xaax");
+    }
+
+    #[test]
+    fn held_key_cannot_confirm_a_newly_opened_modal_and_release_never_types() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        app.insert_text("draft");
+        app.open_approval();
+        for code in [KeyCode::Enter, KeyCode::Char('a'), KeyCode::Char('d')] {
+            let mut repeat = KeyEvent::new(code, KeyModifiers::NONE);
+            repeat.kind = KeyEventKind::Repeat;
+            input.handle(&mut app, repeat);
+            assert!(app.approval_open);
+        }
+        let a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        input.handle(&mut app, a);
+        let mut release = a;
+        release.kind = KeyEventKind::Release;
+        input.handle(&mut app, release);
+        assert_eq!(app.composer.text(), "draft");
+        input.handle(&mut app, a);
+        assert_eq!(app.composer.text(), "drafta");
+        app.open_themes();
+        let mut repeat = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        input.handle(&mut app, repeat);
+        assert!(app.themes_open);
+        assert!(app.turns.is_empty());
+    }
+
+    #[test]
+    fn shifted_control_letters_select_all_without_inserting_or_submitting() {
+        let mut app = Demo::default();
+        app.insert_text("draft 雪");
+        key(
+            &mut app,
+            KeyEvent::new(
+                KeyCode::Char('A'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+        );
+        assert_eq!(app.composer.selected_text(), "draft 雪");
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.composer.text(), "x");
+        assert!(app.turns.is_empty());
+    }
+
+    #[test]
+    fn composer_chords_cannot_resolve_a_mock_approval() {
+        let mut app = Demo::default();
+        app.insert_text("saved draft");
+        app.open_approval();
+        for (code, modifiers) in [
+            (KeyCode::Char('a'), KeyModifiers::CONTROL),
+            (
+                KeyCode::Char('A'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL),
+        ] {
+            key(&mut app, KeyEvent::new(code, modifiers));
+            assert!(app.approval_open);
+            assert_eq!(
+                app.tools[3].state,
+                litetui_terminal::demo::ToolState::Awaiting
+            );
+        }
+        assert_eq!(app.composer.text(), "saved draft");
+    }
+
+    #[test]
+    fn composer_keys_edit_and_recall_instead_of_scrolling_the_transcript() {
+        let mut app = Demo::default();
+        app.insert_text("first");
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.scroll = 4;
+        app.insert_text("draft");
+        key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "first");
+        assert_eq!(app.scroll, 4);
+        key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.composer.text(), "t");
+        key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.composer.before_cursor(), "t");
+        assert_eq!(app.turns, ["first"]);
+    }
+
+    #[test]
     fn picker_owns_keys_and_escape_does_not_apply_selection() {
-        let mut app = Demo {
-            input: "draft".into(),
-            ..Demo::default()
-        };
+        let mut app = Demo::default();
+        app.insert_text("draft");
         for code in [
             KeyCode::F(4),
             KeyCode::Char('m'),
@@ -209,7 +463,7 @@ mod tests {
         }
         assert!(app.themes_open);
         assert!(!app.approval_open);
-        assert_eq!(app.input, "draft");
+        assert_eq!(app.composer.text(), "draft");
         assert_eq!(app.theme_query, "m");
         assert_eq!(app.palette().name, "ash");
         key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -255,7 +509,7 @@ mod tests {
             &mut app,
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         );
-        assert!(app.input.is_empty());
+        assert!(app.composer.text().is_empty());
         key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(
             app.tools[3].state,

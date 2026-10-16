@@ -26,10 +26,15 @@ The binary is at `target/debug/litetui-rs.exe`. Build again after changing sourc
 | Input | Action |
 | --- | --- |
 | Tab / Shift+Tab | Select next / previous tool |
-| Ctrl+E or F2 | Expand / collapse selected tool |
+| F2 | Expand / collapse selected tool |
 | Ctrl+B | Previous tool |
-| Up / Down, PgUp / PgDn, mouse wheel | Scroll transcript |
-| Home / End | Start / end of transcript |
+| PgUp / PgDn, mouse wheel | Scroll transcript |
+| Ctrl+Home / Ctrl+End | Start / end of transcript |
+| Left / Right, Home / End | Move composer cursor |
+| Shift+Left / Right / Home / End | Select composer text |
+| Ctrl+A / Ctrl+E | Composer start / end (focused-input bindings) |
+| Ctrl+Shift+A | Select all composer text |
+| Up / Down | Recall prompt history / restore original draft |
 | F4 | Open searchable public dark-theme picker |
 | Up / Down, Enter, Escape (picker) | Select, apply in memory, cancel |
 | F6 | Open the pending mock approval |
@@ -37,10 +42,15 @@ The binary is at `target/debug/litetui-rs.exe`. Build again after changing sourc
 | Escape | Close the mock approval without deciding |
 | F5 | Reset/replay the fixture conversation |
 | Enter | Add composer text as a local mock turn |
-| Ctrl+U | Clear composer |
+| Backspace / Delete (or Ctrl+D) | Delete selected text or adjacent character |
+| Ctrl+U / Ctrl+K | Delete from cursor to start / end |
 | Ctrl+Q or Ctrl+C | Exit and restore terminal modes |
 
 Below 36 columns or 14 rows, the preview asks for a resize and suspends decision keys; a hidden approval cannot be confirmed. No full editor, mouse selection, markdown renderer, clipboard integration, backend selector, settings screen, image support or runtime transport is claimed yet.
+
+The composer edits at Unicode scalar boundaries and replaces selections on insertion. Rendering uses whole graphemes: an internal scalar caret position is displayed at the glyph's trailing edge, and horizontal scrolling preserves complete wide glyphs. A single grapheme wider than the input viewport is displayed as � until it fits again; the underlying text and scalar selection remain intact. History preserves the original draft while browsing and restores it at the end; edits of recalled entries do not change stored history. Preview-only limits are 500 characters per draft and 100 history entries, not production defaults. CR/LF/tab are converted to spaces and other controls are discarded; source paste-event parity remains unverified.
+
+Confirmation requires a key press; reported repeat events cannot confirm a modal or submit a draft. Repeats of a modal-closing letter are suppressed until release or a fresh press, while ordinary typing and cursor repeats still work. Hosts reporting repeated physical keys as fresh presses cannot provide this distinction. Word editing, OS clipboard, autocomplete, footer navigation and runtime submission remain open.
 
 ## Safety and evidence boundary
 
@@ -61,7 +71,7 @@ Tests currently cover these primitives with Rust fixtures, including raw JSONL-t
 
 ## Dependencies and Ratty target
 
-Pinned Ratatui **0.30.2**, Crossterm **0.29.0**, unicode-width **0.2.2**, serde **1.0.229**, and serde_json **1.0.151** (`arbitrary_precision` and `raw_value`); lockfile committed. Rust 1.92.0 was used to build. The package declares the dependencies' supported Rust floor (1.88), but that older compiler was not tested here.
+Pinned Ratatui **0.30.2**, Crossterm **0.29.0**, unicode-width **0.2.2**, unicode-segmentation **1.13.3**, serde **1.0.229**, and serde_json **1.0.151** (`arbitrary_precision` and `raw_value`); lockfile committed. Rust 1.92.0 was used to build. The package declares the dependencies' supported Rust floor (1.88), but that older compiler was not tested here.
 
 On 2026-10-15 the upstream Ratty `widget/Cargo.toml` identified the widget as **`ratatui-ratty` 0.4.0**, not the earlier `ratatui-rgp` name. It depends on `ratatui-core = 0.1.2` and uses Ratatui 0.30 / Crossterm 0.29 in examples. This preview resolves the same core line. That is a dependency compatibility observation, **not a tested RGP/inline-3D integration**. No Ratty/GPU dependencies are added.
 
@@ -76,4 +86,4 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo build --locked
 ```
 
-Tests cover all public palettes, picker search/navigation/input ownership, synthetic custom overrides, narrow layouts, fixture state, mock decisions, modal input isolation, input bounds/control-character filtering, scrolling, explicit dark cells, compact dialog visibility, and actual `TestBackend` resize sequences. They do not establish real-runtime or full terminal-host parity.
+Tests cover all public palettes, picker search/navigation/input ownership, synthetic custom overrides, narrow layouts, fixture state, mock decisions, modal input isolation, input bounds/control-character filtering, cursor/selection/history editing, grapheme-safe caret geometry, modal confirmation repeats, scrolling, explicit dark cells, compact dialog visibility, and actual `TestBackend` resize sequences. They do not establish real-runtime or full terminal-host parity.

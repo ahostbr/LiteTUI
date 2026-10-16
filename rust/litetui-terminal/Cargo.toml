@@ -13,6 +13,7 @@ path = "src/main.rs"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "crossterm_0_29"] }
 crossterm = "=0.29.0"
 unicode-width = "=0.2.2"
+unicode-segmentation = "=1.13.3"
 serde = "=1.0.229"
 # Keep opaque Python integer/decimal payloads exact until a typed reducer validates them.
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision", "raw_value"] }

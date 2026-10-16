@@ -391,38 +391,113 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         .style(style(t.title, t.background)),
         areas[3],
     );
-    let input_width = areas[4].width.saturating_sub(5) as usize;
-    let tail = tail(&app.input, input_width);
-    let composer = Paragraph::new(if app.input.is_empty() {
-        "Message... (preview only; Enter adds a local mock turn)"
+    let input_width = areas[4].width.saturating_sub(2).max(1) as usize;
+    use unicode_segmentation::UnicodeSegmentation;
+    // Some clusters (e.g. repeated Hangul leading jamo) exceed an entire row.
+    // Keep the logical text intact but draw one replacement cell until it fits.
+    let graphemes: Vec<_> = app
+        .composer
+        .text()
+        .grapheme_indices(true)
+        .map(|(index, text)| {
+            (
+                index,
+                text,
+                if text.width() > input_width {
+                    "�"
+                } else {
+                    text
+                },
+            )
+        })
+        .collect();
+    let cursor_byte = app.composer.before_cursor().len();
+    // Match the renderer's grapheme cell widths, not byte/scalar counts. Cursor
+    // movement remains scalar-based; terminals cannot split a drawn grapheme.
+    let cursor_cells: usize = graphemes
+        .iter()
+        .filter(|(index, _, _)| *index < cursor_byte)
+        // A scalar boundary inside a grapheme has no separate terminal cell.
+        // Snap the visual caret to its trailing edge without changing editing.
+        .map(|(_, _, display)| display.width())
+        .sum();
+    let caret_width = graphemes
+        .iter()
+        .find(|(index, _, _)| *index >= cursor_byte)
+        .map_or(1, |(_, _, display)| display.width().max(1));
+    let desired_scroll = (cursor_cells + caret_width).saturating_sub(input_width);
+    let mut input_scroll = 0;
+    for (_, _, text) in &graphemes {
+        if input_scroll >= desired_scroll {
+            break;
+        }
+        input_scroll += text.width();
+    }
+    // Round scrolling UP to a whole glyph. Paragraph rounds a partial wide
+    // glyph down; using that unadjusted offset displaced the caret and hid Z.
+    let (before, selected, _) = app.composer.selection_parts();
+    let selected_start = before.len();
+    let selected_end = selected_start + selected.len();
+    let input_line = if app.composer.text().is_empty() {
+        Line::styled(
+            "Message... (preview only; Enter adds a local mock turn)",
+            style(t.title, t.surface),
+        )
     } else {
-        &tail
-    })
-    .style(style(
-        if app.input.is_empty() {
-            t.title
-        } else {
-            t.foreground
-        },
-        t.surface,
-    ))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(style(t.thinking_border, t.surface)),
-    );
+        Line::from(
+            graphemes
+                .into_iter()
+                .map(|(index, text, display)| {
+                    if !selected.is_empty()
+                        && index < selected_end
+                        && index + text.len() > selected_start
+                    {
+                        Span::styled(
+                            display,
+                            style(t.title, t.panel)
+                                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                        )
+                    } else {
+                        Span::raw(display)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    let composer = Paragraph::new(input_line)
+        .style(style(t.foreground, t.surface))
+        .scroll((0, input_scroll as u16))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(style(t.thinking_border, t.surface)),
+        );
     frame.render_widget(composer, areas[4]);
     if !app.approval_open && !app.themes_open {
-        frame.set_cursor_position((areas[4].x + 1 + tail.width() as u16, areas[4].y + 1));
+        frame.set_cursor_position((
+            areas[4].x + 1 + (cursor_cells - input_scroll) as u16,
+            areas[4].y + 1,
+        ));
     }
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
-                if area.width < 80 { "F4 themes · F6 approval · Ctrl+Q quit" } else { "Tab tool · Ctrl+E/F2 expand · F4 themes · F6 approval · F5 replay · Ctrl+Q quit" },
+                if area.width < 80 {
+                    "F4 themes · F6 approval · Ctrl+Q quit"
+                } else {
+                    "Tab tool · F2 expand · F4 themes · F6 approval · F5 replay · Ctrl+Q quit"
+                },
                 style(t.footer_foreground, t.footer_background),
             ),
             Line::styled(
-                if area.width < 80 { "Tab tool · F2 expand · F5 replay".to_string() } else { format!("↑↓ / PgUp PgDn / wheel scroll · {} theme · offline fixture", t.name) },
+                if area.width < 80 {
+                    "Tab tool · F2 expand · F5 replay".to_string()
+                } else {
+                    format!(
+                        "↑↓ history · PgUp PgDn / wheel scroll · {} theme · offline fixture",
+                        t.name
+                    )
+                },
                 style(t.footer_foreground, t.footer_background),
             ),
         ])
