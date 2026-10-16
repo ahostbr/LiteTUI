@@ -2,15 +2,21 @@
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
-## Interactive checkpoint — current status
+## Runtime footer checkpoint — current status
+
+Validated native `ready`/`usage`/`turn_start`/`turn_end` facts now feed the existing two-row footer: model, conversation prefix, optional thinking level, context counts/confirmed percent and optional settled token rate. Ready context length is only a labelled ceiling; absent usage maximum clears any old confirmed denominator. Zero measured usage is valid; missing usage is not fabricated zero. Claude turn-start clears settled throughput; generic turn-start retains the previous rate, matching the two source paths. Metadata is bounded and escaped. Opaque updates preserve parser invariants; malformed state fails before Ready admits work or Complete claims success. Closing a live view removes stale controls and rejects later observations. No invented authority glyph, seat, plan, output-token count or preference state.
+
+Verification: **210 ordinary Rust tests + 10 controlled-process tests**, fmt/Clippy/build, renderer assertions and invalid-state process failure tests. Real Claude smoke (`output/tasks/t-80d844f0b563461ba1cd1e2cb989e367.log`) received `think:low`, conversation `0ace45af`, and context `6,267 / 200,000` after two remembered-ORANGE prompts; cleanup `Ok(())`. These are real wire/readmodel plus automated render checks, not desktop hands-on acceptance. Footer actions, dynamic ordering/preferences, context severity colours and remaining facts are still open.
+
+## Interactive checkpoint
 
 The existing composer and themed transcript now connect to one owned real Python child for serialized multi-turn native chat. Real Claude retained ORANGE across two prompts and exited cleanly (`output/tasks/t-af329ae5909646e59918061f69e447f8.log`). The UI uses the existing assistant geometry, editing/history/clipboard/theme/scroll behavior without fixture messages or mock tool actions. ACK is not completion; unique command IDs cannot match a previous turn's ACK. Busy Enter preserves the draft. Ctrl+Q and terminal I/O errors wait for process-tree cleanup; view and cleanup failures remain distinct.
 
 Launch: `& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-chat.ps1'` (or double-click `open-chat.cmd`). Fresh isolated data/settings, Claude Sonnet, no local models, tools/MCP off. The one-prompt `open-live.ps1` and offline `open-preview.cmd` remain separate modes.
 
-This is **text-chat progress, not 100% parity**. Native tool/approval/reasoning views, real usage/footer controls, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
+This is **text-chat progress, not 100% parity**. Native tool/approval/reasoning views, footer actions/preferences and remaining facts, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
 
-**Hands-on / desktop acceptance is still pending.** Ryan was gaming during the attempted desktop check; no clicks/keys were sent. Sentinel instructed no more screenshots/visible windows until he returns. The idle visual-test runtime was stopped by exact owned PID; this forced stop is not graceful-quit evidence. Continue hidden/automated development only in the meantime. Harness-home isolation is still a known gap even with isolated application data.
+**Hands-on / desktop acceptance is still pending.** Ryan was gaming during the attempted desktop check; no clicks/keys were sent. Ryan subsequently clarified that visible test windows are allowed; no desktop clicks/keys or focus-stealing while he plays. This supersedes the earlier temporary no-windows restriction. The idle visual-test runtime was stopped by exact owned PID; this forced stop is not graceful-quit evidence. Harness-home isolation is still a known gap even with isolated application data.
 
 Historical checkpoint sections below preserve what was true at those milestones; they do not override this current status.
 

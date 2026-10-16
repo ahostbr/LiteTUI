@@ -93,6 +93,7 @@ impl Options {
 /// or an admission receipt. The prompt ACK alone never completes this state.
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    State(crate::runtime_state::Update),
     Ready,
     Text(String),
     Snapshot(String),
@@ -549,6 +550,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     .map_err(|e| io::Error::other(format!("{e:?}")))?;
                 let event = value.expect("complete nonblank frame");
                 let observation = turn.accept(&event, &options.backend, &options.model)?;
+                // Validate facts before Ready can admit work or Complete can
+                // claim success. Never derive them from launch preferences.
+                if let Some(update) = crate::runtime_state::Update::from_event(&event)? {
+                    frontend.observe(Observation::State(update))?;
+                }
                 if !turn.closing
                     && matches!(observation, Observation::Ready | Observation::Complete)
                 {
@@ -611,6 +617,7 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
+            Observation::State(_) => {} // Read-only footer facts; no one-shot action.
             Observation::Ready => {
                 let prompt = self
                     .prompt

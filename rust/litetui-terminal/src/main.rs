@@ -472,11 +472,8 @@ fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
         loop {
             for observation in runtime.events.try_iter() {
                 if let Err(error) = app.observe_live(observation) {
-                    view_failure = Some(error.to_string());
-                    app.live
-                        .as_mut()
-                        .expect("live")
-                        .finish(view_failure.clone());
+                    view_failure.get_or_insert_with(|| error.to_string());
+                    app.finish_live(view_failure.clone());
                     quitting = true;
                     let _ = runtime.quit();
                     break;
@@ -495,8 +492,7 @@ fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
                     let failure = view_failure
                         .clone()
                         .or_else(|| result.as_ref().err().map(ToString::to_string));
-                    app.live.as_mut().expect("live").finish(failure);
-                    app.notice = app.live.as_ref().expect("live").notice.clone();
+                    app.finish_live(failure);
                 }
             }
             if quitting && let Some(result) = result.take() {
@@ -536,11 +532,7 @@ fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
                 && let Err(error) = runtime.submit(prompt)
             {
                 view_failure = Some(error.to_string());
-                app.live
-                    .as_mut()
-                    .expect("live")
-                    .finish(view_failure.clone());
-                app.notice = app.live.as_ref().expect("live").notice.clone();
+                app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
             }
         }

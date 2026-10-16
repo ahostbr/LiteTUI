@@ -42,9 +42,26 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
     let mut answers = Vec::new();
     let mut answer = String::new();
     let mut failure = None;
+    let mut state = litetui_terminal::runtime_state::State::default();
+    let mut saw_ready_facts = false;
+    let mut saw_usage = false;
     while answers.len() < 2 && Instant::now() < deadline {
         match runtime.events.recv_timeout(Duration::from_secs(1)) {
+            Ok(Observation::State(update)) => {
+                println!("[state] {update:?}");
+                state.apply(update);
+                let fields = state.footer_fields();
+                println!("[footer] {fields:?}");
+                saw_ready_facts |= fields.iter().any(|f| {
+                    f.key == litetui_terminal::footer::FieldKey::Model
+                        && f.text == "claude-sonnet-5-5"
+                });
+                saw_usage |= fields.iter().any(|f| {
+                    f.key == litetui_terminal::footer::FieldKey::Context && !f.text.contains('—')
+                });
+            }
             Ok(Observation::Ready) => {
+                assert!(saw_ready_facts, "validated facts precede Ready");
                 println!("Ready; submit turn 1");
                 runtime.submit("Remember the word ORANGE for this conversation. Reply with exactly ORANGE. Do not use tools.".into()).unwrap();
             }
@@ -83,6 +100,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
     cleanup.unwrap();
     assert!(failure.is_none(), "{failure:?}");
     assert_eq!(answers.len(), 2);
+    assert!(saw_usage, "expected real context usage facts");
     assert!(
         answers
             .iter()

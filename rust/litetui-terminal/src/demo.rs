@@ -148,16 +148,21 @@ impl Demo {
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
         self.notice = chat.notice.clone();
-        if chat.ready {
-            self.footer_fields = vec![crate::footer::FooterField::new(
-                crate::footer::FieldKey::Model,
-                &chat.model,
-            )];
-        }
+        self.footer_fields = if chat.ready {
+            chat.runtime_state.footer_fields()
+        } else {
+            Vec::new()
+        };
         if following {
             self.scroll = usize::MAX;
         }
         Ok(())
+    }
+    pub fn finish_live(&mut self, failure: Option<String>) {
+        let chat = self.live.as_mut().expect("live view");
+        chat.finish(failure);
+        self.notice = chat.notice.clone();
+        self.footer_fields.clear();
     }
     pub fn palette(&self) -> &crate::theme::Theme {
         &self.themes[self.theme_index]

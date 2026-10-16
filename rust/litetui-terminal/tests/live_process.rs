@@ -17,6 +17,9 @@ mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')
 def emit(value):
     print(json.dumps(value), flush=True)
 ready = dict(type='ready', protocol_version=1, launch_status='ready', backend='claude', model='claude-sonnet-5-5')
+ready.update(conversation_id='controlled-conversation', thinking_level='low', context_length=200000)
+if mode == 'bad_ready_state':
+    ready['context_length'] = True
 if mode == 'blocked':
     ready['launch_status'] = 'blocked'
     print('fixture stderr retained', file=sys.stderr, flush=True)
@@ -38,7 +41,8 @@ for line in sys.stdin:
     if mode == 'timeout':
         continue
     emit(dict(type='text_delta',text=('x'*1048576 if mode == 'bigtext' else 'Hello')))
-    emit(dict(type='turn_end',stopReason='stop',error=None))
+    emit(dict(type='usage',usage=dict(context_tokens=4000,max_context_tokens=(0 if mode == 'bad_usage_state' else 8000))))
+    emit(dict(type='turn_end',stopReason='stop',error=None,tps=(-1 if mode == 'bad_rate_state' else 12.3)))
     if mode == 'truncated':
         sys.stdout.write('{"type":'); sys.stdout.flush(); break
     if mode.startswith('unknown'):
@@ -145,6 +149,27 @@ fn runtime_timeout_is_not_completion_and_shutdown_is_sent() {
     );
 }
 #[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn malformed_runtime_facts_fail_before_admission_or_completion() {
+    for (mode, diagnostic) in [
+        ("bad_ready_state", "context_length"),
+        ("bad_usage_state", "denominator"),
+        ("bad_rate_state", "tps"),
+    ] {
+        let (mut command, root) = setup(mode);
+        let result = command.output().unwrap();
+        assert!(!result.status.success(), "{mode}");
+        assert!(String::from_utf8_lossy(&result.stderr).contains(diagnostic));
+        let output = String::from_utf8_lossy(&result.stdout);
+        assert!(!output.contains("Turn ended: stop"));
+        if mode == "bad_ready_state" {
+            assert!(!output.contains("Ready. Prompt:"));
+            let commands = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+            assert!(!commands.contains("rust-live-prompt"));
+        }
+    }
+}
+#[test]
 #[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON; ~22 seconds"]
 fn nonreading_child_does_not_block_prompt_or_cleanup_deadline() {
     let (mut command, _) = setup("no_read");
@@ -221,11 +246,25 @@ fn interactive_worker_keeps_one_child_for_two_unique_prompt_commands() {
     let mut runtime = Interactive::start(options);
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut completed = 0;
+    let mut state = litetui_terminal::runtime_state::State::default();
     while completed < 2 {
         assert!(Instant::now() < deadline);
         match runtime.events.recv_timeout(Duration::from_secs(5)).unwrap() {
-            Observation::Ready => runtime.submit("first".into()).unwrap(),
+            Observation::State(update) => state.apply(update),
+            Observation::Ready => {
+                assert!(
+                    state
+                        .footer_fields()
+                        .iter()
+                        .any(|f| f.text == "ctx — / 200,000 max")
+                );
+                runtime.submit("first".into()).unwrap();
+            }
             Observation::Complete => {
+                let fields = state.footer_fields();
+                for text in ["50%", "ctx 4,000 / 8,000", "12.3 tok/s"] {
+                    assert!(fields.iter().any(|f| f.text == text), "{text}");
+                }
                 completed += 1;
                 if completed == 1 {
                     runtime.submit("second".into()).unwrap();

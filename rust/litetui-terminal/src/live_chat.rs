@@ -48,6 +48,7 @@ pub struct Chat {
     pub closed: bool,
     pub quitting: bool,
     pub notice: String,
+    pub runtime_state: crate::runtime_state::State,
     pending: Option<String>,
     retained_bytes: usize,
     retained_units: usize,
@@ -63,6 +64,7 @@ impl Chat {
             closed: false,
             quitting: false,
             notice: "Connecting real owned Python runtime…".into(),
+            runtime_state: crate::runtime_state::State::default(),
             pending: None,
             retained_bytes: 0,
             retained_units: 0,
@@ -110,8 +112,12 @@ impl Chat {
         self.pending.take()
     }
     pub fn observe(&mut self, observation: Observation) -> io::Result<()> {
+        if self.closed {
+            return Err(io::Error::other("Observation after live view closed"));
+        }
         let replace = matches!(&observation, Observation::Snapshot(_));
         match observation {
+            Observation::State(update) => self.runtime_state.apply(update),
             Observation::Ready => {
                 self.ready = true;
                 self.notice = "Connected. Enter sends; Ctrl+Q quits. Tools are disabled.".into();
