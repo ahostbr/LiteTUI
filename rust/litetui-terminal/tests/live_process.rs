@@ -40,6 +40,8 @@ for line in sys.stdin:
     emit(dict(type='turn_start',model='claude-sonnet-5-5'))
     if mode == 'timeout':
         continue
+    emit(dict(type='reasoning_delta',text='wrong prefix',reconcile='append'))
+    emit(dict(type='reasoning_delta',text='correct trace',reconcile='replace'))
     emit(dict(type='text_delta',text=('x'*1048576 if mode == 'bigtext' else 'Hello')))
     emit(dict(type='usage',usage=dict(context_tokens=4000,max_context_tokens=(0 if mode == 'bad_usage_state' else 8000))))
     emit(dict(type='turn_end',stopReason='stop',error=None,tps=(-1 if mode == 'bad_rate_state' else 12.3)))
@@ -246,31 +248,36 @@ fn interactive_worker_keeps_one_child_for_two_unique_prompt_commands() {
     let mut runtime = Interactive::start(options);
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut completed = 0;
-    let mut state = litetui_terminal::runtime_state::State::default();
+    let mut chat =
+        litetui_terminal::live_chat::Chat::new("claude".into(), "claude-sonnet-5-5".into());
     while completed < 2 {
         assert!(Instant::now() < deadline);
-        match runtime.events.recv_timeout(Duration::from_secs(5)).unwrap() {
-            Observation::State(update) => state.apply(update),
-            Observation::Ready => {
-                assert!(
-                    state
-                        .footer_fields()
-                        .iter()
-                        .any(|f| f.text == "ctx — / 200,000 max")
-                );
-                runtime.submit("first".into()).unwrap();
+        let observation = runtime.events.recv_timeout(Duration::from_secs(5)).unwrap();
+        let ready = matches!(observation, Observation::Ready);
+        let complete = matches!(observation, Observation::Complete);
+        chat.observe(observation).unwrap();
+        if ready {
+            assert!(
+                chat.runtime_state
+                    .footer_fields()
+                    .iter()
+                    .any(|f| f.text == "ctx — / 200,000 max")
+            );
+            chat.submit("first").unwrap();
+            runtime.submit(chat.take_submission().unwrap()).unwrap();
+        }
+        if complete {
+            let fields = chat.runtime_state.footer_fields();
+            for text in ["50%", "ctx 4,000 / 8,000", "12.3 tok/s"] {
+                assert!(fields.iter().any(|f| f.text == text), "{text}");
             }
-            Observation::Complete => {
-                let fields = state.footer_fields();
-                for text in ["50%", "ctx 4,000 / 8,000", "12.3 tok/s"] {
-                    assert!(fields.iter().any(|f| f.text == text), "{text}");
-                }
-                completed += 1;
-                if completed == 1 {
-                    runtime.submit("second".into()).unwrap();
-                }
+            assert_eq!(chat.rows.last().unwrap().reasoning, "correct trace");
+            assert_eq!(chat.rows.last().unwrap().answer, "Hello");
+            completed += 1;
+            if completed == 1 {
+                chat.submit("second").unwrap();
+                runtime.submit(chat.take_submission().unwrap()).unwrap();
             }
-            _ => {}
         }
     }
     runtime.quit().unwrap();

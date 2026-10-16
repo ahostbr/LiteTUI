@@ -705,7 +705,11 @@ async def stream_turn(app):
                     snapshot = event.kind == "thinking" and event.reconcile == "replace"
                     stale = snapshot and thinking_text and event.text != thinking_text
                     thinking_text = event.text if snapshot else thinking_text + event.text
-                    app._rpc_emit({"type": "reasoning_delta", "text": event.text})
+                    # The native snapshot can replace a divergent prefix. Keep
+                    # that distinction on the wire as well as in ThinkingBlock;
+                    # append-only hosts otherwise display the trace twice.
+                    app._rpc_emit({"type": "reasoning_delta", "text": event.text,
+                                   "reconcile": "replace" if snapshot else "append"})
                     if stale and thinking is not None:
                         # ThinkingBlock only appends (widgets.py:454) and owns
                         # no setter, so the authoritative trace is rebuilt into

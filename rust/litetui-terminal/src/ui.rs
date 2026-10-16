@@ -500,7 +500,11 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 t,
                 &mut lines,
                 &format!("Assistant · {}", display_safe(&chat.model)),
-                &[],
+                &if row.reasoning.is_empty() {
+                    Vec::new()
+                } else {
+                    vec!["▾ Thinking".to_owned(), display_safe(&row.reasoning)]
+                },
                 &display_safe(&row.answer),
                 state,
                 width,

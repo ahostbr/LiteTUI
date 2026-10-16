@@ -224,6 +224,12 @@ The explicit positive `tool_calls` limit is aggregate across rows and is not rel
 
 Tool rendering shares the demo's unbordered body geometry and semantic theme colors, escaping controls/bidi at display time. Tools are grouped after each aggregate assistant row with a visible nonchronological label. No arguments, timings, approval or task-completion state is invented. There is no interactive projected-tool controller, runtime connection or live visual acceptance in this increment.
 
+### Native live reasoning reconciliation (subsequent live increment)
+
+The live serialized Claude path is separate from the generic identified-stream projection described above. Claude `reasoning_delta` now carries additive `reconcile: "append" | "replace"`, reflecting the same `thinking` snapshot distinction used by Python's ThinkingBlock. The raw event type/text remain available to existing consumers; clients must interpret the new field to repair divergent prefixes. This is not a new execution ID, pairing receipt or authority grant. Rust requires explicit reconciliation on native Claude traces; old ambiguous Claude emitters fail visibly. Generic non-Claude deltas without the field retain append semantics. Present malformed modes are refused.
+
+Accepted reasoning is confined to an active started turn. It never makes an answer visible for the completion gate. Reasoning and answers share emitted-content limits; snapshots do not refund emitted work. Retained snapshots replace only the trace, preserving the answer and refunding only the prior trace's retained bytes/display units. Bounds are checked before mutation. Empty snapshots clear the trace; late/closed observations cannot revive it. Rendering uses existing thinking-card geometry and terminal-control escaping without invented timing/token metadata. Tools, approvals and GUI reconciliation are not enabled by this addition.
+
 ### Bounded raw ingress foundation
 
 `transport::Inbound` is a single-generation, synchronous borrowed-byte FIFO before JSON decoding. Caller-supplied positive limits cover per-frame bytes excluding LF (including CR), queued frame count, and aggregate queued original bytes including LF. Partial-frame content has its own per-frame bound. Complete frames are moved, not reserialized; popping transfers ownership and releases the queue charge. Limits are logical retained bytes/counts, not exact heap/capacity or consumer-retained-frame bounds. No production defaults are selected.

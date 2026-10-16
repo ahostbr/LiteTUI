@@ -86,6 +86,8 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                         .unwrap();
                 }
             }
+            Ok(Observation::Reasoning(text)) => println!("[reasoning] {text}"),
+            Ok(Observation::ReasoningSnapshot(text)) => println!("[reasoning replacement] {text}"),
             Ok(Observation::Information(info)) => println!("[runtime] {info}"),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => {

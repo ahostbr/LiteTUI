@@ -36,8 +36,10 @@ pub enum ReplyState {
 pub struct Row {
     pub prompt: String,
     pub answer: String,
+    pub reasoning: String,
     pub state: ReplyState,
     answer_units: usize,
+    reasoning_units: usize,
 }
 pub struct Chat {
     pub backend: String,
@@ -101,8 +103,10 @@ impl Chat {
         self.rows.push(Row {
             prompt: prompt.into(),
             answer: String::new(),
+            reasoning: String::new(),
             state: ReplyState::Sending,
             answer_units: 0,
+            reasoning_units: 0,
         });
         self.busy = true;
         self.notice = "Sending prompt (not yet admitted)…".into();
@@ -115,48 +119,68 @@ impl Chat {
         if self.closed {
             return Err(io::Error::other("Observation after live view closed"));
         }
-        let replace = matches!(&observation, Observation::Snapshot(_));
+        let replace = matches!(
+            &observation,
+            Observation::Snapshot(_) | Observation::ReasoningSnapshot(_)
+        );
+        let reasoning = matches!(
+            &observation,
+            Observation::Reasoning(_) | Observation::ReasoningSnapshot(_)
+        );
         match observation {
             Observation::State(update) => self.runtime_state.apply(update),
             Observation::Ready => {
                 self.ready = true;
                 self.notice = "Connected. Enter sends; Ctrl+Q quits. Tools are disabled.".into();
             }
-            Observation::Text(text) | Observation::Snapshot(text) => {
+            Observation::Text(text)
+            | Observation::Snapshot(text)
+            | Observation::Reasoning(text)
+            | Observation::ReasoningSnapshot(text) => {
                 let units = display_units(&text)?;
                 let row = self
                     .rows
                     .last_mut()
                     .filter(|row| matches!(row.state, ReplyState::Sending | ReplyState::Streaming))
-                    .ok_or_else(|| io::Error::other("Text without a pending live row"))?;
+                    .ok_or_else(|| io::Error::other("Content without a pending live row"))?;
+                let (content, content_units) = if reasoning {
+                    (&mut row.reasoning, &mut row.reasoning_units)
+                } else {
+                    (&mut row.answer, &mut row.answer_units)
+                };
                 let retained = self
                     .retained_bytes
-                    .saturating_sub(if replace { row.answer.len() } else { 0 })
+                    .saturating_sub(if replace { content.len() } else { 0 })
                     .saturating_add(text.len());
                 if retained > 8 * 1024 * 1024 {
                     return Err(io::Error::other("Live transcript text limit exceeded"));
                 }
                 let retained_units = self
                     .retained_units
-                    .saturating_sub(if replace { row.answer_units } else { 0 })
+                    .saturating_sub(if replace { *content_units } else { 0 })
                     .saturating_add(units);
                 if retained_units > DISPLAY_UNITS {
                     return Err(io::Error::other("Live display-line/work limit exceeded"));
                 }
                 self.retained_units = retained_units;
-                row.answer_units = if replace {
+                *content_units = if replace {
                     units
                 } else {
-                    row.answer_units.saturating_add(units)
+                    content_units.saturating_add(units)
                 };
                 self.retained_bytes = retained;
                 if replace {
-                    row.answer = text;
+                    *content = text;
                 } else {
-                    row.answer.push_str(&text);
+                    content.push_str(&text);
                 }
                 row.state = ReplyState::Streaming;
-                self.notice = "Receiving real model reply…".into();
+                self.notice = if reasoning {
+                    "Receiving reported reasoning…"
+                } else {
+                    "Receiving real model reply…"
+                }
+                .into();
             }
             Observation::Information(info) => {
                 self.notice = info;

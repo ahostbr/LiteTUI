@@ -97,6 +97,8 @@ pub enum Observation {
     Ready,
     Text(String),
     Snapshot(String),
+    Reasoning(String),
+    ReasoningSnapshot(String),
     Information(String),
     Complete,
 }
@@ -111,7 +113,7 @@ pub struct Turn {
     started: bool,
     acknowledged: bool,
     complete: bool,
-    answer_bytes: usize,
+    content_bytes: usize,
 }
 impl Turn {
     /// Reserve a new command ID exactly once. Neither a write nor admission.
@@ -140,7 +142,7 @@ impl Turn {
         self.acknowledged = false;
         self.complete = false;
         self.visible_answer = false;
-        self.answer_bytes = 0;
+        self.content_bytes = 0;
         Ok(json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":"strict"}))
     }
     pub fn accept(&mut self, event: &Value, backend: &str, model: &str) -> io::Result<Observation> {
@@ -199,23 +201,44 @@ impl Turn {
                 self.started = true;
                 Ok(Observation::Information("turn started".into()))
             }
-            "text_delta" | "native_text_snapshot" if self.started && !self.complete => {
+            "text_delta" | "native_text_snapshot" | "reasoning_delta"
+                if self.started && !self.complete =>
+            {
+                let reasoning = kind == "reasoning_delta";
+                let replace = if reasoning {
+                    match event.get("reconcile").and_then(Value::as_str) {
+                        Some("append") => false,
+                        Some("replace") => true,
+                        None if backend != "claude" && event.get("reconcile").is_none() => false,
+                        _ => {
+                            return Err(fail(
+                                "Reasoning needs explicit append/replace reconciliation for native Claude",
+                            ));
+                        }
+                    }
+                } else {
+                    kind == "native_text_snapshot"
+                };
                 let text = text()?.to_owned();
-                // Bound aggregate emitted text, including replacements; do not retain history.
-                self.answer_bytes = self
-                    .answer_bytes
+                // Answer and reasoning share the aggregate emitted-text budget,
+                // including replacements. A trace is never an answer receipt.
+                self.content_bytes = self
+                    .content_bytes
                     .checked_add(text.len())
                     .filter(|size| *size <= 4 * FRAME_BYTES)
-                    .ok_or_else(|| fail("Live answer budget exceeded"))?;
-                self.visible_answer = if kind == "text_delta" {
-                    self.visible_answer || !text.is_empty()
-                } else {
-                    !text.is_empty()
-                };
-                Ok(if kind == "text_delta" {
-                    Observation::Text(text)
-                } else {
-                    Observation::Snapshot(text)
+                    .ok_or_else(|| fail("Live content budget exceeded"))?;
+                if !reasoning {
+                    self.visible_answer = if replace {
+                        !text.is_empty()
+                    } else {
+                        self.visible_answer || !text.is_empty()
+                    };
+                }
+                Ok(match (reasoning, replace) {
+                    (true, true) => Observation::ReasoningSnapshot(text),
+                    (true, false) => Observation::Reasoning(text),
+                    (false, true) => Observation::Snapshot(text),
+                    (false, false) => Observation::Text(text),
                 })
             }
             "turn_end" if self.started && !self.complete => {
@@ -238,9 +261,7 @@ impl Turn {
             }
             // These source-defined observations have no authority in this frontend.
             // Print their kind, rather than silently discarding unsupported state.
-            "usage" | "native_usage" | "native_event" | "reasoning_delta" => {
-                Ok(Observation::Information(kind.into()))
-            }
+            "usage" | "native_usage" | "native_event" => Ok(Observation::Information(kind.into())),
             // No tool/UI/native-activity implementation is claimed by this slice.
             _ => Err(fail(&format!(
                 "Unsupported or out-of-order live event: {kind}"
@@ -627,6 +648,14 @@ impl Frontend for OneShot {
                 self.next = Some(Input::Prompt(prompt));
             }
             Observation::Text(text) => write!(self.output, "{}", terminal_text(&text))?,
+            Observation::Reasoning(text) => {
+                writeln!(self.output, "\n[Thinking] {}", terminal_text(&text))?
+            }
+            Observation::ReasoningSnapshot(text) => writeln!(
+                self.output,
+                "\n[Thinking snapshot replaces current trace]\n{}",
+                terminal_text(&text)
+            )?,
             Observation::Snapshot(text) => writeln!(
                 self.output,
                 "\n[Answer snapshot replaces current answer]\n{}",

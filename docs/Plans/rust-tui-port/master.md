@@ -2,7 +2,13 @@
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
-## Runtime footer checkpoint — current status
+## Native reasoning checkpoint — current status
+
+The live runtime now projects reasoning into the shared source-shaped dashed thinking card. Claude's producer previously emitted divergent authoritative snapshots as indistinguishable `reasoning_delta` text. It now adds `reconcile: append|replace`; Rust requires that distinction for Claude and fails visibly on older ambiguous traces. Generic non-Claude unannotated deltas keep append semantics. A reasoning-only turn cannot satisfy the answer/completion gate. Traces share answer wire/retained byte/display-work limits, including replacement accounting and escaping. No synthetic elapsed time or token counts. Fold controls, preferences and timing remain open.
+
+Affected Python tests: **110 passed**, including source snapshot behavior and existing execution-origin/event-identity contracts. Ruff and focused mypy clean. Rust renderer and controlled-process tests cover actual replacement delivery, no duplicated prefix, separate answer content, lifecycle errors and shared budgets. Real Claude math smoke `output/tasks/t-4af3d61556b04f149298327239cbb2ee.log` emitted empty reasoning deltas and an empty replacement, then answered and completed whole-job shutdown successfully. Live compatibility is observed; **nonempty reasoning rendering is controlled-test evidence, not real-provider/desktop acceptance**. Tools/MCP remain disabled; no approval behavior changed.
+
+## Runtime footer checkpoint
 
 Validated native `ready`/`usage`/`turn_start`/`turn_end` facts now feed the existing two-row footer: model, conversation prefix, optional thinking level, context counts/confirmed percent and optional settled token rate. Ready context length is only a labelled ceiling; absent usage maximum clears any old confirmed denominator. Zero measured usage is valid; missing usage is not fabricated zero. Claude turn-start clears settled throughput; generic turn-start retains the previous rate, matching the two source paths. Metadata is bounded and escaped. Opaque updates preserve parser invariants; malformed state fails before Ready admits work or Complete claims success. Closing a live view removes stale controls and rejects later observations. No invented authority glyph, seat, plan, output-token count or preference state.
 
@@ -14,7 +20,7 @@ The existing composer and themed transcript now connect to one owned real Python
 
 Launch: `& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-chat.ps1'` (or double-click `open-chat.cmd`). Fresh isolated data/settings, Claude Sonnet, no local models, tools/MCP off. The one-prompt `open-live.ps1` and offline `open-preview.cmd` remain separate modes.
 
-This is **text-chat progress, not 100% parity**. Native tool/approval/reasoning views, footer actions/preferences and remaining facts, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
+This is **text-chat progress, not 100% parity**. Native tool/approval views and remaining thinking controls, footer actions/preferences and remaining facts, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
 
 **Hands-on / desktop acceptance is still pending.** Ryan was gaming during the attempted desktop check; no clicks/keys were sent. Ryan subsequently clarified that visible test windows are allowed; no desktop clicks/keys or focus-stealing while he plays. This supersedes the earlier temporary no-windows restriction. The idle visual-test runtime was stopped by exact owned PID; this forced stop is not graceful-quit evidence. Harness-home isolation is still a known gap even with isolated application data.
 

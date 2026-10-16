@@ -369,6 +369,10 @@ async def test_a_diverged_thinking_snapshot_rebuilds_instead_of_duplicating(tmp_
     live = [block for block in FakeThinking.instances if not block.removed]
     assert len(live) == 1
     assert live[0].text == "Let me check the file."
+    reasoning = [event for event in app.emitted if event.get("type") == "reasoning_delta"]
+    assert [(event["text"], event.get("reconcile")) for event in reasoning] == [
+        ("Let me ", "append"), ("Let me check the file.", "replace"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -386,6 +390,10 @@ async def test_a_continuing_thinking_snapshot_appends_only_its_tail(tmp_path, mo
     live = [block for block in FakeThinking.instances if not block.removed]
     assert len(live) == 1
     assert live[0].text == "Let me check."
+    reasoning = [event for event in app.emitted if event.get("type") == "reasoning_delta"]
+    assert [(event["text"], event.get("reconcile")) for event in reasoning] == [
+        ("Let me ", "append"), ("check.", "append"),
+    ]
 
 
 @pytest.mark.asyncio
