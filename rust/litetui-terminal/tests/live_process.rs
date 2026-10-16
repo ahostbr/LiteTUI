@@ -13,7 +13,7 @@ const FIXTURE: &str = r#"
 import json, os, subprocess, sys, time
 from pathlib import Path
 root = Path(os.environ['LITETUI_DATA_ROOT'])
-mode = os.environ['RUST_LIVE_FIXTURE']
+mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')
 def emit(value):
     print(json.dumps(value), flush=True)
 ready = dict(type='ready', protocol_version=1, launch_status='ready', backend='claude', model='claude-sonnet-5-5')
@@ -203,5 +203,91 @@ fn stalled_terminal_does_not_block_child_cleanup_or_deadline() {
             panic!("blocked terminal prevented deadline");
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn interactive_worker_keeps_one_child_for_two_unique_prompt_commands() {
+    use litetui_terminal::live::{Interactive, Observation, Options};
+    let (command, root) = setup("success");
+    let args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let mut options = Options::parse(&args).unwrap();
+    options.prompt.clear();
+    let mut runtime = Interactive::start(options);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut completed = 0;
+    while completed < 2 {
+        assert!(Instant::now() < deadline);
+        match runtime.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Observation::Ready => runtime.submit("first".into()).unwrap(),
+            Observation::Complete => {
+                completed += 1;
+                if completed == 1 {
+                    runtime.submit("second".into()).unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
+    runtime.quit().unwrap();
+    runtime.shutdown().unwrap();
+    let commands = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    let commands: Vec<serde_json::Value> = commands
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(commands.len(), 3);
+    assert_ne!(commands[0]["id"], commands[1]["id"]);
+    assert_eq!(commands[2]["type"], "shutdown");
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON; ~20 seconds"]
+fn ui_failure_always_waits_cleanup_and_preserves_both_failures() {
+    use litetui_terminal::live::{Interactive, Observation, Options};
+    for mode in ["timeout", "grandchild"] {
+        let (command, root) = setup(mode);
+        let source = root.parent().unwrap().join("source/src/litetui/cli.py");
+        let script = fs::read_to_string(&source).unwrap().replace(
+            "mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')",
+            &format!("mode = '{mode}'"),
+        );
+        fs::write(source, script).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .skip(1)
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let options = Options::parse(&args).unwrap();
+        let runtime = Interactive::start(options);
+        let result = runtime.with_cleanup(|runtime| {
+            loop {
+                match runtime.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    Observation::Ready => runtime.submit("test".into()).unwrap(),
+                    Observation::Information(info) if info == "turn started" => {
+                        return Err(std::io::Error::other("injected draw failure"));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("injected draw failure"));
+        if mode == "timeout" {
+            assert_eq!(error, "injected draw failure");
+        } else {
+            assert!(error.contains("runtime cleanup"));
+            assert!(error.contains("forced termination"));
+        }
+        assert!(
+            fs::read_to_string(root.join("commands.jsonl"))
+                .unwrap()
+                .contains("shutdown")
+        );
     }
 }

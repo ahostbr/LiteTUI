@@ -5,6 +5,7 @@ pub mod composer;
 pub mod demo;
 pub mod footer;
 pub mod live;
+pub mod live_chat;
 mod live_process;
 pub mod protocol;
 pub mod session;

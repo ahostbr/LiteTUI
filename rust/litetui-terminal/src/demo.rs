@@ -19,6 +19,7 @@ pub struct Tool {
 }
 
 pub struct Demo {
+    pub live: Option<crate::live_chat::Chat>,
     pub tools: Vec<Tool>,
     pub selected_tool: usize,
     pub composer: crate::composer::Composer,
@@ -50,6 +51,7 @@ impl Default for Demo {
             .position(|theme| theme.name == "ash")
             .unwrap_or(0);
         Self {
+            live: None,
             themes,
             theme_index,
             themes_open: false,
@@ -129,6 +131,34 @@ impl Default for Demo {
 }
 
 impl Demo {
+    pub fn live(backend: String, model: String) -> Self {
+        let mut app = Self::default();
+        app.tools.clear();
+        app.selected_tool = 0;
+        app.completion_candidates.clear();
+        app.footer_fields.clear();
+        app.composer = crate::composer::Composer::new(16384, 100);
+        let chat = crate::live_chat::Chat::new(backend, model);
+        app.notice = chat.notice.clone();
+        app.live = Some(chat);
+        app
+    }
+    pub fn observe_live(&mut self, observation: crate::live::Observation) -> std::io::Result<()> {
+        let following = self.scroll >= self.max_scroll;
+        let chat = self.live.as_mut().expect("live view");
+        chat.observe(observation)?;
+        self.notice = chat.notice.clone();
+        if chat.ready {
+            self.footer_fields = vec![crate::footer::FooterField::new(
+                crate::footer::FieldKey::Model,
+                &chat.model,
+            )];
+        }
+        if following {
+            self.scroll = usize::MAX;
+        }
+        Ok(())
+    }
     pub fn palette(&self) -> &crate::theme::Theme {
         &self.themes[self.theme_index]
     }
@@ -179,21 +209,30 @@ impl Demo {
         if let Some(&index) = matches.get(self.theme_cursor.min(matches.len().saturating_sub(1))) {
             self.theme_index = index;
             self.themes_open = false;
-            self.notice = format!("Theme: {} · preview only, not saved", self.palette().name);
+            self.notice = format!("Theme: {} · local only, not saved", self.palette().name);
         }
     }
 
     pub fn next_tool(&mut self) {
+        if self.tools.is_empty() {
+            return;
+        }
         self.selected_tool = (self.selected_tool + 1) % self.tools.len();
         self.follow_selection = true;
     }
 
     pub fn previous_tool(&mut self) {
+        if self.tools.is_empty() {
+            return;
+        }
         self.selected_tool = (self.selected_tool + self.tools.len() - 1) % self.tools.len();
         self.follow_selection = true;
     }
 
     pub fn toggle_tool(&mut self) {
+        if self.tools.is_empty() {
+            return;
+        }
         self.tools[self.selected_tool].expanded = !self.tools[self.selected_tool].expanded;
         self.follow_selection = true;
     }
@@ -207,6 +246,10 @@ impl Demo {
     }
 
     pub fn open_approval(&mut self) {
+        if self.live.is_some() {
+            self.notice = "Tools are disabled; live approval UI is not wired yet.".into();
+            return;
+        }
         self.footer.leave();
         if !self.themes_open && self.tools[3].state == ToolState::Awaiting {
             self.approval_open = true;
@@ -237,6 +280,9 @@ impl Demo {
     }
 
     pub fn tick(&mut self, steps: u64) {
+        if self.live.is_some() {
+            return;
+        }
         self.ticks = self.ticks.saturating_add(steps);
         if self.ticks >= 80 && self.tools[2].state == ToolState::Running {
             self.tools[2].state = ToolState::Success;
@@ -280,8 +326,23 @@ impl Demo {
     }
 
     pub fn submit(&mut self) {
-        let text = self.composer.text().trim().to_string();
-        if text.is_empty() {
+        let text = if self.live.is_some() {
+            self.composer.text().to_string()
+        } else {
+            self.composer.text().trim().to_string()
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Some(chat) = &mut self.live {
+            if let Err(error) = chat.submit(&text) {
+                self.notice = error.to_string();
+                return;
+            }
+            self.notice = chat.notice.clone();
+            self.composer.push_history(&text);
+            self.composer.clear();
+            self.scroll = usize::MAX;
             return;
         }
         self.composer.push_history(&text);
@@ -296,6 +357,10 @@ impl Demo {
     }
 
     pub fn reset(&mut self) {
+        if self.live.is_some() {
+            self.notice = "Live runtime restart is not wired; Ctrl+Q exits cleanly.".into();
+            return;
+        }
         let themes = std::mem::take(&mut self.themes);
         let theme_index = self.theme_index;
         *self = Self {

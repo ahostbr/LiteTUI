@@ -1,4 +1,4 @@
-//! First live vertical path: ONE owned Python child and ONE legacy RPC prompt.
+//! Owned Python legacy RPC runtime for one-shot and interactive frontends.
 //! Deliberately not GUI reconciliation or the generic identified-stream reducer.
 //! No automatic retries, backend fallback, approvals or local model launches.
 use crate::{
@@ -63,7 +63,7 @@ impl Options {
         let data_root = required("--data-root")?.into();
         let backend = required("--backend")?;
         let model = required("--model")?;
-        let prompt = required("--prompt")?;
+        let prompt = fields.remove("--prompt").unwrap_or_default();
         let seconds: u64 = fields
             .remove("--timeout")
             .unwrap_or_else(|| "180".into())
@@ -101,13 +101,47 @@ pub enum Observation {
 }
 #[derive(Default)]
 pub struct Turn {
+    ready: bool,
     sent: bool,
+    closing: bool,
+    sequence: u64,
+    command_id: String,
+    visible_answer: bool,
     started: bool,
     acknowledged: bool,
     complete: bool,
     answer_bytes: usize,
 }
 impl Turn {
+    /// Reserve a new command ID exactly once. Neither a write nor admission.
+    pub fn submit(&mut self, prompt: &str) -> io::Result<Value> {
+        if !self.ready
+            || self.closing
+            || (self.sent && !self.complete)
+            || prompt.trim().is_empty()
+            || prompt.len() > 65536
+        {
+            return Err(io::Error::other(
+                "Runtime is not idle, or prompt is empty/too large",
+            ));
+        }
+        self.command_id = if self.sequence == 0 {
+            PROMPT_ID.into()
+        } else {
+            format!("{PROMPT_ID}-{}", self.sequence)
+        };
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Command ID exhausted"))?;
+        self.sent = true;
+        self.started = false;
+        self.acknowledged = false;
+        self.complete = false;
+        self.visible_answer = false;
+        self.answer_bytes = 0;
+        Ok(json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":"strict"}))
+    }
     pub fn accept(&mut self, event: &Value, backend: &str, model: &str) -> io::Result<Observation> {
         let fail = |message: &str| io::Error::other(message.to_owned());
         let kind = event
@@ -122,7 +156,7 @@ impl Turn {
         };
         match kind {
             "ready" => {
-                if self.sent
+                if self.ready
                     || event["protocol_version"] != 1
                     || event["launch_status"] != "ready"
                     || event["backend"] != backend
@@ -130,11 +164,11 @@ impl Turn {
                 {
                     return Err(fail(&format!("Unexpected/blocked runtime ready: {event}")));
                 }
-                self.sent = true; // no retries, even if the subsequent write fails
+                self.ready = true;
                 Ok(Observation::Ready)
             }
             "response"
-                if self.complete
+                if self.closing
                     && event["id"] == SHUTDOWN_ID
                     && event["ok"] == true
                     && event["result"]["ok"] == true =>
@@ -142,7 +176,7 @@ impl Turn {
                 Ok(Observation::Information("shutdown acknowledged".into()))
             }
             "response" => {
-                if event["id"] != PROMPT_ID
+                if event["id"] != self.command_id
                     || !self.sent
                     || self.acknowledged
                     || event["ok"] != true
@@ -172,6 +206,11 @@ impl Turn {
                     .checked_add(text.len())
                     .filter(|size| *size <= 4 * FRAME_BYTES)
                     .ok_or_else(|| fail("Live answer budget exceeded"))?;
+                self.visible_answer = if kind == "text_delta" {
+                    self.visible_answer || !text.is_empty()
+                } else {
+                    !text.is_empty()
+                };
                 Ok(if kind == "text_delta" {
                     Observation::Text(text)
                 } else {
@@ -179,8 +218,13 @@ impl Turn {
                 })
             }
             "turn_end" if self.started && !self.complete => {
+                if self.closing && event["stopReason"] != "stop" {
+                    return Ok(Observation::Information(
+                        "turn interrupted while quitting; not completed".into(),
+                    ));
+                }
                 if !self.acknowledged
-                    || self.answer_bytes == 0
+                    || !self.visible_answer
                     || event["stopReason"] != "stop"
                     || event.get("error").is_some_and(|v| !v.is_null() && v != "")
                 {
@@ -354,7 +398,7 @@ fn reader(mut input: impl Read + Send + 'static, stdout: bool, tx: mpsc::SyncSen
     });
 }
 
-pub fn run(options: Options) -> io::Result<()> {
+fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let source = options.source.canonicalize()?;
     if !source.join("src/litetui/cli.py").is_file()
         || !options.python.is_file()
@@ -441,22 +485,34 @@ pub fn run(options: Options) -> io::Result<()> {
         JsonlDecoder::new(FRAME_BYTES).map_err(|e| io::Error::other(format!("{e:?}")))?;
     let mut turn = Turn::default();
     let mut tail = Vec::new();
-    let mut output = Output::new();
-    writeln!(
-        output,
-        "LiteTUI Rust LIVE — one prompt, legacy RPC, tools disabled\nBackend: {} / {}\nData: {}",
-        terminal_text(&options.backend),
-        terminal_text(&options.model),
-        terminal_text(&root.to_string_lossy())
-    )?;
-    output.flush()?;
-    let mut deadline = Instant::now() + options.timeout;
+    let mut deadline = Some(Instant::now() + options.timeout);
     let result = (|| -> io::Result<()> {
         loop {
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(io::Error::other("Live deadline elapsed; no prompt retry"));
             }
-            let chunk = match rx.recv_timeout(Duration::from_millis(100)) {
+            if !turn.closing
+                && let Some(command) = frontend.command()?
+            {
+                match command {
+                    Input::Prompt(prompt) => {
+                        let value = turn.submit(&prompt)?;
+                        owned
+                            .stdin
+                            .as_ref()
+                            .expect("owned stdin")
+                            .try_send(value)
+                            .map_err(io::Error::other)?;
+                        deadline = Some(Instant::now() + options.timeout);
+                    }
+                    Input::Quit => {
+                        turn.closing = true;
+                        deadline = Some(Instant::now() + Duration::from_secs(20));
+                        owned.request_shutdown()?;
+                    }
+                }
+            }
+            let chunk = match rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(chunk) => chunk,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(error) => return Err(io::Error::other(error)),
@@ -478,12 +534,10 @@ pub fn run(options: Options) -> io::Result<()> {
                     decoder
                         .finish()
                         .map_err(|e| io::Error::other(format!("{e:?}")))?;
-                    return if turn.complete {
+                    return if turn.closing {
                         Ok(())
                     } else {
-                        Err(io::Error::other(
-                            "Runtime stdout closed before successful turn_end",
-                        ))
+                        Err(io::Error::other("Runtime stdout closed unexpectedly"))
                     };
                 }
                 Pipe::Error(error) => return Err(error),
@@ -494,38 +548,21 @@ pub fn run(options: Options) -> io::Result<()> {
                     .push(&frame, |v| value = Some(v))
                     .map_err(|e| io::Error::other(format!("{e:?}")))?;
                 let event = value.expect("complete nonblank frame");
-                match turn.accept(&event, &options.backend, &options.model)? {
-                    Observation::Ready => {
-                        // A faulted chunk must never grant new work, even if its
-                        // accepted prefix contains ready. No retransmission.
-                        if ingress_result.is_err() {
-                            return Err(io::Error::other("Ingress failed before prompt admission"));
-                        }
-                        writeln!(output, "Ready. Prompt: {}", terminal_text(&options.prompt))?;
-                        owned.stdin.as_ref().expect("owned stdin").try_send(json!({"type":"prompt","id":PROMPT_ID,"message":options.prompt,"tool_profile":"strict"})).map_err(io::Error::other)?;
-                    }
-                    Observation::Text(text) => write!(output, "{}", terminal_text(&text))?,
-                    Observation::Snapshot(text) => writeln!(
-                        output,
-                        "\n[Answer snapshot replaces current answer]\n{}",
-                        terminal_text(&text)
-                    )?,
-                    Observation::Information(kind) => {
-                        writeln!(output, "\n[Runtime: {}]", terminal_text(&kind))?
-                    }
-                    Observation::Complete => {
-                        owned.request_shutdown()?;
-                        deadline = Instant::now() + Duration::from_secs(20);
-                        writeln!(output, "\n[Turn ended: stop]")?;
-                    }
+                let observation = turn.accept(&event, &options.backend, &options.model)?;
+                if !turn.closing
+                    && matches!(observation, Observation::Ready | Observation::Complete)
+                {
+                    deadline = None;
                 }
-                output.flush()?;
+                frontend.observe(observation)?;
             }
+            // Never admit another command after a fault, including when an
+            // accepted prefix contains Ready or Complete. Drain prefix first.
             ingress_result.map_err(|e| io::Error::other(format!("{e:?}")))?;
         }
     })();
-    // Continue draining while the runtime shuts down; otherwise a full pipe can
-    // block the very cleanup we are waiting for. Preserve bounded stderr tail.
+    // Failure cleanup still drains both pipes to avoid deadlocking shutdown.
+    // Success reaches here only after clean, fully validated stdout EOF.
     let (tail_tx, tail_rx) = mpsc::channel();
     thread::spawn(move || {
         while let Ok(chunk) = rx.recv() {
@@ -539,8 +576,6 @@ pub fn run(options: Options) -> io::Result<()> {
         let _ = tail_tx.send(tail);
     });
     let cleanup = owned.close();
-    // Never indefinitely join a reader held by a surviving provider; report
-    // unresolved pipe ownership instead of claiming successful cleanup.
     let tail = tail_rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|error| {
@@ -549,16 +584,185 @@ pub fn run(options: Options) -> io::Result<()> {
             ))
         })?;
     match (result, cleanup) {
-        (Ok(()), Ok(())) => {
-            writeln!(
-                output,
-                "[Python child and contained process tree exited successfully]"
-            )?;
-            output.finish()
-        }
+        (Ok(()), Ok(())) => Ok(()),
         (result, cleanup) => Err(io::Error::other(format!(
             "live={result:?}; cleanup={cleanup:?}\n{}",
             terminal_text(&String::from_utf8_lossy(&tail))
         ))),
+    }
+}
+
+pub enum Input {
+    Prompt(String),
+    Quit,
+}
+trait Frontend {
+    fn command(&mut self) -> io::Result<Option<Input>>;
+    fn observe(&mut self, observation: Observation) -> io::Result<()>;
+}
+struct OneShot {
+    output: Output,
+    prompt: Option<String>,
+    next: Option<Input>,
+}
+impl Frontend for OneShot {
+    fn command(&mut self) -> io::Result<Option<Input>> {
+        Ok(self.next.take())
+    }
+    fn observe(&mut self, observation: Observation) -> io::Result<()> {
+        match observation {
+            Observation::Ready => {
+                let prompt = self
+                    .prompt
+                    .take()
+                    .ok_or_else(|| io::Error::other("Repeated ready"))?;
+                writeln!(self.output, "Ready. Prompt: {}", terminal_text(&prompt))?;
+                self.next = Some(Input::Prompt(prompt));
+            }
+            Observation::Text(text) => write!(self.output, "{}", terminal_text(&text))?,
+            Observation::Snapshot(text) => writeln!(
+                self.output,
+                "\n[Answer snapshot replaces current answer]\n{}",
+                terminal_text(&text)
+            )?,
+            Observation::Information(kind) => {
+                writeln!(self.output, "\n[Runtime: {}]", terminal_text(&kind))?
+            }
+            Observation::Complete => {
+                writeln!(self.output, "\n[Turn ended: stop]")?;
+                self.next = Some(Input::Quit);
+            }
+        }
+        Ok(())
+    }
+}
+pub fn run(options: Options) -> io::Result<()> {
+    if options.prompt.trim().is_empty() {
+        return Err(io::Error::other("--live requires --prompt"));
+    }
+    let mut frontend = OneShot {
+        output: Output::new(),
+        prompt: Some(options.prompt.clone()),
+        next: None,
+    };
+    writeln!(
+        frontend.output,
+        "LiteTUI Rust LIVE — one prompt, legacy RPC, tools disabled\nBackend: {} / {}\nData: {}",
+        terminal_text(&options.backend),
+        terminal_text(&options.model),
+        terminal_text(&options.data_root.to_string_lossy())
+    )?;
+    drive(options, &mut frontend)?;
+    writeln!(
+        frontend.output,
+        "[Python child and contained process tree exited successfully]"
+    )?;
+    frontend.output.finish()
+}
+
+/// UI owns the receivers, worker owns the real child. Queues are bounded and
+/// nonblocking; saturation fails visibly rather than dropping stream deltas.
+pub struct Interactive {
+    commands: mpsc::SyncSender<Input>,
+    pub events: mpsc::Receiver<Observation>,
+    done: mpsc::Receiver<io::Result<()>>,
+    finished: Option<Result<(), String>>,
+}
+struct Bridge {
+    commands: mpsc::Receiver<Input>,
+    events: mpsc::SyncSender<Observation>,
+}
+impl Frontend for Bridge {
+    fn command(&mut self) -> io::Result<Option<Input>> {
+        match self.commands.try_recv() {
+            Ok(input) => Ok(Some(input)),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => Ok(Some(Input::Quit)),
+        }
+    }
+    fn observe(&mut self, observation: Observation) -> io::Result<()> {
+        self.events.try_send(observation).map_err(io::Error::other)
+    }
+}
+impl Interactive {
+    pub fn start(options: Options) -> Self {
+        let (commands, input) = mpsc::sync_channel(2);
+        let (events, output) = mpsc::sync_channel(64);
+        let (finished, done) = mpsc::channel();
+        thread::spawn(move || {
+            let mut frontend = Bridge {
+                commands: input,
+                events,
+            };
+            let result = drive(options, &mut frontend);
+            let _ = finished.send(result);
+        });
+        Self {
+            commands,
+            events: output,
+            done,
+            finished: None,
+        }
+    }
+    /// Cache cleanup outcome so UI polling cannot consume ownership evidence.
+    pub fn poll_done(&mut self) -> Option<io::Result<()>> {
+        if self.finished.is_none() {
+            self.finished = match self.done.try_recv() {
+                Ok(result) => Some(result.map_err(|error| error.to_string())),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Runtime worker exited without a cleanup result".into()))
+                }
+            };
+        }
+        self.finished
+            .clone()
+            .map(|result| result.map_err(io::Error::other))
+    }
+    /// Close even after draw/input failure; keep draining to avoid blocking the
+    /// worker's bounded observation queue while awaiting whole-job cleanup.
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        if let Some(result) = self.poll_done() {
+            return result;
+        }
+        let _ = self.quit();
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            for _ in self.events.try_iter() {}
+            if let Some(result) = self.poll_done() {
+                return result;
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::other(
+                    "Runtime cleanup result timed out; cleanup unproven",
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    /// Unconditional epilogue for the terminal frontend, including fallible
+    /// draw/poll/read paths. Preserve both UI and cleanup errors.
+    pub fn with_cleanup(
+        mut self,
+        operation: impl FnOnce(&mut Self) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let result = operation(&mut self);
+        let cleanup = self.shutdown();
+        match (result, cleanup) {
+            (Ok(()), result) | (result, Ok(())) => result,
+            (Err(ui), Err(cleanup)) => Err(io::Error::other(format!(
+                "UI failure: {ui}; runtime cleanup: {cleanup}"
+            ))),
+        }
+    }
+    pub fn submit(&self, prompt: String) -> io::Result<()> {
+        self.commands
+            .try_send(Input::Prompt(prompt))
+            .map_err(io::Error::other)
+    }
+    pub fn quit(&self) -> io::Result<()> {
+        self.commands
+            .try_send(Input::Quit)
+            .map_err(io::Error::other)
     }
 }

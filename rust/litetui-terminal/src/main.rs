@@ -173,7 +173,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             let (_, intent) = app.footer.activate();
             app.notice = match intent {
                 Some(intent) => {
-                    format!("Not applied: {intent:?} (offline).")
+                    format!("Not applied: {intent:?} (runtime controls not wired).")
                 }
                 None => "Chip disappeared; draft not submitted.".into(),
             };
@@ -284,7 +284,11 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         KeyCode::Backspace => app.composer.delete(Delete::Left),
         KeyCode::Delete => app.composer.delete(Delete::Right),
         KeyCode::Esc => {
-            app.notice = "Offline preview only. F5 replays the mock conversation.".into()
+            app.notice = if app.live.is_some() {
+                "Live runtime; Ctrl+Q exits cleanly.".into()
+            } else {
+                "Offline preview only. F5 replays the mock conversation.".into()
+            }
         }
         KeyCode::Char(ch)
             if !key
@@ -431,8 +435,123 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
+fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(io::Error::other(
+            "--interactive requires a real terminal; --live supports redirected pipes",
+        ));
+    }
+    if !options.prompt.is_empty() {
+        return Err(io::Error::other(
+            "--interactive takes prompts from the composer, not --prompt",
+        ));
+    }
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore();
+        previous_hook(info);
+    }));
+    let _guard = TerminalGuard;
+    enable_raw_mode()?;
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    terminal.clear()?;
+    let mut app = Demo::live(options.backend.clone(), options.model.clone());
+    let runtime = litetui_terminal::live::Interactive::start(options);
+    runtime.with_cleanup(|runtime| {
+        let mut input = KeyRouter::default();
+        let mut clipboard = litetui_terminal::clipboard::SystemClipboard::new(1024 * 1024);
+        let mut result: Option<io::Result<()>> = None;
+        let mut quitting = false;
+        let mut view_failure: Option<String> = None;
+        loop {
+            for observation in runtime.events.try_iter() {
+                if let Err(error) = app.observe_live(observation) {
+                    view_failure = Some(error.to_string());
+                    app.live
+                        .as_mut()
+                        .expect("live")
+                        .finish(view_failure.clone());
+                    quitting = true;
+                    let _ = runtime.quit();
+                    break;
+                }
+            }
+            if result.is_none() {
+                result = runtime.poll_done();
+                if let Some(result) = &result {
+                    // done is sent after the last observation. Drain that accepted
+                    // prefix before finalizing the view, even when channels race.
+                    for observation in runtime.events.try_iter() {
+                        if let Err(error) = app.observe_live(observation) {
+                            view_failure.get_or_insert_with(|| error.to_string());
+                        }
+                    }
+                    let failure = view_failure
+                        .clone()
+                        .or_else(|| result.as_ref().err().map(ToString::to_string));
+                    app.live.as_mut().expect("live").finish(failure);
+                    app.notice = app.live.as_ref().expect("live").notice.clone();
+                }
+            }
+            if quitting && let Some(result) = result.take() {
+                return if let Some(error) = view_failure {
+                    Err(io::Error::other(error))
+                } else {
+                    result
+                };
+            }
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+            if event::poll(Duration::from_millis(50))? {
+                let quit = match event::read()? {
+                    Event::Key(event) => handle_key(&mut app, &mut input, event, &mut clipboard),
+                    Event::Paste(text) => {
+                        paste(&mut app, &text);
+                        false
+                    }
+                    Event::Mouse(event) => {
+                        mouse(&mut app, event);
+                        false
+                    }
+                    _ => false,
+                };
+                if quit && !quitting {
+                    quitting = true;
+                    if result.is_none() {
+                        app.live.as_mut().expect("live").begin_quit();
+                        app.notice = app.live.as_ref().expect("live").notice.clone();
+                        // A disconnected worker will report through done above.
+                        if let Err(error) = runtime.quit() {
+                            app.notice = error.to_string();
+                        }
+                    }
+                }
+            }
+            if let Some(prompt) = app.live.as_mut().expect("live").take_submission()
+                && let Err(error) = runtime.submit(prompt)
+            {
+                view_failure = Some(error.to_string());
+                app.live
+                    .as_mut()
+                    .expect("live")
+                    .finish(view_failure.clone());
+                app.notice = app.live.as_ref().expect("live").notice.clone();
+                let _ = runtime.quit();
+            }
+        }
+    })
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--interactive") {
+        return run_interactive(litetui_terminal::live::Options::parse(&args[1..])?);
+    }
     if args.first().is_some_and(|arg| arg == "--live") {
         return litetui_terminal::live::run(litetui_terminal::live::Options::parse(&args[1..])?);
     }
@@ -441,7 +560,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>]\n\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; tools disabled.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; tools disabled.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; tools disabled.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -1253,6 +1372,23 @@ mod tests {
         let mut app = Demo::default();
         app.open_approval();
         assert!(key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
+    }
+    #[test]
+    fn live_quit_remains_available_after_dense_layout_and_with_modal_open() {
+        let mut app = Demo::live("claude".into(), "model".into());
+        app.observe_live(litetui_terminal::live::Observation::Ready)
+            .unwrap();
+        app.insert_text("question");
+        app.submit();
+        app.observe_live(litetui_terminal::live::Observation::Text("\n".repeat(1000)))
+            .unwrap();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(36, 14)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        app.open_themes();
+        assert!(KeyRouter::default().handle(
             &mut app,
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
         ));

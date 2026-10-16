@@ -1,0 +1,92 @@
+#![cfg(windows)]
+//! Explicitly opt-in real-provider smoke; never part of ordinary/fixture tests.
+use litetui_terminal::live::{Interactive, Observation, Options};
+use std::{
+    io::Write,
+    path::PathBuf,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+#[test]
+#[ignore = "PAID Claude smoke; requires LITETUI_REAL_CLAUDE_SMOKE=YES and LITETUI_TEST_PYTHON"]
+fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
+    assert_eq!(
+        std::env::var("LITETUI_REAL_CLAUDE_SMOKE").as_deref(),
+        Ok("YES"),
+        "explicit real-provider opt-in required"
+    );
+    let python = PathBuf::from(std::env::var_os("LITETUI_TEST_PYTHON").expect("explicit Python"));
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let root = PathBuf::from("C:/Projects/.scratch/T0565").join(format!(
+        "interactive-smoke-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    println!("Real Claude multi-turn data: {}", root.display());
+    let mut runtime = Interactive::start(Options {
+        python,
+        source,
+        data_root: root,
+        backend: "claude".into(),
+        model: "claude-sonnet-5-5".into(),
+        prompt: String::new(),
+        timeout: Duration::from_secs(90),
+    });
+    let deadline = Instant::now() + Duration::from_secs(150);
+    let mut answers = Vec::new();
+    let mut answer = String::new();
+    let mut failure = None;
+    while answers.len() < 2 && Instant::now() < deadline {
+        match runtime.events.recv_timeout(Duration::from_secs(1)) {
+            Ok(Observation::Ready) => {
+                println!("Ready; submit turn 1");
+                runtime.submit("Remember the word ORANGE for this conversation. Reply with exactly ORANGE. Do not use tools.".into()).unwrap();
+            }
+            Ok(Observation::Text(text)) => {
+                print!("{text}");
+                std::io::stdout().flush().unwrap();
+                answer.push_str(&text);
+            }
+            Ok(Observation::Snapshot(text)) => {
+                println!("[replacement] {text}");
+                answer = text;
+            }
+            Ok(Observation::Complete) => {
+                println!("\nTurn {} completed", answers.len() + 1);
+                answers.push(std::mem::take(&mut answer));
+                if answers.len() == 1 {
+                    runtime
+                        .submit(
+                            "Reply with only the word I asked you to remember. Do not use tools."
+                                .into(),
+                        )
+                        .unwrap();
+                }
+            }
+            Ok(Observation::Information(info)) => println!("[runtime] {info}"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(error) => {
+                failure = Some(error.to_string());
+                break;
+            }
+        }
+    }
+    let _ = runtime.quit();
+    let cleanup = runtime.shutdown();
+    println!("Cleanup: {cleanup:?}");
+    cleanup.unwrap();
+    assert!(failure.is_none(), "{failure:?}");
+    assert_eq!(answers.len(), 2);
+    assert!(
+        answers
+            .iter()
+            .all(|answer| answer.to_ascii_uppercase().contains("ORANGE")),
+        "{answers:?}"
+    );
+}

@@ -10,6 +10,7 @@ fn accept(turn: &mut Turn, value: serde_json::Value) -> std::io::Result<Observat
 fn started() -> Turn {
     let mut turn = Turn::default();
     assert_eq!(accept(&mut turn, ready()).unwrap(), Observation::Ready);
+    turn.submit("Hello").unwrap();
     accept(
         &mut turn,
         json!({"type":"response","id":"rust-live-prompt","ok":true,"result":{"turn":"accepted"}}),

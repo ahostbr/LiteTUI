@@ -1,6 +1,18 @@
 # LiteTUI Rust terminal port
 
-**T0565 · Tier 2 / High · P0 CLOSED · P1 first live one-prompt path VERIFIED; interactive multi-turn next**
+**T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
+
+## Interactive checkpoint — current status
+
+The existing composer and themed transcript now connect to one owned real Python child for serialized multi-turn native chat. Real Claude retained ORANGE across two prompts and exited cleanly (`output/tasks/t-af329ae5909646e59918061f69e447f8.log`). The UI uses the existing assistant geometry, editing/history/clipboard/theme/scroll behavior without fixture messages or mock tool actions. ACK is not completion; unique command IDs cannot match a previous turn's ACK. Busy Enter preserves the draft. Ctrl+Q and terminal I/O errors wait for process-tree cleanup; view and cleanup failures remain distinct.
+
+Launch: `& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-chat.ps1'` (or double-click `open-chat.cmd`). Fresh isolated data/settings, Claude Sonnet, no local models, tools/MCP off. The one-prompt `open-live.ps1` and offline `open-preview.cmd` remain separate modes.
+
+This is **text-chat progress, not 100% parity**. Native tool/approval/reasoning views, real usage/footer controls, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
+
+**Hands-on / desktop acceptance is still pending.** Ryan was gaming during the attempted desktop check; no clicks/keys were sent. Sentinel instructed no more screenshots/visible windows until he returns. The idle visual-test runtime was stopped by exact owned PID; this forced stop is not graceful-quit evidence. Continue hidden/automated development only in the meantime. Harness-home isolation is still a known gap even with isolated application data.
+
+Historical checkpoint sections below preserve what was true at those milestones; they do not override this current status.
 
 ## First live checkpoint — not full parity
 

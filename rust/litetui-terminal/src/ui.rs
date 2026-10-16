@@ -477,6 +477,37 @@ fn observed_tool(
 
 fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) {
     let t = app.palette();
+    if let Some(chat) = &app.live {
+        let mut lines = Vec::new();
+        for row in &chat.rows {
+            for text in wrap(
+                &format!("You: {}", display_safe(&row.prompt)),
+                width.saturating_sub(4),
+            ) {
+                lines.push(Line::styled(
+                    format!("  {text}"),
+                    style(t.foreground, t.background),
+                ));
+            }
+            lines.push(Line::raw(""));
+            let state = match row.state {
+                crate::live_chat::ReplyState::Sending => "Sending · not yet completed",
+                crate::live_chat::ReplyState::Streaming => "Streaming",
+                crate::live_chat::ReplyState::Complete => "Completed · stop",
+                crate::live_chat::ReplyState::Incomplete => "Incomplete · runtime closed or failed",
+            };
+            assistant_card(
+                t,
+                &mut lines,
+                &format!("Assistant · {}", display_safe(&chat.model)),
+                &[],
+                &display_safe(&row.answer),
+                state,
+                width,
+            );
+        }
+        return (lines, (0, 0));
+    }
     let mut lines = vec![
         Line::styled(
             "  ▸ You · Show me the tool calls and their results.",
@@ -556,7 +587,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     if app.viewport_too_small {
         app.footer.update_visible(&[]);
         app.completion.hide();
-        frame.render_widget(Paragraph::new(if app.themes_open {
+        frame.render_widget(Paragraph::new(if app.live.is_some() { "LIVE RUNTIME\nResize to 36 x 14.\nCtrl+Q exits cleanly.\nTools are disabled." } else if app.themes_open {
             "LOCAL PREVIEW\nTHEME PICKER PAUSED\nResize to 36 x 14.\nEsc closes dialog.\nCtrl+Q exits."
         } else if app.approval_open {
             "LOCAL PREVIEW\nAPPROVAL PAUSED\nResize to 36 x 14.\nEsc closes dialog.\nCtrl+Q exits."
@@ -573,15 +604,25 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     ])
     .split(area);
     frame.render_widget(
-        Paragraph::new("LiteTUI — Rust preview · mock-model · tools:5 · think:high")
-            .alignment(Alignment::Center)
-            .style(style(t.title, t.surface)),
+        Paragraph::new(if let Some(chat) = &app.live {
+            format!(
+                "LiteTUI — Rust LIVE · {} · {}",
+                display_safe(&chat.backend),
+                display_safe(&chat.model)
+            )
+        } else {
+            "LiteTUI — Rust preview · mock-model · tools:5 · think:high".into()
+        })
+        .alignment(Alignment::Center)
+        .style(style(t.title, t.surface)),
         areas[0],
     );
     frame.render_widget(
-        Paragraph::new(
-            " LOCAL PREVIEW · No model connected · all calls, timings and counts are fixtures",
-        )
+        Paragraph::new(if app.live.is_some() {
+            " LIVE · real Python runtime · tools disabled · serialized multi-turn · Ctrl+Q quits"
+        } else {
+            " LOCAL PREVIEW · No model connected · all calls, timings and counts are fixtures"
+        })
         .style(style(t.tool_text, t.background)),
         areas[1],
     );
@@ -683,7 +724,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     frame.render_widget(
         Paragraph::new(format!(
             " {} · scroll {}/{}",
-            app.notice, app.scroll, app.max_scroll
+            display_safe(&app.notice),
+            app.scroll,
+            app.max_scroll
         ))
         .style(style(t.title, t.background)),
         areas[3],
@@ -736,7 +779,11 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     let selected_end = selected_start + selected.len();
     let input_line = if app.composer.text().is_empty() {
         Line::styled(
-            "Message... (preview only; Enter adds a local mock turn)",
+            if app.live.is_some() {
+                "Message… (Enter sends to the real model; Ctrl+Q quits)"
+            } else {
+                "Message... (preview only; Enter adds a local mock turn)"
+            },
             style(t.title, t.surface),
         )
     } else {
@@ -766,7 +813,11 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title_bottom(" F4 themes · F6 approval · Ctrl+Q ")
+                .title_bottom(if app.live.is_some() {
+                    " F4 themes · Enter sends · Ctrl+Q "
+                } else {
+                    " F4 themes · F6 approval · Ctrl+Q "
+                })
                 .border_style(style(t.thinking_border, t.surface)),
         );
     frame.render_widget(composer, areas[4]);
