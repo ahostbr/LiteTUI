@@ -88,8 +88,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     {
         key.code = KeyCode::Char(ch.to_ascii_lowercase());
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('q' | 'c'))
-    {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('q')) {
         return true;
     }
     if app.viewport_too_small {
@@ -256,6 +255,58 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     false
 }
 
+fn handle_key(
+    app: &mut Demo,
+    input: &mut KeyRouter,
+    event: KeyEvent,
+    clipboard: &mut impl litetui_terminal::clipboard::Clipboard,
+) -> bool {
+    if event.kind != KeyEventKind::Release {
+        let code = match event.code {
+            KeyCode::Char(ch) => Some(ch.to_ascii_lowercase()),
+            _ => None,
+        };
+        let control = event.modifiers == KeyModifiers::CONTROL;
+        let copy = code == Some('c') && (control || event.modifiers == KeyModifiers::SUPER);
+        let blocked = app.approval_open || app.themes_open || app.viewport_too_small;
+        if copy {
+            if blocked || app.composer.selected_text().is_empty() {
+                app.notice = "Press Ctrl+Q to quit; Ctrl+C copies selected input.".into();
+            } else {
+                app.notice = match clipboard.copy_text(app.composer.selected_text()) {
+                    Ok(()) => "Copy sequence sent; terminal clipboard support is required.".into(),
+                    Err(error) => error,
+                };
+            }
+            return false;
+        }
+        if control && code == Some('v') {
+            if blocked {
+                return false;
+            }
+            match clipboard.read_text() {
+                Ok(Some(text)) if !text.is_empty() => {
+                    let inserted = app.composer.paste_clipboard(&text);
+                    if inserted > 0 {
+                        app.sync_completion();
+                    }
+                    app.notice = format!(
+                        "Pasted {inserted} characters from clipboard (preview limits apply)."
+                    );
+                }
+                Ok(_) => {
+                    app.notice =
+                        "No text in clipboard; image paste is not implemented in this preview."
+                            .into()
+                }
+                Err(error) => app.notice = error,
+            }
+            return false;
+        }
+    }
+    input.handle(app, event)
+}
+
 fn paste(app: &mut Demo, text: &str) {
     if app.approval_open || app.viewport_too_small {
         return;
@@ -311,11 +362,14 @@ fn run() -> io::Result<()> {
     let mut app = Demo::default();
     let mut tick_at = Instant::now();
     let mut input = KeyRouter::default();
+    let mut clipboard = litetui_terminal::clipboard::SystemClipboard::new(1024 * 1024);
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(event) if input.handle(&mut app, event) => break,
+                Event::Key(event) if handle_key(&mut app, &mut input, event, &mut clipboard) => {
+                    break;
+                }
                 Event::Paste(text) => paste(&mut app, &text),
                 Event::Mouse(event) => mouse(&mut app, event),
 
@@ -547,6 +601,122 @@ mod tests {
         paste(&mut app, "matrix");
         assert_eq!(app.theme_query, "matrix");
         assert_eq!(app.composer.text(), "/pre");
+        assert!(app.turns.is_empty());
+    }
+
+    #[derive(Default)]
+    struct TestClipboard {
+        copied: Vec<String>,
+        read: Option<String>,
+        reads: usize,
+        fail: bool,
+    }
+    impl litetui_terminal::clipboard::Clipboard for TestClipboard {
+        fn read_text(&mut self) -> Result<Option<String>, String> {
+            self.reads += 1;
+            if self.fail {
+                Err("fixture clipboard error".into())
+            } else {
+                Ok(self.read.clone())
+            }
+        }
+        fn copy_text(&mut self, text: &str) -> Result<(), String> {
+            if self.fail {
+                Err("fixture copy error".into())
+            } else {
+                self.copied.push(text.into());
+                Ok(())
+            }
+        }
+    }
+    #[test]
+    fn ctrl_c_copies_selection_or_explains_quit_but_never_exits() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        let mut clipboard = TestClipboard::default();
+        app.insert_text("selected 雪");
+        app.composer.select_all();
+        let copy = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!handle_key(&mut app, &mut input, copy, &mut clipboard));
+        assert_eq!(clipboard.copied, ["selected 雪"]);
+        assert_eq!(app.composer.text(), "selected 雪");
+        app.composer.move_cursor(Motion::End, false);
+        assert!(!handle_key(&mut app, &mut input, copy, &mut clipboard));
+        assert_eq!(clipboard.copied.len(), 1);
+        assert!(app.notice.contains("Ctrl+Q"));
+        assert!(handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            &mut clipboard
+        ));
+    }
+
+    #[test]
+    fn ctrl_v_uses_clipboard_insertion_not_bracketed_paste_or_submission() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        let mut clipboard = TestClipboard {
+            read: Some("one\r\n \r\n two".into()),
+            ..TestClipboard::default()
+        };
+        app.insert_text("abcdef");
+        app.composer.move_cursor(Motion::Home, false);
+        for _ in 0..2 {
+            app.composer.move_cursor(Motion::Right, false);
+        }
+        for _ in 0..2 {
+            app.composer.move_cursor(Motion::Right, true);
+        }
+        handle_key(
+            &mut app,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 1);
+        assert_eq!(app.composer.text(), "abcdone  twoef");
+        assert!(app.turns.is_empty());
+        assert!(app.notice.contains("8 characters"));
+    }
+    #[test]
+    fn clipboard_errors_releases_and_modal_guards_preserve_draft_without_io() {
+        let mut app = Demo::default();
+        let mut input = KeyRouter::default();
+        let mut clipboard = TestClipboard {
+            fail: true,
+            ..TestClipboard::default()
+        };
+        app.insert_text("draft");
+        app.composer.select_all();
+        let paste = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        let copy = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for (approval, themes, small) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            app.approval_open = approval;
+            app.themes_open = themes;
+            app.viewport_too_small = small;
+            handle_key(&mut app, &mut input, paste, &mut clipboard);
+            handle_key(&mut app, &mut input, copy, &mut clipboard);
+        }
+        assert_eq!(clipboard.reads, 0);
+        app.approval_open = false;
+        app.themes_open = false;
+        app.viewport_too_small = false;
+        let mut release = paste;
+        release.kind = KeyEventKind::Release;
+        handle_key(&mut app, &mut input, release, &mut clipboard);
+        assert_eq!(clipboard.reads, 0);
+        handle_key(&mut app, &mut input, paste, &mut clipboard);
+        assert!(app.notice.contains("fixture clipboard error"));
+        handle_key(&mut app, &mut input, copy, &mut clipboard);
+        assert!(app.notice.contains("fixture copy error"));
+        assert_eq!(app.composer.text(), "draft");
+        assert_eq!(app.composer.selected_text(), "draft");
+        assert!(clipboard.copied.is_empty());
         assert!(app.turns.is_empty());
     }
 

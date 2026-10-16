@@ -17,3 +17,8 @@ unicode-segmentation = "=1.13.3"
 serde = "=1.0.229"
 # Keep opaque Python integer/decimal payloads exact until a typed reducer validates them.
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision", "raw_value"] }
+
+base64 = "=0.22.1"
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "=5.4.1"

@@ -103,6 +103,34 @@ impl Composer {
             .unwrap_or("");
         self.replace_selection(line, true);
     }
+    /// The application's priority Ctrl+V path joins nonblank CR/LF lines and
+    /// inserts at the ACTIVE cursor, preserving (not replacing) selected text.
+    /// Returns inserted scalar count after the preview's bounds/filtering.
+    pub fn paste_clipboard(&mut self, text: &str) -> usize {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let joined = if normalized.contains('\n') {
+            normalized
+                .split('\n')
+                .filter(|line| {
+                    line.chars()
+                        .any(|ch| !(ch.is_whitespace() || matches!(ch, '\u{1c}'..='\u{1f}')))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            normalized
+        };
+        let remaining = self.max_chars.saturating_sub(self.text.chars().count());
+        let inserted = Self::sanitized(&joined, remaining);
+        if inserted.is_empty() {
+            return 0;
+        }
+        let count = inserted.chars().count();
+        self.text.insert_str(self.cursor, &inserted);
+        self.cursor += inserted.len();
+        self.anchor = self.cursor;
+        count
+    }
     fn replace_selection(&mut self, text: &str, replace_empty: bool) {
         let range = self.selection();
         let retained =
