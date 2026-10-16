@@ -85,11 +85,30 @@ impl Composer {
             .collect()
     }
     pub fn insert(&mut self, text: &str) {
+        self.replace_selection(text, false);
+    }
+    /// Focused Textual Input consumes Paste before it bubbles to the App:
+    /// first Python splitlines line only; an empty first line deletes selection.
+    /// Empty events do nothing. Existing preview control filtering still applies.
+    pub fn paste_bracketed(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let line = text
+            .split([
+                '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
+                '\u{2029}',
+            ])
+            .next()
+            .unwrap_or("");
+        self.replace_selection(line, true);
+    }
+    fn replace_selection(&mut self, text: &str, replace_empty: bool) {
         let range = self.selection();
         let retained =
             self.text[..range.start].chars().count() + self.text[range.end..].chars().count();
         let inserted = Self::sanitized(text, self.max_chars.saturating_sub(retained));
-        if inserted.is_empty() {
+        if inserted.is_empty() && !replace_empty {
             return;
         }
         self.text.replace_range(range.clone(), &inserted);

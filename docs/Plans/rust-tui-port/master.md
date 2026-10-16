@@ -214,3 +214,10 @@ A non-modal picker now filters source-ordered candidate snapshots, ranks prefixe
 The source-resolved primary token now drives the rounded picker border across all 36 themes. Resize tests retain selected rows and command/skill labels; a VS16-heart name overflow was reproduced red and repaired with whole-grapheme clipping. Review also identified missing mouse selection; rendered-offset click routing and invalidation tests were added. Picker-specific wheel scrolling remains open.
 
 Verification: **87 Rust tests passed**, formatting, all-target Clippy, build, **8 focused Python exporter/oracle tests**, theme generated-output check, focused Ruff and exporter mypy. This is automated presentation evidence only: preview stays closed, no desktop action or real-runtime launch. Existing LiteTUI-construction-based slash-command tests were not used as a substitute for the still-open owned-construction gate.
+
+
+### Bracketed-paste event contract
+
+A minimal Textual App mounting the actual source PromptInput established that focused bracketed Paste consumes the first splitlines line, replaces its selection and stops before the application handler. The Rust route now matches that first-line/selection contract, including all Python line separators, empty events and empty first lines. Its prior multiline-join behavior was reproduced failing before repair. Preview control sanitization and caller limits remain explicit differences; the separate OS Ctrl+V path is not implemented and no system clipboard was touched. Approval/hidden-input guards and completion refresh are tested.
+
+Verification: **91 Rust tests passed**, **9 focused Python tests passed** (source paste probe, word oracle, theme exporter), fmt/all-target Clippy/build and focused Ruff. The source probe constructs only a minimal Textual App and PromptInput, not LiteTUI or a runtime. The preview remains closed; full parity and runtime gates remain incomplete.

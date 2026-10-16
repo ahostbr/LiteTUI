@@ -117,3 +117,35 @@ fn control_bytes_never_become_terminal_instructions_or_submissions() {
     assert!(!editor.text().chars().any(char::is_control));
     assert_eq!(editor.text(), "safe[31m more  text");
 }
+
+#[test]
+fn bracketed_paste_uses_python_line_boundaries_and_distinguishes_empty_events() {
+    for separator in [10u32, 13, 11, 12, 28, 29, 30, 133, 8232, 8233] {
+        let mut composer = Composer::new(20, 0);
+        composer.insert("old");
+        composer.select_all();
+        composer.paste_bracketed(&format!("雪{}ignored", char::from_u32(separator).unwrap()));
+        assert_eq!(composer.text(), "雪");
+        assert_eq!(composer.before_cursor(), "雪");
+        assert!(composer.selected_text().is_empty());
+        composer.select_all();
+        composer.paste_bracketed("");
+        assert_eq!(composer.selected_text(), "雪");
+        composer.paste_bracketed(&char::from_u32(separator).unwrap().to_string());
+        assert_eq!(composer.text(), "");
+        assert_eq!(composer.before_cursor(), "");
+    }
+}
+
+#[test]
+fn bracketed_paste_retains_preview_bounds_and_control_filtering() {
+    let mut composer = Composer::new(4, 0);
+    composer.insert("abXY");
+    composer.move_cursor(Motion::Left, true);
+    composer.move_cursor(Motion::Left, true);
+    composer.paste_bracketed("雪zz");
+    assert_eq!(composer.text(), "ab雪z");
+    composer.select_all();
+    composer.paste_bracketed(&format!("a{}b", char::from_u32(27).unwrap()));
+    assert_eq!(composer.text(), "ab");
+}

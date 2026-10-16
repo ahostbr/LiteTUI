@@ -256,6 +256,17 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     false
 }
 
+fn paste(app: &mut Demo, text: &str) {
+    if app.approval_open || app.viewport_too_small {
+        return;
+    }
+    if app.themes_open {
+        app.search_themes(text);
+    } else {
+        app.paste_text(text);
+    }
+}
+
 fn mouse(app: &mut Demo, event: MouseEvent) {
     if app.approval_open || app.themes_open || app.viewport_too_small {
         app.completion.hide();
@@ -305,13 +316,7 @@ fn run() -> io::Result<()> {
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(event) if input.handle(&mut app, event) => break,
-                Event::Paste(text) if !app.approval_open && !app.viewport_too_small => {
-                    if app.themes_open {
-                        app.search_themes(&text);
-                    } else {
-                        app.insert_text(&text);
-                    }
-                }
+                Event::Paste(text) => paste(&mut app, &text),
                 Event::Mouse(event) => mouse(&mut app, event),
 
                 _ => {}
@@ -500,6 +505,49 @@ mod tests {
             mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left), 4));
             assert_eq!(app.composer.text(), "/pick-099 ");
         }
+    }
+
+    #[test]
+    fn bracketed_paste_replaces_selection_with_only_first_line_and_never_submits() {
+        for (text, expected) in [
+            ("one\r\ntwo", "aboneef"),
+            ("\nrest", "abef"),
+            ("", "abcdef"),
+        ] {
+            let mut app = Demo::default();
+            app.insert_text("abcdef");
+            app.composer.move_cursor(Motion::Home, false);
+            for _ in 0..2 {
+                app.composer.move_cursor(Motion::Right, false);
+            }
+            for _ in 0..2 {
+                app.composer.move_cursor(Motion::Right, true);
+            }
+            paste(&mut app, text);
+            assert_eq!(app.composer.text(), expected);
+            assert!(app.turns.is_empty());
+        }
+    }
+
+    #[test]
+    fn paste_respects_modal_ownership_and_refreshes_slash_completion() {
+        let mut app = Demo::default();
+        paste(&mut app, "/pre\nignored");
+        assert_eq!(app.composer.text(), "/pre");
+        assert!(app.completion.is_open());
+        app.open_approval();
+        paste(&mut app, "should not appear");
+        assert_eq!(app.composer.text(), "/pre");
+        app.approval_open = false;
+        app.viewport_too_small = true;
+        paste(&mut app, "hidden input");
+        assert_eq!(app.composer.text(), "/pre");
+        app.viewport_too_small = false;
+        app.open_themes();
+        paste(&mut app, "matrix");
+        assert_eq!(app.theme_query, "matrix");
+        assert_eq!(app.composer.text(), "/pre");
+        assert!(app.turns.is_empty());
     }
 
     #[test]

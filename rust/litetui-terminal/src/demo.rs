@@ -248,6 +248,13 @@ impl Demo {
         self.insert_text(&format!("/{name} "));
         self.completion.dismiss();
     }
+    pub fn paste_text(&mut self, text: &str) {
+        let before = self.composer.text().to_owned();
+        self.composer.paste_bracketed(text);
+        if self.composer.text() != before {
+            self.sync_completion();
+        }
+    }
     pub fn insert_text(&mut self, text: &str) {
         let before = self.composer.text().to_owned();
         self.composer.insert(text);
