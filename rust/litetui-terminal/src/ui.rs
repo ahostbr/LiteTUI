@@ -309,8 +309,8 @@ fn display_safe(text: &str) -> String {
     safe
 }
 
-/// Render only identified generic streams; no demo transcript, tool results,
-/// completion inference, commands or persistence. `scroll` is a visual line
+/// Render identified generic streams and grouped host observations; no demo
+/// content, completion inference, commands or persistence. `scroll` is a visual line
 /// offset, clamped after wrapping so narrow resize never loses retained text.
 pub fn draw_stream_projection(
     frame: &mut Frame,
@@ -380,6 +380,17 @@ pub fn draw_stream_projection(
             &footer,
             area.width as usize,
         );
+        if !row.tools.is_empty() {
+            for line in wrap(
+                "Tools grouped by execution (not transcript order)",
+                area.width as usize,
+            ) {
+                lines.push(Line::styled(line, style(t.title, t.background)));
+            }
+            for tool in &row.tools {
+                observed_tool(t, &mut lines, tool, area.width as usize);
+            }
+        }
     }
     if lines.is_empty() {
         lines.push(Line::raw("No identified streams"));
@@ -397,6 +408,71 @@ pub fn draw_stream_projection(
         .style(style(t.foreground, t.background)),
         Rect::new(area.x, area.y + 1, area.width, area.height - 1),
     );
+}
+
+// Shared unbordered ToolMessage body geometry. No fixture execution metadata.
+fn tool_body(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    text: &str,
+    color: Color,
+    width: usize,
+) {
+    for row in wrap(text, width.saturating_sub(8)) {
+        lines.push(Line::styled(
+            format!("     {row}"),
+            style(color, t.tool_background),
+        ));
+    }
+}
+
+fn observed_tool(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    tool: &crate::stream::ToolObservation,
+    width: usize,
+) {
+    use crate::stream::ToolObservationState;
+    // Wrap instead of truncating identity/status on narrow terminals. These
+    // rows have no collapse/approval controls until a real view controller owns them.
+    // Metadata newlines are visible escapes; only result bodies keep multiline
+    // formatting. A supplied name cannot inject a new status-looking line.
+    let metadata = |text: &str| display_safe(text).replace('\n', "\\u{a}");
+    for row in wrap(
+        &format!("Tool: {}", metadata(&tool.name)),
+        width.saturating_sub(3),
+    ) {
+        lines.push(Line::styled(
+            format!("   {row}"),
+            style(t.tool_text, t.tool_background).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let status = match &tool.state {
+        ToolObservationState::Requested => "Requested · dispatch unknown",
+        ToolObservationState::Returned { ok: true, .. } => "Returned · host ok=true",
+        ToolObservationState::Returned { ok: false, .. } => "Returned · host ok=false",
+        ToolObservationState::Incomplete => "Incomplete · return unavailable",
+    };
+    tool_body(t, lines, status, t.title, width);
+    tool_body(
+        t,
+        lines,
+        &format!("Observation {}", tool.id.as_str()),
+        MUTED,
+        width,
+    );
+    let coordinates = format!(
+        "Round {} · slot {} · provider {}",
+        tool.round,
+        tool.slot,
+        metadata(&tool.provider_call_id)
+    );
+    tool_body(t, lines, &coordinates, MUTED, width);
+    if let ToolObservationState::Returned { result, .. } = &tool.state {
+        tool_body(t, lines, "Host result (not task completion)", MUTED, width);
+        tool_body(t, lines, &display_safe(result), MUTED, width);
+    }
+    lines.push(Line::raw(""));
 }
 
 fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) {
@@ -436,12 +512,7 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 ),
             ];
             for (text, color) in fields {
-                for row in wrap(text, width.saturating_sub(8)) {
-                    lines.push(Line::styled(
-                        format!("     {row}"),
-                        style(color, t.tool_background),
-                    ));
-                }
+                tool_body(t, &mut lines, text, color, width);
             }
             lines.push(Line::styled(
                 " ".repeat(width),

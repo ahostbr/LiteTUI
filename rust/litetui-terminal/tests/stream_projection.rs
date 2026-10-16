@@ -11,6 +11,7 @@ const B: &str = "ef78dd70-b2a2-46d3-a325-e45d9c31b330";
 fn limits() -> Limits {
     Limits {
         rows: 4,
+        tool_calls: 16,
         text_bytes: 4096,
         metadata_bytes: 4096,
     }

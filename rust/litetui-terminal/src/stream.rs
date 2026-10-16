@@ -1,4 +1,4 @@
-//! Bounded projection of explicitly attributed GENERIC stream events.
+//! Bounded projection of explicitly attributed GENERIC stream/tool observations.
 //!
 //! This is presentation state, not operation success, persistence or authority.
 //! Caller owns one projection per connection generation and feeds selected wire
@@ -9,15 +9,26 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub rows: usize,
-    /// Total retained UTF-8 bytes across answer AND reasoning lanes.
+    /// Aggregate retained tool observations, including returned observations.
+    pub tool_calls: usize,
+    /// Total retained UTF-8 bytes across answer, reasoning AND tool results.
     pub text_bytes: usize,
-    /// Total retained identity, model and terminal string bytes (integers: 8).
+    /// Retained identity/model/terminal/tool strings; integers cost 8 bytes each.
     pub metadata_bytes: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionId(String);
 impl ExecutionId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A host invocation observation, NOT a provider call, execution or task ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservationId(String);
+impl ObservationId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -47,6 +58,26 @@ pub enum StreamState {
     Incomplete,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolObservationState {
+    /// Request record observed, not evidence of authorization or dispatch.
+    Requested,
+    /// Literal host return flag/result, not success or background completion.
+    Returned { result: String, ok: bool },
+    /// No retained return before stream end or loss of certainty.
+    Incomplete,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolObservation {
+    pub id: ObservationId,
+    pub round: u64,
+    pub slot: u64,
+    pub provider_call_id: String,
+    pub name: String,
+    pub state: ToolObservationState,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub execution: ExecutionId,
@@ -55,6 +86,8 @@ pub struct Row {
     pub thinking_level: Option<String>,
     pub answer: String,
     pub reasoning: String,
+    /// Request-arrival order within this execution, not a full transcript order.
+    pub tools: Vec<ToolObservation>,
     pub state: StreamState,
 }
 
@@ -68,6 +101,9 @@ pub enum ProjectionFault {
     OriginChanged,
     MissingStart,
     DuplicateStart,
+    DuplicateToolRequest,
+    MissingToolRequest,
+    DuplicateToolReturn,
     AfterEnd,
     Capacity,
     TransportUncertain,
@@ -79,6 +115,7 @@ pub struct Projection {
     generation: u64,
     limits: Limits,
     rows: Vec<Row>,
+    tool_calls: usize,
     text_bytes: usize,
     metadata_bytes: usize,
     negotiated: bool,
@@ -87,13 +124,18 @@ pub struct Projection {
 
 impl Projection {
     pub fn new(generation: u64, limits: Limits) -> Result<Self, ProjectionFault> {
-        if limits.rows == 0 || limits.text_bytes == 0 || limits.metadata_bytes == 0 {
+        if limits.rows == 0
+            || limits.tool_calls == 0
+            || limits.text_bytes == 0
+            || limits.metadata_bytes == 0
+        {
             return Err(ProjectionFault::InvalidLimit);
         }
         Ok(Self {
             generation,
             limits,
             rows: Vec::new(),
+            tool_calls: 0,
             text_bytes: 0,
             metadata_bytes: 0,
             negotiated: false,
@@ -116,6 +158,7 @@ impl Projection {
             if row.state == StreamState::Streaming {
                 row.state = StreamState::Incomplete;
             }
+            incomplete_tools(row);
         }
         reason
     }
@@ -160,7 +203,12 @@ impl Projection {
         let kind = required_text(event, "type")?;
         if !matches!(
             kind,
-            "turn_start" | "text_delta" | "reasoning_delta" | "turn_end"
+            "turn_start"
+                | "text_delta"
+                | "reasoning_delta"
+                | "turn_end"
+                | "generic_tool_requested"
+                | "generic_tool_returned"
         ) {
             return Err(ProjectionFault::UnsupportedEvent);
         }
@@ -186,6 +234,7 @@ impl Projection {
                 thinking_level: thinking.map(str::to_owned),
                 answer: String::new(),
                 reasoning: String::new(),
+                tools: Vec::new(),
                 state: StreamState::Streaming,
             });
             self.metadata_bytes += bytes;
@@ -201,9 +250,7 @@ impl Projection {
         match kind {
             "text_delta" | "reasoning_delta" => {
                 let text = required_text(event, "text")?;
-                if text.len() > self.limits.text_bytes.saturating_sub(self.text_bytes) {
-                    return Err(ProjectionFault::Capacity);
-                }
+                self.check_text(text.len())?;
                 let row = &mut self.rows[index];
                 if kind == "text_delta" {
                     row.answer.push_str(text);
@@ -212,6 +259,8 @@ impl Projection {
                 }
                 self.text_bytes += text.len();
             }
+            "generic_tool_requested" => self.tool_request(index, event)?,
+            "generic_tool_returned" => self.tool_return(index, event)?,
             "turn_end" => {
                 let reason = required_text(event, "stopReason")?;
                 if reason.is_empty() {
@@ -246,11 +295,81 @@ impl Projection {
                     tps_source: tps_source.map(str::to_owned),
                     error: error.map(str::to_owned),
                 });
+                incomplete_tools(&mut self.rows[index]);
                 self.metadata_bytes += bytes;
             }
             _ => unreachable!("event kinds checked above"),
         }
         Ok(())
+    }
+
+    fn tool_request(&mut self, index: usize, event: &Value) -> Result<(), ProjectionFault> {
+        let id = required_uuid4(event, "observation_id")?;
+        // Global within this projection generation, including returned calls.
+        if self
+            .rows
+            .iter()
+            .flat_map(|row| &row.tools)
+            .any(|tool| tool.id.as_str() == id)
+        {
+            return Err(ProjectionFault::DuplicateToolRequest);
+        }
+        let round = required_u64(event, "round")?;
+        let slot = required_u64(event, "slot")?;
+        let provider = required_text(event, "provider_call_id")?;
+        let name = required_text(event, "name")?;
+        let bytes = id
+            .len()
+            .saturating_add(provider.len())
+            .saturating_add(name.len())
+            .saturating_add(16);
+        if self.tool_calls >= self.limits.tool_calls {
+            return Err(ProjectionFault::Capacity);
+        }
+        self.check_metadata(bytes)?;
+        self.rows[index].tools.push(ToolObservation {
+            id: ObservationId(id.to_owned()),
+            round,
+            slot,
+            provider_call_id: provider.to_owned(),
+            name: name.to_owned(),
+            state: ToolObservationState::Requested,
+        });
+        self.tool_calls += 1;
+        self.metadata_bytes += bytes;
+        Ok(())
+    }
+
+    fn tool_return(&mut self, index: usize, event: &Value) -> Result<(), ProjectionFault> {
+        let id = required_uuid4(event, "observation_id")?;
+        let tool_index = self.rows[index]
+            .tools
+            .iter()
+            .position(|tool| tool.id.as_str() == id)
+            .ok_or(ProjectionFault::MissingToolRequest)?;
+        if self.rows[index].tools[tool_index].state != ToolObservationState::Requested {
+            return Err(ProjectionFault::DuplicateToolReturn);
+        }
+        let result = required_text(event, "result")?;
+        let ok = event
+            .get("ok")
+            .and_then(Value::as_bool)
+            .ok_or(ProjectionFault::Malformed("ok"))?;
+        self.check_text(result.len())?;
+        self.rows[index].tools[tool_index].state = ToolObservationState::Returned {
+            result: result.to_owned(),
+            ok,
+        };
+        self.text_bytes += result.len();
+        Ok(())
+    }
+
+    fn check_text(&self, additional: usize) -> Result<(), ProjectionFault> {
+        if additional > self.limits.text_bytes.saturating_sub(self.text_bytes) {
+            Err(ProjectionFault::Capacity)
+        } else {
+            Ok(())
+        }
     }
     fn check_metadata(&self, additional: usize) -> Result<(), ProjectionFault> {
         if additional
@@ -266,10 +385,23 @@ impl Projection {
     }
 }
 
+fn incomplete_tools(row: &mut Row) {
+    for tool in &mut row.tools {
+        if tool.state == ToolObservationState::Requested {
+            tool.state = ToolObservationState::Incomplete;
+        }
+    }
+}
 fn required_text<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, ProjectionFault> {
     value
         .get(key)
         .and_then(Value::as_str)
+        .ok_or(ProjectionFault::Malformed(key))
+}
+fn required_u64(value: &Value, key: &'static str) -> Result<u64, ProjectionFault> {
+    value
+        .get(key)
+        .and_then(Value::as_u64)
         .ok_or(ProjectionFault::Malformed(key))
 }
 fn nullable_text<'a>(
@@ -286,12 +418,11 @@ fn text_size(text: Option<&str>) -> usize {
     text.map_or(0, str::len)
 }
 
-fn origin(frame: &Value, limit: usize) -> Result<(ExecutionId, Origin, usize), ProjectionFault> {
-    let execution = required_text(frame, "execution_id")?;
-    // Python's uuid4 producer uses canonical lowercase spelling. This key is
-    // intentionally NOT a CommandId, envelope event_id or an operation ID.
-    let bytes = execution.as_bytes();
-    let uuid4 = bytes.len() == 36
+fn required_uuid4<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, ProjectionFault> {
+    let id = required_text(value, key)?;
+    // Python uuid4 canonical lowercase spelling; ID domains remain separate.
+    let bytes = id.as_bytes();
+    let valid = bytes.len() == 36
         && bytes[14] == b'4'
         && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
         && bytes.iter().enumerate().all(|(i, b)| {
@@ -301,11 +432,15 @@ fn origin(frame: &Value, limit: usize) -> Result<(ExecutionId, Origin, usize), P
                 b.is_ascii_digit() || (b'a'..=b'f').contains(b)
             }
         });
-    if !uuid4 {
-        return Err(ProjectionFault::Malformed(
-            "execution_id must be canonical UUID4",
-        ));
+    if valid {
+        Ok(id)
+    } else {
+        Err(ProjectionFault::Malformed(key))
     }
+}
+
+fn origin(frame: &Value, limit: usize) -> Result<(ExecutionId, Origin, usize), ProjectionFault> {
+    let execution = required_uuid4(frame, "execution_id")?;
     let session = required_text(frame, "session_id")?;
     if session.is_empty() {
         return Err(ProjectionFault::Malformed("empty session_id"));
