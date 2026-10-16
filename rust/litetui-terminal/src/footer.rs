@@ -3,11 +3,7 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-// Ratatui renders individual graphemes. Whole-string width can be smaller:
-// Arabic lam-alef is width one as a string, but two separately drawn glyphs.
-fn rendered_width(text: &str) -> usize {
-    text.graphemes(true).map(UnicodeWidthStr::width).sum()
-}
+use crate::rendered_width;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldKey {

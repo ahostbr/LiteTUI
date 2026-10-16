@@ -1,6 +1,7 @@
 use crate::{
     completion::CompletionKind,
     demo::{Demo, ToolState},
+    rendered_width,
 };
 use ratatui::{
     Frame,
@@ -20,14 +21,14 @@ fn style(fg: Color, bg: Color) -> Style {
 }
 fn clip(text: &str, width: usize) -> String {
     let mut used = 0;
-    text.chars()
-        .take_while(|ch| {
-            used += ch.width().unwrap_or(0);
+    text.graphemes(true)
+        .take_while(|glyph| {
+            used += glyph.width();
             used <= width
         })
         .collect()
 }
-fn clip_completion_name(text: &str, width: usize) -> String {
+fn clip_label(text: &str, width: usize) -> String {
     let safe: String = text.chars().filter(|ch| !ch.is_control()).collect();
     let mut used = 0;
     safe.graphemes(true)
@@ -55,7 +56,7 @@ fn padded(text: &str, width: usize) -> String {
     format!(
         "{}{}",
         value,
-        " ".repeat(width.saturating_sub(value.width()))
+        " ".repeat(width.saturating_sub(rendered_width(&value)))
     )
 }
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -64,15 +65,19 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     for source in text.split('\n') {
         let mut line = String::new();
         let mut used = 0;
-        for ch in source.chars() {
-            let cells = ch.width().unwrap_or(0);
+        for glyph in source.graphemes(true) {
+            let cells = glyph.width();
             if used + cells > width && !line.is_empty() {
                 result.push(std::mem::take(&mut line));
                 used = 0;
             }
             if cells <= width {
-                line.push(ch);
+                line.push_str(glyph);
                 used += cells;
+            } else {
+                // Display fallback only: retained transcript text is untouched.
+                line.push('�');
+                used += 1;
             }
         }
         result.push(line);
@@ -163,11 +168,6 @@ fn thinking_card(
     index: usize,
     width: usize,
 ) {
-    let narrow = width < 78;
-    let left = if narrow { 0 } else { 2 };
-    let right = if narrow { 0 } else { 8 };
-    let outer_width = width.saturating_sub(left + right).max(12);
-    let inner_width = outer_width.saturating_sub(6);
     let summaries = [
         "Inspecting the tool-call layout",
         "Checking arguments and results",
@@ -176,10 +176,41 @@ fn thinking_card(
         "Keeping a failed call visible",
     ];
     let summary = summaries[index];
-    let title = clip(
+    let mut body = vec![
+        "▾ Thinking · 0.4s · 16 tok · 40.9 tok/s".to_string(),
+        summary.to_string(),
+    ];
+    if index == 1 {
+        body.push("Matching the existing tool presentation".into());
+    }
+    assistant_card(
+        t,
+        lines,
         &format!("▾ Thinking: **{summary}** - mock-model"),
-        outer_width.saturating_sub(5),
+        &body,
+        "",
+        "♫ Speak [mock]",
+        width,
     );
+}
+
+// Shared AssistantMessage / ThinkingBlock geometry. Runtime projection supplies
+// its own content and settlement label; fixture timing/speech stays in the demo.
+fn assistant_card(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    title: &str,
+    reasoning: &[String],
+    answer: &str,
+    footer: &str,
+    width: usize,
+) {
+    let narrow = width < 78;
+    let left = if narrow { 0 } else { 2 };
+    let right = if narrow { 0 } else { 8 };
+    let outer_width = width.saturating_sub(left + right).max(12);
+    let inner_width = outer_width.saturating_sub(6);
+    let title = clip_label(title, outer_width.saturating_sub(5));
     lines.push(Line::from(vec![
         Span::styled(" ".repeat(left), style(t.foreground, t.background)),
         Span::styled("╭─ ", style(t.assistant_border, t.surface)),
@@ -187,7 +218,7 @@ fn thinking_card(
         Span::styled(
             format!(
                 "{}╮",
-                "─".repeat(outer_width.saturating_sub(title.width() + 4))
+                "─".repeat(outer_width.saturating_sub(rendered_width(&title) + 4))
             ),
             style(t.assistant_border, t.surface),
         ),
@@ -205,45 +236,49 @@ fn thinking_card(
         " ".repeat(inner_width),
         style(t.foreground, t.surface),
     )]));
-    lines.push(outer_row(vec![Span::styled(
-        format!("┏{}┓", "╍".repeat(inner_width.saturating_sub(2))),
-        style(t.thinking_border, t.surface),
-    )]));
-    let mut body = vec![
-        "▾ Thinking · 0.4s · 16 tok · 40.9 tok/s".to_string(),
-        summary.to_string(),
-    ];
-    if index == 1 {
-        body.push("Matching the existing tool presentation".into());
+    if !reasoning.is_empty() {
+        lines.push(outer_row(vec![Span::styled(
+            format!("┏{}┓", "╍".repeat(inner_width.saturating_sub(2))),
+            style(t.thinking_border, t.surface),
+        )]));
+        for text in reasoning {
+            for row in wrap(text, inner_width.saturating_sub(4)) {
+                lines.push(outer_row(vec![
+                    Span::styled("╏ ", style(t.thinking_border, t.surface)),
+                    Span::styled(
+                        padded(&row, inner_width.saturating_sub(4)),
+                        style(t.thinking_text, t.surface).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" ╏", style(t.thinking_border, t.surface)),
+                ]));
+            }
+        }
+        lines.push(outer_row(vec![Span::styled(
+            format!("┗{}┛", "╍".repeat(inner_width.saturating_sub(2))),
+            style(t.thinking_border, t.surface),
+        )]));
     }
-    for text in body {
-        for row in wrap(&text, inner_width.saturating_sub(4)) {
-            lines.push(outer_row(vec![
-                Span::styled("╏ ", style(t.thinking_border, t.surface)),
-                Span::styled(
-                    padded(&row, inner_width.saturating_sub(4)),
-                    style(t.thinking_text, t.surface).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ╏", style(t.thinking_border, t.surface)),
-            ]));
+    if !answer.is_empty() {
+        for row in wrap(answer, inner_width) {
+            lines.push(outer_row(vec![Span::styled(
+                padded(&row, inner_width),
+                style(t.foreground, t.surface),
+            )]));
         }
     }
-    lines.push(outer_row(vec![Span::styled(
-        format!("┗{}┛", "╍".repeat(inner_width.saturating_sub(2))),
-        style(t.thinking_border, t.surface),
-    )]));
     lines.push(outer_row(vec![Span::styled(
         " ".repeat(inner_width),
         style(t.foreground, t.surface),
     )]));
-    let speech = "♫ Speak [mock]";
-    lines.push(outer_row(vec![Span::styled(
-        format!(
-            "{}{speech}",
-            " ".repeat(inner_width.saturating_sub(speech.width()))
-        ),
-        style(t.title, t.surface),
-    )]));
+    for row in wrap(footer, inner_width) {
+        lines.push(outer_row(vec![Span::styled(
+            format!(
+                "{}{row}",
+                " ".repeat(inner_width.saturating_sub(rendered_width(&row)))
+            ),
+            style(t.title, t.surface),
+        )]));
+    }
     lines.push(Line::styled(
         format!(
             "{}╰{}╯",
@@ -253,6 +288,115 @@ fn thinking_card(
         style(t.assistant_border, t.surface),
     ));
     lines.push(Line::raw(""));
+}
+
+// Retain original wire text in the projection; terminal escapes and bidi
+// controls are printable escapes ONLY at this presentation boundary.
+fn display_safe(text: &str) -> String {
+    let mut safe = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\n' => safe.push('\n'),
+            '\t' => safe.push_str("    "),
+            ch if ch.is_control()
+                || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
+            {
+                safe.push_str(&format!("\\u{{{:x}}}", ch as u32));
+            }
+            ch => safe.push(ch),
+        }
+    }
+    safe
+}
+
+/// Render only identified generic streams; no demo transcript, tool results,
+/// completion inference, commands or persistence. `scroll` is a visual line
+/// offset, clamped after wrapping so narrow resize never loses retained text.
+pub fn draw_stream_projection(
+    frame: &mut Frame,
+    area: Rect,
+    projection: &crate::stream::Projection,
+    t: &crate::theme::Theme,
+    scroll: usize,
+) {
+    use crate::stream::StreamState;
+    let area = area.intersection(frame.area());
+    frame.render_widget(
+        Block::default().style(style(t.foreground, t.background)),
+        area,
+    );
+    if area.width < 12 || area.height < 3 {
+        frame.render_widget(
+            Paragraph::new("Resize to view streams").style(style(t.foreground, t.background)),
+            area,
+        );
+        return;
+    }
+    let header = if let Some(fault) = projection.fault() {
+        format!("STREAM BLOCKED · {fault:?} · settlement unknown")
+    } else {
+        "STREAM PROJECTION · persistence unverified".to_owned()
+    };
+    frame.render_widget(
+        Paragraph::new(header).style(style(
+            if projection.fault().is_some() {
+                t.error
+            } else {
+                t.title
+            },
+            t.background,
+        )),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let mut lines = Vec::new();
+    for row in projection.rows() {
+        let title = format!(
+            "Assistant · {} · {}",
+            display_safe(row.model.as_deref().unwrap_or("unknown model")),
+            row.execution.as_str()
+        );
+        let reasoning = if row.reasoning.is_empty() {
+            Vec::new()
+        } else {
+            vec!["▾ Thinking".to_owned(), display_safe(&row.reasoning)]
+        };
+        let footer = match &row.state {
+            StreamState::Streaming => "Streaming · settlement unknown".to_owned(),
+            StreamState::Incomplete => "Incomplete · settlement unknown".to_owned(),
+            StreamState::Ended(terminal) => {
+                let mut label = format!("Stream ended · {}", display_safe(&terminal.reason));
+                if let Some(error) = &terminal.error {
+                    label.push_str(&format!("\n{}", display_safe(error)));
+                }
+                label
+            }
+        };
+        assistant_card(
+            t,
+            &mut lines,
+            &title,
+            &reasoning,
+            &display_safe(&row.answer),
+            &footer,
+            area.width as usize,
+        );
+    }
+    if lines.is_empty() {
+        lines.push(Line::raw("No identified streams"));
+    }
+    let height = area.height as usize - 1;
+    let offset = scroll.min(lines.len().saturating_sub(height));
+    frame.render_widget(
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(offset)
+                .take(height)
+                .collect::<Vec<_>>(),
+        )
+        .style(style(t.foreground, t.background)),
+        Rect::new(area.x, area.y + 1, area.width, area.height - 1),
+    );
 }
 
 fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) {
@@ -419,7 +563,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .matches()
             .iter()
             .map(|candidate| {
-                let name = clip_completion_name(&candidate.name, name_width);
+                let name = clip_label(&candidate.name, name_width);
                 let tag = match candidate.kind {
                     CompletionKind::Command => "[command]",
                     CompletionKind::Skill => "[skill]",
