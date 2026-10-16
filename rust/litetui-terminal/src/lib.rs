@@ -7,6 +7,7 @@ pub mod footer;
 pub mod protocol;
 pub mod stream;
 pub mod theme;
+pub mod transport;
 pub mod ui;
 
 mod word_chars;
