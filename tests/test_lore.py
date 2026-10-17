@@ -207,7 +207,13 @@ def test_a_cut_is_named_in_the_prompt_and_the_user_is_told(lore_file, make_app):
 # ── .agents vs .convos ─────────────────────────────────────────────────
 
 
-def test_an_agents_seat_gets_lore_and_a_convos_era_archive_gets_nothing_and_no_error(lore_file, make_app):
+def test_no_owned_agent_session_means_no_lore_and_no_error(lore_file, make_app):
+    """lore_block keys on the owned `_agent_session`, the `.agents` layout's marker.
+
+    LiteTUI.__init__ already refuses a session-less start, so a `.convos`-era
+    seat cannot launch at all; this pins the reader's own gate, for any caller
+    that holds an app-like object with no session (an archive view, a helper).
+    """
     _write(lore_file, STORY)
     agents_seat = make_app()
     assert "LORE-MARKER-4410" in appsvc.lore_block(agents_seat)
