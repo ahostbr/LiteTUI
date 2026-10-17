@@ -121,6 +121,7 @@ def system_prompt_for(app, segment):
     launch = getattr(app, "_cli_system_prompt", None)
     parts = [launch, app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
     parts.append(appsvc.index_block(app, cwd=segment["workspace"]).strip())
+    parts.append(appsvc.lore_block(app).strip())
     store_block = appsvc.store_block(app).strip()
     parts.append(store_block)
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):

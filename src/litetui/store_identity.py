@@ -92,6 +92,7 @@ def launch_message_matches(app, content: str) -> bool:
     from litetui.appsvc import (
         FLEET_OPENING,
         INDEX_OPENING,
+        LORE_OPENING,
         STORE_OPENING,
         extend_system_text,
     )
@@ -108,6 +109,8 @@ def launch_message_matches(app, content: str) -> bool:
         return True
     index_opening = re.escape(INDEX_OPENING).replace(re.escape("{where}"), r"[^\r\n]+")
     if re.match(index_opening, suffix):
+        return True
+    if suffix.startswith(LORE_OPENING):
         return True
     names = (("SOUL.md", "NOW.md", "DOMAIN.md") if getattr(app, "_owner_memory_dir", None) is not None
              else ("memory.md", "soul.md", "handoff.md"))
