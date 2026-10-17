@@ -147,10 +147,48 @@ def test_over_the_cap_is_cut_on_a_line_boundary_with_one_warning_line(lore_file)
     assert warnings == [f"[... lore {str(lore_file).replace(chr(92), '/')} truncated at {LORE_CAP} of {full} chars]"]
 
 
-def test_no_newline_in_the_slice_is_a_hard_cut(lore_file):
-    _write(lore_file, "y" * (LORE_CAP + 50))
-    _, text, warnings = read_lore()
-    assert text == "y" * LORE_CAP and len(warnings) == 1
+def _block(lore_file) -> str:
+    """The block as the system prompt carries it, minus the two newlines that join it to message 0."""
+    return appsvc.lore_block(SimpleNamespace(_agent_session=object())).removeprefix("\n\n")
+
+
+def _where(lore_file) -> str:
+    return str(lore_file).replace("\\", "/")
+
+
+# Twin cases of liteharness tests/test_lore.py (d56f798): the two blocks must be byte-identical.
+
+
+def test_no_line_boundary_in_the_cap_keeps_no_partial_line(lore_file):
+    _write(lore_file, "a" * 3000)
+    assert _block(lore_file) == f"{appsvc.LORE_HEADER}\n\n[... lore {_where(lore_file)} truncated at 2400 of 3000 chars]\n"
+
+
+def test_one_line_of_exactly_the_cap_is_whole(lore_file):
+    _write(lore_file, "a" * 2400)
+    assert _block(lore_file) == f"{appsvc.LORE_HEADER}\n\n{'a' * 2400}\n"
+
+
+def test_a_bom_is_dropped_and_does_not_hide_the_first_section(lore_file):
+    body = "\n\n".join(f"## STORY{i}\ntext {i}" for i in range(1, 6))  # 5 sections
+    lore_file.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    block = _block(lore_file)
+    assert "\ufeff" not in block
+    assert block.startswith(f"{appsvc.LORE_HEADER}\n\n## STORY1\n")
+    assert "5 sections, only the first 4" in block and "STORY5" not in block
+
+
+def test_crlf_cuts_on_the_same_line_as_lf(lore_file):
+    rows = [f"row {i:03d} " + "x" * 80 for i in range(40)]
+    _write(lore_file, "\n".join(rows))
+    as_lf = _block(lore_file)
+    _write(lore_file, "\r\n".join(rows))
+    assert _block(lore_file) == as_lf and "\r" not in as_lf
+
+
+def test_triple_hash_is_not_a_section(lore_file):
+    _write(lore_file, "## ONE\n" + "\n".join(f"### sub {i}" for i in range(10)))
+    assert "only the first" not in _block(lore_file)
 
 
 def test_both_limits_apply_sections_first_then_the_cap_each_on_its_own_line(lore_file):

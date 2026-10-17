@@ -166,10 +166,10 @@ def lore_block(app) -> str:
     _, text, warnings = found
     notify = getattr(app, '_system', None)
     for warning in warnings:
-        text += '\n' + warning
         if notify is not None:
             notify(f'warning: {warning[1:-1].removeprefix("... ")}. Trim it.')
-    return LORE_OPENING + text + '\n'
+    # no text line when a cut kept none (one long line): the header and the note only
+    return LORE_OPENING + '\n'.join([*([text] if text else []), *warnings]) + '\n'
 
 
 def store_block(app, live: bool=False) -> str:

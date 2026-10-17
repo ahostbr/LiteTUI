@@ -41,18 +41,20 @@ def read_lore() -> tuple[Path, str, list[str]] | None:
     """(path, text within the section limit and the cap, warning lines), or None.
 
     None when the file is missing, unreadable or empty. Undecodable bytes
-    degrade to U+FFFD: a stray cp1252 byte must not raise out of a turn.
+    degrade to U+FFFD: a stray cp1252 byte must not raise out of a turn. A BOM
+    is dropped and CRLF is read as LF (once, up front), so the section count,
+    the cap and the cut all see the same characters whatever editor wrote it.
     """
     path = lore_path()
     try:
-        text = path.read_bytes().decode("utf-8", errors="replace").strip()
+        text = path.read_bytes().decode("utf-8-sig", errors="replace").replace("\r\n", "\n").strip()
     except OSError:
         return None
     if not text:
         return None
     where = str(path).replace("\\", "/")
     warnings: list[str] = []
-    lines = text.split("\n")  # not splitlines(): the text keeps its own line endings
+    lines = text.split("\n")
     starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
     if len(starts) > LORE_SECTIONS:
         text = "\n".join(lines[: starts[LORE_SECTIONS]]).rstrip()
@@ -60,9 +62,9 @@ def read_lore() -> tuple[Path, str, list[str]] | None:
     if len(text) > LORE_CAP:
         size = len(text)
         cut = text[:LORE_CAP]
-        # whole lines only, so no story is cut mid-sentence; no newline at all -> hard cut
-        if text[LORE_CAP] != "\n" and "\n" in cut:
-            cut = cut[: cut.rfind("\n")]
+        # whole lines only, so no story is cut mid-sentence; no line boundary at all -> nothing kept
+        if text[LORE_CAP] != "\n":
+            cut = cut[: cut.rindex("\n")] if "\n" in cut else ""
         text = cut.rstrip()
         warnings.append(f"[... lore {where} truncated at {LORE_CAP} of {size} chars]")
     return path, text, warnings
