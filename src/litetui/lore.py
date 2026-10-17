@@ -9,6 +9,7 @@ brief), which this app does not import. Change one, change the other.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -20,9 +21,20 @@ LORE_SECTIONS = 4
 
 
 def lore_path() -> Path:
-    """LITEHARNESS_LORE_FILE, else ~/.liteharness/lore.md. LiteTUI reads no harness config."""
+    """LITEHARNESS_LORE_FILE, else `lore_file` in ~/.liteharness/config.json, else ~/.liteharness/lore.md.
+
+    A missing, unreadable or invalid config (or a `lore_file` that is not a
+    non-empty string) falls through silently to the default.
+    """
     override = os.environ.get(LORE_ENV)
-    return Path(override).expanduser() if override else Path.home() / ".liteharness" / "lore.md"
+    if override:
+        return Path(override).expanduser()
+    home = Path.home() / ".liteharness"
+    try:
+        named = json.loads((home / "config.json").read_text(encoding="utf-8")).get("lore_file")
+    except (OSError, ValueError, AttributeError):
+        named = None
+    return Path(named).expanduser() if isinstance(named, str) and named else home / "lore.md"
 
 
 def read_lore() -> tuple[Path, str, list[str]] | None:

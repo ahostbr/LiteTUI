@@ -1,7 +1,8 @@
 """T0583-D: the lore file rides into the system prompt of `.agents` seats.
 
 Contract (twin of the liteharness SessionStart reader; change one, change the other):
-  * ~/.liteharness/lore.md, or LITEHARNESS_LORE_FILE; missing/empty/blank -> nothing.
+  * LITEHARNESS_LORE_FILE, else `lore_file` in ~/.liteharness/config.json (a bad config
+    falls through), else ~/.liteharness/lore.md; missing/empty/blank -> nothing.
   * At most 4 `## ` sections (the preamble stays), then at most 2,400 chars cut on a
     line boundary; each cut adds one warning line naming the file.
   * Injected once into message 0 at conversation start, before the store, and it is
@@ -11,6 +12,7 @@ Contract (twin of the liteharness SessionStart reader; change one, change the ot
 """
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -75,6 +77,39 @@ def test_default_path_is_under_the_home_and_the_env_var_overrides_it(monkeypatch
     assert lore_path().parts[-2:] == (".liteharness", "lore.md")
     monkeypatch.setenv("LITEHARNESS_LORE_FILE", str(tmp_path / "elsewhere.md"))
     assert lore_path() == tmp_path / "elsewhere.md"
+
+
+def _config(tmp_path, text: str) -> None:
+    home = tmp_path / "Users" / "test-profile" / ".liteharness"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.json").write_text(text, encoding="utf-8")
+
+
+def test_config_lore_file_wins_over_the_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("LITEHARNESS_LORE_FILE", raising=False)
+    _config(tmp_path, json.dumps({"lore_file": str(tmp_path / "from-config.md")}))
+    assert lore_path() == tmp_path / "from-config.md"
+
+
+def test_env_wins_over_the_config_key(monkeypatch, tmp_path):
+    _config(tmp_path, json.dumps({"lore_file": str(tmp_path / "from-config.md")}))
+    monkeypatch.setenv("LITEHARNESS_LORE_FILE", str(tmp_path / "from-env.md"))
+    assert lore_path() == tmp_path / "from-env.md"
+
+
+@pytest.mark.parametrize("config", ["{not json", "[]", '{"lore_file": 7}', '{"lore_file": ""}', '{"other": 1}'])
+def test_a_corrupt_or_irrelevant_config_falls_through_silently(monkeypatch, tmp_path, config):
+    monkeypatch.delenv("LITEHARNESS_LORE_FILE", raising=False)
+    _config(tmp_path, config)
+    assert lore_path().parts[-2:] == (".liteharness", "lore.md")
+
+
+def test_the_config_named_file_is_what_reaches_the_prompt(monkeypatch, tmp_path, make_app):
+    monkeypatch.delenv("LITEHARNESS_LORE_FILE", raising=False)
+    named = tmp_path / "personal-lore.md"
+    _write(named, STORY)
+    _config(tmp_path, json.dumps({"lore_file": str(named)}))
+    assert "LORE-MARKER-4410" in appsvc.lore_block(make_app())
 
 
 @pytest.mark.parametrize("content", [None, "", "  \n\t\n"])
