@@ -3875,10 +3875,30 @@ class LiteTUI(App):
         if not self._convo_loading:
             self._edit(0, "project index injected once")
 
+    def _inject_lore_once(self) -> None:
+        """Merge the lore file into the system message, once, after the index.
+
+        Detected by LORE_HEADER in message 0, like the index. Message 0 survives a
+        local compaction (only the store block is cut), so the lore does too; /new,
+        Ctrl+T and plan mode rebuild message 0 and this puts it back.
+        """
+        if not self.conversation or self.conversation[0].get("role") != "system":
+            return
+        current = self.conversation[0].get("content", "")
+        if not isinstance(current, str) or appsvc.LORE_HEADER in current:
+            return
+        block = appsvc.lore_block(self)
+        if not block:
+            return
+        self.conversation[0] = {**self.conversation[0], "content": current + block}
+        if not self._convo_loading:
+            self._edit(0, "lore injected once")
+
     def _request_messages(self) -> list[dict]:
-        """The conversation as sent. The index and store ride in message 0, once per message 0."""
+        """The conversation as sent. The index, lore and store ride in message 0, once per message 0."""
         if getattr(self, "_store_injected", None) is not None:
             self._inject_index_once()
+            self._inject_lore_once()
         self._inject_store_once()
         self._ensure_legacy_store_notice()
         return list(self.conversation)

@@ -109,6 +109,9 @@ INDEX_HEADER = "## Project index (AGENT_INDEX.md), snapshot at the start of this
 INDEX_OPENING = (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it lists. Source: {{where}}. '
                  'It is NOT re-sent each turn and is not refreshed on resume; read the file for its '
                  'current contents.\n\n')
+#: Marks an already-injected lore block inside the system message; by marker for the same reason.
+LORE_HEADER = "## Lore, loaded at the start of this conversation"
+LORE_OPENING = f'\n\n{LORE_HEADER}\n\n'
 STORE_OPENING = ('\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n')
 
 
@@ -144,6 +147,29 @@ def index_block(app, cwd=None) -> str:
             notify(f'warning: {INDEX_NAME} is {total} chars and was truncated at {INDEX_CAP} '
                    f'in the system prompt ({where}). Trim it.')
     return INDEX_OPENING.format(where=where) + text + '\n'
+
+
+def lore_block(app) -> str:
+    """The lore file as a prompt section, or '' for a seat with no owned agent home.
+
+    Only `.agents` seats (an owned AgentSession) are told the lore; a `.convos`-era
+    archive has no session and gets nothing, not even an error. A SNAPSHOT like the
+    index: injected once into message 0, which a local compaction keeps and a Claude
+    compaction rebuilds. Cuts are named in the text and the user is told too.
+    """
+    if getattr(app, '_agent_session', None) is None:
+        return ''
+    from litetui.lore import read_lore
+    found = read_lore()
+    if found is None:
+        return ''
+    _, text, warnings = found
+    notify = getattr(app, '_system', None)
+    for warning in warnings:
+        if notify is not None:
+            notify(f'warning: {warning[1:-1].removeprefix("... ")}. Trim it.')
+    # no text line when a cut kept none (one long line): the header and the note only
+    return LORE_OPENING + '\n'.join([*([text] if text else []), *warnings]) + '\n'
 
 
 def store_block(app, live: bool=False) -> str:
