@@ -11,12 +11,13 @@ import asyncio
 import difflib
 import json
 import os
-from pathlib import Path
-import secrets
 import re
+import secrets
+from pathlib import Path
 from uuid import uuid4
 
-from litetui import harness, paths, prompt_overrides as prompts
+from litetui import harness, paths
+from litetui import prompt_overrides as prompts
 from litetui.agent_store import AgentStore, valid_id
 
 REQUEST = "gui.prompts.request"
@@ -153,7 +154,7 @@ async def dispatch(app, command: dict) -> dict:
         notice = result["notice"]
         try:
             sent = await asyncio.to_thread(app.seat.send, agent.agent_id, notice)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- notice failure must not undo an applied edit
             sent = False
         try:
             receipt = await attach(agent.agent_id, {**forwarded, "notification_sent": sent})
@@ -180,7 +181,13 @@ async def dispatch(app, command: dict) -> dict:
         raise prompts.PromptError("Target must own its agent home and requested live conversation")
     # Role text can vary; role authority cannot. Validate before publishing.
     if command["action"] == "set":
-        from litetui.seat_prompts import authored_text, method_selected, role_body, role_name, validate_method
+        from litetui.seat_prompts import (
+            authored_text,
+            method_selected,
+            role_body,
+            role_name,
+            validate_method,
+        )
         if command["name"] == "role.md":
             role_body(command["text"], role_name(app.seat.tier))
         elif command["name"] == "method.md":
@@ -194,7 +201,7 @@ async def dispatch(app, command: dict) -> dict:
     if not result.get("duplicate"):
         try:
             app._system(notice)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- UI notice failure is recorded after publication
             result = {**result, "local_notice_failed": True}
     return {**result, "notice": notice}
 
@@ -213,10 +220,10 @@ def sync_directory(path: Path) -> None:
 
 
 def append_audit(directory: Path, row: dict) -> None:
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
     path = prompts.checked(directory / "prompts" / "audit.jsonl")
     with path.open("a", encoding="utf-8") as out:
-        out.write(json.dumps({"when": datetime.now(timezone.utc).isoformat(), **row}, ensure_ascii=False) + "\n")
+        out.write(json.dumps({"when": datetime.now(UTC).isoformat(), **row}, ensure_ascii=False) + "\n")
         out.flush()
         os.fsync(out.fileno())
     sync_directory(path.parent)

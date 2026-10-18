@@ -102,7 +102,13 @@ def launch_message_matches(app, content: str) -> bool:
 
 
 def _launch_content_matches(app, launch: str, content: str) -> bool:
-    from litetui.appsvc import FLEET_OPENING, INDEX_OPENING, LORE_OPENING, STORE_OPENING, extend_system_text
+    from litetui.appsvc import (
+        FLEET_OPENING,
+        INDEX_OPENING,
+        LORE_OPENING,
+        STORE_OPENING,
+        extend_system_text,
+    )
     if not isinstance(content, str):
         return False
     if content.startswith(extend_system_text(launch, FLEET_OPENING)):

@@ -104,8 +104,8 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
             directory: str | None = None) -> None:
     """Seed only after AgentSession lease acquisition, before first composition.
 
-    A prepared home is read directly on subsequent launches. Explicit inputs
-    replace their named files; a full-folder seed is intentionally exclusive.
+    A prepared home is read directly on subsequent launches. Launch inputs
+    seed their named files once; a full-folder seed is intentionally exclusive.
     No home creation or launch identity is inferred from prompt contents.
     """
     from litetui.prompt_commands import publish
@@ -151,14 +151,33 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
     launch_manifest = prompts.checked(root / ".prompt-launch.json")
     supplied = {name: prompts.sha(text) for name, text in selected.items()}
     recorded = {}
+    role_source = ("seed" if directory else "custom" if custom is not None else "default") if "role.md" in supplied else "none"
     if launch_manifest.exists():
-        recorded = json.loads(prompts.read_text(launch_manifest))
+        manifest = json.loads(prompts.read_text(launch_manifest))
+        recorded_role_source = None  # Legacy hash-only manifests cannot prove source origin.
+        recorded = manifest
+        if isinstance(manifest, dict) and "version" in manifest:
+            if (set(manifest) != {"version", "sources", "role_source"}
+                    or type(manifest["version"]) is not int or manifest["version"] != 2
+                    or manifest["role_source"] not in ("custom", "default", "seed", "none")):
+                raise prompts.PromptError("Invalid per-home launch-source manifest")
+            recorded = manifest["sources"]
+            recorded_role_source = manifest["role_source"]
         if not isinstance(recorded, dict) or any(name not in prompts.MUTABLE or not isinstance(digest, str)
                                                or not re.fullmatch(r"[0-9a-f]{64}", digest)
                                                for name, digest in recorded.items()):
             raise prompts.PromptError("Invalid per-home launch-source manifest")
-        if any(recorded.get(name) != digest for name, digest in supplied.items()):
-            raise prompts.PromptError("Launch prompt source changed for an initialized home; use owner prompt command or a new agent home")
+        if recorded_role_source is not None and ((recorded_role_source == "none") != ("role.md" not in recorded)):
+            raise prompts.PromptError("Invalid per-home launch-source manifest")
+        for name, digest in supplied.items():
+            # Producers omit fresh-only custom flags on named resume. Their default
+            # role file is fallback, not a replacement for the authored home body.
+            # Validation above still checks its declared role against actual tier.
+            if (name == "role.md" and custom is None and role_file and not directory
+                    and recorded_role_source in ("custom", "seed")):
+                continue
+            if recorded.get(name) != digest:
+                raise prompts.PromptError("Launch prompt source changed for an initialized home; use owner prompt command or a new agent home")
         # Repeated producer defaults must not erase live edits on restart.
         selected = {}
     app._legacy_launch_candidates = legacy_launches(custom, role_file, cognitive_file)
@@ -177,7 +196,7 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
             global_path = paths.SYSTEM_PROMPT_FILE if name == "systemprompt.md" else paths.prompt_file(name)
             publish(destination, prompts.read_text(global_path) if global_path.is_file() else "")
     if not launch_manifest.exists():
-        publish(launch_manifest, json.dumps(supplied, sort_keys=True))
+        publish(launch_manifest, json.dumps({"version": 2, "sources": supplied, "role_source": role_source}, sort_keys=True))
     app._prompt_snapshot = None
     prompts.refresh(app)
     app._prompt_revision_at_launch = revision(app)
