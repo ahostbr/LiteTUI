@@ -54,9 +54,21 @@ def _cmd_new(app, name: str, arg: str) -> None:
 
 def _cmd_system(app, name: str, arg: str) -> None:
     if arg:
+        if hasattr(app, "_seat_prompt_role"):
+            from litetui.seat_prompts import set_system_body
+            set_system_body(app, arg)
+            message = app._host_prompt_message()
+            if app.conversation and app.conversation[0]["role"] == "system":
+                app.conversation[0] = message
+                app._edit(0, "system body changed; actual role retained")
+            else:
+                app.conversation.insert(0, message)
+                app._snapshot("system body inserted; actual role retained")
+            app.system_message("System body updated for this agent home; actual role/method retained")
+            return
         app._store_injected = False  # the replacement contains no host store snapshot
         if app.conversation and app.conversation[0]["role"] == "system":
-            app.conversation[0]["content"] = arg
+            app.conversation[0] = {"role": "system", "content": arg}
             app._edit(0, "system prompt changed")
         else:
             app.conversation.insert(

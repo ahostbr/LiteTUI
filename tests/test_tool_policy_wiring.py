@@ -396,14 +396,14 @@ async def test_a_seat_s_own_worktree_command_runs_without_a_modal_but_a_stranger
     calls = []
     host, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
                           profile=INTERACTIVE, approve=DENIED)
-    host.seat = SimpleNamespace(name="Seat")
+    host.seat = SimpleNamespace(name="Seat", current_spawner=lambda: None)
     result, ok = await app_mod.LiteTUI._execute_tool(host, "bash", {"command": command})
     assert ok and screens == [] and calls == [{"command": command}]
 
     calls.clear()
     stranger, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
                               profile=INTERACTIVE, approve=DENIED)
-    stranger.seat = SimpleNamespace(name="Someone")
+    stranger.seat = SimpleNamespace(name="Someone", current_spawner=lambda: None)
     result, ok = await app_mod.LiteTUI._execute_tool(stranger, "bash", {"command": command})
     assert not ok and len(screens) == 1 and calls == []
 
