@@ -242,7 +242,10 @@ def _owned_file_refusal(app, args, workspace, policy, name, words, unders=(None,
     if policy is not None and policy.classify_args is None and policy.capabilities <= {
             tool_policy.READ_ONLY, tool_policy.NETWORK}:
         return None
-    found = _protected_write(args, workspace, name, unders, shell)
+    try:
+        found = _protected_write(args, workspace, name, unders, shell)
+    except deny_floor.UnresolvablePath as error:
+        return error.reason  # not an ownership waiver, even for Owner's own seat
     # The owner recheck costs a bridge call: only a recognized write pays it.
     if found is None or is_ryans_own(app, recheck=True):
         return None
@@ -263,18 +266,22 @@ def _protected_write(args, workspace, name, unders, shell=None) -> tuple | None:
         for under in unders:
             if reason := deny_floor.jobs_git_refusal(command, workspace, shell=shell, name=name, under=under):
                 return None, reason, under
-    bases = [Path(workspace), Path.cwd()]
+    try:
+        cwd = Path.cwd()
+    except (OSError, ValueError, RuntimeError) as error:
+        raise deny_floor.UnresolvablePath("<current working directory>", error) from error
+    bases = [Path(workspace), cwd]
     if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
         bases.append(Path(workspace) / args["cwd"])
-    for base in dict.fromkeys(b.resolve() for b in bases):
+    for base in dict.fromkeys(deny_floor.resolve_path(b) for b in bases):
         for raw in paths:
-            try:   # the one door every tool passes: a malformed path is not the target
-                # dealias FIRST (Dijkstra A1): `jobs.json::$DATA` opens jobs.json, and
-                # un-reduced it fails to resolve, which would skip it as malformed.
-                path = Path(deny_floor.dealias(raw.strip().strip("\"'"))).expanduser()
-                target = (path if path.is_absolute() else base / path).resolve()
-            except (OSError, ValueError, RuntimeError):
-                continue
+            # dealias FIRST (Dijkstra A1): `jobs.json::$DATA` opens jobs.json.
+            # A failed check is a refusal, never evidence of a non-target.
+            path = Path(deny_floor.dealias(raw.strip().strip("\"'"), allow_globs=False))
+            if str(path).startswith("~"):
+                target = deny_floor.resolve_path(path, expanduser=True)
+            else:
+                target = deny_floor.resolve_path(path if path.is_absolute() else base / path)
             for under in unders:
                 if deny_floor.is_jobs_file(target, name, under):
                     return target, None, under
