@@ -1,3 +1,5 @@
+> **SUPERSEDED - historical checkpoint only.** Current contract and evidence: [T0338-current-validation.md](T0338-current-validation.md). The HOME-scoped full catalog and audited fresh/named-resume authoring supersede the five-file, global-only and materialized-conversation restrictions below. Historical body/evidence and review-round numbering are retained unchanged.
+
 # T0338 same-reviewer bounded R1/R2/R3 candidate
 
 This is the one authorized fix round following REQUEST-CHANGES on 3025a62.
