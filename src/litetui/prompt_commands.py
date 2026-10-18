@@ -24,7 +24,7 @@ APPLY = "gui.prompts.apply"
 LOCAL_OPERATIONS = frozenset({REQUEST, APPLY})
 
 
-def target(root: Path, seat: str, convo: str):
+def target(root: Path, seat: str, convo: str | None):
     store = AgentStore(root)
     try:
         identity = valid_id(seat)
@@ -174,20 +174,23 @@ async def dispatch(app, command: dict) -> dict:
     agent, directory = target(paths.data_root(), command["seat"], command["convo"])
     store = app.store
     if (store.agent_session is not app._agent_session
-            or not store.owned or store.loading or store.convo_dir != app.convo_dir
+            or (not store.owned and not store.pending) or store.loading or store.convo_dir != app.convo_dir
             or app._agent_session.memory_root != directory
             or (command["convo"] is not None and app.convo_id != command["convo"])):
         raise prompts.PromptError("Target must own its agent home and requested live conversation")
     # Role text can vary; role authority cannot. Validate before publishing.
     if command["action"] == "set":
-        from litetui.seat_prompts import role_body, role_name, validate_method
+        from litetui.seat_prompts import authored_text, method_selected, role_body, role_name, validate_method
         if command["name"] == "role.md":
             role_body(command["text"], role_name(app.seat.tier))
         elif command["name"] == "method.md":
-            validate_method(command["text"])
+            validate_method(command["text"], selected=method_selected(app))
     # No await from ownership validation through publication: the target app loop
     # owns selection and turn snapshots; neither can interleave with this write.
     result, notice = apply(directory, command)
+    if command["name"] == "method.md" and command["action"] == "set" and authored_text(command["text"]).strip():
+        app._seat_method_selected = True
+        app._seat_prompt_policy = True
     if not result.get("duplicate"):
         try:
             app._system(notice)

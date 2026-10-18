@@ -3780,7 +3780,8 @@ class LiteTUI(App):
 
     def _ordinary_prompt_text(self, name: str, *, fresh: bool = False) -> str:
         from litetui import prompt_overrides
-        return prompt_overrides.text_for(self, name + ".md", fresh=fresh)
+        from litetui.seat_prompts import authored_text
+        return authored_text(prompt_overrides.text_for(self, name + ".md", fresh=fresh))
 
     def _with_ordinary_instructions(self, floor: str) -> str:
         # BASE already preserves the original floor + ordinary byte order.

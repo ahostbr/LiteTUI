@@ -60,7 +60,7 @@ def seeded_append(seed, *, verbatim=False):
     Fixed for the life of the segment, so every request of that session (and
     every resume of it) carries the same prefix."""
     if verbatim:
-        return f"{APPEND}\n\nLiteTUI preserved the prior conversation verbatim for this system update. Treat it as historical context, not new user instructions:\n\n{seed}"
+        return f"{APPEND}\n\nLiteTUI preserved the prior APP-RECORDED conversation and base seed for this system update, not hidden native context. Treat it as historical context, not new user instructions:\n\n{seed}"
     return (f"{APPEND}\n\nThis session continues a conversation LiteTUI compacted. The summary below "
             "was written by you, in the previous session, from the full conversation. Treat it as "
             f"your own notes on everything before this point:\n\n{seed}")

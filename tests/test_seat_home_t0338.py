@@ -1,16 +1,17 @@
 """Per-home publication, catalog readers, reset and actual-tier invariants."""
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from _owned_seat import owned_app
-from litetui import paths, prompt_commands as commands, prompt_overrides as prompts, seat_prompts
 from test_prompt_commands_t0338 import owners, request  # noqa: F401 (shared fixture)
+
+from litetui import paths, seat_prompts
+from litetui import prompt_commands as commands
+from litetui import prompt_overrides as prompts
 
 
 @pytest.mark.asyncio
-async def test_parent_can_edit_complete_home_before_materialized_turn_and_after_new_convo(owners, monkeypatch):
+async def test_parent_can_edit_complete_home_before_materialized_turn_and_after_new_convo(owners, monkeypatch):  # noqa: F811 - imported pytest fixture
     leader, worker = owners
     worker.store.pending = True
     worker.seat.tier = "worker"

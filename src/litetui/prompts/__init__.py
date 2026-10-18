@@ -41,7 +41,13 @@ Snapshots refresh at turn admission, not mid-turn. Reset keeps revision/audit
 history and uses packaged defaults; role/method have no global defaults, so
 their reset is explicitly unsupported (set the desired body instead). Native
 Claude edits use a fresh seeded segment with prior context and frozen store;
-pending deliveries are held, never silently moved or replayed. Legacy native
-segments lacking frozen metadata require an explicit /claude new after edits.
+pending deliveries are held, never silently moved or replayed. Selected-policy
+native segments lacking a recorded revision require explicit /claude new even
+when current files are unchanged. A revision includes normalized actual role
+and composer policy version. Repeat updates carry one APP-RECORDED history
+snapshot plus the stable prior base seed, not hidden native/session context.
+Selected methods must remain nonblank at source, publication and composition.
+One leading encoding BOM is normalized in authored parsing/rendering only;
+raw launch-prefix proof and managed-publication hashes retain source text.
 Executable ownership/approval/tool enforcement is not authored prompt prose.
 """

@@ -13,9 +13,22 @@ from litetui import prompt_overrides as prompts
 ALIASES = {"owner": "leader", "builder": "worker", "critic": "reviewer", "scout": "thinker"}
 DISPLAY_ROLES = {"leader": "owner", "worker": "builder", "reviewer": "critic", "thinker": "scout", "orchestrator": "orchestrator"}
 ROLES = frozenset({"orchestrator", "leader", "worker", "thinker", "reviewer"})
-ROLE_HEADER = re.compile(r"^#\s+([A-Z]+) ROLE[^\n]*$", re.MULTILINE)
-MODE_HEADER = re.compile(r"^#\s+POLYMATHIC[^\n]*\s[—-]\s[^\n]*Mode[^\n]*$", re.MULTILINE | re.IGNORECASE)
-METHOD_HEADER = re.compile(r"^#\s+POLYMATHIC[^\n]*$", re.MULTILINE)
+ROLE_HEADER = re.compile(r"^\ufeff*#\s+([A-Z]+) ROLE[^\n]*$", re.MULTILINE)
+MODE_HEADER = re.compile(r"^\ufeff*#\s+POLYMATHIC[^\n]*\s[â€”-]\s[^\n]*Mode[^\n]*$", re.MULTILINE | re.IGNORECASE)
+METHOD_HEADER = re.compile(r"^\ufeff*#\s+POLYMATHIC[^\n]*$", re.MULTILINE)
+
+
+def authored_text(text: str) -> str:
+    """One UTF-8 encoding BOM is not authored role/method content.
+
+    This is a parsing/rendering view only. Legacy source matching and managed
+    publication hashes keep their raw text, including any encoding marker.
+    """
+    if text.startswith("\ufeff"):
+        text = text[1:]
+        if text.startswith("\ufeff"):
+            raise prompts.PromptError("Multiple leading encoding BOMs are refused")
+    return text
 
 
 def role_name(value: str) -> str:
@@ -34,6 +47,7 @@ def home(app) -> Path | None:
 
 
 def role_body(text: str, role: str) -> str:
+    text = authored_text(text)
     headers = list(ROLE_HEADER.finditer(text))
     if len(headers) > 1 or MODE_HEADER.search(text):
         raise prompts.PromptError("Duplicate or embedded role-mode scaffold refused; use method-only text")
@@ -62,12 +76,26 @@ def method_text(source: Path) -> str:
         pure = prompts.checked(source.parent.parent / "pure" / source.name)
         if pure.is_file():
             source = pure
-    text = prompts.read_text(source)
-    validate_method(text)
+    text = authored_text(prompts.read_text(source))
+    validate_method(text, selected=True)
     return text
 
 
-def validate_method(text: str) -> None:
+def method_selected(app) -> bool:
+    if getattr(app, "_seat_method_selected", False):
+        return True
+    snapshot = getattr(app, "_prompt_snapshot", None)
+    if snapshot is not None and authored_text(snapshot.texts.get("method.md", "")).strip():
+        return True
+    root = home(app)
+    path = prompts.checked(root / "prompts" / "method.md") if root is not None else None
+    return path is not None and path.is_file() and bool(authored_text(prompts.read_text(path)).strip())
+
+
+def validate_method(text: str, *, selected: bool = False) -> None:
+    text = authored_text(text)
+    if selected and not text.strip():
+        raise prompts.PromptError("Selected polymath method cannot be blank")
     if ROLE_HEADER.search(text) or MODE_HEADER.search(text) or len(METHOD_HEADER.findall(text)) > 1:
         raise prompts.PromptError("Cognitive source must be one method without role-mode scaffold; select pure catalog file")
 
@@ -115,13 +143,14 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
     if "method.md" in selected:
         if not selected["method.md"].strip():
             raise prompts.PromptError("Selected cognitive method is empty")
-        validate_method(selected["method.md"])
+        validate_method(selected["method.md"], selected=True)
     for name, text in selected.items():
         if len(text.encode("utf-8")) > prompts.MAX_BYTES or "\0" in text:
             raise prompts.PromptError(f"Launch prompt {name} is oversized or contains NUL")
     import json
     launch_manifest = prompts.checked(root / ".prompt-launch.json")
     supplied = {name: prompts.sha(text) for name, text in selected.items()}
+    recorded = {}
     if launch_manifest.exists():
         recorded = json.loads(prompts.read_text(launch_manifest))
         if not isinstance(recorded, dict) or any(name not in prompts.MUTABLE or not isinstance(digest, str)
@@ -153,6 +182,11 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
     prompts.refresh(app)
     app._prompt_revision_at_launch = revision(app)
     app._prompt_baseline_texts = dict(app._prompt_snapshot.texts)
+    app._seat_method_selected = ("method.md" in supplied or "method.md" in recorded
+                                 or bool(authored_text(app._prompt_snapshot.texts["method.md"]).strip()))
+    app._seat_prompt_policy = (any(value is not None for value in (role_file, cognitive_file, custom, directory))
+                               or bool(authored_text(app._prompt_snapshot.texts["role.md"]).strip())
+                               or bool(authored_text(app._prompt_snapshot.texts["method.md"]).strip()))
 
 
 def launch_text(app) -> str:
@@ -163,15 +197,18 @@ def launch_text(app) -> str:
     if role != app._seat_prompt_role:
         raise prompts.PromptError("Actual role changed after prompt initialization")
     for name, text in snapshot.texts.items():
+        text = authored_text(text)
         if name not in {"role.md", "method.md"} and (
                 ROLE_HEADER.search(text) or MODE_HEADER.search(text) or METHOD_HEADER.search(text)):
             raise prompts.PromptError(f"Role/method scaffold belongs only in role.md/method.md, not {name}")
     body = role_body(snapshot.texts["role.md"], role)
-    method = snapshot.texts["method.md"].strip()
-    validate_method(method)
+    method = authored_text(snapshot.texts["method.md"]).strip()
+    validate_method(method, selected=method_selected(app))
+    if method:
+        app._seat_method_selected = True
     # Empty method is supported for ordinary unselected interactive seats.
     # A selected source is required to be nonempty at the launch boundary.
-    return "\n\n".join(p for p in (f"# {DISPLAY_ROLES[role].upper()} ROLE — {DISPLAY_ROLES[role].title()} Mode", body, method) if p)
+    return "\n\n".join(p for p in (f"# {DISPLAY_ROLES[role].upper()} ROLE â€” {DISPLAY_ROLES[role].title()} Mode", body, method) if p)
 
 
 def legacy_launches(custom, role_file, cognitive_file) -> tuple[str, ...]:
@@ -249,6 +286,12 @@ def set_system_body(app, text: str) -> None:
     prompts.refresh(app)
 
 
+COMPOSER_POLICY_VERSION = 1
+
+
 def revision(app, *, snapshot=None) -> str:
     snapshot = snapshot or getattr(app, "_prompt_snapshot", None) or prompts.refresh(app)
-    return prompts.sha("\0".join(name + "\0" + text for name, text in sorted(snapshot.texts.items())))
+    tier = getattr(getattr(app, "seat", None), "tier", None)
+    role = role_name(tier) if tier is not None else "unbound"
+    prefix = f"litetui-seat-composer/{COMPOSER_POLICY_VERSION}\0role={role}\0"
+    return prompts.sha(prefix + "\0".join(name + "\0" + text for name, text in sorted(snapshot.texts.items())))

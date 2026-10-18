@@ -59,13 +59,20 @@ def test_name_refusal(tmp_path, name):
         paths.prompt_file(name, convo_dir=tmp_path)
 
 
-def test_link_refusal(tmp_path):
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    try:
-        (tmp_path / "prompts").symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("OS does not grant test symlink creation")
+def test_link_refusal(tmp_path, monkeypatch):
+    # Exercise the real storage resolver against OS link metadata without
+    # creating a symlink/junction as a side effect of this task's test run.
+    import stat
+    from pathlib import Path
+
+    original = Path.lstat
+
+    def lstat(path):
+        if path == tmp_path / "prompts":
+            return SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0)
+        return original(path)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
     with pytest.raises(prompts.PromptError, match="Linked"):
         paths.prompt_file("compact.md", convo_dir=tmp_path)
 

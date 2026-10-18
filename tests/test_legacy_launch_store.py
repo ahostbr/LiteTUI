@@ -115,7 +115,11 @@ async def test_same_legacy_launch_shape_resumes_without_rewriting_systems(tmp_pa
         if backend == "claude":
             ledger = ledger_for(resumed)
             before = ledger.file.read_bytes()
-            assert system_prompt_for(resumed, ledger.selected) == ledger.selected["system_prompt"]
+            # Store provenance remains readable, but selected-policy execution
+            # cannot bless an unversioned native system from current files.
+            from litetui.claude_turn import UncertainDelivery
+            with pytest.raises(UncertainDelivery, match="/claude new"):
+                system_prompt_for(resumed, ledger.selected)
             assert ledger.file.read_bytes() == before
 
 

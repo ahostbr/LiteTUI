@@ -172,7 +172,7 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
-    def rotate_prompt(self, segment_id: str, *, seed: str) -> dict[str, Any]:
+    def rotate_prompt(self, segment_id: str, *, seed: str, root_seed: str = "") -> dict[str, Any]:
         """Fresh native context for edited system text; never rebind/replay an entry."""
         old = self._require_segment(segment_id)
         if self.pending(segment_id):
@@ -182,6 +182,7 @@ class ClaudeLedger:
         new = self.select_segment(old["workspace"], new=True, seed=seed)
         target = self._require_segment(new["id"])
         target["seed_verbatim"] = True
+        target["prompt_root_seed"] = root_seed
         for key in ("prompt_frozen", "store_identity", "store_injected"):
             if key in old:
                 target[key] = deepcopy(old[key])

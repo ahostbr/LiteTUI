@@ -61,6 +61,10 @@ def prompt_file(name: str, *, convo_dir: Path | None = None) -> Path:
     `tool-denied.md` -- the exact crash class T135 was written to remove,
     reintroduced by the shape of the anchor rather than by a missing file.
 
+    T0338: ``convo_dir`` is retained as a compatibility keyword for the layer
+    directory; owned-app readers pass the leased agent HOME, not its current
+    conversation or an external owner-memory folder.
+
     Per-file makes that docstring's promise ("override any file") true, and a
     partial override stays partial.
     """

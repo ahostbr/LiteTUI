@@ -46,7 +46,8 @@ def load_prompt(name: str, *, app=None, **variables: object) -> str:
     """
     if app is not None:
         from litetui.prompt_overrides import text_for
-        text = text_for(app, f"{name}.md")
+        from litetui.seat_prompts import authored_text
+        text = authored_text(text_for(app, f"{name}.md"))
     else:
         text = paths.prompt_file(f"{name}.md").read_text(encoding="utf-8")
     for key, value in variables.items():
