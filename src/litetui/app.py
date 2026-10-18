@@ -10308,7 +10308,7 @@ class LiteTUI(App):
         manual /compact, which is why the 70% reminder exists.
         """
         owner_dir, t0 = self._owner_memory_dir, self._owner_compact_t0
-        text = owner_mode.compact_prompt(owner_dir, summary=False, app=self)
+        text = owner_mode.compact_prompt(owner_dir, summary=False, app=self, fresh=True)
         why = None
         for attempt in (1, 2):
             if attempt == 1:
@@ -10430,7 +10430,7 @@ class LiteTUI(App):
         before_count = len(self.conversation)
         # Owner mode swaps STEP 1 (NOW.md rewrite + DOMAIN.md append in the owner folder).
         owner_dir = getattr(self, '_owner_memory_dir', None)
-        compact_text = owner_mode.compact_prompt(owner_dir, app=self) if owner_dir is not None else compact_prompt
+        compact_text = owner_mode.compact_prompt(owner_dir, app=self, fresh=True) if owner_dir is not None else compact_prompt
         owner_t0 = getattr(self, '_owner_compact_t0', None) if owner_dir is not None else None
         owner_failure = None  # why NOW.md was not committed, once the one retry is spent
         owner_retried = False

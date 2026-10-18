@@ -32,8 +32,13 @@ from rich.text import Text
 TOOL_NAME_DEFAULT = "#e8a33d"
 
 
-def load_prompt(name: str, *, app=None, **variables: object) -> str:
+def load_prompt(name: str, *, app=None, fresh: bool = False, **variables: object) -> str:
     """A prompt from prompts/<name>.md, with {name} placeholders substituted.
+
+    ``app`` binds reads to its per-home frozen turn snapshot. ``fresh=True``
+    is for a new maintenance operation: take a checked read-only snapshot and
+    restore the active turn snapshot afterward. Capture the returned text once
+    so retries of the same operation do not reread a moving template.
 
     Replacement, not str.format(): these files are meant to be EDITED, and a
     stray brace in hand-edited prose must not crash the app — only the
@@ -47,7 +52,7 @@ def load_prompt(name: str, *, app=None, **variables: object) -> str:
     if app is not None:
         from litetui.prompt_overrides import text_for
         from litetui.seat_prompts import authored_text
-        text = authored_text(text_for(app, f"{name}.md"))
+        text = authored_text(text_for(app, f"{name}.md", fresh=fresh))
     else:
         text = paths.prompt_file(f"{name}.md").read_text(encoding="utf-8")
     for key, value in variables.items():
