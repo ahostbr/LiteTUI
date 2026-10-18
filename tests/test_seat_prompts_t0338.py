@@ -37,7 +37,14 @@ def test_caller_replaces_default_role_body_and_next_turn_changes_system(tmp_path
     first = app._request_messages()[0]["content"]
     assert "CUSTOM BODY" in first and "DEFAULT MUST GO" not in first
     folder = app._agent_session.memory_root / "prompts"
-    (folder / "role.md").write_text("LIVE BODY", encoding="utf-8")
+    from uuid import uuid4
+
+    from litetui import prompt_commands
+    prompt_commands.apply(app._agent_session.memory_root, {
+        "type": prompt_commands.APPLY, "id": str(uuid4()), "action": "set",
+        "seat": app.seat.agent_id, "convo": None, "name": "role.md", "reason": "live update",
+        "text": "LIVE BODY", "global_sha": prompts.sha(""),
+        "actor": app.seat.agent_id, "notification_sent": None})
     prompts.refresh(app)
     second = app._request_messages()[0]["content"]
     assert "LIVE BODY" in second and "CUSTOM BODY" not in second

@@ -104,8 +104,9 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
             directory: str | None = None) -> None:
     """Seed only after AgentSession lease acquisition, before first composition.
 
-    A prepared home is read directly on subsequent launches. Launch inputs
-    seed their named files once; a full-folder seed is intentionally exclusive.
+    A prepared home retains live edits across default-only launches. Explicit
+    custom role input is an audited revision; other sources seed once and remain
+    pinned. A full-folder seed is intentionally exclusive.
     No home creation or launch identity is inferred from prompt contents.
     """
     from litetui.prompt_commands import publish
@@ -150,6 +151,7 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
     import json
     launch_manifest = prompts.checked(root / ".prompt-launch.json")
     supplied = {name: prompts.sha(text) for name, text in selected.items()}
+    explicit_role = selected.pop("role.md") if custom is not None else None
     recorded = {}
     role_source = ("seed" if directory else "custom" if custom is not None else "default") if "role.md" in supplied else "none"
     if launch_manifest.exists():
@@ -170,11 +172,11 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
         if recorded_role_source is not None and ((recorded_role_source == "none") != ("role.md" not in recorded)):
             raise prompts.PromptError("Invalid per-home launch-source manifest")
         for name, digest in supplied.items():
-            # Producers omit fresh-only custom flags on named resume. Their default
-            # role file is fallback, not a replacement for the authored home body.
-            # Validation above still checks its declared role against actual tier.
-            if (name == "role.md" and custom is None and role_file and not directory
-                    and recorded_role_source in ("custom", "seed")):
+            # Explicit custom text is an intentional audited role revision. A
+            # producer default remains fallback, never a replacement for that body.
+            # All supplied role text was checked against actual tier above.
+            if name == "role.md" and (custom is not None or (
+                    role_file and not directory and recorded_role_source in ("custom", "seed"))):
                 continue
             if recorded.get(name) != digest:
                 raise prompts.PromptError("Launch prompt source changed for an initialized home; use owner prompt command or a new agent home")
@@ -182,6 +184,14 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
         selected = {}
     app._legacy_launch_candidates = legacy_launches(custom, role_file, cognitive_file)
     folder = prompts.checked(root / "prompts")
+    # Validate other seed destinations before an explicit role revision. Publication
+    # uncertainty must reach the shared audit barrier before any seed file writes.
+    for name in selected:
+        if prompts.metadata(root, name) is not None:
+            raise prompts.PromptError(f"Managed prompt {name} already exists; use owner prompt command to revise it")
+    if explicit_role is not None:
+        assert custom is not None  # explicit_role was selected only from custom input
+        _apply_launch_role(app, root, explicit_role, custom)
     folder.mkdir(exist_ok=True)
     # Full catalog is per-home even before the first conversation materializes.
     # Global fallbacks seed missing files, not a half-created agent home.
@@ -195,8 +205,9 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
         elif not destination.exists():
             global_path = paths.SYSTEM_PROMPT_FILE if name == "systemprompt.md" else paths.prompt_file(name)
             publish(destination, prompts.read_text(global_path) if global_path.is_file() else "")
-    if not launch_manifest.exists():
-        publish(launch_manifest, json.dumps({"version": 2, "sources": supplied, "role_source": role_source}, sort_keys=True))
+    if explicit_role is not None or not launch_manifest.exists():
+        sources = {**recorded, **supplied} if explicit_role is not None else supplied
+        publish(launch_manifest, json.dumps({"version": 2, "sources": sources, "role_source": role_source}, sort_keys=True))
     app._prompt_snapshot = None
     prompts.refresh(app)
     app._prompt_revision_at_launch = revision(app)
@@ -206,6 +217,38 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
     app._seat_prompt_policy = (any(value is not None for value in (role_file, cognitive_file, custom, directory))
                                or bool(authored_text(app._prompt_snapshot.texts["role.md"]).strip())
                                or bool(authored_text(app._prompt_snapshot.texts["method.md"]).strip()))
+
+
+def _apply_launch_role(app, root: Path, text: str, input_text: str) -> None:
+    """Use the on-fly publication/audit path, under the already acquired HOME lease."""
+    import sys
+    from uuid import uuid4
+
+    from litetui import paths, prompt_commands
+
+    authority = app._agent_session.authority
+    parent = getattr(app.seat, "spawned_by", None)  # captured before launch-env scrubbing
+    global_file = paths.prompt_file("role.md")
+    global_text = prompts.read_text(global_file) if global_file.is_file() else ""
+    command = {"type": prompt_commands.APPLY, "id": str(uuid4()), "action": "set",
+               "seat": authority.agent_id, "convo": getattr(app, "_cli_convo_id", None),
+               "name": "role.md", "reason": "Explicit launch body before first composition",
+               "text": text, "global_sha": prompts.sha(global_text),
+               "actor": parent or authority.agent_id, "notification_sent": None}
+    # Validate the RAW launch body too: scaffold stripping cannot hide oversized
+    # metadata/comments or NUL from the shared public mutation contract.
+    prompt_commands.validate({**command, "text": input_text}, applying=True)
+    prompt_commands.validate(command, applying=True)
+    provenance = {"version": 1, "route": "owned-launch-role",
+                  "actor_kind": "launch-envelope parent assertion" if parent else "unparented OS-user launch; actor is home identity",
+                  "home_owner": authority.agent_id, "actual_role": app._seat_prompt_role,
+                  "source": "explicit system-prompt body (literal or UTF-8 file)",
+                  "input_text_sha256": prompts.sha(input_text), "body_sha256": prompts.sha(text),
+                  "authentication": "acquired HOME lease; not private-RPC actor authentication",
+                  "notification": "not sent; before first composition"}
+    result, _ = prompt_commands.apply(root, command, actor_provenance=provenance)
+    app._launch_prompt_update = result
+    print(f"Launch role prompt published: request {command['id']}; before first composition; no notification sent", file=sys.stderr)
 
 
 def launch_text(app) -> str:
@@ -232,7 +275,13 @@ def launch_text(app) -> str:
 
 def legacy_launches(custom, role_file, cognitive_file) -> tuple[str, ...]:
     """Exact catalog-derived former argv compositions, never a saved-text scan."""
-    preamble = custom if custom is not None else prompts.read_text(Path(role_file).absolute()) if role_file else ""
+    # NEW explicit launch text need not equal the old transcript prefix. The
+    # supplied default is also an exact known historical source, never a heading cut.
+    preambles = [custom] if custom is not None else []
+    if role_file:
+        preambles.append(prompts.read_text(Path(role_file).absolute()))
+    if not preambles:
+        preambles = [""]
     methods = [""]
     if cognitive_file:
         path = Path(cognitive_file).absolute()
@@ -243,7 +292,7 @@ def legacy_launches(custom, role_file, cognitive_file) -> tuple[str, ...]:
                 if wrapped.is_file():
                     methods.append(prompts.read_text(wrapped))
     return tuple(dict.fromkeys((preamble + "\n\n" if preamble and method else preamble) + method
-                               for method in methods if preamble or method))
+                               for preamble in preambles for method in methods if preamble or method))
 
 
 def rehydrate(app) -> bool:

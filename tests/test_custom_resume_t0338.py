@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from litetui import app as app_mod
-from litetui import cli, harness, image_viewer
+from litetui import cli, harness, image_viewer, prompt_commands
 from litetui import prompt_overrides as prompts
 
 
@@ -15,8 +15,8 @@ from litetui import prompt_overrides as prompts
 def test_custom_fresh_default_only_named_resume(tmp_path, monkeypatch, role, modern, live):
     """Use real CLI, AgentSession acquire/release and constructor/request composer.
 
-    Only the terminal event loop and terminal-image setup are substituted. Like
-    the producer, resume supplies no fresh-only --system-prompt[-file] flag.
+    Only the terminal event loop and terminal-image setup are substituted.
+    Default-only resume supplies no explicit --system-prompt[-file] revision.
     """
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -63,7 +63,10 @@ def test_custom_fresh_default_only_named_resume(tmp_path, monkeypatch, role, mod
     expected_body = "LIVE AUTHORED BODY" if live else "EXPLICIT CUSTOM BODY"
     expected_method = "LIVE METHOD DETAIL" if live else "SELECTED METHOD"
     if live:
-        (home / "prompts" / "role.md").write_text(expected_body, encoding="utf-8")
+        prompt_commands.apply(home, {"type": prompt_commands.APPLY, "id": str(uuid4()), "action": "set",
+                                    "seat": identity, "convo": None, "name": "role.md", "reason": "live edit",
+                                    "text": expected_body, "global_sha": prompts.sha(""),
+                                    "actor": str(uuid4()), "notification_sent": None})
         (home / "prompts" / "method.md").write_text(
             f"# POLYMATHIC GAMMA\n{expected_method}", encoding="utf-8")
     launch(["--agent", name])
@@ -79,11 +82,12 @@ def test_custom_fresh_default_only_named_resume(tmp_path, monkeypatch, role, mod
     for other in {"OWNER", "BUILDER", "CRITIC"} - {modern}:
         assert f"# {other} ROLE" not in text
 
-    # Fallback exemption must not authorize an explicitly changed custom source.
+    # Current intent: explicit ROLE input is an audited revision, unlike fallback.
     custom.write_text("CHANGED EXPLICIT CUSTOM", encoding="utf-8")
-    with pytest.raises(prompts.PromptError, match="source changed"):
-        launch(["--agent", name], ["--system-prompt-file", str(custom)])
-    assert (home / "prompts" / "role.md").read_text(encoding="utf-8") == expected_body
+    launch(["--agent", name], ["--system-prompt-file", str(custom)])
+    assert seen[-1].count("CHANGED EXPLICIT CUSTOM") == 1
+    assert (home / "prompts" / "role.md").read_text(encoding="utf-8") == "CHANGED EXPLICIT CUSTOM"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["sources"]["role.md"] == prompts.sha("CHANGED EXPLICIT CUSTOM")
     method.write_text("# POLYMATHIC GAMMA\nCHANGED EXPLICIT METHOD", encoding="utf-8")
     with pytest.raises(prompts.PromptError, match="source changed"):
         launch(["--agent", name])
