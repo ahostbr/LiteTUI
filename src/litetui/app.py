@@ -4492,14 +4492,24 @@ class LiteTUI(App):
         host_index = (1 if len(msgs) > 1 and msgs[1].get('role') == 'system'
                       and launch_message_matches(self, msgs[0].get('content', '')) else 0)
         if self.conversation and self.conversation[host_index].get('role') == 'system':
-            current = self.conversation[host_index].get('content')
-            if isinstance(current, str):
+            host = self.conversation[host_index]
+            current = host.get('content')
+            base = host.get('litetui_prompt_base')
+            # Explicit recorded provenance was validated above. A proved v2
+            # host owns its entire prefix, including edited storage templates;
+            # legacy address inference must not append after its frozen suffix.
+            proved_v2 = (meta.get('store_identity', UNRECORDED) is not UNRECORDED
+                         and type(host.get('litetui_prompt_owner')) is int and host['litetui_prompt_owner'] == 1
+                         and type(host.get('litetui_prompt_version')) is int and host['litetui_prompt_version'] == 2
+                         and isinstance(base, str) and bool(base)
+                         and isinstance(current, str) and current.startswith(base))
+            if isinstance(current, str) and not proved_v2:
                 owner_dir = getattr(self, '_owner_memory_dir', None)
                 refreshed = (refresh_store_address(current, self.convo_id, owner_dir, owner=True)
                              if owner_dir is not None
                              else refresh_store_address(current, self.convo_id, self._agent_session.memory_root))
                 if refreshed != current:
-                    self.conversation[host_index] = {**self.conversation[host_index], 'content': refreshed}
+                    self.conversation[host_index] = {**host, 'content': refreshed}
                     self._edit(host_index, 'owned store address refreshed')
         memory_root = (self._agent_session.memory_root
                        if getattr(self, '_agent_session', None) is not None else self.convo_dir)
