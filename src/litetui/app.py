@@ -6172,7 +6172,7 @@ class LiteTUI(App):
             if self._cli_convo_id:
                 from litetui.seat_prompts import rehydrate
                 if not rehydrate(self):
-                    self._cli_launch_error = "Launch text mismatch: exact supplied launch provenance could not be proved; nothing was sent"
+                    self._cli_launch_error = "Launch text mismatch: exact supplied launch provenance could not be proved; resume with identical launch sources or start a new conversation (omit --convo). Nothing was sent"
                     self._system(self._cli_launch_error)
                     return
             # Launch role/method already belongs to the one host system message.

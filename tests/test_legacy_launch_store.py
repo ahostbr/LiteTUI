@@ -67,7 +67,13 @@ async def legacy_fixture(tmp_path, monkeypatch, build, owner, backend, suffix, l
             first._inject_lore_once()
             first._inject_store_once()
         if backend == "claude":
-            system_prompt_for(first, ledger_for(first).select_segment(str(Path.cwd())))
+            ledger = ledger_for(first)
+            segment = ledger.select_segment(str(Path.cwd()))
+            # Explicit historical native shape: raw launch then original host,
+            # not the new canonical composer with a midturn stale snapshot.
+            ledger.fix_system_prompt(segment["id"], launch + "\n\n" + host,
+                                     store_identity=first._prompt_store_identity,
+                                     store_injected=first._store_injected)
         first._append({"role": "user", "content": "saved first input"})
         path = first.convo_path
         saved = [dict(message) for message in first.conversation]

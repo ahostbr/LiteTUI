@@ -116,11 +116,18 @@ def prepare(app, *, role_file: str | None = None, cognitive_file: str | None = N
         if not selected["method.md"].strip():
             raise prompts.PromptError("Selected cognitive method is empty")
         validate_method(selected["method.md"])
+    for name, text in selected.items():
+        if len(text.encode("utf-8")) > prompts.MAX_BYTES or "\0" in text:
+            raise prompts.PromptError(f"Launch prompt {name} is oversized or contains NUL")
     import json
     launch_manifest = prompts.checked(root / ".prompt-launch.json")
     supplied = {name: prompts.sha(text) for name, text in selected.items()}
     if launch_manifest.exists():
         recorded = json.loads(prompts.read_text(launch_manifest))
+        if not isinstance(recorded, dict) or any(name not in prompts.MUTABLE or not isinstance(digest, str)
+                                               or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                                               for name, digest in recorded.items()):
+            raise prompts.PromptError("Invalid per-home launch-source manifest")
         if any(recorded.get(name) != digest for name, digest in supplied.items()):
             raise prompts.PromptError("Launch prompt source changed for an initialized home; use owner prompt command or a new agent home")
         # Repeated producer defaults must not erase live edits on restart.

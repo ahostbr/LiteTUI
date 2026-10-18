@@ -57,7 +57,7 @@ def _host_prefixes(app, *, native: bool) -> list[str]:
         elif enabled:
             bases = [(base + section.render()).strip() for base in bases]
     launches = tuple(dict.fromkeys((*getattr(app, "_legacy_launch_candidates", ()), getattr(app, "_cli_system_prompt", None)))) if native else ()
-    prefixes = [(base + "\n\n" if base else "") for base in bases]
+    prefixes = [] if any(isinstance(launch, str) and launch for launch in launches) else [(base + "\n\n" if base else "") for base in bases]
     prefixes += [launch + "\n\n" + (base + "\n\n" if base else "")
                  for launch in launches if isinstance(launch, str) and launch for base in bases]
     from litetui.seat_prompts import launch_text

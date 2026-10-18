@@ -248,10 +248,10 @@ def main() -> None:
         if not args.rpc:
             app_kwargs["ansi_color"] = wants_ansi_fallback()
 
-        if args.system_prompt and args.system_prompt_file:
+        if args.system_prompt is not None and args.system_prompt_file is not None:
             parser.error("--system-prompt and --system-prompt-file are mutually exclusive")
         system_prompt = args.system_prompt
-        if args.system_prompt_file:
+        if args.system_prompt_file is not None:
             try:
                 system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
             except OSError as exc:
