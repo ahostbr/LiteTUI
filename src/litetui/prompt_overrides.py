@@ -15,7 +15,15 @@ from pathlib import Path
 
 from litetui.agent_store import StoreError, _unlinked
 
-MUTABLE = frozenset(p.name for p in (Path(__file__).parent / "prompts").glob("*.md")) | {"role.md", "method.md"}
+# Source-controlled packaged catalog, not an inventory of a mutable install.
+# Backups, locks and other unshipped files must never become authored defaults.
+PACKAGED = frozenset({
+    "card-summary.md", "claude-tools.md", "compact-owner.md", "compact.md",
+    "conversation-store.md", "harness-capabilities.md", "ordinary-instructions.md",
+    "owner-store.md", "plan-mode.md", "seat-instructions.md", "systemprompt.md",
+    "tool-denied.md", "tools.md", "wake-after-compact.md",
+})
+MUTABLE = PACKAGED | {"role.md", "method.md"}
 MAX_BYTES = 64 * 1024
 
 
