@@ -1,6 +1,6 @@
 //! Owned Python legacy RPC runtime for one-shot and interactive frontends.
 //! Deliberately not GUI reconciliation or the generic identified-stream reducer.
-//! No automatic retries, backend fallback, approvals or local model launches.
+//! No automatic retries, backend fallback, automatic approvals or local model launches.
 use crate::{
     protocol::JsonlDecoder,
     transport::{Inbound, IngressLimits},
@@ -116,6 +116,7 @@ pub enum Observation {
         text: String,
     },
     Activity(crate::native_activity::Activity),
+    Approval(crate::approvals::Event),
     Text(String),
     Snapshot(String),
     Reasoning(String),
@@ -136,13 +137,16 @@ pub struct Turn {
     started: bool,
     acknowledged: bool,
     complete: bool,
+    terminal_received: bool,
     content_bytes: usize,
+    approvals: crate::approvals::Ledger,
 }
 impl Turn {
     /// Reserve a new command ID exactly once. Neither a write nor admission.
     pub fn submit(&mut self, prompt: &str) -> io::Result<Value> {
         if !self.ready
             || self.closing
+            || !self.approvals.settled()
             || (self.sent && !self.complete)
             || prompt.trim().is_empty()
             || prompt.len() > 65536
@@ -164,11 +168,18 @@ impl Turn {
         self.started = false;
         self.acknowledged = false;
         self.complete = false;
+        self.terminal_received = false;
         self.visible_answers.clear();
         self.tools_seen = false;
         self.card_count = 1;
         self.content_bytes = 0;
         Ok(json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":"strict"}))
+    }
+    pub fn approve(&mut self, decision: crate::approvals::Decision) -> io::Result<Option<Value>> {
+        if self.closing {
+            return Ok(None);
+        }
+        self.approvals.decide(decision)
     }
     pub fn accept(&mut self, event: &Value, backend: &str, model: &str) -> io::Result<Observation> {
         let fail = |message: &str| io::Error::other(message.to_owned());
@@ -204,6 +215,13 @@ impl Turn {
                 Ok(Observation::Information("shutdown acknowledged".into()))
             }
             "response" => {
+                if let Some(event) = self.approvals.response(event)? {
+                    if self.terminal_received && !self.complete && self.approvals.settled() {
+                        self.complete = true;
+                        return Ok(Observation::Complete);
+                    }
+                    return Ok(Observation::Approval(event));
+                }
                 if event["id"] != self.command_id
                     || !self.sent
                     || self.acknowledged
@@ -227,7 +245,7 @@ impl Turn {
                 Ok(Observation::Information("turn started".into()))
             }
             "text_delta" | "native_text_snapshot" | "reasoning_delta"
-                if self.started && !self.complete =>
+                if self.started && !self.terminal_received =>
             {
                 let card = crate::native_activity::card_index(event)?;
                 if card.is_none() && self.tools_seen {
@@ -290,7 +308,7 @@ impl Turn {
                     }
                 })
             }
-            "native_activity" if self.started && !self.complete && backend == "claude" => {
+            "native_activity" if self.started && !self.terminal_received && backend == "claude" => {
                 let activity = crate::native_activity::Activity::from_event(event)?;
                 if activity.card >= self.card_count {
                     return Err(fail("Native tool has invalid display ownership"));
@@ -303,13 +321,28 @@ impl Turn {
                 self.tools_seen = true;
                 Ok(Observation::Activity(activity))
             }
-            "turn_end" if self.started && !self.complete => {
+            "tool_approval_requested"
+                if self.started && !self.terminal_received && !self.closing =>
+            {
+                let event = self.approvals.request(event)?;
+                if let crate::approvals::Event::Requested(request) = &event {
+                    self.content_bytes = self
+                        .content_bytes
+                        .checked_add(request.text_bytes())
+                        .filter(|n| *n <= 4 * FRAME_BYTES)
+                        .ok_or_else(|| fail("Live content budget exceeded"))?;
+                }
+                Ok(Observation::Approval(event))
+            }
+            "tool_approval_closed" => Ok(Observation::Approval(self.approvals.close(event)?)),
+            "turn_end" if self.started && !self.terminal_received => {
                 if self.closing && event["stopReason"] != "stop" {
                     return Ok(Observation::Information(
                         "turn interrupted while quitting; not completed".into(),
                     ));
                 }
                 if !self.acknowledged
+                    || !self.approvals.all_closed()
                     || self.visible_answers.is_empty()
                     || event["stopReason"] != "stop"
                     || event.get("error").is_some_and(|v| !v.is_null() && v != "")
@@ -318,13 +351,20 @@ impl Turn {
                         "Turn did not complete successfully: {event}"
                     )));
                 }
-                self.complete = true;
-                Ok(Observation::Complete)
+                self.terminal_received = true;
+                if self.approvals.settled() {
+                    self.complete = true;
+                    Ok(Observation::Complete)
+                } else {
+                    Ok(Observation::Information(
+                        "Turn ended; waiting for outstanding approval-command responses".into(),
+                    ))
+                }
             }
             // These source-defined observations have no authority in this frontend.
             // Print their kind, rather than silently discarding unsupported state.
             "usage" | "native_usage" | "native_event" => Ok(Observation::Information(kind.into())),
-            // Interactive approval/question requests remain unsupported; never auto-answer.
+            // Structured questions remain unsupported; never auto-answer.
             _ => Err(fail(&format!(
                 "Unsupported or out-of-order live event: {kind}"
             ))),
@@ -572,9 +612,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let mut deadline = Some(Instant::now() + options.timeout);
     let result = (|| -> io::Result<()> {
         loop {
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return Err(io::Error::other("Live deadline elapsed; no prompt retry"));
-            }
+            check_deadline(deadline)?;
             if !turn.closing
                 && let Some(command) = frontend.command()?
             {
@@ -589,6 +627,17 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             .map_err(io::Error::other)?;
                         deadline = Some(Instant::now() + options.timeout);
                     }
+                    Input::Approve(decision) => {
+                        if let Some(value) = turn.approve(decision)? {
+                            owned
+                                .stdin
+                                .as_ref()
+                                .expect("owned stdin")
+                                .try_send(value)
+                                .map_err(io::Error::other)?;
+                        }
+                        // No deadline extension, no implicit denial on expiry.
+                    }
                     Input::Quit => {
                         turn.closing = true;
                         deadline = Some(Instant::now() + Duration::from_secs(20));
@@ -601,6 +650,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(error) => return Err(io::Error::other(error)),
             };
+            check_deadline(deadline)?;
             let ingress_result = match chunk {
                 Pipe::Stdout(bytes) => ingress.push(1, &bytes),
                 Pipe::Stderr(bytes) => {
@@ -632,18 +682,14 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     .push(&frame, |v| value = Some(v))
                     .map_err(|e| io::Error::other(format!("{e:?}")))?;
                 let event = value.expect("complete nonblank frame");
-                let observation = turn.accept(&event, &options.backend, &options.model)?;
-                // Validate facts before Ready can admit work or Complete can
-                // claim success. Never derive them from launch preferences.
-                if let Some(update) = crate::runtime_state::Update::from_event(&event)? {
-                    frontend.observe(Observation::State(update))?;
-                }
-                if !turn.closing
-                    && matches!(observation, Observation::Ready | Observation::Complete)
-                {
-                    deadline = None;
-                }
-                frontend.observe(observation)?;
+                publish_event(
+                    &mut turn,
+                    &event,
+                    &options.backend,
+                    &options.model,
+                    &mut deadline,
+                    frontend,
+                )?;
             }
             // Never admit another command after a fault, including when an
             // accepted prefix contains Ready or Complete. Drain prefix first.
@@ -683,6 +729,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 
 pub enum Input {
     Prompt(String),
+    Approve(crate::approvals::Decision),
     Quit,
 }
 trait Frontend {
@@ -701,6 +748,11 @@ impl Frontend for OneShot {
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
             Observation::State(_) => {} // Read-only footer facts; no one-shot action.
+            Observation::Approval(_) => {
+                return Err(io::Error::other(
+                    "One-shot frontend cannot answer approval; use interactive (no answer sent)",
+                ));
+            }
             Observation::Content { card, kind, text } => writeln!(
                 self.output,
                 "\n[Card {card} {kind:?}] {}",
@@ -772,16 +824,21 @@ pub fn run(options: Options) -> io::Result<()> {
 /// nonblocking; saturation fails visibly rather than dropping stream deltas.
 pub struct Interactive {
     commands: mpsc::SyncSender<Input>,
+    quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub events: mpsc::Receiver<Observation>,
     done: mpsc::Receiver<io::Result<()>>,
     finished: Option<Result<(), String>>,
 }
 struct Bridge {
     commands: mpsc::Receiver<Input>,
+    quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     events: mpsc::SyncSender<Observation>,
 }
 impl Frontend for Bridge {
     fn command(&mut self) -> io::Result<Option<Input>> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(Some(Input::Quit));
+        }
         match self.commands.try_recv() {
             Ok(input) => Ok(Some(input)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
@@ -797,9 +854,12 @@ impl Interactive {
         let (commands, input) = mpsc::sync_channel(2);
         let (events, output) = mpsc::sync_channel(64);
         let (finished, done) = mpsc::channel();
+        let quitting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_quitting = quitting.clone();
         thread::spawn(move || {
             let mut frontend = Bridge {
                 commands: input,
+                quitting: worker_quitting,
                 events,
             };
             let result = drive(options, &mut frontend);
@@ -807,6 +867,7 @@ impl Interactive {
         });
         Self {
             commands,
+            quitting,
             events: output,
             done,
             finished: None,
@@ -833,7 +894,7 @@ impl Interactive {
         if let Some(result) = self.poll_done() {
             return result;
         }
-        let _ = self.quit();
+        self.quit()?;
         let deadline = Instant::now() + Duration::from_secs(45);
         loop {
             for _ in self.events.try_iter() {}
@@ -864,13 +925,148 @@ impl Interactive {
         }
     }
     pub fn submit(&self, prompt: String) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
         self.commands
             .try_send(Input::Prompt(prompt))
             .map_err(io::Error::other)
     }
-    pub fn quit(&self) -> io::Result<()> {
+    pub fn approve(&self, decision: crate::approvals::Decision) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
         self.commands
-            .try_send(Input::Quit)
+            .try_send(Input::Approve(decision))
             .map_err(io::Error::other)
+    }
+    pub fn quit(&self) -> io::Result<()> {
+        // Cancellation is an out-of-band control, not another queue item.
+        self.quitting
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+}
+
+fn check_deadline(deadline: Option<Instant>) -> io::Result<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(io::Error::other("Live deadline elapsed; no prompt retry"));
+    }
+    Ok(())
+}
+fn publish_event(
+    turn: &mut Turn,
+    event: &Value,
+    backend: &str,
+    model: &str,
+    deadline: &mut Option<Instant>,
+    frontend: &mut impl Frontend,
+) -> io::Result<()> {
+    check_deadline(*deadline)?;
+    let observation = turn.accept(event, backend, model)?;
+    if let Some(update) = crate::runtime_state::Update::from_event(event)? {
+        frontend.observe(Observation::State(update))?;
+    }
+    check_deadline(*deadline)?;
+    if !turn.closing && matches!(observation, Observation::Ready | Observation::Complete) {
+        *deadline = None;
+    }
+    frontend.observe(observation)
+}
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    struct SlowView {
+        complete: bool,
+    }
+    impl Frontend for SlowView {
+        fn command(&mut self) -> io::Result<Option<Input>> {
+            Ok(None)
+        }
+        fn observe(&mut self, observation: Observation) -> io::Result<()> {
+            match observation {
+                Observation::State(_) => thread::sleep(Duration::from_millis(25)),
+                Observation::Complete => self.complete = true,
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn publishing_runtime_state_cannot_erase_an_expired_turn_deadline() {
+        let mut turn = Turn::default();
+        turn.accept(&json!({"type":"ready","protocol_version":1,"launch_status":"ready","backend":"claude","model":"fixture"}),"claude","fixture").unwrap();
+        let command = turn.submit("fixture").unwrap();
+        for event in [
+            json!({"type":"response","id":command["id"],"ok":true,"result":{"turn":"accepted"}}),
+            json!({"type":"turn_start","model":"fixture"}),
+            json!({"type":"text_delta","text":"done"}),
+        ] {
+            turn.accept(&event, "claude", "fixture").unwrap();
+        }
+        let mut deadline = Some(Instant::now() + Duration::from_millis(10));
+        let mut frontend = SlowView { complete: false };
+        let result = publish_event(
+            &mut turn,
+            &json!({"type":"turn_end","stopReason":"stop","tps":1.0}),
+            "claude",
+            "fixture",
+            &mut deadline,
+            &mut frontend,
+        );
+        assert!(
+            result.is_err(),
+            "expired deadline must not be cleared by completion"
+        );
+        assert!(!frontend.complete);
+        assert!(deadline.is_some());
+    }
+}
+#[cfg(test)]
+mod approval_shutdown_tests {
+    use super::*;
+    #[test]
+    fn quit_is_not_lost_behind_a_full_decision_queue() {
+        let (commands, _input) = mpsc::sync_channel(2);
+        let (_events, output) = mpsc::sync_channel(64);
+        let (_finished, done) = mpsc::channel();
+        let quitting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut bridge = Bridge {
+            commands: _input,
+            events: _events,
+            quitting: quitting.clone(),
+        };
+        let runtime = Interactive {
+            commands,
+            quitting,
+            events: output,
+            done,
+            finished: None,
+        };
+        runtime
+            .approve(crate::approvals::Decision {
+                id: "a".into(),
+                allow: false,
+            })
+            .unwrap();
+        runtime
+            .approve(crate::approvals::Decision {
+                id: "b".into(),
+                allow: false,
+            })
+            .unwrap();
+        assert!(
+            runtime.quit().is_ok(),
+            "quit must have a control path independent of a full decision queue"
+        );
+        assert!(matches!(bridge.command().unwrap(), Some(Input::Quit)));
+        assert!(
+            runtime
+                .approve(crate::approvals::Decision {
+                    id: "c".into(),
+                    allow: true
+                })
+                .is_err()
+        );
     }
 }

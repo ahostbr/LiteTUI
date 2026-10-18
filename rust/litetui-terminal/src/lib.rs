@@ -1,4 +1,5 @@
 //! Terminal preview, wire primitives and an explicit one-prompt live child path.
+pub mod approvals;
 pub mod clipboard;
 pub mod completion;
 pub mod composer;

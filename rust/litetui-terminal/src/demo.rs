@@ -145,6 +145,14 @@ impl Demo {
     }
     pub fn observe_live(&mut self, observation: crate::live::Observation) -> std::io::Result<()> {
         let following = self.scroll >= self.max_scroll;
+        if matches!(
+            observation,
+            crate::live::Observation::Approval(crate::approvals::Event::Requested(_))
+        ) {
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
         self.notice = chat.notice.clone();
@@ -157,6 +165,11 @@ impl Demo {
             self.scroll = usize::MAX;
         }
         Ok(())
+    }
+    pub fn has_live_approval(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| !chat.approvals.is_empty())
     }
     pub fn finish_live(&mut self, failure: Option<String>) {
         let chat = self.live.as_mut().expect("live view");

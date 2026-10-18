@@ -397,7 +397,8 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
         spawners = app._rpc_approval_spawners = {}
     from litetui import approval_authority, approval_relay, seat_authority
 
-    status = "cancelled"
+    status = "error"
+    requested = False
     try:
         _approval_registry(app)[approval_id] = fut
         spawners[approval_id] = approval_relay.current_spawner(app)
@@ -412,14 +413,20 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             "why": decision.reason,
             "timeout_s": timeout,
         })
+        requested = True
         try:
             answer = await approval_authority.wait_for_answer(app, approval_id, fut)
             approval_authority.raise_if_cancelled()
-            return answer if approval_authority.persistence_ready(app, approval_id) else None
+            if answer is None or not approval_authority.persistence_ready(app, approval_id):
+                status = "revoked"
+                return None
+            status = "answered"
+            return answer
         except TimeoutError:
             status = "timeout"
             return None
         except asyncio.CancelledError:
+            status = "cancelled"
             return None
     except approval_authority.ApprovalAuditError:
         status = "audit-error"
@@ -427,4 +434,12 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     finally:
         _approval_registry(app).pop(approval_id, None)
         spawners.pop(approval_id, None)
-        approval_authority.close(app, approval_id, status)
+        outcome = approval_authority.close(app, approval_id, status)
+        if requested:
+            # The decision can be approved even when the wait was subsequently
+            # cancelled, timed out or revoked. Neither field means a tool ran.
+            # Cleanup precedes emission; a transport error cannot leave authority
+            # live and is not silently converted into successful approval.
+            app._rpc_emit({"type": "tool_approval_closed", "id": approval_id,
+                           "outcome": outcome,
+                           "reason": "audit-error" if outcome == "audit-error" else status})

@@ -254,8 +254,19 @@ def settle(app, ident: str, *, outcome: str, answerer_id: str | None = None) -> 
     return True
 
 
-def close(app, ident: str, outcome: str) -> None:
+def close(app, ident: str, outcome: str) -> str | None:
+    """Remove authority and return its final outcome, not the caller's fallback.
+
+    A settled decision survives later cancellation/revocation. A pending record
+    that cannot be audited is revoked locally; never write through a new origin.
+    This is an authority-lifecycle fact, NOT execution or rule-persistence proof.
+    Existing relay callers can ignore the return value.
+    """
     try:
         settle(app, ident, outcome=outcome)
+        record = _records(app).get(ident)
+        if record is None:
+            return None
+        return 'revoked' if record['outcome'] == 'pending' else record['outcome']
     finally:
         _records(app).pop(ident, None)

@@ -2,7 +2,17 @@
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
-## Native activity display checkpoint — current status
+## Approval lifecycle checkpoint — current status
+
+Source RPC approvals now close with an additive `tool_approval_closed` event after waiter/spawner/authority removal. Its `outcome` preserves the actual authority decision or finalization failure; its separate `reason` explains why waiting ended. An approved decision can close cancelled, timed out or revoked without executing a tool. Neither closure nor ACK proves execution or a saved standing rule. Origin revocation never writes through the replacement store.
+
+Rust implements bounded identified approval requests, independent decision command IDs, ACK/closure correlation and a source-shaped denial-first live modal. Enter defaults to deny; explicit selection permits allow once; Escape denies. Pending decisions are not replayed, key repeats cannot confirm, and concurrent requests cannot inherit the previous selection. Full request contents are escaped/wrapped/scrollable. Always-allow, mouse approval controls and structured questions are still open; **tools/MCP remain disabled**.
+
+The configured runtime deadline continues during approval waits, even when the source advertises an unbounded wait; expiry closes the runtime without inventing a human denial. A source terminal event can wait for a late decision response rather than requiring a second `turn_end`. Quit has an out-of-band control flag and cannot be lost behind a full decision queue. Request JSON is bounded during pretty serialization, before indentation can amplify a compact frame.
+
+Evidence is automated source/RPC, controlled-child and Ratatui render/key tests, **not real-provider tool execution or desktop hands-on acceptance**. High review prompted reproduced RED→GREEN lifecycle and asynchronous modal-key ownership regressions (including clipboard and shifted punctuation), plus bounded serialization hardening. Controlled child coverage includes a late decision ACK after the single terminal event. Focused Python verification passed 203 tests; Rust verification passed 245 ordinary plus 13 explicitly enabled controlled-process tests. Rust fmt/Clippy/build and focused Python mypy passed. Ruff is clean for the authority module and new tests; two untouched `tool_approval.py` findings (`RUF012`, `BLE001`) reproduce on HEAD. The expanded relay suites have 13 failures and 3 fixture teardown errors also reproduced with the two changed Python modules loaded from committed HEAD; these remain baseline failures, not a green suite. Latest real-provider evidence is still the earlier `unrecognized_model` failure; no provider retry or route change occurred. Full parity remains open.
+
+## Native activity display checkpoint
 
 Native tool observations now render between source-owned assistant cards, retaining per-turn native IDs, input snapshots and explicit nullable error outcomes. These are display records, never tool dispatch or permission. Source events add `card_index` (local display ownership, not execution identity) and `is_error`; post-tool card allocation emits an empty indexed snapshot before references, even for recap-only text. Late snapshots update their named card. Python thinking state is now per-card as well: a mounted regression reproduced late old-card thinking corrupting the latest trace, then verified the repair without moving the active card/clock. Pending tools become incomplete on completion/closure; orphan results do not invent a request. Tool bodies, metadata and cards share bounded retained/render-work budgets; escaping and work accounting now use one control-character classification.
 

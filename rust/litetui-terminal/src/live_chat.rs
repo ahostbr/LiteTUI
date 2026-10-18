@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthChar;
 // at least one unit (including combining marks), and every card pays overhead.
 // Reject before allocating/wrapping an oversized view; never silently truncate.
 const DISPLAY_UNITS: usize = 32768;
-fn display_units(text: &str) -> io::Result<usize> {
+pub(crate) fn display_units(text: &str) -> io::Result<usize> {
     text.chars().try_fold(0usize, |total, ch| {
         let cost = if ch == '\n' {
             32
@@ -64,6 +64,7 @@ pub struct Chat {
     pub quitting: bool,
     pub notice: String,
     pub runtime_state: crate::runtime_state::State,
+    pub approvals: crate::approvals::View,
     pending: Option<String>,
     retained_bytes: usize,
     retained_units: usize,
@@ -80,6 +81,7 @@ impl Chat {
             quitting: false,
             notice: "Connecting real owned Python runtime…".into(),
             runtime_state: crate::runtime_state::State::default(),
+            approvals: crate::approvals::View::default(),
             pending: None,
             retained_bytes: 0,
             retained_units: 0,
@@ -133,6 +135,12 @@ impl Chat {
         }
         match observation {
             Observation::State(update) => self.runtime_state.apply(update),
+            Observation::Approval(event) => {
+                if matches!(event, crate::approvals::Event::Requested(_)) {
+                    self.pending_row()?;
+                }
+                self.notice = self.approvals.observe(event)?;
+            }
             Observation::Ready => {
                 self.ready = true;
                 self.notice = "Connected. Enter sends; Ctrl+Q quits. Tools are disabled.".into();
@@ -151,6 +159,9 @@ impl Chat {
                 self.notice = info;
             }
             Observation::Complete => {
+                if !self.approvals.is_empty() {
+                    return Err(io::Error::other("Completion with pending approval"));
+                }
                 let row = self
                     .rows
                     .last_mut()
@@ -288,6 +299,7 @@ impl Chat {
         self.ready = false;
         self.busy = false;
         self.pending = None;
+        self.approvals.clear();
         for row in &mut self.rows {
             for tool in &mut row.tools {
                 tool.finish();

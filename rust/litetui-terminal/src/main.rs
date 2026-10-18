@@ -43,9 +43,22 @@ impl Drop for TerminalGuard {
 #[derive(Default)]
 struct KeyRouter {
     closing_keys: std::collections::HashSet<KeyCode>,
+    live_repeat_guard: bool,
 }
 impl KeyRouter {
+    // A terminal's character code is not a physical key identity: Shift can
+    // change '1' to '!'. After live-modal ownership, reject all reported repeats
+    // until fresh non-modifier intent, including before the clipboard fast path.
+    fn suppress_live_repeat(&mut self, event: KeyEvent) -> bool {
+        if event.kind == KeyEventKind::Press && !matches!(event.code, KeyCode::Modifier(_)) {
+            self.live_repeat_guard = false;
+        }
+        event.kind == KeyEventKind::Repeat && self.live_repeat_guard
+    }
     fn handle(&mut self, app: &mut Demo, event: KeyEvent) -> bool {
+        if self.suppress_live_repeat(event) {
+            return false;
+        }
         let physical = match event.code {
             KeyCode::Char(ch) => KeyCode::Char(ch.to_ascii_lowercase()),
             other => other,
@@ -61,14 +74,20 @@ impl KeyRouter {
             KeyEventKind::Repeat if self.closing_keys.contains(&physical) => return false,
             KeyEventKind::Repeat => {}
         }
-        let modal_was_open = app.approval_open || app.themes_open;
+        // Live modals can disappear on a source event between key calls. Keep
+        // their held keys owned even when this key does not close the modal.
+        let live_owned = app.has_live_approval();
+        let modal_was_open = app.approval_open || live_owned || app.themes_open;
         let completion_was_open = app.completion.is_open();
         let before = app.composer.text().to_owned();
         let quit = key(app, event);
         if before != app.composer.text() {
             app.sync_completion();
         }
-        if (modal_was_open && !(app.approval_open || app.themes_open))
+        if live_owned {
+            self.live_repeat_guard = true;
+        }
+        if (modal_was_open && !(app.approval_open || app.has_live_approval() || app.themes_open))
             || (completion_was_open
                 && !app.completion.is_open()
                 && matches!(event.code, KeyCode::Tab | KeyCode::Esc))
@@ -96,6 +115,29 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             app.approval_open = false;
             app.themes_open = false;
             app.completion.dismiss();
+        }
+        return false;
+    }
+    if app.has_live_approval() {
+        let chat = app.live.as_mut().expect("live approval");
+        if chat.quitting || key.kind != KeyEventKind::Press || !key.modifiers.is_empty() {
+            return false;
+        }
+        let current = chat.approvals.current_mut().expect("pending approval");
+        match key.code {
+            KeyCode::Up => current.scroll = current.scroll.saturating_sub(1),
+            KeyCode::Down => current.scroll = current.scroll.saturating_add(1),
+            KeyCode::PageUp => current.scroll = current.scroll.saturating_sub(10),
+            KeyCode::PageDown => current.scroll = current.scroll.saturating_add(10),
+            KeyCode::Tab | KeyCode::Left | KeyCode::Right if !current.waiting => {
+                current.allow = !current.allow
+            }
+            KeyCode::Enter if !current.waiting => {
+                let allow = current.allow;
+                chat.approvals.choose(allow);
+            }
+            KeyCode::Esc if !current.waiting => chat.approvals.choose(false),
+            _ => {}
         }
         return false;
     }
@@ -308,14 +350,31 @@ fn handle_key(
     event: KeyEvent,
     clipboard: &mut impl litetui_terminal::clipboard::Clipboard,
 ) -> bool {
+    // Include clipboard chords in live modal ownership, before any host I/O.
+    if input.suppress_live_repeat(event) {
+        return false;
+    }
+    if app.has_live_approval() {
+        return input.handle(app, event);
+    }
     if event.kind != KeyEventKind::Release {
         let code = match event.code {
             KeyCode::Char(ch) => Some(ch.to_ascii_lowercase()),
             _ => None,
         };
+        let physical = code.map(KeyCode::Char).unwrap_or(event.code);
+        if event.kind == KeyEventKind::Repeat && input.closing_keys.contains(&physical) {
+            return false;
+        }
+        if event.kind == KeyEventKind::Press {
+            input.closing_keys.remove(&physical);
+        }
         let control = event.modifiers == KeyModifiers::CONTROL;
         let copy = code == Some('c') && (control || event.modifiers == KeyModifiers::SUPER);
-        let blocked = app.approval_open || app.themes_open || app.viewport_too_small;
+        let blocked = app.approval_open
+            || app.has_live_approval()
+            || app.themes_open
+            || app.viewport_too_small;
         if copy {
             if !blocked {
                 app.footer.leave();
@@ -359,7 +418,7 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
-    if app.approval_open || app.viewport_too_small {
+    if app.approval_open || app.has_live_approval() || app.viewport_too_small {
         return;
     }
     if app.themes_open {
@@ -370,7 +429,7 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
-    if app.approval_open || app.themes_open || app.viewport_too_small {
+    if app.approval_open || app.has_live_approval() || app.themes_open || app.viewport_too_small {
         app.completion.hide();
         return;
     }
@@ -527,6 +586,14 @@ fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
                         }
                     }
                 }
+            }
+            if !quitting
+                && let Some(decision) = app.live.as_mut().expect("live").approvals.take_decision()
+                && let Err(error) = runtime.approve(decision)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
             }
             if let Some(prompt) = app.live.as_mut().expect("live").take_submission()
                 && let Err(error) = runtime.submit(prompt)
@@ -1384,5 +1451,226 @@ mod tests {
             &mut app,
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
         ));
+    }
+
+    fn live_approval_app() -> Demo {
+        let mut app = Demo::live("claude".into(), "fixture".into());
+        app.observe_live(litetui_terminal::live::Observation::Ready)
+            .unwrap();
+        app.insert_text("question");
+        app.submit();
+        app.insert_text("preserved draft");
+        app
+    }
+    fn request_approval(app: &mut Demo, id: &str) {
+        let event = litetui_terminal::approvals::Ledger::default().request(&serde_json::json!({
+            "type":"tool_approval_requested", "id":id, "tool":"write", "input":{"path":"fixture"},
+            "profile":"strict", "why":"writes", "timeout_s":300.0
+        })).unwrap();
+        app.observe_live(litetui_terminal::live::Observation::Approval(event))
+            .unwrap();
+    }
+    fn close_approval(app: &mut Demo, id: &str) {
+        app.observe_live(litetui_terminal::live::Observation::Approval(
+            litetui_terminal::approvals::Event::Closed {
+                id: id.into(),
+                outcome: Some("denied".into()),
+                reason: "answered".into(),
+            },
+        ))
+        .unwrap();
+    }
+    #[test]
+    fn live_modal_traps_typing_paste_chords_and_enter_denies_only_once() {
+        let mut app = live_approval_app();
+        app.open_themes();
+        request_approval(&mut app, "a");
+        assert!(!app.themes_open);
+        let draft = app.composer.text().to_owned();
+        paste(&mut app, "not a decision");
+        for event in [
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE),
+        ] {
+            key(&mut app, event);
+        }
+        assert_eq!(app.composer.text(), draft);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.live.as_mut().unwrap().approvals.take_decision(),
+            Some(litetui_terminal::approvals::Decision {
+                id: "a".into(),
+                allow: false
+            })
+        );
+        key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        assert!(app.has_live_approval());
+    }
+    #[test]
+    fn live_modal_repeats_cannot_allow_next_request_and_escape_denies_selected_allow() {
+        let mut app = live_approval_app();
+        request_approval(&mut app, "a");
+        request_approval(&mut app, "b");
+        key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .unwrap()
+                .allow
+        );
+        close_approval(&mut app, "a");
+        for code in [KeyCode::Tab, KeyCode::Enter, KeyCode::Esc] {
+            let mut event = KeyEvent::new(code, KeyModifiers::NONE);
+            event.kind = KeyEventKind::Repeat;
+            key(&mut app, event);
+        }
+        assert!(
+            !app.live
+                .as_ref()
+                .unwrap()
+                .approvals
+                .current()
+                .unwrap()
+                .allow
+        );
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            app.live.as_mut().unwrap().approvals.take_decision(),
+            Some(litetui_terminal::approvals::Decision {
+                id: "b".into(),
+                allow: false
+            })
+        );
+    }
+    #[test]
+    fn live_modal_cannot_approve_hidden_or_while_quitting_and_finish_clears_intents() {
+        let mut app = live_approval_app();
+        request_approval(&mut app, "a");
+        app.viewport_too_small = true;
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        app.viewport_too_small = false;
+        app.live.as_mut().unwrap().begin_quit();
+        key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        assert!(key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
+        app.finish_live(Some("disconnected".into()));
+        assert!(!app.has_live_approval());
+    }
+    #[test]
+    fn live_modal_source_closure_cannot_leak_held_keys_into_the_draft() {
+        let mut app = live_approval_app();
+        request_approval(&mut app, "a");
+        let mut router = KeyRouter::default();
+        let draft = app.composer.text().to_owned();
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        close_approval(&mut app, "a");
+        let mut repeat = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        router.handle(&mut app, repeat);
+        assert_eq!(
+            app.composer.text(),
+            draft,
+            "a repeat owned by the closed approval must not edit the draft"
+        );
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.composer.text(), format!("{draft}x"));
+    }
+    #[test]
+    fn live_modal_source_closure_cannot_leak_a_clipboard_repeat() {
+        let mut app = live_approval_app();
+        request_approval(&mut app, "a");
+        let mut router = KeyRouter::default();
+        let mut clipboard = TestClipboard {
+            read: Some("secret".into()),
+            ..TestClipboard::default()
+        };
+        let press = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        handle_key(&mut app, &mut router, press, &mut clipboard);
+        close_approval(&mut app, "a");
+        let mut repeat = press;
+        repeat.kind = KeyEventKind::Repeat;
+        handle_key(&mut app, &mut router, repeat, &mut clipboard);
+        assert_eq!(
+            clipboard.reads, 0,
+            "modal-owned repeat cannot initiate clipboard I/O"
+        );
+        handle_key(&mut app, &mut router, press, &mut clipboard);
+        assert_eq!(clipboard.reads, 1);
+    }
+    #[test]
+    fn live_modal_repeat_guard_does_not_guess_physical_keys_from_shifted_punctuation() {
+        let mut app = live_approval_app();
+        request_approval(&mut app, "a");
+        let mut router = KeyRouter::default();
+        let draft = app.composer.text().to_owned();
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
+        close_approval(&mut app, "a");
+        let mut repeat = KeyEvent::new(KeyCode::Char('!'), KeyModifiers::SHIFT);
+        repeat.kind = KeyEventKind::Repeat;
+        router.handle(&mut app, repeat);
+        assert_eq!(app.composer.text(), draft);
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('!'), KeyModifiers::SHIFT),
+        );
+        assert_eq!(app.composer.text(), format!("{draft}!"));
     }
 }

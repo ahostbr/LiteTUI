@@ -947,6 +947,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     if app.approval_open {
         approval(frame, app, area);
     }
+    if app.has_live_approval() {
+        live_approval(frame, app, area);
+    }
     if app.themes_open {
         theme_picker(frame, app, area);
     }
@@ -1138,5 +1141,74 @@ fn theme_picker(frame: &mut Frame, app: &Demo, area: Rect) {
     frame.render_widget(
         Paragraph::new("↑↓ select · Enter apply · Esc").style(style(t.foreground, t.panel)),
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    );
+}
+
+fn live_approval(frame: &mut Frame, app: &mut Demo, area: Rect) {
+    let t = app.palette().clone();
+    let chat = app.live.as_mut().expect("live approval");
+    let count = chat.approvals.len();
+    let current = chat.approvals.current_mut().expect("visible approval");
+    let width = area.width.saturating_sub(4).min(78);
+    let lines = wrap(
+        &display_safe(&current.request.display_text()),
+        width.saturating_sub(4) as usize,
+    );
+    let height = (lines.len() + 8).min(usize::from(area.height) * 85 / 100) as u16;
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(style(t.tool_text, t.surface))
+        .title(format!(" Tool approval ({count} pending) "));
+    let inner = block.inner(rect);
+    frame.render_widget(block.style(style(t.foreground, t.surface)), rect);
+    let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(6)]).split(inner);
+    current.scroll = current
+        .scroll
+        .min(lines.len().saturating_sub(parts[0].height as usize));
+    frame.render_widget(
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(current.scroll)
+                .map(|line| Line::raw(format!(" {line}")))
+                .collect::<Vec<_>>(),
+        )
+        .style(style(t.foreground, t.surface)),
+        parts[0],
+    );
+    let budget = current
+        .request
+        .timeout_s
+        .map_or("unbounded".into(), |n| format!("{n}s"));
+    let action: String = if current.waiting {
+        "Decision sent; waiting for source closure.".into()
+    } else if current.allow {
+        "  [ Deny ]   [> Allow once <]".into()
+    } else {
+        "  [> Deny <]   [ Allow once ]".into()
+    };
+    let controls = vec![
+        Line::raw(format!(
+            " Source wait budget: {budget}; turn deadline still applies."
+        )),
+        Line::raw(" No execution receipt. Always-allow is not offered yet."),
+        Line::styled(
+            action,
+            style(t.tool_text, t.surface).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(" Tab selects; Enter decides; Esc denies; Ctrl+Q quits."),
+        Line::raw(" Up/Down/PgUp/PgDn scroll full request; no auto-answer."),
+    ];
+    frame.render_widget(
+        Paragraph::new(controls).style(style(t.foreground, t.surface)),
+        parts[1],
     );
 }

@@ -29,15 +29,39 @@ if mode == 'grandchild':
 emit(ready)
 if mode == 'no_read':
     time.sleep(120)
+pending = None
+approval_sequence = 0
 for line in sys.stdin:
     command = json.loads(line)
     with (root/'commands.jsonl').open('a') as out:
         out.write(json.dumps(command)+'\n')
     if command['type'] == 'shutdown':
+        if pending:
+            emit(dict(type='tool_approval_closed',id=pending,outcome='cancelled',reason='cancelled'))
         emit(dict(type='response',id=command['id'],ok=True,result=dict(ok=True)))
         break
+    if command['type'] == 'approve':
+        assert command['approval_id'] == pending and command['id'] != pending
+        assert command['remember'] is False and type(command['allow']) is bool
+        ack = dict(type='response',id=command['id'],ok=True,result=dict(approved=pending,allow=command['allow'],id_key='approval_id'))
+        closure = dict(type='tool_approval_closed',id=pending,outcome='approved' if command['allow'] else 'denied',reason='answered')
+        # Turn one ACKs before closure; turn two ACKs after the sole turn_end.
+        if not command['allow']:
+            emit(ack)
+        emit(closure)
+        pending = None
+        emit(dict(type='text_delta',text='Fixture decision observed; nothing executed',card_index=0))
+        emit(dict(type='turn_end',stopReason='stop',error=None))
+        if command['allow']:
+            emit(ack)
+        continue
     emit(dict(type='response',id=command['id'],ok=True,result=dict(turn='accepted')))
     emit(dict(type='turn_start',model='claude-sonnet-5-5'))
+    if mode.startswith('approval'):
+        pending = 'fixture-approval-' + str(approval_sequence)
+        approval_sequence += 1
+        emit(dict(type='tool_approval_requested',id=pending,tool='write',input={'path':'never-executed.txt'},profile='strict',why='fixture only',timeout_s=None))
+        continue
     if mode == 'timeout':
         continue
     emit(dict(type='reasoning_delta',text='wrong prefix',reconcile='append',card_index=0))
@@ -359,4 +383,146 @@ fn ui_failure_always_waits_cleanup_and_preserves_both_failures() {
                 .contains("shutdown")
         );
     }
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn interactive_approval_commands_are_explicit_and_correlated_across_two_turns() {
+    use litetui_terminal::{
+        approvals::Event,
+        live::{Interactive, Observation, Options},
+    };
+    let (command, root) = setup("approval");
+    let source = root.parent().unwrap().join("source/src/litetui/cli.py");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')",
+            "mode = 'approval'",
+        ),
+    )
+    .unwrap();
+    let args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let mut options = Options::parse(&args).unwrap();
+    options.timeout = Duration::from_secs(5);
+    let mut runtime = Interactive::start(options);
+    let mut chat =
+        litetui_terminal::live_chat::Chat::new("claude".into(), "claude-sonnet-5-5".into());
+    let mut turns = 0;
+    let mut closures = 0;
+    while turns < 2 {
+        let observation = runtime
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let ready = matches!(observation, Observation::Ready);
+        let asked = matches!(observation, Observation::Approval(Event::Requested(_)));
+        let complete = matches!(observation, Observation::Complete);
+        if matches!(observation, Observation::Approval(Event::Closed { .. })) {
+            closures += 1;
+        }
+        chat.observe(observation).unwrap();
+        if ready {
+            chat.submit("first").unwrap();
+            runtime.submit(chat.take_submission().unwrap()).unwrap();
+        }
+        if asked {
+            // Receiving a request alone cannot send an implicit answer.
+            std::thread::sleep(Duration::from_millis(75));
+            let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+            assert_eq!(
+                log.lines()
+                    .filter(|line| line.contains("approval_id"))
+                    .count(),
+                turns
+            );
+            chat.approvals.choose(turns == 1);
+            runtime
+                .approve(chat.approvals.take_decision().unwrap())
+                .unwrap();
+        }
+        if complete {
+            assert!(chat.approvals.is_empty());
+            turns += 1;
+            if turns == 1 {
+                chat.submit("second").unwrap();
+                runtime.submit(chat.take_submission().unwrap()).unwrap();
+            }
+        }
+    }
+    assert_eq!(closures, 2);
+    runtime.shutdown().unwrap();
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    let commands: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(commands.len(), 5);
+    assert_eq!(commands[1]["allow"], false);
+    assert_eq!(commands[3]["allow"], true);
+    assert_ne!(commands[1]["id"], commands[3]["id"]);
+    assert_ne!(commands[1]["approval_id"], commands[3]["approval_id"]);
+    assert_eq!(commands[4]["type"], "shutdown");
+    assert!(!root.join("never-executed.txt").exists());
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn one_shot_refuses_approval_without_answering() {
+    let (mut command, root) = setup("approval");
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot answer approval"));
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert!(!log.contains("approval_id"));
+    assert!(log.contains("shutdown"));
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn unanswered_unbounded_approval_does_not_disable_runtime_deadline_or_auto_deny() {
+    use litetui_terminal::live::{Interactive, Observation, Options};
+    let (command, root) = setup("approval");
+    let source = root.parent().unwrap().join("source/src/litetui/cli.py");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')",
+            "mode = 'approval'",
+        ),
+    )
+    .unwrap();
+    let args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let mut runtime = Interactive::start(Options::parse(&args).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut requested = false;
+    loop {
+        assert!(Instant::now() < deadline);
+        for observation in runtime.events.try_iter() {
+            match observation {
+                Observation::Ready => runtime.submit("fixture".into()).unwrap(),
+                Observation::Approval(_) => requested = true,
+                _ => {}
+            }
+        }
+        if let Some(result) = runtime.poll_done() {
+            assert!(requested);
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Live deadline elapsed"));
+            assert!(error.contains("cleanup=Ok"));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert!(!log.contains("approval_id"));
+    assert!(log.contains("shutdown"));
 }
