@@ -253,7 +253,12 @@ async def test_system_command_resets_receipt_and_replay_keeps_fresh_store(tmp_pa
         assert app._store_injected is True
         meta, messages = ConversationRepository.read(app.convo_path)
         assert meta["store_injected"] is True and meta["store_identity"] == provenance
-        assert messages == outgoing
+        assert messages == app.conversation, "persisted host bookkeeping is retained exactly"
+        expected_public = [{"role": "system", "content": messages[0]["content"]}]
+        if insert:
+            expected_public.append({"role": "user", "content": "keep this prior turn"})
+        assert outgoing == expected_public, "wire body/turns are identical without host bookkeeping"
+        assert messages[0]["litetui_prompt_owner"] == 1 and "litetui_prompt_owner" not in outgoing[0]
         if insert:
             assert any(message.get("content") == "keep this prior turn" for message in messages)
         saved = outgoing[0]["content"]
