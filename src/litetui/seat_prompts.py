@@ -14,7 +14,7 @@ ALIASES = {"owner": "leader", "builder": "worker", "critic": "reviewer", "scout"
 DISPLAY_ROLES = {"leader": "owner", "worker": "builder", "reviewer": "critic", "thinker": "scout", "orchestrator": "orchestrator"}
 ROLES = frozenset({"orchestrator", "leader", "worker", "thinker", "reviewer"})
 ROLE_HEADER = re.compile(r"^\ufeff*#\s+([A-Z]+) ROLE[^\n]*$", re.MULTILINE)
-MODE_HEADER = re.compile(r"^\ufeff*#\s+POLYMATHIC[^\n]*\s[â€”-]\s[^\n]*Mode[^\n]*$", re.MULTILINE | re.IGNORECASE)
+MODE_HEADER = re.compile(r"^\ufeff*#\s+POLYMATHIC[^\n]*\s[\u2014-]\s[^\n]*Mode[^\n]*$", re.MULTILINE | re.IGNORECASE)
 METHOD_HEADER = re.compile(r"^\ufeff*#\s+POLYMATHIC[^\n]*$", re.MULTILINE)
 
 
@@ -208,7 +208,7 @@ def launch_text(app) -> str:
         app._seat_method_selected = True
     # Empty method is supported for ordinary unselected interactive seats.
     # A selected source is required to be nonempty at the launch boundary.
-    return "\n\n".join(p for p in (f"# {DISPLAY_ROLES[role].upper()} ROLE â€” {DISPLAY_ROLES[role].title()} Mode", body, method) if p)
+    return "\n\n".join(p for p in (f"# {DISPLAY_ROLES[role].upper()} ROLE \u2014 {DISPLAY_ROLES[role].title()} Mode", body, method) if p)
 
 
 def legacy_launches(custom, role_file, cognitive_file) -> tuple[str, ...]:
@@ -286,7 +286,7 @@ def set_system_body(app, text: str) -> None:
     prompts.refresh(app)
 
 
-COMPOSER_POLICY_VERSION = 1
+COMPOSER_POLICY_VERSION = 2
 
 
 def revision(app, *, snapshot=None) -> str:

@@ -50,7 +50,12 @@ def main():
                 assert len(seat_prompts.ROLE_HEADER.findall(text)) == 1
                 assert len(seat_prompts.METHOD_HEADER.findall(text)) == 1
                 assert not seat_prompts.MODE_HEADER.search(text)
-                captures.append({"role": seat_prompts.DISPLAY_ROLES[app.seat.tier].upper(), "wire_role": app.seat.tier, "system_messages": len(systems),
+                expected = {"leader": ("OWNER", "# OWNER ROLE — Owner Mode"),
+                            "worker": ("BUILDER", "# BUILDER ROLE — Builder Mode"),
+                            "reviewer": ("CRITIC", "# CRITIC ROLE — Critic Mode")}
+                modern, expected_header = expected[app.seat.tier]
+                assert headers == [expected_header, "# POLYMATHIC GAMMA"]
+                captures.append({"role": modern, "wire_role": app.seat.tier, "system_messages": len(systems),
                                  "characters": len(text), "sha256": hashlib.sha256(text.encode()).hexdigest(),
                                  "headers": headers, "prompt_files": sorted(p.name for p in (app._agent_session.memory_root / "prompts").glob("*.md"))})
 
