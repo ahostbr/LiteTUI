@@ -16,6 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _owned_seat import owned_app
 from litetui import app as m  # noqa: E402
 from litetui import paths  # noqa: E402
 from litetui import plugins as plugins_mod
@@ -60,7 +61,8 @@ def _reference(a) -> str:
         )
         if unresolved:
             raise ValueError(f"reference found unresolved placeholders: {unresolved}")
-        base = base.strip()
+        # T0338 split preserves the former BASE bytes/order before every other section.
+        base = base.strip() + "\n\n" + paths.prompt_file("ordinary-instructions.md").read_text(encoding="utf-8").strip()
     # T558: plan mode rides slot 5, between BASE and MEMORY. Built here
     # INDEPENDENTLY of the app, like every other arm of this reference.
     if getattr(a, "_plan_mode", False) and paths.PLAN_PROMPT_FILE.exists():
@@ -68,7 +70,7 @@ def _reference(a) -> str:
             base + "\n" + paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
         ).strip()
     if a.convo_dir is not None:
-        base = (base + m.memory_prompt(a.convo_id, a.convo_dir)).strip()
+        base = (base + m.memory_prompt(a.convo_id, a._agent_session.memory_root)).strip()
     if a.tools_enabled:
         # Was m.TOOLS_PROMPT, a constant in app.py, until the prompt text moved
         # to prompts/tools.md (2026-08-22). The reference still builds the fold
@@ -93,7 +95,7 @@ def _reference(a) -> str:
         base = (base + m.TOOLS_DISABLED_PROMPT).strip()
     # T1124's required final recap is appended after every composed section.
     # Independent literal: sharing the app's value would hide a missing suffix.
-    return base + (
+    return "# BUILDER ROLE "+ "\u2014 Builder Mode\n\n" + base + (
         "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, "
         "about 40 tokens</recap>. Do not put this tag in interim tool calls."
     )
@@ -119,7 +121,7 @@ def _fake_skills():
 def test_composition_matches_the_reference_fold(
     tools_on, with_skills, with_store, plan_on, tmp_path
 ):
-    a = m.LiteTUI(plan_mode=plan_on)
+    a = owned_app(plan_mode=plan_on)
     a.tools_enabled = tools_on
     a.skills = _fake_skills() if with_skills else []
     if with_store:
@@ -133,7 +135,7 @@ def test_composition_matches_the_reference_fold(
 def test_the_gate_can_fail():
     # An equality gate whose operands could never differ proves nothing:
     # perturb one side's input and demand a mismatch.
-    a = m.LiteTUI()
+    a = owned_app()
     a.tools_enabled = True
     a.skills = _fake_skills()
     a.convo_dir = None
@@ -150,7 +152,7 @@ def test_unknown_placeholder_fails_the_composed_prompt_gate(tmp_path, monkeypatc
     authored.write_text("bad=${UNKNOWN_PROMPT_PATH}", encoding="utf-8")
     monkeypatch.setattr(paths, "SYSTEM_PROMPT_FILE", authored)
     with pytest.raises(ValueError, match="UNKNOWN_PROMPT_PATH"):
-        m.LiteTUI()
+        owned_app()
 
 
 def test_memory_prompt_distinguishes_storage_id_from_inbox_sender(tmp_path):
@@ -167,5 +169,5 @@ def test_composed_prompt_ends_with_required_final_recap_instruction():
         "End each FINAL answer with <recap>two short lines: what you did and result, "
         "about 40 tokens</recap>. Do not put this tag in interim tool calls."
     )
-    a = m.LiteTUI()
+    a = owned_app()
     assert a._system_prompt_text().endswith("\n\n" + expected)

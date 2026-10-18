@@ -32,8 +32,13 @@ from rich.text import Text
 TOOL_NAME_DEFAULT = "#e8a33d"
 
 
-def load_prompt(name: str, **variables: object) -> str:
+def load_prompt(name: str, *, app=None, fresh: bool = False, **variables: object) -> str:
     """A prompt from prompts/<name>.md, with {name} placeholders substituted.
+
+    ``app`` binds reads to its per-home frozen turn snapshot. ``fresh=True``
+    is for a new maintenance operation: take a checked read-only snapshot and
+    restore the active turn snapshot afterward. Capture the returned text once
+    so retries of the same operation do not reread a moving template.
 
     Replacement, not str.format(): these files are meant to be EDITED, and a
     stray brace in hand-edited prose must not crash the app — only the
@@ -44,7 +49,12 @@ def load_prompt(name: str, **variables: object) -> str:
     be a model quietly running without its instructions, which is worse than
     not booting.
     """
-    text = paths.prompt_file(f"{name}.md").read_text(encoding="utf-8")
+    if app is not None:
+        from litetui.prompt_overrides import text_for
+        from litetui.seat_prompts import authored_text
+        text = authored_text(text_for(app, f"{name}.md", fresh=fresh))
+    else:
+        text = paths.prompt_file(f"{name}.md").read_text(encoding="utf-8")
     for key, value in variables.items():
         text = text.replace("{" + key + "}", str(value))
     return text
@@ -101,9 +111,9 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
 }
 
 
-def _tool_denied_sections() -> dict[str, str]:
+def _tool_denied_sections(*, app=None) -> dict[str, str]:
     """`## key` sections of prompts/tool-denied.md, comments stripped."""
-    text = paths.prompt_file("tool-denied.md").read_text(encoding="utf-8")
+    text = load_prompt("tool-denied", app=app)
     text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     out: dict[str, str] = {}
     key = None
@@ -139,7 +149,7 @@ def validate_tool_denied() -> None:
             )
 
 
-def tool_denied(key: str, **variables: object) -> str:
+def tool_denied(key: str, *, app=None, **variables: object) -> str:
     """One refusal, rendered.  NEVER raises for a bad file, NEVER goes silent.
 
     A refusal is the one message that must survive its own source being
@@ -161,7 +171,7 @@ def tool_denied(key: str, **variables: object) -> str:
         raise KeyError(f"no such tool-denied key: {key!r}")
     template = TOOL_DENIED_FALLBACK[key]
     try:
-        section = _tool_denied_sections().get(key)
+        section = _tool_denied_sections(app=app).get(key)
     except OSError:
         section = None
     if section and all(
@@ -173,14 +183,14 @@ def tool_denied(key: str, **variables: object) -> str:
     return " ".join(template.split())
 
 
-def memory_prompt(convo_id: str, folder: Path, *, owner: bool = False) -> str:
+def memory_prompt(convo_id: str, folder: Path, *, owner: bool = False, app=None) -> str:
     """The block appended to the system prompt so the agent can find its own
     store. Body lives in prompts/conversation-store.md — read PER CALL, so
     edits take effect on the next conversation without a restart."""
     # Owner mode swaps the template only: `folder` is then the owner memory folder,
     # and the same id/path stanza shape lets refresh_store_address find it again.
     return load_prompt(
-        "owner-store" if owner else "conversation-store",
+        "owner-store" if owner else "conversation-store", app=app,
         convo_id=convo_id,
         store_path=str(folder).replace("\\", "/"),
     )

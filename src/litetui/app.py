@@ -318,7 +318,7 @@ LITETUI_SPLASH = (
 #: exist is worse than no refusal at all.
 #:
 #: 🔴 THE REFUSAL HALF NOW LIVES IN `prompts/tool-denied.md`, section
-#: `## tools-off`, reached through `textfmt.tool_denied("tools-off")` — one
+#: `## tools-off`, reached through `textfmt.tool_denied("tools-off", app=self)` — one
 #: file holding every refusal LiteTUI hands the model. The constant that used
 #: to sit here is still the FLOOR (`textfmt.TOOL_DENIED_FALLBACK`), used when
 #: the file is missing or an edit breaks the section, so a refusal survives
@@ -1553,6 +1553,9 @@ class LiteTUI(App):
         rpc: bool = False,
         first_prompt: str | None = None,
         system_prompt: str | None = None,
+        role_prompt_file: str | None = None,
+        cognitive_file: str | None = None,
+        prompts_dir: str | None = None,
         initial_model: str | None = None,
         initial_backend: str | None = None,
         initial_thinking: str | None = None,
@@ -1901,11 +1904,11 @@ class LiteTUI(App):
         _ord = plugins_mod.PROMPT_ORDER
         self.plugins.add_prompt_section(
             "host", _ord["BASE"],
-            lambda: prompt_compiler.compile_prompt_file(
-                paths.SYSTEM_PROMPT_FILE,
+            lambda: prompt_compiler.compile_prompt(
+                self._ordinary_prompt_text("systemprompt"),
                 root=paths.ROOT,
                 user_name=self.settings.user_name,
-            ).strip(),
+            ).strip() + "\n\n" + self._ordinary_prompt_text("ordinary-instructions").strip(),
             enabled=lambda: paths.SYSTEM_PROMPT_FILE.exists(),
         )
         # T558. Gated on the mode, so LEAVING plan mode drops the instruction —
@@ -1913,15 +1916,15 @@ class LiteTUI(App):
         # toggle uses, and an absent section leaves nothing behind.
         self.plugins.add_prompt_section(
             "host", _ord["PLAN"],
-            lambda: "\n" + paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n",
+            lambda: "\n" + self._ordinary_prompt_text("plan-mode").strip() + "\n",
             enabled=lambda: self._plan_mode and paths.PLAN_PROMPT_FILE.exists(),
         )
         self.plugins.add_prompt_section(
             "host", _ord["MEMORY"],
-            lambda: memory_prompt(self.convo_id, self._owner_memory_dir, owner=True)
+            lambda: memory_prompt(self.convo_id, self._owner_memory_dir, owner=True, app=self)
             if self._owner_memory_dir is not None
             else memory_prompt(self.convo_id, self._agent_session.memory_root
-                               if self._agent_session is not None else self.convo_dir),
+                               if self._agent_session is not None else self.convo_dir, app=self),
             enabled=lambda: self.convo_dir is not None,
         )
         self.plugins.add_prompt_section(
@@ -1934,7 +1937,7 @@ class LiteTUI(App):
             # test_prompt_compose's reference fold, which is exactly what that
             # test exists to notice.
             lambda: (
-                "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
+                "\n" + self._ordinary_prompt_text("tools").strip() + "\n"
                 if self.tools_enabled
                 else TOOLS_DISABLED_PROMPT
             ),
@@ -1976,6 +1979,8 @@ class LiteTUI(App):
             disabled=frozenset(self.settings.plugins_disabled or ()),
         )
         self._new_convo()
+        from litetui import seat_prompts
+        seat_prompts.prepare(self, role_file=role_prompt_file, cognitive_file=cognitive_file, directory=prompts_dir)
         self._load_system_prompt()
 
     def compose(self) -> ComposeResult:
@@ -2724,7 +2729,7 @@ class LiteTUI(App):
                     in str(self.conversation[0].get("content") or "")):
                 self._append_to_system(
                     self._fleet_identity_sentence()
-                    + load_prompt("harness-capabilities")
+                    + load_prompt("harness-capabilities", app=self)
                 )
         else:
             # Say so once. A seat nobody can reach that reports nothing is
@@ -3168,9 +3173,9 @@ class LiteTUI(App):
         # not a profile cap or a spawner's to APPROVE (T1133 caps stay removed).
         shell = tool_policy.proven_shell(name, policy)
         if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy, shell=shell):
-            return tool_denied("profile", name=name, reason=why), False
+            return tool_denied("profile", app=self, name=name, reason=why), False
         if why := seat_authority.settings_file_refusal(self, args, workspace or paths.ROOT, policy, shell=shell):
-            return tool_denied("profile", name=name, reason=why), False
+            return tool_denied("profile", app=self, name=name, reason=why), False
         decision = tool_policy.evaluate(
             # 🔴 THE FLOOR, NOT THE DEFAULT. If we cannot say what authority
             # this turn holds, the answer is the least authority -- never the
@@ -3197,10 +3202,10 @@ class LiteTUI(App):
             seat_name=getattr(getattr(self, "seat", None), "name", None),
         )
         if decision.action == tool_policy.DENY:
-            return tool_denied("profile", name=name, reason=decision.reason), False
+            return tool_denied("profile", app=self, name=name, reason=decision.reason), False
         if decision.action == tool_policy.CONFIRM:
             if not allow_prompt:
-                return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
+                return tool_denied("profile", app=self, name=name, reason="approval unavailable during shutdown"), False
             # A non-owner seat routes any CONFIRM here independently of profile.
             # T1049-B routes by seat_authority.confirm_route. The ONE turn source read
             # here is `_hook_source` (Dijkstra D1).
@@ -3235,13 +3240,13 @@ class LiteTUI(App):
                     self._stop_reason = reason
                     self._stop_cause = "approval"  # turn_end stopReason "approval" (B2)
                 denial_kind = "approval-timeout" if status == "timeout" else "profile"
-                return tool_denied(denial_kind, name=name, reason=reason), False
+                return tool_denied(denial_kind, app=self, name=name, reason=reason), False
             # Nobody at the keyboard (inbox mail, a cron fire, a child's result):
             # refuse this ONE action in words, and let the rest of the turn go on.
             if route != "host" and source in tool_policy.UNATTENDED_SOURCES:
                 if route == "hand":  # Marquee Q1: Owner's unmarked launch gains the log only
                     approval_relay.record(self, "no_spawner", name, source)
-                return tool_denied("profile", name=name, reason=tool_policy.unattended_refusal(decision)), False
+                return tool_denied("profile", app=self, name=name, reason=tool_policy.unattended_refusal(decision)), False
             # Sidebar or modal, decided by the setting. `show_dialog` — not
             # `open_dialog` — because this frame ALREADY awaits, and the whole
             # turn is blocked on the answer. It returns the body's value, or
@@ -3291,7 +3296,7 @@ class LiteTUI(App):
             # modal returns a tri-state instead of a bool.
             if not answer:
                 if not stop_on_denial:
-                    return tool_denied("no-host" if unanswered else "by-user", name=name), False
+                    return tool_denied("no-host" if unanswered else "by-user", app=self, name=name), False
                 # DENY STOPS THE TURN (the user, 2026-08-24 — asked whether this
                 # should replace or supplement the existing verb, answered
                 # REPLACE). The refusal is still returned and still recorded,
@@ -3313,9 +3318,9 @@ class LiteTUI(App):
                         f"[stopped — no host answered the approval for {name} "
                         f"within {tool_approval.APPROVAL_TIMEOUT_S:.0f}s; denied]"
                     )
-                    return tool_denied("no-host", name=name), False
+                    return tool_denied("no-host", app=self, name=name), False
                 self._stop_reason = f"[stopped — you denied {name}]"
-                return tool_denied("by-user", name=name), False
+                return tool_denied("by-user", app=self, name=name), False
             if answer.remember:
                 self._remember_tool_rule(name, decision.capabilities)
         return None
@@ -3421,7 +3426,7 @@ class LiteTUI(App):
         # PARSED: detect-and-execute would defeat the one guarantee this
         # setting exists to make.
         if not self.tools_enabled:
-            return tool_denied("tools-off"), False
+            return tool_denied("tools-off", app=self), False
         # MCP maintenance is reconnecting servers off-loop; the dispatch map is
         # being rebuilt. Pause ALL tool dispatch (conservative — an MCP tool
         # could route to a server mid-reconnect, and classifying non-MCP dynamic
@@ -3452,7 +3457,7 @@ class LiteTUI(App):
         # Before resolution, for the same reason the global toggle is: a tool
         # the user switched off must not run even if a branch is added above.
         if name in (self.settings.tools_disabled or ()):
-            return tool_denied("tool-disabled", name=name), False
+            return tool_denied("tool-disabled", app=self, name=name), False
         # LOOP-BREAK (tracker above): a call deep in a no-change repetition is
         # refused BEFORE it runs, so a stuck model spends its round reading the
         # refusal instead of performing another dead action.
@@ -3460,10 +3465,10 @@ class LiteTUI(App):
             return loop_refusal, False
         fn = self._dispatch_for(name)
         if fn is None:
-            return tool_denied("unknown-tool", name=name), False
+            return tool_denied("unknown-tool", app=self, name=name), False
         policy = self.plugins.policy_for(name)
         if policy is None:
-            return tool_denied("no-metadata", name=name), False
+            return tool_denied("no-metadata", app=self, name=name), False
         hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.STRICT
         authorize = getattr(self, "_authorize_action", partial(LiteTUI._authorize_action, self))
         refusal = await authorize(name, args, policy, profile=hook_profile)
@@ -3773,6 +3778,16 @@ class LiteTUI(App):
                 "— it holds for this session only"
             )
 
+    def _ordinary_prompt_text(self, name: str, *, fresh: bool = False) -> str:
+        from litetui import prompt_overrides
+        from litetui.seat_prompts import authored_text
+        return authored_text(prompt_overrides.text_for(self, name + ".md", fresh=fresh))
+
+    def _with_ordinary_instructions(self, floor: str) -> str:
+        # BASE already preserves the original floor + ordinary byte order.
+        seat = self._ordinary_prompt_text("seat-instructions")
+        return floor + ("\n\n[LiteTUI seat instructions]\n" + seat if seat else "")
+
     def _system_prompt_text(self) -> str:
         """The base prompt: the registry's fold of its PROMPT_ORDER slots.
 
@@ -3786,12 +3801,28 @@ class LiteTUI(App):
         from litetui.store_identity import capture
         self._prompt_store_identity = capture(self)
         self._store_injected = False
-        return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
+        return self._compose_system_text()
+
+    def _compose_system_text(self, *, replace=None) -> str:
+        from litetui import seat_prompts
+        launch = seat_prompts.launch_text(self)
+        base = self._with_ordinary_instructions(self.plugins.compose_prompt(replace=replace))
+        return ((launch + "\n\n" if launch else "") + base
+                + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
+
+    def _host_prompt_message(self) -> dict:
+        base = self._system_prompt_text()
+        floor = prompt_compiler.compile_prompt_file(
+            paths.SYSTEM_PROMPT_FILE, root=paths.ROOT, user_name=self.settings.user_name).strip()
+        return {"role": "system", "content": base, "litetui_prompt_owner": 1, "litetui_prompt_version": 2,
+                "litetui_prompt_base": base, "litetui_prompt_ordinary_start": len(floor) + 2,
+                "litetui_ordinary_text": self._ordinary_prompt_text("ordinary-instructions").strip(),
+                "litetui_seat_text": self._ordinary_prompt_text("seat-instructions")}
 
     def _load_system_prompt(self) -> None:
-        base = self._system_prompt_text()
-        if base:
-            self._append({"role": "system", "content": base})
+        message = self._host_prompt_message()
+        if message["content"]:
+            self._append(message)
 
     # ── Store injection ──────────────────────────────────────────
     #
@@ -3895,14 +3926,78 @@ class LiteTUI(App):
             self._edit(0, "lore injected once")
 
     def _request_messages(self) -> list[dict]:
-        """The conversation as sent. The index, lore and store ride in message 0, once per message 0."""
+        """The conversation as sent. The index and store ride in message 0, injected once."""
         if getattr(self, "_store_injected", None) is not None:
             self._inject_index_once()
             self._inject_lore_once()
         self._inject_store_once()
         self._ensure_legacy_store_notice()
-        return list(self.conversation)
-
+        from litetui import prompt_overrides
+        if getattr(self, "_prompt_snapshot", None) is None:
+            prompt_overrides.refresh(self)
+        systems = [i for i, m in enumerate(self.conversation) if m.get("role") == "system"]
+        if systems and (systems != [0] or not isinstance(self.conversation[0].get("content"), str)):
+            raise prompt_overrides.PromptError("Scoped guidance requires one initial string system message; input held unsent")
+        messages = list(self.conversation)
+        for index, message in enumerate(messages):
+            if message.get("litetui_prompt_owner") != 1:
+                continue
+            original = message.get("litetui_prompt_base")
+            old_ordinary = message.get("litetui_ordinary_text")
+            old_seat = message.get("litetui_seat_text")
+            content = message["content"]
+            if not isinstance(original, str) or not content.startswith(original):
+                raise prompt_overrides.PromptError("Host prompt was replaced; cannot safely rewrite ordinary guidance")
+            if message.get("litetui_prompt_version") == 2:
+                # Prefix is host-owned; its frozen index/lore/store suffix is opaque.
+                # Recomposition does not reset or reread the store receipt.
+                messages[index] = {**message, "content": self._compose_system_text() + content[len(original):]}
+                continue
+            start = message.get("litetui_prompt_ordinary_start")
+            if start is None and old_ordinary:
+                needle = "\n\n" + old_ordinary
+                if original.count(needle) == 1:
+                    start = original.index(needle) + 2
+            if (not isinstance(start, int) or not isinstance(old_ordinary, str)
+                    or original[start:start + len(old_ordinary)] != old_ordinary):
+                raise prompt_overrides.PromptError("Ambiguous host ordinary instruction boundary")
+            ordinary = self._ordinary_prompt_text("ordinary-instructions").strip()
+            replaced = (original[:start] + ordinary + ("\n\n" if not old_ordinary and ordinary else "")
+                        + original[start + len(old_ordinary):])
+            if old_seat:
+                recap = "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
+                ending = "\n\n[LiteTUI seat instructions]\n" + old_seat + recap
+                if not replaced.endswith(ending):
+                    raise prompt_overrides.PromptError("Ambiguous host seat instruction boundary")
+                replaced = replaced[:-len(ending)] + recap
+            seat = self._ordinary_prompt_text("seat-instructions")
+            if seat:
+                replaced += "\n\n[LiteTUI seat instructions]\n" + seat
+            messages[index] = {**message, "content": replaced + content[len(original):]}
+        if not any(m.get("litetui_prompt_owner") == 1 for m in messages):
+            # Old/custom transcripts have no trustworthy replacement boundary.
+            # Preserve them bytewise; explicit scoped ordinary configuration gets
+            # host-authored guidance appended to a first system request copy, including reset.
+            names = {"ordinary-instructions.md", "seat-instructions.md"}
+            snapshot = self._prompt_snapshot
+            configured = (
+                snapshot.directory is not None and any(
+                    prompt_overrides.metadata(snapshot.directory, name) is not None for name in names))
+            baseline = getattr(self, "_prompt_baseline_texts", {})
+            configured = configured or any(name in baseline and snapshot.texts[name] != baseline[name] for name in names)
+            if configured:
+                systems = [i for i, m in enumerate(messages) if m.get("role") == "system"]
+                guidance = prompt_overrides.native_context(self)
+                if systems:
+                    if systems != [0] or not isinstance(messages[0].get("content"), str):
+                        raise prompt_overrides.PromptError("Scoped guidance requires one initial string system message; input held unsent")
+                    messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + guidance}
+                else:
+                    messages.insert(0, {"role": "system", "content": guidance})
+        # Host bookkeeping must never reach OpenAI-compatible wire messages.
+        return [{k: v for k, v in message.items() if not k.startswith("litetui_prompt_")
+                 and k not in {"litetui_ordinary_text", "litetui_seat_text"}}
+                for message in messages]
     def _ensure_legacy_store_notice(self, *, native_unknown: bool = False) -> None:
         if getattr(self, "_store_notice_text", None):
             return
@@ -4397,14 +4492,24 @@ class LiteTUI(App):
         host_index = (1 if len(msgs) > 1 and msgs[1].get('role') == 'system'
                       and launch_message_matches(self, msgs[0].get('content', '')) else 0)
         if self.conversation and self.conversation[host_index].get('role') == 'system':
-            current = self.conversation[host_index].get('content')
-            if isinstance(current, str):
+            host = self.conversation[host_index]
+            current = host.get('content')
+            base = host.get('litetui_prompt_base')
+            # Explicit recorded provenance was validated above. A proved v2
+            # host owns its entire prefix, including edited storage templates;
+            # legacy address inference must not append after its frozen suffix.
+            proved_v2 = (meta.get('store_identity', UNRECORDED) is not UNRECORDED
+                         and type(host.get('litetui_prompt_owner')) is int and host['litetui_prompt_owner'] == 1
+                         and type(host.get('litetui_prompt_version')) is int and host['litetui_prompt_version'] == 2
+                         and isinstance(base, str) and bool(base)
+                         and isinstance(current, str) and current.startswith(base))
+            if isinstance(current, str) and not proved_v2:
                 owner_dir = getattr(self, '_owner_memory_dir', None)
                 refreshed = (refresh_store_address(current, self.convo_id, owner_dir, owner=True)
                              if owner_dir is not None
                              else refresh_store_address(current, self.convo_id, self._agent_session.memory_root))
                 if refreshed != current:
-                    self.conversation[host_index] = {**self.conversation[host_index], 'content': refreshed}
+                    self.conversation[host_index] = {**host, 'content': refreshed}
                     self._edit(host_index, 'owned store address refreshed')
         memory_root = (self._agent_session.memory_root
                        if getattr(self, '_agent_session', None) is not None else self.convo_dir)
@@ -4623,9 +4728,9 @@ class LiteTUI(App):
             # exactly the disagreement this change exists to remove.
             self._system("could not save the tools setting — this session only")
         if self.conversation and self.conversation[0].get("role") == "system":
-            # Rebuilt through the single builder. The store and index blocks
-            # leave with the old text; the next request appends fresh ones.
-            self.conversation[0]["content"] = self._system_prompt_text()
+            # Rebuilt through the single builder. Hand-rolling it here is how
+            # the store block gets dropped on the first Ctrl+T.
+            self.conversation[0] = self._host_prompt_message()
             self._edit(0, "tools toggled")  # one message, not the whole list
         state = "ON (bash, read, write, web_fetch)" if self.tools_enabled else "OFF"
         self._system(f"Tools {state} — Ctrl+T to toggle")
@@ -4827,7 +4932,7 @@ class LiteTUI(App):
             return False
         self._plan_mode = on
         if self.conversation and self.conversation[0].get("role") == "system":
-            self.conversation[0]["content"] = self._system_prompt_text()
+            self.conversation[0] = self._host_prompt_message()
             self._edit(0, "plan mode toggled")  # one message, not the whole list
         if announce:
             # 🔴 THE KEY IS READ FROM THE BINDING, NEVER TYPED HERE (T573).
@@ -6076,19 +6181,12 @@ class LiteTUI(App):
                     and not await self._register_owned_startup()):
                 return
             if self._cli_convo_id:
-                from litetui.store_identity import launch_message_matches
-                launch_pair = (len(self.conversation) > 1
-                               and self.conversation[0].get("role") == "system"
-                               and self.conversation[1].get("role") == "system")
-                if self._cli_system_prompt or launch_pair:
-                    if not launch_pair or not launch_message_matches(self, self.conversation[0].get("content", "")):
-                        self._cli_launch_error = ("Launch text mismatch: resume with the identical --system-prompt, "
-                                                  "--system-prompt-file and/or --cognitive-file text, or start "
-                                                  "a new conversation (omit --convo). Nothing was sent.")
-                        self._system(self._cli_launch_error)
-                        return
-            elif self._cli_system_prompt:
-                self.conversation.insert(0, {"role": "system", "content": self._cli_system_prompt})
+                from litetui.seat_prompts import rehydrate
+                if not rehydrate(self):
+                    self._cli_launch_error = "Launch text mismatch: exact supplied launch provenance could not be proved; resume with identical launch sources or start a new conversation (omit --convo). Nothing was sent"
+                    self._system(self._cli_launch_error)
+                    return
+            # Launch role/method already belongs to the one host system message.
             if self._first_prompt:
                 await self._ensure_chat_ready(timeout=15.0)
                 self._submit_text(self._first_prompt, alt_chord=False)
@@ -7562,7 +7660,7 @@ class LiteTUI(App):
                 model=model or self.model_id or "local-model",
                 messages=[{
                     "role": "user",
-                    "content": CARD_SUMMARY_PROMPT.replace("{answer}", answer),
+                    "content": self._ordinary_prompt_text("card-summary", fresh=True).replace("{answer}", answer),
                 }],
                 # Reuses the compact budget rather than minting another literal,
                 # same reasoning as the tool-summary fold.
@@ -9106,7 +9204,7 @@ class LiteTUI(App):
         self._interrupted_compact_resume = None
         self.self_compaction.pending = None
         if (self.conversation and self.conversation[-1].get("role") == "user"
-                and self.conversation[-1].get("content") != WAKE_AFTER_COMPACT):
+                and self.conversation[-1].get("content") != self._ordinary_prompt_text("wake-after-compact")):
             self.self_compaction.progress()
         # 🔴 RE-READ THE WINDOW AT TURN START, NOT ONLY AT TURN END.
         #
@@ -10125,9 +10223,10 @@ class LiteTUI(App):
             self._system(why)
             return
         self._materialise_convo()
-        self._user_bubble(WAKE_AFTER_COMPACT, False)
+        wake = self._ordinary_prompt_text("wake-after-compact", fresh=True)
+        self._user_bubble(wake, False)
         self._hooks_suppressed = True
-        self._append({"role": "user", "content": WAKE_AFTER_COMPACT})
+        self._append({"role": "user", "content": wake})
         self._stream()
 
     def _record_native_usage(self, usage) -> None:
@@ -10209,7 +10308,7 @@ class LiteTUI(App):
         manual /compact, which is why the 70% reminder exists.
         """
         owner_dir, t0 = self._owner_memory_dir, self._owner_compact_t0
-        text = owner_mode.compact_prompt(owner_dir, summary=False)
+        text = owner_mode.compact_prompt(owner_dir, summary=False, app=self, fresh=True)
         why = None
         for attempt in (1, 2):
             if attempt == 1:
@@ -10324,13 +10423,14 @@ class LiteTUI(App):
                                   kept_recent=len(tail))
             return
 
+        compact_prompt = self._ordinary_prompt_text("compact", fresh=True)
         compact_started = time.perf_counter()
         trigger_tokens = self.ctx_used
         before_chars = self._msg_chars(self.conversation)
         before_count = len(self.conversation)
         # Owner mode swaps STEP 1 (NOW.md rewrite + DOMAIN.md append in the owner folder).
         owner_dir = getattr(self, '_owner_memory_dir', None)
-        compact_text = owner_mode.compact_prompt(owner_dir) if owner_dir is not None else COMPACT_PROMPT
+        compact_text = owner_mode.compact_prompt(owner_dir, app=self, fresh=True) if owner_dir is not None else compact_prompt
         owner_t0 = getattr(self, '_owner_compact_t0', None) if owner_dir is not None else None
         owner_failure = None  # why NOW.md was not committed, once the one retry is spent
         owner_retried = False

@@ -36,6 +36,25 @@ def ledger_for(app):
     return ledger
 
 
+def _recorded_prompt_revision(app, segment, *, allow_changed=False):
+    """A current launch cannot certify an old native system by default.
+
+    Native saved systems are immutable. Selected-policy launches must explicitly
+    transition legacy segments before any admission, queued reuse or transport
+    opening; transcript prefix rehydration cannot change a native ledger.
+    """
+    revision = segment.get("prompt_revision")
+    if (getattr(app, "_seat_prompt_policy", False)
+            and (segment.get("system_prompt") or segment.get("session_id"))
+            and not isinstance(revision, str)):
+        raise UncertainDelivery("Legacy Claude system has no recorded role/method revision; input held unsent. Use /claude new explicitly to adopt the selected role and method")
+    if revision is not None and (segment.get("system_prompt") or segment.get("session_id")) and not allow_changed:
+        from litetui.seat_prompts import revision as current_revision
+        if revision != current_revision(app):
+            raise UncertainDelivery("Claude input remains held: saved system revision differs from the current role/prompt. A fresh unqueued input transitions safely; /claude new is the explicit alternative")
+    return revision
+
+
 #: Claude's tools are off entirely when LiteTUI's are (claude_tools.sdk_options), so the
 #: host's "advertised but disabled" note would be false here.
 CLAUDE_TOOLS_OFF = "\nTools are off in LiteTUI, so you have none this session. Only the user can turn them on (Ctrl+T).\n"
@@ -95,7 +114,7 @@ def system_prompt_for(app, segment):
     A segment already bound to a native session before this existed returns None
     and keeps the preset it was created with.
     """
-    from litetui import appsvc
+    from litetui import appsvc, seat_prompts
     from litetui.claude_backend import APPEND, seeded_append
     from litetui.plugins import PROMPT_ORDER
     from litetui.textfmt import load_prompt
@@ -105,6 +124,7 @@ def system_prompt_for(app, segment):
     if segment.get("system_prompt") or segment.get("session_id"):
         require_store_match(app, segment.get("store_identity", UNRECORDED),
                             prompt=segment.get("system_prompt") or "", convo_id=app.convo_id, native=True)
+    _recorded_prompt_revision(app, segment)
     if segment.get("system_prompt"):
         if not isinstance(segment.get("store_injected"), bool):
             app._ensure_legacy_store_notice(native_unknown=True)
@@ -115,22 +135,22 @@ def system_prompt_for(app, segment):
     if segment.get("session_id"):
         return None
     store_identity = capture(app)
-    tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
-    # The launch block (tier preamble + cognitive file, from --system-prompt-file/--cognitive-file)
-    # leads a new native segment; without it the role and method never reach Claude's prompt.
-    launch = getattr(app, "_cli_system_prompt", None)
-    parts = [launch, app.plugins.compose_prompt(replace={PROMPT_ORDER["TOOLS"]: tools, PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
-    parts.append(appsvc.index_block(app, cwd=segment["workspace"]).strip())
-    parts.append(appsvc.lore_block(app).strip())
-    store_block = appsvc.store_block(app).strip()
-    parts.append(store_block)
+    tools = "\n" + load_prompt("claude-tools", app=app, cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
+    parts = [app._compose_system_text(replace={PROMPT_ORDER["TOOLS"]: tools,
+                                              PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
+    frozen = segment.get("prompt_frozen")
+    if frozen is None:
+        frozen = {"index": appsvc.index_block(app, cwd=segment["workspace"]).strip(),
+                  "lore": appsvc.lore_block(app).strip(), "store": appsvc.store_block(app).strip()}
+    parts.extend(frozen[key] for key in ("index", "lore", "store"))
+    store_block = frozen["store"]
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
-        parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
-    parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
-    parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
+        parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities", app=app).strip())
+    parts.append(seeded_append(segment["seed"], verbatim=segment.get("seed_verbatim", False)) if segment.get("seed") else APPEND)
     text = "\n\n".join(p for p in parts if p)
     return ledger_for(app).fix_system_prompt(segment["id"], text, store_identity=store_identity,
-                                            store_injected=bool(store_block))
+                                            store_injected=bool(store_block), host_policy_version=1,
+                                            prompt_revision=seat_prompts.revision(app), prompt_frozen=frozen)
 
 
 #: The CLI's own words for a context that no longer fits (read out of CLI 2.1.281).
@@ -332,6 +352,34 @@ def prepare_input(app, content, profile, source, operation_id=None):
     unresolved = [e for e in ledger.pending(segment["id"]) if e["state"] != "prepared" and e["id"] != active]
     if unresolved:
         raise UncertainDelivery("Claude delivery is uncertain. Inspect saved history, then /claude resolve to settle it without replay, /claude continue to send what is still only prepared, or /claude new for a fresh session; no input is replayed automatically.")
+    from litetui import prompt_overrides, seat_prompts
+    previous_snapshot = getattr(app, "_prompt_snapshot", None)
+    busy = app._chat_running()
+    try:
+        snapshot = prompt_overrides.refresh(app)
+    finally:
+        if busy:
+            app._prompt_snapshot = previous_snapshot
+    if segment.get("system_prompt") or segment.get("session_id"):
+        current_revision = seat_prompts.revision(app, snapshot=snapshot)
+        recorded_revision = _recorded_prompt_revision(app, segment, allow_changed=True)
+        if (recorded_revision or getattr(app, "_prompt_revision_at_launch", current_revision)) != current_revision:
+            if app._chat_running() or ledger.pending(segment["id"]):
+                raise UncertainDelivery("System prompt changed; input held until the active/pending Claude deliveries settle")
+            if not isinstance(segment.get("prompt_frozen"), dict):
+                raise UncertainDelivery("Legacy Claude system cannot be updated safely; use /claude new explicitly")
+            from litetui.store_identity import UNRECORDED, require_store_match
+            require_store_match(app, segment.get("store_identity", UNRECORDED),
+                                prompt=segment.get("system_prompt") or "", convo_id=app.convo_id, native=True)
+            # Existing supported seeded-segment mechanism, with verbatim saved
+            # context rather than an invented summary or silent history loss.
+            import json
+            history = [m for m in app.conversation if m.get("role") != "system"]
+            root_seed = segment.get("prompt_root_seed", segment.get("seed", ""))
+            seed = (root_seed + "\n\nPrevious APP-RECORDED conversation (verbatim JSON; historical context):\n"
+                    + json.dumps(history, ensure_ascii=False))
+            segment = ledger.rotate_prompt(segment["id"], seed=seed, root_seed=root_seed)
+            app._system("System prompt updated: fresh Claude segment carries APP-RECORDED history and prior base seed, not hidden native context")
     entry = ledger.prepare(segment["id"], content, profile, source, operation_id=operation_id)
     return {"_claude_entry": entry, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
 
@@ -356,6 +404,20 @@ def queue_ready(app, item):
     if not selected or item["_claude_segment"] != selected["id"]:
         _hold_notice(app, item, "Queued Claude input is held for its original session segment.")
         return False
+    from litetui import prompt_overrides, seat_prompts
+    previous_snapshot = getattr(app, "_prompt_snapshot", None)
+    try:
+        snapshot = prompt_overrides.refresh(app)
+        recorded_revision = _recorded_prompt_revision(app, selected)
+    except (ValueError, OSError) as exc:
+        _hold_notice(app, item, f"Queued Claude input held unsent: {exc}")
+        return False
+    finally:
+        app._prompt_snapshot = previous_snapshot
+    recorded_revision = recorded_revision or getattr(app, "_prompt_revision_at_launch", None)
+    if recorded_revision and recorded_revision != seat_prompts.revision(app, snapshot=snapshot):
+        _hold_notice(app, item, "System prompt changed; queued Claude input is held, not replayed. Settle/cancel old pending deliveries or explicitly /claude new before continuing.")
+        return False
     if not item.get("_claude_entry") and selected["workspace"] != launch_workspace(app):
         _hold_notice(app, item, "Queued Claude input is held for its original workspace; relaunch there to continue.")
         return False
@@ -375,7 +437,15 @@ def accept_input(app, item):
         # T1043: an unlabelled item is recorded "unlabelled", never as an
         # attended "queued" that a later replay would inherit.
         metadata = prepare_input(app, item["content"], item.get("tool_profile"), item.get("source") or "unlabelled", item.get("operation_id"))
-    app._claude_active_input = {**item, **metadata}
+    from litetui import prompt_overrides, seat_prompts
+    snapshot = getattr(app, "_prompt_snapshot", None)
+    if snapshot is None or snapshot.directory != seat_prompts.home(app):
+        snapshot = prompt_overrides.refresh(app)
+    selected = ledger_for(app).segment(metadata["_claude_segment"])
+    recorded_revision = _recorded_prompt_revision(app, selected or {}) or getattr(app, "_prompt_revision_at_launch", None)
+    if recorded_revision and recorded_revision != seat_prompts.revision(app, snapshot=snapshot):
+        raise UncertainDelivery("System prompt changed; prepared Claude input remains held for its original segment, not replayed")
+    app._claude_active_input = {**item, **metadata, "_litetui_prompt_snapshot": snapshot}
     return {"id": metadata["_claude_entry"]["id"], "segment_id": metadata["_claude_segment"], "state": "prepared"}
 
 
@@ -462,6 +532,7 @@ async def session_for(app, backend, segment, effort):
 
     ONE door for a turn and for a compaction: reuse the live session (model and
     effort switched live), or open one, resuming the segment's native session."""
+    _recorded_prompt_revision(app, segment)
     from litetui.claude_events import ClaudeEventStream
     from litetui.claude_tools import ClaudeTools
 
