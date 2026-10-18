@@ -78,3 +78,26 @@ def test_aliases(modern, wire):
     assert seat_prompts.DISPLAY_ROLES[wire] == modern
     assert seat_prompts.role_body(f"# {modern.upper()} ROLE -- {modern.title()} Mode\nBODY", wire) == "BODY"
     assert seat_prompts.role_body(f"# {wire.upper()} ROLE -- {wire.title()} Mode\nBODY", wire) == "BODY"
+
+
+@pytest.mark.parametrize("invalid", ["oversized-stripped-comment", "nul-stripped-comment"])
+def test_human_system_raw_validation_preserves_active_revision(tmp_path, invalid):
+    method = source(tmp_path, "method.md", "# POLYMATHIC GAMMA\nSELECTED METHOD")
+    app = owned_app(system_prompt="PREVIOUS BODY", cognitive_file=method)
+    first = app._request_messages()[0]["content"]
+    root = app._agent_session.memory_root
+    files = [root / "prompts" / name for name in ("role.md", "role.md.json", "audit.jsonl")]
+    files.append(root / ".prompt-launch.json")
+    before = {p: p.read_bytes() for p in files}
+    prefix = "x" * prompts.MAX_BYTES if invalid == "oversized-stripped-comment" else "\0"
+    raw = "<!--" + prefix + "-->\n# BUILDER ROLE\nSMALL BODY"
+    assert seat_prompts.role_body(raw, "worker") == "SMALL BODY"
+    with pytest.raises(prompts.PromptError, match="bounded UTF-8"):
+        seat_prompts.set_system_body(app, raw)
+    assert all(p.read_bytes() == data for p, data in before.items())
+    assert app._request_messages()[0]["content"] == first
+    seat_prompts.set_system_body(app, "# BUILDER ROLE\nNORMAL VALID UPDATE")
+    rendered = app._request_messages()[0]["content"]
+    assert rendered.count("NORMAL VALID UPDATE") == 1 and "PREVIOUS BODY" not in rendered
+    assert rendered.count("# BUILDER ROLE") == 1 and rendered.count("# POLYMATHIC GAMMA") == 1
+    assert prompts.metadata(root, "role.md")["active"] is True

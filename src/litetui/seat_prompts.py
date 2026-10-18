@@ -349,6 +349,7 @@ def set_system_body(app, text: str) -> None:
                "seat": app.seat.agent_id, "convo": app.convo_id, "name": "role.md",
                "reason": "direct human /system command", "text": text,
                "global_sha": prompts.sha(""), "actor": app.seat.agent_id, "notification_sent": None}
+    prompt_commands.validate(command, applying=True)
     prompt_commands.apply(root, command, actor_provenance="direct human command in owning app")
     prompt_commands.apply(root, {**command, "notification_sent": True})
     prompts.refresh(app)
