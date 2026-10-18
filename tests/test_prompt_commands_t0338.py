@@ -70,10 +70,10 @@ async def test_owned_actor_target_apply_notification_dedup(owners, monkeypatch, 
     assert outgoing[0][0] == worker.seat.agent_id and len(worker.notices) == 1
     assert forwarded[0]["actor"] == leader.seat.agent_id
     assert len(forwarded) == 2
-    assert prompts.read_text(paths.prompt_file(cmd["name"], convo_dir=worker.convo_dir)) == cmd["text"]
+    assert prompts.read_text(paths.prompt_file(cmd["name"], convo_dir=worker._agent_session.memory_root)) == cmd["text"]
     again = await commands.dispatch(leader, cmd)
     assert again["duplicate"] and len(outgoing) == 1 and len(worker.notices) == 1
-    rows = [json.loads(s) for s in (worker.convo_dir / "prompts" / "audit.jsonl").read_text().splitlines()]
+    rows = [json.loads(s) for s in (worker._agent_session.memory_root / "prompts" / "audit.jsonl").read_text().splitlines()]
     assert [r["phase"] for r in rows] == ["intent", "applied", "notification"]
     assert rows[0]["who"] == leader.seat.agent_id
 
@@ -111,7 +111,7 @@ async def test_notification_ack_lost_is_partial(owners, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["wrong-convo", "unowned", "parent", "unknown-field", "legacy", "cross-seat"])
+@pytest.mark.parametrize("fault", ["wrong-convo", "unowned", "parent", "unknown-field", "cross-seat"])
 async def test_refusal_before_publication(owners, fault):
     leader, worker = owners
     cmd = {**request(worker), "type": commands.APPLY, "actor": leader.seat.agent_id, "notification_sent": None}
@@ -133,7 +133,7 @@ async def test_refusal_before_publication(owners, fault):
         cmd["seat"] = leader.seat.agent_id
     with pytest.raises(ValueError):
         await commands.dispatch(worker, cmd)
-    assert not (worker.convo_dir / "prompts").exists()
+    assert not (worker._agent_session.memory_root / "prompts").exists()
 
 
 @pytest.mark.asyncio
@@ -145,8 +145,10 @@ async def test_explicit_fresh_claude_transition(owners):
     ledger.fix_system_prompt(segment["id"], "old mixed system")
     ledger.bind_session(segment["id"], "native-old")
     cmd = {**request(worker), "type": commands.APPLY, "actor": leader.seat.agent_id, "notification_sent": None}
-    with pytest.raises(ValueError, match="one /claude new"):
-        await commands.dispatch(worker, cmd)
+    # Publication is home-scoped; unsafe native sessions are held at admission,
+    # not disguised as a prose-immutability ban in the publication endpoint.
+    result = await commands.dispatch(worker, cmd)
+    assert result["status"] == "APPLIED_NOTIFICATION_UNKNOWN"
     fresh = ledger.select_segment(str(worker.convo_dir), new=True)
     assert fresh["id"] != segment["id"]
     result = await commands.dispatch(worker, cmd)
@@ -186,7 +188,7 @@ async def test_private_auth_gate_actual_owner_dispatch(owners):
     cmd = {**request(worker), "type": commands.APPLY, "actor": leader.seat.agent_id, "notification_sent": None}
     w = Writer()
     await rpc._client(reader({"agent_id": worker.seat.agent_id, "nonce": "fixture", "token": "wrong"}, cmd), w)
-    assert w.frames[0]["ok"] is False and not (worker.convo_dir / "prompts").exists()
+    assert w.frames[0]["ok"] is False and not (worker._agent_session.memory_root / "prompts").exists()
     w = Writer()
     await rpc._client(reader({"agent_id": worker.seat.agent_id, "nonce": "fixture", "token": rpc.secret}, cmd), w)
     assert w.frames[-1]["ok"] and w.frames[-1]["result"]["status"] == "APPLIED_NOTIFICATION_UNKNOWN"

@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from litetui import paths, prompt_commands as commands, prompt_overrides as prompts
-from litetui.app import LiteTUI
+from _owned_seat import owned_app as LiteTUI
 from test_prompt_overrides_t0338 import command, layer
 from test_prompt_commands_t0338 import owners, request
 
@@ -29,7 +29,7 @@ def test_metadata_escaped_envelope_and_bounded_decoded_body(tmp_path):
 
 
 @pytest.mark.parametrize("name,allowed", [("compact.md", True), ("compact.md.json", True),
-                                         ("systemprompt.md", False), ("unknown.md", False)])
+                                         ("systemprompt.md", True), ("unknown.md", False)])
 def test_retained_publication_temporary_is_not_active(tmp_path, name, allowed):
     folder = tmp_path / "prompts"
     folder.mkdir()
@@ -111,7 +111,7 @@ def test_managed_body_tamper_refused(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["foreign-session", "pending", "loading", "store-dir", "authority", "sha"])
+@pytest.mark.parametrize("fault", ["foreign-session", "loading", "store-dir", "authority", "sha"])
 async def test_owner_and_schema_edges_refuse_before_writes(owners, fault):
     leader, worker = owners
     cmd = {**request(worker), "type": commands.APPLY, "actor": leader.seat.agent_id,
@@ -134,7 +134,7 @@ async def test_owner_and_schema_edges_refuse_before_writes(owners, fault):
 def test_host_rebuild_wire_keys_and_custom_legacy_guidance(tmp_path):
     app = LiteTUI()
     app._materialise_convo()
-    layer(app.convo_dir, "ordinary-instructions.md", "current ordinary")
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", "current ordinary")
     prompts.refresh(app)
     for tools in (False, True):
         app.tools_enabled = tools
@@ -149,7 +149,7 @@ def test_host_rebuild_wire_keys_and_custom_legacy_guidance(tmp_path):
     assert "host supplied, not user-authored" in wire[0]["content"]
     assert "current ordinary" in wire[0]["content"]
     assert len(app.conversation) == len(wire)
-    commands.apply(app.convo_dir, command(app.convo_dir, action="reset", text=""))
+    commands.apply(app._agent_session.memory_root, command(app._agent_session.memory_root, action="reset", text=""))
     prompts.refresh(app)
     assert "## Engineering practices" in app._request_messages()[0]["content"]
 
@@ -157,11 +157,11 @@ def test_host_rebuild_wire_keys_and_custom_legacy_guidance(tmp_path):
 def test_empty_ordinary_host_boundary_is_reloadable():
     app = LiteTUI()
     app._materialise_convo()
-    layer(app.convo_dir, "ordinary-instructions.md", "")
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", "")
     prompts.refresh(app)
     app.conversation[0] = app._host_prompt_message()
     assert "Shared-worktree caveat" in app._request_messages()[0]["content"]
-    layer(app.convo_dir, "ordinary-instructions.md", "restored ordinary")
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", "restored ordinary")
     prompts.refresh(app)
     assert "restored ordinary\n\n" in app._request_messages()[0]["content"]
 
@@ -171,11 +171,11 @@ def test_seat_text_is_removed_at_owned_trailing_boundary_only():
     app._materialise_convo()
     seat = "SAME SEAT"
     ordinary = "ordinary quotes\n\n[LiteTUI seat instructions]\n" + seat
-    layer(app.convo_dir, "ordinary-instructions.md", ordinary)
-    layer(app.convo_dir, "seat-instructions.md", seat)
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", ordinary)
+    layer(app._agent_session.memory_root, "seat-instructions.md", seat)
     prompts.refresh(app)
     app.conversation[0] = app._host_prompt_message()
-    layer(app.convo_dir, "seat-instructions.md", "NEXT SEAT")
+    layer(app._agent_session.memory_root, "seat-instructions.md", "NEXT SEAT")
     prompts.refresh(app)
     result = app._request_messages()[0]["content"]
     assert ordinary in result and "NEXT SEAT" in result
@@ -189,8 +189,8 @@ def test_invalid_managed_revision_holds_actual_admission_without_floor_change(mo
     before = app.conversation[0]["content"]
     notices = []
     app._system = notices.append
-    commands.apply(app.convo_dir, command(app.convo_dir, "compact.md", "managed"))
-    layer(app.convo_dir, "compact.md", "mismatch")
+    commands.apply(app._agent_session.memory_root, command(app._agent_session.memory_root, "compact.md", "managed"))
+    layer(app._agent_session.memory_root, "compact.md", "mismatch")
     monkeypatch.setattr(hook_host, "refuse_below_floor", lambda *args: False)
     assert hook_host.accept_prompt(app, {"content": "never sent", "source": "typed"}) is False
     assert app.conversation[0]["content"] == before
@@ -270,8 +270,8 @@ async def test_quoted_marker_absent_invalid_policy_remains_legacy(owners, versio
         ledger._save()
     cmd = {**request(worker), "type": commands.APPLY, "actor": leader.seat.agent_id,
            "notification_sent": None}
-    with pytest.raises(ValueError, match="one /claude new"):
-        await commands.dispatch(worker, cmd)
+    result = await commands.dispatch(worker, cmd)
+    assert result["status"] == "APPLIED_NOTIFICATION_UNKNOWN"
     assert not (worker.convo_dir / "prompts").exists()
 
 

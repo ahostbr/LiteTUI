@@ -32,11 +32,9 @@ def target(root: Path, seat: str, convo: str):
         agent = store.find_agent(name=seat)
     else:
         agent = store.find_agent(agent_id=identity)
-    directory = store.conversation_directory(agent, valid_id(convo))
-    transcript = prompts.checked(directory / "convo.jsonl")
-    if not transcript.is_file():
-        raise prompts.PromptError("Target conversation must already have a transcript")
-    return agent, directory
+    if convo is not None:
+        store.conversation_directory(agent, valid_id(convo))
+    return agent, agent.directory
 
 
 def registry(identity: str) -> dict:
@@ -106,8 +104,11 @@ def validate(command: dict, *, applying: bool) -> dict:
         raise prompts.PromptError("Unexpected prompt request fields")
     valid_id(command["id"])
     valid_id(command["seat"])
-    valid_id(command["convo"])
+    if command["convo"] is not None:
+        valid_id(command["convo"])
     prompts.mutable(command["name"])
+    if command["action"] == "reset" and command["name"] in {"role.md", "method.md"}:
+        raise prompts.PromptError("Role/method reset has no global default; explicitly set the desired body instead")
     if command["action"] not in {"set", "reset"}:
         raise prompts.PromptError("Unknown prompt mutation")
     reason = command["reason"]
@@ -172,21 +173,18 @@ async def dispatch(app, command: dict) -> dict:
     registry(command["actor"])
     agent, directory = target(paths.data_root(), command["seat"], command["convo"])
     store = app.store
-    if (app.convo_id != command["convo"] or app.convo_dir != directory
-            or store.convo_id != app.convo_id or store.convo_dir != directory
-            or not store.owned or store.pending or store.loading
-            or store.agent_session is not app._agent_session
-            or app._agent_session.conversation_directory(app.convo_id) != directory):
-        raise prompts.PromptError("Target must own the requested current materialized conversation")
-    if (command["name"] in {"ordinary-instructions.md", "seat-instructions.md"}
-            and command["action"] == "set" and command["notification_sent"] is None
-            and getattr(getattr(app, "backend", None), "name", None) == "claude"):
-        from litetui.claude_persistence import ClaudeLedger
-        ledger = getattr(app, "_claude_ledger", None) or ClaudeLedger(directory)
-        segment = ledger.selected
-        if segment and (segment.get("session_id") or segment.get("system_prompt")) and (
-                type(segment.get("host_policy_version")) is not int or segment["host_policy_version"] != 1):
-            raise prompts.PromptError("This Claude seat needs one /claude new to accept per-agent prompts")
+    if (store.agent_session is not app._agent_session
+            or not store.owned or store.loading or store.convo_dir != app.convo_dir
+            or app._agent_session.memory_root != directory
+            or (command["convo"] is not None and app.convo_id != command["convo"])):
+        raise prompts.PromptError("Target must own its agent home and requested live conversation")
+    # Role text can vary; role authority cannot. Validate before publishing.
+    if command["action"] == "set":
+        from litetui.seat_prompts import role_body, role_name, validate_method
+        if command["name"] == "role.md":
+            role_body(command["text"], role_name(app.seat.tier))
+        elif command["name"] == "method.md":
+            validate_method(command["text"])
     # No await from ownership validation through publication: the target app loop
     # owns selection and turn snapshots; neither can interleave with this write.
     result, notice = apply(directory, command)
@@ -232,7 +230,9 @@ def publish(path: Path, text: str) -> None:
     sync_directory(path.parent)
 
 
-def apply(directory: Path, command: dict) -> tuple[dict, str]:
+def apply(directory: Path, command: dict, *, actor_provenance="trusted-private-RPC-route assertion; OS-user capability") -> tuple[dict, str]:
+    if command["action"] == "reset" and command["name"] in {"role.md", "method.md"}:
+        raise prompts.PromptError("Role/method reset has no global default; explicitly set the desired body instead")
     from litetui.shared_state import coordinated_write
     folder = prompts.checked(directory / "prompts")
     folder.mkdir(exist_ok=True)
@@ -301,15 +301,17 @@ def apply(directory: Path, command: dict) -> tuple[dict, str]:
         if any(r.get("request_id") == command["id"] for r in rows):
             raise prompts.PromptError("Prior prompt request has uncertain publication; inspect audit, do not retry blindly")
         name = command["name"]
-        global_text = prompts.read_text(paths.prompt_file(name))
+        global_file = paths.prompt_file(name)
+        global_text = prompts.read_text(global_file) if global_file.is_file() else ""
         if prompts.sha(global_text) != command["global_sha"]:
             raise prompts.PromptError("Global prompt drifted before publication; inspect diff and submit a new request")
-        before = prompts.read_text(paths.prompt_file(name, convo_dir=directory))
+        previous_file = paths.prompt_file(name, convo_dir=directory)
+        before = prompts.read_text(previous_file) if previous_file.is_file() else ""
         after = command["text"] if command["action"] == "set" else global_text
         diff = "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
                                           fromfile="previous", tofile="requested"))
         row = {"version": 1, "request_id": command["id"], "phase": "intent",
-               "who": command["actor"], "actor_provenance": "trusted-private-RPC-route assertion; OS-user capability",
+               "who": command["actor"], "actor_provenance": actor_provenance,
                "seat": command["seat"], "convo": command["convo"], "name": name,
                "action": command["action"], "reason": command["reason"], "diff": diff,
                "global_sha": prompts.sha(global_text), "fingerprint": fingerprint}
@@ -345,7 +347,8 @@ def inspect(directory: Path, name: str, *, diff: bool) -> str:
     effective = prompts.read_text(paths.prompt_file(name, convo_dir=directory))
     if not diff:
         return effective
-    global_text = prompts.read_text(paths.prompt_file(name))
+    global_file = paths.prompt_file(name)
+    global_text = prompts.read_text(global_file) if global_file.is_file() else ""
     metadata = prompts.metadata(directory, name)
     drift = metadata is not None and metadata["global_sha"] != prompts.sha(global_text)
     output = f"Global drift: {str(drift).lower()}\nCurrent global SHA: {prompts.sha(global_text)}\n"
@@ -360,7 +363,7 @@ def main(argv: list[str]) -> None:
     parser.add_argument("action", choices=("set", "show", "diff", "reset"))
     parser.add_argument("seat")
     parser.add_argument("name")
-    parser.add_argument("--convo", required=True)
+    parser.add_argument("--convo", help="optional current-conversation assertion; prompt storage is agent-home scoped")
     parser.add_argument("--via", help="actual live leader's private OS-user capability")
     parser.add_argument("--file")
     parser.add_argument("--reason")
@@ -376,10 +379,10 @@ def main(argv: list[str]) -> None:
             raise prompts.PromptError("set/reset requires --via and --reason; only set requires --file")
         leader, _ = target_agent(args.via)
         command = {"type": REQUEST, "id": valid_id(args.request_id) if args.request_id else str(uuid4()),
-                   "action": args.action, "seat": agent.agent_id, "convo": valid_id(args.convo),
+                   "action": args.action, "seat": agent.agent_id, "convo": valid_id(args.convo) if args.convo else None,
                    "name": name, "reason": args.reason,
                    "text": prompts.read_text(Path(args.file).absolute()) if args.file else "",
-                   "global_sha": prompts.sha(prompts.read_text(paths.prompt_file(name)))}
+                   "global_sha": prompts.sha(prompts.read_text(paths.prompt_file(name)) if paths.prompt_file(name).is_file() else "")}
         validate(command, applying=False)
         print(f"REQUESTED {command['id']} (no automatic retry; a timeout leaves outcome unknown)", flush=True)
         print(json.dumps(asyncio.run(attach(leader.agent_id, command)), ensure_ascii=False))

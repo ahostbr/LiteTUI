@@ -289,14 +289,14 @@ def _posix(path) -> str:
     return str(path).replace("\\", "/")
 
 
-def compact_prompt(owner_dir, *, summary: bool = True) -> str:
+def compact_prompt(owner_dir, *, summary: bool = True, app=None) -> str:
     """STEP 1 / STEP 2 for an owner seat: rewrite NOW.md, append to DOMAIN.md, then summarise.
 
     `summary=False` is STEP 1 alone, for a backend that compacts natively and writes its
     own summary (Codex): the seat writes the files and confirms in one line.
     """
     from litetui.textfmt import load_prompt
-    text = load_prompt("compact-owner", dir=_posix(owner_dir))
+    text = load_prompt("compact-owner", app=app, dir=_posix(owner_dir))
     if summary:
         return text
     return (text.split("\nSTEP 2")[0].rstrip()

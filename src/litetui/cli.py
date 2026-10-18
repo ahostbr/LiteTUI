@@ -62,6 +62,8 @@ def main() -> None:
         default=None,
         help="read the system message from a UTF-8 file",
     )
+    parser.add_argument("--role-prompt-file", help="default actual-role preamble; caller system text replaces its body")
+    parser.add_argument("--prompts-dir", help="exclusive full prompt-folder launch seed, copied into leased agent home")
     parser.add_argument("--cognitive-file", type=str, default=None,
                         help="canonical cognitive architecture file selected by the LiteSuite bridge")
     parser.add_argument("--cwd", type=str, default=None, help="change working directory before start")
@@ -237,6 +239,7 @@ def main() -> None:
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
         if owner_lock is not None:
+            assert agent_session is not None
             owner_lock.set_agent(agent_session.authority.agent_id)
 
         from litetui.app import LiteTUI, wants_ansi_fallback
@@ -253,17 +256,13 @@ def main() -> None:
                 system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
             except OSError as exc:
                 parser.error(f"cannot read --system-prompt-file: {exc}")
-        if args.cognitive_file:
-            try:
-                architecture = Path(args.cognitive_file).read_text(encoding="utf-8")
-            except OSError as exc:
-                parser.error(f"cannot read --cognitive-file: {exc}")
-            system_prompt = (system_prompt + "\n\n" if system_prompt else "") + architecture
-
         app = LiteTUI(
             rpc=args.rpc,
             first_prompt=args.prompt,
             system_prompt=system_prompt,
+            role_prompt_file=args.role_prompt_file,
+            cognitive_file=args.cognitive_file,
+            prompts_dir=args.prompts_dir,
             initial_model=args.model,
             initial_backend=args.backend,
             initial_thinking=args.reasoning_effort or args.thinking_level,

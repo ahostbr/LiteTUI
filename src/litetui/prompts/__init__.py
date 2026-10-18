@@ -23,10 +23,25 @@ five -- and ``textfmt.load_prompt`` reads them unguarded. Taking this docstring
 at its word crashed on ``compact.md``. Reads now go through
 ``paths.prompt_file()``, which resolves PER FILE.
 
-T0338: an explicitly selected conversation's ``prompts/<name>.md`` wins
-before repo/package text for ordinary-instructions, seat-instructions, compact,
-card-summary and wake-after-compact ONLY. Security/ownership/tool/messaging
-prompts and unknown names are global-only; a scoped copy is explicitly refused.
-Mutable text is checked at each actual turn boundary, not frozen at import.
-Reset retains revisions and an inactive metadata tombstone, never deletes text.
+T0338 (current): a leased agent HOME owns a complete ``prompts/`` catalog,
+seeded after child lease acquisition and before first system composition. All
+shipped files plus role.md/method.md are editable; ordinary conversations in
+that home share the layer. External --owner/--memory folders are NOT prompt
+homes. The actual launch tier supplies exactly one role header independently
+of editable body text. Selected wrapped cognitive sources resolve to an
+existing pure catalog file, never a guessed heading split.
+
+--role-prompt-file supplies default role body; caller --system-prompt[-file]
+replaces that body. --cognitive-file selects one method. --prompts-dir is an
+exclusive direct-CLI full-folder seed. The launch-source manifest prevents
+repeated defaults from erasing live edits; changed launch sources for an
+initialized home explicitly require owner prompt commands/new home.
+
+Snapshots refresh at turn admission, not mid-turn. Reset keeps revision/audit
+history and uses packaged defaults; role/method have no global defaults, so
+their reset is explicitly unsupported (set the desired body instead). Native
+Claude edits use a fresh seeded segment with prior context and frozen store;
+pending deliveries are held, never silently moved or replayed. Legacy native
+segments lacking frozen metadata require an explicit /claude new after edits.
+Executable ownership/approval/tool enforcement is not authored prompt prose.
 """

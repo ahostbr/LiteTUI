@@ -70,7 +70,7 @@ def request(extra: str = "", owner_dir=None, *, app=None) -> str:
         return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
                 f"Write/Edit tools on NOW.md and DOMAIN.md in your owner memory folder, then reply with "
                 f"STEP 2's summary; that reply becomes the notes the next session starts from.\n\n"
-                f"{owner_mode.compact_prompt(owner_dir).strip()}"
+                f"{owner_mode.compact_prompt(owner_dir, app=app).strip()}"
                 + (f"\n\n{extra}" if extra else ""))
     return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
             f"Write/Edit tools on the store files your system prompt names, then reply with STEP 2's "

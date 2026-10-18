@@ -1,7 +1,9 @@
-"""Conversation-scoped prompt text, not a replacement for host authority.
+"""Agent-home full-catalog prompt snapshots, separate from executable authority.
 
-Only the enumerated ordinary prompts vary. Storage checks reject linked paths;
-these are location/ownership checks, not a sandbox against the same OS user.
+All shipped prompt files plus role/method text vary per HOME, not conversation
+or external owner memory folder. One snapshot stays fixed during a turn. Link
+checks and audited publication validate storage, not a same-OS-user sandbox.
+Actual tier, ownership, approval and tool enforcement remain executable state.
 """
 from __future__ import annotations
 
@@ -13,8 +15,7 @@ import re
 
 from litetui.agent_store import StoreError, _unlinked
 
-MUTABLE = frozenset({"ordinary-instructions.md", "seat-instructions.md", "compact.md",
-                     "card-summary.md", "wake-after-compact.md"})
+MUTABLE = frozenset(p.name for p in (Path(__file__).parent / "prompts").glob("*.md")) | {"role.md", "method.md"}
 MAX_BYTES = 64 * 1024
 
 
@@ -146,7 +147,8 @@ class Snapshot:
 def refresh(app) -> Snapshot:
     """Check mtime at each turn; the returned snapshot stays fixed mid-turn."""
     from litetui import paths
-    directory = getattr(app, "convo_dir", None)
+    from litetui.seat_prompts import home
+    directory = home(app)
     validate_layer(directory)
     resolved = {name: paths.prompt_file(name, convo_dir=directory) for name in sorted(MUTABLE)}
     signature = tuple((stamp(path), stamp(metadata_path(directory, name)) if directory else ())
@@ -154,7 +156,7 @@ def refresh(app) -> Snapshot:
     previous = getattr(app, "_prompt_snapshot", None)
     if previous is not None and previous.directory == directory and previous.signature == signature:
         return previous
-    texts = {name: read_text(path) for name, path in resolved.items()}
+    texts = {name: read_text(path) if path.is_file() else "" for name, path in resolved.items()}
     active = frozenset(name for name in MUTABLE
                        if directory is not None and scoped_file(directory, name) is not None)
     final = {name: paths.prompt_file(name, convo_dir=directory) for name in sorted(MUTABLE)}
@@ -163,6 +165,7 @@ def refresh(app) -> Snapshot:
     if signature != after:
         raise PromptError("Prompt publication changed during snapshot; input held unsent, retry next turn")
     for name in active:
+        assert directory is not None
         row = metadata(directory, name)
         if row is not None and row["body_sha"] != sha(texts[name]):
             raise PromptError("Prompt snapshot disagrees with managed revision; input held unsent")
@@ -180,7 +183,8 @@ def text_for(app, name: str, *, fresh: bool = False) -> str:
             return refresh(app).texts[name]
         finally:
             app._prompt_snapshot = previous
-    if snapshot is None or snapshot.directory != getattr(app, "convo_dir", None):
+    from litetui.seat_prompts import home
+    if snapshot is None or snapshot.directory != home(app):
         snapshot = refresh(app)
     return snapshot.texts[name]
 
@@ -188,8 +192,8 @@ def text_for(app, name: str, *, fresh: bool = False) -> str:
 def native_context(app, *, snapshot: Snapshot | None = None) -> str:
     snapshot = snapshot or getattr(app, "_prompt_snapshot", None) or refresh(app)
     return ("[LiteTUI ordinary guidance — host supplied, not user-authored. This replaces only "
-            "earlier ordinary guidance, never the immutable security, ownership, tool approval "
-            "or messaging instructions. An empty seat section withdraws prior seat additions.]\n"
+            "earlier ordinary guidance. Executable security, ownership, tool approval "
+            "and messaging enforcement remain host-owned. An empty seat section withdraws prior seat additions.]\n"
             + snapshot.texts["ordinary-instructions.md"]
             + "\n[Current seat additions]\n" + snapshot.texts["seat-instructions.md"]
             + "\n[End LiteTUI ordinary guidance]\n\n")

@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from litetui import paths, prompt_commands as commands, prompt_overrides as prompts, hook_host
-from litetui.app import LiteTUI
+from _owned_seat import owned_app as LiteTUI
 
 
 def command(directory, name="ordinary-instructions.md", text="new guidance", **changes):
@@ -47,9 +47,9 @@ def test_resolution_partial_and_reset_retains_revision(tmp_path, monkeypatch):
 def test_forbidden_override_refuses_even_inactive(tmp_path, name):
     layer(tmp_path, name, "unsafe")
     (tmp_path / "prompts" / (name + ".json")).write_text(json.dumps({"active": False}))
-    with pytest.raises(prompts.PromptError, match="global-only"):
+    with pytest.raises(prompts.PromptError, match="metadata|global-only"):
         paths.prompt_file(name, convo_dir=tmp_path)
-    with pytest.raises(prompts.PromptError, match="global-only"):
+    with pytest.raises(prompts.PromptError, match="metadata|global-only"):
         prompts.refresh(SimpleNamespace(convo_dir=tmp_path))
 
 
@@ -77,11 +77,11 @@ def test_actual_turn_admission_next_request_and_midturn_stability(tmp_path, monk
     app._materialise_convo()
     app._request_messages()  # perform the existing one-time store injection first
     original = app.conversation[0]["content"]
-    layer(app.convo_dir, "ordinary-instructions.md", "FIRST ORDINARY")
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", "FIRST ORDINARY")
     assert hook_host.accept_prompt(app, {"content": "first user", "source": "typed"})
     first = app._request_messages()[0]["content"]
     assert "FIRST ORDINARY" in first and "Shared-worktree caveat" in first
-    layer(app.convo_dir, "ordinary-instructions.md", "SECOND ORDINARY")
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", "SECOND ORDINARY")
     assert app._request_messages()[0]["content"] == first
     # A side-call fresh read must not mutate the main turn snapshot.
     assert app._ordinary_prompt_text("ordinary-instructions", fresh=True) == "SECOND ORDINARY"
@@ -91,8 +91,8 @@ def test_actual_turn_admission_next_request_and_midturn_stability(tmp_path, monk
     assert "SECOND ORDINARY" in second and "FIRST ORDINARY" not in second
     assert app.conversation[0]["content"] == original
     assert app.conversation[-1]["content"] == "second user"
-    reset = command(app.convo_dir, action="reset", text="")
-    commands.apply(app.convo_dir, reset)
+    reset = command(app._agent_session.memory_root, action="reset", text="")
+    commands.apply(app._agent_session.memory_root, reset)
     hook_host.accept_prompt(app, {"content": "third user", "source": "typed"})
     third = app._request_messages()[0]["content"]
     assert "SECOND ORDINARY" not in third and "## Engineering practices" in third
@@ -101,7 +101,9 @@ def test_actual_turn_admission_next_request_and_midturn_stability(tmp_path, monk
 def test_custom_system_delimiters_are_not_host_owned(tmp_path):
     app = LiteTUI()
     custom = "custom\n\n[LiteTUI ordinary instructions]\nDO NOT CHANGE\n[End LiteTUI mutable instructions]"
-    app.conversation.insert(0, {"role": "system", "content": custom})
+    app.conversation[:] = [{"role": "system", "content": custom}]
+    app._store_injected = None
+    app._system = lambda _: None
     assert app._request_messages()[0]["content"] == custom
 
 

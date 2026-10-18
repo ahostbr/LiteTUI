@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from litetui import prompt_commands as commands, prompt_overrides as prompts
-from litetui.app import LiteTUI
+from _owned_seat import owned_app as LiteTUI
 from litetui.model_transport import OpenAITransport
 from test_prompt_commands_t0338 import owners, request
 from test_prompt_overrides_t0338 import command, layer
@@ -118,14 +118,14 @@ async def test_actual_request_to_openai_single_system_override_and_reset(existin
         captured.append(messages)
         return NS()
     transport = OpenAITransport(NS(chat=NS(completions=NS(create=create))))
-    layer(app.convo_dir, "ordinary-instructions.md", "OVERRIDE")
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", "OVERRIDE")
     prompts.refresh(app)
     await transport.create(model="single-system-qwen", messages=app._request_messages())
     assert "OVERRIDE" in captured[-1][0]["content"]
     if existing_system:
         assert captured[-1][0]["content"].startswith(prefix + "\n\n")
     assert app.conversation == stored
-    commands.apply(app.convo_dir, command(app.convo_dir, action="reset", text=""))
+    commands.apply(app._agent_session.memory_root, command(app._agent_session.memory_root, action="reset", text=""))
     prompts.refresh(app)
     await transport.create(model="single-system-qwen", messages=app._request_messages())
     assert "OVERRIDE" not in captured[-1][0]["content"]
@@ -145,7 +145,7 @@ def test_malformed_or_misplaced_system_refuses_before_wire(systems):
     app._store_injected = True
     app._inject_index_once = lambda: None
     before = json.loads(json.dumps(systems))
-    layer(app.convo_dir, "ordinary-instructions.md", "override")
+    layer(app._agent_session.memory_root, "ordinary-instructions.md", "override")
     prompts.refresh(app)
     with pytest.raises(ValueError, match="one initial string system"):
         app._request_messages()

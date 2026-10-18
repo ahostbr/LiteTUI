@@ -1,129 +1,131 @@
-"""Drive shipped native wire seams, substituting only provider transports."""
-import json
+"""Shipped native SYSTEM seams; provider transport only is substituted.
+
+These are isolated captures, not running-seat/restart proof. The old mutable
+user-prefix protocol is deliberately replaced by native system-segment updates.
+"""
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
-
-from litetui import claude_turn, paths, prompt_overrides as prompts
-from litetui.app import LiteTUI
-from test_claude_turn import turn_app, result_event
+from _owned_seat import owned_app
 from test_codex_app_server import Server
+
+from litetui import claude_turn
+from litetui import prompt_overrides as prompts
 from litetui.codex_app_server import AppServerTransport
 
 
-def write(directory, name, text):
-    folder = directory / "prompts"
-    folder.mkdir(exist_ok=True)
-    (folder / name).write_text(text, encoding="utf-8")
+def write(app, name, text):
+    (app._agent_session.memory_root / "prompts" / name).write_text(text, encoding="utf-8")
+    prompts.refresh(app)
 
 
 @pytest.mark.asyncio
-async def test_real_claude_query_next_turn_reset_and_input_provenance(tmp_path, monkeypatch):
-    app = turn_app(tmp_path, messages=["result"], events=[[result_event()]])
-    app.settings.user_name = ""
-    ledger = app._claude_ledger
-    segment = ledger.selected
-    ledger.fix_system_prompt(segment["id"], "immutable FLOOR mutable-policy version 1", host_policy_version=1)
-    session = app.backend.session
-    queried = []
-    async def query(entry_id, content):
-        queried.append(content)
-    session.query = query
-    write(tmp_path, "ordinary-instructions.md", "FIRST ORDINARY")
-    write(tmp_path, "seat-instructions.md", "FIRST SEAT")
-    snapshot = prompts.refresh(app)
-    app._claude_active_input["_litetui_prompt_snapshot"] = snapshot
-    write(tmp_path, "ordinary-instructions.md", "MIDTURN CHANGE")
-    await claude_turn.stream_turn(app)
-    assert len(queried) == 1 and "FIRST ORDINARY" in queried[-1] and "MIDTURN CHANGE" not in queried[-1]
-    assert queried[-1].endswith("hello") and "not user-authored" in queried[-1]
-    first = ledger.segment(segment["id"])["entries"][0]
-    assert first["content"] == "hello"
-    assert "FIRST ORDINARY" in first["litetui_ordinary_context"]
-    write(tmp_path, "ordinary-instructions.md", "SECOND ORDINARY")
-    write(tmp_path, "seat-instructions.md", "")
-    app._events = [[result_event()]]
-    item = claude_turn.prepare_input(app, "second user", "strict", "typed")
-    app._claude_active_input = {"content": "second user", **item, "_litetui_prompt_snapshot": prompts.refresh(app)}
-    await claude_turn.stream_turn(app)
-    assert len(queried) == 2 and "SECOND ORDINARY" in queried[-1]
-    assert "FIRST SEAT" not in queried[-1] and "FIRST ORDINARY" not in queried[-1]
-    assert queried[-1].endswith("second user")
-    # Reset via retained inactive metadata, no physical deletion.
-    from litetui import prompt_commands
-    from test_prompt_overrides_t0338 import command
-    for name in ("ordinary-instructions.md", "seat-instructions.md"):
-        prompt_commands.apply(tmp_path, command(tmp_path, name, action="reset", text=""))
-    app._events = [[result_event()]]
-    item = claude_turn.prepare_input(app, "third user", "strict", "typed")
-    app._claude_active_input = {"content": "third user", **item, "_litetui_prompt_snapshot": prompts.refresh(app)}
-    await claude_turn.stream_turn(app)
-    assert len(queried) == 3 and "## Engineering practices" in queried[-1] and "SECOND ORDINARY" not in queried[-1]
-
-
-@pytest.mark.asyncio
-async def test_manually_placed_ordinary_on_quoted_marker_legacy_holds_query(tmp_path):
-    app = turn_app(tmp_path, messages=["result"], events=[[result_event()]])
-    ledger = app._claude_ledger
-    segment = ledger.selected
-    ledger.fix_system_prompt(segment["id"], 'old higher priority text quotes "mutable-policy version 1"')
-    write(tmp_path, "ordinary-instructions.md", "MUST NOT SEND")
-    app._claude_active_input["_litetui_prompt_snapshot"] = prompts.refresh(app)
-    session = app.backend.session
-    await claude_turn.stream_turn(app)
-    assert session.queried == []
-    assert ledger.pending(segment["id"])[0]["state"] == "prepared"
-    assert any("/claude new" in note for note in app.notices)
-
-
-def test_fresh_claude_native_system_has_only_floor_not_mutable():
-    app = LiteTUI()
+async def test_claude_fresh_segment_emits_edited_system_preserves_context_and_frozen_store(monkeypatch):
+    app = owned_app(initial_backend="claude", initial_model="claude-sonnet")
     app._materialise_convo()
+    app._system = lambda _: None
+    app._seat_started = True
+    app._chat_running = lambda: False
+    root = app._agent_session.memory_root
+    (root / "memory.md").write_text("FROZEN MEMORY", encoding="utf-8")
     ledger = claude_turn.ledger_for(app)
-    segment = ledger.select_segment(str(app.convo_dir))
-    write(app.convo_dir, "ordinary-instructions.md", "MUTABLE ORDINARY")
-    write(app.convo_dir, "seat-instructions.md", "MUTABLE SEAT")
-    text = claude_turn.system_prompt_for(app, segment)
-    assert "Shared-worktree caveat" in text
-    assert "## Engineering practices" not in text and "MUTABLE ORDINARY" not in text and "MUTABLE SEAT" not in text
-    assert "mutable-policy version 1" in text
-    assert ledger.selected["host_policy_version"] == 1
+    segment = ledger.select_segment(claude_turn.launch_workspace(app))
+    first = claude_turn.system_prompt_for(app, segment)
+    assert "FROZEN MEMORY" in first
+    old_segment = ledger.selected
+    ledger.bind_session(segment["id"], "old-native-id")
+    app.conversation += [{"role": "user", "content": "KEEP PRIOR QUESTION"},
+                         {"role": "assistant", "content": "KEEP PRIOR ANSWER"}]
+    (root / "memory.md").write_text("MUST NOT REFRESH MEMORY", encoding="utf-8")
+    write(app, "role.md", "NEW SYSTEM ROLE BODY")
+    entry = claude_turn.prepare_input(app, "NEXT INPUT", "strict", "typed")
+    fresh = ledger.selected
+    assert fresh["id"] != segment["id"]
+    assert ledger.segment(segment["id"])["system_prompt"] == old_segment["system_prompt"]
+    opened = []
+
+    async def open_session(segment, model, *, system_prompt, **kwargs):
+        opened.append((segment, system_prompt))
+        return NS(effort=None)
+
+    monkeypatch.setattr(app.backend, "open_session", open_session)
+    await claude_turn.session_for(app, app.backend, fresh, None)
+    system = Path(opened[0][1]["path"]).read_text(encoding="utf-8")
+    assert "NEW SYSTEM ROLE BODY" in system
+    assert "KEEP PRIOR QUESTION" in system and "KEEP PRIOR ANSWER" in system
+    assert "FROZEN MEMORY" in system and "MUST NOT REFRESH MEMORY" not in system
+    assert entry["_claude_segment"] == fresh["id"]
+    assert ledger.pending(fresh["id"])[0]["content"] == "NEXT INPUT"
+    assert "ordinary guidance" not in ledger.pending(fresh["id"])[0]["content"]
+
+
+def test_claude_pending_delivery_never_moves_or_replays_on_system_edit():
+    app = owned_app(initial_backend="claude", initial_model="claude-sonnet")
+    app._materialise_convo()
+    app._system = lambda _: None
+    app._seat_started = True
+    ledger = claude_turn.ledger_for(app)
+    segment = ledger.select_segment(claude_turn.launch_workspace(app))
+    claude_turn.system_prompt_for(app, segment)
+    prepared = ledger.prepare(segment["id"], "HELD ORIGINAL", "strict", "typed")
+    write(app, "role.md", "EDITED ROLE")
+    with pytest.raises(claude_turn.UncertainDelivery, match="pending"):
+        claude_turn.prepare_input(app, "NEW INPUT", "strict", "typed")
+    assert ledger.selected["id"] == segment["id"]
+    assert [e["id"] for e in ledger.pending(segment["id"])] == [prepared["id"]]
+    item = {"content": "HELD ORIGINAL", "_claude_entry": prepared, "_claude_segment": segment["id"], "_claude_conversation": app.convo_id}
+    assert claude_turn.queue_ready(app, item) is False
+    with pytest.raises(claude_turn.UncertainDelivery, match="remains held"):
+        claude_turn.accept_input(app, item)
+
+
+def test_legacy_claude_edit_explicitly_held_not_user_prefix_fallback():
+    app = owned_app(initial_backend="claude", initial_model="claude-sonnet")
+    app._materialise_convo()
+    app._system = lambda _: None
+    app._seat_started = True
+    ledger = claude_turn.ledger_for(app)
+    segment = ledger.select_segment(claude_turn.launch_workspace(app))
+    ledger.fix_system_prompt(segment["id"], "LEGACY IMMUTABLE SYSTEM")
+    write(app, "role.md", "EDITED ROLE")
+    with pytest.raises(claude_turn.UncertainDelivery, match="/claude new"):
+        claude_turn.prepare_input(app, "NEW INPUT", "strict", "typed")
+    assert not ledger.pending(segment["id"])
 
 
 @pytest.mark.asyncio
-async def test_codex_actual_transport_next_turn_instructions(tmp_path, monkeypatch):
-    from litetui import codex_history
-    app = LiteTUI()
+async def test_codex_actual_transport_next_turn_system_instructions(monkeypatch):
+    from litetui import codex_history, codex_steering
+    app = owned_app()
     app._materialise_convo()
     app.model_id = "model"
     app.backend = NS(name="codex", models={"model": {}}, app_server=True)
     server = Server()
     transport = AppServerTransport(server, app)
     monkeypatch.setattr(codex_history, "hydrate", lambda *a: None)
-    # Real reconciliation has no history fetch for a new thread; suppress only
-    # remote resumption on subsequent fixture turns, not instruction building.
-    from litetui import codex_steering
+
     async def reconcile(*args):
         pass
+
     monkeypatch.setattr(codex_steering, "reconcile_messages", reconcile)
-    write(app.convo_dir, "ordinary-instructions.md", "CODEX FIRST")
-    prompts.refresh(app)
+    write(app, "role.md", "CODEX FIRST SYSTEM")
     app.conversation.append({"role": "user", "content": "first"})
-    async def collect(messages):
-        stream = await transport.create(model="model", messages=messages, stream=True,
+
+    async def collect():
+        stream = await transport.create(model="model", messages=app._request_messages(), stream=True,
                                         tools=[], max_tokens=32, extra_body={"reasoning_effort": "high"})
         async for _ in stream:
             pass
-    await collect(app._request_messages())
+
+    await collect()
     start = next(params for method, params in server.requests if method == "thread/start")
-    assert "CODEX FIRST" in start["developerInstructions"] and "Shared-worktree caveat" in start["developerInstructions"]
+    assert "CODEX FIRST SYSTEM" in start["developerInstructions"]
     app.conversation.append({"role": "assistant", "content": "OK", "provider_metadata": {
         "provider": "codex", "app_server_thread_id": "thread-1", "instructions_digest": "old"}})
     app.conversation.append({"role": "user", "content": "second"})
-    write(app.convo_dir, "ordinary-instructions.md", "CODEX SECOND")
-    prompts.refresh(app)
-    await collect(app._request_messages())
+    write(app, "role.md", "CODEX SECOND SYSTEM")
+    await collect()
     turn = [params for method, params in server.requests if method == "turn/start"][-1]
     text = turn["additionalContext"]["litetui-instructions"]["value"]
-    assert "CODEX SECOND" in text and "CODEX FIRST" not in text
-    assert "Shared-worktree caveat" in text
+    assert "CODEX SECOND SYSTEM" in text and "CODEX FIRST SYSTEM" not in text
