@@ -3296,7 +3296,7 @@ class LiteTUI(App):
             # modal returns a tri-state instead of a bool.
             if not answer:
                 if not stop_on_denial:
-                    return tool_denied("no-host" if unanswered else "by-user", name=name), False
+                    return tool_denied("no-host" if unanswered else "by-user", app=self, name=name), False
                 # DENY STOPS THE TURN (the user, 2026-08-24 — asked whether this
                 # should replace or supplement the existing verb, answered
                 # REPLACE). The refusal is still returned and still recorded,
