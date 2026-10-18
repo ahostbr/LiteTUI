@@ -233,7 +233,7 @@ class Job:
     run_count: int = 0
     created: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     label: str = ""
-    #: 🔴 THE JOB'S AUTHORITY AGAIN (T1082), READ WHEN IT FIRES. Ryan: "we need
+    #: 🔴 THE JOB'S AUTHORITY AGAIN (T1082), READ WHEN IT FIRES. Owner: "we need
     #: new settings to set this at the time u create the schedule". Every creation
     #: site records it through `seat_authority.schedule_level` (a /loop through
     #: `loop_level`), and `app._fire_job` runs the job at it or skips it

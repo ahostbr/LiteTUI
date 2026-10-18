@@ -3,6 +3,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import hook_host
 from litetui.app import LiteTUI
@@ -184,7 +185,7 @@ async def test_cli_first_prompt_is_held_nonfatally_after_ledger_reload(tmp_path)
 @pytest.mark.asyncio
 async def test_real_textual_seat_survives_startup_inbox_uncertainty(tmp_path):
     _, _, before = resumed_host(tmp_path, "submitted")
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.jobs[:] = []
@@ -272,7 +273,7 @@ async def test_real_local_tool_loop_holds_claude_head_then_allows_explicit_recov
     from litetui import app as app_mod
     from litetui.claude_turn import hold_input, ledger_for, prepare_input
 
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app._resync_ctx_if_stale = lambda: None

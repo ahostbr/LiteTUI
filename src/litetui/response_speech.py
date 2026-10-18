@@ -18,7 +18,7 @@ class ResponseSpeakButton(Static):
         super().__init__('♫ Speak', classes='response-speak')
         self.response = response
         self.header_label = ''
-        self.tooltip = 'Read this response aloud; click again to stop'
+        self.tooltip = 'Read this response aloud; Stop controls local playback. LiteSuite owns its queued speech.'
 
     def on_mount(self):
         self.refresh_playback()
@@ -66,13 +66,14 @@ class ResponseSpeakButton(Static):
             if not text:
                 return
             settings = self.app.settings
-            # Only one response at a time, without affecting another App process.
+            # Stop this app's local speech only; never interrupt LiteSuite's queue.
             voice_backend.stop()
             ok = voice_backend.speak(text, engine=settings.tts_engine,
                 voice=(settings.tts_edge_voice if settings.tts_engine == 'edge' else settings.tts_voice) or None,
-                timeout=settings.tts_timeout, owner=self)
+                timeout=settings.tts_timeout, owner=self,
+                litesuite_first=getattr(settings, 'tts_litesuite_first', True))
             if not ok:
-                self.tooltip = 'Speech unavailable — check Voice settings and installed engine'
+                self.tooltip = 'Speech unavailable or LiteSuite acknowledgement uncertain; no automatic replay. Check Voice settings.'
         self.refresh_playback()
 
     def on_unmount(self):

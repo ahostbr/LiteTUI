@@ -44,7 +44,7 @@ PROMPT = (
     "You are a helpful assistant.\n\n"
     f"You are registered in the LiteHarness fleet as LiteTUI (id {OLD}, tier worker). "
     "Other agents can message you and their mail arrives as a user turn.\n\n"
-    "RYAN'S OWN EDIT: never touch the F drive."
+    "OWNER'S OWN EDIT: never touch the F drive."
 )
 
 
@@ -87,7 +87,7 @@ def test_it_preserves_everything_else_in_the_prompt():
     a._sync_fleet_identity()
     body = a.conversation[0]["content"]
     assert "You are a helpful assistant." in body
-    assert "RYAN'S OWN EDIT: never touch the F drive." in body
+    assert "OWNER'S OWN EDIT: never touch the F drive." in body
 
 
 def test_CONTROL_an_already_correct_prompt_is_left_alone():
@@ -125,7 +125,7 @@ def test_no_system_message_is_not_a_crash():
     assert a._sync_fleet_identity() is False
 
 
-def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkeypatch):
+def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkeypatch, make_app):
     """Exercise the resume contract rather than parsing its source.
 
     `_resume_cli_conversation` now precedes `_resume`; splitting on the text
@@ -133,19 +133,21 @@ def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkey
     and reported this already-wired behavior as missing.
     """
     monkeypatch.setenv("LITEHARNESS_HOME", str(tmp_path / "harness-home"))
-    folder = tmp_path / "saved"
-    folder.mkdir()
-    path = folder / "convo.jsonl"
+    from litetui.store_identity import capture
+
+    app = make_app()
+    path = app.convo_path
+    path.parent.mkdir(exist_ok=True)
     path.write_text(
-        '{"type":"meta","v":3,"id":"saved"}\n'
+        json.dumps({"type": "meta", "v": 3, "id": app.convo_id}) + "\n"
         + json.dumps({
             "type": "snapshot",
+            "store_identity": capture(app), "store_injected": False,
             "messages": [{"role": "system", "content": PROMPT}],
         })
         + "\n",
         encoding="utf-8",
     )
-    app = app_mod.LiteTUI()
     app.seat = _Seat()
     app._render_resumed = lambda path: None
 
@@ -165,14 +167,14 @@ def test_the_resume_path_corrects_the_previous_process_identity(tmp_path, monkey
 @pytest.mark.parametrize("prompt", [PROMPT, PROMPT.replace(OLD, NEW),
                                     "You are a helpful assistant."])
 async def test_registered_monitor_keeps_polling_and_heartbeat_after_identity_sync(
-        prompt, monkeypatch):
+        prompt, monkeypatch, make_app):
     """Changed, already-correct, and absent sentences all reach the poll loop."""
     from litetui import harness
 
     monkeypatch.setattr(app_mod, "_INBOX_SETTLE_S", 0)
     monkeypatch.setattr(harness, "POLL_SECONDS", 0)
     monkeypatch.setattr(harness, "HEARTBEAT_EVERY", 1)
-    app = app_mod.LiteTUI()
+    app = make_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     seen = []

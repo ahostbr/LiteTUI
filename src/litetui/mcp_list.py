@@ -19,6 +19,8 @@ happened to test and break on the first scoped one.
 """
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, VerticalScroll
@@ -33,6 +35,8 @@ from litetui.side_panel import SwapButton, close_dialog
 STATE_NOTE = {
     "connected": "serving tools to the model",
     "stopped": "declared, not running",
+    "not started (lazy)": "starts when tool_search loads its tools or a tool is called",
+    "excluded": "not available to this seat (--mcp-servers)",
     "disabled": '"disabled": true in the config',
     "failed": "tried to start and could not",
     "orphan": "running, but no longer in the config — a restart will not bring it back",
@@ -44,6 +48,8 @@ STATE_NOTE = {
 ACTIONS_FOR = {
     "connected": ("disconnect", "reconnect", "remove"),
     "stopped": ("connect", "remove"),
+    "not started (lazy)": ("connect", "disconnect", "remove"),
+    "excluded": (),
     "disabled": ("connect", "remove"),
     "failed": ("connect", "remove"),
     "orphan": ("disconnect",),
@@ -143,8 +149,8 @@ class MCPListBody(Widget):
         with VerticalScroll(id="mcp-scroll"):
             yield from self._row_widgets()
         with Horizontal(id="mcp-add"):
-            yield Input(placeholder="name", id="mcp-add-name")
-            yield Input(placeholder="https://host/mcp   or   command arg arg", id="mcp-add-target")
+            yield HostedInput(placeholder="name", id="mcp-add-name")
+            yield HostedInput(placeholder="https://host/mcp   or   command arg arg", id="mcp-add-target")
             yield Button("Add", variant="primary", id="mcp-add-go")
         yield Static("", id="mcp-status", markup=False)
         with Horizontal(id="mcp-buttons"):

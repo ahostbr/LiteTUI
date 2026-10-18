@@ -3,15 +3,22 @@ import json
 from types import SimpleNamespace as NS
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui.app import WAKE_AFTER_COMPACT, LiteTUI
+from litetui.app import WAKE_AFTER_COMPACT
 from litetui.plugins.self_compact import CompactionRequest
 from litetui.settings import Settings
 
 
 @pytest.fixture
-def app():
-    a = LiteTUI()
+def app(monkeypatch):
+    a = owned_app(initial_backend="lmstudio", initial_model="fixture")
+    a._connect = lambda: None  # startup discovery is outside this test
+    # All native discovery (including turn-start context and failure diagnostics)
+    # uses fixture metadata, not the developer's running LM Studio server.
+    monkeypatch.setattr(a.backend, "_native_models", lambda: [
+        {"id": "fixture", "loaded_context_length": 8192, "type": "llm"},
+    ])
     a.settings = Settings(compact_keep_recent=2, autocompact_enabled=False,
                           wake_after_compact=False, clear_screen_after_compact=False)
     a.conversation = [
@@ -117,7 +124,9 @@ async def test_real_round_compacts_after_all_results_and_resumes_with_handoff(ap
         write_record(row)
     monkeypatch.setattr(app.store, "write_record", record)
     async def create(**kwargs):
-        requests.append(copy.deepcopy(kwargs))
+        # Preserve callback identity; only request data is a serializable snapshot.
+        requests.append({key: value if key == "retry_notice" else copy.deepcopy(value)
+                         for key, value in kwargs.items()})
         snapshots.append(copy.deepcopy(app.conversation))
         if len(requests) == 1:
             return Stream(calls=[call(0, "self_compact", ARGS), call(1, "read", {"path": str(evidence)})])

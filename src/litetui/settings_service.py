@@ -74,10 +74,25 @@ def _write(path, raw):
 
 
 class SettingsService:
-    def __init__(self, root: Path, conversation_root: Path | None = None):
+    def __init__(self, root: Path, conversation_root: Path | None = None, *, agent_session=None):
         validate_registry()
         self.root = Path(root)
-        self.conversation_root = Path(conversation_root) if conversation_root else self.root / '.convos'
+        self.agent_session = agent_session
+        if agent_session is not None:
+            agent_session.authority
+            if self.root != agent_session.store.data_root:
+                raise ValueError('Settings root disagrees with owned agent')
+            owned_root = agent_session.memory_root / 'conversations'
+            if conversation_root is not None and Path(conversation_root) != owned_root:
+                raise ValueError('Settings conversation root disagrees with owned agent')
+            self.conversation_root = owned_root
+        else:
+            # Retained snapshot reader only; mutable calls require ownership.
+            self.conversation_root = Path(conversation_root) if conversation_root else self.root / '.convos'
+
+    def _writable(self, conversation_id):
+        from litetui.owned_storage import require_conversation
+        return require_conversation(self.conversation_root / conversation_id, self.agent_session)
 
     def _paths(self, conversation_id):
         # IDs are directory names, never caller-supplied paths escaping the store.
@@ -89,14 +104,33 @@ class SettingsService:
     def create_conversation(self, conversation_id):
         """Materialize inherited execution once, never replace an existing record."""
         paths = self._paths(conversation_id)
+        self._writable(conversation_id)  # fail before even creating a coordinator lock
         with coordinated_write(paths['conversation']):
             if not paths['conversation'].exists():
                 inherited = self.snapshot(conversation_id).saved
                 _write(paths['conversation'], asdict(cs.born_from(inherited)))
         return self.snapshot(conversation_id)
 
+    def global_value(self, key):
+        """Read a shared preference afresh, distinguishing absent from explicit null.
+
+        Side-call dispatch uses this instead of an instance's cached Settings.
+        Parse/I/O failures propagate: they must not silently select another model.
+        """
+        spec = SETTING_SPECS.get(key)
+        if spec is None or spec.scope != SettingScope.DEVICE:
+            raise ValueError(f'Not a device preference: {key}')
+        from litetui.subagent_routing import migrate_global_file
+        path = st.settings_path(self.root)
+        migrate_global_file(path)
+        raw, _ = _read(path)
+        default = getattr(st.Settings(), key)
+        return key in raw, st._coerce(key, raw.get(key, default), default)
+
     def snapshot(self, conversation_id, overrides=None):
         paths = self._paths(conversation_id)
+        from litetui.subagent_routing import migrate_global_file
+        migrate_global_file(paths['global'])
         global_raw, global_rev = _read(paths['global'])
         convo, convo_rev = _read(paths['conversation'])
         saved = st.Settings()
@@ -121,7 +155,16 @@ class SettingsService:
                 raise ValueError(f'Unknown invocation setting: {key}')
             setattr(effective, key, deepcopy(value))
         object.__setattr__(effective, '_baseline', asdict(effective))
-        return SettingsSnapshot(saved, effective, {'global': global_rev, 'conversation': convo_rev})
+        revisions = {'global': global_rev, 'conversation': convo_rev}
+        if self.agent_session is not None:
+            authority = self.agent_session.authority
+            _, revisions['agent'] = _read(self.agent_session.memory_root / 'settings.json')
+            for key, value in (('backend', authority.backend), ('default_model', authority.model),
+                               ('thinking_level', authority.thinking_level)):
+                setattr(saved, key, value)
+                setattr(effective, key, value)
+            object.__setattr__(effective, '_baseline', asdict(effective))
+        return SettingsSnapshot(saved, effective, revisions)
 
     def save_patch(self, conversation_id, changes, expected_revisions):
         paths = self._paths(conversation_id)
@@ -163,6 +206,9 @@ class SettingsService:
                 api_base(value)
             if change.key == 'custom_context_length' and value < 0:
                 raise ValueError('Custom context budget must be zero or positive')
+            if change.key in ('subagent_route', 'subagent_route_override'):
+                from litetui.subagent_routing import validate_route
+                validate_route(value, override=change.key == 'subagent_route_override')
             # Reject unserializable nested payloads before any destination writes.
             json.dumps(value, allow_nan=False)
             destination = 'conversation' if spec.scope == SettingScope.CONVERSATION else 'global'
@@ -176,6 +222,8 @@ class SettingsService:
             scopes = {c.scope for c in patch}
             scope = next(iter(scopes)) if len(scopes) == 1 else 'mixed'
             try:
+                if destination == 'conversation':
+                    self._writable(conversation_id)
                 with coordinated_write(path):
                     raw, revision = _read(path)
                     if expected_revisions.get(destination) != revision:
@@ -206,6 +254,24 @@ class SettingsService:
                             if change.key in aliases:
                                 raw[aliases[change.key]] = deepcopy(change.value)
                         raw['schema_version'] = 2
+                        authoritative = {c.key: c.value for c in patch
+                                         if c.key in ('backend', 'default_model', 'thinking_level')}
+                        if authoritative:
+                            authority = self.agent_session.authority
+                            _, revision_home = _read(self.agent_session.memory_root / 'settings.json')
+                            if revision_home != expected_revisions.get('agent'):
+                                raise ValueError('Stale agent revision; reload before retry')
+                            self.agent_session.update_execution(
+                                backend=authoritative.get('backend', authority.backend),
+                                model=authoritative.get('default_model', authority.model),
+                                thinking_level=authoritative.get('thinking_level', authority.thinking_level))
+                            home = self.agent_session.memory_root / 'settings.json'
+                            _, home_revision = _read(home)
+                            results.append(PersistenceDestinationResult(str(home), scope, True,
+                                           revision=home_revision, fields=tuple(authoritative)))
+                            # Home is independently persisted even if the historical
+                            # snapshot below fails. Runtime applies its exact outcome.
+                            keys = tuple(key for key in keys if key not in authoritative)
                     else:
                         raw.update({c.key: deepcopy(c.value) for c in patch})
                     revision = _write(path, raw)

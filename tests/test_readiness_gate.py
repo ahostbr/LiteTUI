@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+
 import pytest
 
 
@@ -12,7 +13,7 @@ def gate():
 
 
 def test_empty_manifest_never_passes(tmp_path):
-    issues = gate().validate({}, tmp_path)
+    issues = gate().validate({}, tmp_path, 'Release Owner')
     assert issues
     assert any('candidate' in issue for issue in issues)
 
@@ -21,15 +22,15 @@ def test_self_declared_green_without_evidence_never_passes(tmp_path):
     module = gate()
     manifest = {'candidate': {'commit': 'a' * 40, 'version': '1.0', 'wheel': 'missing.whl', 'sha256': 'b' * 64},
                 'results': [{'id': key, 'status': 'PASS'} for key in module.REQUIRED],
-                'approval': {'observer': 'Ryan', 'approved': True, 'version': '1.0'}}
-    issues = module.validate(manifest, tmp_path)
+                'approval': {'observer': 'Release Owner', 'approved': True, 'version': '1.0'}}
+    issues = module.validate(manifest, tmp_path, 'Release Owner')
     assert any('wheel' in issue for issue in issues)
     assert any('evidence' in issue for issue in issues)
 
 
 def test_duplicate_results_are_rejected(tmp_path):
     module = gate()
-    issues = module.validate({'results': [{'id': 'settings', 'status': 'PASS'}] * 2}, tmp_path)
+    issues = module.validate({'results': [{'id': 'settings', 'status': 'PASS'}] * 2}, tmp_path, 'Release Owner')
     assert any('duplicate' in issue.lower() for issue in issues)
 
 
@@ -38,7 +39,7 @@ def test_path_escape_is_not_accepted_as_evidence(tmp_path):
     outside = tmp_path.parent / 'outside-evidence.txt'
     outside.write_text('green')
     issues = module.validate({'results': [{'id': 'settings', 'status': 'PASS',
-                            'evidence': '../outside-evidence.txt'}]}, tmp_path)
+                            'evidence': '../outside-evidence.txt'}]}, tmp_path, 'Release Owner')
     assert any('outside' in issue.lower() for issue in issues)
 
 
@@ -63,7 +64,7 @@ def complete_manifest(tmp_path, module):
                               'evidence': record(f'{key}-{i}.txt')} for i in range(3)]
             row['negative_evidence'] = record(key + '-negative.txt')
         rows.append(row)
-    approval = dict(identity, observer='Ryan', approved=True, scenarios=['fixture only'],
+    approval = dict(identity, observer='Release Owner', approved=True, scenarios=['fixture only'],
                     timestamp='2026-09-20T00:01:00Z', evidence=record('approval.txt'))
     return {'candidate': candidate, 'results': rows, 'approval': approval}
 
@@ -71,9 +72,9 @@ def complete_manifest(tmp_path, module):
 def test_complete_structural_fixture_passes_then_tampering_blocks(tmp_path):
     module = gate()
     manifest = complete_manifest(tmp_path, module)
-    assert module.validate(manifest, tmp_path) == []
+    assert module.validate(manifest, tmp_path, 'Release Owner') == []
     (tmp_path / 'candidate.whl').write_bytes(b'tampered')
-    assert any('hash' in issue for issue in module.validate(manifest, tmp_path))
+    assert any('hash' in issue for issue in module.validate(manifest, tmp_path, 'Release Owner'))
 
 
 def test_reused_critical_evidence_and_missing_approval_block(tmp_path):
@@ -82,9 +83,9 @@ def test_reused_critical_evidence_and_missing_approval_block(tmp_path):
     row = next(row for row in manifest['results'] if row['id'] in module.CRITICAL)
     row['passes'] = [row['passes'][0]] * 3
     manifest['approval']['approved'] = False
-    issues = module.validate(manifest, tmp_path)
+    issues = module.validate(manifest, tmp_path, 'Release Owner')
     assert any('duplicated pass' in issue for issue in issues)
-    assert any('Ryan approval' in issue for issue in issues)
+    assert any('observer approval' in issue for issue in issues)
 
 
 @pytest.mark.parametrize('change', [
@@ -96,4 +97,16 @@ def test_critical_runs_need_ordered_candidate_bound_success(tmp_path, change):
     manifest = complete_manifest(tmp_path, module)
     row = next(row for row in manifest['results'] if row['id'] in module.CRITICAL)
     row['passes'][1].update(change)
-    assert module.validate(manifest, tmp_path)
+    assert module.validate(manifest, tmp_path, 'Release Owner')
+
+
+@pytest.mark.parametrize('expected', ['', ' ', None, 'release owner', 'Another Owner'])
+def test_observer_requires_exact_nonblank_explicit_identity(tmp_path, expected):
+    module = gate()
+    manifest = complete_manifest(tmp_path, module)
+    assert module.validate(manifest, tmp_path, expected)
+
+
+def test_observer_argument_has_no_default(tmp_path):
+    with pytest.raises(TypeError):
+        gate().validate({}, tmp_path)

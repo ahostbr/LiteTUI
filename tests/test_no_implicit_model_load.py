@@ -18,26 +18,28 @@ helper.
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import paths
 from litetui.settings import Settings
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-noload-"))
 
 
 class _Recorder:
-    """Stands in for ttyguard.run and remembers every argv it was handed."""
+    """Record model loads; leave unrelated process queries untouched."""
 
-    def __init__(self) -> None:
+    def __init__(self, run) -> None:
         self.calls: list[list[str]] = []
+        self._run = run
 
     def __call__(self, cmd, **kw):
-        self.calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)])
+        argv = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
+        if not (len(argv) >= 2 and Path(str(argv[0])).stem.lower() == "lms" and argv[1] == "load"):
+            # A load spy must not fabricate success for nvidia-smi or other tools.
+            return self._run(cmd, **kw)
+        self.calls.append(argv)
 
         class _P:
             returncode = 0
@@ -50,7 +52,7 @@ class _Recorder:
     def load_calls(self) -> list:
         argv_loads = [
             c for c in self.calls
-            if len(c) >= 2 and c[0] == "lms" and c[1] == "load"
+            if len(c) >= 2 and Path(str(c[0])).stem.lower() == "lms" and c[1] == "load"
         ]
         return argv_loads + self.backend_loads
 
@@ -60,9 +62,10 @@ def recorder(monkeypatch):
     """Watches BOTH load channels: the legacy `lms load` argv through
     ttyguard, and the dual-backend seam (backend.load). "nothing loads
     unless the user asked" must hold whichever road a load takes."""
-    from litetui import llm_backend
+    from litetui import gpu_gate, llm_backend
 
-    r = _Recorder()
+    gpu_gate.is_rtx_5090.cache_clear()
+    r = _Recorder(app_mod.ttyguard.run)
     r.backend_loads = []
     monkeypatch.setattr(app_mod.ttyguard, "run", r)
 
@@ -71,11 +74,16 @@ def recorder(monkeypatch):
 
     monkeypatch.setattr(llm_backend.LMStudioBackend, "load", _load)
     monkeypatch.setattr(llm_backend.LlamaCppBackend, "load", _load)
-    return r
+    try:
+        yield r
+    finally:
+        gpu_gate.is_rtx_5090.cache_clear()
 
 
-def _app_with_a_context_preference():
-    a = app_mod.LiteTUI()
+def _app_with_a_context_preference(*, real_effects=()):
+    a = owned_app(initial_backend="lmstudio", initial_model="qwen/qwen3.8-27b",
+                  real_effects=real_effects)
+    a._connect = lambda: None  # startup discovery is outside this test
     # The exact real-world configuration that caused it: a saved default model
     # and a saved context length.
     a.settings = Settings(
@@ -101,22 +109,28 @@ async def test_booting_the_app_loads_no_model(recorder):
 @pytest.mark.asyncio
 async def test_connecting_loads_no_model(recorder):
     """The regression itself: connect used to call _apply_context_length()."""
-    a = _app_with_a_context_preference()
+    a = _app_with_a_context_preference(real_effects={"model_list"})
     a._fetch_ctx_window = lambda: None
 
-    class _FakeModels:
-        async def list(self):
-            class _M:
-                data = [type("x", (), {"id": "qwen/qwen3.8-27b"})()]
+    from litetui.llm_backend import ModelRow
 
-            return _M()
+    discovered = []
+    async def list_models():
+        discovered.append(a.backend.name)
+        return [ModelRow(key="qwen/qwen3.8-27b", path=None, source="server", loaded=True)]
 
-    a.client = type("c", (), {"models": _FakeModels()})()
+    a.backend.list_models = list_models
+    a._probe_thinking = lambda: None  # thinking discovery is unrelated to model loading
     async with a.run_test() as pilot:
-        a._connect()
+        # Startup uses the suppressed private alias; drive its real public implementation.
+        connection = a.connect()
+        await connection.wait()
         for _ in range(6):
             await pilot.pause()
             await asyncio.sleep(0.05)
+    assert discovered == ["lmstudio"]
+    assert a._gui_connection_success and a._connect_settled
+    assert a.available_models == ["qwen/qwen3.8-27b"]
     assert recorder.load_calls == [], (
         f"connecting shelled out to lms load: {recorder.load_calls}"
     )

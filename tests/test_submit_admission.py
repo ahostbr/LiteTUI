@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import pytest
 
-from litetui import app as app_mod
+from _owned_seat import owned_app
 from litetui.app import LiteTUI
 
 
@@ -113,7 +113,7 @@ def test_a_huge_payload_containing_the_extension_list_is_ordinary():
 
 
 def _app():
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None

@@ -1,6 +1,8 @@
 """Hook authoring and explicit script testing, shared by Settings and /hooks."""
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 import json
 import sys
 from typing import ClassVar
@@ -69,7 +71,7 @@ class HooksEditor(VerticalScroll):
         yield Static("Sources: " + ", ".join(hooks.SOURCES))
         for name, label, default in HOOK_FIELDS:
             yield Label(label)
-            yield Input(default, id=f"hook-field-{name}")
+            yield HostedInput(default, id=f"hook-field-{name}")
         yield Static("", id="hook-error", markup=False)
         yield TextArea("", id="hook-repair-json")
         yield Button("Save repaired file JSON", id="hook-repair")

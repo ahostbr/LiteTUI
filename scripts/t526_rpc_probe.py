@@ -23,14 +23,14 @@ import os
 env = dict(os.environ)
 if os.environ.get("T526_VIA_UV"):
     # exactly what LiteTuiAdapter.ts spawns (shell:true, uv run ... litetui --rpc --cwd)
-    argv = ["uv", "run", "--project", str(ROOT), "--locked", "--no-sync", "litetui", "--rpc", "--cwd", "C:\\Projects\\LiteSuite"]
+    argv = ["uv", "run", "--project", str(ROOT), "--locked", "--no-sync", "litetui", "--rpc", "--cwd", str(Path.cwd())]
     env["LITEHARNESS_SPAWNED_BY"] = "litesuite-frontier"
     env.pop("NO_COLOR", None)
 else:
-    argv = [sys.executable, "-m", "litetui.cli", "--rpc", "--cwd", "C:/Projects/LiteSuite"]
+    argv = [sys.executable, "-m", "litetui.cli", "--rpc", "--cwd", str(Path.cwd())]
 print("argv:", argv)
 proc = subprocess.Popen(
-    argv, cwd="C:\\Projects\\LiteSuite", env=env,
+    argv, cwd=str(Path.cwd()), env=env,
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_f, text=True,
     encoding="utf-8", errors="replace", bufsize=1,
 )

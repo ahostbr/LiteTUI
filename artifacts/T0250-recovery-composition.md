@@ -2,12 +2,12 @@
 
 ## Authority and exact source
 
-Authorized workspace: `C:/Projects/.scratch/EmberRecoveryPreview/LiteTUI`, branch `ember/recovery-preview`.
+Authorized workspace: `C:/ExampleProjects/.scratch/EmberRecoveryPreview/LiteTUI`, branch `ember/recovery-preview`.
 Validation source HEAD: `4631f12f2cee81f63f47e68c572ed86848a6d992` (main `156f7b88d4961c2efd7a26feca1494002b5555e1` plus both approved fixes).
 Both ancestry checks returned 0:
 
 ```powershell
-Set-Location 'C:/Projects/.scratch/EmberRecoveryPreview/LiteTUI'
+Set-Location 'C:/ExampleProjects/.scratch/EmberRecoveryPreview/LiteTUI'
 git merge-base --is-ancestor f788f67f3f17fc724e01bfae308fab89c55c22e0 HEAD
 git merge-base --is-ancestor b1e3e76 HEAD
 ```
@@ -26,24 +26,24 @@ All IDs below are prefixed `tests/test_recovery_composition.py::`.
 
 ## Validation commands
 
-Interpreter: `C:/Projects/LiteTUI/.venv/Scripts/python.exe`.
+Interpreter: `C:/ExampleProjects/LiteTUI/.venv/Scripts/python.exe`.
 Every composition command explicitly changes to the preview and sets its source root:
 
 ```powershell
-Set-Location 'C:/Projects/.scratch/EmberRecoveryPreview/LiteTUI'
+Set-Location 'C:/ExampleProjects/.scratch/EmberRecoveryPreview/LiteTUI'
 $env:PYTHONPATH="$PWD/src"
-& 'C:/Projects/LiteTUI/.venv/Scripts/python.exe' -m pytest tests/test_recovery_composition.py tests/test_claude_uncertain_startup.py tests/test_claude_turn.py tests/test_claude_compact.py tests/test_claude_backend.py tests/test_claude_persistence.py tests/test_claude_session.py tests/test_claude_submit.py tests/test_compaction_recovery.py tests/test_compaction_busy_input.py tests/test_local_compaction_loop.py tests/test_local_compaction_recovery.py tests/test_message_queue.py tests/test_queued_input_delivery.py tests/test_wake_after_compact.py tests/test_wake_guard_abandoned_turn.py tests/test_autocompact.py tests/test_self_compact.py -q --tb=short --deselect='tests/test_self_compact.py::test_real_round_compacts_after_all_results_and_resumes_with_handoff[success]' --deselect='tests/test_self_compact.py::test_real_round_compacts_after_all_results_and_resumes_with_handoff[failure]' --deselect='tests/test_self_compact.py::test_real_round_compacts_after_all_results_and_resumes_with_handoff[stop]'
-& 'C:/Projects/LiteTUI/.venv/Scripts/python.exe' -m ruff check tests/test_recovery_composition.py
+& 'C:/ExampleProjects/LiteTUI/.venv/Scripts/python.exe' -m pytest tests/test_recovery_composition.py tests/test_claude_uncertain_startup.py tests/test_claude_turn.py tests/test_claude_compact.py tests/test_claude_backend.py tests/test_claude_persistence.py tests/test_claude_session.py tests/test_claude_submit.py tests/test_compaction_recovery.py tests/test_compaction_busy_input.py tests/test_local_compaction_loop.py tests/test_local_compaction_recovery.py tests/test_message_queue.py tests/test_queued_input_delivery.py tests/test_wake_after_compact.py tests/test_wake_guard_abandoned_turn.py tests/test_autocompact.py tests/test_self_compact.py -q --tb=short --deselect='tests/test_self_compact.py::test_real_round_compacts_after_all_results_and_resumes_with_handoff[success]' --deselect='tests/test_self_compact.py::test_real_round_compacts_after_all_results_and_resumes_with_handoff[failure]' --deselect='tests/test_self_compact.py::test_real_round_compacts_after_all_results_and_resumes_with_handoff[stop]'
+& 'C:/ExampleProjects/LiteTUI/.venv/Scripts/python.exe' -m ruff check tests/test_recovery_composition.py
 git -c core.whitespace=cr-at-eol diff --check 4631f12f2cee81f63f47e68c572ed86848a6d992 HEAD
 ```
 
-Final affected-contract run after strengthening assertions: **292 passed, 3 deselected, 36.13s**, log `C:/Projects/LiteTUI/output/tasks/t-d63269d9b6a74e3099050c1c0941454b.log`. This includes all five exact composition IDs above.
-Earlier same affected selection: **292 passed, 3 deselected, 34.43s**, log `C:/Projects/LiteTUI/output/tasks/t-0e0fac3e907844298f8c32615e8074cf.log`.
+Final affected-contract run after strengthening assertions: **292 passed, 3 deselected, 36.13s**, log `C:/ExampleProjects/LiteTUI/output/tasks/t-d63269d9b6a74e3099050c1c0941454b.log`. This includes all five exact composition IDs above.
+Earlier same affected selection: **292 passed, 3 deselected, 34.43s**, log `C:/ExampleProjects/LiteTUI/output/tasks/t-0e0fac3e907844298f8c32615e8074cf.log`.
 Scoped Ruff: **All checks passed**. Diff whitespace check: clean. No full suite was run.
 
 ### Exact exclusions, independently reproduced baseline only
 
-Only the three exact `test_real_round_compacts_after_all_results_and_resumes_with_handoff[success|failure|stop]` IDs above were deselected. Their fake transport deepcopies the whole kwargs dict, including bound `retry_notice`, and fails `TypeError: cannot pickle '_asyncio.Task' object`. Same three failures reproduced against actual archived main `156f7b88d4961c2efd7a26feca1494002b5555e1`, with import paths and committed source bytes checked, at `C:/Projects/.scratch/T0250/baseline156f7b8`; evidence `C:/Projects/LiteTUI/output/tasks/t-74ec074254044678a9415d364e9578d1.log` (6 pass, same 3 fail). Composition fake snapshots **messages only**, avoiding that unrelated fixture bug.
+Only the three exact `test_real_round_compacts_after_all_results_and_resumes_with_handoff[success|failure|stop]` IDs above were deselected. Their fake transport deepcopies the whole kwargs dict, including bound `retry_notice`, and fails `TypeError: cannot pickle '_asyncio.Task' object`. Same three failures reproduced against actual archived main `156f7b88d4961c2efd7a26feca1494002b5555e1`, with import paths and committed source bytes checked, at `C:/ExampleProjects/.scratch/T0250/baseline156f7b8`; evidence `C:/ExampleProjects/LiteTUI/output/tasks/t-74ec074254044678a9415d364e9578d1.log` (6 pass, same 3 fail). Composition fake snapshots **messages only**, avoiding that unrelated fixture bug.
 
 The earlier CLI startup and canonical fleet-floor baseline failures are not hidden by broad `-k` filtering: neither file is part of this affected-contract selection.
 

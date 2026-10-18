@@ -21,6 +21,7 @@ Run it deliberately:
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import time
 from pathlib import Path as _P
@@ -32,14 +33,16 @@ import sys
 # e2e/ is one level below the repo root, same as tests/ was.
 sys.path.insert(0, str(_P(__file__).resolve().parent.parent / "src"))
 
+try:
+    from e2e._owned_app import owned_session, configure_owned_app
+except ModuleNotFoundError as exc:
+    if exc.name != "e2e":
+        raise
+    from _owned_app import owned_session, configure_owned_app
+
 from litetui import paths  # noqa: E402
 from litetui.app import LiteTUI, AssistantMessage, ThinkingBlock, ThinkingHeader  # noqa: E402
 
-# Booting LiteTUI creates a real .convos/<uuid>/ before anything is typed, so a
-# test that instantiates it leaves an empty conversation in the user's list.
-# `from app import LiteTUI` does not bind CONVO_DIR here, but _new_convo reads
-# the MODULE global at call time, so patching the module is what takes effect.
-paths.CONVO_DIR = _P(tempfile.mkdtemp(prefix="convos-thinking-"))
 
 pytestmark = [pytest.mark.live, pytest.mark.asyncio]
 
@@ -62,66 +65,72 @@ async def wait_stream_done(app, timeout_s: float = 180.0) -> bool:
     return False
 
 
-async def test_thinking_trace_streams_collapses_and_survives_a_second_turn() -> None:
-    app = LiteTUI()
-    async with app.run_test(size=(120, 32)) as pilot:
-        # Wait for connection
-        for _ in range(60):
-            await pilot.pause(0.25)
-            if app.sub_title not in ("Connecting...",):
-                break
-        print(f"[1] connected, model = {app.sub_title}")
+async def test_thinking_trace_streams_collapses_and_survives_a_second_turn(monkeypatch) -> None:
+    from litetui import settings
+    cfg = settings.load()
+    monkeypatch.setenv("LITETUI_NO_HARNESS", "1")
+    root = _P(tempfile.mkdtemp(prefix="owned-thinking-"))
+    with owned_session(root, cfg) as session:
+        app = LiteTUI(agent_session=session)
+        configure_owned_app(app)
+        async with app.run_test(size=(120, 32)) as pilot:
+            # Wait for connection
+            for _ in range(60):
+                await pilot.pause(0.25)
+                if app.sub_title not in ("Connecting...",):
+                    break
+            print(f"[1] connected, model = {app.sub_title}")
 
-        # ── Turn 1: expect a thinking trace ─────────────────────────
-        inp = app.query_one("#message-input")
-        inp.value = "What is 2+2? Answer in one word."
-        await pilot.press("enter")
+            # ── Turn 1: expect a thinking trace ─────────────────────────
+            inp = app.query_one("#message-input")
+            inp.value = "What is 2+2? Answer in one word."
+            await pilot.press("enter")
 
-        ok = await wait_stream_done(app)
-        print(f"[2] stream done: {ok}")
+            ok = await wait_stream_done(app)
+            print(f"[2] stream done: {ok}")
 
-        blocks = list(app.query(ThinkingBlock))
-        print(f"[3] thinking blocks: {len(blocks)}")
-        assert blocks, "no ThinkingBlock appeared!"
-        block = blocks[0]
-        trace = get_text(block.text)
-        print(f"[4] thinking expanded={block.expanded}, trace length={len(trace)}")
-        print(f"    trace head: {trace[:80]!r}")
-        assert len(trace) > 10, "thinking trace looks empty"
+            blocks = list(app.query(ThinkingBlock))
+            print(f"[3] thinking blocks: {len(blocks)}")
+            assert blocks, "no ThinkingBlock appeared!"
+            block = blocks[0]
+            trace = get_text(block.text)
+            print(f"[4] thinking expanded={block.expanded}, trace length={len(trace)}")
+            print(f"    trace head: {trace[:80]!r}")
+            assert len(trace) > 10, "thinking trace looks empty"
 
-        body = app.query_one(AssistantMessage).body
-        print(f"    answer head: {get_text(body)[:80]!r}")
+            body = app.query_one(AssistantMessage).body
+            print(f"    answer head: {get_text(body)[:80]!r}")
 
-        # ── Click header: should collapse ───────────────────────────
-        header = block.query_one(ThinkingHeader)
-        block.scroll_visible()
-        await pilot.pause()
-        ok = await pilot.click(header)
-        await pilot.pause()
-        print(f"[5] click landed={ok} expanded={block.expanded} (expect False)")
-        assert block.expanded is False
+            # ── Click header: should collapse ───────────────────────────
+            header = block.query_one(ThinkingHeader)
+            block.scroll_visible()
+            await pilot.pause()
+            ok = await pilot.click(header)
+            await pilot.pause()
+            print(f"[5] click landed={ok} expanded={block.expanded} (expect False)")
+            assert block.expanded is False
 
-        # ── Click again: should expand ──────────────────────────────
-        block.scroll_visible()
-        await pilot.pause()
-        ok = await pilot.click(header)
-        await pilot.pause()
-        print(f"[6] click landed={ok} expanded={block.expanded} (expect True)")
-        assert block.expanded is True
+            # ── Click again: should expand ──────────────────────────────
+            block.scroll_visible()
+            await pilot.pause()
+            ok = await pilot.click(header)
+            await pilot.pause()
+            print(f"[6] click landed={ok} expanded={block.expanded} (expect True)")
+            assert block.expanded is True
 
-        # ── Turn 2: verify echoed reasoning_content doesn't break API ─
-        assert any(
-            isinstance(m.get("content"), str) and m.get("reasoning_content")
-            for m in app.conversation
-            if m["role"] == "assistant"
-        ), "assistant message should carry reasoning_content"
-        inp.value = "Now what is 3+3? One word."
-        await pilot.press("enter")
-        ok2 = await wait_stream_done(app)
-        print(f"[7] turn 2 stream done: {ok2}")
-        msgs = list(app.query(AssistantMessage))
-        last_body = msgs[-1].body
-        text = get_text(last_body)
-        print(f"    turn 2 answer: {text[:80]!r}")
-        assert "Error" not in text, "turn 2 errored"
-        assert ok2
+            # ── Turn 2: verify echoed reasoning_content doesn't break API ─
+            assert any(
+                isinstance(m.get("content"), str) and m.get("reasoning_content")
+                for m in app.conversation
+                if m["role"] == "assistant"
+            ), "assistant message should carry reasoning_content"
+            inp.value = "Now what is 3+3? One word."
+            await pilot.press("enter")
+            ok2 = await wait_stream_done(app)
+            print(f"[7] turn 2 stream done: {ok2}")
+            msgs = list(app.query(AssistantMessage))
+            last_body = msgs[-1].body
+            text = get_text(last_body)
+            print(f"    turn 2 answer: {text[:80]!r}")
+            assert "Error" not in text, "turn 2 errored"
+            assert ok2

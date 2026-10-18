@@ -37,8 +37,8 @@ there are no Select tasks in flight to catch. The state that fails lives inside
 Textual's scheduler and only appears under machine load, which is why the only
 instrument for the PRODUCT's timing is the seven-file reproducer:
 
-    cd C:/Projects/LiteTUI/.worktrees/silverbolt-t596
-    PYTHONUTF8=1 C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest -q \\
+    cd C:/ExampleProjects/LiteTUI/.worktrees/silverbolt-t596
+    PYTHONUTF8=1 C:/ExampleProjects/LiteTUI/.venv/Scripts/python.exe -m pytest -q \\
       tests/test_hooks_ui.py tests/test_hook_boundaries.py \\
       tests/test_lifecycle_hooks.py tests/test_settings.py \\
       tests/test_settings_live.py tests/test_theme_extra_tokens.py \\
@@ -83,13 +83,13 @@ from textual.widgets import Select
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui.plugins.model_switch import ModelConfigBody
 from litetui.side_panel import DialogController, SidePanel, _is_composing
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

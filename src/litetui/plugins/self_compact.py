@@ -20,7 +20,7 @@ class SelfCompaction:
         self.needs_progress = False
 
     def supported(self):
-        return getattr(self.app.backend, "name", "") in {"ninfer", "lmstudio", "llamacpp"}
+        return getattr(self.app.backend, "name", "") in {"ninfer", "strata", "lmstudio", "llamacpp"}
 
     def progress(self):
         self.needs_progress = False

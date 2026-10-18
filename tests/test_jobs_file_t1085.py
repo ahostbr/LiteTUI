@@ -1,4 +1,4 @@
-"""T1085 — jobs.json is Ryan's: only Ryan's own seat may directly write it.
+"""T1085 — jobs.json is Owner's: only Owner's own seat may directly write it.
 
 T1133 removed profile locks and schedule API caps. These arms protect only direct
 file writes, at the shared _authorize_action door, without restoring those caps.
@@ -11,13 +11,14 @@ import pytest
 from litetui import app as m
 from litetui import claude_tools, scheduler, seat_authority, tool_policy
 from litetui.tool_policy import AUTONOMOUS
+from _owned_seat import owned_app
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 
 
 def _agent(tmp_path, monkeypatch):
     """An autonomous agent seat; the file guard must not narrow its profile."""
-    a = m.LiteTUI()
+    a = owned_app()
     a.settings.tool_policy_profile = AUTONOMOUS
     a._active_tool_profile = AUTONOMOUS
     a._spawned_seat = True
@@ -85,7 +86,7 @@ async def test_the_refusal_comes_before_the_relay(tmp_path, monkeypatch):
 
 
 def test_ryans_own_seat_may_write_its_schedule(tmp_path):
-    a = _ryans(m.LiteTUI())
+    a = _ryans(owned_app())
     for _name, args, policy in _calls(tmp_path / "jobs.json"):
         assert seat_authority.jobs_file_refusal(a, args, tmp_path, policy) is None, args
 
@@ -137,7 +138,7 @@ async def test_a_read_tool_path_is_not_a_write(tmp_path, monkeypatch):
 @pytest.mark.parametrize("clean", [True, False])
 def test_protected_write_rechecks_owner_taint(tmp_path, monkeypatch, clean):
     """A cached owner mark must not exempt a bridge-tainted write mid-turn."""
-    a = _ryans(m.LiteTUI())
+    a = _ryans(owned_app())
     a._pty_term = "owner-terminal"
     monkeypatch.setattr(seat_authority, "pty_taint_clean", lambda term: clean)
     why = seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / "jobs.json")}, tmp_path)

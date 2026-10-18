@@ -33,7 +33,7 @@ from litetui.tool_approval import ONCE
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import sync_deny_floor  # noqa: E402
 
-INCIDENT = (r"$home='C:\Projects\LiteTUI\temp-working-dir\t1018-main-red-home'; "
+INCIDENT = (r"$home='C:\ExampleProjects\LiteTUI\temp-working-dir\t1018-main-red-home'; "
             r"Remove-Item $home -Recurse -Force -ErrorAction SilentlyContinue")
 
 
@@ -65,10 +65,10 @@ INCIDENT = (r"$home='C:\Projects\LiteTUI\temp-working-dir\t1018-main-red-home'; 
     ("for /f %i in ('echo') do run", True),
     ("Get-Content '{owner}'", False),
     ("python x.py '{owner}'", False),
-    ("{other}", False),
-    ("{missing}", False),
+    ("{other}", True),
+    ("{missing}", True),
 ])
-def test_owner_launcher_requires_executable_position_and_resolved_identity(
+def test_owner_launcher_requires_executable_position_without_machine_identity(
         tmp_path, monkeypatch, command, refused):
     """T0206: judge strings only, never execute the inert owner launcher."""
     owner = tmp_path / "owner" / "run.bat"
@@ -79,14 +79,12 @@ def test_owner_launcher_requires_executable_position_and_resolved_identity(
     other.write_text("@echo off\n", encoding="utf-8")
     missing = tmp_path / "missing" / "run.bat"
     (missing.parent / "src" / "litetui").mkdir(parents=True)
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     reason = deny_floor.refusal(command.format(owner=owner, other=other, missing=missing, dir=owner.parent),
                                 owner.parent)
     assert bool(reason) is refused, reason
     if refused:
         assert "[owner-launcher]" in reason
-        assert str(owner.resolve()) in reason
 
 @pytest.mark.parametrize("command, refused", [
     ("@'\nrun = vi.fn();\n'@ | Add-Content tests.ts", False),
@@ -124,7 +122,6 @@ def test_owner_launcher_literal_here_string_data_only(tmp_path, monkeypatch, com
     """T0291: classify strings only; every launcher file is inert test data."""
     owner = tmp_path / "run.bat"
     owner.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     reason = deny_floor.refusal(command.format(owner=owner), owner.parent, shell="powershell")
     assert bool(reason) is refused, reason
@@ -135,7 +132,6 @@ def test_owner_launcher_literal_here_string_data_only(tmp_path, monkeypatch, com
 def test_original_t0291_command_is_literal_test_data(tmp_path, monkeypatch):
     owner = tmp_path / "run.bat"
     owner.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     command = (Path(__file__).parent / "fixtures" / "T0291-here-string.txt").read_text(encoding="utf-8")
     assert deny_floor.refusal(command, owner.parent, shell="powershell") is None
@@ -264,7 +260,7 @@ def _seat(run, *, launched, saved):
         _maybe_stage_shot=lambda name, args, result: result,
         _gui_quitting=False, _chat_running=lambda: False,
         _user_bubble=lambda *a, **k: None, _append=lambda message: None,
-        # T1049: only Ryan's own instance may hold autonomous, and these arms
+        # T1049: only Owner's own instance may hold autonomous, and these arms
         # prove the floor holds AT autonomous.
         _spawned_seat=False, _owner_seat=True,
         # T0132: `_execute_tool` births the conversation before a backgroundable
@@ -375,7 +371,6 @@ def test_the_floor_works_with_liteharness_not_importable(tmp_path):
 def test_here_string_exemption_requires_proven_shell(tmp_path, monkeypatch, shell, original):
     owner = tmp_path / "run.bat"
     owner.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     command = "@'\nrun\n'@"
     if original:
@@ -398,7 +393,6 @@ def test_here_string_exemption_requires_proven_shell(tmp_path, monkeypatch, shel
 def test_floor_here_string_shell_route(tmp_path, monkeypatch, tool_name, policy, command_list, refused, original):
     owner = tmp_path / "run.bat"
     owner.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     monkeypatch.chdir(tmp_path)
     command = "@'\nrun\n'@"
@@ -415,7 +409,6 @@ def test_floor_here_string_shell_route(tmp_path, monkeypatch, tool_name, policy,
 def test_here_string_ambiguous_terminator_falls_back(tmp_path, monkeypatch, closer, separator):
     owner = tmp_path / "run.bat"
     owner.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     command = "@'\nfoo\n" + closer + "@" + separator + "run\n'@ | Add-Content x\n'"
     if closer == "\r'":
@@ -437,7 +430,6 @@ def test_here_string_ambiguous_terminator_falls_back(tmp_path, monkeypatch, clos
 def test_here_string_unusual_syntax_is_conservative(tmp_path, monkeypatch, command):
     owner = tmp_path / "run.bat"
     owner.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     if "\u2019" not in command and "\r" not in command.replace("\r\n", ""):
         assert deny_floor.refusal(command, tmp_path, shell="powershell") is None
@@ -474,7 +466,6 @@ HERE_COST_COMMANDS_T0291A = [
 def _gap_owner_t0291a(tmp_path, monkeypatch):
     owner = tmp_path / "run.bat"
     owner.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(deny_floor, "_OWNER_LAUNCHER", owner)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     return owner
 
@@ -728,8 +719,8 @@ def test_owner_brace_data_cost_reduction(tmp_path, monkeypatch, shell, command):
 
 @pytest.mark.parametrize("shell", [None, "cmd", "powershell", "bash"])
 @pytest.mark.parametrize("command, refused", [('Get-Date\rrun', True), ('& { run }', True), ('1 | % {run}', True), ('1 | ForEach-Object { run }', True), ('& { if ($true) { run } }', True), ('Get-Date(run)', True), ('git commit -m "fix(run): keep owner launcher"', False), ("rg '{run}' tests", False), ('rg "{run}" tests', False), ("node -e 'console.log({run})'", False)])
-def test_owner_sentinel_corpus_regressions(tmp_path, monkeypatch, shell, command, refused):
-    """Sentinel corpus_a/corpus4 data; no candidate string is executed."""
+def test_owner_orchestrator_corpus_regressions(tmp_path, monkeypatch, shell, command, refused):
+    """Orchestrator corpus_a/corpus4 data; no candidate string is executed."""
     owner = _gap_owner_t0291a(tmp_path, monkeypatch)
     assert bool(deny_floor.refusal(command, owner.parent, shell=shell)) is refused
 
@@ -816,9 +807,9 @@ def test_owner_rich_code_still_requires_identity(tmp_path, monkeypatch, command)
     other = tmp_path / "other"
     other.mkdir()
     (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
-    assert deny_floor.refusal(command, other) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, other)
     owner.unlink()
-    assert deny_floor.refusal(command, tmp_path) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, tmp_path)
 
 @pytest.mark.parametrize("command", [
     "git commit -m 'prefix & run & suffix'", "git commit -am 'prefix | run | suffix'",
@@ -856,9 +847,9 @@ def test_owner_grouped_scriptblock_identity_f1(tmp_path, monkeypatch, shell, com
     other = tmp_path / "other"
     other.mkdir()
     (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
-    assert deny_floor.refusal(command, other, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, other, shell=shell)
     owner.unlink()
-    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, tmp_path, shell=shell)
 
 @pytest.mark.parametrize("shell", [None, "powershell"])
 @pytest.mark.parametrize("command", GROUPED_DATA_T0291A)
@@ -896,9 +887,9 @@ def test_owner_scriptblock_closures_identity_f1(tmp_path, monkeypatch, shell, co
     other = tmp_path / "other"
     other.mkdir()
     (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
-    assert deny_floor.refusal(command, other, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, other, shell=shell)
     owner.unlink()
-    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, tmp_path, shell=shell)
 
 @pytest.mark.parametrize("shell", [None, "powershell"])
 @pytest.mark.parametrize("command", CLOSURE_DATA_T0291A)
@@ -933,9 +924,9 @@ def test_owner_nested_group_identity_f1(tmp_path, monkeypatch, shell, command):
     other = tmp_path / "other"
     other.mkdir()
     (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
-    assert deny_floor.refusal(command, other, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, other, shell=shell)
     owner.unlink()
-    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, tmp_path, shell=shell)
 
 @pytest.mark.parametrize("shell", [None, "powershell"])
 @pytest.mark.parametrize("command", ['foo({run: 1})', 'console.log({run})', 'foo]({run})', 'foo()({run})'])
@@ -963,9 +954,9 @@ def test_owner_switch_labels_identity_f1(tmp_path, monkeypatch, shell, command):
     other = tmp_path / "other"
     other.mkdir()
     (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
-    assert deny_floor.refusal(command, other, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, other, shell=shell)
     owner.unlink()
-    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, tmp_path, shell=shell)
 
 @pytest.mark.parametrize("shell", [None, "powershell"])
 @pytest.mark.parametrize("command", ["foo{10{run}", "a'1'{run}", "${1}{run}", "foo{default{run}"])
@@ -987,9 +978,9 @@ def test_owner_f1_nested_and_label_paths(tmp_path, monkeypatch, shell, command):
     other = tmp_path / "other"
     other.mkdir()
     (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
-    assert deny_floor.refusal(command, other, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, other, shell=shell)
     owner.unlink()
-    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, tmp_path, shell=shell)
 
 
 SWITCH_LABEL_QUOTING_T0291A = [
@@ -1011,9 +1002,9 @@ def test_owner_switch_label_quoting_spacing_identity(tmp_path, monkeypatch, shel
     other = tmp_path / "other"
     other.mkdir()
     (other / "run.bat").write_text("@echo off\n", encoding="utf-8")
-    assert deny_floor.refusal(command, other, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, other, shell=shell)
     owner.unlink()
-    assert deny_floor.refusal(command, tmp_path, shell=shell) is None
+    assert "[owner-launcher]" in deny_floor.refusal(command, tmp_path, shell=shell)
 
 @pytest.mark.parametrize("shell", [None, "powershell"])
 @pytest.mark.parametrize("command", ["foo{10{run}", "a'1'{run}", "${1}{run}", "foo({run:1})", "foo{ '1'{run}"])

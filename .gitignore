@@ -2,6 +2,12 @@
 # .convos/<uuid>/ holds actual transcripts plus the agent's memory.md,
 # soul.md and handoff.md. These are Ryan's conversations, not fixtures.
 .convos/
+# Private agent conversations/memory, quarantined or trashed stores, and indexes.
+.agents/
+.agents-quarantine-T0332/
+.agents.catalog.lease
+.conversation-search.db
+.convos-trash/
 
 # ── Never commit: screenshots ────────────────────────────────────
 # A desktop capture can contain anything that was on screen.
@@ -78,6 +84,9 @@ bin/
 
 # T982: per-install Codex routing id (never commit: public repo)
 .codex_installation_id
+
+# Disposable, per-launch MCP tool inventories (may contain project schema text).
+.mcp-tool-cache/
 
 # Docs are local-only (Ryan, liteask a-8c7fb080: "ignore the docs folder. It doesn't need to be pushed anymore.")
 Docs/

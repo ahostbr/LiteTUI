@@ -24,6 +24,10 @@ DESIGN NOTES
 
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
+import json
+
 from copy import deepcopy
 from dataclasses import fields, replace
 from functools import partial
@@ -605,11 +609,12 @@ class SettingsBody(Widget):
             help_text = capability.help
         value = getattr(self._start, name)
         shown = "" if value is None else (
+            json.dumps(value) if isinstance(value, dict) else
             ",".join(value) if isinstance(value, list) else str(value)
         )
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
-            yield Input(
+            yield HostedInput(
                 value=shown,
                 placeholder=placeholder or "unset — server default",
                 id=f"f-{name}",
@@ -684,7 +689,7 @@ class SettingsBody(Widget):
                 value=current or "",
                 id=f"f-{name}",
                 allow_blank=False,
-                disabled=locked is not None,
+                disabled=locked is not None or bool(capability and not capability.editable),
             )
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
@@ -697,7 +702,7 @@ class SettingsBody(Widget):
                 id="set-sub",
             )
             with Horizontal(id="set-search-row"):
-                yield Input(
+                yield HostedInput(
                     placeholder="Find a setting, help text, or section…",
                     id="set-search",
                 )
@@ -916,18 +921,53 @@ class SettingsBody(Widget):
                                 "Pinned system RAM for KV moved off the GPU. Blank uses the engine's 8192.",
                                 placeholder="8192",
                             )
+                with TabPane("Strata", id="tab-strata"):
+                    with VerticalScroll(classes="set-scroll"):
+                        yield self._section_header("strata-engine")
+                        yield from self._text_row(
+                            "strata_host", "Strata host",
+                            "Blank uses the chosen model's own port on this PC (8080). Set it "
+                            "only for a Strata server you started yourself somewhere else.",
+                            placeholder="http://127.0.0.1:8080",
+                        )
+                        yield from self._text_row(
+                            "strata_root", "Strata: install folder",
+                            "Blank uses LiteSuite's install. The folder Strata's setup prepared "
+                            "(it holds .venv, serve/ and one strata-<model>.json per model). "
+                            "Engine and docs: https://github.com/Niko1221/Strata",
+                            placeholder="C:/Users/you/.litesuite/llm/strata",
+                        )
+                        yield from self._text_row(
+                            "strata_config", "Strata: model (strata-<model>.json)",
+                            "Blank uses the one model the install holds; /model picks between "
+                            "several. /engine start serves this.",
+                            placeholder="C:/Users/you/.litesuite/llm/strata/strata-iq3_xxs.json",
+                        )
+                        yield from self._text_row(
+                            "strata_max_context", "Strata: context length (--max-context)",
+                            "Blank keeps what the model was set up with. Up to 262144. A longer "
+                            "context takes VRAM from the expert cache, not system RAM. Applies on "
+                            "the next /engine start.",
+                            placeholder="blank, or tokens such as 131072",
+                        )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
                         yield self._section_header("voice-speak")
                         yield Label("Speak — replies read aloud (TTS out)",
                                     classes="set-label")
-                        yield Static("Use Speak / Stop on each response to control playback. Replies are never spoken automatically.")
+                        yield Static("Replies are never spoken automatically. Stop controls LiteTUI playback only; stop queued LiteSuite speech in LiteSuite.")
                         yield from self._switch_row(
                             "tts_enabled", "Show the Speak button on responses",
-                            "Off hides the ♫ Speak button on every response and stops any playback.",
+                            "Off hides the ♫ Speak button and stops LiteTUI-owned playback, not LiteSuite's queue.",
+                        )
+                        yield from self._switch_row(
+                            "tts_litesuite_first", "Prefer LiteSuite speech",
+                            "Use LiteSuite's selected voice when reachable; otherwise use the fallback below. "
+                            "Off uses only the fallback. Health/dispatch socket timeouts are 0.25s/0.75s, "
+                            "not a total deadline; the synchronous check can pause the interface.",
                         )
                         yield from self._select_row(
-                            "tts_engine", "TTS engine",
+                            "tts_engine", "Fallback TTS engine",
                             [("pyttsx3 — Windows voices, offline, no download", "pyttsx3"),
                              ("edge — Microsoft cloud neural voices (needs install)", "edge")],
                             "pyttsx3 speaks through the built-in Windows voices with "
@@ -944,7 +984,7 @@ class SettingsBody(Widget):
                         if hasattr(self._start, "tts_timeout"):
                             yield from self._text_row(
                                 "tts_timeout", "TTS timeout (seconds)",
-                                "Maximum time a speech request may run before it is stopped.",
+                                "Maximum lifetime of a local speech child; does not control LiteSuite's queue.",
                                 placeholder="300")
                         yield from self._text_row(
                             "tts_edge_voice", "edge voice",
@@ -952,7 +992,7 @@ class SettingsBody(Widget):
                             placeholder="en-GB-SoniaNeural")
                         with Vertical(classes="set-row"):
                             with Horizontal(classes="set-switchline"):
-                                yield Button("Test voice", id="voice-test")
+                                yield Button("Test fallback voice", id="voice-test")
                                 yield Button("Install edge support",
                                              id="voice-install-edge")
                         # ── Dictate (STT in) ──
@@ -975,7 +1015,7 @@ class SettingsBody(Widget):
                         with Vertical(classes="set-row"):
                             yield Label("Record hotkey", classes="set-label")
                             with Horizontal(classes="set-switchline"):
-                                yield Input(value=self._start.stt_hotkey,
+                                yield HostedInput(value=self._start.stt_hotkey,
                                             id="f-stt_hotkey", classes="set-input",
                                             placeholder="ctrl+space")
                                 yield Button("Capture key", id="voice-capture")
@@ -1043,6 +1083,36 @@ class SettingsBody(Widget):
                         # tab and the other did not exist. the user 2026-09-11 15:1x
                         # runs MiniCPM5-2B resident beside the big model; these
                         # are the two knobs that point work at it.
+                        yield self._section_header("agent-subagent-routing")
+                        from litetui.llm_backend import visible_backends
+                        route = self._start.subagent_route or {}
+                        with Vertical(classes="set-row"):
+                            yield Label("Global subagent backend", classes="set-label")
+                            yield Select(
+                                [("Follow parent", "")] + [(label, key) for key, label in visible_backends()],
+                                value=route.get("backend", ""), id="f-subagent_route", allow_blank=False,
+                            )
+                            yield Label("Global subagent model", classes="set-label")
+                            yield HostedInput(value=route.get("model", ""), id="subagent-route-model",
+                                        placeholder="Exact model id for the selected backend")
+                            yield Static("Shared by all instances. Follow parent resets the global route; "
+                                         "a conversation override still wins.", classes="set-help")
+                        yield from self._text_row(
+                            "small_task_route", "Small-task worker route (JSON)",
+                            "Blank/null = off. Exact backend, model, cognitive and thinking_level required; "
+                            "visible named workers only, no inheritance or fallback.",
+                        )
+                        yield from self._switch_row(
+                            "allow_local_subagents", "Allow local subagents · expert only",
+                            "Use only if you know what you're doing: local subagents can run you out of GPU memory. "
+                            "Children never load models; the selected model must already be resident and nothing may be loading. "
+                            "Local LM Studio remains unsupported until its usage/lease protocol lands.",
+                        )
+                        yield from self._text_row(
+                            "subagent_route_override", "Conversation subagent override",
+                            'Blank = no new route override; {} = follow parent; or {"backend":"codex","model":"model-id"}. '
+                            "To inherit global, also clear the legacy subagent model below, or use /subagent-set inherit.",
+                        )
                         yield self._section_header("agent-routing")
                         yield from self._model_pick_row(
                             "subagent_model", "Subagent model",
@@ -1137,6 +1207,14 @@ class SettingsBody(Widget):
                             "seconds the turn stops and the refusal is logged (T1049).",
                             placeholder="600",
                         )
+                        yield from self._text_row(
+                            "permission_judge", "Count approvals a plain-read check would cover",
+                            "Blank = off. Write count to log, for each approval this LiteTUI "
+                            "routes, whether the plain-read check would have covered it. Every "
+                            "approval is still asked; nothing is authorized and no model is "
+                            "called. Shared by every LiteTUI on this machine.",
+                            placeholder="unset: off",
+                        )
                         yield self._section_header("agent-tools")
                         yield from self._text_row(
                             "tools_disabled", "Tools switched off",
@@ -1210,6 +1288,10 @@ class SettingsBody(Widget):
                         yield from self._text_row(
                             "compact_max_tool_iters", "Compact tool rounds",
                             "How many tool round-trips compaction may take while persisting.",
+                        )
+                        yield from self._text_row(
+                            "owner_domain_cap", "Owner DOMAIN.md cap",
+                            "Owner mode only: characters of DOMAIN.md injected at conversation start.",
                         )
 
                         # ── Capabilities ─────────────────────────────────────────────
@@ -1464,7 +1546,7 @@ class SettingsBody(Widget):
             resolved = {}
         with Vertical(classes="set-row"):
             yield Label("New theme name", classes="set-label")
-            yield Input(value="", id="ct-name", placeholder="my-theme")
+            yield HostedInput(value="", id="ct-name", placeholder="my-theme")
         try:
             extras = dict(self.app.current_theme.variables or {})
         except Exception:
@@ -1485,7 +1567,7 @@ class SettingsBody(Widget):
                 # they are absent from the generated colour system -- prefill
                 # them from the theme's own variables instead of leaving the
                 # row blank, which would read as "unset" for a live colour.
-                yield Input(value=str(resolved.get(tok) or extras.get(tok, "")),
+                yield HostedInput(value=str(resolved.get(tok) or extras.get(tok, "")),
                             id=f"ct-{tok}",
                             placeholder="#RRGGBB", classes="ct-hex")
 
@@ -1552,6 +1634,35 @@ class SettingsBody(Widget):
                 continue
 
             t = typemap[name]
+            if name == "small_task_route":
+                try:
+                    raw = str(widget.value).strip()
+                    route = json.loads(raw) if raw else None
+                    if route is not None:
+                        from litetui.small_task_dispatch import Route
+                        Route.parse(route)
+                except ValueError as exc:
+                    raise ValueError(f"small_task_route: {exc}") from exc
+                out.small_task_route = route
+                continue
+            if name == "subagent_route":
+                backend = widget.value
+                model = self.query_one("#subagent-route-model", Input).value.strip()
+                route = {"backend": backend, "model": model} if backend else None
+                from litetui.subagent_routing import validate_route
+                validate_route(route)
+                out.subagent_route = route
+                continue
+            if name == "subagent_route_override":
+                try:
+                    raw = str(widget.value).strip()
+                    route = json.loads(raw) if raw else None
+                    from litetui.subagent_routing import validate_route
+                    validate_route(route, override=True)
+                except ValueError as exc:
+                    raise ValueError(f"subagent_route_override: {exc}") from exc
+                out.subagent_route_override = route
+                continue
             if isinstance(widget, Switch):
                 setattr(out, name, bool(widget.value))
                 continue
@@ -1637,6 +1748,9 @@ class SettingsBody(Widget):
             raise ValueError(
                 f"tool_policy_profile: must be one of {', '.join(tool_policy.PROFILE_NAMES)}"
             )
+        if out.permission_judge not in (None, "count"):
+            # A misspelt word would read as off, and a count of zero would then be a lie.
+            raise ValueError("permission_judge: leave blank (off) or write count")
         if out.compact_max_tokens < 256:
             raise ValueError("compact_max_tokens: below 256 no summary can fit")
         if out.tool_context_threshold_chars < 0:
@@ -1740,6 +1854,11 @@ class SettingsBody(Widget):
                 continue
             widget = found.first()
             value = deepcopy(getattr(target, name))
+            if name == "subagent_route":
+                self.query_one("#subagent-route-model", Input).value = (value or {}).get("model", "")
+                value = (value or {}).get("backend", "")
+            elif name in ("subagent_route_override", "small_task_route"):
+                value = json.dumps(value) if value is not None else ""
             # An optional-string Select's UNSET state is its blank "" option, not
             # a raw None. The mount already knows this (_model_pick_row and the
             # default_model Select both build `value=current or ""`) and so does
@@ -1896,7 +2015,8 @@ class SettingsBody(Widget):
                 self.query_one("#voice-status", Static).update(str(exc))
                 return
         ok = voice_backend.speak("This is the LiteTUI voice test.",
-                                 engine=engine, voice=voice or None, timeout=timeout)
+                                 engine=engine, voice=voice or None, timeout=timeout,
+                                 litesuite_first=False)
         self.query_one("#voice-status", Static).update(
             "Sent a test line — you should hear it now." if ok
             else "That engine is not installed — use Install, or pick pyttsx3.")

@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from litetui.llm_backend import BackendError
+
+#: The engine backends by the name a refusal uses: only ever the one that was asked for.
+_ENGINE_LABELS = {'ninfer': 'NInfer', 'strata': 'Strata'}
 
 
 @dataclass
@@ -23,10 +27,15 @@ class LaunchOptions:
     server_command: list[str] | None = None
     api_key_env: str | None = None
     timeout: int = 600
+    codex_engine: str | None = None
 
     def overrides(self, settings, backend, model):
         from litetui.custom_backend import api_base
         values = {}
+        if self.codex_engine is not None:
+            if self.codex_engine not in ('native', 'http'):
+                raise ValueError('codex_engine must be native or http')
+            values['codex_native_engine'] = self.codex_engine == 'native'
         if backend == 'claude' and any((
             self.base_url, self.context_length, self.max_tokens, self.server_executable,
             self.model_path, self.server_command, self.api_key_env, self.load_model,
@@ -41,6 +50,8 @@ class LaunchOptions:
                 if self.base_url:
                     raise ValueError('NInfer startup allocates its port; use --base-url only when connecting')
                 values['ninfer_host'] = ''
+        if backend == 'strata' and self.server_executable:
+            raise ValueError('Strata has no server executable to name; --model-path takes its strata-<model>.json')
         for name in ('base_url', 'server_executable', 'model_path', 'api_key_env'):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip() or '\x00' in value):
@@ -70,16 +81,18 @@ class LaunchOptions:
         if self.base_url:
             base = api_base(self.base_url)
             field = {'custom': 'custom_base_url', 'llamacpp': 'llama_host',
-                     'lmstudio': 'lm_host', 'ninfer': 'ninfer_host'}[backend]
+                     'lmstudio': 'lm_host', 'ninfer': 'ninfer_host', 'strata': 'strata_host'}[backend]
             values[field] = base if backend == 'custom' else base.removesuffix('/v1')
             if backend == 'llamacpp':
                 values['llama_attach_hosts'] = []
         if self.context_length:
             if backend in ('llamacpp', 'lmstudio') and not self.load_model:
                 raise ValueError('--context-length requires --load-model for llama.cpp/LM Studio; changing context reloads the model')
-            if backend == 'ninfer' and self.server_mode != 'start':
-                raise ValueError('NInfer context is fixed at startup; use --start-server --context-length')
+            if backend in ('ninfer', 'strata') and self.server_mode != 'start':
+                # Names the backend that was asked for: a Strata refusal never says NInfer (T893).
+                raise ValueError(f'{_ENGINE_LABELS[backend]} context is fixed at startup; use --start-server --context-length')
             field = {'custom': 'custom_context_length', 'ninfer': 'ninfer_max_context',
+                     'strata': 'strata_max_context',
                      'llamacpp': 'default_context_length', 'lmstudio': 'default_context_length'}[backend]
             values[field] = self.context_length
         if self.max_tokens:
@@ -91,10 +104,10 @@ class LaunchOptions:
                 raise ValueError('Use --server-command JSON for a custom executable and its arguments')
             values['llama_executable' if backend == 'llamacpp' else 'ninfer_executable'] = self.server_executable
         if self.model_path:
-            if backend == 'ninfer':
+            if backend in ('ninfer', 'strata'):
                 if self.server_mode != 'start':
-                    raise ValueError('--model-path for NInfer requires --start-server')
-                values['ninfer_artifact'] = self.model_path
+                    raise ValueError(f'--model-path for {_ENGINE_LABELS[backend]} requires --start-server')
+                values['ninfer_artifact' if backend == 'ninfer' else 'strata_config'] = self.model_path
             elif backend == 'llamacpp':
                 if not self.load_model:
                     raise ValueError('--model-path requires --load-model for llama.cpp')
@@ -103,7 +116,7 @@ class LaunchOptions:
                     raise ValueError(f'Model file does not exist: {path}')
                 values['llama_models_dirs'] = [*settings.llama_models_dirs, str(path.parent)]
             elif backend != 'custom':
-                raise ValueError('--model-path applies to llama.cpp, NInfer or a custom command')
+                raise ValueError('--model-path applies to llama.cpp, NInfer, Strata or a custom command')
             elif not self.server_command:
                 raise ValueError('--model-path for custom requires --server-command')
         if self.api_key_env:
@@ -119,6 +132,8 @@ class LaunchOptions:
 
 
 def add_arguments(parser):
+    parser.add_argument('--codex-engine', choices=('native', 'http'),
+                        help='Invocation-only Codex loop: native app-server or LiteTUI HTTP; overrides LITETUI_CODEX_ENGINE, then saved setting (default: http)')
     parser.add_argument('--base-url', '--host', dest='base_url', help='Explicit server URL; never fall back to another endpoint')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--server-mode', choices=['auto', 'connect', 'start'], default='auto', help='auto: existing backend behavior; connect: never spawn; start: explicitly start server')
@@ -127,7 +142,7 @@ def add_arguments(parser):
     parser.add_argument('--context-length', type=int, help='Load/start context tokens; custom: declared client budget (server command must set actual context)')
     parser.add_argument('--max-tokens', type=int, help='Completion token limit for local/custom backends')
     parser.add_argument('--server-executable', help='llama-server or ninfer-serve executable')
-    parser.add_argument('--model-path', help='GGUF file, NInfer artifact, or custom command {model_path}')
+    parser.add_argument('--model-path', help='GGUF file, NInfer artifact, Strata strata-<model>.json, or custom command {model_path}')
     parser.add_argument('--server-command', help='Custom server argv as JSON array; no shell. Placeholders: {model}, {model_path}, {context_length}, {host}, {port}')
     parser.add_argument('--api-key-env', help='Custom server credential environment variable NAME (never the key)')
     parser.add_argument('--server-timeout', type=int, default=600, help='Startup/readiness timeout in seconds')
@@ -144,15 +159,22 @@ def from_args(args):
         raise ValueError('--server-command must be a JSON array of arguments') from exc
     if command is not None and not isinstance(command, list):
         raise ValueError('--server-command must be a JSON array of arguments')
+    # Resolve once at the CLI boundary: flag > environment > saved settings.
+    # Both sources use the existing invocation overlay, never a persisted edit.
+    codex_engine = args.codex_engine
+    if codex_engine is None:
+        codex_engine = os.environ.get('LITETUI_CODEX_ENGINE') or None
+        if codex_engine is not None and codex_engine not in ('native', 'http'):
+            raise ValueError('LITETUI_CODEX_ENGINE must be native or http')
     return LaunchOptions(args.base_url, args.server_mode, args.load_model, args.context_length,
                          args.max_tokens, args.server_executable, args.model_path, command,
-                         args.api_key_env, args.server_timeout)
+                         args.api_key_env, args.server_timeout, codex_engine)
 
 
 def to_argv(options):
     """Use the same public arguments for supervised and external agents."""
     args = ['--server-mode', options.server_mode, '--server-timeout', str(options.timeout)]
-    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env'):
+    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine'):
         value = getattr(options, name)
         if value is not None:
             args += ['--' + name.replace('_', '-'), str(value)]
@@ -183,7 +205,7 @@ async def _prepare(app):
     if getattr(app, '_launch_prepared', False):
         return await backend.ensure_running()
     if options.server_mode == 'start':
-        if backend.name == 'ninfer':
+        if backend.name in ('ninfer', 'strata'):     # llm_backend.ENGINE_BACKENDS
             app._system(await backend.start_engine())
         elif backend.name == 'custom':
             await start_custom(app, options)

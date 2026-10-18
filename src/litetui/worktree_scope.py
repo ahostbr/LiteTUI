@@ -2,7 +2,7 @@
 
 `tool_policy` asks this one question before it prompts an interactive seat about a
 DANGER_TABLE row: a command that runs entirely inside the tree the seat owns
-should not need a human (Ryan: "cmds inside its worktree that arent removal of the
+should not need a human (Owner: "cmds inside its worktree that arent removal of the
 tree... it should never need approval on interactive").
 
 This module only READS: it looks at `.git` files and directory listings and
@@ -43,8 +43,10 @@ text-tool programs whose whole purpose is to run a command (`git rebase -x`, `bi
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import warnings
 from pathlib import Path
 
 from litetui import scope_verbs
@@ -164,6 +166,33 @@ def own_roots(workspace: Path, seat_name: str | None) -> list[Path]:
     return roots
 
 
+def _output_scratch_bases() -> set[str]:
+    """Machine-local opt-in only; empty env explicitly disables file defaults.
+
+    The home file is shared by spawned seats even when a pane transport filters
+    environment variables. Invalid config grants no card-parent expansion.
+    """
+    name = "LITETUI_OUTPUT_SCRATCH_ROOTS"
+    try:
+        if name in os.environ:
+            values = [value for value in os.environ[name].split(os.pathsep) if value]
+        else:
+            config = Path.home() / ".litetui" / "output-roots.json"
+            try:
+                values = json.loads(config.read_text(encoding="utf-8"))["scratch_roots"]
+            except FileNotFoundError:
+                return set()
+        if not isinstance(values, list) or not all(
+            isinstance(value, str) and Path(value).expanduser().is_absolute()
+            for value in values
+        ):
+            raise ValueError("scratch_roots must be a list of absolute paths")
+        return {_real(Path(value).expanduser()) for value in values}
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        warnings.warn(f"Output scratch roots disabled: {error}", stacklevel=2)
+        return set()
+
+
 def output_context(workspace: Path, seat_name: str | None) -> tuple[list[Path], dict[str, str]]:
     """T0331 output roots: own tree/card scratch and host TEMP, not foreign cards.
 
@@ -171,12 +200,12 @@ def output_context(workspace: Path, seat_name: str | None) -> tuple[list[Path], 
     and every other effect; these roots grant no executable/destructive authority.
     """
     roots = own_roots(workspace, seat_name)
+    scratch_bases = _output_scratch_bases()
     for root in list(roots):
         parent = root.parent
-        if re.fullmatch(r"T\d+(?:-[A-Za-z0-9]+)*", parent.name, re.IGNORECASE):
-            base = parent.parent.as_posix().lower()
-            if base in {"c:/projects/.scratch", "e:/sas/shadowsandshurikens/.worktrees/_scratch"}:
-                roots.append(parent.resolve())
+        if (re.fullmatch(r"T\d+(?:-[A-Za-z0-9]+)*", parent.name, re.IGNORECASE)
+                and _real(parent.parent) in scratch_bases):
+            roots.append(parent.resolve())
     variables = {}
     for name in ("TEMP", "TMP"):
         raw = os.environ.get(name, "")

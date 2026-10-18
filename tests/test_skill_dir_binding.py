@@ -4,7 +4,7 @@ A LiteTUI/Codex seat (0be01da8, 2026-09-10 22:0x) asked for `/ls-mark`, got back
 SKILL.md VERBATIM, and read a run line pointing at `<this skill's directory>`.
 Nothing resolves that. The only skills directory the system prompt named was
 `<root>/skills` — where the REPO's own skills live, not where this one came
-from — so the seat guessed `C:/Projects/LiteTUI/skills/ls-mark/mark.py`, missed,
+from — so the seat guessed `C:/ExampleProjects/LiteTUI/skills/ls-mark/mark.py`, missed,
 and hand-searched the plugin cache across two installed versions before it could
 run a one-line tool.
 

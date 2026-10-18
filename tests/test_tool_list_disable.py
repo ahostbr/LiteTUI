@@ -32,8 +32,8 @@ this whole file.
 from __future__ import annotations
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui.app import LiteTUI
 from litetui.plugins import PluginRegistry
 from litetui.textfmt import tool_denied
 from litetui.tool_policy import READ_POLICY
@@ -108,7 +108,7 @@ def test_an_unknown_name_in_the_denylist_hides_nothing():
 # ── mechanism 2: refused at the authorization door ─────────────────────────
 
 def _app_with_probe():
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app.settings.tools_disabled = []
     app.ran = []

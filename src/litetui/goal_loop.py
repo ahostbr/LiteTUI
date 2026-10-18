@@ -50,7 +50,7 @@ class GoalState:
     no_progress_count: int = 0
     tool_profile: str = INTERACTIVE
     #: T1043: who issued the /goal (seat_authority.command_origin): "typed",
-    #: "gui", "rpc", ... Ryan's own loops are exempt from the fleet floor in his
+    #: "gui", "rpc", ... Owner's own loops are exempt from the fleet floor in his
     #: own instance; "" (a goal saved before this field) is enforced.
     started_by: str = ""
 
@@ -221,6 +221,9 @@ class GoalRuntime:
         self._evaluating = False
 
     async def on_plain_answer(self) -> None:
+        from litetui.restart_checkpoint import is_held
+        if is_held(self.app):
+            return
         if self._evaluating or getattr(self.app, "_gui_quitting", False):
             return
         state = load_goal(getattr(self.app, "convo_dir", None))
@@ -321,6 +324,9 @@ class GoalRuntime:
 
 
 def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
+    from litetui.restart_checkpoint import is_held
+    if is_held(app):
+        return  # durable goal stays selected; no new autonomous turn
     text = f"[goal {state.id}]\nObjective: {state.objective}\n{instruction}"
     if app._chat_running():
         app._user_bubble(text, False, queued=True)
@@ -493,7 +499,7 @@ def loop_command(app: Any, arg: str) -> None:
         app._system("/loop: a prompt is required after the interval")
         return
     app._materialise_convo()
-    # T1082: a loop inherits the level of the turn it was created in (Ryan: "loops
+    # T1082: a loop inherits the level of the turn it was created in (Owner: "loops
     # inherit the setting they were created on"). /loop takes no level, so a loop's
     # level is never set directly.
     level = seat_authority.loop_level(app)

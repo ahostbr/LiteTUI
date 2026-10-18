@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
 from litetui import llm_backend
 from litetui.llm_backend import (
     NO_PROJECTOR, ModelRow, is_no_projector, sibling_mmproj, write_preset_ini,
@@ -361,12 +362,11 @@ def test_none_ROUND_TRIPS_through_the_settings_the_panel_writes(tmp_path, monkey
     """
     import asyncio
 
-    from litetui import app as m
     from litetui.plugins.model_switch import ModelConfigBody, ModelConfigScreen
     from textual.widgets import Input
 
     async def body():
-        a = m.LiteTUI()
+        a = owned_app()
         a.available_models = ["m"]
         a.model_id = "m"
         a._connect = lambda: None

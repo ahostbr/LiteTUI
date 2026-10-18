@@ -23,7 +23,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from litetui import app as m
+from _owned_seat import owned_app
+
 from litetui import tool_policy
 from litetui.side_panel import DialogController, SidePanel, request_swap
 from litetui.tool_approval import (
@@ -39,7 +40,7 @@ BUTTONS = ["tool-approval-deny", "tool-approval-allow", "tool-approval-always"]
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

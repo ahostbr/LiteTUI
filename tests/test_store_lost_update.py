@@ -31,6 +31,16 @@ from litetui import router_record, row_store
 from litetui import tasks as tasks_mod
 
 
+@pytest.fixture
+def owned_store(make_app):
+    from uuid import uuid4
+
+    app = make_app()
+    destination = app._agent_session.conversation_directory(str(uuid4()))
+    destination.mkdir()
+    return destination, app._agent_session
+
+
 @pytest.fixture(autouse=True)
 def _instances_are_the_only_live_pids(monkeypatch):
     """An `_Instance` is alive until it is not, and nothing else is.
@@ -72,8 +82,9 @@ class _Instance:
     #: per test by that fixture.
     LIVE: ClassVar[set] = set()
 
-    def __init__(self, root):
+    def __init__(self, root, agent_session):
         self.root = root
+        self.agent_session = agent_session
         self.baseline: dict = {}
         self.tasks: dict = {}
         type(self)._next_pid += 1
@@ -103,10 +114,10 @@ class _Instance:
 
     def save(self):
         with self._switched_in():
-            tasks_mod.save(list(self.tasks.values()), self.root)
+            tasks_mod.save(list(self.tasks.values()), self.root, agent_session=self.agent_session)
 
     def start(self, command):
-        t = tasks_mod.new_task("bash", {"command": command}, "")
+        t = tasks_mod.new_task("bash", {"command": command}, self.root.name)
         t.owner_pid = self.pid          # this instance's process, not pytest's
         # T0132: `_owner_alive` treats the pytest process's own instance id as
         # "ours, alive", so a simulated sibling needs an instance id of its own.
@@ -125,10 +136,11 @@ def _on_disk(root):
 # ── the cross-instance overwrite ─────────────────────────────────────────
 
 
-def test_a_second_instance_does_not_erase_the_first_instances_rows(tmp_path):
+def test_a_second_instance_does_not_erase_the_first_instances_rows(owned_store):
     """THE CARD'S REPRODUCTION, from the T688 F+G commit body: A adds `task-A`
     and saves; B, which booted earlier, adds `task-B`; the file held only B's."""
-    a, b = _Instance(tmp_path).boot(), _Instance(tmp_path).boot()
+    tmp_path, agent_session = owned_store
+    a, b = _Instance(tmp_path, agent_session).boot(), _Instance(tmp_path, agent_session).boot()
 
     task_a = a.start("a")
     task_b = b.start("b")
@@ -136,11 +148,12 @@ def test_a_second_instance_does_not_erase_the_first_instances_rows(tmp_path):
     assert set(_on_disk(tmp_path)) == {task_a.id, task_b.id}
 
 
-def test_the_writers_own_transition_reaches_disk(tmp_path):
+def test_the_writers_own_transition_reaches_disk(owned_store):
     """THE DISCRIMINATOR. Without it the arm above is satisfied by a save that
     keeps disk verbatim for every id — which would freeze every task at the
     state it was first written with, a worse store than the one we have."""
-    a = _Instance(tmp_path).boot()
+    tmp_path, agent_session = owned_store
+    a = _Instance(tmp_path, agent_session).boot()
     t = a.start("x")                                   # running
 
     tasks_mod.finish(t, "ok", True, tmp_path)
@@ -149,16 +162,17 @@ def test_the_writers_own_transition_reaches_disk(tmp_path):
     assert _on_disk(tmp_path)[t.id].state == tasks_mod.DONE
 
 
-def test_a_stale_copy_of_a_row_we_never_touched_does_not_overwrite_it(tmp_path):
+def test_a_stale_copy_of_a_row_we_never_touched_does_not_overwrite_it(owned_store):
     """🔴 THE ARM THAT SEPARATES A DELTA FROM A MERGE, and the one a merge-by-id
     fails. B boots while A's task is running, A finishes it, then B saves for a
     reason of its own. B still holds the `running` copy it read at boot — and
     it did not change that row, so it must have no opinion about it.
     """
-    a = _Instance(tmp_path).boot()
+    tmp_path, agent_session = owned_store
+    a = _Instance(tmp_path, agent_session).boot()
     task_a = a.start("a")
 
-    b = _Instance(tmp_path).boot()                     # B sees it running
+    b = _Instance(tmp_path, agent_session).boot()                     # B sees it running
     assert task_a.id in b.tasks
 
     tasks_mod.finish(task_a, "ok", True, tmp_path)
@@ -173,11 +187,12 @@ def test_a_stale_copy_of_a_row_we_never_touched_does_not_overwrite_it(tmp_path):
     assert len(after) == 2
 
 
-def test_a_row_we_hold_is_not_written_twice(tmp_path):
+def test_a_row_we_hold_is_not_written_twice(owned_store):
     """A delta applied by position rather than by id duplicates instead of
     updating, and a duplicate is invisible to `load` — the dict swallows it —
     so this asserts on the FILE."""
-    a = _Instance(tmp_path).boot()
+    tmp_path, agent_session = owned_store
+    a = _Instance(tmp_path, agent_session).boot()
     t = a.start("x")
     a.save()
 
@@ -185,12 +200,13 @@ def test_a_row_we_hold_is_not_written_twice(tmp_path):
     assert [r["id"] for r in rows] == [t.id]
 
 
-def test_an_unreadable_store_still_writes_our_own_rows(tmp_path):
+def test_an_unreadable_store_still_writes_our_own_rows(owned_store):
     """The fix adds a READ to a path that previously only wrote. A store that
     cannot be parsed must not take the save down with it: losing the history is
     survivable, losing the row for the task running right now is not."""
+    tmp_path, agent_session = owned_store
     (tmp_path / tasks_mod.STORE).write_text("{ this is not json", encoding="utf-8")
-    a = _Instance(tmp_path).boot()
+    a = _Instance(tmp_path, agent_session).boot()
 
     t = a.start("x")
 
@@ -200,20 +216,21 @@ def test_an_unreadable_store_still_writes_our_own_rows(tmp_path):
 # ── LOST belongs to the owner's death, not to our boot ───────────────────
 
 
-def test_a_running_row_whose_owner_is_ALIVE_is_not_marked_lost(tmp_path):
+def test_a_running_row_whose_owner_is_ALIVE_is_not_marked_lost(owned_store):
     """THE USER'S TWO WINDOWS, and the defect this half of the card is for: B
     booting must not report A's in-flight task as killed. Before the owner pid
     every boot stamped every running row, whoever owned it."""
-    a = _Instance(tmp_path).boot()
+    tmp_path, agent_session = owned_store
+    a = _Instance(tmp_path, agent_session).boot()
     t = a.start("sleep 900")
 
-    b = _Instance(tmp_path).boot()
+    b = _Instance(tmp_path, agent_session).boot()
 
     assert b.tasks[t.id].state == tasks_mod.RUNNING
     assert _on_disk(tmp_path)[t.id].state == tasks_mod.RUNNING
 
 
-def test_a_running_row_whose_owner_QUIT_is_marked_lost(tmp_path):
+def test_a_running_row_whose_owner_QUIT_is_marked_lost(owned_store):
     """The original truth, which had to survive the fix: the child sits in the
     owner's kill-on-close Job Object, so when that process went, the work went.
 
@@ -221,7 +238,8 @@ def test_a_running_row_whose_owner_QUIT_is_marked_lost(tmp_path):
     proves the branch; this proves the SEQUENCE the user would actually perform —
     start a task in one window, close that window, open another.
     """
-    a = _Instance(tmp_path).boot()
+    tmp_path, agent_session = owned_store
+    a = _Instance(tmp_path, agent_session).boot()
     t = a.start("sleep 900")
     a.quit()
 
@@ -229,7 +247,7 @@ def test_a_running_row_whose_owner_QUIT_is_marked_lost(tmp_path):
     assert back.state == tasks_mod.LOST and back.ended is not None
 
 
-def test_the_lost_stamping_reaches_DISK_and_is_not_only_in_memory(tmp_path, monkeypatch):
+def test_the_lost_stamping_reaches_DISK_and_is_not_only_in_memory(owned_store, monkeypatch):
     """The stamping is a change this instance made, so it belongs in its delta.
 
     ⚠️ THIS IS THE ARM FOR THE ORDER `tasks.load` TAKES ITS BASELINE IN. Taken
@@ -237,24 +255,26 @@ def test_the_lost_stamping_reaches_DISK_and_is_not_only_in_memory(tmp_path, monk
     empty, and LOST would be recomputed on every boot forever while the file
     still said `running` — green everywhere, wrong on disk.
     """
+    tmp_path, agent_session = owned_store
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: False)
-    a = _Instance(tmp_path).boot()
+    a = _Instance(tmp_path, agent_session).boot()
     t = a.start("sleep 900")
 
-    b = _Instance(tmp_path).boot()           # B boots, owner is gone
+    b = _Instance(tmp_path, agent_session).boot()           # B boots, owner is gone
     b.save()
 
     rows = json.loads((tmp_path / tasks_mod.STORE).read_text(encoding="utf-8"))
     assert [r["state"] for r in rows if r["id"] == t.id] == [tasks_mod.LOST]
 
 
-def test_a_row_written_before_this_change_keeps_TODAYS_answer(tmp_path, monkeypatch):
+def test_a_row_written_before_this_change_keeps_TODAYS_answer(owned_store, monkeypatch):
     """No pid on the row means no claim about an owner, and the honest fallback
     is the behaviour that shipped: assume it died with the app that wrote it.
     The `pid_is_live` stub returning True proves the row is not merely taking
     the live branch by accident."""
+    tmp_path, agent_session = owned_store
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: True)
-    a = _Instance(tmp_path).boot()
+    a = _Instance(tmp_path, agent_session).boot()
     t = a.start("sleep 900")
 
     p = tmp_path / tasks_mod.STORE
@@ -275,7 +295,7 @@ def test_the_owner_pid_is_THIS_process() -> None:
     assert tasks_mod.new_task("bash", {"command": "x"}, "").owner_pid == os.getpid()
 
 
-def test_a_row_carrying_OUR_OWN_pid_is_marked_lost(tmp_path, monkeypatch):
+def test_a_row_carrying_OUR_OWN_pid_is_marked_lost(owned_store, monkeypatch):
     """🔴 OUR PID ON A ROW WE FIND AT BOOT MEANS THE PID WAS REUSED.
 
     `load` runs once, from `__init__`, before this process has started any
@@ -287,15 +307,16 @@ def test_a_row_carrying_OUR_OWN_pid_is_marked_lost(tmp_path, monkeypatch):
     `running` for the life of this instance, and again on every future boot
     that drew the same pid. (Sentinel, 94cedaec.)
     """
+    tmp_path, agent_session = owned_store
     import os
 
     monkeypatch.setattr(router_record, "pid_is_live", lambda pid: True)
-    t = tasks_mod.new_task("bash", {"command": "sleep 900"}, "")
+    t = tasks_mod.new_task("bash", {"command": "sleep 900"}, tmp_path.name)
     assert t.owner_pid == os.getpid(), "the arm is not testing what it claims"
     # T0132: a row of THIS instance is alive (bind reloads mid-session); a reused
     # pid is our pid on a row from ANOTHER instance.
     t.owner_instance = "a-predecessor-that-held-this-pid"
-    tasks_mod.save([t], tmp_path)
+    tasks_mod.save([t], tmp_path, agent_session=agent_session)
 
     assert _on_disk(tmp_path)[t.id].state == tasks_mod.LOST
 

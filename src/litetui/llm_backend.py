@@ -1382,6 +1382,20 @@ class LlamaCppBackend(_VramGate):
         rows.sort(key=lambda r: r.key)
         return rows
 
+    def subagent_model_states(self) -> dict[str, str]:
+        """Read-only admission evidence; never ensure_running or load."""
+        if self._probe_shape() == _SHAPE_SINGLE:
+            # A server started with --sleep-idle-seconds drops its weights when idle
+            # and reloads them on the next request; /props then says is_sleeping.
+            # (From llama.cpp's server documentation as remembered, NOT read from a
+            # live server.) A server with no such field is not sleeping.
+            state = self._single_state()
+            if state is None:
+                return {}
+            return {state[0]: 'unloaded' if state[1].get('is_sleeping') else 'loaded'}
+        return {key: info.get('status', {}).get('value', 'unknown')
+                for key, info in self._server_models().items()}
+
     def _server_models(self) -> dict[str, dict]:
         try:
             data = _http_json(f"{self.host()}/models")
@@ -1939,6 +1953,20 @@ class LMStudioBackend(_VramGate):
                 return int(m.get("max_context_length") or 0) or None, m.get("type"), False
         return None
 
+    def subagent_model_states(self) -> dict[str, str]:
+        """Live native state retains loading, which loaded_models omits."""
+        states = {}
+        for row in self._native_models():
+            key = row.get('id')
+            if not key:
+                continue
+            state = row.get('state') or (row.get('status') or {}).get('value')
+            if state is None:
+                state = 'loaded' if row.get('loaded_context_length') else 'unknown'
+            # LM Studio's word for a downloaded model that is not resident.
+            states[key] = 'unloaded' if state == 'not-loaded' else state
+        return states
+
     def loaded_models(self) -> list[str]:
         """Ids LM Studio has RESIDENT right now. Read-only, starts no load.
 
@@ -2259,12 +2287,16 @@ BACKENDS: tuple[tuple[str, str], ...] = (
     ("lmstudio", "LM Studio desktop"),
     ("llamacpp", "llama.cpp (our own llama-server)"),
     ("ninfer", "NInfer (NVFP4 5090 engine)"),
+    ("strata", "Strata (Qwen3.8-Flash-Next, GPU + system RAM)"),
     ("codex", "Codex (OAuth subscription)"),
     ("claude", "Claude Agent"),
     ("cline", "ClinePass (Cline subscription)"),
     ("free", "Free tier (no-cost models: Cline, Kilo, OVH, + keyed)"),
 )
 BACKEND_NAMES: tuple[str, ...] = tuple(name for name, _ in BACKENDS)
+#: The backends whose engine is ONE process LiteTUI may start and stop (`/engine`,
+#: `gui.engine.*`, `--start-server`): engine_lifecycle.OwnedEngineLifecycle subclasses.
+ENGINE_BACKENDS: frozenset[str] = frozenset({"ninfer", "strata"})
 
 
 def backend_label(name: str) -> str:
@@ -2352,6 +2384,10 @@ def _make_backend(settings):
         # the codex import is lazy one branch up.
         from litetui.ninfer_backend import NInferBackend
         return NInferBackend(settings)
+    if settings.backend == "strata":
+        # Lazy for the same reason as NInfer: a broken import must not stop the others booting.
+        from litetui.strata_backend import StrataBackend
+        return StrataBackend(settings)
     if settings.backend != "lmstudio":
         raise BackendError(
             f"That backend is unavailable. Choose one of {', '.join(BACKEND_NAMES)}; "

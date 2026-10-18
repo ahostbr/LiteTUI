@@ -15,6 +15,8 @@ ticking are both first-class:
 
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 from textual import events, on
 from textual.containers import Horizontal
 from textual.message import Message
@@ -56,7 +58,7 @@ class NumberTicker(Horizontal):
 
     def compose(self):
         yield Button("−", classes="tick-down")
-        yield Input(value=self._fmt(self._value), id=None, classes="tick-value")
+        yield HostedInput(value=self._fmt(self._value), id=None, classes="tick-value")
         yield Button("+", classes="tick-up")
 
     # -- value ------------------------------------------------------------

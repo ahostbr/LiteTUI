@@ -15,6 +15,7 @@ name = "litetui"
 # src/version.py is the single source; see [tool.setuptools.dynamic] below.
 dynamic = ["version"]
 description = "TUI chat client for LM Studio with image support"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "textual>=0.89.0",

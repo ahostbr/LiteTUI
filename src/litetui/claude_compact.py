@@ -35,7 +35,7 @@ import uuid
 
 from rich.text import Text
 
-from litetui import claude_cache
+from litetui import claude_cache, owner_mode
 from litetui.claude_backend import COMPACT_MARKER
 from litetui.claude_turn import (
     effort_for,
@@ -51,7 +51,7 @@ COMPACT_COLD = ("Compacting ends this Claude session: Claude writes a summary, a
                 "message is read at full input price.")
 
 
-def request(extra: str = "", *, app=None) -> str:
+def request(extra: str = "", owner_dir=None, *, app=None) -> str:
     """LiteTUI's compaction instructions, whole, as the marked request Claude's system
     prompt declares genuine (claude_backend.APPEND).
 
@@ -65,6 +65,13 @@ def request(extra: str = "", *, app=None) -> str:
     compact_text = (prompt_overrides.text_for(app, "compact.md", fresh=True) if app is not None
                     else prompt_overrides.read_text(paths.prompt_file("compact.md")))
 
+    if owner_dir is not None:
+        # Owner mode: STEP 1 is the owner folder's NOW.md rewrite and DOMAIN.md append.
+        return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
+                f"Write/Edit tools on NOW.md and DOMAIN.md in your owner memory folder, then reply with "
+                f"STEP 2's summary; that reply becomes the notes the next session starts from.\n\n"
+                f"{owner_mode.compact_prompt(owner_dir).strip()}"
+                + (f"\n\n{extra}" if extra else ""))
     return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
             f"Write/Edit tools on the store files your system prompt names, then reply with STEP 2's "
             f"summary; that reply becomes the notes the next session starts from.\n\n{compact_text.strip()}"
@@ -79,7 +86,12 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     app._claude_compact_resume = None
     if resume is not None and not resume_current(app, resume):
         resume = None
-    prompt = request(extra, app=app)
+    owner_dir = getattr(app, "_owner_memory_dir", None)
+    owner_t0 = None
+    if owner_dir is not None:
+        # Recorded by LiteTUI._compact at entry; a direct caller gets "now".
+        owner_t0 = getattr(app, "_owner_compact_t0", None) or time.time_ns()
+    prompt = request(extra, owner_dir, app=app)
     from litetui.claude_backend import settle_close
     from litetui.widgets import CompactionCard, ToolMessage
 
@@ -135,6 +147,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
 
     summary = ""
     failure = None
+    owner_failure = None  # why NOW.md was not committed, once the retry is spent
     tools: dict[str | None, ToolMessage] = {}
     writes = []
     try:
@@ -144,55 +157,76 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         session, bridge, normalizer = await session_for(app, backend, segment, effort_for(app))
         if session.session_id and not segment.get("session_id"):
             segment = ledger.bind_session(segment["id"], session.session_id)
-        await session.query(f"compact-{uuid.uuid4().hex}", prompt)
-        texts = {}
-        terminal = False
-        async for message in session.events():
-            if app._stop_requested:
-                bridge.stop()
-                await session.interrupt()
-            for event in normalizer.push(message):
-                if event.kind in {"text_delta", "message"}:
-                    card.thinking_done()
-                    key = event.message_id or "current"
-                    if event.kind == "message" and event.reconcile != "append":
-                        texts[key] = event.text
-                    else:
-                        texts[key] = texts.get(key, "") + event.text
-                    # The summary is the LAST message; earlier ones narrate tool use.
-                    summary = list(texts.values())[-1]
-                    card.body.content = Text(summary + " ▌")
-                    card.set_status(f"summary {len(summary):,} chars")
-                    app._scroll_down()
-                elif event.kind == "thinking_delta":
-                    card.think(event.text)
-                elif event.kind in {"tool_use", "tool_result"}:
-                    card.thinking_done()
-                    msg = tools.get(event.tool_id)
-                    if msg is None:
-                        msg = tools[event.tool_id] = ToolMessage("Claude · " + (event.tool_name or "tool"))
-                        card.add_tool(msg)
-                    if event.kind == "tool_use" and event.tool_input is not None:
-                        msg.set_args(json.dumps(event.tool_input))
-                        path = (event.tool_input or {}).get("file_path") or (event.tool_input or {}).get("path")
-                        if event.complete and path and any(w in (event.tool_name or "").lower() for w in ("write", "edit")):
-                            writes.append(str(path))
-                    elif event.kind == "tool_result":
-                        msg.set_result(str(event.tool_result), not event.is_error)
-                elif event.kind == "usage" and event.usage and event.usage.source == "message":
-                    clock = claude_cache.clock_for(app, segment["id"])
-                    if clock.observe(event.usage) and clock.used_at is not None:
-                        ledger.note_cache(segment["id"], clock.used_at, app.model_id)
-                elif event.kind == "error":
-                    failure = event.detail or "Claude reported an error"
-                elif event.kind == "result":
-                    terminal = True
-                    if event.is_error:
-                        failure = event.detail or event.text or failure or "Claude compaction turn failed"
-                    elif event.text:
-                        summary = event.text   # the turn's final answer: authoritative
-        if not terminal:
-            failure = "Claude summary ended without a terminal result; no continuation was admitted"
+        async def turn(text: str) -> None:
+            """One query and its events; sets `summary` / `failure`. A retry reuses it."""
+            nonlocal summary, failure
+            await session.query(f"compact-{uuid.uuid4().hex}", text)
+            texts = {}
+            terminal = False
+            async for message in session.events():
+                if app._stop_requested:
+                    bridge.stop()
+                    await session.interrupt()
+                for event in normalizer.push(message):
+                    if event.kind in {"text_delta", "message"}:
+                        card.thinking_done()
+                        key = event.message_id or "current"
+                        if event.kind == "message" and event.reconcile != "append":
+                            texts[key] = event.text
+                        else:
+                            texts[key] = texts.get(key, "") + event.text
+                        # The summary is the LAST message; earlier ones narrate tool use.
+                        summary = list(texts.values())[-1]
+                        card.body.content = Text(summary + " ▌")
+                        card.set_status(f"summary {len(summary):,} chars")
+                        app._scroll_down()
+                    elif event.kind == "thinking_delta":
+                        card.think(event.text)
+                    elif event.kind in {"tool_use", "tool_result"}:
+                        card.thinking_done()
+                        msg = tools.get(event.tool_id)
+                        if msg is None:
+                            msg = tools[event.tool_id] = ToolMessage("Claude · " + (event.tool_name or "tool"))
+                            card.add_tool(msg)
+                        if event.kind == "tool_use" and event.tool_input is not None:
+                            msg.set_args(json.dumps(event.tool_input))
+                            path = (event.tool_input or {}).get("file_path") or (event.tool_input or {}).get("path")
+                            if event.complete and path and any(w in (event.tool_name or "").lower() for w in ("write", "edit")):
+                                writes.append(str(path))
+                        elif event.kind == "tool_result":
+                            msg.set_result(str(event.tool_result), not event.is_error)
+                    elif event.kind == "usage" and event.usage and event.usage.source == "message":
+                        clock = claude_cache.clock_for(app, segment["id"])
+                        if clock.observe(event.usage) and clock.used_at is not None:
+                            ledger.note_cache(segment["id"], clock.used_at, app.model_id)
+                    elif event.kind == "error":
+                        failure = event.detail or "Claude reported an error"
+                    elif event.kind == "result":
+                        terminal = True
+                        if event.is_error:
+                            failure = event.detail or event.text or failure or "Claude compaction turn failed"
+                        elif event.text:
+                            summary = event.text   # the turn's final answer: authoritative
+            if not terminal:
+                failure = "Claude summary ended without a terminal result; no continuation was admitted"
+
+        await turn(prompt)
+        if owner_t0 is not None and not failure and summary.strip() and not app._stop_requested:
+            # Owner mode: before the session is closed or anything truncated, did the
+            # seat rewrite NOW.md, and did `owner-handoff` commit it? Never for an empty
+            # summary (the compaction is about to be reported failed) and never after Stop.
+            passed, why = await app._owner_gate(owner_t0)
+            if not passed and not app._stop_requested:
+                owner_failure, first_summary = why, summary
+                app._system(f"NOW.md was not saved ({why}); asking Claude once more.")
+                card.set_status("NOW.md was not committed; asking once more")
+                await turn(owner_mode.retry_text(why, owner_dir))
+                if failure:
+                    owner_failure = f"{why} (the retry turn failed: {failure})"
+                    failure, summary = None, first_summary
+                else:
+                    passed, why = await app._owner_gate(owner_t0)
+                    owner_failure = None if passed else why
         card.thinking_done()
         selected = ledger.selected
         if (app.backend is not backend or app.convo_id != conversation_id
@@ -283,6 +317,8 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 + (f" · persisted: {', '.join(dict.fromkeys(writes))}" if writes else ""))
     app._system(f"Compacted: Claude session {old_session} closed. Your next message starts a fresh "
                 f"Claude session (same model and effort) carrying the summary. Scrollback is untouched.")
+    if owner_failure:
+        app._system(owner_mode.not_committed_note(owner_failure))
     if app.settings.clear_screen_after_compact:
         app._clear_screen(note="Compacted into a summary; the next message starts a fresh Claude session "
                                "carrying it. The full transcript is still on disk in this conversation's file.")

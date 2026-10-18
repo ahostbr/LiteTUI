@@ -35,7 +35,7 @@ async def run_for_app(app, spec, process, *, registry, inbox, receipts, parent,
         receipts.replay_from_inbox(parent, inbox=inbox, registry=registry)
 
     # T1049-B: the child's CONFIRMs come back to THIS parent (plan §5, gate
-    # d47235da): a human's keypress is never timed out, at Ryan's own parent AND at
+    # d47235da): a human's keypress is never timed out, at Owner's own parent AND at
     # a hand-launch modal (Dijkstra H1, 18be505a); a locked parent asks its spawner.
     # The child waits as long as its parent will.
     from litetui import approval_relay, seat_authority

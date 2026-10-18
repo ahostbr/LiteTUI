@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import app as m  # noqa: E402
 from litetui import harness, textfmt, tool_approval, tool_policy  # noqa: E402
+from _owned_seat import owned_app
 
 
 @pytest.fixture(autouse=True)
@@ -38,19 +39,23 @@ def disposable_presence(tmp_path, monkeypatch):
 
 
 def _registered_parent(a, parent):
+    (harness.AGENTS_DIR / f"{parent}.json").write_text(
+        json.dumps({"agent_id": parent, "spawned_by": None}), encoding="utf-8")
     a.seat.registered = True
     (harness.AGENTS_DIR / f"{a.seat.agent_id}.json").write_text(
         json.dumps({"agent_id": a.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
 
 
 def make_app(rpc: bool = False):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a.bg_tasks = {}
     a._rpc = rpc
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(a, harness.AGENTS_DIR / a.seat.agent_id, actual_edit=True)
     a.emitted: list = []
     a._rpc_emit = a.emitted.append
     return a
@@ -166,7 +171,7 @@ async def test_execute_tool_CHOOSES_the_wire_when_rpc_is_set(monkeypatch) -> Non
     assert "denied by user" in text.lower(), (
         "a real Deny on the wire must read as the human refusal it is"
     )
-    assert a._stop_requested, "DENY still stops the turn (Ryan, 2026-08-24)"
+    assert a._stop_requested, "DENY still stops the turn (Owner, 2026-08-24)"
 
 
 @pytest.mark.asyncio

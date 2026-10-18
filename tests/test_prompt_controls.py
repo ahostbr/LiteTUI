@@ -1,5 +1,6 @@
 import pytest
 from textual.app import App
+from _owned_seat import owned_app
 from litetui.input_controls import PromptBox
 
 
@@ -13,7 +14,7 @@ class Demo(App):
 
 
 @pytest.mark.asyncio
-async def test_controls_share_input_border_and_click():
+async def test_controls_share_input_border_and_click(tmp_path):
     from litetui.app import LiteTUI
     class StyledDemo(Demo):
         CSS = LiteTUI.CSS
@@ -36,7 +37,7 @@ async def test_controls_share_input_border_and_click():
         for selector, result in [('#scroll-lock','lock'), ('.mic-button','mic'), ('.pause-button','pause')]:
             assert await pilot.click(selector)
             assert app.clicked == result
-        app.save_screenshot('prompt-controls.svg', path='C:/Projects/LiteTUI/artifacts')
+        app.save_screenshot('prompt-controls.svg', path=str(tmp_path))
 
 
 def test_unlock_rejects_even_reader_acted_scroll():
@@ -140,7 +141,7 @@ def test_long_speech_uses_file_not_windows_command_line(monkeypatch):
     monkeypatch.setattr(voice.optional_python, 'resolve', lambda *m: sys.executable)
     monkeypatch.setattr(voice.subprocess, 'Popen', launch)
     monkeypatch.setattr(voice.threading, 'Thread', Thread)
-    assert voice.speak('hello ' * 10000, timeout=450)
+    assert voice.speak('hello ' * 10000, timeout=450, litesuite_first=False)
     assert len(captured['args']) == 2
     assert 'hello ' * 9999 in captured['script']
     assert captured['timeout'] == 450
@@ -158,7 +159,7 @@ async def test_actual_app_prompt_controls(tmp_path, monkeypatch):
     monkeypatch.setattr(LiteTUI, '_mcp_connect', lambda self: None)
     monkeypatch.setattr(plugins, 'activate_plugins', lambda *args: None)
     monkeypatch.setattr(hook_host, 'queue_lifecycle', lambda *args: None)
-    app = LiteTUI()
+    app = owned_app()
     async with app.run_test(size=(120, 35)) as pilot:
         await pilot.pause(0.2)
         assert len(app.query(MicButton)) == 1
@@ -174,7 +175,7 @@ async def test_actual_app_prompt_controls(tmp_path, monkeypatch):
         assert app.settings.autoscroll is not initial
         assert await pilot.click('.pause-button')
         assert app.paused
-        app.save_screenshot('actual-app-prompt-controls.svg', path='C:/Projects/LiteTUI/artifacts')
+        app.save_screenshot('actual-app-prompt-controls.svg', path=str(tmp_path))
 
 
 def test_mic_and_pause_tooltips_track_state():

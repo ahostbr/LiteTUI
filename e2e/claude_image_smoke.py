@@ -17,6 +17,13 @@ os.environ["LITETUI_NO_HARNESS"] = "1"
 
 from PIL import Image  # noqa: E402
 
+try:
+    from e2e._owned_app import owned_session, configure_owned_app
+except ModuleNotFoundError as exc:
+    if exc.name != "e2e":
+        raise
+    from _owned_app import owned_session, configure_owned_app
+
 from litetui import app as app_mod  # noqa: E402
 from litetui import paths, settings  # noqa: E402
 
@@ -39,39 +46,36 @@ def two_colour_png():
 
 async def main():
     with tempfile.TemporaryDirectory(prefix="litetui-claude-image-") as directory:
-        paths.CONVO_DIR = Path(directory) / "convos"
-        settings.settings_path = lambda root=None: Path(directory) / "settings.json"
-        original_load = settings.load
         cfg = settings.Settings(backend="claude", backend_chosen=True, default_model="default",
             skills_enabled=False, mcp_enabled=False, tools_enabled=True,
             autocompact_enabled=False, wake_after_compact=False)
-        settings.load = lambda *a, **k: cfg
-        app = app_mod.LiteTUI()
-        settings.load = original_load
-        emitted = []
-        app._rpc_emit = emitted.append
-        async with app.run_test(size=(125, 42)) as pilot:
-            await settle(app, pilot)
-            assert app.backend.name == "claude", app.backend.name
-            app.pending_image = two_colour_png()
-            app._submit_text("What colour is the left half of this image, and what colour is the right half? "
-                             "Answer as: LEFT=<colour> RIGHT=<colour>", False)
-            await settle(app, pilot)
-            sent = app._claude_ledger.selected["entries"][-1]["content"]
-            saved = sorted((app.convo_dir / "images").glob("*.png"))
-            answer = app.conversation[-1].get("content") or ""
-            out = Path("artifacts")
-            out.mkdir(exist_ok=True)
-            app.save_screenshot(filename="claude-image-smoke.svg", path=str(out.resolve()))
-            report = {"sent_to_claude": sent, "saved": [str(p) for p in saved], "answer": answer,
-                      "tool_events": [e for e in emitted if "tool" in str(e.get("type", ""))][:10],
-                      "turn_end": [e for e in emitted if e.get("type") == "turn_end"]}
-            (out / "claude-image-smoke.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-            print(json.dumps({k: report[k] for k in ("sent_to_claude", "saved", "answer")}, indent=1))
-            assert isinstance(sent, str) and str(saved[0]) in sent, sent
-            assert len(saved) == 1, saved
-            assert "red" in answer.lower() and "blue" in answer.lower(), answer
-            print("PASS Claude opened the attached image by its path and named both colours")
+        with owned_session(directory, cfg) as session:
+            app = app_mod.LiteTUI(agent_session=session)
+            configure_owned_app(app)
+            emitted = []
+            app._rpc_emit = emitted.append
+            async with app.run_test(size=(125, 42)) as pilot:
+                await settle(app, pilot)
+                assert app.backend.name == "claude", app.backend.name
+                app.pending_image = two_colour_png()
+                app._submit_text("What colour is the left half of this image, and what colour is the right half? "
+                                 "Answer as: LEFT=<colour> RIGHT=<colour>", False)
+                await settle(app, pilot)
+                sent = app._claude_ledger.selected["entries"][-1]["content"]
+                saved = sorted((app.convo_dir / "images").glob("*.png"))
+                answer = app.conversation[-1].get("content") or ""
+                out = Path("artifacts")
+                out.mkdir(exist_ok=True)
+                app.save_screenshot(filename="claude-image-smoke.svg", path=str(out.resolve()))
+                report = {"sent_to_claude": sent, "saved": [str(p) for p in saved], "answer": answer,
+                          "tool_events": [e for e in emitted if "tool" in str(e.get("type", ""))][:10],
+                          "turn_end": [e for e in emitted if e.get("type") == "turn_end"]}
+                (out / "claude-image-smoke.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+                print(json.dumps({k: report[k] for k in ("sent_to_claude", "saved", "answer")}, indent=1))
+                assert isinstance(sent, str) and str(saved[0]) in sent, sent
+                assert len(saved) == 1, saved
+                assert "red" in answer.lower() and "blue" in answer.lower(), answer
+                print("PASS Claude opened the attached image by its path and named both colours")
 
 
 if __name__ == "__main__":

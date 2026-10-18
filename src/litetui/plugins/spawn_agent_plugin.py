@@ -18,8 +18,8 @@ def capture_launch(app, request):
     depth = require_root_launcher()
     profile = getattr(app, '_active_tool_profile', None) or app.settings.tool_policy_profile
     # T1049-B2: an interactive parent may spawn when its child's CONFIRMs have
-    # somewhere to go (collect_turn -> approve_for_child): Ryan's own UI, its own
-    # supervising host, its spawner, or Ryan's hand-launched modal. Only a parent
+    # somewhere to go (collect_turn -> approve_for_child): Owner's own UI, its own
+    # supervising host, its spawner, or Owner's hand-launched modal. Only a parent
     # an agent launched without naming itself has none.
     from litetui import seat_authority
     if profile != 'autonomous' and seat_authority.confirm_route(app) == 'refuse':

@@ -30,7 +30,7 @@ or non-NInfer engine operations are errors, not successful no-ops. Positive
 model/engine operations require separate runtime authorization and validation.
 
 A terminal chat client and agent harness for **local** LLMs. Textual TUI,
-streaming, tool use, vision, per-conversation memory, and compaction.
+streaming, tool use, vision, per-agent memory, and compaction.
 
 **Two engines, one seam** (`src/litetui/llm_backend.py`): [LM Studio](https://lmstudio.ai)'s
 desktop server, or LiteTUI's own `llama-server` from llama.cpp. Switch between
@@ -56,6 +56,34 @@ model switch cannot quietly fill 32 GB of VRAM. The router's model list is
 generated: LiteSuite's install dir, LM Studio's dirs, the HuggingFace cache and
 any custom roots, deduplicated, with voice and embedding GGUFs filtered out by
 the file's own `general.architecture` header rather than by guessing from names.
+
+## Seat-scoped MCP servers
+
+Use `litetui --mcp-servers none` for a scout/doc seat with no project MCP
+servers, or `--mcp-servers SOTS_MCP_CORE,VibeUE` for an exact named set.
+The default is `all`. This is invocation-only: it never rewrites `.mcp.json`
+or shared settings. Unknown selected names produce a startup warning rather
+than silently looking like an empty tool set. Native Codex receives process-local config overrides for
+project registrations; unrelated global Codex servers are outside this scope.
+
+Host-managed stdio servers start lazily by default. `/mcp` shows **not started
+(lazy)** until `tool_search` loads one of their tools or a tool is called.
+After the first real connection, names and schemas are cached in
+`.mcp-tool-cache/` under the data root, keyed by launch config and executable/
+argument-file timestamps. A cold or invalidated cache has no tool names yet:
+an unmatched keyword `tool_search` discovers enabled cold servers on demand,
+then answers from their live tools. This can start multiple cold servers once,
+since their tool keywords are unknowable until discovery. An exact server-name
+query or `select:mcp__server__tool` limits discovery to that server. Empty tool
+lists remain cold. Parallel first calls wait behind startup/maintenance rather
+than failing busy. HTTP servers retain their existing startup.
+`--mcp-start eager` restores eager host startup.
+
+Native Codex owns its direct MCP processes and fixed thread inventory; host
+lazy-start/cache does **not** defer those native registrations. Seat selection
+works there, but an included native server may still start at thread open.
+There is no automatic idle stop. Disconnect/reconnect are explicit lifecycle
+operations; no live project-server or RAM benchmark is implied by this feature.
 
 ## llama.cpp speculative decoding (opt-in)
 
@@ -191,16 +219,28 @@ C:\shots\screen.png what is the error in this dialog?
 
 ## Conversations
 
-Every conversation gets a directory:
+Every launch opens an **agent home**, and every conversation lives inside one:
 
 ```
-.convos/<uuid>/
-    convo.jsonl    append-only transcript
+.agents/<Name>/
+    settings.json  the agent's backend, model and thinking level
     memory.md      an INDEX the agent maintains
     soul.md        who it is here: preferences, standing corrections
     handoff.md     in flight / owed / absent-by-decision / caveats
     memories/      the memories themselves, one file per idea
+    conversations/<uuid>/
+        convo.jsonl    append-only transcript
+        settings.json  this conversation's contextual settings
 ```
+
+A plain `litetui` launch opens the agent named `LiteTUI` by default (your seat
+name, when you have set one); if that home is busy, the launch gets its own,
+`LiteTUI-<8 hex>`. `/resume` picks an agent first. Memory, soul and handoff
+belong to the agent and are shared by all of its conversations.
+
+Upgrading from 0.25.0: conversations saved under `.convos/<uuid>/` stay on disk
+as a **read-only archive**. They are not migrated and cannot be continued;
+`litetui --convo <old id>` explains how to export one (`--export-conversation`).
 
 The agent is told its own uuid and absolute path in the system prompt, and
 `memory.md`, `soul.md` and `handoff.md` are injected **once**, into the system
@@ -234,8 +274,8 @@ raw history stays on disk behind the marker.
 |---|---|
 | `/new` `/clear` | start a new conversation (new folder on disk) |
 | `/system <text>` | set the system prompt |
-| `/model [n\|name]` | show or switch this conversation's model; startup defaults stay unchanged |
-| `/backend [--default] [name]` | switch this conversation's backend; only `--default` also changes the startup default |
+| `/model [n\|name]` | show or switch the agent's model; startup defaults stay unchanged |
+| `/backend [--default] [name]` | switch the agent's backend; only `--default` also changes the startup default |
 | `/load` `/unload` | put a model into memory, or free it |
 | `/modelcfg` | per-model Info / Load / Inference screen (see below) |
 | `/think [level]` | `off · minimal · low · medium · high · xhigh · unset` |
@@ -367,20 +407,25 @@ resident stops and asks first:
 live session — which includes LiteSuite's headless children, because they load
 models too.
 
-### Each conversation remembers its own setup
+### The agent remembers its own setup
 
-A conversation carries its own `.convos/<id>/settings.json`: backend, model,
-thinking level (and the codex reasoning effort, which is a separate vocabulary),
-the llama.cpp or LM Studio load settings for *its* model, and the seat that owned
-it. Switching model or engine inside one conversation changes that conversation
-only — the other one you have open does not move, and the global `settings.json`
-keeps being the **defaults** a new conversation is born from, plus the app-wide
-knobs (theme, seat name, dialog style).
+An agent's backend, model and thinking level are saved in its home,
+`.agents/<Name>/settings.json`. Switching model or engine publishes there first,
+so the agent keeps its choice across launches; another agent you have open does
+not move. A conversation's own `settings.json` keeps the contextual knobs (the
+codex reasoning effort, which is a separate vocabulary, and the llama.cpp or LM
+Studio load settings for the model in use), and the global `settings.json` keeps
+being the **defaults** a new agent is born from, plus the app-wide knobs (theme,
+seat name, dialog style).
 
-Opening or `/resume`-ing a conversation restores its provider, model and thinking
-level and automatically reconnects, including when the provider is unchanged.
-A pinned global model does not replace the resumed selection. Explicit launch
-and environment overrides still take precedence. Reconnecting does not request
+Resuming a conversation does **not** restore the backend, model or thinking
+level it was saved with: the agent's home decides, and a saved load setting for a
+different model is reported as not applied. A new agent home with no default
+model asks you to choose one with `/model` before the first send. A launch flag
+(`--backend`, `--model`, a thinking level) that differs from the agent's saved
+setting is refused with an explanation, and `LITETUI_MODEL`, `LITETUI_THINKING`
+and `LITETUI_BACKEND` only seed a new agent home; change a saved agent with
+`/model`, `/backend` and `/think`. Reconnecting does not request
 a local model load. If the saved model/provider is unavailable or connection
 fails, sending is blocked with an explanation; choose an available model/provider
 or retry `/reconnect` rather than silently falling back to another model.
@@ -396,10 +441,10 @@ save: the file records what you *chose*, so unsetting a variable must not
 silently revert the knob.
 
 ⚠️ **`background-tasks.json` no longer lives in the data root.** Each conversation
-keeps its own at `.convos/<id>/background-tasks.json`, so two windows only meet in
-a store when they share a conversation (which the session lease forbids). The old
-shared file is read, never written, and a conversation copies its rows out of it
-when it is resumed; task output logs still live in `output/tasks/`.
+keeps its own `background-tasks.json` in its conversation folder, so two windows
+only meet in a store when they share a conversation (which the session lease
+forbids). The old shared file is neither read nor written, and its rows are not copied
+into a conversation; task output logs still live in `output/tasks/`.
 
 ⚠️ **The model ceiling is shared too.** The llama.cpp router holds at most
 `--models-max` models and that limit belongs to whichever instance started it, so
@@ -414,16 +459,17 @@ Give one its own root before it starts:
 LITETUI_DATA_ROOT=~/.litetui-b litetui
 ```
 
-That instance gets its own `settings.json`, `.convos/`, tasks and jobs — and,
-being a separate data root, no shared anything. Finer knobs exist for one field
-at a time: `LITETUI_SEAT_NAME`, `LITETUI_MODEL`, `LITETUI_THINKING`,
-`LITETUI_BACKEND`.
+That instance gets its own `settings.json`, `.agents/`, tasks and jobs — and,
+being a separate data root, no shared anything. `LITETUI_SEAT_NAME` names the
+default agent; `LITETUI_MODEL`, `LITETUI_THINKING` and `LITETUI_BACKEND` seed a
+new agent home and do not change a saved one.
 
 ## Launching backends from a terminal or another agent
 
 Run `litetui --help` (or `python -m litetui.cli --help`) for the complete argument
-contract. Unknown flags are errors. Options apply to this invocation, including
-when resuming a conversation; they do not overwrite saved defaults.
+contract. Unknown flags are errors. Options apply to this invocation and do not
+overwrite saved defaults; on an existing agent, a backend, model or thinking
+level that differs from the agent's saved one is refused.
 
 Normal launches open the TUI in the current terminal. Add `--rpc` for JSONL over
 stdio. Agents must wait for the `ready` event with `launch_status: "ready"` and
@@ -438,7 +484,28 @@ initial prompt for a headed launch; avoid putting sensitive text on process argv
 | `llamacpp` | `--server-mode connect` or `--start-server`; optional `--server-executable PATH` and `--base-url URL` | `--load-model --model ID --context-length N`; optional `--model-path GGUF` adds its directory to discovery. |
 | `lmstudio` | `--server-mode connect` or `--start-server` using installed `lms server start` | `--load-model --model ID --context-length N` uses the LM Studio SDK. |
 | `ninfer` | Connect to discovery or `--base-url URL`; `--start-server` uses an allocated port | Startup accepts `--model-path ARTIFACT --context-length N --server-executable PATH`. `--model` must match the served ID. Requires RTX 5090. |
+| `strata` | Connect to the install's port (8080) or `--base-url URL`; `--start-server` runs the install's own server | [Strata](https://github.com/Niko1221/Strata) runs Qwen3.8-Flash-Next on one GPU plus system RAM. `--model-path strata-MODEL.json` picks a prepared model; `--context-length N` with `--start-server` starts it at that size. Install it and download models from LiteSuite's Model Hub, or with Strata's own `START-HERE.bat`. |
 | `codex` | Subscription login; connects using the configured Codex adapter (native app-server is managed by that adapter when enabled) | `--model ID --reasoning-effort LEVEL`. Endpoint, context and output limits belong to Codex; local-server overrides are rejected. |
+
+For Codex, `--codex-engine native` selects the official app-server agent loop;
+`--codex-engine http` selects LiteTUI's own loop over the subscription HTTP API.
+Precedence is **CLI flag > `LITETUI_CODEX_ENGINE` > saved conversation/global
+`codex_native_engine` setting > `http` default**. The environment variable is
+resolved at CLI startup and accepts the same lowercase `native`/`http` values;
+an unset or empty variable leaves the saved setting alone. An invalid selected
+value is a startup error (an explicit valid flag supersedes the environment).
+Both inputs are invocation-only, including on resume: unrelated settings saves
+and new conversations do not remember the override. The existing Settings →
+Engine toggle remains the way to save a preference. Neither input selects the
+backend: use `--backend codex` or an already Codex-configured agent.
+
+```powershell
+litetui --backend codex --codex-engine native
+litetui --backend codex --codex-engine http
+$env:LITETUI_CODEX_ENGINE = 'native'
+litetui --backend codex
+Remove-Item Env:LITETUI_CODEX_ENGINE
+```
 
 `--server-mode auto` preserves each backend's existing behavior. `connect` never
 starts an inference server. `--start-server` explicitly authorizes starting one;
@@ -452,6 +519,114 @@ backend/model: NInfer uses `off/low/medium/xhigh`; Codex uses its model metadata
 custom servers receive the selected value and their template defines support.
 `--max-tokens` sets the output limit for local/custom servers. Use
 `--server-timeout SECONDS` for slow model loads (default 600).
+
+### Owner mode: `--owner NAME --memory DIR`
+
+A seat whose long memory is a folder it does not own, so the same memory carries
+across conversations, compactions and restarts:
+
+```powershell
+litetui --owner Alpha --memory C:\work\widgets-memory
+```
+
+`DIR` must be an absolute path to an existing folder, not a link or junction at
+any level, holding `SOUL.md` (the charter), `NOW.md` (where the seat is right
+now) and `DOMAIN.md` (what it knows; newest rows first). It should sit in a git
+repository: the handoff below is a commit. `NAME` opens (or creates) the agent
+home of that name for this launch. Both flags are per launch only; nothing is
+saved in the agent's `settings.json`, and a busy `NAME`, or a spawned seat named
+differently, is refused with the flag to change rather than opening another home.
+
+A resume must use the saved conversation's store: supply the same `--owner NAME`
+and `--memory DIR` alongside `--convo ID`. Switching an ordinary conversation to owner
+mode, dropping owner flags, or changing its owner folder is refused before the
+conversation is adopted. The refusal gives the matching launch command. Ambiguous
+saved addresses require a new conversation without `--convo`; stored snapshots
+and recorded Claude segment prompts are never rewritten to migrate stores.
+New transcript snapshots/system edits and native segment records carry optional
+store provenance (version, mode, folder) in the same record as the prompt, not in settings. Older readers ignore
+this extra field. For older records without it, compatibility requires the complete
+generated address at its original slot immediately after an exactly recognized
+host base/plan prefix (and the same supplied native launch prefix, if any). File
+bodies are not searched. Changed templates or custom prefixes that cannot identify
+that slot refuse with `legacy prompt has no verifiable host store slot` and a
+command to start a new conversation without `--convo`; old files are not backfilled.
+The shipped two-message CLI shape is also recognized: message 0 must be the same
+supplied launch text (`--system-prompt`, `--system-prompt-file`, or the combined
+`--cognitive-file` text), optionally followed immediately by the generator's first
+index/store opening; message 1 must contain the complete host prefix and address.
+A fleet extension also qualifies when it begins with the host's exact composition:
+the supplied launch text with trailing whitespace stripped, two newlines, and the
+shared fleet-registration opening. The same joining function writes and recognizes
+that prefix; extra intervening text does not qualify. Only that beginning is verified.
+Everything after the first suffix opening is
+opaque, never parsed for identity, later section order, or a cut. Missing/changed
+launch text, an intervening prefix, or an incomplete host message refuses;
+markers inside the supplied launch text do not disqualify it. No later messages are searched. Native
+preset-only legacy sessions with no recorded prompt remain unverifiable and refuse
+with the same actionable new-conversation notice.
+
+New prompts also carry an injection receipt beside their contents: quoted store
+headers in an index or memory file cannot suppress the real snapshot. A same-store
+legacy resume without that receipt preserves its prompt without guessing whether
+another block is needed. One notice on screen and in the agent's context explains
+that the store may not have loaded, names the exact files to read, and gives the
+explicit rebuild action: run `/new`, then send your next message. This does not
+block the first legacy send. Native Claude receives the notice with its next input,
+not by rewriting its fixed prompt; delivery is recorded only after the query returns.
+A crash between accepted query and receipt persistence can repeat the notice once
+on recovery rather than risk omitting it. Modern conversations get no legacy notice.
+
+- **Injected in place of the home's own files.** `SOUL.md`, `NOW.md` and
+  `DOMAIN.md`, in that order, replace `memory.md`, `soul.md` and `handoff.md` in
+  the snapshot every backend starts a conversation (or a Claude segment) with,
+  capped at 8,000, 6,000 and the `owner_domain_cap` setting (default 30,000)
+  characters. A file cut at its cap says so and names the path to read for the
+  rest. The system prompt names `DIR`, the three files and the `NOW.md` template
+  (headings `Updated`, `Doing now`, `Next 3 steps`, `Waiting on`, `Crew alive`,
+  `Do NOT redo`; at most 60 lines).
+- **One seat per folder.** `DIR/.owner.lock` is created exclusively and records
+  the holder's pid and agent id. A second launch is refused naming the holder; a
+  lock whose process is gone is taken over with a one-line notice; the lock is
+  removed on exit and is never committed by the handoff. A kernel lease on the
+  persistent `DIR/.owner.guard` serializes metadata transactions, including stale
+  takeover and release. Never remove the guard file: its inode anchors the lease.
+  Add `.owner.lock` and `.owner.guard` to the memory repository's ignore file so
+  a `git add -A` cannot commit them. A recycled pid can make a dead holder look
+  alive (the refusal names the metadata file to delete).
+- **Writes.** `NOW.md` and `DOMAIN.md` are the seat's own store: writing them is
+  never asked about, on any tool profile. `SOUL.md` gets no such exemption: it is
+  judged like any other write outside the workspace, so it asks only on the strict
+  profile. Matching follows the filesystem: on Windows `now.md` or `NOW.md.` name
+  the same file and match; a link, a hardlink, a sibling or a subfolder never does.
+- **Compaction rewrites `NOW.md`, then commits it, then truncates.** STEP 1 of the
+  compaction prompt has the seat rewrite `NOW.md` in the template and append
+  anything new to `DOMAIN.md`. Before anything is cut, LiteTUI checks that
+  `NOW.md` changed and runs `liteharness owner-handoff --memory DIR` (a
+  subprocess; LiteTUI checks at launch that it exists) to validate the template
+  and commit both files. If that fails the seat gets one retry turn naming the
+  reason (the retry has its own tool-round budget on the local backends); if it
+  fails again compaction goes ahead and a message in the transcript says
+  `NOW.md was NOT committed: <reason>`, carrying the second reason. It is never
+  skipped silently. If the retry turn itself errors, Claude goes ahead with the
+  first summary and the same message; a local backend aborts the compaction and
+  leaves the conversation unchanged. Pressing Stop during the rewrite runs no
+  check and no retry. The next conversation starts from the rewritten files.
+- **Codex.** Codex compacts natively and has no STEP 1, so a manual `/compact`
+  first sends one ordinary turn asking the seat for STEP 1, runs the same check
+  and commit, and only then asks Codex to compact. **Limit:** Codex's own
+  automatic compaction cannot be intercepted and can still fire without the
+  handoff. To make the manual path the likely one, owner mode shows
+  `context 70%: run /compact to write NOW.md first` once each time the context
+  rises through 70% of the window, on every backend. The reminder says "70%"
+  whatever the first reading was, and a momentary unknown reading re-arms it. If
+  the driven Codex turn is not answered (the engine defers it or refuses it),
+  the check fails, the retry fails, and compaction goes ahead with the
+  `NOW.md was NOT committed` message; a turn that is not admitted at all
+  compacts nothing.
+
+Not covered: the GUI memory pane and sibling-seat launches from the UI do not
+carry the owner folder.
 
 ### Codex HTTP failure handling
 
@@ -472,6 +647,41 @@ automatically retried. Bounded, secret-redacted diagnostics also go to
 HTTP server failures name the status and retry count rather than blaming login.
 Existing 401 login refresh, 403 access refusal and 429 usage-limit behavior is
 unchanged. Native Codex app-server retry behavior is separate and unchanged.
+
+### Codex tool-argument diagnostics
+
+The OAuth/Responses transport preserves terminal-only function arguments from
+argument-done, item-done and completed events, including expanded parallel
+batches. It appends only the missing suffix, not duplicate JSON. Conflicting
+snapshots fail before pending calls are released. This is a demonstrated protocol
+fix, not a conclusive attribution of historical missing-argument incidents:
+saved conversations retain assembled calls, not the original stream. There is
+no local `multi_tool_use.parallel` unpacker.
+
+`LITETUI_CAPTURE_TOOL_EVENTS=1` enables **metadata-only** diagnostics for a future
+explicitly authorized session (OFF by default; no restart/probe is implied).
+Only a currently leased agent can append to its own conversation's
+`tool-call-stream.jsonl`. Ownership and non-linked paths are checked on every
+append; linked/reparse-point paths, hard-linked files and unowned fallbacks are
+refused. No arbitrary output path or raw-argument mode exists.
+
+Records contain event type, per-request sequence, bounded call ID/tool name, and
+argument/delta **character count** only. No argument content, headers, auth,
+reasoning, output text or tool results are saved: arguments can contain sensitive
+credentials, paths and private text. This instrument shows event order and where
+nonempty fields arrived, but cannot reconstruct a wrapper or validate its JSON.
+
+Retention is one fixed file per conversation, capped at **1 MiB**. At the cap,
+recording stops without rotation, deletion or growth. Missing folders are not
+created. Records append across requests (sequence numbers restart); disabling the
+flag does not remove evidence. Explicit owner cleanup is separate. This uses the
+store's normal lease/path protections, not a sandbox against hostile filesystem
+races. Storage refusal only stops diagnostics, not the model reply.
+
+`parallel_tool_calls` remains `True`. Setting it to `False` would ask the provider
+for at most one function per response, serializing independent tools into extra
+model round trips (latency/token cost). It would neither repair received batches
+nor guarantee provider compliance; no new parallel-disable switch was added.
 
 Examples (PowerShell):
 
@@ -549,19 +759,66 @@ parent-lineage redirect, registry takeover or fallback to a different approver.
 
 ## Tests
 
-```bash
-uv run --locked python tests/run_all.py    # 138 files. THE gate — read its exit code
-uv run --locked pytest -q                  # the 125 pytest-style files only
+### Focused local merge check
+
+Before integrating a candidate, the reviewer names its affected production domain,
+existing neighboring tests, and intentional omissions in a JSON evidence file:
+
+```json
+{
+  "base": "<full target commit ID before integration>",
+  "candidate": "<full reviewed worker commit ID>",
+  "domain": "sidecar jobs and owned app startup",
+  "review": "<reviewer and durable review reference>",
+  "neighbors": ["tests/test_sidecar_jobs_t1082.py", "tests/test_sidecar_reader.py"],
+  "exceptions": []
+}
 ```
 
-**Run `run_all.py`, and believe its exit code rather than a pass count.**
-`tests/` holds two mutually hostile styles: pytest-style files, and script-style
-files whose module body ends in `sys.exit(...)`. A module-level exit fires during
-pytest *collection*, so `pytest -q` cannot collect the script-style half at all —
-it reports a confident green while measuring 125 of 138 files. `run_all.py` runs
-each half with the runner it needs and is the only thing that sees all of them.
+On a **clean, committed integration-preview tree** containing both commits, run:
 
-No network, no TUI, and neither engine required.
+```bash
+python tools/merge_gate.py --base <target-before> --candidate <worker-tip> --review-evidence <review.json> tests/test_new_regression.py
+```
+
+Use the project's existing development interpreter; the final positional test
+files are optional additions. Keep evidence outside the checkout or in an ignored
+scratch directory. The command requires a nonempty domain, review reference and
+neighbor selection; neighbors must already exist at the base commit. Evidence
+must name the exact resolved base/candidate IDs. `exceptions` must be present,
+with reasons for intentional omissions (or `[]`), and cannot bypass required tests.
+
+Every run includes `test_autoscroll.py` and `test_sidecar_jobs_t1082.py`: these two
+files were found red on main by neighboring checks on 2026-10-07. This is a small
+incident-derived floor, **not automatic dependency discovery**. Select additional
+existing neighbors by tracing the changed behavior, not just the new test file.
+The command reuses `run_all`'s inventory and per-file collection accounting, runs
+only the selected files with their proper runner, checks `git diff --check`, and
+fails on errors, zero-item selected files, timeouts, or a changed/dirty tree.
+Inherited `PYTEST_ADDOPTS` and configured pytest `addopts` are deliberately cleared
+so they cannot silently expand the selection. Other pytest configuration remains.
+Its PASS names the exact HEAD tested; rerun if the integrated tree changes.
+
+**Enforced:** evidence shape and commit identity, existing-neighbor selection,
+commit ancestry, clean stable tree, and selected-check exit status.
+**Reviewed by people:** whether the domain and neighbors cover the actual change,
+exceptions are justified, and the review reference is genuine. This command does
+not authenticate the reviewer, install hooks, merge, or enforce GitHub branch
+protection. The merge owner must require it on the actual integration tree before
+accepting that tree; a worker-only green is not integration evidence. Required
+review, current-intent and human-look gates remain separate.
+
+### Full validation (when explicitly requested)
+
+```bash
+uv run --locked python tests/run_all.py
+```
+
+Believe the exit code rather than a pass count. The runner maintains a reviewed
+inventory of pytest files and legacy standalone scripts; bare `pytest` is not a
+substitute for that inventory. CI's full validation is unchanged. Neither engine
+nor network is required by the selected unit tests; no live-service checks are
+included in the focused merge command.
 
 ## Bundled
 

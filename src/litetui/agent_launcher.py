@@ -23,7 +23,7 @@ class LaunchSpec:
 
 
 def delegated_profile(parent_profile):
-    """The profile a managed child runs: T1049, Ryan's clause 2a (rpc children fall
+    """The profile a managed child runs: T1049, Owner's clause 2a (rpc children fall
     under the autonomy lock). A child is never autonomous, and it could not be:
     it carries no owner mark, so it would report interactive and fail its
     handshake. An autonomous parent delegates INTERACTIVE; any other parent its own."""
@@ -160,7 +160,7 @@ async def start_headless_child(spec, process, *, workspace, data_root, supported
     try:
         # T1049-B: this parent's supervisor answers the child's approvals
         # (confirm_route "host"), on a deadline the parent sets: "0" = none (an
-        # owner parent, Ryan's keypress), else its relay timeout + 60 s.
+        # owner parent, Owner's keypress), else its relay timeout + 60 s.
         env = {'LITETUI_DATA_ROOT': str(root), 'LITETUI_AGENT_DEPTH': str(spec.child_depth),
                'LITETUI_APPROVAL_HOST': '1'}
         if approval_timeout is not None:

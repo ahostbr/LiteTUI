@@ -64,6 +64,7 @@ CONTROLS = {
             "compact_max_tokens",
             "compact_thinking_level",
             "compact_max_tool_iters",
+            "owner_domain_cap",
             "compact_keep_recent",
             "clear_screen_after_compact",
             "wake_after_compact",
@@ -84,7 +85,7 @@ CONTROLS = {
     ),
     "subagent_model": Control(
         "host",
-        "Model for the LiteTUI subagent tool. Codex native delegation, including Ultra, uses its own engine configuration.",
+        "Legacy conversation-local child model. Clear it to inherit the global route, or use /subagent-set inherit.",
     ),
     "tools_enabled": Control(
         "host", "Controls LiteTUI tools and the native Codex pre-tool policy gate."
@@ -127,6 +128,8 @@ def native(backend):
 
 
 def control(backend, name):
+    if name in {"subagent_route", "subagent_route_override", "allow_local_subagents"}:
+        return Control("host", "LiteTUI subagent routing; global defaults are read on every child call. Conversation overrides take precedence.")
     if getattr(backend, "owns_native_turns", False):
         if name in {"tools_enabled", "tools_disabled"}:
             return Control("host", "Permission changes apply immediately to Claude calls. Advertised tool inventory is fixed for a live session; use /claude new to refresh it.")
@@ -138,7 +141,7 @@ def control(backend, name):
         if name in {"autocompact_enabled", "autocompact_at_percent", "clear_screen_after_compact", "wake_after_compact"}:
             return Control("host", "LiteTUI compacts Claude conversations itself (Claude's own autocompact is off): "
                            "Claude writes the summary, and the next message starts a fresh session carrying it.")
-        if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith("ninfer_"):
+        if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith(("ninfer_", "strata_")):
             return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
         return None
     if getattr(backend, "name", None) in ("cline", "free"):
@@ -146,7 +149,7 @@ def control(backend, name):
         # only its endpoint is fixed and remote.
         if name == "thinking_level":
             return CLINE_THINKING
-        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith("ninfer_"):
+        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith(("ninfer_", "strata_")):
             return CLINE_FIXED
         return None
     return CONTROLS.get(name) if native(backend) else None

@@ -37,6 +37,7 @@ def _isolated_convos(tmp_path, monkeypatch):
     store = tmp_path / "convos"
     store.mkdir()
     monkeypatch.setattr(paths, "CONVO_DIR", store)
+    monkeypatch.setattr(paths, "data_root", lambda: tmp_path)
     return store
 
 
@@ -132,7 +133,10 @@ def test_a_resolved_id_still_lets_the_prompt_through():
 
 
 def _mounted():
-    app = app_mod.LiteTUI()
+    from litetui.agent_launch_context import ordinary
+    from litetui import settings
+    session = ordinary(paths.data_root(), settings.load())
+    app = app_mod.LiteTUI(agent_session=session)
     app.connect = lambda: None
     app._connect = lambda: None
     return app

@@ -20,6 +20,13 @@ from pathlib import Path
 
 os.environ["LITETUI_NO_HARNESS"] = "1"
 
+try:
+    from e2e._owned_app import owned_session, configure_owned_app
+except ModuleNotFoundError as exc:
+    if exc.name != "e2e":
+        raise
+    from _owned_app import owned_session, configure_owned_app
+
 from litetui import app as app_mod  # noqa: E402
 
 FIELDS = ("autocompact_at_percent", "thinking_level", "show_stop_time", "backend")
@@ -49,40 +56,47 @@ def state(app, n):
 
 
 async def main(work: Path):
-    app = app_mod.LiteTUI()
-    notices = app._notices_for_test = []
-    original = app.system_message
-    app.system_message = lambda text, *a, **k: (notices.append(text), original(text, *a, **k))[1]
-    async with app.run_test(size=(140, 50)) as pilot:
-        await settle(app, pilot)
-        app._materialise_convo()
-        app._handle_command("/sidecar settings")
-        for _ in range(40):
-            await pilot.pause(0.25)
-        # What the sidecar command said, for a failed launch to be diagnosable.
-        (work / "boot.json").write_text(json.dumps(
-            {"notices": [str(n) for n in notices], "sidecar_enabled": app.settings.sidecar_enabled,
-             "exe": os.environ.get("LITETUI_SIDECAR_EXE")}, default=str), encoding="utf-8")
-        seen = -1
-        while True:
-            await pilot.pause(0.2)
-            try:
-                cmd = json.loads((work / "cmd.json").read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if cmd["n"] == seen:
-                continue
-            seen = cmd["n"]
-            if cmd["cmd"] == "quit":
-                break
-            if cmd["cmd"] == "turn":
-                app._submit_text(cmd.get("text", "Reply only OK."), False)
-                await settle(app, pilot)
-            (work / "state.tmp").write_text(json.dumps(state(app, seen), default=str), encoding="utf-8")
-            os.replace(work / "state.tmp", work / "state.json")
-        owner = getattr(app, "_sidecar_preview", None)
-        if owner is not None:
-            owner.close()
+    from litetui import paths, settings
+    if not os.environ.get("LITETUI_DATA_ROOT"):
+        raise ValueError("Sidecar probe requires driver-supplied isolated LITETUI_DATA_ROOT")
+    cfg = settings.load()
+    root = paths.data_root()
+    with owned_session(root, cfg) as session:
+        app = app_mod.LiteTUI(agent_session=session)
+        configure_owned_app(app)
+        notices = app._notices_for_test = []
+        original = app.system_message
+        app.system_message = lambda text, *a, **k: (notices.append(text), original(text, *a, **k))[1]
+        async with app.run_test(size=(140, 50)) as pilot:
+            await settle(app, pilot)
+            app._materialise_convo()
+            app._handle_command("/sidecar settings")
+            for _ in range(40):
+                await pilot.pause(0.25)
+            # What the sidecar command said, for a failed launch to be diagnosable.
+            (work / "boot.json").write_text(json.dumps(
+                {"notices": [str(n) for n in notices], "sidecar_enabled": app.settings.sidecar_enabled,
+                 "exe": os.environ.get("LITETUI_SIDECAR_EXE")}, default=str), encoding="utf-8")
+            seen = -1
+            while True:
+                await pilot.pause(0.2)
+                try:
+                    cmd = json.loads((work / "cmd.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if cmd["n"] == seen:
+                    continue
+                seen = cmd["n"]
+                if cmd["cmd"] == "quit":
+                    break
+                if cmd["cmd"] == "turn":
+                    app._submit_text(cmd.get("text", "Reply only OK."), False)
+                    await settle(app, pilot)
+                (work / "state.tmp").write_text(json.dumps(state(app, seen), default=str), encoding="utf-8")
+                os.replace(work / "state.tmp", work / "state.json")
+            owner = getattr(app, "_sidecar_preview", None)
+            if owner is not None:
+                owner.close()
 
 
 if __name__ == "__main__":

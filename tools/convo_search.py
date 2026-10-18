@@ -14,9 +14,13 @@ Usage:
   python convo_search.py "query words" --messages flat per-message view
   python convo_search.py "query" --agent LiteTUI --since 30
   python convo_search.py --show <convo-id-or-prefix>
-  python convo_search.py --raw <convo-id-or-prefix> "regex"
-  python convo_search.py --reindex                full rebuild
+  python convo_search.py --raw <convo-id-or-prefix> "regex"  refuses: no bounded ownership resolver
+  python convo_search.py --refresh                detached hidden refresh; immediate log receipt
+  python convo_search.py --reindex                detached full rebuild; immediate log receipt
   python convo_search.py --stats
+
+Lookup reads only a root-bound index snapshot. It never builds or scans sources.
+The first result line reports the last successful refresh UTC, or UNKNOWN.
 """
 import argparse
 import hashlib
@@ -27,9 +31,47 @@ import re
 import sqlite3
 import sys
 import time
+import subprocess
+import shlex
+import uuid
+from datetime import datetime, timezone
 
-ROOT = r"C:\Projects\LiteTUI\.convos"
-DB_PATH = r"C:\Projects\LiteTUI\tools\convo_search.db"
+from pathlib import Path
+
+# Direct script execution uses the package shipped with this checkout.
+if str(Path(__file__).resolve().parents[1] / 'src') not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from litetui.paths import data_root
+from litetui.storage_catalog import conversations
+from litetui.agent_store import StoreError
+
+# Published 0.25.0 boundary: conversations under .convos/ and the index at
+# tools/convo_search.db, both under the data root (LITETUI_DATA_ROOT when set).
+_DATA_ROOT = data_root()
+ROOT = str(_DATA_ROOT / ".convos")
+DB_PATH = str(_DATA_ROOT / "tools" / "convo_search.db")
+
+
+def catalog_paths():
+    rows = conversations(_DATA_ROOT, include_archives=True)
+    selected = {}
+    for row in rows:
+        previous = selected.get(row.conversation_id)
+        if previous is not None:
+            if not previous.archive and not row.archive:
+                raise StoreError('Search conversation has ambiguous owned membership')
+            if not previous.archive:
+                continue
+        selected[row.conversation_id] = row
+    return {cid: row.transcript for cid, row in selected.items()}
+
+
+def schema(conn):
+    conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(convos)')}
+    for name, kind in (('source_path', 'TEXT'), ('mtime_ns', 'INTEGER')):
+        if name not in columns:
+            conn.execute(f'ALTER TABLE convos ADD COLUMN {name} {kind}')
 MAX_MSG_CHARS = 100_000  # cap per message stored in the index (raw stays on disk)
 
 SCHEMA = """
@@ -126,16 +168,18 @@ def parse_line(raw: bytes):
 
 
 def index_convo(conn, path, force=False):
-    convo_id = path.name
-    size = path.stat().st_size
-    row = conn.execute("SELECT file_size, byte_offset FROM convos WHERE id=?", (convo_id,)).fetchone()
+    convo_id = path.parent.name
+    stat = path.stat()
+    size = stat.st_size
+    row = conn.execute("SELECT file_size, byte_offset, source_path, mtime_ns FROM convos WHERE id=?", (convo_id,)).fetchone()
     stored_size = row[0] if row else -1
     stored_offset = row[1] if row else 0
+    changed_source = row is not None and (row[2] != str(path) or row[3] != stat.st_mtime_ns)
 
-    if not force and row and size == stored_size:
+    if not force and row and size == stored_size and not changed_source:
         return 0  # up to date
 
-    full = force or size < stored_offset or row is None
+    full = force or size < stored_offset or row is None or (changed_source and size == stored_size) or (row is not None and row[2] != str(path))
     if full:
         conn.execute("DELETE FROM messages WHERE convo_id=?", (convo_id,))
         conn.execute("DELETE FROM msgs_fts WHERE convo_id=?", (convo_id,))
@@ -167,7 +211,7 @@ def index_convo(conn, path, force=False):
                        ON CONFLICT(id) DO UPDATE SET
                          agent_name=excluded.agent_name, agent_id=excluded.agent_id,
                          model=excluded.model, created=excluded.created""",
-                    (obj.get("id") or convo_id, obj.get("agent_name"),
+                    (convo_id, obj.get("agent_name"),
                      obj.get("agent_id"), obj.get("model"), obj.get("created")),
                 )
             else:
@@ -191,10 +235,11 @@ def index_convo(conn, path, force=False):
             offset = f.tell()
 
     conn.execute(
-        """INSERT INTO convos(id, file_size, byte_offset) VALUES(?,?,?)
+        """INSERT INTO convos(id, file_size, byte_offset, source_path, mtime_ns) VALUES(?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET file_size=excluded.file_size,
-             byte_offset=excluded.byte_offset""",
-        (convo_id, size, offset),
+             byte_offset=excluded.byte_offset, source_path=excluded.source_path,
+             mtime_ns=excluded.mtime_ns""",
+        (convo_id, size, offset, str(path), stat.st_mtime_ns),
     )
     stats = conn.execute(
         """SELECT COUNT(*), SUM(LENGTH(text)) FILTER (WHERE role IN ('user','assistant')),
@@ -205,40 +250,137 @@ def index_convo(conn, path, force=False):
         "UPDATE convos SET msg_count=?, ua_chars=?, turns=? WHERE id=?",
         (stats[0] or 0, stats[1] or 0, stats[2] or 0, convo_id),
     )
-    conn.commit()
     return new_count
 
 
+INDEX_VERSION = '1'
+REFRESH_BUDGET = 3600
+FRESHNESS_UNKNOWN = 'Last successful refresh UTC: UNKNOWN'
+
+
+def root_identity():
+    return os.path.normcase(str(_DATA_ROOT.resolve()))
+
+
 def build_index(force=False):
-    conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMA)
-    convos = sorted(os.listdir(ROOT))
+    convos = catalog_paths()  # validate all owned catalog before creating index state
+    conn = open_db()
     t0 = time.time()
     total = 0
-    for name in convos:
-        p = os.path.join(ROOT, name)
-        cj = os.path.join(p, "convo.jsonl")
-        if os.path.isdir(p) and os.path.exists(cj):
-            total += index_convo(conn, _Path(cj))
-    print(f"indexed {len(convos)} convos, {total} new message rows in {time.time() - t0:.1f}s -> {DB_PATH}")
-    conn.close()
+    try:
+        # Publish rows and successful-refresh metadata together. A failed or killed
+        # refresh must not leave partial rows wearing the previous success stamp.
+        with conn:
+            for cid, path in convos.items():
+                total += index_convo(conn, path, force=force)
+            for (cid,) in conn.execute('SELECT id FROM convos').fetchall():
+                if cid not in convos:
+                    conn.execute('DELETE FROM messages WHERE convo_id=?', (cid,))
+                    conn.execute('DELETE FROM msgs_fts WHERE convo_id=?', (cid,))
+                    conn.execute('DELETE FROM convos WHERE id=?', (cid,))
+            conn.execute('CREATE TABLE IF NOT EXISTS search_meta (key TEXT PRIMARY KEY, value TEXT)')
+            conn.executemany('INSERT OR REPLACE INTO search_meta VALUES (?, ?)', [
+                ('version', INDEX_VERSION), ('root', root_identity()),
+                ('refreshed_utc', datetime.now(timezone.utc).isoformat()),
+            ])
+        print(f"indexed {len(convos)} convos, {total} new message rows in {time.time() - t0:.1f}s -> {DB_PATH}", file=sys.stderr)
+    finally:
+        conn.close()
 
 
-class _Path:
-    def __init__(self, path):
-        self.full = path
-        self.name = os.path.basename(os.path.dirname(path))
+def refresh_command():
+    argv = [sys.executable, str(Path(__file__).resolve()), '--root', str(_DATA_ROOT.resolve()), '--refresh']
+    # Copy/paste into PowerShell on Windows, POSIX shell elsewhere.
+    if os.name == 'nt':
+        return '& ' + ' '.join("'" + part.replace("'", "''") + "'" for part in argv)
+    return shlex.join(argv)
 
-    def __fspath__(self):
-        return self.full
 
-    def stat(self):
-        return os.stat(self.full)
+def open_snapshot(*, refusing=True):
+    """Read only; no schema migration, creation, source reads or catalog scan."""
+    conn = None
+    freshness = FRESHNESS_UNKNOWN
+    try:
+        conn = sqlite3.connect(Path(DB_PATH).resolve().as_uri() + '?mode=ro', uri=True, timeout=0.2)
+        conn.execute('BEGIN')  # metadata and results describe the same snapshot
+        meta = dict(conn.execute('SELECT key, value FROM search_meta'))
+        if meta.get('version') != INDEX_VERSION:
+            raise ValueError('incompatible index version')
+        if meta.get('root') != root_identity():
+            raise ValueError('index belongs to a different data root')
+        # Check the fields actually consumed by search/show/stats, without reading sources.
+        conn.execute('SELECT id, agent_name, model, created, ua_chars, turns, msg_count, source_path FROM convos LIMIT 0')
+        conn.execute('SELECT convo_id, ts, role, text FROM messages LIMIT 0')
+        conn.execute('SELECT convo_id, ts, role, user_text, assistant_text, tool_text, other_text FROM msgs_fts LIMIT 0')
+        stamp = meta.get('refreshed_utc')
+        age = None
+        if stamp:
+            try:
+                refreshed = datetime.fromisoformat(stamp)
+                if refreshed.utcoffset() is None:
+                    raise ValueError('timestamp has no timezone')
+                refreshed = refreshed.astimezone(timezone.utc)
+                freshness = 'Last successful refresh UTC: ' + refreshed.isoformat()
+                age = (datetime.now(timezone.utc) - refreshed).total_seconds()
+            except (ValueError, TypeError):
+                pass
+        print(freshness, flush=True)
+        if age is not None and age > 86400:
+            print(f'Warning: index snapshot is {age / 3600:.1f} hours old (over 24h); lookup remains available.')
+        return conn
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        if conn is not None:
+            conn.close()
+        print(freshness, flush=True)
+        if refusing:
+            print(f'Refused: missing, incompatible or unavailable index: {exc}')
+            print('Refresh explicitly: ' + refresh_command())
+        return None
+
+
+def start_refresh(force=False):
+    """Detach a hidden supervisor; the caller never waits for catalog/index work."""
+    log_dir = _DATA_ROOT / 'tools' / 'convo-search-refresh'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = log_dir / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex + '.log')
+    cmd = [sys.executable, str(Path(__file__).resolve()), '--root', str(_DATA_ROOT.resolve()), '--refresh-worker']
+    if force:
+        cmd.append('--reindex')
+    options = {'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0)} if os.name == 'nt' else {'start_new_session': True}
+    with log.open('x', encoding='utf-8') as output:
+        output.write(f'Refresh requested UTC: {datetime.now(timezone.utc).isoformat()}; budget {REFRESH_BUDGET}s\n')
+        output.flush()
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, close_fds=True, **options)
+        except OSError as exc:
+            output.write(f'Refresh supervisor launch failed: {exc}\n')
+            raise OSError(f'{exc}; log: {log}') from exc
+    print(f'Refresh launched (not completed): supervisor PID {proc.pid}; budget {REFRESH_BUDGET}s; log: {log}')
+    print('The requesting agent/operator owns monitoring this log for completion, failure or timeout. No automatic watcher.')
+
+
+def refresh_worker(force=False):
+    """Bound the actual refresh in a child, retaining its output in the launch log."""
+    cmd = [sys.executable, '-u', str(Path(__file__).resolve()), '--root', str(_DATA_ROOT.resolve()), '--build-index']
+    if force:
+        cmd.append('--reindex')
+    try:
+        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, timeout=REFRESH_BUDGET,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        print(f'Refresh finished UTC: {datetime.now(timezone.utc).isoformat()}; exit {result.returncode}', flush=True)
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        print(f'Refresh timed out after {REFRESH_BUDGET}s; child killed and waited; completion unconfirmed, inspect snapshot timestamp.', flush=True)
+        return 1
+    except OSError as exc:
+        print(f'Refresh failed to launch: {exc}', flush=True)
+        return 1
 
 
 def open_db():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMA)
+    schema(conn)
     return conn
 
 
@@ -361,21 +503,10 @@ def do_show(conn, prefix, maxchars=400):
 
 
 def do_raw(conn, prefix, pattern):
-    cid = resolve_convo(conn, prefix)
-    path = os.path.join(ROOT, cid, "convo.jsonl")
-    rx = re.compile(pattern)
-    n = 0
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for i, line in enumerate(f, 1):
-            if rx.search(line):
-                n += 1
-                m = rx.search(line)
-                a, b = max(0, m.start() - 120), min(len(line), m.end() + 120)
-                print(f"L{i}: …{line[a:b].strip()}…")
-                if n >= 40:
-                    print("…(stopped at 40 matches)")
-                    break
-    print(f"{n} matching lines")
+    # The authoritative resolver scans the fleet, even with an agent selector.
+    # An indexed path alone cannot establish current ownership or precedence.
+    raise StoreError('Raw lookup unavailable: current ownership requires a fleet catalog scan. '
+                     'Refresh does not enable raw access; --show reads an indexed snapshot only.')
 
 
 def do_stats(conn):
@@ -383,7 +514,7 @@ def do_stats(conn):
     m = conn.execute("SELECT COUNT(*), SUM(LENGTH(text)) FROM messages").fetchone()
     by_role = conn.execute("SELECT role, COUNT(*), SUM(LENGTH(text)) FROM messages GROUP BY role ORDER BY 3 DESC").fetchall()
     size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
-    print(f"convos: {c}   message rows: {m[0]}   indexed chars: {m[1] / 1e6:.1f}M   db: {size / 1e6:.1f} MB")
+    print(f"convos: {c}   message rows: {m[0]}   indexed chars: {(m[1] or 0) / 1e6:.1f}M   db: {size / 1e6:.1f} MB")
     for role, n, ch in by_role:
         print(f"  {role:<9} {n:>6} rows   {ch / 1e6:6.2f}M chars")
 
@@ -391,7 +522,16 @@ def do_stats(conn):
 def main():
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    class Parser(argparse.ArgumentParser):
+        def print_help(self, file=None):
+            print(FRESHNESS_UNKNOWN, flush=True)
+            super().print_help(file)
+
+        def error(self, message):
+            print(FRESHNESS_UNKNOWN, flush=True)
+            super().error(message)
+
+    ap = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("query", nargs="?", help="search terms (implicit AND)")
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--messages", action="store_true",
@@ -399,45 +539,69 @@ def main():
     ap.add_argument("--agent", help="filter by agent_name")
     ap.add_argument("--since", type=float, help="only convos created within N days (epoch seconds also accepted if > 1e9)")
     ap.add_argument("--show", metavar="CONVO_ID", help="dump one convo's indexed messages")
-    ap.add_argument("--raw", metavar="CONVO_ID", help="grep the raw convo.jsonl (requires pattern as query)")
-    ap.add_argument("--reindex", action="store_true", help="force full rebuild")
-    ap.add_argument("--stats", action="store_true")
-    ap.add_argument("--index", action="store_true", help="incremental index pass, then exit (or before a search)")
+    ap.add_argument("--raw", metavar="CONVO_ID", help="currently refuses: current ownership needs a fleet scan; refresh does not enable raw")
+    ap.add_argument('--refresh', action='store_true', help='launch a detached, hidden, logged refresh and return immediately')
+    ap.add_argument('--refresh-worker', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--build-index', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--reindex', action='store_true', help='launch detached full rebuild (not a lookup)')
+    ap.add_argument('--stats', action='store_true')
+    ap.add_argument('--index', action='store_true', help='legacy alias for detached --refresh; cannot combine with lookup')
+    ap.add_argument('--root', type=Path, help='configured durable data root (owned plus read-only archives)')
     args = ap.parse_args()
-
-    if args.reindex:
-        build_index(force=True)
-        return
-    if not os.path.exists(DB_PATH):
-        print("no index yet — building…")
-        build_index()
-
-    if args.index:
-        build_index()
-        if not args.query:
-            return
-    conn = open_db()
+    global _DATA_ROOT, ROOT, DB_PATH
+    if args.root is not None:
+        _DATA_ROOT = args.root.resolve()
+        ROOT = str(_DATA_ROOT / '.convos')
+        DB_PATH = str(_DATA_ROOT / 'tools' / 'convo_search.db')
+    refresh = any((args.refresh, args.refresh_worker, args.build_index, args.index, args.reindex))
+    lookup = any((args.query, args.show, args.raw, args.stats))
+    if refresh and lookup:
+        ap.error('refresh/index actions cannot be combined with lookup')
+    if args.raw and not args.query:
+        ap.error('--raw requires the search pattern as the query argument')
+    if not (refresh or lookup):
+        ap.print_help()
+        return 0
+    if args.refresh_worker:
+        return refresh_worker(force=args.reindex)
+    conn = open_snapshot(refusing=not (refresh or args.raw))
+    if refresh:
+        if conn is not None:
+            conn.close()
+        try:
+            if args.build_index:
+                build_index(force=args.reindex)
+            else:
+                start_refresh(force=args.reindex)
+            return 0
+        except (OSError, sqlite3.Error, StoreError) as exc:
+            print(f'Refresh failed: {exc}')
+            return 1
+    if conn is None and not args.raw:
+        return 1
     try:
-        if args.stats:
-            do_stats(conn)
-            return
-        if args.show:
-            do_show(conn, args.show)
-            return
         if args.raw:
-            if not args.query:
-                ap.error("--raw requires the search pattern as the query argument")
             do_raw(conn, args.raw, args.query)
-            return
-        if not args.query:
-            ap.print_help()
-            return
-        if args.since and args.since > 1e9:
-            args.since = time.time() - args.since  # epoch given
-        do_search(conn, args.query, args.limit, args.agent, args.since, per_convo=not args.messages)
+        else:
+            print('Indexed snapshot; source ownership validated at refresh, not revalidated during lookup.')
+            if args.stats:
+                do_stats(conn)
+            elif args.show:
+                do_show(conn, args.show)
+            else:
+                if args.since and args.since > 1e9:
+                    args.since = time.time() - args.since
+                do_search(conn, args.query, args.limit, args.agent, args.since, per_convo=not args.messages)
+        return 0
+    except (sqlite3.Error, StoreError) as exc:
+        print(f'Refused: {exc}')
+        if isinstance(exc, sqlite3.Error):
+            print('Refresh explicitly: ' + refresh_command())
+        return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    sys.exit(main())

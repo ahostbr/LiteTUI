@@ -18,23 +18,23 @@ from litetui.conversation import ConversationRepository
 from litetui.widgets import AssistantMessage
 
 
-def _repo(path):
-    """A repository pointed at a scratch file.
+def _repo(make_app):
+    """A real owned repository staged in this test's temporary agent home."""
+    from uuid import uuid4
 
-    The write guard is `convo_path` plus the loading/pending flags, not a `path`
-    attribute - set them the way the app does rather than inventing a double.
-    """
-    repo = ConversationRepository()
-    repo.convo_path = path
+    repo = make_app().store
+    repo.stage(str(uuid4()))
+    repo.convo_dir.mkdir()
     repo.loading = False
     repo.pending = False
     return repo
 
 
 def _app():
-    app = app_mod.LiteTUI()
-    app._connect = lambda: None
-    app._fetch_ctx_window = lambda: None
+    from test_compaction_ui import _app as owned_app
+
+    app = owned_app()
+    app._inbox_monitor = lambda: None  # fixture registration has no live inbox
     return app
 
 
@@ -193,17 +193,17 @@ class TestKick:
 
 
 class TestPersistence:
-    def test_record_and_read_back(self, tmp_path):
-        path = tmp_path / "convo.jsonl"
+    def test_record_and_read_back(self, make_app):
+        repo = _repo(make_app)
+        path = repo.convo_path
         path.write_text(json.dumps({"type": "meta", "name": "t"}) + "\n", encoding="utf-8")
-        repo = _repo(path)
         repo.record_card_summary("abc123", "Did the thing", "model-A")
         assert ConversationRepository.card_summaries(path) == {"abc123": "Did the thing"}
 
-    def test_last_record_wins(self, tmp_path):
-        path = tmp_path / "convo.jsonl"
+    def test_last_record_wins(self, make_app):
+        repo = _repo(make_app)
+        path = repo.convo_path
         path.write_text("", encoding="utf-8")
-        repo = _repo(path)
         repo.record_card_summary("k", "first", "m")
         repo.record_card_summary("k", "second", "m")
         assert ConversationRepository.card_summaries(path)["k"] == "second"

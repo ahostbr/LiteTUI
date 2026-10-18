@@ -29,7 +29,7 @@ def test_real_http_client_propagates_only_known_suite_seat_id(monkeypatch, url, 
         seen.append(request)
         return Response()
     monkeypatch.setattr(mcp_client.urllib.request, "urlopen", urlopen)
-    client = mcp_client.HTTPMCPServer(name, {"url": url}, Path.cwd(), None)
+    client = mcp_client.HTTPMCPServer(name, {"url": url}, Path.cwd(), None, agent_id="worker-123")
     assert client.call("pccontrol", {"action": "click", "x": 1, "y": 2}) == "refused"
     headers = {key.lower(): value for key, value in seen[0].header_items()}
     assert headers.get("x-litesuite-agent-id") == ("worker-123" if expected else None)
@@ -50,6 +50,6 @@ def test_absent_or_invalid_seat_id_is_not_fabricated(monkeypatch, identity):
         def __exit__(self, *args): pass
         def read(self): return b'{"jsonrpc":"2.0","id":1,"result":{}}'
     monkeypatch.setattr(mcp_client.urllib.request, "urlopen", lambda request, **kwargs: seen.append(request) or Response())
-    client = mcp_client.HTTPMCPServer("litesuite-tools", {"url": "http://localhost:7423/mcp"}, Path.cwd(), None)
+    client = mcp_client.HTTPMCPServer("litesuite-tools", {"url": "http://localhost:7423/mcp"}, Path.cwd(), None, agent_id=identity)
     client._request("tools/call", {"name": "pccontrol", "arguments": {"action": "type", "text": "not sent to headers"}})
     assert "x-litesuite-agent-id" not in {key.lower() for key, _ in seen[0].header_items()}

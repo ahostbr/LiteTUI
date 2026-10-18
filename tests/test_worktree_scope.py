@@ -1,6 +1,6 @@
 """T0246: an interactive seat's shell commands INSIDE its own worktree never prompt.
 
-Ryan, on LandingShannon's `cd <its own worktree>/packages/... && ...` approval:
+Owner, on LandingShannon's `cd <its own worktree>/packages/... && ...` approval:
     "cmds inside its worktree that arent removal of the tree... it should never
      need approval on interactive"
 
@@ -320,7 +320,7 @@ def test_a_relative_path_through_a_link_out_of_the_tree_is_not_inside(trees, tem
     assert decide("rm -rf real/x", trees["wt"]).action == tp.ALLOW
 
 
-# ── every LINE and every SEGMENT is judged on its own (Sentinel, T0251 finding) ──
+# ── every LINE and every SEGMENT is judged on its own (Orchestrator, T0251 finding) ──
 #
 # The danger table does not recognise a command that starts a NEW LINE (its
 # command-position anchor has no multiline flag; card T0251 fixes the table). The

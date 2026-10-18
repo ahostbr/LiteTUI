@@ -22,54 +22,7 @@ from litetui import paths, runtime_log
 
 TRANSCRIPT_NAME = "convo.jsonl"
 
-CONVO_SEED_FILES = {
-    "memory.md": (
-        "# Memory Index\n\n"
-        "One line per memory, NEWEST AT THE TOP. Bodies live in "
-        f"`{paths.MEMORIES_DIR}/`.\n\n"
-        "`- [short title](memories/slug.md) — the hook`\n\n"
-        "POINTERS ONLY. ~50 tokens (about 200 chars) per line, hard. Enough to\n"
-        "decide whether to open the file, nothing more. If you are explaining\n"
-        "the thing here, it belongs in the topic file instead.\n\n"
-        "This file is injected into the system prompt ONCE, at the start of the\n"
-        "conversation, so a long line permanently crowds out other entries.\n\n"
-        "Append and edit only — never rewrite it to make it shorter. A line\n"
-        "removed here orphans a file that nothing will ever open again.\n\n"
-        "---\n\n"
-    ),
-    "soul.md": (
-        "# Soul\n\n"
-        "Who I am in this conversation. I write this for myself; it survives\n"
-        "/resume and /compact when the transcript does not.\n\n"
-        "## How the user works\n"
-        "_Preferences, tone, what they want more or less of._\n\n"
-        "## Standing corrections\n"
-        "_Things I got wrong and was corrected on. The correction, and WHY —\n"
-        "a rule without its reason gets re-litigated or misapplied._\n\n"
-        "## How I work here\n"
-        "_Habits that have proven useful in this conversation specifically._\n"
-    ),
-    "handoff.md": (
-        "# Handoff\n\n"
-        "Written so the next session can ACT without re-deriving anything.\n\n"
-        "> Every row must be CHECKABLE: name the file, the command, or the\n"
-        "> identifier. A query can be re-run; a bare claim can only be believed.\n"
-        "> State when each row was last MEASURED — not when it was assumed.\n\n"
-        "## 1. In flight\n"
-        "_What is running or half-done right now. 'Nothing' is a valid and\n"
-        "useful answer — say it explicitly rather than leaving the section out._\n\n"
-        "## 2. Owed — split by owner\n"
-        "_Mine / theirs / the user's. An unowned item is one nobody does._\n\n"
-        "## 3. Absent by decision\n"
-        "_What is deliberately NOT being done, and what defends that choice.\n"
-        "Without this, the next session rediscovers it and redoes it._\n\n"
-        "## 4. Caveats riding the green lines\n"
-        "_What 'it works' does NOT cover. The limits of every pass claim._\n\n"
-        "## 5. My corrections and retractions\n"
-        "_What I claimed and later found wrong. Carry these forward: a\n"
-        "retracted claim that is not written down comes back as fact._\n"
-    ),
-}
+from litetui.agent_store import AGENT_SEED_FILES as CONVO_SEED_FILES
 
 
 class ConversationRepository:
@@ -97,6 +50,12 @@ class ConversationRepository:
                     candidate = rec.get("messages")
                     if isinstance(candidate, list) and all(isinstance(m, dict) and isinstance(m.get('role'), str) for m in candidate):
                         msgs = list(candidate)
+                        meta.pop("store_identity", None)
+                        meta.pop("store_injected", None)
+                        if "store_identity" in rec:
+                            meta["store_identity"] = rec["store_identity"]
+                        if "store_injected" in rec:
+                            meta["store_injected"] = rec["store_injected"]
                 elif kind == "rename":
                     # APPEND-ONLY, like every other record here. The name is not
                     # patched into the meta line -- rewriting a JSONL record in
@@ -114,6 +73,13 @@ class ConversationRepository:
                         rec.get("message"), dict
                     ):
                         msgs[i] = rec["message"]
+                        if i == 0:
+                            meta.pop("store_identity", None)
+                            meta.pop("store_injected", None)
+                            if "store_identity" in rec:
+                                meta["store_identity"] = rec["store_identity"]
+                            if "store_injected" in rec:
+                                meta["store_injected"] = rec["store_injected"]
                 elif kind == "truncate":
                     keep_from = rec.get("keep_from")
                     if not isinstance(keep_from, int) or keep_from < 0:
@@ -128,9 +94,15 @@ class ConversationRepository:
                     prepend = [
                         m for m in (rec.get("prepend") or []) if isinstance(m, dict)
                     ]
+                    previous_first = msgs[0] if msgs else None
                     msgs = head + prepend + msgs[keep_from:]
+                    if not msgs or msgs[0] is not previous_first:
+                        meta.pop("store_identity", None)
+                        meta.pop("store_injected", None)
                 elif kind == "msg" and isinstance(rec.get("message"), dict):
                     msgs.append(rec["message"])
+                    if rec.get("store_notice") is True:
+                        meta["store_notice"] = rec["message"].get("content")
         return meta, msgs
 
     @staticmethod
@@ -218,8 +190,10 @@ class ConversationRepository:
 
     def stage(self, convo_id: str) -> None:
         """Pick the id and the paths. Touch no disk."""
-        directory = (self.agent_session.conversation_directory(convo_id)
-                     if self.agent_session is not None else paths.CONVO_DIR / convo_id)
+        if self.agent_session is None:
+            from litetui.agent_store import StoreError
+            raise StoreError('An owned agent session is required to stage a conversation')
+        directory = self.agent_session.conversation_directory(convo_id)
         self.release()
         self.convo_id = convo_id
         self.convo_dir = directory
@@ -239,7 +213,10 @@ class ConversationRepository:
             if Path(path) != expected:
                 from litetui.agent_store import StoreError
                 raise StoreError("Resume transcript disagrees with owned agent")
-        self.acquire(path.parent)
+        if self.agent_session is not None:
+            self.acquire(path.parent)
+        else:
+            self.release()  # archive browsing never creates a lease or other state
         self.pending = False
         self.convo_path = path
         self.convo_dir = path.parent
@@ -251,6 +228,9 @@ class ConversationRepository:
 
     def acquire(self, directory: Path | None = None) -> None:
         from litetui.shared_state import Lease, check_data_version
+        if self.agent_session is None:
+            from litetui.agent_store import StoreError
+            raise StoreError('An owned agent session is required to write; archives are read-only')
         directory = directory or self.convo_dir
         if directory is None:
             return
@@ -261,8 +241,6 @@ class ConversationRepository:
                 raise StoreError("Conversation lies outside the owned agent")
             _unlinked(directory / ".session.lease")
             root = self.agent_session.store.data_root  # explicit, never nesting-derived
-        else:
-            root = directory.parent.parent  # unchanged legacy compatibility
         target = directory / ".session.lease"
         if self._lease is not None and self._lease.path == target:
             return
@@ -362,6 +340,11 @@ class ConversationRepository:
         self.write_record({"type": "msg", "ts": time.time(), "message": msg,
                            **({"usage": usage, "model": model} if usage is not None else {})})
 
+    def record_store_notice(self, message: dict) -> None:
+        # A normal context message for old readers; the receipt is not an API field.
+        self.write_record({"type": "msg", "ts": time.time(), "message": message,
+                           "store_notice": True})
+
     def record_card_summary(self, key: str, summary: str, model: str = "") -> None:
         """Persist one card's one-line summary.
 
@@ -411,14 +394,16 @@ class ConversationRepository:
             return {}
         return out
 
-    def record_snapshot(self, messages: list[dict], reason: str = "") -> None:
+    def record_snapshot(self, messages: list[dict], reason: str = "", *, store_identity=None, store_injected=None) -> None:
         """Full-list record. Kept for readability of older files; prefer edit."""
         self.write_record({
             "type": "snapshot", "ts": time.time(),
             "reason": reason, "messages": messages,
+            **({"store_identity": store_identity} if store_identity is not None else {}),
+            **({"store_injected": store_injected} if isinstance(store_injected, bool) else {}),
         })
 
-    def record_edit(self, index: int, message: dict, reason: str = "") -> None:
+    def record_edit(self, index: int, message: dict, reason: str = "", *, store_identity=None, store_injected=None) -> None:
         """Record an in-place change to ONE message.
 
         /system and the tools toggle only ever rewrite message 0, which is the
@@ -429,6 +414,8 @@ class ConversationRepository:
         self.write_record({
             "type": "edit", "ts": time.time(), "reason": reason,
             "index": index, "message": message,
+            **({"store_identity": store_identity} if store_identity is not None else {}),
+            **({"store_injected": store_injected} if isinstance(store_injected, bool) else {}),
         })
 
     def record_truncate(self, keep_from: int, prepend: list[dict],

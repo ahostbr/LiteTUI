@@ -24,7 +24,7 @@ from typing import Literal, get_args, get_origin, get_type_hints
 from litetui import settings_runtime
 from litetui import llm_backend, paths, seat_authority, tasks
 from litetui import settings as settings_mod
-from litetui.shared_state import DATA_VERSION, Lease, OwnershipError, check_data_version
+from litetui.shared_state import DATA_VERSION, check_data_version
 
 PROTOCOL_VERSION = 1
 OPERATION_CONTEXT = ContextVar("gui_management_operation", default=None)
@@ -35,6 +35,7 @@ def current_operation(app):
 
 
 OPERATIONS = (
+    "checkpoint.prepare", "checkpoint.status", "checkpoint.flush", "checkpoint.release",
     "hello", "state", "prompt.submit", "settings.get", "settings.validate", "settings.apply",
     "conversations.list", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -55,7 +56,7 @@ OPERATIONS = (
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
-RECONNECT = frozenset({"lm_host", "ninfer_host", "llama_host", "llama_executable", "backend", "default_model", "mcp_enabled", "skills_enabled", "mcp_disabled_servers"})
+RECONNECT = frozenset({"lm_host", "ninfer_host", "strata_host", "llama_host", "llama_executable", "backend", "default_model", "mcp_enabled", "skills_enabled", "mcp_disabled_servers"})
 RESTART = frozenset({"plugins_disabled", "skill_roots"})
 
 
@@ -173,6 +174,8 @@ def _validate(app, patch):
             raise ValueError(f"{name}: expected an http(s) server URL")
         if name == "ninfer_host" and value and not value.startswith(("http://", "https://")):
             raise ValueError("ninfer_host: expected an http(s) server URL, or blank to discover")
+        if name == "strata_host" and value and not value.startswith(("http://", "https://")):
+            raise ValueError("strata_host: expected an http(s) server URL, or blank for the install's port")
     candidate = copy.deepcopy(app.settings)
     for name, value in patch.items():
         setattr(candidate, name, value)
@@ -221,16 +224,12 @@ def _conversations(app, action, cmd):
             result = {"session_id": session_id, "meta": {"id": session_id}, "messages": copy.deepcopy(app.conversation)}
         else:
             result = _read_session(session_id, app)
-        result["read_only"] = False
-        if (getattr(app, '_agent_session', None) is None
-                and session_id != getattr(app, "convo_id", "")):
-            try:
-                with Lease(_session_path(session_id, app).parent / ".session.lease"):
-                    pass
-            except OwnershipError:
-                result["read_only"] = True
-                result["ownership_reason"] = "This conversation is active in another process"
+        result["read_only"] = getattr(app, '_agent_session', None) is None
+        if result["read_only"]:
+            result["ownership_reason"] = "Legacy conversation archive is read-only; no owned agent session"
         return result
+    if getattr(app, '_agent_session', None) is None:
+        raise ValueError("Mutable conversation RPC requires an owned agent session")
     _idle(app)
     if action == "create":
         app._handle_command("/new")
@@ -263,10 +262,15 @@ def _conversations(app, action, cmd):
         if not isinstance(message, str) or not message.strip():
             raise ValueError("message must be nonempty text")
         app.conversation = app.conversation[:index]
-        app.store.record_snapshot(app.conversation, "GUI retry from user message")
+        app._snapshot("GUI retry from user message")
         app._submit_text(message, alt_chord=False, source="rpc")
         return {"session_id": session_id, "accepted": True}
     elif action == "compact":
+        from litetui import restart_checkpoint
+        if restart_checkpoint.is_held(app):
+            from litetui.plugin_reload_activity import idle_infra_phase
+            with idle_infra_phase(app):
+                restart_checkpoint.authorize_compaction(app, cmd.get("checkpoint_id"), cmd.get("handoff_sha256"))
         app._handle_command("/compact")
         return {"session_id": session_id, "accepted": True}
     else:
@@ -433,9 +437,30 @@ def _memory(app, action, cmd):
     return {"name": name, "text": text}
 
 
+# During a restart hold, reads and completion of already-issued callbacks remain
+# available. New mutations are refused BEFORE their first side effect, including
+# async management operations that do not pass through dispatch().
+_RESTART_SAFE = frozenset({
+    "hello", "state", "checkpoint.prepare", "checkpoint.status", "checkpoint.flush", "checkpoint.release",
+    "settings.get", "settings.validate", "conversations.list", "conversations.read", "conversations.compact",
+    "models.list", "models.capabilities", "models.config", "models.confirm", "extensions.list",
+    "hooks.get", "hooks.validate", "mcp.list", "skills.list", "skills.read", "tools.list",
+    "memory.list", "memory.read", "jobs.list", "tasks.list", "tasks.tail", "goals.get", "calendar.list",
+    "diagnostics.get", "host_tools.result", "subagents.list", "subagents.tail", "system.get",
+    "glassbox.get", "work.get", "engine.status",
+})
+
+
+def _restart_gate(app, operation):
+    from litetui import restart_checkpoint
+    if operation not in _RESTART_SAFE and restart_checkpoint.is_held(app):
+        raise ValueError("Restart checkpoint hold blocks this mutation")
+
+
 def dispatch(app, cmd):
     """Execute nonblocking operations on the existing app loop."""
     operation = str(cmd.get("type", ""))[4:]
+    _restart_gate(app, operation)
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
     if operation == "hello":
@@ -485,6 +510,21 @@ def dispatch(app, cmd):
                         "source": "connected backend model metadata"}
         return {"backend": backend, "model": model, "thinking": thinking}
     domain, action = operation.split(".", 1)
+    from litetui import restart_checkpoint
+    if domain == "checkpoint":
+        from litetui.plugin_reload_activity import idle_infra_phase
+        # Exclude this exact control worker, not a group or unrelated task.
+        with idle_infra_phase(app):
+            if action == "prepare":
+                return restart_checkpoint.prepare(app, cmd.get("checkpoint_id"), disposition=cmd.get("disposition"))
+            if action == "status":
+                return restart_checkpoint.status(app)
+            if action == "flush":
+                return restart_checkpoint.flush(app, cmd.get("checkpoint_id"))
+            if action == "release":
+                return restart_checkpoint.release(app, cmd.get("checkpoint_id"), reconciled=cmd.get("reconciled"))
+    if domain == "prompt" and restart_checkpoint.is_held(app):
+        raise ValueError("Restart checkpoint hold blocks new input")
     if domain == "prompt":
         message, behavior = cmd.get("message"), cmd.get("behavior", "normal")
         if not isinstance(message, str) or not message.strip():
@@ -706,6 +746,7 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    _restart_gate(app, operation[4:])
     blocking = operation in {"gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
@@ -746,8 +787,12 @@ async def _async_dispatch(app, cmd):
     if operation.startswith("gui.engine."):
         _idle(app)
         backend = app.backend
-        if backend.name != "ninfer":
-            raise ValueError("engine operations require the NInfer backend")
+        from litetui import llm_backend
+        if backend.name not in llm_backend.ENGINE_BACKENDS:
+            from litetui import gpu_gate
+            # T893: NInfer is never named on a box that is not an RTX 5090 (as /engine's own refusal).
+            engines = "NInfer or Strata" if gpu_gate.is_rtx_5090() else "Strata"
+            raise ValueError(f"engine operations require the {engines} backend")
         action = operation.rsplit(".", 1)[1]
         if action == "status":
             return {"status": backend.engine_status()}
@@ -757,7 +802,7 @@ async def _async_dispatch(app, cmd):
         if action == "stop":
             from litetui import agent_preparation
             if not backend.begin_stop():
-                raise ValueError("NInfer engine start/stop is already active")
+                raise ValueError(f"{getattr(backend, 'label', 'NInfer')} engine start/stop is already active")
             try:
                 result = await agent_preparation.await_preparation(backend.stop_engine)
                 return {"result": result, "status": backend.engine_status()}
@@ -787,7 +832,7 @@ async def _async_dispatch(app, cmd):
             raise ValueError("Connection failed; requested connection settings remain deferred")
         if not hasattr(app, "_gui_effective_settings"):
             app._gui_effective_settings = asdict(app.settings)
-        for name in ("lm_host", "ninfer_host", "llama_host", "llama_executable", "backend", "default_model"):
+        for name in ("lm_host", "ninfer_host", "strata_host", "llama_host", "llama_executable", "backend", "default_model"):
             app._gui_effective_settings[name] = getattr(app.settings, name)
         return {"connected": True, "model": app._rpc_model_state(), "settings": _settings(app)}
     if operation in ("gui.models.load", "gui.models.unload", "gui.models.config", "gui.models.configure"):

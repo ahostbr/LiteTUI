@@ -8,21 +8,26 @@ including /new and compaction. Conversation leases remain a separate concern.
 
 The kernel byte/flock algorithm matches LiteTUI shared_state.Lease. Unlike its
 legacy convenience API, acquisition never creates parent directories and every
-uninspectable/inaccessible lock fails closed. No PID, age, timeout or takeover.
+uninspectable/inaccessible lock fails closed. Catalog contention waits briefly;
+seat contention fails immediately. No PID/age-based eviction or timeout takeover.
 Path checks are not a sandbox against concurrent external filesystem changes.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import json
 import os
 from pathlib import Path
 import sys
+import time
 from typing import BinaryIO, Callable, TypeVar
+from uuid import uuid4
 
 from .agent_store import (
+    AGENT_SEED_FILES, CONVERSATIONS_DIR, MEMORIES_DIR,
     Agent, AgentStore, INITIALIZING_NAME, SCHEMA_VERSION, SETTINGS_NAME, StoreError, _unlinked,
-    name_key, valid_id, valid_name,
+    name_key, read_agent, valid_id, valid_name,
 )
 
 AGENT_LEASE_NAME = ".agent.lease"
@@ -35,8 +40,9 @@ class OwnershipError(OSError):
 
 
 class _KernelLease:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, timeout: float = 0):
         self.path = path
+        self.timeout = timeout
         self.handle: BinaryIO | None = None
         self.pid = os.getpid()
 
@@ -57,12 +63,23 @@ class _KernelLease:
             except BaseException:
                 os.close(fd)
                 raise
-            if sys.platform == "win32":
-                import msvcrt
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            deadline = time.monotonic() + self.timeout
+            while True:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    # Only kernel contention may wait, never failed path/open or
+                    # initialization checks. Expiry refuses; it cannot take over.
+                    remaining = deadline - time.monotonic()
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or remaining <= 0:
+                        raise
+                    time.sleep(min(0.02, remaining))
             # Lock first: even initialization belongs to the kernel owner.
             if not os.fstat(handle.fileno()).st_size:
                 handle.write(b"\0")
@@ -96,7 +113,7 @@ class AgentAuthority:
     name: str
     agent_id: str
     backend: str
-    model: str
+    model: str | None
     thinking_level: str
 
     @classmethod
@@ -119,6 +136,7 @@ class AgentSession:
         self._agent = agent
         self._lease = lease
         self._authority = AgentAuthority.from_agent(agent)
+        self.initial_conversation_id: str | None = None
 
     @classmethod
     def acquire_existing(cls, store: AgentStore, *, name: str | None = None,
@@ -139,7 +157,8 @@ class AgentSession:
 
     @classmethod
     def create_fresh(cls, store: AgentStore, *, name: str, agent_id: str,
-                     backend: str, model: str, thinking_level: str) -> AgentSession:
+                     backend: str, model: str | None, thinking_level: str,
+                     allow_unchosen: bool = False) -> AgentSession:
         """Reserve one caller-generated name/UUID, never overwrite or rename.
 
         Callers use liteharness.naming.generate_name; collisions are explicit,
@@ -150,9 +169,16 @@ class AgentSession:
         """
         name, agent_id = valid_name(name), valid_id(agent_id)
         execution = {"backend": backend, "model": model, "thinking_level": thinking_level}
-        if any(not isinstance(v, str) or not v.strip() for v in execution.values()):
-            raise StoreError("Agent execution authority is incomplete")
-        with _KernelLease(store.data_root / CATALOG_LEASE_NAME):
+        if allow_unchosen and model is None:
+            execution['model_selection'] = 'unchosen'
+        if (any(not isinstance(execution[k], str) or not execution[k].strip()
+                for k in ('backend', 'thinking_level'))
+                or (not (allow_unchosen and model is None)
+                    and (not isinstance(model, str) or not model.strip()))):
+            raise StoreError('Agent execution authority is incomplete')
+        # Serialize short fresh-home reservations; unlike seat ownership, another
+        # creator holding the catalog does not mean this agent is already owned.
+        with _KernelLease(store.data_root / CATALOG_LEASE_NAME, timeout=10):
             agents = store.list_agents()
             if any(name_key(a.name) == name_key(name) or a.agent_id == agent_id for a in agents):
                 raise StoreError("Agent name or identity already exists")
@@ -177,7 +203,20 @@ class AgentSession:
                     handle.write("\n")
                     handle.flush()
                     os.fsync(handle.fileno())
+                # Seed only this reserved home, before removing the blocking marker.
+                # Interrupted initialization is never activated or repaired on read.
+                _unlinked(directory / MEMORIES_DIR).mkdir()
+                conversation_id = str(uuid4())
+                conversations = _unlinked(directory / CONVERSATIONS_DIR)
+                conversations.mkdir()
+                _unlinked(conversations / conversation_id).mkdir()
+                for filename, seed in AGENT_SEED_FILES.items():
+                    with _unlinked(directory / filename).open("x", encoding="utf-8") as handle:
+                        handle.write(seed)
+                        handle.flush()
+                        os.fsync(handle.fileno())
                 session = cls(store, Agent(name, agent_id, directory, settings), lease)
+                session.initial_conversation_id = conversation_id
                 published = _unlinked(directory / SETTINGS_NAME)
                 os.link(initial, published)  # fails if any destination already exists
                 if not initial.samefile(published):
@@ -192,9 +231,13 @@ class AgentSession:
                 raise
 
     def _require_owned(self) -> None:
+        # Discovery/acquisition validates the whole catalog. Under the lease,
+        # re-read this home's paths and authority, not every unrelated sibling.
+        # Sibling corruption introduced later is caught on the next catalog
+        # discovery/acquisition; no metadata or path validation is cached here.
         if self._lease.handle is None or self._lease.pid != os.getpid():
             raise OwnershipError("Agent session is not owned by this process")
-        current = self.store.find_agent(agent_id=self._authority.agent_id)
+        current = read_agent(self.store.agent_directory(self._authority.name))
         if (current.directory != self._agent.directory
                 or AgentAuthority.from_agent(current) != self._authority):
             raise StoreError("Owned agent authority changed; reopen explicitly")
@@ -211,7 +254,41 @@ class AgentSession:
 
     def conversation_directory(self, conversation_id: str) -> Path:
         self._require_owned()
-        return self.store.conversation_directory(self._agent, conversation_id)
+        return _unlinked(self._agent.conversations_root / valid_id(conversation_id))
+
+    def update_execution(self, *, backend: str, model: str, thinking_level: str) -> AgentAuthority:
+        """Publish execution under this process lease; retain failed temp evidence.
+
+        Atomic replace leaves old authority intact on prepublication failure. The
+        in-memory capability refreshes only after exact readback. No registry or
+        conversation snapshot becomes a second execution authority.
+        """
+        from copy import deepcopy
+        self._require_owned()
+        execution = {'backend': backend, 'model': model, 'thinking_level': thinking_level}
+        if any(not isinstance(v, str) or not v.strip() for v in execution.values()):
+            raise StoreError('Agent execution authority is incomplete')
+        before = read_agent(self.store.agent_directory(self._authority.name))
+        settings = deepcopy(before.settings)
+        settings['execution'].update(execution)
+        settings['execution']['model_selection'] = 'chosen'
+        target = _unlinked(self._agent.directory / SETTINGS_NAME)
+        temporary = _unlinked(self._agent.directory / ('.settings.update.' + str(uuid4()) + '.json'))
+        with temporary.open('x', encoding='utf-8') as handle:
+            json.dump(settings, handle, indent=2)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._require_owned()
+        if read_agent(self.store.agent_directory(self._authority.name)).settings != before.settings:
+            raise StoreError('Agent settings changed before execution publication')
+        os.replace(temporary, target)
+        current = read_agent(self.store.agent_directory(self._authority.name))
+        if current.settings != settings or current.directory != self._agent.directory:
+            raise StoreError('Agent execution publication changed; reopen explicitly')
+        self._agent = current
+        self._authority = AgentAuthority.from_agent(current)
+        return self.authority
 
     def register_presence(self, register: Callable[[AgentAuthority], T]) -> T:
         self._require_owned()

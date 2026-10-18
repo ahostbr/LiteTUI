@@ -1,6 +1,6 @@
 """T1049-B2 — supervised children's CONFIRMs, spawn_agent, stopReason "approval", and K1.
 
-Plan §5/S2 (ab8969c2, approved 5ef7612a). Gate Sentinel d47235da: an OWNER parent's
+Plan §5/S2 (ab8969c2, approved 5ef7612a). Gate Orchestrator d47235da: an OWNER parent's
 child CONFIRM reaches the parent's UI and is approved by a keypress, never inbox and
 never a timeout-deny; CONTROL: a locked parent's child goes to its leader by inbox.
 Dijkstra 79e113ce (3): a child stopped by an approval outcome is reported FAILED with
@@ -21,6 +21,7 @@ from litetui import approval_relay, harness, runtime_log, seat_authority, tool_a
 from litetui.agent_launcher import LaunchBlocked, validate_request
 from litetui.agent_supervisor import AgentProcess, child_process_env
 from litetui.tool_policy import INTERACTIVE
+from _owned_seat import owned_app
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 DESTRUCTIVE = {"command": "rm -rf ./build"}
@@ -32,13 +33,15 @@ def disposable_presence(tmp_path, monkeypatch):
 
 
 def _registered_parent(a, parent):
+    if parent:
+        (harness.AGENTS_DIR / f"{parent}.json").write_text(json.dumps({"agent_id": parent}), encoding="utf-8")
     a.seat.registered = True
     (harness.AGENTS_DIR / f"{a.seat.agent_id}.json").write_text(
         json.dumps({"agent_id": a.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
 
 
 def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
-    a = m.LiteTUI()
+    a = owned_app()
     a.settings.tool_policy_profile = INTERACTIVE
     a._active_tool_profile = INTERACTIVE
     a._spawned_seat = bool(spawner)
@@ -49,6 +52,8 @@ def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
     a._rpc = rpc
     a._approval_host = host
     a._system = lambda *_: None
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(a, harness.AGENTS_DIR / a.seat.agent_id, actual_edit=True)
     return a
 
 
@@ -80,7 +85,50 @@ async def _until_sent(sent, limit=5.0):
 
 async def _reply(a, sent, verb):
     ident = await _until_sent(sent)
-    a._receive_mail({"from": SPAWNER, "body": f"{verb} {ident}"})
+    a._receive_mail({"to": a.seat.agent_id, "from": SPAWNER, "body": f"{verb} {ident}"})
+
+
+# ── T0340: timeout wording is request-scoped, not an operation ban ─────────
+
+TIMEOUT_REQUEST_NOTICE = (
+    "This request was not run and will not be retried automatically. "
+    "A new request for the same operation is allowed and gets its own approval."
+)
+
+
+@pytest.mark.parametrize("timeout", [600, 42])
+def test_timeout_stop_line_allows_a_new_request_but_not_automatic_retry(timeout):
+    a = SimpleNamespace(settings=SimpleNamespace(relay_approval_timeout_s=timeout))
+    assert approval_relay.stop_line(a, "powershell", "timeout") == (
+        "[stopped — the request's spawning agent did not answer the approval "
+        f"for powershell within {timeout}s; refused and logged] "
+        + TIMEOUT_REQUEST_NOTICE
+    )
+    # The timeout clarification must not weaken an explicit denial.
+    assert approval_relay.stop_line(a, "powershell", "denied") == (
+        "[stopped — the request's spawning agent denied powershell]"
+    )
+
+
+@pytest.mark.parametrize("timeout", [600, 42])
+def test_relay_message_conditions_request_scoped_notice_on_no_answer(timeout):
+    a = SimpleNamespace(seat=SimpleNamespace(name="worker", agent_id="worker-id"))
+    decision = SimpleNamespace(danger="write", reason="confirmation", capabilities=frozenset())
+    message = approval_relay._message(
+        a, "appr-0123456789ab", "powershell", {"command": "operation"},
+        decision, "typed", timeout, approver=SPAWNER,
+    )
+    assert message == (
+        "[APPROVAL appr-0123456789ab] worker (worker-i) asks to run powershell "
+        "during a typed turn\n"
+        "Danger: write; why: confirmation\n"
+        'Input: {"command": "operation"}\n'
+        f"[DELIVERY requester=worker-id approver={SPAWNER}]\n"
+        "Answer by inbox with exactly one line: APPROVE appr-0123456789ab  "
+        "or  DENY appr-0123456789ab\n"
+        f"If no answer within {timeout} s, the turn stops and this is logged:\n"
+        + TIMEOUT_REQUEST_NOTICE
+    )
 
 
 # ── K1: the Claude bridge (claude_tools._decide) ────────────────────────────
@@ -101,9 +149,87 @@ async def test_K1a_a_spawner_DENY_through_the_claude_bridge_stops_the_turn_and_l
     replying = asyncio.create_task(_reply(a, sent, "DENY"))
     refusal = await _bridge(a, tmp_path)._decide("Bash", DESTRUCTIVE, tool_policy.SHELL_POLICY)
     await replying
-    assert refusal and "denied Bash" in refusal
+    from litetui.textfmt import tool_denied
+    assert refusal == tool_denied(
+        "profile", name="Bash", reason=approval_relay.stop_line(a, "Bash", "denied"))
+    assert "do not retry" in refusal.lower()
+    assert TIMEOUT_REQUEST_NOTICE not in refusal
     assert a._stop_requested and a._stop_cause == "approval"
     assert [kw["status"] for kw in log] == ["denied"]
+
+
+@pytest.mark.parametrize("prompt_state", ["shipped", "missing", "broken"])
+@pytest.mark.asyncio
+async def test_timeout_final_model_response_is_request_scoped(log, tmp_path, monkeypatch, prompt_state):
+    from litetui import paths, textfmt
+    a = _seat()
+    if prompt_state != "shipped":
+        prompts = tmp_path / "prompts"
+        prompts.mkdir()
+        if prompt_state == "broken":
+            # Missing required reason must select the safe timeout fallback,
+            # not a profile refusal with a blanket retry ban.
+            (prompts / "tool-denied.md").write_text(
+                "## approval-timeout\n\n{name}: do not retry\n", encoding="utf-8")
+        monkeypatch.setattr(paths, "PROMPTS_DIR", prompts)
+    a._hook_source = "scheduled"
+    a.settings.relay_approval_timeout_s = 0.08
+    sent = []
+    _wire_send(a, sent)
+    try:
+        # Real unanswered relay -> authorization -> final native denial envelope.
+        # Only transport is inert; the pre-tool hook never dispatches a command.
+        from litetui.claude_tools import ClaudeTools
+        a.backend = SimpleNamespace(segment_id="timeout-test")
+        bridge = ClaudeTools(a, a.backend, "timeout-test", workspace=tmp_path)
+        result = await bridge.pre_tool({"tool_name": "Bash", "tool_input": DESTRUCTIVE}, "call-test", None)
+        refusal = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert result == {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": refusal,
+        }}
+        assert sent and len(sent) == 1
+        assert [kw["status"] for kw in log] == ["timeout"]
+        assert refusal == (
+            "[approval timeout] Bash: Nothing ran and nothing changed. "
+            + approval_relay.stop_line(a, "Bash", "timeout")
+        )
+        assert refusal.endswith(TIMEOUT_REQUEST_NOTICE)
+        assert "do not retry" not in refusal.lower()
+        assert a._stop_requested and a._stop_cause == "approval"
+        assert a._stop_reason == approval_relay.stop_line(a, "Bash", "timeout")
+        assert not approval_relay._pending(a)
+        # Sibling policy-denial rendering remains unchanged even on fallback.
+        expected = (textfmt._tool_denied_sections()["profile"] if prompt_state == "shipped"
+                    else textfmt.TOOL_DENIED_FALLBACK["profile"])
+        expected = " ".join(expected.replace("{name}", "Bash").replace("{reason}", "floor denial").split())
+        assert textfmt.tool_denied("profile", name="Bash", reason="floor denial") == expected
+        assert "do not retry" in expected.lower()
+    finally:
+        a.store.release()
+
+
+@pytest.mark.asyncio
+async def test_immutable_floor_final_response_keeps_retry_ban(log, tmp_path):
+    from litetui.claude_tools import ClaudeTools
+    from litetui.textfmt import tool_denied
+    a = _seat()
+    a.backend = SimpleNamespace(segment_id="floor-test")
+    args = {"command": "rm -rf /"}
+    decision = tool_policy.evaluate(INTERACTIVE, tool_policy.SHELL_POLICY, args,
+                                    tmp_path, tool_name="Bash", shell="bash")
+    assert decision.action == tool_policy.DENY and "DENY FLOOR" in decision.reason
+    try:
+        result = await ClaudeTools(a, a.backend, "floor-test", workspace=tmp_path).pre_tool(
+            {"tool_name": "Bash", "tool_input": args}, "call-floor", None)
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert reason == tool_denied("profile", name="Bash", reason=decision.reason)
+        assert "do not retry" in reason.lower()
+        assert TIMEOUT_REQUEST_NOTICE not in reason
+        assert log == []  # immutable refusals never ask for approval
+    finally:
+        a.store.release()
 
 
 def test_K1b_the_claude_deadline_outlasts_the_relay_timeout_not_315s():
@@ -136,7 +262,9 @@ async def test_SHOULD_an_answer_written_as_payload_text_is_read():
     a = _seat()
     future = asyncio.get_running_loop().create_future()
     approval_relay._pending(a)["appr-0123456789ab"] = (future, SPAWNER)
-    assert approval_relay.take_answer(a, {"from": SPAWNER, "payload": {"text": "APPROVE appr-0123456789ab"}})
+    from litetui import approval_authority
+    approval_authority.create(a, "appr-0123456789ab", approver=SPAWNER, route="spawner", timeout=600)
+    assert approval_relay.take_answer(a, {"to": a.seat.agent_id, "from": SPAWNER, "payload": {"text": "APPROVE appr-0123456789ab"}})
     assert future.result() is True
 
 
@@ -207,7 +335,7 @@ async def test_G_an_owner_GUI_parent_asks_its_host_with_NO_deadline(monkeypatch)
 
     monkeypatch.setattr(tool_approval, "approve_over_rpc", host)
     assert await a.approve_for_child(REQUEST) is True
-    assert seen["timeout"] == 0, "0 = no deadline: Ryan's keypress is never timed out"
+    assert seen["timeout"] == 0, "0 = no deadline: Owner's keypress is never timed out"
 
 
 @pytest.mark.asyncio
@@ -300,7 +428,9 @@ def test_C1_the_child_reads_its_approval_deadline_from_its_launcher(monkeypatch,
 async def test_C1_an_unbounded_rpc_approval_waits_and_says_so(monkeypatch):
     monkeypatch.setenv(tool_approval.APPROVAL_TIMEOUT_ENV, "0")
     emitted = []
-    host = SimpleNamespace(_rpc_emit=emitted.append, _active_tool_profile=INTERACTIVE)
+    host = _seat(spawner=None, rpc=True)
+    host._rpc_emit = emitted.append
+    store = host.store
     decision = tool_policy.PolicyDecision(tool_policy.CONFIRM, INTERACTIVE, frozenset(), "why")
 
     async def answer_late():
@@ -308,9 +438,15 @@ async def test_C1_an_unbounded_rpc_approval_waits_and_says_so(monkeypatch):
         tool_approval.resolve_over_rpc(host, emitted[0]["id"], True)
 
     late = asyncio.create_task(answer_late())
-    answer = await tool_approval.approve_over_rpc(host, "bash", DESTRUCTIVE, decision)
-    await late
-    assert bool(answer) is True and emitted[0]["timeout_s"] is None
+    try:
+        answer = await tool_approval.approve_over_rpc(host, "bash", DESTRUCTIVE, decision)
+        await late
+        assert bool(answer) is True and emitted[0]["timeout_s"] is None
+    finally:
+        if not late.done():
+            late.cancel()
+        await asyncio.gather(late, return_exceptions=True)
+        store.release()
 
 
 @pytest.mark.asyncio
@@ -338,7 +474,7 @@ async def test_the_supervised_child_is_launched_with_the_host_flag_and_its_deadl
 @pytest.mark.asyncio
 async def test_run_for_app_sets_no_deadline_for_a_human_and_the_relay_for_a_locked_parent(
         monkeypatch, seat, expected):
-    """Dijkstra H1: a keypress is never timed out at Ryan's own parent AND at a
+    """Dijkstra H1: a keypress is never timed out at Owner's own parent AND at a
     hand-launch modal; only a parent that relays to its spawner bounds the child."""
     from litetui import agent_app_runtime
     a = {"own": lambda: _ryans(_seat(spawner=None)), "hand": lambda: _seat(spawner=None),

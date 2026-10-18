@@ -1,8 +1,9 @@
 """The shared task store must not expose another conversation's live work."""
 from types import SimpleNamespace
 
+from _owned_seat import owned_app
+
 from litetui import rpc, tasks
-from litetui.app import LiteTUI
 from litetui.plugins.tasks_plugin import _cmd_tasks
 from litetui.task_screens import bg_text
 
@@ -23,7 +24,7 @@ def test_live_panel_only_shows_current_conversation():
 def test_other_conversation_cannot_list_tail_or_kill_task(monkeypatch):
     own = tasks.new_task("bash", {"command": "own job"}, "our-convo")
     other = tasks.new_task("bash", {"command": "foreign job"}, "other-convo")
-    app = LiteTUI()
+    app = owned_app()
     app.convo_id = "our-convo"
     app.bg_tasks = {own.id: own, other.id: other}
     said = []

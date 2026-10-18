@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "convo_search",
-    "description": "Ranked search over ALL LiteHarness conversations on this machine (C:\\Projects\\LiteTUI\\.convos, 400+ convos) — the fleet-wide memory of what every agent has ever discussed, decided or run. Backed by SQLite FTS5 (bm25, user/assistant messages weighted 10x tool output). Default view is ONE ROW PER CONVO ranked by its best match — it answers 'which conversation', use `messages=true` for the flat per-message view.\nquery: search terms, implicit AND, quoted phrases supported. Verify ground truth before trusting a no-hit: a word absent from every raw transcript genuinely returns nothing (grep for absence is the raw file, not this index).\nshow: dump one conversation's indexed messages (convo id or unique prefix).\nraw: grep the RAW on-disk convo.jsonl with a regex (convo id as `raw`, pattern as `query`) — for confirming what the index holds.\nstats: index health — convo/message/char counts by role. The index is incremental and current; no rebuild needed to search.",
+    "description": "Read-only ranked search of the existing index snapshot for the configured data root: owned .agents/<Name>/conversations plus read-only .convos archives, validated at refresh. Lookup never builds or scans the fleet. SQLite FTS5 weights user/assistant 10x tool output. Default ONE ROW PER CONVO; messages=true selects individual messages. First line reports last successful refresh UTC or UNKNOWN; snapshots older than 24h warn but remain searchable. Missing/incompatible/wrong-root indexes refuse with the exact explicit refresh command. No-hit means absent from this snapshot, not necessarily absent from live transcripts.\nshow: indexed snapshot messages, not a live source read.\nraw: currently refuses; authoritative current ownership requires fleet enumeration. Refresh does NOT enable raw access.\nstats: snapshot counts by role, not live index health.\nrefresh=true: separate explicit action; launches a detached hidden refresh with a 3600s budget and returns immediately with PID/log path. The requesting agent/operator must monitor the log for success/failure/timeout. No automatic startup refresh or watcher.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -16,11 +16,15 @@
         },
         "raw": {
           "type": "string",
-          "description": "grep the raw on-disk convo.jsonl for a convo (id or prefix); query becomes the regex"
+          "description": "currently refuses: safe current ownership needs fleet enumeration; refresh does not enable raw"
         },
         "stats": {
           "type": "boolean",
-          "description": "index health report and exit"
+          "description": "indexed snapshot counts by role"
+        },
+        "refresh": {
+          "type": "boolean",
+          "description": "separate explicit detached hidden logged refresh; returns launch receipt immediately, requester monitors log; do not combine with lookup arguments"
         },
         "agent": {
           "type": "string",

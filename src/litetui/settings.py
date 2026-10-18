@@ -131,6 +131,15 @@ class Settings:
     ninfer_kv_capacity: str = ""
     #: --host-kv-mib (serving.md:786): pinned host RAM for spilled KV. None = engine default 8192.
     ninfer_host_kv_mib: int | None = None
+    #: Strata (https://github.com/Niko1221/Strata): Qwen3.8-Flash-Next on one GPU plus system
+    #: RAM. Blank host = the chosen config's port on loopback (8080). Blank root = LiteSuite's
+    #: install (~/.litesuite/llm/strata). Blank config = the ONE strata-<model>.json there;
+    #: /model picks between several. Context None = what the config was set up with; a number
+    #: is the engine's --max-context on the next /engine start.
+    strata_host: str = ""
+    strata_root: str = ""
+    strata_config: str = ""
+    strata_max_context: int | None = None
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
@@ -282,12 +291,25 @@ class Settings:
     #: [APPROVAL] inbox message before the turn stops and is logged (Marquee
     #: f4d49382: 600 s, no answer = deny). Read by approval_relay.timeout_s.
     relay_approval_timeout_s: int = 600
+    #: T0408-L, stage 1. None is off. The one word "count" makes the approval door LOG,
+    #: for each approval it routes, whether the plain-read check would have covered it
+    #: (permission_judge.py). It authorizes nothing, skips no approval, calls no model.
+    permission_judge: str | None = None
     #: T538 — the model the subagent tool sends its child to when the call names
     #: none. None = the parent's own model. the user 2026-09-08 21:4x: "run it with
     #: the 27b using the 2B Q4 as its subagents" — a small model loaded beside
     #: the big one has its own LM Studio slots, so summaries and extractions run
     #: there without touching the parent's pool.
     subagent_model: str | None = None
+    #: One route shared by all instances; null follows the parent backend/model.
+    subagent_route: dict | None = None
+    #: Opt-in ordinary named-worker dispatch. None is disabled; no model inheritance.
+    #: Exact keys: backend, model, cognitive (bare profile), thinking_level.
+    small_task_route: dict | None = None
+    #: null inherits global, {} explicitly follows parent, route overrides global.
+    subagent_route_override: dict | None = None
+    #: Expert-only local dispatch; never permits loading a model for a child.
+    allow_local_subagents: bool = False
     #: T640 — the model the `llm-tool-summ` fold's throwaway side call goes to.
     #: None = the model you are talking to, which is what it always did.
     #:
@@ -375,6 +397,10 @@ class Settings:
 
     # ── Compaction ───────────────────────────────────────────────────────────
     compact_max_tool_iters: int = 8
+    #: Owner mode (`--owner NAME --memory DIR`): the cap, in characters, on how much of
+    #: DOMAIN.md is injected. DOMAIN.md is long and its newest rows are first, so the
+    #: cut drops the tail. A small local window may need a lower value.
+    owner_domain_cap: int = 30000
     #: 🔴 WAS HARDCODED AT 2048 AND THAT IS WHY /compact PRODUCED NO SUMMARY.
     #: Compact asks for reasoning_effort="none", but a virtual model whose own
     #: level set lacks "none" has the field DROPPED with a 200 (see app.py's
@@ -505,12 +531,12 @@ class Settings:
     footer_show_tps: bool = True
     #: Claude prompt-cache health and time left on it, e.g. "cache warm 97% 52m" (T911).
     footer_show_cache: bool = True
-    #: Live machine meters on footer line 2. OFF by default (Ryan 2026-09-27: "turn this off in
+    #: Live machine meters on footer line 2. OFF by default (Owner 2026-09-27: "turn this off in
     #: light UI though. Uh, make a setting to toggle that"); /settings and the meters:on/off click
     #: turn it on.
     footer_task_manager: bool = False
     #: Keyboard-shortcut hints in the footer (^G view · ^B select · ^E open, and the
-    #: binding row). OFF by default (Ryan 2026-09-30: "stop showing these keyboard
+    #: binding row). OFF by default (Owner 2026-09-30: "stop showing these keyboard
     #: shortcuts by default make it a toggle and set it off for now").
     footer_show_key_hints: bool = False
     #: Footer item ids in left-to-right order. Visibility remains controlled by
@@ -522,9 +548,11 @@ class Settings:
     # ── Voice (TTS out) ───────────────────────────────────────────────────────
     #: Show the "♫ Speak" button on each response (the user 2026-09-24: "tts_enabled
     #: should toggle displaying the speach button on responses"). Replies are never
-    #: spoken automatically; off hides the buttons and stops any playback.
+    #: spoken automatically; off hides buttons and stops local playback only.
     tts_enabled: bool = True
-    #: Maximum duration of a speech child, seconds.
+    #: Prefer LiteSuite's selected voice; engine/voice below remain the fallback.
+    tts_litesuite_first: bool = True
+    #: Maximum duration of a local speech child, seconds.
     tts_timeout: int = 300
     #: "pyttsx3" (Windows SAPI direct, offline, no download — the default) or
     #: "edge" (Microsoft cloud neural voices; needs edge-tts + playsound).
@@ -557,6 +585,9 @@ ENV_OVERRIDES: dict[str, str] = {
     "ninfer_host": "LITETUI_NINFER_HOST",
     "ninfer_executable": "LITETUI_NINFER_EXE",
     "ninfer_artifact": "LITETUI_NINFER_ARTIFACT",
+    "strata_host": "LITETUI_STRATA_HOST",
+    "strata_root": "LITETUI_STRATA_ROOT",
+    "strata_config": "LITETUI_STRATA_CONFIG",
     "backend": "LITETUI_BACKEND",
     "llama_host": "LITETUI_LLAMA_HOST",
     "tool_iterations": "LM_TOOL_ITERS",
@@ -620,6 +651,13 @@ def load(root: Path | None = None) -> Settings:
     """Defaults, then the settings file, then the environment."""
     s = Settings()
     p = settings_path(root)
+    from litetui.subagent_routing import migrate_global_file
+    try:
+        migrate_global_file(p)
+    except (OSError, ValueError):
+        # Startup retains the existing tolerant-load contract. Child dispatch
+        # uses SettingsService's strict live read and reports malformed routing.
+        pass
     if p.exists():
         try:
             data = json.loads(p.read_text(encoding="utf-8"))

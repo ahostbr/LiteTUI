@@ -18,6 +18,7 @@ from litetui import (
     tool_policy,
 )
 from litetui.app import LiteTUI
+from _owned_seat import owned_app
 
 OLD = "old-parent"
 NEW = "new-parent"
@@ -30,7 +31,9 @@ def arm(tmp_path, monkeypatch):
     agents.mkdir()
     monkeypatch.setattr(harness, "AGENTS_DIR", agents)
     monkeypatch.setattr(harness, "INBOX_ROOT", tmp_path / "inbox")
-    app = LiteTUI()
+    for parent in (OLD, NEW):
+        (agents / f"{parent}.json").write_text(json.dumps({"agent_id": parent, "spawned_by": None}), encoding="utf-8")
+    app = owned_app()
     app._owner_seat = False
     app._spawned_seat = app._agent_launched = True
     app._spawner_id = OLD
@@ -46,6 +49,8 @@ def arm(tmp_path, monkeypatch):
         row.write_text(json.dumps({"agent_id": app.seat.agent_id, "spawned_by": parent}), encoding="utf-8")
 
     reparent(OLD)
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin', actual_edit=True)
     calls, logs = [], []
     monkeypatch.setattr(runtime_log, "record", lambda event, **kw: logs.append((event, kw)))
     monkeypatch.setattr(harness, "harness_disabled", lambda: False)
@@ -84,16 +89,16 @@ async def test_reparent_routes_next_request_but_cannot_answer_an_issued_request(
     destination, ident = await request(calls, 1)
     assert destination == OLD
     reparent(NEW)
-    assert not approval_relay.take_answer(app, {"from": NEW, "body": f"APPROVE {ident}"})
-    assert approval_relay.take_answer(app, {"from": OLD, "body": f"DENY {ident}"})
+    assert not approval_relay.take_answer(app, {"to": app.seat.agent_id, "from": NEW, "body": f"APPROVE {ident}"})
+    assert approval_relay.take_answer(app, {"to": app.seat.agent_id, "from": OLD, "body": f"DENY {ident}"})
     assert (await first)[1] is False
 
     second = asyncio.create_task(door(app, tmp_path))
     destination, ident = await request(calls, 2)
     try:
         assert destination == NEW, "launch-cached parent must not receive the next request"
-        assert not approval_relay.take_answer(app, {"from": OLD, "body": f"APPROVE {ident}"})
-        app._receive_mail({"from": NEW, "body": f"APPROVE {ident}"})
+        assert not approval_relay.take_answer(app, {"to": app.seat.agent_id, "from": OLD, "body": f"APPROVE {ident}"})
+        app._receive_mail({"to": app.seat.agent_id, "from": NEW, "body": f"APPROVE {ident}"})
         assert await second is None
         assert app._spawner_id == OLD, "launch provenance is not mutable approval authority"
         assert [kw["status"] for event, kw in logs if event == "approval_relay"] == ["denied", "approved"]
@@ -129,7 +134,7 @@ async def test_registered_new_parent_without_launch_parent_is_adopted(arm, tmp_p
     app, _row, reparent, _calls, _logs = arm
     app._spawner_id = None
     reparent(NEW)
-    app.settings.relay_approval_timeout_s = 0.01
+    app.settings.relay_approval_timeout_s = 0.2
     assert seat_authority.confirm_route(app) == "spawner"
     assert (await door(app, tmp_path))[1] is False  # no answer, never permission
     assert _calls[0][1] == NEW

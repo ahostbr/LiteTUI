@@ -417,7 +417,7 @@ def render_list(tasks) -> str:
 # ── store ───────────────────────────────────────────────────────────────
 
 
-def save(tasks, root: Path | str) -> None:
+def save(tasks, root: Path | str, *, agent_session=None) -> None:
     """Persist through `row_store`: re-read, apply OUR delta, replace atomically.
 
     🔴 A WHOLE-FILE WRITE IS A LOST UPDATE AS SOON AS THERE ARE TWO WINDOWS.
@@ -435,7 +435,9 @@ def save(tasks, root: Path | str) -> None:
     `jobs.json`, which has three deletion paths, needs the same helper for the
     half this file does not exercise.
     """
-    row_store.write(Path(root) / STORE, [t.to_row() for t in tasks], prefix=".tasks-")
+    from litetui.owned_storage import require_conversation
+    root = require_conversation(root, agent_session)
+    row_store.write(root / STORE, [t.to_row() for t in tasks], prefix=".tasks-")
 
 
 class StoreNotBorn(Exception):
@@ -452,17 +454,20 @@ class StoreNotBorn(Exception):
     """
 
 
-def convo_store_dir(convo_id: str) -> Path:
-    """The directory holding one conversation's store. It must already exist."""
-    if not convo_id or convo_id in (".", "..") or Path(convo_id).name != convo_id:
-        raise StoreNotBorn(f"no task store for conversation id {convo_id!r}")
-    d = Path(paths.CONVO_DIR) / convo_id
-    if not d.is_dir():
-        raise StoreNotBorn(f"conversation {convo_id} has no directory yet; its task rows have nowhere to go")
-    return d
+def convo_store_dir(convo_id: str, *, agent_session=None) -> Path:
+    """Resolve writable task store through owned capability, never its archive twin."""
+    if agent_session is not None:
+        try:
+            d = agent_session.conversation_directory(convo_id)
+        except ValueError as exc:
+            raise StoreNotBorn(f'owned task store authority refused: {exc}') from exc
+        if not d.is_dir():
+            raise StoreNotBorn(f'owned conversation {convo_id} has no directory yet')
+        return d
+    raise StoreNotBorn('An owned agent session is required for task persistence; archives are read-only')
 
 
-def save_by_convo(tasks) -> None:
+def save_by_convo(tasks, *, agent_session=None) -> None:
     """Persist each row into the store of the conversation that STARTED it.
 
     A row's `convo_id` never changes, and a task can finish long after the user
@@ -476,7 +481,8 @@ def save_by_convo(tasks) -> None:
     failures: list[Exception] = []
     for convo_id, rows in groups.items():
         try:
-            save(rows, convo_store_dir(convo_id))
+            save(rows, convo_store_dir(convo_id, agent_session=agent_session),
+                 agent_session=agent_session)
         except (StoreNotBorn, OSError) as e:
             failures.append(e)
     if failures:
@@ -508,10 +514,11 @@ def _marker_sig(marker: Path) -> dict | None:
     return {"size": raw.get("size"), "mtime_ns": raw.get("mtime_ns")}
 
 
-def topup(convo_dir: Path | str, legacy_root: Path | str) -> int:
+def topup(convo_dir: Path | str, legacy_root: Path | str, *, agent_session=None) -> int:
     """Copy this conversation's rows out of the legacy shared file. Returns how many.
 
-    🔴 COPY-ONLY, AND ON EVERY BIND. The legacy file is opened for READING and
+    🔴 EXPLICIT CAPABILITY-GATED TOPUP ONLY; BIND DOES NOT MIGRATE. The legacy
+    file is opened for READING and
     nothing else: no write, no rename, no delete, and not its `.lock` - seats on
     older code keep writing it until they are relaunched, and one that resumes
     this conversation AFTER it was migrated appends its rows there. A one-shot
@@ -524,7 +531,8 @@ def topup(convo_dir: Path | str, legacy_root: Path | str) -> int:
     it. A directory that does not exist is left alone (a top-up never creates
     one); a legacy file that cannot be read leaves no marker and is retried.
     """
-    convo_dir = Path(convo_dir)
+    from litetui.owned_storage import require_conversation
+    convo_dir = require_conversation(convo_dir, agent_session)
     legacy = Path(legacy_root) / STORE
     if not convo_dir.is_dir():
         return 0
@@ -544,7 +552,8 @@ def topup(convo_dir: Path | str, legacy_root: Path | str) -> int:
     return copied
 
 
-def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str) -> None:
+def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str, *,
+         agent_session=None) -> None:
     """Bring one conversation's rows into `held`: top up, load, merge.
 
     Rows of other conversations already in `held` are untouched (a task started
@@ -561,7 +570,16 @@ def bind(held: dict[str, Task], convo_dir: Path | str, legacy_root: Path | str) 
     resumed here, which the pre-T0132 boot-time load did show. `/tasks` and the
     rpc `tasks.list` filter to the current conversation (`host_tasks_for_app`).
     """
-    topup(convo_dir, legacy_root)
+    if agent_session is None:
+        pass  # retained archive rows may be read, never top-up/lock/write on bind
+    else:
+        try:
+            expected = agent_session.conversation_directory(Path(convo_dir).name)
+        except ValueError as exc:
+            raise StoreNotBorn(f'owned task bind authority refused: {exc}') from exc
+        if Path(convo_dir) != expected:
+            raise StoreNotBorn('Task bind lies outside selected owned agent')
+        # Copy-only migration is an explicit operator action, never on owned read.
     for task_id, task in load(convo_dir).items():
         ours = held.get(task_id)
         if ours is not None and ours.owner_instance == _INSTANCE_ID:

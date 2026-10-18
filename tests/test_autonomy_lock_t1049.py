@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as m
 from litetui import rpc, seat_authority, tool_policy
@@ -11,7 +12,7 @@ from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 
 
 def _app(profile=STRICT, **kw):
-    a = m.LiteTUI(**kw)
+    a = owned_app(**kw)
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -23,7 +24,7 @@ def _app(profile=STRICT, **kw):
 
 
 @pytest.mark.parametrize("seat", ["spawned", "resumed", "owner", "unmarked"])
-def test_ryan_can_always_manually_set_autonomous(monkeypatch, seat):
+def test_owner_can_always_manually_set_autonomous(monkeypatch, seat):
     """please just make that one of the fixes is that I can always manually change to auto mode if I so choose to in Lite UI."""
     a = _app(STRICT, tool_profile=INTERACTIVE)
     a._spawned_seat = seat == "spawned"

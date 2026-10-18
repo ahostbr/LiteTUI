@@ -38,7 +38,6 @@ import pytest
 
 from litetui import app as app_mod
 from litetui import paths
-from litetui.settings import Settings
 from litetui.tool_approval import ALWAYS, DENIED, ONCE
 from litetui.tool_policy import SHELL_POLICY
 
@@ -97,16 +96,14 @@ class _ToolCallStream:
 
 def _app(answer, iterations: int = 3):
     """A LiteTUI whose one tool needs confirmation, answered with `answer`."""
-    a = app_mod.LiteTUI()
+    from test_compaction_ui import _app as owned_app
+
     # STRICT, because this file is ABOUT the deny path, which only exists when
     # the probe CONFIRMs. INTERACTIVE stopped confirming ordinary shell in
-    # 5e3c7be (2026-09-19), and Ryan's ruling in 1ed3b84 (2026-09-24) made it
+    # 5e3c7be (2026-09-19), and Owner's ruling in 1ed3b84 (2026-09-24) made it
     # ask only for the danger table, so `git status` never asks there. STRICT
     # still confirms process_execution.
-    # BOTH fields: `_execute_tool` reads `_active_tool_profile`, and the fresh
-    # Settings below would otherwise carry the AUTONOMOUS default.
-    a._active_tool_profile = app_mod.tool_policy.STRICT
-    a.settings = Settings(
+    a = owned_app(
         tools_enabled=True,
         tool_iterations=iterations,
         tool_policy_profile=app_mod.tool_policy.STRICT,
@@ -114,6 +111,7 @@ def _app(answer, iterations: int = 3):
         wake_after_compact=False,
         clear_screen_after_compact=False,
     )
+    a._active_tool_profile = app_mod.tool_policy.STRICT
     a.tools_enabled = True
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
@@ -149,12 +147,7 @@ def _app(answer, iterations: int = 3):
         return _ToolCallStream(rounds["n"])
 
     a._create = create
-    # WS3 b5f1f40: local LM Studio inference is refused before any HTTP, and this
-    # app boots on LM Studio (conftest pins LITETUI_BACKEND), so every turn died
-    # "BLOCKED" in the error widget before the tool loop -- even the approve
-    # control ran 0 times. See test_compaction_ui.off_local_lm_studio.
-    from test_compaction_ui import off_local_lm_studio
-    return off_local_lm_studio(a)
+    return a
 
 
 async def _settle(a, pilot, extra: int = 10):

@@ -24,6 +24,7 @@ from litetui.tool_policy import (
     WRITE_POLICY,
     evaluate,
 )
+from _owned_seat import owned_app
 
 
 def decide(profile, policy, args=None, root=None):
@@ -121,7 +122,7 @@ def test_unknown_profiles_and_undeclared_mcp_effects_fail_closed(tmp_path):
 
 
 def test_every_first_party_registered_tool_has_explicit_policy():
-    tui = app.LiteTUI()
+    tui = owned_app()
     assert tui.plugins.tools
     unknown = [entry.name for entry in tui.plugins.tools if entry.policy is MCP_UNKNOWN_POLICY]
     assert unknown == [], f"first-party tools missing policy metadata: {unknown}"
@@ -135,7 +136,7 @@ def test_the_chat_defaults_to_autonomous_and_a_job_keeps_the_level_it_recorded(t
     It was `..._conversations_are_interactive_and_jobs_are_narrow_by_default`,
     then `test_every_turn_defaults_to_autonomous_and_the_job_knob_is_dead`. The
     conversation default is still `autonomous` ("b default to auto"). But a job's
-    own `tool_profile` is read again when it fires (T1082, Ryan: "we need new
+    own `tool_profile` is read again when it fires (T1082, Owner: "we need new
     settings to set this at the time u create the schedule ... it runs at the
     scheduled level"), so the knob is live and what it records must survive the
     round-trip.

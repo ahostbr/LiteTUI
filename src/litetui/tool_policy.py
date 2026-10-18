@@ -12,6 +12,7 @@ become side effects of the operation they are supposed to guard.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -23,8 +24,8 @@ from litetui import deny_floor, worktree_scope
 # execution is process_execution, and a command that formats a disk is also
 # destructive_irreversible.
 READ_ONLY = "read_only"
-#: The agent writing ITS OWN STORE — `.convos/<id>/**`: the transcript, the
-#: memory index, soul.md, handoff.md, memories/. Distinct from workspace_write
+#: The agent writing ITS OWN STORE — its owned `.agents/<Name>/` home:
+#: memory index, soul.md, handoff.md, memories/ and conversation children. Distinct from workspace_write
 #: because it is a different ACT, not a smaller one: persisting yourself is not
 #: editing the user's code, and the two were indistinguishable until T083.
 #:
@@ -131,7 +132,7 @@ class PolicyDecision:
 # T0116: default/interactive asks only for destructive shell actions. Read-only
 # ordinary commands and program launches never ask merely because of their
 # executable's location. Undeclared MCP effects retain their separate gate.
-# Rare/unrepresented shell forms ask (Ryan: "Ship, rare shapes ask").
+# Rare/unrepresented shell forms ask (Owner: "Ship, rare shapes ask").
 # Explicit human-selected strict supervision is deliberately MORE asking.
 INTERACTIVE_PROFILE = ToolProfile(
     INTERACTIVE,
@@ -331,6 +332,18 @@ def rule_key(tool_name: str, capabilities: Iterable[str]) -> str:
     return f"{tool_name}:{caps}"
 
 
+def proven_shell(tool_name: str, policy: ToolPolicy) -> str | None:
+    """The interpreter a command is KNOWN to run under, or None.
+
+    Only the core PowerShell command route proves it. An MCP name or an
+    agent-supplied shell field must never gain this: an unproven command is
+    parsed under every dialect, and cmd's reading (`;` is data, `'` is not a
+    quote) turns a compound read into one malformed write. Every guard that
+    asks the deny floor about a shell command passes this, not its own guess.
+    """
+    return "powershell" if tool_name == "powershell" and policy is SHELL_POLICY else None
+
+
 def evaluate(
     profile_name: str,
     policy: ToolPolicy,
@@ -340,6 +353,7 @@ def evaluate(
     tool_name: str = "",
     active_conversation: Path | None = None,
     active_agent_memory_root: Path | None = None,
+    active_owner_memory_dir: Path | None = None,
     always_allow: frozenset[str] = frozenset(),
     deny: frozenset[str] = frozenset(),
     shell: str | None = None,
@@ -375,7 +389,8 @@ def evaluate(
     if policy.classify_args is classify_write:
         capabilities = frozenset(policy.capabilities) | frozenset(classify_write(
             args or {}, Path(workspace).resolve(), active_conversation=active_conversation,
-            active_agent_memory_root=active_agent_memory_root))
+            active_agent_memory_root=active_agent_memory_root,
+            active_owner_memory_dir=active_owner_memory_dir))
     names = ", ".join(sorted(capabilities))
     # 🔴 THE DENY FLOOR RUNS FIRST: before the profile, before any standing
     # rule, for every turn source. Every turn (typed, inbox, cron, goal loop,
@@ -384,8 +399,7 @@ def evaluate(
     # typed turn can disagree on it) and adds no prompt: it only refuses.
     # Only the core PowerShell command route proves its interpreter. An MCP
     # name / agent-supplied shell field must never gain this exemption.
-    floor_shell = "powershell" if tool_name == "powershell" and policy is SHELL_POLICY else None
-    if floor := _floor(args, workspace, shell=floor_shell):
+    if floor := _floor(args, workspace, shell=proven_shell(tool_name, policy)):
         return PolicyDecision(DENY, profile_name, capabilities, floor, danger=DELETION)
     if profile is None:
         return PolicyDecision(
@@ -428,7 +442,7 @@ def evaluate(
                 f"allowed by a standing rule for {key}",
             )
         # T0246: a shell command confined to the seat's OWN worktree needs no human on
-        # `interactive` (Ryan: "cmds inside its worktree that arent removal of the
+        # `interactive` (Owner: "cmds inside its worktree that arent removal of the
         # tree... it should never need approval"). After the floor and the standing
         # rules above, so neither can be bypassed by it; and interactive only.
         if (profile.name == INTERACTIVE and policy.classify_args is classify_shell
@@ -505,9 +519,41 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+#: The two files an owner-mode seat rewrites at every compaction. SOUL.md is
+#: deliberately absent: the charter changes rarely and on purpose, so it gets no
+#: exemption. It is judged like any write outside the workspace, which means it asks
+#: only on the strict profile (interactive and autonomous allow external writes).
+OWNER_WORKING_FILES = ("NOW.md", "DOMAIN.md")
+
+
+def _owner_working_file(args: Mapping[str, object], workspace: Path, owner_dir: Path) -> bool:
+    """True when args name exactly `<owner_dir>/NOW.md` or `<owner_dir>/DOMAIN.md`.
+
+    Fails closed on a link or reparse point anywhere in the path, a hardlinked
+    file, and any spelling that is not exactly one of the two names directly
+    under the folder (`..`, a subfolder, a sibling, another folder).
+    """
+    from litetui.agent_store import StoreError, _unlinked
+    try:
+        own = _unlinked(Path(owner_dir)).resolve()
+        raw = Path(str(args.get("path") or "")).expanduser()
+        checked = _unlinked(raw if raw.is_absolute() else workspace / raw)
+        try:
+            if checked.lstat().st_nlink > 1:
+                return False
+        except FileNotFoundError:
+            pass
+    except (OSError, StoreError):
+        return False
+    target = _resolve_path(args.get("path"), workspace)
+    return any(os.path.normcase(str(target)) == os.path.normcase(str(own / name))
+               for name in OWNER_WORKING_FILES)
+
+
 def classify_write(args: Mapping[str, object], workspace: Path, *,
                    active_conversation: Path | None = None,
-                   active_agent_memory_root: Path | None = None) -> Iterable[str]:
+                   active_agent_memory_root: Path | None = None,
+                   active_owner_memory_dir: Path | None = None) -> Iterable[str]:
     """Narrow host-owned memory permission, never authority from tool args.
 
     An agent memory root comes only from the host's validated owned AgentSession.
@@ -516,7 +562,13 @@ def classify_write(args: Mapping[str, object], workspace: Path, *,
     agent context preserves the existing legacy conversation behavior.
     Linked/reparse agent memory paths fail closed, including ancestors. Resolution
     and ownership checks are not a TOCTOU filesystem sandbox.
+
+    `active_owner_memory_dir` is the owner-mode folder, set once from the
+    validated launch flag and never from args: exactly its NOW.md and DOMAIN.md
+    are SELF_STORE, in addition to (not instead of) the agent home's own files.
     """
+    if active_owner_memory_dir is not None and _owner_working_file(args, workspace, active_owner_memory_dir):
+        return (SELF_STORE,)
     target = _resolve_path(args.get("path"), workspace)
     if active_agent_memory_root is not None:
         from litetui.agent_store import StoreError, _unlinked
@@ -578,7 +630,7 @@ def _unwrap_command_verbs(command: str) -> str:
 #:   `format` now has to be at a command position; a disk wipe is
 #:   `format C:`, never the third word of a script name.
 #:
-#:   T1094, Ryan 1ed3b84: interactive asks only for dangerous commands.
+#:   T1094, Owner 1ed3b84: interactive asks only for dangerous commands.
 #:   Python's `\b` accepts the hyphen in PowerShell Verb-Noun names as an end
 #:   of word: Format-Table, Kill-Process and Del-Item were false prompts.
 #:   Bare command names must end before both word characters AND hyphens.
@@ -803,6 +855,93 @@ def _command_view(command: str, shell: str | None = None, *, path_launch: bool =
     return scan(0)[0]
 
 
+_PS_PLAIN_STRING = r"(?:'(?:[^']|'')*'|\"[^\"$`]*\")"
+_PS_READ_CMDLETS = frozenset({
+    "get-content", "get-childitem", "get-item", "test-path", "select-string", "select-object",
+})
+
+
+def _powershell_common_literals(command: str) -> str:
+    """T0340 represent only literal argument arrays and a finite Test-Path guard.
+
+    Not a PowerShell evaluator: unsupported forms remain unchanged and meet the
+    existing unknown-shape gate. Both branches are inspected, never executed.
+    """
+    out: list[str] = []
+    i = 0
+    quote = ""
+    statement_start = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "`" and quote == '"' and i + 1 < len(command):
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and command[i:i + 2] == "''":
+                    out.append("'")
+                    i += 2
+                    continue
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+        if ch == "`" and i + 1 < len(command):
+            out.extend(command[i:i + 2])
+            i += 2
+            continue
+        if command[i:i + 2] == "@(" and (i == 0 or command[i - 1].isspace()):
+            match = re.match(r"@\(\s*(" + _PS_PLAIN_STRING + r"(?:\s*,\s*" + _PS_PLAIN_STRING + r")*)\s*\)", command[i:])
+            prefix = command[statement_start:i]
+            recipients = deny_floor.shell_commands(prefix, "powershell")
+            if (match and len(recipients) == 1 and recipients[0]["words"]
+                    and not recipients[0]["words"][0][0].startswith(("$", "@"))
+                    and recipients[0]["words"][0][0] != "."
+                    and (i + len(match[0]) == len(command) or command[i + len(match[0])] in " ;|\r\n")):
+                # Keep quoted literal argv, replace only commas/array delimiters.
+                literals = re.findall(_PS_PLAIN_STRING, match[1])
+                out.append(" ".join(literals))
+                i += len(match[0])
+                continue
+        if not command[statement_start:i].strip() and re.match(r"(?i)if\s*\(", command[i:]):
+            # All delimiters inside these finite token/body forms are quoted.
+            path = r"(?:" + _PS_PLAIN_STRING + r"|[A-Za-z0-9_./\\:][A-Za-z0-9_./\\:-]*)"
+            body = r"(?:" + _PS_PLAIN_STRING + r"|[^'\"{}])*"
+            guard = re.match(r"(?is)if\s*\(\s*Test-Path\s+(?:(?:-Path|-LiteralPath)\s+)?(" + path
+                             + r")\s*\)\s*\{(" + body + r")\}\s*(?:else\s*\{(" + body + r")\})?", command[i:])
+            if guard and (i + len(guard[0]) == len(command) or command[i + len(guard[0])] in ";\r\n"):
+                branches = [guard[2], *( [guard[3]] if guard[3] is not None else [])]
+                ordinary = True
+                for branch in branches:
+                    shaped, unknown = _powershell_shape(branch)
+                    parts = deny_floor.shell_commands(shaped, "powershell")
+                    for part in parts:
+                        argv = [word[0] for word in part["words"]]
+                        if (unknown or not part["complete"] or part["redirects"] or not argv
+                                or argv[0].lower() not in _PS_READ_CMDLETS
+                                or any("$" in arg or "`" in arg for arg in argv[1:])
+                                or any(arg.startswith('-') and any(
+                                    name.startswith(arg[1:].lower().split(':')[0])
+                                    for name in ('outvariable', 'ov', 'pipelinevariable', 'pv',
+                                                 'errorvariable', 'ev', 'warningvariable', 'wv',
+                                                 'informationvariable', 'iv')) for arg in argv[1:])):
+                            ordinary = False
+                    if not parts:
+                        ordinary = False
+                if ordinary:
+                    out.append(";".join(branches))
+                    i += len(guard[0])
+                    continue
+        out.append(ch)
+        if ch in ";\r\n":
+            statement_start = i + 1
+        i += 1
+    return "".join(out)
+
+
 def _powershell_shape(command: str) -> tuple[str, bool]:
     """Approval-only view of literal PS operators; never changes the floor's input.
 
@@ -872,8 +1011,77 @@ _PS_ASSIGNMENT = re.compile(r"^\s*(\$(?:env:)?[A-Za-z_]\w*)\s*=\s*(.*)$", re.IGN
 _PS_SCALAR = re.compile(r"(?:\$[A-Za-z_]\w*|\$env:[A-Za-z_]\w*|[-+]?\d+(?:\.\d+)?|'(?:[^']|'')*'|\"(?:[^\"`]|`.)*\")", re.DOTALL)
 
 
+def _powershell_json_reads(command: str) -> str:
+    """Represent a closed language of file-backed JSON queries, never evaluate PS.
+
+    Every statement must be a literal file read/JSON assignment or a projection
+    of an earlier JSON binding. Every pipeline stage must match below in full.
+    This provenance matters: arbitrary PS objects can have executable getters.
+    Any unsupported statement leaves the ENTIRE command untouched, including
+    its unknown-shape guard. The deny floor always receives the original input.
+    """
+    name = r"[A-Za-z_][A-Za-z_0-9]*"
+    member = name + r"(?:\." + name + r")*"
+    properties = name + r"(?:\s*,\s*" + name + r")*"
+    literal = _PS_PLAIN_STRING + r"|[-+]?\d+|\$(?:true|false|null)"
+    scalar = r"(?:" + literal + r")"
+    array = r"@\(\s*" + scalar + r"(?:\s*,\s*" + scalar + r")*\s*\)"
+    comparison = (r"\$_\." + member + r"\s+-(?:eq|ne|like|notlike|match|notmatch)\s+" + scalar
+                  + r"|\$_\." + member + r"\s+-(?:in|notin)\s+" + array)
+    predicate = r"(?:" + comparison + r")(?:\s+-(?:and|or)\s+(?:" + comparison + r"))*"
+    stage = re.compile(
+        r"\s*(?:Where-Object\s+\{\s*" + predicate + r"\s*\}"
+        r"|Select-Object\s+(?:(?:-Property\s+)?" + properties
+        + r"|-ExpandProperty\s+" + name + r"|-First\s+\d+)"
+        r"|Sort-Object\s+(?:-Property\s+)?" + properties
+        + r"|ConvertTo-Json(?:\s+-Depth\s+\d+)?(?:\s+-Compress)?"
+        r"|Write-Output)\s*", re.IGNORECASE)
+    # No variable/interpolated paths, provider expressions, or extra parameters.
+    path = r"(?:" + _PS_PLAIN_STRING + r"|[A-Za-z0-9_./\\:][A-Za-z0-9_./\\:-]*)"
+    source = re.compile(
+        r"\s*(?:\$(?P<binding>" + name + r")\s*=\s*)?"
+        r"(?P<read>Get-Content\s+(?:-Raw\s+)?(?:(?:-LiteralPath|-Path)\s+)?"
+        + path + r"(?:\s+-Raw)?\s*\|\s*ConvertFrom-Json)\s*", re.IGNORECASE)
+    projection = re.compile(r"\s*\$(?P<binding>" + name + r")(?:\." + member + r")?\s*")
+    # Split only separators outside plain strings. Delimiters inside a predicate
+    # or any other unsupported expression fail its full grammar match below.
+    tokens = re.compile(_PS_PLAIN_STRING + r"|[;\r\n|]")
+    statements: list[list[str]] = [[]]
+    start = 0
+    for token in tokens.finditer(command):
+        if token[0] not in {";", "\r", "\n", "|"}:
+            continue
+        statements[-1].append(command[start:token.start()])
+        if token[0] != "|":
+            statements.append([])
+        start = token.end()
+    statements[-1].append(command[start:])
+    bindings: set[str] = set()
+    represented: list[str] = []
+    for parts in statements:
+        if len(parts) == 1 and not parts[0].strip():
+            continue
+        # A file source consumes two pipeline stages; everything else must be
+        # a projection of a binding established by such a source in THIS call.
+        read = source.fullmatch("|".join(parts[:2])) if len(parts) >= 2 else None
+        if read:
+            if read["binding"]:
+                bindings.add(read["binding"].lower())
+            represented.append(read["read"])
+            tail = parts[2:]
+        else:
+            project = projection.fullmatch(parts[0])
+            if not project or project["binding"].lower() not in bindings:
+                return command
+            represented.append("Write-Output 'JSON projection'")
+            tail = parts[1:]
+        if any(not stage.fullmatch(part) for part in tail):
+            return command
+    return ";".join(represented) if represented else command
+
+
 def _powershell_parts(command: str) -> tuple[list[dict], bool]:
-    normalized, unknown = _powershell_shape(command)
+    normalized, unknown = _powershell_shape(_powershell_common_literals(_powershell_json_reads(command)))
     parts = deny_floor.shell_commands(normalized, "powershell")
     result: list[dict] = []
     for part in parts:
@@ -923,7 +1131,7 @@ def _iter_danger(command: str, workspace: Path, shell: str | None, trusted_inter
         parts = deny_floor.shell_commands(command, shell or "bash")
         if shell is None and not any(part.get("heredoc") for part in parts):
             parts += deny_floor.shell_commands(command, "powershell")
-    # Ryan: "Ship, rare shapes ask". ONE explicit fail-closed prompt guard;
+    # Owner: "Ship, rare shapes ask". ONE explicit fail-closed prompt guard;
     # no claim that incomplete stream/operator representation proves inert data.
     # The mandatory jobs floor still runs separately and before this policy.
     view = _command_view(_powershell_shape(command)[0] if shell == "powershell" else command, shell)

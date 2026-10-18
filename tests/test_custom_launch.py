@@ -116,7 +116,7 @@ async def test_cli_waits_for_actual_connection():
     app = SimpleNamespace(_launch_options=LaunchOptions(timeout=1), _connect_done=event,
         _connect_settled=True, _gui_connection_success=True, available_models=['fixture'],
         model_rows={'fixture': ModelRow('fixture', None, 'server', True)},
-        _cli_initial_model='fixture', _cli_system_prompt=None, _first_prompt=None,
+        _cli_initial_model='fixture', _cli_system_prompt=None, _first_prompt=None, _cli_convo_id=None,
         _resume_cli_convo=lambda: True,
         _update_header=lambda: None, _fetch_ctx_window=lambda: None)
     task = asyncio.create_task(LiteTUI._apply_cli_args.__wrapped__(app))
@@ -169,7 +169,7 @@ async def test_lmstudio_thinking_is_probed_for_selected_model(monkeypatch):
     app = App(_model_id='old', backend=SimpleNamespace(name='lmstudio'),
         settings=Settings(lmstudio_graded_thinking_models=['fixture']),
         _cli_thinking_level='medium', _cli_initial_model='fixture',
-        _cli_system_prompt=None, _first_prompt=None, available_models=['fixture'],
+        _cli_system_prompt=None, _first_prompt=None, _cli_convo_id=None, available_models=['fixture'],
         model_rows={'fixture': ModelRow('fixture', None, 'server', True)},
         _resume_cli_convo=lambda: True,
         _update_header=lambda: None, _fetch_ctx_window=lambda: None)
@@ -195,7 +195,7 @@ def test_custom_reconnect_keeps_invocation_until_explicit_edit(tmp_path):
     app = SimpleNamespace(settings=active, backend=CustomBackend(active), convo_dir=tmp_path,
         _invocation_saved_values={'custom_base_url': saved.custom_base_url},
         _settings_service=SimpleNamespace(
-            conversation_root=tmp_path.parent,
+            agent_session=None, conversation_root=tmp_path.parent,
             snapshot=lambda name: SimpleNamespace(effective=saved),
         ))
     prepare_reconnect(app)
@@ -245,7 +245,75 @@ HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
     root.mkdir()
     (root / 'settings.json').write_text(json.dumps({'tools_enabled': False, 'mcp_enabled': False,
         'skills_enabled': False, 'default_model': None, 'pin_default_model': False}))
+    # Real owned CLI/session/registration, with only the external receipt
+    # transport replaced. Never register this subprocess in the live fleet.
+    registration_log = tmp_path / 'registration.jsonl'
+    registration_cli = tmp_path / 'fixture registration.py'
+    registration_cli.write_text('''import json, os, sys
+from pathlib import Path
+from litetui.agent_ownership import AgentAuthority
+from litetui.agent_store import AgentStore
+root = Path(ROOT)
+args = sys.argv[1:]
+allowed = False
+receipt = None
+try:
+    authority = AgentAuthority.from_agent(AgentStore(root).find_agent(name='LiteTUI'))
+    expected = ['register', '--strict-identity', '--agent-id', authority.agent_id,
+        '--cli', 'litetui', '--model', authority.model, '--tier', 'worker',
+        '--name', authority.name, '--thinking-level', authority.thinking_level,
+        '--session-pid', str(os.getppid()), '--backend', authority.backend]
+    allowed = args == expected
+    if allowed:
+        receipt = dict(agent_id=authority.agent_id, name=authority.name,
+            backend=authority.backend, model=authority.model,
+            thinking_level=authority.thinking_level, session_pid=os.getppid())
+except (ValueError, OSError):
+    pass
+with open(LOG, 'a', encoding='utf-8') as stream:
+    stream.write(json.dumps(dict(argv=args, allowed=allowed, receipt=receipt,
+        pid=os.getpid(), session_pid=os.getppid())) + '\\n')
+if not allowed:
+    print('fixture refuses every command except exact owned registration', file=sys.stderr)
+    sys.exit(1)
+print('Folder-owned identity: ' + json.dumps(receipt))
+'''.replace('Path(ROOT)', f'Path({str(root)!r})').replace('open(LOG,', f'open({str(registration_log)!r},'), encoding='utf-8')
+    bootstrap = tmp_path / 'owned child bootstrap.py'
+    bootstrap.write_text('''import os, sys
+assert os.environ.get('LITETUI_DISABLE_UPDATE_CHECK') == '1'
+assert 'LITETUI_FORCE_UPDATE_CHECK' not in os.environ
+assert all(key not in os.environ for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'))
+assert os.environ.get('NO_PROXY') == os.environ.get('no_proxy') == '127.0.0.1,localhost,::1'
+from litetui import cli, harness
+executable = EXECUTABLE
+original_run = harness.ttyguard.run
+def fixture_transport(command, **kwargs):
+    if command and command[0] == executable:
+        return original_run([sys.executable, *command], **kwargs)
+    return original_run(command, **kwargs)
+harness.harness_disabled = lambda: False
+harness._liteharness_exe = lambda: executable
+harness.ttyguard.run = fixture_transport
+cli.main()
+'''.replace('EXECUTABLE', repr(str(registration_cli))), encoding='utf-8')
     from pathlib import Path
+    from litetui import agent_supervisor
+    original_child_argv = agent_supervisor.python_child_argv
+    def owned_child_argv(*, module, args):
+        assert module == 'litetui.cli'
+        return original_child_argv(script=bootstrap, args=args)
+    monkeypatch.setattr(agent_supervisor, 'python_child_argv', owned_child_argv)
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
+    # Child startup must not inherit updater/proxy effects from the test host.
+    monkeypatch.setenv('LITETUI_DISABLE_UPDATE_CHECK', '1')
+    monkeypatch.delenv('LITETUI_FORCE_UPDATE_CHECK', raising=False)
+    for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost,::1')
+    monkeypatch.setenv('no_proxy', '127.0.0.1,localhost,::1')
     monkeypatch.setenv('PYTHONPATH', str(Path(__file__).resolve().parents[1] / 'src'))
     spec = validate_request({'prompt': 'test', 'backend': 'custom', 'model': 'fixture',
         'workspace': str(tmp_path), 'thinking_level': 'off', 'launch': {
@@ -253,7 +321,7 @@ HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
             'server_command': [sys.executable, str(script), '{port}'],
             'context_length': 4096, 'max_tokens': 32, 'timeout': 30}},
         parent_profile='autonomous', depth=0)
-    # T1049 (Ryan's clause 2a): a child is never autonomous; an autonomous parent
+    # T1049 (Owner's clause 2a): a child is never autonomous; an autonomous parent
     # delegates interactive, and the child's handshake reports exactly that.
     assert spec.tool_profile == 'interactive'
     process = AgentProcess()
@@ -263,6 +331,11 @@ HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         assert ready['backend'] == 'custom'
         assert ready['tool_profile'] == 'interactive'
         assert ready['context_length'] == 4096
+        registrations = [json.loads(line) for line in registration_log.read_text(encoding='utf-8').splitlines()]
+        accepted = [row for row in registrations if row['allowed']]
+        assert len(accepted) == 1
+        assert accepted[0]['receipt']['session_pid'] == ready['pid']
+        assert accepted[0]['receipt']['model'] == 'fixture'
         result = await process.collect_turn(timeout=15)
         assert result['summary'] == 'fixture ok', (result, list(process.diagnostics))
         process.process.stdin.write(b'{"type":"shutdown"}\n')

@@ -22,7 +22,7 @@ from litetui.claude_persistence import (
     LedgerError,
 )
 
-WORKSPACE = "C:/Projects/LiteTUI"
+WORKSPACE = "C:/ExampleProjects/LiteTUI"
 
 
 @pytest.fixture
@@ -90,9 +90,9 @@ def test_selection_resumes_the_same_segment_and_new_starts_another(convo):
 def test_a_different_workspace_does_not_resume_the_selected_segment(convo):
     ledger = ClaudeLedger(convo)
     first = ledger.select_segment(WORKSPACE)
-    elsewhere = ledger.select_segment("C:/Projects/LiteImage")
+    elsewhere = ledger.select_segment("C:/ExampleProjects/LiteImage")
     assert elsewhere["id"] != first["id"]
-    assert elsewhere["workspace"] == "C:/Projects/LiteImage"
+    assert elsewhere["workspace"] == "C:/ExampleProjects/LiteImage"
 
 
 @pytest.mark.parametrize("reached", [SUBMITTED, ACKNOWLEDGED])
@@ -370,3 +370,38 @@ def test_a_corrupt_ledger_raises_naming_the_path_and_is_not_discarded(convo, wri
         ClaudeLedger(convo)
     assert LEDGER_NAME in str(caught.value)
     assert (convo / LEDGER_NAME).read_text(encoding="utf-8") == written
+
+
+def test_prompt_store_provenance_is_optional_and_fixed_with_the_prompt(convo):
+    ledger = ClaudeLedger(convo)
+    segment = ledger.select_segment(WORKSPACE)
+    fact = {"version": 1, "mode": "home", "folder": str(convo)}
+    ledger.fix_system_prompt(segment["id"], "recorded prompt", store_identity=fact)
+    saved = ledger.file.read_bytes()
+    fact["mode"] = "owner"
+    assert ClaudeLedger(convo).selected["store_identity"]["mode"] == "home"
+    assert ledger.fix_system_prompt(segment["id"], "replacement", store_identity=fact) == "recorded prompt"
+    assert ledger.file.read_bytes() == saved
+    legacy = ledger.select_segment(WORKSPACE, new=True)
+    ledger.fix_system_prompt(legacy["id"], "legacy prompt")
+    before = ledger.file.read_bytes()
+    ledger.fix_system_prompt(legacy["id"], "legacy prompt", store_identity=fact)
+    assert "store_identity" not in ClaudeLedger(convo).selected
+    assert ledger.file.read_bytes() == before
+
+
+def test_failed_prompt_publish_leaves_both_prompt_and_provenance_absent(convo, monkeypatch):
+    ledger = ClaudeLedger(convo)
+    segment = ledger.select_segment(WORKSPACE)
+    before = ledger.file.read_bytes()
+
+    def refuse(*args):
+        raise OSError("publication refused")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(OSError, match="publication refused"):
+        ledger.fix_system_prompt(segment["id"], "prompt", store_identity={
+            "version": 1, "mode": "home", "folder": str(convo)})
+    assert ledger.file.read_bytes() == before
+    selected = ClaudeLedger(convo).selected
+    assert not selected.get("system_prompt") and "store_identity" not in selected

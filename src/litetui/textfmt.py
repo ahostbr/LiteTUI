@@ -58,6 +58,7 @@ TOOL_DENIED_REQUIRED: dict[str, tuple[str, ...]] = {
     "unknown-tool": ("name",),
     "no-metadata": ("name",),
     "profile": ("name", "reason"),
+    "approval-timeout": ("name", "reason"),
     "by-user": ("name",),
     "no-host": ("name",),
     "tool-disabled": ("name",),
@@ -72,6 +73,7 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
         "This is the active authority profile refusing, not the user — do not "
         "ask them to approve it and do not retry."
     ),
+    "approval-timeout": "[approval timeout] {name}: Nothing ran and nothing changed. {reason}",
     "no-host": (
         "[no answer] {name} needed approval and the request was sent to the "
         "host, which never answered. Nothing ran and nothing changed. This is "
@@ -171,15 +173,45 @@ def tool_denied(key: str, **variables: object) -> str:
     return " ".join(template.split())
 
 
-def memory_prompt(convo_id: str, folder: Path) -> str:
+def memory_prompt(convo_id: str, folder: Path, *, owner: bool = False) -> str:
     """The block appended to the system prompt so the agent can find its own
     store. Body lives in prompts/conversation-store.md — read PER CALL, so
     edits take effect on the next conversation without a restart."""
+    # Owner mode swaps the template only: `folder` is then the owner memory folder,
+    # and the same id/path stanza shape lets refresh_store_address find it again.
     return load_prompt(
-        "conversation-store",
+        "owner-store" if owner else "conversation-store",
         convo_id=convo_id,
         store_path=str(folder).replace("\\", "/"),
     )
+
+
+def refresh_store_address(prompt: str, convo_id: str, folder: Path, *, owner: bool = False) -> str:
+    """Replace only the host storage instruction block, preserving user/snapshot text."""
+    import re
+    header = '## Your conversation store'
+    start = prompt.find(header)
+    if start < 0:
+        return prompt + memory_prompt(convo_id, folder, owner=owner)
+    # Recognize the exact generated address stanza, then replace only the
+    # address occurrences in its recognizable template-sized span. Trailing
+    # unheaded user prose and snapshots are not part of our template.
+    match = re.search(r'Your conversation id \(storage only\) is `([^`]+)`.*?\n    ([^\n]+)\n',
+                      prompt[start:], re.DOTALL)
+    if match is None:
+        return prompt + memory_prompt(convo_id, folder, owner=owner)
+    old_id, old_folder = match.groups()
+    # The stanza being replaced may have been written by either mode (a
+    # conversation started without --owner and resumed with it, or the reverse),
+    # so the current mode's template is tried first and the other one second.
+    for was_owner in (owner, not owner):
+        old_block = memory_prompt(old_id, Path(old_folder), owner=was_owner).lstrip('\n')
+        if prompt.startswith(old_block, start):
+            return (prompt[:start] + memory_prompt(convo_id, folder, owner=owner).lstrip('\n')
+                    + prompt[start + len(old_block):])
+    # User edited this generated block: do not erase their edits. Add the
+    # current host address separately, with no guessed deletion boundary.
+    return prompt + memory_prompt(convo_id, folder, owner=owner)
 
 
 def _markdown_to_text(src: str, width: int) -> Text:

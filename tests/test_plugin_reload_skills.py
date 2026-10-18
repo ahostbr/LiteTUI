@@ -243,7 +243,7 @@ def test_cache_write_raising_leaves_mapping_untouched(tmp_path, monkeypatch):
     # self.skills swap => live mapping untouched, guarded path reports failed.
     app = _real_app(tmp_path, monkeypatch)
     _make_skill(tmp_path, "myskill", "d", "BODY")
-    def _raise(root, skills):
+    def _raise(root, skills, extra=None):
         raise RuntimeError("disk full")
     monkeypatch.setattr("litetui.skills.write_cache", _raise)
     before = app.skills
@@ -259,7 +259,7 @@ def test_cache_write_oserror_is_best_effort_live_updated_no_partial(tmp_path, mo
     # because the writer is atomic (mkstemp + os.replace) there is NO partial file.
     app = _real_app(tmp_path, monkeypatch)
     _make_skill(tmp_path, "myskill", "d", "BODY")
-    monkeypatch.setattr("litetui.skills.write_cache", lambda root, skills: None)
+    monkeypatch.setattr("litetui.skills.write_cache", lambda root, skills, extra=None: None)
     _invoke(app, "skills_cmd")
     assert any(s.name == "myskill" for s in app.skills)     # live updated (by design)
     assert "refresh" in _last(app).lower()
@@ -369,3 +369,26 @@ def test_real_idle_children_allows_refresh(tmp_path, monkeypatch):
     _invoke(app, "skills_cmd")
     assert app._refresh_calls == [True]
     assert "refresh" in _last(app).lower()
+
+
+@BOTH
+def test_plugin_upgrade_refreshes_running_skill_tool_and_persisted_index(tmp_path, monkeypatch, surface):
+    from litetui import appsvc
+
+    app = _real_app(tmp_path, monkeypatch)
+    plugin = tmp_path / "plugins" / "cache" / "liteharness" / "liteharness"
+    app.settings.skill_roots = [str(plugin / "*" / "skills")]
+    _make_skill(plugin / "1.0.16", "ls-youtube", "Old", "PLUGIN 16")
+    app.skills, app.skills_cached_at = appsvc.load_skills(app)
+    tool = next(e for e in app.plugins.tools if e.gate)
+    assert "PLUGIN 16" in tool.run({"name": "ls-youtube"})
+
+    _make_skill(plugin / "1.0.18", "ls-youtube", "New", "PLUGIN 18")
+    # Existing seats retain their mapping until the explicit guarded refresh.
+    assert "PLUGIN 16" in tool.run({"name": "ls-youtube"})
+    _invoke(app, surface)
+    assert "PLUGIN 18" in tool.run({"name": "ls-youtube"})
+    assert "refresh" in _last(app).lower()
+    persisted, timestamp = skills_mod.read_cache(tmp_path, app.settings.skill_roots)
+    assert timestamp > 0
+    assert "PLUGIN 18" in skills_mod.load(persisted, "ls-youtube")

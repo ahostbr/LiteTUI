@@ -89,27 +89,39 @@ def test_checkout_root_guard_rejects_writes(tmp_path, mutation):
         _assert_checkout_root_unchanged(checkout, before)
 
 
-def test_saving_with_the_live_root_does_not_touch_the_live_store() -> None:
+@pytest.fixture
+def owned_task_store(tmp_path, monkeypatch, make_app):
+    from test_compaction_ui import _app
+    from test_conftest_task_guard import install_guard
+
+    app = _app(make_app)
+    app._materialise_convo()
+    checkout = install_guard(tmp_path, monkeypatch)
+    destination = app._agent_session.conversation_directory(app.convo_id)
+    assert destination.resolve().is_relative_to(tmp_path.resolve())
+    task = tasks_mod.new_task("bash", {"command": "fixture"}, app.convo_id)
+    return app, checkout, destination, task
+
+
+def test_saving_with_the_live_root_does_not_touch_the_live_store(owned_task_store) -> None:
+    app, checkout, destination, task = owned_task_store
     before = _snapshot(_live_store())
-    task = tasks_mod.new_task("bash", {"command": "sleep 300"}, "c1")
 
-    tasks_mod.save([task], paths.ROOT)
+    tasks_mod.save([task], checkout, agent_session=app._agent_session)
 
-    assert _snapshot(_live_store()) == before, (
-        "a test wrote the repo-root background-tasks.json — this is the file "
-        "that appeared untracked in the worktree"
-    )
+    assert _snapshot(_live_store()) == before, "a save changed the stand-in checkout store"
+    assert (destination / tasks_mod.STORE).is_file(), "the redirect must really persist"
+    assert not list(checkout.iterdir())
 
 
-def test_the_saved_rows_are_still_readable_back() -> None:
-    """The redirect must not turn persistence into a no-op: a test that saves
-    and then loads has to see its own rows, or the guard would hide real
-    breakage behind an empty store."""
-    task = tasks_mod.new_task("bash", {"command": "sleep 300"}, "c1")
-    tasks_mod.save([task], paths.ROOT)
+def test_the_saved_rows_are_still_readable_back(owned_task_store) -> None:
+    """Owned readers address the conversation destination, not the checkout."""
+    app, checkout, destination, task = owned_task_store
+    tasks_mod.save([task], checkout, agent_session=app._agent_session)
 
-    back = tasks_mod.load(paths.ROOT)
+    back = tasks_mod.load(destination)
     assert task.id in back, "save/load disagree once redirected"
+    assert not list(checkout.iterdir())
 
 
 def test_finish_does_not_write_the_live_log_tree() -> None:
@@ -124,18 +136,23 @@ def test_finish_does_not_write_the_live_log_tree() -> None:
     assert not live_log.exists(), f"a test wrote {live_log}"
 
 
-def test_an_explicit_root_is_still_honoured(tmp_path: Path) -> None:
-    """The negative control, and the compatibility claim. Tests that already
-    pass a tmp root (test_background_tasks.py, test_task_screens.py) must behave
-    exactly as before — a guard that swallowed every root would make them pass
-    while measuring a different directory."""
-    task = tasks_mod.new_task("bash", {"command": "x"}, "c1")
-    explicit = tmp_path / "elsewhere"
-    explicit.mkdir()
+def test_an_explicit_root_is_still_honoured(owned_task_store) -> None:
+    """An explicit owned root is not swallowed by the live-root redirect."""
+    from uuid import uuid4
 
-    tasks_mod.save([task], explicit)
+    app, checkout, _, control = owned_task_store
+    # Positive control: the guard must also redirect an accidental live-root save.
+    tasks_mod.save([control], checkout, agent_session=app._agent_session)
+    convo_id = str(uuid4())
+    explicit = app._agent_session.conversation_directory(convo_id)
+    explicit.mkdir()
+    task = tasks_mod.new_task("bash", {"command": "x"}, convo_id)
+
+    tasks_mod.save([task], explicit, agent_session=app._agent_session)
 
     assert (explicit / tasks_mod.STORE).is_file(), "an explicit root was swallowed"
+    assert task.id in tasks_mod.load(explicit)
+    assert not list(checkout.iterdir())
 
 
 # ── the same guard, for the file nobody was watching (T689) ─────────
@@ -186,29 +203,22 @@ def test_an_explicit_jobs_root_is_still_honoured(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_app_path_is_covered_not_just_the_module(monkeypatch) -> None:
-    """The call is INVISIBLE at the test site — that is why the guard is a
-    choke point and not a fix at two call sites. This arm goes through the app
-    method T581's arms actually call, so it fails if someone later guards
-    `tasks.save` in a way `_save_background` routes around.
-    """
-    from litetui import app as m
-
+async def test_the_app_path_is_covered_not_just_the_module(owned_task_store) -> None:
+    """The app writes its owned conversation without touching the checkout."""
+    app, checkout, destination, control = owned_task_store
     before = _snapshot(_live_store())
-
-    a = m.LiteTUI()
-    a.available_models = ["a-model"]
-    a.model_id = "a-model"
-    a._connect = lambda: None
-    a._fetch_ctx_window = lambda: None
-    a.bg_tasks = {}
-    async with a.run_test(size=(100, 30)) as pilot:
-        task = tasks_mod.new_task("bash", {"command": "sleep 300"}, "c1")
-        a.bg_tasks[task.id] = task
-        a._save_background()
+    # Positive control: app routing alone no longer traverses the live-root arm.
+    tasks_mod.save([control], checkout, agent_session=app._agent_session)
+    app.bg_tasks = {}
+    async with app.run_test(size=(100, 30)) as pilot:
+        task = tasks_mod.new_task("bash", {"command": "fixture"}, app.convo_id)
+        app.bg_tasks[task.id] = task
+        app._save_background()
         await pilot.pause()
+        assert task.id in tasks_mod.load(destination)
 
     assert _snapshot(_live_store()) == before
+    assert not list(checkout.iterdir())
 
 
 # ── what an autouse fixture may leave behind ────────────────────────

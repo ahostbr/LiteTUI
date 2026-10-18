@@ -10,6 +10,7 @@ def test_every_proposed_tab_has_named_sections():
     expected_tabs = {
         "model",
         "ninfer",
+        "strata",
         "voice",
         "generation",
         "agent",

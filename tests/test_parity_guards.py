@@ -5,7 +5,7 @@ Both were "kept in sync" by a comment and nothing else.
 (1) AGENT_SHELL_MARKERS here vs LiteSuite's AGENT_SHELL_ENV
     (packages/shared/src/agentShellEnv.ts, T1043/T1049). LiteSuite deletes those names from an owner
     terminal and from the Frontier chat's LiteTUI child; this side reads them as "an agent started
-    me". A name added only here survives into Ryan's own seats and voids their owner mark; one added
+    me". A name added only here survives into Owner's own seats and voids their owner mark; one added
     only there is stripped for nothing.
 (2) spawn_agent.json's `tool_profile` enum vs tool_policy.PROFILE_NAMES (T1086 made them equal). A
     profile that exists but is not in the schema cannot be chosen by a spawning agent.

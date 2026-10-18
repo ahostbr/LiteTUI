@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "subagent",
-    "description": "Delegate a self-contained, single-prompt job to a child model that runs independently on the active backend, in parallel with you. Use it whenever a step is prompt -> response with no tools needed: summarise or analyse a file or a long tool result, translate, classify, extract, draft a section, answer a question from given material. The child has NO tools and NO conversation history: everything it needs goes in `prompt` (the instruction) and `files` (paths it reads itself). Canonical call: {\"prompt\": \"Summarise this README in 3 bullets.\", \"files\": [\"README.md\"], \"background\": true}. For an explicit Sol child at High reasoning, call {\"prompt\": \"...\", \"model\": \"gpt-5.6-sol\", \"reasoning_effort\": \"high\", \"background\": true}; `think=true` is the legacy medium request, not High. Rules: (1) never read a file yourself only to hand its text over, and never paste file or tool output into `prompt` -- pass the path in `files` (the prompt is streamed token by token and a pasted body stalls you for seconds); (2) use background=true and keep working: the call returns a task id at once, the result arrives later as a message tagged [inbox from task], and the full text is in output/tasks/<id>.log (read it with the read tool); (3) leave max_tokens, think, model, reasoning_effort and system unset unless you have a specific reason. Not for: edits, shell commands, anything that needs tools or your conversation context -- do those yourself.",
+    "description": "Delegate a self-contained, single-prompt job to a child model that runs independently on the active backend, in parallel with you. Use it whenever a step is prompt -> response with no tools needed: summarise or analyse a file or a long tool result, translate, classify, extract, draft a section, answer a question from given material. The child has NO tools and NO conversation history: everything it needs goes in `prompt` (the instruction) and `files` (paths it reads itself). Canonical call: {\"prompt\": \"Summarise this README in 3 bullets.\", \"files\": [\"README.md\"], \"background\": true}. For High reasoning, call {\"prompt\": \"...\", \"reasoning_effort\": \"high\", \"background\": true}; `think=true` is the legacy medium request, not High. Rules: (1) never read a file yourself only to hand its text over, and never paste file or tool output into `prompt` -- pass the path in `files` (the prompt is streamed token by token and a pasted body stalls you for seconds); (2) use background=true and keep working: the call returns a task id at once, the result arrives later as a message tagged [inbox from task], and the full text is in output/tasks/<id>.log (read it with the read tool); (3) omit model to use the configured subagent model (conversation override or global setting); pass model only when the user explicitly asks for a different one. Leave max_tokens, think, reasoning_effort and system unset unless you have a specific reason. Not for: edits, shell commands, anything that needs tools or your conversation context -- do those yourself.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -34,11 +34,16 @@
         "reasoning_effort": {
           "type": "string",
           "enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
-          "description": "Optional explicit child-only reasoning level. Use high with model gpt-5.6-sol when High reasoning is required. The selected model must advertise the requested level; unsupported levels fail instead of silently falling back. This does not change the parent turn."
+          "description": "Optional explicit child-only reasoning level. Use high when High reasoning is required; omit model to keep the configured child. The selected model must advertise the requested level; unsupported levels fail instead of silently falling back. This does not change the parent turn."
+        },
+        "backend": {
+          "type": "string",
+          "enum": ["codex", "claude", "free", "cline", "lmstudio", "llamacpp", "ninfer", "custom"],
+          "description": "Optional child-only backend with an explicit model. Otherwise use the saved route. Never changes the parent. Local backends require the expert toggle and an already resident model."
         },
         "model": {
           "type": "string",
-          "description": "Leave unset: the child uses the configured subagent_model when available on the active backend, otherwise your current model. Local defaults must already be loaded. An explicit model argument overrides the default."
+          "description": "Omit model to use the configured subagent model (conversation override or global setting), otherwise follow the parent. Pass model only when the user explicitly asks for a different one. A route names its own backend and model; unavailable backends refuse rather than falling back. Local defaults must already be loaded. An explicit model argument overrides the default."
         }
       },
       "required": [

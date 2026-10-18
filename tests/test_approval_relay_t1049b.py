@@ -1,7 +1,7 @@
 """T1049-B1 — a locked seat's CONFIRM goes to the agent that spawned it, by inbox.
 
-Ryan (04169351): "whatever agent spawned the light qi instance should be babysitting it".
-Ryan (6e280dd4): typed CONFIRM in an agent-launched seat -> "The launching agent";
+Owner (04169351): "whatever agent spawned the light qi instance should be babysitting it".
+Owner (6e280dd4): typed CONFIRM in an agent-launched seat -> "The launching agent";
 an agent-launched LiteGUI's CONFIRM -> "No, launching agent".
 Plan ab8969c2, approved by Dijkstra 5ef7612a; Marquee da3eb064 (E2, Q1), 26d5b28c.
 
@@ -23,6 +23,7 @@ import pytest
 from litetui import app as m
 from litetui import approval_relay, harness, runtime_log, seat_authority, tool_policy
 from litetui.tool_policy import INTERACTIVE
+from _owned_seat import owned_app
 
 SPAWNER = "leader-4f1e2d3c-0000-0000-0000-000000000001"
 DESTRUCTIVE = {"command": "rm -rf ./build"}
@@ -40,7 +41,7 @@ def _registered_parent(a, parent):
 
 
 def _seat(spawner=SPAWNER, *, agent_launched=False, rpc=False, host=False):
-    a = m.LiteTUI()
+    a = owned_app()
     a.settings.tool_policy_profile = INTERACTIVE
     a._active_tool_profile = INTERACTIVE
     a._spawned_seat = bool(spawner)
@@ -221,7 +222,7 @@ async def test_ACCIDENT_a_reply_from_another_agent_or_to_an_unknown_id_is_ordina
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["typed", "scheduled", "rpc"])
 async def test_REFUSE_agent_launched_without_a_spawner_stops_and_logs_never_a_human(wire, tmp_path, source):
-    """Ryan 6e280dd4 (b): never the GUI human; typed or rpc, no modal and no host."""
+    """Owner 6e280dd4 (b): never the GUI human; typed or rpc, no modal and no host."""
     a = _seat(spawner=None, agent_launched=True, rpc=(source == "rpc"))
     state = wire(a)
     text, ok = await _door(a, tmp_path, source)
@@ -255,7 +256,7 @@ async def test_CONTROL_HAND_typed_still_gets_the_modal(monkeypatch, tmp_path):
     assert opened == [True]
 
 
-# ── Ryan's own: unchanged, and out of B ─────────────────────────────────────
+# ── Owner's own: unchanged, and out of B ─────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_CONTROL_ryans_own_unattended_is_refused_with_no_relay_no_log_no_stop(wire, tmp_path):
@@ -288,7 +289,7 @@ async def test_HOST_a_supervised_child_asks_its_host_for_every_source_and_logs(m
     assert a._stop_requested == (not answer)
 
 
-# ── Ryan (b): an agent-launched LiteGUI with the envelope ───────────────────
+# ── Owner (b): an agent-launched LiteGUI with the envelope ───────────────────
 
 @pytest.mark.asyncio
 async def test_LITEGUI_an_enveloped_gui_seat_asks_the_launching_agent_not_the_gui(wire, tmp_path):
@@ -315,7 +316,7 @@ def test_E2_the_spawner_comes_only_from_the_marker_and_both_vars_are_popped(monk
     monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", SPAWNER)
     monkeypatch.setenv("LITETUI_APPROVAL_HOST", "1")
     monkeypatch.setenv("LITESUITE_LEAF_ID", "leaf0001")
-    a = m.LiteTUI()
+    a = owned_app()
     assert a._spawner_id == SPAWNER and a._approval_host is True
     assert a.seat.spawned_by == SPAWNER
     # The launcher appends --leaf-id after --spawned-by (fcec6cf, T1150).
@@ -329,7 +330,7 @@ def test_E2_M1_no_marker_means_no_spawner_whatever_the_env_says(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", "27bec769-a21d-4219-a659-a3dd692260a9")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "e24ec61f-ee78-472e-931b-3ce4819c638e")
-    a = m.LiteTUI()
+    a = owned_app()
     assert a._spawner_id is None
     assert a.seat.spawned_by is None
     assert "--spawned-by" not in a.seat._presence_argv()
@@ -341,7 +342,7 @@ def test_agent_launched_is_read_before_the_seat_exports_its_own_marker(monkeypat
     _clear(monkeypatch)
     if marker:
         monkeypatch.setenv(marker, "1")
-    assert m.LiteTUI()._agent_launched is expected
+    assert owned_app()._agent_launched is expected
 
 
 # ── B5, D1, the setting ─────────────────────────────────────────────────────
@@ -387,7 +388,7 @@ async def test_T0210_explicit_resumed_startup_changes_authority_not_old_process(
     _clear(monkeypatch)
     monkeypatch.setenv("LITETUI_SPAWN_IDENTITY", "1")
     monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", old_leader)
-    old = m.LiteTUI()
+    old = owned_app()
     _registered_parent(old, old_leader)
     old._rpc_emit = lambda *_: None
     old._deliver_inbox = lambda *_: None
@@ -398,7 +399,7 @@ async def test_T0210_explicit_resumed_startup_changes_authority_not_old_process(
     # Model only the new process's supported launcher envelope, never launch a seat.
     monkeypatch.setenv("LITETUI_SPAWN_IDENTITY", "1")
     monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", new_leader)
-    resumed = m.LiteTUI()
+    resumed = owned_app()
     assert old._spawner_id == old_leader and resumed._spawner_id == new_leader
     assert resumed.seat.spawned_by == new_leader
     assert "LITEHARNESS_SPAWNED_BY" not in os.environ

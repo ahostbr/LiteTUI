@@ -9,9 +9,10 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 proc = subprocess.Popen(
-    [sys.executable, "-m", "litetui.cli", "--rpc", "--cwd", "C:/Projects/LiteSuite"],
+    [sys.executable, "-m", "litetui.cli", "--rpc", "--cwd", str(Path.cwd())],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     encoding="utf-8", errors="replace", bufsize=1,
 )

@@ -34,27 +34,27 @@ def _capture(calls):
 def test_speak_launches_a_detached_child_for_pyttsx3(monkeypatch):
     calls = {}
     monkeypatch.setattr(v.subprocess, "Popen", _capture(calls))
-    assert v.speak("hello there", engine="pyttsx3") is True
+    assert v.speak("hello there", engine="pyttsx3", litesuite_first=False) is True
     # a child process, not an in-process call (the whole point — no MCI/thread)
     assert calls["argv"][1].endswith(".py") and "pyttsx3" in calls["src"]
 
 
 def test_speak_is_false_for_empty_text(monkeypatch):
     monkeypatch.setattr(v.subprocess, "Popen", lambda *a, **k: object())
-    assert v.speak("   ", engine="pyttsx3") is False
+    assert v.speak("   ", engine="pyttsx3", litesuite_first=False) is False
 
 
 def test_speak_is_false_when_engine_unavailable(monkeypatch):
     # edge needs edge_tts+playsound; force them absent -> no child, no crash.
-    monkeypatch.setattr(v, "_has", lambda m: False)
+    monkeypatch.setattr(v.optional_python, "resolve", lambda *modules: None)
     monkeypatch.setattr(v.subprocess, "Popen",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched!")))
-    assert v.speak("hi", engine="edge") is False
+    assert v.speak("hi", engine="edge", litesuite_first=False) is False
 
 
 def test_a_quote_in_the_text_cannot_break_the_child(monkeypatch):
     grabbed = {}
     monkeypatch.setattr(v.subprocess, "Popen", _capture(grabbed))
-    v.speak('he said "hi" and \n newline', engine="pyttsx3")
+    v.speak('he said "hi" and \n newline', engine="pyttsx3", litesuite_first=False)
     # repr() escaping means the payload is a valid python literal, not a break-out
     compile(grabbed["src"], "<child>", "exec")

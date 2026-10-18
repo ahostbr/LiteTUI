@@ -27,24 +27,24 @@ Four rules, all about what the command TARGETS, never about how it is spelled:
                           git repository root (a `.git` DIRECTORY; a worktree's
                           `.git` file is not one), or a folder containing the
                           workspace (the workspace itself only when it is a repo).
-  owner-launcher          executing the existing owner `C:/Projects/LiteTUI/run.bat`
-                          by resolved path identity, including command-position
-                          `run` completed through PATHEXT. Arguments, nonexistent
-                          paths and other checkouts are not the owner launcher. It
-                          sets LITETUI_OWNER=1, the user's floor exemption, and is
-                          guarded only by CLAUDECODE / LITETUI_AGENT_SHELL, which a
-                          Codex seat or a plain subprocess does not carry (T1054;
-                          the user: "Deny floor blocks agents from it"). Every
-                          spelling that names it is refused unless a READER heads
-                          the command (cat, type, Get-Content, git, rg, ...);
-                          another project's run.bat is not this one.
+  owner-launcher          every parser-recognized executable `run` / `run.bat`
+                          launcher is refused, without private path identity.
+                          This includes bare, relative and absolute spellings,
+                          nonexistent files and another checkout's launcher;
+                          resolution, PATH, PATHEXT and environment/configuration
+                          claims do not narrow the refusal. Existing reader and
+                          proven literal-data exclusions remain: mentioning a
+                          launcher is not necessarily executing it. This is a
+                          bounded command recognizer, not a sandbox for arbitrary
+                          scripts, variables, aliases or custom launcher names.
+                          Agents use `liteharness spawn` for managed seats.
   jobs-file               writing a LiteTUI data root's `jobs.json`: the file
                           whose rows LiteTUI fires at their RECORDED level, so
                           since T1082 a written row is authority (T1085; Dijkstra
                           f0ae21c1 P1). The target is a file named jobs.json whose
                           folder holds `src/litetui` (a checkout: the default data
                           root), or `.litetui-data.json` (the marker every data root
-                          gets on launch, check_data_version; Ryan's LiteGUI root
+                          gets on launch, check_data_version; the user's LiteGUI root
                           is not a checkout), or is $LITETUI_DATA_ROOT. A redirect,
                           tee / Out-File / Set-Content / Add-Content / New-Item, a
                           copy ONTO it, any move or rename of it, a delete, an
@@ -58,6 +58,13 @@ Four rules, all about what the command TARGETS, never about how it is spelled:
                           with uncertain targets are refused conservatively. Windows
                           aliases of the name (`jobs.json::$DATA`, `:x`, a trailing
                           dot or space) are the same file (canonical_name, A1).
+                          The recognizer takes the file's name as a keyword
+                          (`name`, default `jobs.json`), so a caller can ask the
+                          same question of another file in a data root; `refusal`
+                          asks it of `jobs.json` only. A second keyword
+                          (`under`, default none: the file sits directly in the
+                          data root) asks it of a file at any depth below one
+                          named folder of the data root.
 
 Relative targets resolve against the folder the command is IN at that point:
 `cd ~; Remove-Item * -Recurse` is judged as a delete of the profile, because a
@@ -118,8 +125,7 @@ HOME_VARIABLES = frozenset({
     "%userprofile%", "%home%", "%homedrive%%homepath%",
 })
 HARNESS_DIRS = (".claude", ".codex", ".liteharness", ".litesuite")
-#: The user's actual launcher, not any folder with a LiteTUI-shaped tree.
-_OWNER_LAUNCHER = Path("C:/Projects/LiteTUI/run.bat")
+#: Launcher recognition is identity-free: no environment/config may hide a launcher.
 
 #: A delete verb at a word boundary. `find` counts only with -delete / -exec rm.
 _VERB = re.compile(
@@ -198,7 +204,7 @@ _WRAPPERS = frozenset({
 _READERS = frozenset({
     "cat", "type", "gc", "get-content", "more", "less", "head", "tail", "bat",
     "grep", "egrep", "rg", "findstr", "select-string", "sls", "wc", "git",
-    "diff", "fc", "code", "notepad", "vim", "vi", "nano", "sed", "awk", "ls",
+    "diff", "fc", "code", "notepad", "vim", "vi", "nano", "ls",
     "dir", "get-item", "gi", "get-childitem", "gci", "test-path", "stat", "file",
     "xxd", "od", "sha256sum", "get-filehash",
     # Copies and moves carry the file; they never run it.
@@ -212,7 +218,14 @@ _READERS = frozenset({
 #: ...with any Windows alias of it (Dijkstra 69c7c209 A1): a stream suffix
 #: (`::$DATA`, `:x`) and trailing dots name the same file. A trailing space is
 #: a separator unquoted, and inside quotes the path tail stops before it anyway.
-_JOBS = re.compile(r"(?i)jobs\.json(?::[^\s\"'`;&|)<>,]*)?\.*(?=$|[\s\"'`;&|)<>,])")
+_JOBS_NAME = "jobs.json"
+
+
+def _jobs_word(name: str) -> re.Pattern:
+    """`name` as the shell word described above; `re` caches the compiled pattern."""
+    return re.compile(r"(?i)" + re.escape(name) + r"(?::[^\s\"'`;&|)<>,]*)?\.*(?=$|[\s\"'`;&|)<>,])")
+
+
 #: A redirect straight onto the path in front of it: `> jobs.json`, `2>>"x\jobs.json"`.
 _REDIRECT_ONTO = re.compile(r"(?<![<>=-])>{1,2}\s*[\"']?\Z")
 #: Heads that only READ the schedule file. Not the T1054 reader set: an editor,
@@ -313,17 +326,26 @@ def dealias(path: str) -> str:
     return head + sep + drive + last.split(":", 1)[0].rstrip(" .")
 
 
-def is_jobs_file(path) -> bool:
+def is_jobs_file(path, name: str = _JOBS_NAME, under: str | None = None) -> bool:
     """Is `path` a LiteTUI data root's jobs.json (T1085)? Its name, and a folder
     that holds src/litetui (a checkout, the default root), or the
     .litetui-data.json marker every data root gets on launch, or that IS
-    $LITETUI_DATA_ROOT."""
+    $LITETUI_DATA_ROOT. With `under`, the file instead sits at any depth below
+    the folder of that name directly inside a data root; the folder's name is
+    compared as a file's is (canonical_name)."""
     if path is None:
         return False
     path = Path(path)
-    if canonical_name(path.name) != "jobs.json":
+    if canonical_name(path.name) != name.lower():
         return False
-    folder = path.parent
+    if under is None:
+        return _is_data_root(path.parent)
+    below = canonical_name(under)
+    return any(canonical_name(folder.name) == below and _is_data_root(folder.parent)
+               for folder in path.parents)
+
+
+def _is_data_root(folder: Path) -> bool:
     if (folder / "src" / "litetui").is_dir() or (folder / ".litetui-data.json").is_file():
         return True
     root = os.environ.get("LITETUI_DATA_ROOT")
@@ -344,14 +366,15 @@ def _jobs_say(target: Path) -> str:
                 "Schedule with /cron or LiteTUI's schedule tools instead.")
 
 
-def write_refusal(path, workspace, home=None) -> str | None:
+def write_refusal(path, workspace, home=None, *, name: str = _JOBS_NAME,
+                  under: str | None = None) -> str | None:
     """The jobs-file refusal for a Write/Edit tool's `file_path`, or None. This
     rule ALONE: a tool write never meets the delete or launcher rules."""
     if not isinstance(path, str) or not path:
         return None
     target = _resolve(dealias(path), Path(workspace),
                       Path(home) if home is not None else Path.home())
-    return _jobs_say(target) if is_jobs_file(target) else None
+    return _jobs_say(target) if is_jobs_file(target, name, under) else None
 
 
 def shell_commands(command: str, shell: str | None = None, *, _depth: int = 0) -> list[dict]:
@@ -707,9 +730,14 @@ def _git_read_words(args: list[str], redirects=()) -> bool:
         return (operands[:1] == ["list"]
                 and all(word in {"--porcelain", "-z", "-v", "--verbose"}
                         for word in operands[1:]))
+    if verb == "merge-base":
+        return (len(operands) == 3 and operands[0] == "--is-ancestor"
+                and all(re.fullmatch(r"[0-9a-fA-F]{40}", oid) for oid in operands[1:]))
     if verb == "branch":
-        # --list is required. Other branch operations write refs/config even
-        # when mixed with it; do not infer a read from one option in argv.
+        if operands == ["--show-current"]:
+            return True
+        # Otherwise --list is required. Other operations write refs/config;
+        # do not infer a read from one option mixed with a write.
         return ("--list" in operands and all(
             not word.startswith("-") or word in {
                 "--list", "-l", "--all", "-a", "--remotes", "-r", "--verbose", "-v", "-vv"
@@ -719,7 +747,8 @@ def _git_read_words(args: list[str], redirects=()) -> bool:
     }
 
 
-def jobs_git_refusal(command, workspace, home=None, *, shell=None) -> str | None:
+def jobs_git_refusal(command, workspace, home=None, *, shell=None,
+                     name: str = _JOBS_NAME, under: str | None = None) -> str | None:
     """Protected schedule Git writes; actual command heads alone get read waivers.
 
     Relocated writes retain the conservative guard. This is literal syntax
@@ -734,10 +763,10 @@ def jobs_git_refusal(command, workspace, home=None, *, shell=None) -> str | None
         r'(?i)^(?:(?:set|export)\s+)?(?:\$env:)?(?:GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)\s*=',
         " ".join(w[0] for w in part["words"])) for part in parts)
     inherited_relocation = False
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-        value = os.environ.get(name)
+    for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        value = os.environ.get(variable)
         target = _resolve(value, base, home) if value else None
-        if target is not None and any(is_jobs_file(folder / "jobs.json")
+        if target is not None and any(is_jobs_file(folder / name, name)
                                       for folder in (target, *target.parents)):
             inherited_relocation = True
             break
@@ -760,7 +789,7 @@ def jobs_git_refusal(command, workspace, home=None, *, shell=None) -> str | None
         targets = args + [word[0] for op, word in part["redirects"] if op.startswith(">")]
         for word in targets:
             path = word.partition("=")[2] if "=" in word else word
-            if not _JOBS.search(path):
+            if not _jobs_word(name).search(path):
                 continue
             if relocating:
                 return _say("jobs-file", "a relocated Git write names jobs.json; "
@@ -768,7 +797,7 @@ def jobs_git_refusal(command, workspace, home=None, *, shell=None) -> str | None
                             "Read schedules with a file-read tool instead.")
             if ":" in path and not re.match(r"^[A-Za-z]:", path):
                 path = path.partition(":")[2]
-            if reason := write_refusal(path, base, home):
+            if reason := write_refusal(path, base, home, name=name, under=under):
                 return reason
         if relocating:
             return _say("jobs-file", "a repo-relocating Git write may change a LiteTUI "
@@ -777,7 +806,8 @@ def jobs_git_refusal(command, workspace, home=None, *, shell=None) -> str | None
     return None
 
 
-def jobs_write_target(command, workspace, home=None, *, shell=None) -> Path | None:
+def jobs_write_target(command, workspace, home=None, *, shell=None,
+                      name: str = _JOBS_NAME, under: str | None = None) -> Path | None:
     """Protected schedule write target, using real argv and control boundaries."""
     if not isinstance(command, str):
         command = " ".join(map(str, command or ()))
@@ -792,7 +822,7 @@ def jobs_write_target(command, workspace, home=None, *, shell=None) -> Path | No
             for op, word in part["redirects"]:
                 if op.startswith(">"):
                     target = _resolve(dealias(word[0]), base, home)
-                    if is_jobs_file(target):
+                    if is_jobs_file(target, name, under):
                         return target
             if head in {"cd", "chdir", "pushd", "set-location", "sl", "push-location"}:
                 args = [word for word in words[1:] if word.lower() not in {"/d", "-path", "-literalpath"}]
@@ -820,7 +850,7 @@ def jobs_write_target(command, workspace, home=None, *, shell=None) -> Path | No
                     _, _, path = word.partition("=")
                 # Literal paths retain spaces. Embedded interpreter code keeps
                 # the historical finite path scan (no inner-language execution).
-                matches = list(_JOBS.finditer(path))
+                matches = list(_jobs_word(name).finditer(path))
                 for match in matches:
                     if match.end() == len(path) and match.start() >= 0:
                         raw = path
@@ -828,9 +858,9 @@ def jobs_write_target(command, workspace, home=None, *, shell=None) -> Path | No
                         prefix = _PATH_TAIL.search(path[:match.start()]).group(0)
                         if prefix and prefix[-1] not in "\\/":
                             continue
-                        raw = prefix + "jobs.json"
+                        raw = prefix + name
                     target = _resolve(dealias(raw), target_base, home)
-                    if not is_jobs_file(target):
+                    if not is_jobs_file(target, name, under):
                         continue
                     if head in _JOBS_COPIES:
                         previous = args[n - 1].lower() if n else ""
@@ -868,6 +898,7 @@ def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = Non
     steps = sorted([*((m.start(), m) for m in _CD.finditer(command)),
                     *((m.start(), m) for m in _VERB.finditer(command)),
                     *((m.start(), m) for m in _LAUNCH.finditer(command)),
+                    *((m.start(), m) for m in _ESCAPED_LAUNCH.finditer(command)),
                     *((m.start(), m) for m in code_launches)],
                    key=lambda step: step[0])
     for _, match in steps:
@@ -877,15 +908,14 @@ def refusal(command, workspace, home=None, *, jobs=True, shell: str | None = Non
             if not in_data:
                 launcher_base = _cd_target(command[match.end():], launcher_base, home)
             continue
-        if match.re in (_LAUNCH, _CODE_LAUNCH):
+        if match.re in (_LAUNCH, _CODE_LAUNCH, _ESCAPED_LAUNCH):
             if in_data:
                 continue
-            launcher = _owner_launch(command, match, launcher_base, home, shell=shell)
-            if launcher:
+            if _owner_launch(command, match, launcher_base, home, shell=shell):
                 return _say("owner-launcher",
-                            f"it runs {launcher}, LiteTUI's owner launcher, which marks "
-                            "the user's own instance (LITETUI_OWNER=1); agents launch "
-                            "LiteTUI seats through the spawn service",
+                            "it executes an owner-capable run/run.bat launcher; private "
+                            "launcher identity is unavailable, so every recognized "
+                            "executable spelling is denied, including other absolute paths",
                             "Launch a seat with `liteharness spawn` instead.")
             continue
         if _GIT_VERB.search(command[:match.start()]):
@@ -923,6 +953,12 @@ _INTERPRETER_CODE = re.compile(
     r'[ \t]+(?P<token>"[^"\r\n]*"|\'[^\'\r\n]*\')[ \t]*', re.IGNORECASE)
 #: Only this anchored code context also recognizes indexing/call adjacency.
 _CODE_LAUNCH = re.compile(r'(?i)(?<![\w])run(?:\.bat)?(?![\w])')
+#: `run` / `run.bat` ending in an ESCAPED QUOTE (`\"` or `\'`): the `run` in
+#: `system(\"run\")` of a bash-quoted program. _LAUNCH needs a quote, space or
+#: operator right after the name, so it never sees this spelling; only
+#: _script_head_launch can make it a launch. A backslash followed by anything else
+#: (`run\sub`: a directory) ends no token and is not matched.
+_ESCAPED_LAUNCH = re.compile(r'(?i)run(?:\.bat)?(?=\\["\'])')
 
 
 def _launcher_quoted_argument(command: str, start: int) -> bool:
@@ -989,6 +1025,198 @@ _EXECUTION_SINKS = frozenset({
 })
 
 
+#: Heads whose single-quoted argument is PATTERN TEXT. Not the whole _READERS
+#: set: awk and sed run their quoted script, an editor opens it. None of these
+#: executes an argument except rg's `--pre` / `--hostname-bin`, refused below.
+_PATTERN_HEADS = frozenset({"rg", "grep", "egrep", "findstr", "select-string", "sls"})
+#: PowerShell cmdlets: resolved by PowerShell itself, never a file found on PATH.
+_PATTERN_CMDLETS = frozenset({"select-string", "sls"})
+#: Options that make a pattern head RUN a program named by an argument.
+_PATTERN_EXEC_OPTIONS = ("--pre", "--hostname-bin")
+#: Heads whose quoted argument is a PROGRAM they run: awk system() and pipes, sed `e`.
+_SCRIPT_HEADS = frozenset({"awk", "gawk", "mawk", "nawk", "sed", "gsed"})
+#: A script head spelled anywhere (path, .exe, after a wrapper): the unproven-shell scan.
+_SCRIPT_HEAD_WORD = re.compile(
+    r"(?i)(?<![\w.\-])(?:[\w:.~\-]*[/\\])?(?:awk|gawk|mawk|nawk|sed|gsed)(?:\.exe)?(?![\w.\-])")
+#: Syntax this small scan does not model; any of it restores the original scan.
+_PATTERN_UNMODELLED = re.compile(
+    "[`#\r‘’‚‛“”„]|\\$\\(|@['\"({]|--%")
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _native_head(name: str) -> bool:
+    """Does `name` resolve, on PATH, to a file that takes its argv as given?
+
+    Reads PATH (and PATHEXT on Windows), executes nothing. Fail-closed: a file or a
+    PATH entry can only REMOVE an exemption, never create one, and any error, or a
+    name that does not resolve, is "not native" so the original scan runs.
+    Windows: only an extension PATHEXT lists counts. A `.cmd`/`.bat`/other listed
+    file, or a `.ps1`, in the same or an earlier PATH directory withdraws it (cmd
+    re-parses the quoted text); a listed `.exe`/`.com` keeps it. An `.exe` PATHEXT
+    omits is not a command name, so it neither keeps nor blocks; an unset PATHEXT, or
+    one that lists none, withdraws (no default list is assumed).
+    POSIX: any executable file keeps it, a `#!` wrapper included (argv is passed
+    intact). PowerShell cmdlets are named, not resolved.
+    """
+    if name in _PATTERN_CMDLETS:
+        return True
+    try:
+        folders = [Path(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+        if not _is_windows():
+            return any((folder / name).is_file() and os.access(folder / name, os.X_OK)
+                       for folder in folders)
+        raw = os.environ.get("PATHEXT")
+        if raw is None:
+            return False
+        listed = {ext.strip().lower() for ext in raw.split(";") if ext.strip()}
+        native = tuple(ext for ext in (".exe", ".com") if ext in listed)
+        others = (listed - set(native)) | {".ps1"}
+        if not native:
+            return False
+        for folder in folders:
+            if any((folder / (name + ext)).is_file() for ext in others):
+                return False
+            if any((folder / (name + ext)).is_file() for ext in native):
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def _scan_statements(command: str):
+    """Statements of a PowerShell command line, with each word DECODED.
+
+    Returns None where the syntax is not modelled (the caller restores the original
+    scan): backtick, comment, CR, here-string, `$(`, `@(`, `--%`, smart quotes, an
+    unterminated single quote, an unterminated or `$`-expanding double quote.
+    Bare text, single-quoted text (`''` is one quote) and double-quoted text are
+    joined as PowerShell joins them, so `--pre`, `'--pre'`, `"--pre"` and `--p"re"`
+    are one word. A statement ends at `; | & ( ) { }` or a newline OUTSIDE quotes, so
+    a `;` or `|` inside a quoted script never ends one. Each statement is
+    {"head": its first word, lower-cased, or NUL when it needed a quote (`'rg' x` is a
+    string expression); "words"; "tainted": a decoded word starts an executing
+    option; "args": (start, end, quote) for each quoted part after the head}.
+    """
+    if _PATTERN_UNMODELLED.search(command):
+        return None
+    statements = []
+    state = {"head": None, "word": "", "quoted": False, "tainted": False, "words": [], "args": []}
+
+    def end_word():
+        word = state["word"]
+        if state["quoted"] or word:
+            if state["head"] is None:
+                # `'rg' x` is a string expression, not an rg invocation.
+                state["head"] = "\0" if state["quoted"] else word.lower()
+            state["tainted"] |= word.lower().startswith(_PATTERN_EXEC_OPTIONS)
+            state["words"].append(word.lower())
+        state.update(word="", quoted=False)
+
+    def end_statement():
+        end_word()
+        if state["head"] is not None:
+            statements.append({key: state[key] for key in ("head", "words", "tainted", "args")})
+        state.update(head=None, word="", quoted=False, tainted=False, words=[], args=[])
+
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "'":
+            j, body = i + 1, ""
+            while True:
+                k = command.find("'", j)
+                if k < 0:
+                    return None
+                body += command[j:k]
+                if command[k + 1:k + 2] == "'":
+                    body += "'"
+                    j = k + 2
+                    continue
+                break
+            if state["head"] is not None:   # an argument; argv0 is never excused
+                state["args"].append((i, k + 1, "'"))
+            state["word"] += body
+            state["quoted"] = True
+            i = k + 1
+        elif ch == '"':
+            k = command.find('"', i + 1)
+            if k < 0 or "$" in command[i + 1:k] or command[k + 1:k + 2] == '"':
+                return None
+            if state["head"] is not None:
+                state["args"].append((i, k + 1, '"'))
+            state["word"] += command[i + 1:k]
+            state["quoted"] = True
+            i = k + 1
+        else:
+            if ch in ";|&\n(){}":
+                end_statement()
+            elif ch.isspace():
+                end_word()
+            else:
+                state["word"] += ch
+            i += 1
+    end_statement()
+    return statements
+
+
+def _pattern_literal_spans(command: str, shell: str | None = "powershell") -> list[tuple[int, int]]:
+    """Single-quoted PowerShell literals that are ARGUMENTS of a pattern-search head.
+
+    Owner-launcher only, and only under a proven PowerShell: `'subprocess\\.(run|Popen)'`
+    is verbatim text handed to rg, yet a `(`, `;`, `|` or `&` inside it was read as
+    a statement boundary, which emptied the command position and made `run` a launch.
+    Only a literal after a bare pattern head is excused, in a statement with no
+    preprocessor option, and only when that head resolves to a native program
+    (_native_head). Boundaries OUTSIDE quotes still split statements, so
+    `rg 'x' f; run.bat` is refused. Not a PowerShell parser: see _scan_statements.
+    """
+    statements = _scan_statements(command) if shell == "powershell" else None
+    spans: list[tuple[int, int]] = []
+    native: dict[str, bool] = {}
+    for statement in statements or ():
+        head = statement["head"]
+        if head not in _PATTERN_HEADS or statement["tainted"]:
+            continue
+        quoted = [(a, b) for a, b, quote in statement["args"] if quote == "'"]
+        if quoted and native.setdefault(head, _native_head(head)):
+            spans.extend(quoted)
+    return spans
+
+
+def _script_head_launch(command: str, start: int, shell: str | None) -> bool:
+    """Is the launcher name at `start` inside the quoted PROGRAM of awk/sed (and kin)?
+
+    Their quoted script runs commands (`system("run")`, `print | "run"`, sed `e run`),
+    so the name inside it is a launch, never data. Proven PowerShell: exact, from
+    _scan_statements, so a bare operand stays a file name (`awk -f run.bat f`,
+    `awk '{print}' run.bat`) and a `;` or `|` inside the quotes cannot end the
+    statement and hide the head. Any other shell, or syntax the scan does not
+    model, cannot be tokenised safely: a script head spelled ANYWHERE before the
+    name, with a quote between them, is a launch. That reading refuses more
+    (`rg 'sed' 'x' run.bat`), never less: it does not depend on where statements end.
+    """
+    statements = _scan_statements(command) if shell == "powershell" else None
+    if statements is not None:
+        for statement in statements:
+            if not any(a < start < b for a, b, _ in statement["args"]):
+                continue
+            words = _owner_command_position(statement["words"])
+            if not words:
+                continue
+            first = words[0].replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".exe")
+            if first in _SCRIPT_HEADS:
+                return True
+            # A whole payload passed as one word (`bash -c 'awk ...'`): read it as text.
+            if re.search(r"\s", words[0]) and _SCRIPT_HEAD_WORD.match(words[0].lstrip()):
+                return True
+        return False
+    return any(re.search(r"[\"']", command[m.end():start])
+              for m in _SCRIPT_HEAD_WORD.finditer(command[:start]))
+
+
 def _owner_command_position(words: list[str]) -> list[str]:
     """Peel only literal, finite launcher wrappers; unknown operands stay put.
 
@@ -1027,38 +1255,51 @@ def _owner_command_position(words: list[str]) -> list[str]:
 
 
 def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
-                  *, shell: str | None = None) -> Path | None:
-    """The LiteTUI run.bat this `run` / `run.bat` word runs, or None when it
-    names something else, is only read, or cannot be resolved."""
+                  *, shell: str | None = None) -> bool:
+    """Recognize executable run/run.bat without caller-controlled identity.
+
+    Deliberately conservative: another absolute run.bat is denied too. Existing
+    parser/data guards remain; no existence, PATH or configuration can grant
+    an exception. This bounded command recognizer is not a shell sandbox.
+    """
     start = match.start()
     if _launcher_quoted_argument(command, start):
-        return None
+        return False
     # Leading non-nested comments can precede argv0. Only a trusted PowerShell
     # context may excuse a match IN the comment; unknown shells keep scanning.
     comments = re.match(r"[ \t]*(?:<#(?:(?!<#|#>).)*#>[ \t]*)+", command, re.DOTALL)
     if comments:
         if start < comments.end() and shell == "powershell":
-            return None
+            return False
         if start >= comments.end():
             command = " " * comments.end() + command[comments.end():]
     prefix = _PATH_TAIL.search(command[:start]).group(0)
     prefix_length = len(prefix)
     if prefix.startswith("-"):   # -FilePath:.\run.bat names the path after the colon
         if ":" not in prefix:
-            return None
+            return False
         prefix = prefix.partition(":")[2]
     if prefix and prefix[-1] not in "\\/":
-        return None   # `rerun`, `myrun.bat`: another name
+        return False   # `rerun`, `myrun.bat`: another name
+    # awk/sed RUN their quoted program: the exact name inside it is a launch, not data.
+    if _script_head_launch(command, start, shell):
+        return True
+    if match.re is _ESCAPED_LAUNCH:
+        return False   # found only to feed the check above; never a launch by itself
     if match.re is _CODE_LAUNCH:
         # No new general brace boundary: only anchored richer interpreter CODE
-        # mentioning the launcher takes this D1 branch, with normal identity.
-        return _existing_owner_launcher(prefix + match.group(0), base, home)
+        # mentioning the launcher takes this D1 branch, without identity narrowing.
+        return True
     # The head is judged PER SEGMENT: `echo x & run.bat` runs run.bat. A `(`
     # or backtick opens a substitution that EXECUTES (`echo $(run.bat)`,
     # echo `run.bat`), so it starts a segment too. A `)` ends one: in
     # `if 1==2 (echo a) else run.bat` the command is `else`'s, not echo's (P1).
     boundaries = []
-    openings = [*((m.end() - 1, None) for m in _OWNER_BOUNDARY.finditer(command[:start])),
+    # A boundary character INSIDE a literal handed to a pattern-search head is
+    # pattern text, not syntax (trusted PowerShell only; see _pattern_literal_spans).
+    literals = _pattern_literal_spans(command) if shell == "powershell" else []
+    openings = [*((m.end() - 1, None) for m in _OWNER_BOUNDARY.finditer(command[:start])
+                  if not any(a < m.end() - 1 < b for a, b in literals)),
                 *((m.end() - 1, m.start()) for m in _SWITCH_LABEL_BOUNDARY.finditer(command[:start]))]
     for boundary, enclosing in sorted(openings, key=lambda opening: opening[0]):
         # Label candidates are syntax-only shapes, not authoritative shell
@@ -1081,7 +1322,7 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
     if token_index is not None and re.match(r"[A-Za-z_][\w]*=", tokens[token_index].group()):
         preceding = [_unquote(token.group()).lower() for token in tokens[:token_index]]
         if not _owner_command_position(preceding):
-            return None
+            return False
     # A clearly quoted function / array argument is data, not argv0. Bare
     # words after an identifier+( remain ambiguous and are scanned fail-closed.
     function_head = re.search(r"[\w.-]+\Z", command[:boundary]) if boundary > 0 else None
@@ -1090,13 +1331,23 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
             command[boundary - 1].isalnum() or command[boundary - 1] in "_@.") and (
             re.fullmatch(r"[ \t]*[\"']", command[boundary + 1:start])) and (
             command[start:].startswith(match.group() + command[start - 1])):
-        return None
+        return False
     before = segment[:-prefix_length] if prefix_length else segment
     expression = re.match(r"[ \t]*(?:\$[A-Za-z_][\w]*[ \t]*=[ \t]*|return[ \t]+)", before, re.IGNORECASE)
     if expression:
         before = before[expression.end():]
         if before.lstrip().startswith(("'", '"')):
-            return None   # assignment/return of a string is not a command
+            return False   # assignment/return of a string is not a command
+    # Literal PowerShell argument arrays launching cmd: only /c (optionally
+    # preceded by /d) places the following launcher at cmd's executable head.
+    # Do not peel echo/type, arbitrary switches, variables, or string operands.
+    cmd_wrapper = re.fullmatch(
+        r"[ \t]*(?:start-process|saps)[ \t]+(?:-filepath[ \t]+)?"
+        r"(?:cmd(?:\.exe)?|'cmd(?:\.exe)?'|\"cmd(?:\.exe)?\")[ \t]+"
+        r"-argumentlist[ \t]+(?:(?:/d|'/d'|\"/d\")[ \t]*,[ \t]*)?"
+        r"(?:/c|'/c'|\"/c\")[ \t]*,[ \t]*[\"']?", before, re.IGNORECASE)
+    if cmd_wrapper:
+        before = ""
     before = before.strip(" \t\"'")
     before = re.sub(r"\d?[<>]{1,2}&?[^\s<>&|]+", "", before)
     position = re.findall(r"[^\s\"'`]+", before.lower())
@@ -1105,7 +1356,7 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
     position = [w.lstrip("@^") for w in position if w.lstrip("@^")]
     position = _owner_command_position(position)
     if position[:1] and position[0] in _READERS:
-        return None
+        return False
     # Narrow command positions: direct invocations and cmd's bounded if
     # conditions. Do not turn a later subcommand/argument into argv0.
     if position and position[0] in ("&", "do", "else"):
@@ -1123,25 +1374,8 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
                      for w in position[1:])
              and ("-filepath" not in position[1:] or position[-1] == "-filepath"))
             or (position[0] in ("invoke-item", "ii") and not position[1:])):
-        return None
-    return _existing_owner_launcher(prefix + match.group(0), base, home)
-
-
-def _existing_owner_launcher(raw: str, base: Path | None, home: Path) -> Path | None:
-    """Resolve the same literal identity for normal command and D1 code arms."""
-    target = _resolve(raw, base, home)
-    if target is None:
-        return None
-    if target.name.lower() == "run":
-        # cmd searches PATHEXT in order; a preceding run.exe is not run.bat.
-        extensions = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
-        target = next((candidate for ext in extensions if ext
-                       for candidate in [target.with_suffix(ext.lower())]
-                       if candidate.is_file()), None)
-    owner = _OWNER_LAUNCHER.resolve()
-    if target is None or not target.is_file() or not owner.is_file():
-        return None
-    return target if os.path.normcase(str(target.resolve())) == os.path.normcase(str(owner)) else None
+        return False
+    return True
 
 
 def _unquote(word: str) -> str:

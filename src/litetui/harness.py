@@ -213,7 +213,7 @@ def new_agent_id() -> str:
 
 
 SPAWN_IDENTITY_MARKER = "LITETUI_SPAWN_IDENTITY"
-#: T1043 finding F: set to "1" ONLY by Ryan's own launchers. POSITIVE owner
+#: T1043 finding F: set to "1" ONLY by Owner's own launchers. POSITIVE owner
 #: identification: an instance without it meets the fleet floor on every turn.
 #: Consumed at startup (app.__init__) so no shell or child inherits it.
 OWNER_MARKER = "LITETUI_OWNER"
@@ -227,6 +227,24 @@ _SPAWN_IDENTITY_ENV = (
     "LITEHARNESS_TIER",
     "LITETUI_SEAT_NAME",
 )
+
+
+def tool_process_env(agent_id: str | None, env=None) -> dict[str, str]:
+    """Attribute ordinary tools to their bound seat, never to inherited IDs.
+
+    This is a copy, not a process-global publication. Launch markers stay
+    consumed: a nested LiteTUI must acquire its own seat rather than adopt
+    the tool's identity. MCP config overrides must be applied BEFORE this.
+    """
+    identity_keys = {*_SPAWN_IDENTITY_ENV, SPAWN_IDENTITY_MARKER, OWNER_MARKER,
+                     "LITESUITE_AGENT_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_COMPANION_SESSION_ID"}
+    # Windows folds environment names; lowercase config keys must not bypass
+    # the scrub when CreateProcess turns them back into resolver/launch IDs.
+    child = {key: value for key, value in (os.environ if env is None else env).items()
+             if key.upper() not in identity_keys}
+    if agent_id:
+        child["LITEHARNESS_AGENT_ID"] = agent_id
+    return child
 
 
 def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]:
@@ -466,7 +484,7 @@ class Seat:
         evicted a holder whose pid was ALIVE but quiet for 700 s as a "dead
         ghost" (measured against a throwaway registry, 2026-09-26). A plain
         register refuses a live holder and still reclaims a dead-pid corpse,
-        which is all a relaunch needs. Ryan (liteask a-1db0f560): "the agents
+        which is all a relaunch needs. Owner (liteask a-1db0f560): "the agents
         name is supposed to auto change if the name is taken" — so a refusal
         becomes the next suffix; only past -9 does the seat keep the registry's
         generated name. First come keeps it. Worst case is 9 sequential
@@ -594,12 +612,31 @@ class Seat:
                 self.name = got
                 self.error = None
             else:
-                self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
+                if self._agent_session is not None:
+                    from litetui.registration_diagnostics import (
+                        OWNED_PRESENCE_FAILURE,
+                        record_failure,
+                    )
+                    record_failure(stage='presence-subprocess', returncode=r.returncode)
+                    self.error = OWNED_PRESENCE_FAILURE
+                else:
+                    self.error = (r.stderr or r.stdout or "").strip()[:200] or f"exit {r.returncode}"
             return self.registered
-        except FileNotFoundError:
+        except FileNotFoundError as e:
+            if self._agent_session is not None:
+                from litetui.registration_diagnostics import record_failure
+                record_failure(stage='presence-registration', exc=e)
             self.error = "liteharness not installed"
         except Exception as e:
-            self.error = f"{type(e).__name__}: {e}"
+            if self._agent_session is not None:
+                from litetui.registration_diagnostics import (
+                    OWNED_PRESENCE_FAILURE,
+                    record_failure,
+                )
+                record_failure(stage='presence-registration', exc=e)
+                self.error = OWNED_PRESENCE_FAILURE
+            else:
+                self.error = f"{type(e).__name__}: {e}"
         return False
 
     def deregister(self) -> None:
@@ -660,7 +697,7 @@ class Seat:
         return out
 
     def send(self, to: str, body: str, *, approval_request: tuple[str, str] | None = None,
-             deadline: float | None = None) -> bool:
+             deadline: float | None = None, approval_ancestors: tuple[str, ...] | None = None) -> bool:
         """Reply into the fleet. Uses --body-file: an inline double-quoted
         message runs backticks as shell commands and still reports success.
 
@@ -677,10 +714,13 @@ class Seat:
             if not self.registered or resolve_agent(to)[0] != to or to == self.agent_id:
                 return False
             ident, approver = approval_request
-            metadata = json.dumps({"kind": REQUEST_TYPE, "id": ident,
-                                   "requester": self.agent_id, "approver": approver})
+            fields: dict[str, object] = {"kind": REQUEST_TYPE, "id": ident,
+                      "requester": self.agent_id, "approver": approver}
+            if approval_ancestors is not None:
+                fields["frozen_ancestors"] = list(approval_ancestors)
+            metadata = json.dumps(fields)
             if request_id({"type": "QUESTION", "thread_id": metadata,
-                           "from": self.agent_id, "to": to}) != ident:
+                           "from": self.agent_id, "to": to}, outbound_ancestors=approval_ancestors) != ident:
                 return False
             flags = ["--type", "QUESTION", "--thread-id", metadata]
         try:
@@ -734,12 +774,32 @@ def _move(src: Path, dest_dir: Path) -> Path | None:
         return None
 
 
+def message_text(msg: dict) -> str:
+    """The words of an inbox message, whichever producer wrote it.
+
+    Two producers share the maildir: the Python CLI and MCP tool write a top-level `body`; the
+    desktop app's inbox (for example its Orchestrator Chat relay) nests the text as
+    `payload.text` and writes no `body`. Reading only `body` rendered the second kind blank, so a
+    seat woken by one saw a header line and nothing to answer. `body` wins when both exist; only
+    strings count, and a malformed `payload` is empty rather than an error.
+    """
+    body = msg.get("body")
+    if isinstance(body, str) and body.strip():
+        return body.strip()
+    payload = msg.get("payload")
+    if isinstance(payload, dict):
+        for key in ("text", "body"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def format_message(msg: dict) -> str:
     """Render an inbox message for the chat log."""
     frm = str(msg.get("from") or "?")[:8]
     pri = msg.get("priority") or "normal"
-    body = (msg.get("body") or "").strip()
-    return f"[inbox from {frm} · {pri}]\n{body}"
+    return f"[inbox from {frm} · {pri}]\n{message_text(msg)}"
 
 
 # ── Agent-facing tool ────────────────────────────────────────────────────────

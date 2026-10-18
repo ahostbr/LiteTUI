@@ -43,6 +43,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
+from _owned_seat import owned_app
 from litetui import app as m
 from litetui import tool_policy
 from litetui.side_panel import DialogController, SidePanel
@@ -53,14 +54,14 @@ from litetui.widgets import ConfirmStopBody
 
 
 def _ryans(a):
-    """T1049: an app that holds autonomous models RYAN'S OWN instance, the only
+    """T1049: an app that holds autonomous models OWNER'S OWN instance, the only
     one that may (owner-marked, not spawned). conftest clears the mark."""
     a._spawned_seat, a._owner_seat, a._pty_term = False, True, None
     return a
 
 
 def make_app(profile=AUTONOMOUS):
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -352,7 +353,7 @@ def test_the_creation_note_states_the_LEVEL_and_who_answers():
     """T1082 superseded T085's "light warning ... it must run auto": a schedule now
     runs at the level recorded when it was created. The note still states the
     MECHANISM: the level, and what happens to an action that needs approval when
-    nobody is at the keyboard (in Ryan's own seat it is refused)."""
+    nobody is at the keyboard (in Owner's own seat it is refused)."""
     a = _ryans(make_app(INTERACTIVE))
     note = seat_authority.schedule_note(a, INTERACTIVE)
     assert "runs interactive" in note

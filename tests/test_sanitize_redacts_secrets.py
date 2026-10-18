@@ -134,7 +134,7 @@ ordinary = (
     "index 9f69742..a1b2c3d 100644\n"
     "    result = sanitize.strip_escapes(result)\n"
     "Traceback (most recent call last):\n"
-    "  File \"C:/Projects/LiteTUI/src/litetui/app.py\", line 4190, in _dispatch\n"
+    "  File \"C:/ExampleProjects/LiteTUI/src/litetui/app.py\", line 4190, in _dispatch\n"
     "the quick brown fox jumps over the lazy dog 0123456789\n"
 )
 chk("ordinary tool output is byte-identical", sanitize.redact_secrets(ordinary) == ordinary)

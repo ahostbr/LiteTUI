@@ -4,11 +4,11 @@ Paths are relative to the manifest directory. A PASS is not a signature: human
 approval provenance must still be reviewed by the release operator.
 """
 import argparse
-from datetime import datetime
 import hashlib
 import json
-from pathlib import Path
 import re
+from datetime import datetime
+from pathlib import Path
 
 REQUIRED = frozenset({'codex', 'lmstudio', 'llamacpp', 'ninfer', 'dual_instance',
     'settings', 'resource_admission', 'child_headless', 'child_headed', 'plugin_reload',
@@ -16,8 +16,10 @@ REQUIRED = frozenset({'codex', 'lmstudio', 'llamacpp', 'ninfer', 'dual_instance'
 CRITICAL = frozenset({'dual_instance', 'resource_admission', 'plugin_reload'})
 
 
-def validate(manifest, root):
+def validate(manifest, root, expected_observer):
     issues = []
+    if not isinstance(expected_observer, str) or not expected_observer.strip():
+        issues.append('expected observer must be non-blank')
     root = Path(root).resolve()
     if not isinstance(manifest, dict):
         return ['manifest must be an object']
@@ -103,22 +105,23 @@ def validate(manifest, root):
     approval = manifest.get('approval')
     if not isinstance(approval, dict):
         approval = {}
-    if (approval.get('observer') != 'Ryan' or approval.get('approved') is not True
+    if (approval.get('observer') != expected_observer or approval.get('approved') is not True
             or approval.get('version') != version or approval.get('commit') != commit
             or approval.get('sha256') != digest or not approval.get('scenarios')
             or not approval.get('timestamp')):
-        issues.append('candidate-specific Ryan approval missing or invalid')
-    evidence(approval.get('evidence'), 'Ryan approval')
+        issues.append('candidate-specific observer approval missing or invalid')
+    evidence(approval.get('evidence'), 'observer approval')
     return issues
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', required=True, type=Path)
+    parser.add_argument('--observer', required=True, help='Exact expected human observer name (no default)')
     args = parser.parse_args()
     try:
         manifest = json.loads(args.manifest.read_text(encoding='utf-8'))
-        issues = validate(manifest, args.manifest.parent)
+        issues = validate(manifest, args.manifest.parent, args.observer)
     except (OSError, ValueError, TypeError) as exc:
         issues = [f'Manifest unreadable or malformed: {exc}']
     print(json.dumps({'status': 'BLOCKED' if issues else 'PASS', 'issues': issues}, indent=2))

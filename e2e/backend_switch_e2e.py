@@ -26,6 +26,13 @@ os.environ["LITETUI_BACKEND"] = "llamacpp"
 os.environ["LITETUI_LLAMA_HOST"] = "http://localhost:7472"
 os.environ["LITETUI_NO_HARNESS"] = "1"
 
+try:
+    from e2e._owned_app import owned_session, configure_owned_app
+except ModuleNotFoundError as exc:
+    if exc.name != "e2e":
+        raise
+    from _owned_app import owned_session, configure_owned_app
+
 from litetui import llm_backend
 from litetui import paths
 
@@ -82,57 +89,62 @@ async def main() -> None:
     if not llm_backend._healthy("http://localhost:1234"):
         fail(2, "LM Studio not serving on :1234 — `lms server start` first.")
 
-    a = app_mod.LiteTUI()
-    a.settings.llama_attach_hosts = []    # this run owns its router, always
-    async with a.run_test(size=(120, 32)) as pilot:
-        # ── 1: connect on llamacpp — the app spawns its own router ────────
-        for _ in range(120):
-            await pilot.pause(0.25)
-            if a.available_models:
-                break
-        if a.backend.name != "llamacpp" or not a.available_models:
-            fail(1, f"no llamacpp connect: backend={a.backend.name} models={len(a.available_models)}")
-        small = [k for k in a.available_models if "0.8b" in k or "0.6b" in k]
-        if not small:
-            fail(2, "no 0.8B-class GGUF discovered for the llama turn")
-        a.model_id = small[0]
-        step(f"llamacpp connected; model {a.model_id}")
+    from litetui import settings
+    cfg = settings.load()
+    root = paths.CONVO_DIR / "owned-data"
+    with owned_session(root, cfg) as session:
+        a = app_mod.LiteTUI(agent_session=session)
+        configure_owned_app(a)
+        a.settings.llama_attach_hosts = []    # this run owns its router, always
+        async with a.run_test(size=(120, 32)) as pilot:
+            # ── 1: connect on llamacpp — the app spawns its own router ────────
+            for _ in range(120):
+                await pilot.pause(0.25)
+                if a.available_models:
+                    break
+            if a.backend.name != "llamacpp" or not a.available_models:
+                fail(1, f"no llamacpp connect: backend={a.backend.name} models={len(a.available_models)}")
+            small = [k for k in a.available_models if "0.8b" in k or "0.6b" in k]
+            if not small:
+                fail(2, "no 0.8B-class GGUF discovered for the llama turn")
+            a.model_id = small[0]
+            step(f"llamacpp connected; model {a.model_id}")
 
-        # ── 2: a real turn on OUR engine (JIT: /load happens explicitly) ──
-        await asyncio.wait_for(a.backend.load(a.model_id), timeout=300)
-        await send(a, pilot, "Reply with exactly one word: ping")
-        msgs_after_llama = len(a.conversation)
-        if msgs_after_llama < 3:   # system + user + assistant
-            fail(1, f"llama turn produced no assistant message ({msgs_after_llama})")
-        step(f"real turn on llama.cpp ({msgs_after_llama} messages)")
+            # ── 2: a real turn on OUR engine (JIT: /load happens explicitly) ──
+            await asyncio.wait_for(a.backend.load(a.model_id), timeout=300)
+            await send(a, pilot, "Reply with exactly one word: ping")
+            msgs_after_llama = len(a.conversation)
+            if msgs_after_llama < 3:   # system + user + assistant
+                fail(1, f"llama turn produced no assistant message ({msgs_after_llama})")
+            step(f"real turn on llama.cpp ({msgs_after_llama} messages)")
 
-        # ── 3: /backend flip mid-conversation ─────────────────────────────
-        before = list(a.conversation)
-        _switch_backend(a, "lmstudio")
-        for _ in range(60):
-            await pilot.pause(0.25)
-            if a.available_models and a.backend.name == "lmstudio":
-                break
-        if a.conversation[:len(before)] != before:
-            fail(1, "the switch REWROTE history")
-        if "qwen3.5-0.8b" in a.available_models:
-            a.model_id = "qwen3.5-0.8b"
-        step(f"flipped to LM Studio; history intact; model {a.model_id}")
+            # ── 3: /backend flip mid-conversation ─────────────────────────────
+            before = list(a.conversation)
+            _switch_backend(a, "lmstudio")
+            for _ in range(60):
+                await pilot.pause(0.25)
+                if a.available_models and a.backend.name == "lmstudio":
+                    break
+            if a.conversation[:len(before)] != before:
+                fail(1, "the switch REWROTE history")
+            if "qwen3.5-0.8b" in a.available_models:
+                a.model_id = "qwen3.5-0.8b"
+            step(f"flipped to LM Studio; history intact; model {a.model_id}")
 
-        # ── 4: a real turn on LM Studio, same conversation ────────────────
-        await send(a, pilot, "Reply with exactly one word: pong")
-        if len(a.conversation) < msgs_after_llama + 2:
-            fail(1, "LM Studio turn added nothing to the SAME conversation")
-        step(f"real turn on LM Studio; one conversation, {len(a.conversation)} messages, two engines")
+            # ── 4: a real turn on LM Studio, same conversation ────────────────
+            await send(a, pilot, "Reply with exactly one word: pong")
+            if len(a.conversation) < msgs_after_llama + 2:
+                fail(1, "LM Studio turn added nothing to the SAME conversation")
+            step(f"real turn on LM Studio; one conversation, {len(a.conversation)} messages, two engines")
 
-    # ── cleanup: our router dies with the app (atexit) — verify ──────────
-    a.backend_llama = None
-    time.sleep(1.0)
+        # ── cleanup: our router dies with the app (atexit) — verify ──────────
+        a.backend_llama = None
+        time.sleep(1.0)
 
-    (ART / "switch_e2e_result.json").write_text(
-        json.dumps({"ok": True, "passed": results}, indent=2), encoding="utf-8"
-    )
-    print(f"\nALL {len(results)} STEPS PROVED — one conversation across two engines")
+        (ART / "switch_e2e_result.json").write_text(
+            json.dumps({"ok": True, "passed": results}, indent=2), encoding="utf-8"
+        )
+        print(f"\nALL {len(results)} STEPS PROVED — one conversation across two engines")
 
 
 if __name__ == "__main__":

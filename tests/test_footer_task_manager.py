@@ -4,15 +4,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
-from litetui import app as app_mod
 from litetui import footer_telemetry as telemetry
 from litetui.widgets import TaskManagerToggle
 
 
 def make_app(meters_on=True):
     # The meters default OFF (T1115c); these arms test them switched on unless told not to.
-    a = app_mod.LiteTUI()
+    a = owned_app()
     if meters_on is not None:
         a.settings.footer_task_manager = meters_on
     a._connect = lambda: None
@@ -166,7 +166,7 @@ async def test_live_shaped_status_keeps_meters_on_second_row(width):
 
 @pytest.mark.asyncio
 async def test_meters_are_off_by_default_and_run_no_sampler(monkeypatch):
-    # Ryan 2026-09-27: "turn this off in light UI though. Uh, make a setting to toggle that".
+    # Owner 2026-09-27: "turn this off in light UI though. Uh, make a setting to toggle that".
     from litetui.settings import Settings
     assert Settings().footer_task_manager is False
     monkeypatch.setattr(telemetry.Sampler, "sample", lambda self: telemetry.Reading(cpu=40, ram=50))

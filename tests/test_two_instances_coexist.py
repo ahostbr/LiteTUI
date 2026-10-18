@@ -4,7 +4,7 @@ each other.
 the user, 2026-09-12: *"one thing i wanna check is how two litetui processes coexist
 with their settings, backend, model selection, think level etc ... make sure two
 litetui instances coexist gracefully."* Two were live when this was written
-(litetui.exe 39320 and 128748), both with cwd C:\\Projects\\LiteTUI, so both
+(litetui.exe 39320 and 128748), both with cwd C:\\ExampleProjects\\LiteTUI, so both
 resolved `paths.data_root()` to the same repo root and `settings_path()` to one
 file.
 
@@ -16,7 +16,7 @@ including the seventy it never touched. That is why these arms save in sequence
 with no threads — a timing test would have implied the bug needs bad luck.
 
 ⚠️ EVERY ARM USES A TEMP ROOT. Two instances were running against the real
-C:\\Projects\\LiteTUI\\settings.json while this was written; a test that touched
+C:\\ExampleProjects\\LiteTUI\\settings.json while this was written; a test that touched
 the default root would have rewritten the user's live seat's settings.
 """
 

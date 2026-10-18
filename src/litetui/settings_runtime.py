@@ -9,14 +9,18 @@ from litetui.settings_apply import SettingsSaveResult, PersistenceDestinationRes
 def service_for(app):
     service = getattr(app, '_settings_service', None)
     directory = getattr(app, 'convo_dir', None)
-    if service is None:
+    session = getattr(app, '_agent_session', None)
+    if session is not None and directory is not None:
+        from litetui.owned_storage import require_conversation
+        require_conversation(directory, session)
+    if service is None or service.agent_session is not session:
         from litetui.paths import data_root
-        service = SettingsService(data_root(), directory.parent if directory else None)
+        root = session.store.data_root if session is not None else data_root()
+        service = SettingsService(root, directory.parent if directory else None, agent_session=session)
         app._settings_service = service
-    elif directory is not None and service.conversation_root.resolve() != directory.parent.resolve():
-        # /resume accepts an external conversation path. Rebind only its
-        # storage root; device/default preferences retain their original owner.
-        service = SettingsService(service.root, directory.parent)
+    elif directory is not None and service.conversation_root != directory.parent:
+        # Read-only archive snapshots may move; never infer a write capability.
+        service = SettingsService(service.root, directory.parent, agent_session=session)
         app._settings_service = service
     return service
 

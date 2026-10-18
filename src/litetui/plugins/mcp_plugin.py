@@ -18,7 +18,7 @@ def _register(ctx) -> None:
     app = ctx.app
     ctx.dynamic_tools(
         lambda: app.mcp.tool_specs(),
-        lambda name: app.mcp_dispatch.get(name),
+        lambda name: app.mcp_dispatch.get(name) or app.mcp.dispatch_for(name),
         policy=MCP_UNKNOWN_POLICY,
     )
 

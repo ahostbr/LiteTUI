@@ -31,10 +31,12 @@ def settings_snapshot(app) -> dict:
     """
     from litetui.plugins.model_switch import backend_rows
 
-    return public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name),
-                           backend=app.backend, backends=backend_rows(app),
-                           models=list(app.available_models), model_id=app.model_id,
-                           launch=launch_overrides(app))
+    snapshot = public_snapshot(settings_runtime.service_for(app).snapshot(app.convo_dir.name),
+                               backend=app.backend, backends=backend_rows(app),
+                               models=list(app.available_models), model_id=app.model_id,
+                               launch=launch_overrides(app))
+    snapshot['conversation_id'] = app.convo_dir.name
+    return snapshot
 
 
 def launch_overrides(app) -> dict:

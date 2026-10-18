@@ -6,6 +6,7 @@ import sys
 import threading
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import paths, tasks, tool_policy, ttyguard
 from litetui.app import LiteTUI
@@ -46,7 +47,8 @@ async def test_stop_pending_shell_prevents_side_effect_and_persists_killed(tmp_p
 
     monkeypatch.setattr(ttyguard, "popen", spawn)
     monkeypatch.setattr(ttyguard, "kill_tree", kill)
-    app = LiteTUI()
+    app = owned_app()
+    app._connect = lambda: None  # startup discovery is outside this test
     if phase == "before_spawn":
         monkeypatch.setattr(core_tools, "powershell_exe", delayed_exe)
     app._active_tool_profile = tool_policy.AUTONOMOUS

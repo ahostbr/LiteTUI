@@ -28,7 +28,7 @@ from litetui.side_panel import SwapButton, close_dialog
 # scrollbar in the sidebar is one of the findings the spike exists to produce.
 _DEMO_PAYLOAD = """{
   "tool": "write_file",
-  "path": "C:/Projects/LiteTUI/src/litetui/plugins/scheduler_ui.py",
+  "path": "C:/ExampleProjects/LiteTUI/src/litetui/plugins/scheduler_ui.py",
   "bytes": 34170,
   "sha256": "9f2c41ab77e0d3195c6ba8e40f7d21ce5813aa96b4d07ef2c1a5b98e6d3f04c7",
   "reason": "the model wants to rewrite the calendar screen in a single edit",

@@ -64,7 +64,8 @@ FIELD_LABELS = {
     "theme_name": "Your color theme", "custom_themes": "Themes you made",
     "sidecar_enabled": "Open settings in this window", "dialog_style": "How dialogs open",
     "dialog_side": "Which side dialogs use", "image_viewer_enabled": "Preview images",
-    "tts_enabled": "Read replies aloud", "tts_engine": "Speech provider", "tts_voice": "Speaking voice",
+    "tts_enabled": "Read replies aloud", "tts_engine": "Fallback speech provider", "tts_voice": "Speaking voice",
+    "tts_litesuite_first": "Prefer LiteSuite speech",
     "stt_model": "Transcription model", "stt_mic": "Microphone", "stt_hotkey": "Dictation shortcut",
     "tools_enabled": "Let the agent use tools", "tool_iterations": "Maximum tool steps",
     "tool_policy_profile": "Approval level", "tool_always_allow": "Actions always allowed",
@@ -89,7 +90,7 @@ def _friendly_label(name: str) -> str:
         return FIELD_LABELS[name]
     words = name.replace("_", " ").split()
     special = {"tts": "Speech", "stt": "Dictation", "mcp": "MCP", "lmstudio": "LM Studio",
-               "lm": "Local model", "ninfer": "NInfer", "llama": "llama.cpp", "api": "API",
+               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "llama": "llama.cpp", "api": "API",
                "hf": "Hugging Face", "kv": "KV", "tps": "tokens per second", "pct": "percentage",
                "s": "seconds", "mib": "MiB", "gguf": "GGUF"}
     return " ".join(special.get(word, word) for word in words).capitalize()
@@ -98,6 +99,10 @@ def _friendly_label(name: str) -> str:
 # The one-line effect of each control. Neither section copy nor a key-to-title
 # transform can say what a numeric budget costs or what a permission changes.
 FIELD_DESCRIPTIONS = {
+    "small_task_route": "Opt-in visible small-task worker: exact backend/model/cognitive/thinking JSON. Blank/null is off; never follows parent or falls back.",
+    "subagent_route": "One child backend and exact model shared by all instances; conversation overrides win. Follow parent clears the global route.",
+    "subagent_route_override": "Conversation child route: inherit the global route, follow the parent, or select a backend and model. Clear the legacy subagent model to inherit.",
+    "allow_local_subagents": "Expert only: local children can exhaust GPU memory. Never loads models; requires the sole resident model and nothing loading. LM Studio remains unsupported until its usage/lease protocol lands.",
     "default_model": "The model selected when a conversation connects to its engine.",
     "pin_default_model": "Always switch back to your usual model on connect; off only picks it when none is loaded.",
     "default_context_length": "Tokens loaded for the context window; a larger window can cost VRAM and speed.",
@@ -134,10 +139,15 @@ FIELD_DESCRIPTIONS = {
     "ninfer_kv_dtype": "NInfer cache format; higher precision needs more memory, smaller formats save it.",
     "ninfer_kv_capacity": "Shared NInfer cache capacity: blank follows context, auto fills remaining GPU memory.",
     "ninfer_host_kv_mib": "MiB of pinned system RAM for NInfer cache offloaded from the GPU.",
-    "tts_enabled": "Show Speak on replies; turning it off also stops playback.",
-    "tts_engine": "Use local Windows voices or Microsoft's online neural speech service.",
+    "strata_host": "Address of a Strata server started separately; blank uses the install's own port.",
+    "strata_root": "Folder Strata's setup prepared; blank uses the one LiteSuite's Model Hub installs.",
+    "strata_config": "Prepared model (strata-<model>.json) served at the next Strata engine start.",
+    "strata_max_context": "Context tokens requested at Strata startup; blank keeps the model's set-up value.",
+    "tts_enabled": "Show Speak on replies; turning it off stops LiteTUI-owned playback, not LiteSuite's queue.",
+    "tts_litesuite_first": "Use LiteSuite's selected voice when reachable; off uses only the fallback engine. LiteSuite owns queued playback and stopping it.",
+    "tts_engine": "Fallback when LiteSuite is unavailable, or the primary engine when LiteSuite preference is off.",
     "tts_voice": "Windows voice used for spoken replies with the local speech engine.",
-    "tts_timeout": "Seconds to wait for speech synthesis before it times out.",
+    "tts_timeout": "Maximum lifetime in seconds of a LiteTUI speech child; does not control LiteSuite's queue.",
     "tts_edge_voice": "Neural voice used for spoken replies with the Edge speech engine.",
     "stt_model": "Transcription model that turns recorded speech into prompt text.",
     "stt_mic": "Microphone used to record dictation.",
@@ -165,6 +175,7 @@ FIELD_DESCRIPTIONS = {
     "tool_deny": "Tool:authority refusals checked before any allow rule or profile.",
     "tool_trusted_interpreters": "One exact absolute path per line for this conversation. Empty adds no trust. Skips only foreign-program confirmation, not danger or deny rules; linked or invalid paths grant no trust.",
     "relay_approval_timeout_s": "Seconds an agent-launched seat waits for its spawner's approval before refusing.",
+    "permission_judge": "Blank is off. The word count logs, for each routed approval, whether the plain-read check would have covered it. Every approval is still asked; nothing is authorized. Shared by every LiteTUI on this machine.",
     "tools_disabled": "Tool names withheld from the model and refused if called anyway.",
     "tool_context_mode": "Put raw, masked, or summarized tool output in context without deleting the original.",
     "tool_context_threshold_chars": "Results shorter than this character count enter context unchanged.",
@@ -174,6 +185,7 @@ FIELD_DESCRIPTIONS = {
     "compact_max_tokens": "Token budget for the summary; too little may be spent entirely on reasoning.",
     "compact_thinking_level": "Reasoning effort used when generating a compaction summary.",
     "compact_max_tool_iters": "Maximum tool round-trips allowed while compaction writes its summary.",
+    "owner_domain_cap": "Owner mode only: characters of DOMAIN.md injected at the start of a conversation; the oldest rows are cut first.",
     "clear_screen_after_compact": "Clear replaced transcript messages so the screen matches the model's context.",
     "compact_keep_recent": "Number of recent messages kept verbatim alongside the summary.",
     "user_name": "Name included in the assistant's system prompt; blank omits it.",
@@ -318,9 +330,14 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         ("ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
     ),
     _section(
+        "strata", "Strata", "strata-engine", "Engine",
+        "Qwen3.8-Flash-Next on one GPU plus system RAM (github.com/Niko1221/Strata).",
+        ("strata_host", "strata_root", "strata_config", "strata_max_context"), scope="device", keywords=("Qwen", "Flash-Next", "engine", "RAM", "context"),
+    ),
+    _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",
         "Reply playback, voice choice, and the install/test path.",
-        ("tts_enabled", "tts_engine", "tts_voice", "tts_timeout", "tts_edge_voice"), scope="device", keywords=("speak", "TTS", "voice", "Microsoft", "offline", "timeout"),
+        ("tts_enabled", "tts_litesuite_first", "tts_engine", "tts_voice", "tts_timeout", "tts_edge_voice"), scope="device", keywords=("speak", "TTS", "voice", "LiteSuite", "Microsoft", "offline", "timeout"),
     ),
     _section(
         "voice", "Voice", "voice-dictate", "Dictate / STT in",
@@ -348,9 +365,14 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         ("seed", "stop"), scope="defaults", keywords=("seed", "repeat", "stop strings", "deterministic"),
     ),
     _section(
+        "agent", "Agent loop", "agent-subagent-routing", "Subagents · global route",
+        "One backend and model shared by all instances; conversation overrides win.",
+        ("subagent_route", "small_task_route", "allow_local_subagents"), scope="device", keywords=("Codex", "Claude", "global", "subagent", "child", "local"),
+    ),
+    _section(
         "agent", "Agent loop", "agent-routing", "Side-call routing",
         "Point background work at the right resident model.",
-        ("subagent_model", "tool_summary_model"), scope="conversation", keywords=("subagent", "side call", "summary", "child"),
+        ("subagent_route_override", "subagent_model", "tool_summary_model"), scope="conversation", keywords=("subagent", "side call", "summary", "child"),
     ),
     _section(
         "agent", "Agent loop", "agent-execution", "Execution limits",
@@ -360,7 +382,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "agent", "Agent loop", "agent-authority", "Authority & approvals",
         "The host-enforced safety profile and standing decisions.",
-        ("tool_policy_profile", "tool_always_allow", "tool_deny", "tool_trusted_interpreters", "relay_approval_timeout_s"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
+        ("tool_policy_profile", "tool_always_allow", "tool_deny", "tool_trusted_interpreters", "relay_approval_timeout_s", "permission_judge"), scope="conversation", keywords=("authority", "approval", "permissions", "safety", "allow", "deny"),
     ),
     _section(
         "agent", "Agent loop", "agent-tools", "Tool surface",
@@ -380,7 +402,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "compaction", "Compaction", "compact-summary", "Summary budget",
         "Give the summary enough room to be useful and durable.",
-        ("compact_max_tokens", "compact_thinking_level", "compact_max_tool_iters"), scope="conversation", keywords=("summary", "budget", "thinking", "tool rounds"),
+        ("compact_max_tokens", "compact_thinking_level", "compact_max_tool_iters", "owner_domain_cap"), scope="conversation", keywords=("summary", "budget", "thinking", "tool rounds", "owner", "domain"),
     ),
     _section(
         "compaction", "Compaction", "compact-transcript", "Transcript presentation",

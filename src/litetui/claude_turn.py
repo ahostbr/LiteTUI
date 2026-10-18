@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import tempfile
 import time
+from pathlib import Path
 
 from rich.text import Text
 
@@ -49,6 +52,35 @@ CLAUDE_FLEET_LINE_RE = re.compile(
 )
 
 
+#: One prompt file per conversation, overwritten when a session opens. argv carries only its
+#: path: a ~60 KB prompt on argv overflows CreateProcess's 32767-character limit (WinError 206).
+SYSTEM_PROMPT_FILE = "system-prompt.md"
+
+
+def system_prompt_file(convo_dir, text):
+    """Write `text` to the conversation's prompt file: temp file plus one `os.replace`, under the write lease."""
+    from litetui.shared_state import coordinated_write
+
+    convo_dir = Path(convo_dir)
+    convo_dir.mkdir(parents=True, exist_ok=True)
+    path = convo_dir / SYSTEM_PROMPT_FILE
+    with coordinated_write(path):
+        fd, tmp = tempfile.mkstemp(dir=str(convo_dir), prefix=".system-prompt-", suffix=".md")
+        try:
+            # Binary, not text: text mode turns "\n" into "\r\n" on Windows, so the bytes
+            # would differ from the recorded prompt.
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(text.encode("utf-8"))
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    return path
+
+
 def system_prompt_for(app, segment):
     """The system prompt a Claude session of `segment` runs under: LiteTUI's, not Claude Code's.
 
@@ -69,29 +101,40 @@ def system_prompt_for(app, segment):
     from litetui.textfmt import load_prompt
 
     segment = ledger_for(app).segment(segment["id"]) or segment  # the recorded state, not a caller's copy
+    from litetui.store_identity import UNRECORDED, capture, require_store_match
+    if segment.get("system_prompt") or segment.get("session_id"):
+        require_store_match(app, segment.get("store_identity", UNRECORDED),
+                            prompt=segment.get("system_prompt") or "", convo_id=app.convo_id, native=True)
     if segment.get("system_prompt"):
+        if not isinstance(segment.get("store_injected"), bool):
+            app._ensure_legacy_store_notice(native_unknown=True)
         if getattr(getattr(app, "seat", None), "registered", False):
             return ledger_for(app).refresh_system_prompt_identity(
                 segment["id"], app._fleet_identity_sentence(), CLAUDE_FLEET_LINE_RE)
         return segment["system_prompt"]
     if segment.get("session_id"):
         return None
+    store_identity = capture(app)
     tools = "\n" + load_prompt("claude-tools", cwd=segment["workspace"]).strip() + "\n" if app.tools_enabled else CLAUDE_TOOLS_OFF
+    launch = getattr(app, "_cli_system_prompt", None)
     from litetui import paths, prompt_compiler
     floor = prompt_compiler.compile_prompt_file(paths.SYSTEM_PROMPT_FILE, root=paths.ROOT,
                                                 user_name=getattr(app.settings, "user_name", "")).strip()
-    parts = [app.plugins.compose_prompt(replace={PROMPT_ORDER["BASE"]: floor,
+    parts = [launch, app.plugins.compose_prompt(replace={PROMPT_ORDER["BASE"]: floor,
                                                 PROMPT_ORDER["TOOLS"]: tools,
                                                 PROMPT_ORDER["DEFERRED_TOOLS"]: ""})]
     parts.append(appsvc.index_block(app, cwd=segment["workspace"]).strip())
-    parts.append(appsvc.store_block(app).strip())
+    parts.append(appsvc.lore_block(app).strip())
+    store_block = appsvc.store_block(app).strip()
+    parts.append(store_block)
     if any(s.get("function", {}).get("name") == "harness" for s in app._all_tools()):
         parts.append(app._fleet_identity_sentence() + load_prompt("harness-capabilities").strip())
     parts.append("End each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
     parts.append(seeded_append(segment["seed"]) if segment.get("seed") else APPEND)
     parts.append("[LiteTUI ordinary instructions are host-supplied per turn; mutable-policy version 1]")
     text = "\n\n".join(p for p in parts if p)
-    return ledger_for(app).fix_system_prompt(segment["id"], text, host_policy_version=1)
+    return ledger_for(app).fix_system_prompt(segment["id"], text, store_identity=store_identity,
+                                            store_injected=bool(store_block), host_policy_version=1)
 
 
 #: The CLI's own words for a context that no longer fits (read out of CLI 2.1.281).
@@ -266,6 +309,9 @@ def hold_input(app, item, refusal):
 
 
 def prepare_input(app, content, profile, source, operation_id=None):
+    from litetui.restart_checkpoint import is_held
+    if is_held(app):
+        raise ValueError("Restart checkpoint hold blocks new native input")
     if not isinstance(content, str):
         raise TypeError("Claude image attachments are not enabled yet; send text instead.")
     ledger = ledger_for(app)
@@ -295,6 +341,9 @@ def prepare_input(app, content, profile, source, operation_id=None):
 
 
 def queue_ready(app, item):
+    from litetui.restart_checkpoint import is_held
+    if is_held(app):
+        return False
     if not item.get("_claude_segment"):
         if not getattr(getattr(app, "backend", None), "owns_native_turns", False):
             return True
@@ -440,6 +489,10 @@ async def session_for(app, backend, segment, effort):
         # fixed for this session; changed inventory requires /claude new.
         # The prompt first: it may wait for the seat, and the inventory is read after it.
         system_prompt = await prompt_for_new_session(app, segment)
+        if system_prompt:
+            # The frozen prompt goes to the SDK by path, not on argv (see SYSTEM_PROMPT_FILE).
+            path = system_prompt_file(ledger_for(app).dir, system_prompt)
+            system_prompt = {"type": "file", "path": str(path)}
         session = await backend.open_session(segment, app.model_id, effort=effort,
                                              system_prompt=system_prompt, **bridge.sdk_options())
         return session, bridge, normalizer
@@ -457,6 +510,13 @@ def _joined(message_texts):
     """The turn's answer: each native message's text, in order. A message with no text
     (a tool call, a thinking block) adds nothing, not a stray blank line."""
     return "\n\n".join(t for t in message_texts.values() if t)
+
+
+async def _query_with_store_notice(session, ledger, entry_id, content, notice):
+    pending = notice if not ledger.store_notice_delivered else None
+    await session.query(entry_id, pending + "\n\n" + content if pending else content)
+    if pending:
+        ledger.mark_store_notice_delivered()
 
 
 async def stream_turn(app):
@@ -564,9 +624,10 @@ async def stream_turn(app):
             raise RuntimeError("This legacy Claude session has higher-priority ordinary instructions. "
                                "Input remains unsent; explicitly use /claude new before applying scoped ordinary prompts.")
         context = prompt_overrides.native_context(app, snapshot=snapshot) if versioned else ""
-        ledger.update_delivery(entry_id, "submitted", litetui_ordinary_context=context)
+        notice = getattr(app, "_store_notice_text", None) if not ledger.store_notice_delivered else None
+        ledger.update_delivery(entry_id, "submitted", **({"store_notice": notice} if notice else {}))
         submitted = True
-        await session.query(entry_id, context + item["content"])
+        await _query_with_store_notice(session, ledger, entry_id, context + item["content"], notice)
         clock = claude_cache.clock_for(app, segment["id"])
         clock.model, clock.effort = app.model_id, effort or "default"
 

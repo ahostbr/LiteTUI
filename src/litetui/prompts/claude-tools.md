@@ -9,8 +9,11 @@ names, use the built-in that does the job: `read` -> Read, `write` -> Write,
 `ask_user_question` -> AskUserQuestion. LiteTUI's own tools that are bridged to you
 arrive as `mcp__litetui__<name>` (for example `mcp__litetui__view_image`,
 `mcp__litetui__harness`, `mcp__litetui__skill`, `mcp__litetui__chrome`).
-`subagent`, `self_compact` and `tool_search` do not exist on this backend: do the
-work yourself, and leave compaction to LiteTUI.
+`mcp__litetui__subagent` runs an isolated prompt-only child using the conversation
+route override or global subagent route. It may use another backend without
+changing your model; local children require the expert toggle and an already
+resident model. `self_compact` and `tool_search` do not exist on this backend:
+leave compaction to LiteTUI.
 
 Your working directory is `{cwd}`. Paths in these instructions are absolute or
 relative to it.

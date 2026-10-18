@@ -71,13 +71,11 @@ STORE_HEADER = "## Your store, loaded once at the start of this conversation"
 
 
 def load_skills(app):
-    """The skill index, from cache when there is one.
+    """The skill index, cached while the selected discovery roots still match.
 
-    Discovery walks every configured library on every boot, which is why a
-    folder added while the app was running never appeared: the answer was
-    computed once at startup and nothing could ask again. The cache does not
-    change that -- it makes the recomputation an explicit, cheap act
-    (/skills refresh) instead of a restart.
+    Plugin upgrades and configured-root changes trigger a scan at startup.
+    Changes inside an unchanged library use /skills refresh instead of a
+    restart; an already running app retains its index until that refresh.
 
     Returns (skills, generated_at). generated_at is 0.0 for a fresh scan,
     which is how /skills knows whether it is showing cached data and how old
@@ -85,11 +83,11 @@ def load_skills(app):
     """
     if not app.settings.skills_enabled:
         return ([], 0.0)
-    cached = skills_mod.read_cache(paths.data_root())
+    cached = skills_mod.read_cache(paths.data_root(), app.settings.skill_roots)
     if cached is not None:
         return cached
     found = skills_mod.discover_all(paths.data_root(), app.settings.skill_roots)
-    skills_mod.write_cache(paths.data_root(), found)
+    skills_mod.write_cache(paths.data_root(), found, app.settings.skill_roots)
     return (found, 0.0)
 
 def load_image_file(app, path: Path) -> str | None:
@@ -107,6 +105,22 @@ def load_image_file(app, path: Path) -> str | None:
 #: Marks an already-injected project index inside the system message; detected
 #: by marker (not a flag) for the same reason as STORE_HEADER: /resume.
 INDEX_HEADER = "## Project index (AGENT_INDEX.md), snapshot at the start of this conversation"
+# Shared with the bounded legacy launch-slot reader; bodies are always opaque.
+INDEX_OPENING = (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it lists. Source: {{where}}. '
+                 'It is NOT re-sent each turn and is not refreshed on resume; read the file for its '
+                 'current contents.\n\n')
+#: Marks an already-injected lore block inside the system message; by marker for the same reason.
+LORE_HEADER = "## Lore, loaded at the start of this conversation"
+LORE_OPENING = f'\n\n{LORE_HEADER}\n\n'
+STORE_OPENING = ('\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n')
+
+
+FLEET_OPENING = 'You are registered in the LiteHarness fleet as '
+
+
+def extend_system_text(current: str, text: str) -> str:
+    """The host's exact suffix join, shared with bounded legacy recognition."""
+    return current.rstrip() + '\n\n' + text
 
 
 def index_block(app, cwd=None) -> str:
@@ -132,16 +146,44 @@ def index_block(app, cwd=None) -> str:
         if notify is not None:
             notify(f'warning: {INDEX_NAME} is {total} chars and was truncated at {INDEX_CAP} '
                    f'in the system prompt ({where}). Trim it.')
-    return (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it lists. Source: {where}. '
-            'It is NOT re-sent each turn and is not refreshed on resume; read the file for its '
-            f'current contents.\n\n{text}\n')
+    return INDEX_OPENING.format(where=where) + text + '\n'
+
+
+def lore_block(app) -> str:
+    """The lore file as a prompt section, or '' for a seat with no owned agent home.
+
+    Only `.agents` seats (an owned AgentSession) are told the lore; a `.convos`-era
+    archive has no session and gets nothing, not even an error. A SNAPSHOT like the
+    index: injected once into message 0, which a local compaction keeps and a Claude
+    compaction rebuilds. Cuts are named in the text and the user is told too.
+    """
+    if getattr(app, '_agent_session', None) is None:
+        return ''
+    from litetui.lore import read_lore
+    found = read_lore()
+    if found is None:
+        return ''
+    _, text, warnings = found
+    notify = getattr(app, '_system', None)
+    for warning in warnings:
+        if notify is not None:
+            notify(f'warning: {warning[1:-1].removeprefix("... ")}. Trim it.')
+    # no text line when a cut kept none (one long line): the header and the note only
+    return LORE_OPENING + '\n'.join([*([text] if text else []), *warnings]) + '\n'
 
 
 def store_block(app, live: bool=False) -> str:
     # memory.md is capped hardest ON PURPOSE: it is an index, and an index
     # that needs more than this has stopped being one.
     parts = []
-    for name, cap in (('memory.md', 6000), ('soul.md', 8000), ('handoff.md', 8000)):
+    # Owner mode: the owner folder's SOUL.md, NOW.md, DOMAIN.md stand in for the
+    # agent home's memory.md, soul.md, handoff.md (see litetui.owner_mode).
+    if getattr(app, '_owner_memory_dir', None) is not None:
+        from litetui.owner_mode import store_files
+        files = store_files(app.settings)
+    else:
+        files = (('memory.md', 6000), ('soul.md', 8000), ('handoff.md', 8000))
+    for name, cap in files:
         body = app._read_store_file(name, cap)
         if body:
             parts.append(f'### {name} (current contents)\n\n{body}')
@@ -154,7 +196,21 @@ def store_block(app, live: bool=False) -> str:
     # local 27B, where it crowds out the conversation itself. The text
     # below must not promise a per-turn refresh -- an instruction that
     # quietly stopped being true is worse than no instruction at all.
-    return '\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n' + '\n\n'.join(parts) + '\n'
+    return STORE_OPENING + '\n\n'.join(parts) + '\n'
+
+def strip_store_block(content: str) -> str:
+    """`content` without its trailing store block; unchanged when it has none.
+
+    INVARIANT: the store block is the LAST thing in message 0, so everything
+    from the blank line before STORE_HEADER onward is the snapshot. The index
+    block, if any, sits before it and stays (found again by its own header).
+    `_inject_store_once` appends it last, and `LiteTUI._append_to_system`
+    inserts any later text in front of it; anything else that extends message 0
+    after the store is injected must do the same or this cut will take it too.
+    """
+    cut = content.find('\n\n' + STORE_HEADER)
+    return content if cut < 0 else content[:cut]
+
 
 def append_tps_into(app, t: Text, sep: str) -> None:
     """The generation-stats field: output tokens, then tok/s.

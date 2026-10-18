@@ -53,7 +53,7 @@ def _validated_theme_change(value, current):
 def apply_patch(app, payload: dict) -> dict:
     """Run on the Textual thread; the sidecar never writes settings itself."""
     if not isinstance(payload, dict) or not (
-            {"changes", "expected_revisions"} <= set(payload) <= {"changes", "expected_revisions", "confirm_cache"}):
+            {"changes", "expected_revisions"} <= set(payload) <= {"changes", "expected_revisions", "confirm_cache", "conversation_id"}):
         raise ValueError("Invalid settings patch")
     changes, expected = payload["changes"], payload["expected_revisions"]
     confirmed = payload.get("confirm_cache", False)
@@ -68,6 +68,9 @@ def apply_patch(app, payload: dict) -> dict:
     directory = getattr(app, "convo_dir", None)
     if directory is None:
         raise ValueError("Settings patch requires a conversation")
+    if 'conversation_id' in payload and payload['conversation_id'] != directory.name:
+        return {'saved': False, 'conflict': True, 'persistence': [], 'runtime': [],
+                'error': 'Conversation changed; discard the draft and reload settings'}
     service = settings_runtime.service_for(app)
     snapshot = service.snapshot(directory.name)
     launch = getattr(app, "_invocation_saved_values", {})

@@ -36,7 +36,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui.ask_user_question import AskUserQuestionBody, QuestionState
 from litetui.picker import PickerBody, PickerScreen
 from litetui.plugins.scheduler_ui import JobBody
@@ -67,7 +67,7 @@ IDS = [name for name, _ in REAL_BODIES]
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

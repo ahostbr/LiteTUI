@@ -1,25 +1,30 @@
-"""Locate child-owned existing conversation storage; never create a profile copy."""
+"""Read child conversation evidence from owned catalog first, archives read-only."""
 from pathlib import Path
 from litetui.agent_inbox import _identity
 from litetui.agent_launcher import LaunchBlocked
+from litetui.agent_store import StoreError, _unlinked
+from litetui.storage_catalog import conversations
 
 
 def conversation_evidence(data_root, conversation_id):
-    """Verify materialization after the child's first prompt, not just readiness.
-
-    Caller owns the lifetime of data_root: it must not be a temporary directory
-    for production launches. This function neither acquires the child's write
-    lease nor modifies/copies its transcript or settings.
-    """
+    """Verify materialized evidence without acquiring leases or modifying stores."""
     identity = _identity(conversation_id)
-    root = (Path(data_root).resolve() / '.convos').resolve()
-    directory = (root / identity).resolve()
-    if directory.parent != root:
-        raise LaunchBlocked('Child conversation storage escapes its data root')
-    result = {'conversation_dir': str(directory)}
-    for key, name in (('transcript', 'convo.jsonl'), ('settings', 'settings.json')):
-        path = directory / name
-        if path.resolve().parent != directory or not path.is_file():
-            raise LaunchBlocked(f'Child {key} is absent or outside its conversation')
-        result[key] = str(path.resolve())
-    return result
+    try:
+        rows = [row for row in conversations(Path(data_root), include_archives=True)
+                if row.conversation_id == identity]
+        owned = [row for row in rows if not row.archive]
+        if len(owned) > 1:
+            raise StoreError('Child conversation has ambiguous owned membership')
+        selected = owned or rows
+        if len(selected) != 1:
+            raise StoreError('Child conversation is absent or ambiguous')
+        directory = selected[0].transcript.parent
+        result = {'conversation_dir': str(directory)}
+        for key, name in (('transcript', 'convo.jsonl'), ('settings', 'settings.json')):
+            path = _unlinked(directory / name)
+            if not path.is_file():
+                raise StoreError(f'Child {key} is absent or outside its conversation')
+            result[key] = str(path)
+        return result
+    except (ValueError, OSError) as exc:
+        raise LaunchBlocked(str(exc)) from exc

@@ -5,8 +5,9 @@ from litetui.agent_launcher import LaunchBlocked
 
 def test_storage_requires_actual_materialized_transcript(tmp_path):
     from litetui.agent_storage import conversation_evidence
-    with pytest.raises(LaunchBlocked, match='transcript'):
+    with pytest.raises(LaunchBlocked, match='absent'):
         conversation_evidence(tmp_path, 'actual-conversation')
+    assert not list(tmp_path.iterdir()), 'read-only evidence lookup created a directory or lease'
 
 
 def test_storage_resolves_existing_conversation_without_copying(tmp_path):

@@ -27,6 +27,7 @@ from pathlib import Path as _Path
 
 from litetui import app as _app_mod
 from litetui import paths
+from _owned_seat import owned_app
 
 
 def _settings_body(app_or_screen):
@@ -381,7 +382,7 @@ async def test_the_settings_sections_are_tabs():
         await pilot.pause()
         panes = app.screen.query(TabPane)
         assert [pane.id for pane in panes] == [
-            "tab-model", "tab-ninfer", "tab-voice", "tab-generation", "tab-agent",
+            "tab-model", "tab-ninfer", "tab-strata", "tab-voice", "tab-generation", "tab-agent",
             "tab-compaction", "tab-capabilities", "tab-hooks", "tab-themes",
             "tab-interface",
         ]
@@ -398,7 +399,7 @@ async def test_the_panel_is_centred_not_docked_top_left(monkeypatch):
     from litetui import app as app_mod
     from litetui.settings_screen import SettingsScreen
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
     # Geometry does not depend on a running model service. The settings command
     # reads residency to decorate model rows before constructing this panel.
     monkeypatch.setattr(a.backend, "loaded_models", lambda: set())

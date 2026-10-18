@@ -1,6 +1,8 @@
 """Optional parent-owned preview never silently replaces Textual on failure."""
 import json
 import subprocess
+import queue
+import threading
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -132,3 +134,171 @@ def test_parallel_exchange_refuses_second_reader(tmp_path):
         process.stdout.readline.assert_not_called()
     finally:
         owner._exchange_lock.release()
+
+
+class ReplyingProcess:
+    """In-memory child boundary: real protocol/reader, no OS process or pipe."""
+
+    def __init__(self, token, *, pause_command=None, entered=None, release=None,
+                 ready=True):
+        self.token = token
+        self.pause_command = pause_command
+        self.entered = entered
+        self.release = release
+        self.ready = ready
+        self.stdin = self
+        self.stdout = self
+        self.replies = queue.Queue()
+        self.commands = []
+        self.dead = False
+
+    def poll(self):
+        return 0 if self.dead else None
+
+    def write(self, raw):
+        frame = sidecar_launch.sidecar_protocol.decode(raw.rstrip(b"\n"), self.token)
+        command = frame["command"]
+        self.commands.append(command)
+        if command == self.pause_command:
+            self.entered.set()
+            assert self.release.wait(3), "test failed to release paused child"
+        if command == "hello":
+            payload = {"ready": self.ready, "version": 1}
+        elif command == "open":
+            payload = {"opened": frame["payload"]["view"]}
+        else:
+            payload = {command: True}
+        self.replies.put(sidecar_launch.sidecar_protocol.encode(
+            frame["id"], self.token, "reply", payload) + b"\n")
+
+    def flush(self):
+        pass
+
+    def readline(self, limit):
+        return self.replies.get(timeout=4)
+
+    def terminate(self):
+        self.dead = True
+        self.replies.put(b"")
+
+    def wait(self, timeout=None):
+        return 0
+
+    def close(self):
+        self.terminate()
+
+
+def overlapping_calls(first, second, entered, release):
+    """Keep the first operation paused while the second caller enters."""
+    results = [None, None]
+    errors = []
+    second_started = threading.Event()
+    second_done = threading.Event()
+
+    def call(index, operation):
+        if index == 1:
+            second_started.set()
+        try:
+            results[index] = operation()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            if index == 1:
+                second_done.set()
+
+    threads = [threading.Thread(target=call, args=(0, first), daemon=True),
+               threading.Thread(target=call, args=(1, second), daemon=True)]
+    try:
+        threads[0].start()
+        assert entered.wait(2), "first call did not reach the paused boundary"
+        threads[1].start()
+        assert second_started.wait(2)
+        # Give the overlapping caller a bounded opportunity to expose the race;
+        # fixed code instead waits for the first owner operation to complete.
+        second_done.wait(0.1)
+    finally:
+        release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=4)
+    assert not any(thread.is_alive() for thread in threads), "owner operation hung"
+    assert not errors, errors
+    return results
+
+
+def test_overlapping_startup_spawns_one_responsive_child(tmp_path):
+    exe = tmp_path / "sidecar.exe"
+    exe.write_bytes(b"fake executable; never run")
+    entered, release = threading.Event(), threading.Event()
+    processes = []
+
+    def spawn(_args, **kwargs):
+        process = ReplyingProcess(kwargs["env"]["LITETUI_SIDECAR_TOKEN"])
+        processes.append(process)
+        if len(processes) == 1:
+            entered.set()
+            assert release.wait(3)
+        return process
+
+    owner = sidecar_launch.SidecarWindow(exe, spawn=spawn, timeout=1)
+    try:
+        results = overlapping_calls(lambda: owner.open("settings"),
+                                    lambda: owner.open("timeline"), entered, release)
+        assert results == [True, True]
+        assert len(processes) == 1
+        assert owner.process is processes[0] and not processes[0].dead
+        assert owner.open("calendar"), "surviving child must still answer"
+    finally:
+        owner.close()
+        for process in processes:
+            process.close()
+
+
+def test_overlapping_handshake_keeps_child_alive(tmp_path):
+    exe = tmp_path / "sidecar.exe"
+    exe.write_bytes(b"fake executable; never run")
+    entered, release = threading.Event(), threading.Event()
+    processes = []
+
+    def spawn(_args, **kwargs):
+        process = ReplyingProcess(kwargs["env"]["LITETUI_SIDECAR_TOKEN"],
+                                  pause_command="hello", entered=entered, release=release)
+        processes.append(process)
+        return process
+
+    owner = sidecar_launch.SidecarWindow(exe, spawn=spawn, timeout=1)
+    try:
+        assert overlapping_calls(lambda: owner.open("settings"),
+                                 lambda: owner.open("timeline"), entered, release) == [True, True]
+        assert len(processes) == 1 and not processes[0].dead
+        assert owner.open("calendar")
+    finally:
+        owner.close()
+        for process in processes:
+            process.close()
+
+
+def test_overlapping_settings_snapshots_both_deliver_without_closing_child(tmp_path):
+    exe = tmp_path / "sidecar.exe"
+    exe.write_bytes(b"fake executable; never run")
+    entered, release = threading.Event(), threading.Event()
+    processes = []
+
+    def spawn(_args, **kwargs):
+        process = ReplyingProcess(kwargs["env"]["LITETUI_SIDECAR_TOKEN"],
+                                  pause_command="settings_snapshot", entered=entered, release=release)
+        processes.append(process)
+        return process
+
+    owner = sidecar_launch.SidecarWindow(exe, spawn=spawn, timeout=1)
+    try:
+        assert overlapping_calls(lambda: owner.open_settings_snapshot({"fields": {}}),
+                                 lambda: owner.open_settings_snapshot({"fields": {}}),
+                                 entered, release) == [True, True]
+        assert len(processes) == 1 and not processes[0].dead
+        assert processes[0].commands.count("settings_snapshot") == 2
+        assert owner.open("timeline")
+    finally:
+        owner.close()
+        for process in processes:
+            process.close()

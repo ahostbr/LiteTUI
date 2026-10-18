@@ -434,6 +434,9 @@ class OwnedEngine:
     #: and no route reports them (ninfer http_server.cpp:480-497 passes id, time and
     #: max_context only), so the setting is not the answer; the argv is.
     args: tuple[str, ...] = ()
+    #: False for an engine that is NOT in LiteSuite's `extraEndpoints` registry (Strata:
+    #: its port is a setting of the install, so nothing is registered and nothing to remove).
+    registered: bool = True
 
     @property
     def alive(self) -> bool:
@@ -771,6 +774,8 @@ def unregister_owned(owned) -> bool:
     other's update. Missing config -> nothing to remove (True). An I/O/parse failure or a
     contended lock -> False, so the caller retains rather than losing the handle over
     bookkeeping. Never a broad URL-only delete."""
+    if not getattr(owned, "registered", True):
+        return True                          # never registered -> nothing to remove
     pid = getattr(owned.proc, "pid", None)
     host = str(owned.host).rstrip("/")
     path = _config_path()

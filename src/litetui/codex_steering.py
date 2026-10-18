@@ -38,6 +38,14 @@ class SteeringLedger:
     def __init__(self, entries, save):
         self.entries = entries
         self.save = save
+        # Read compatibility for existing conversations only. New enqueues use
+        # goal-owner; the legacy spelling is not an attended-source default.
+        from litetui.legacy_goal_source import normalize_persisted_goal_source
+
+        for entry in self.entries:
+            item = entry.get("item", {})
+            if "source" in item:
+                item["source"] = normalize_persisted_goal_source(item["source"])
 
     def enqueue(self, item, thread_id, turn_id):
         entry = {
@@ -153,10 +161,14 @@ class HostSteering:
             captured=context,
         )
         context["reason"] = result.reason
-        return result.allowed and not self.app._stop_requested, context
+        from litetui.restart_checkpoint import is_held
+        return result.allowed and not self.app._stop_requested and not is_held(self.app), context
 
     async def run(self):
+        from litetui.restart_checkpoint import is_held
         while not getattr(self.app, "_stop_requested", False):
+            if is_held(self.app):
+                return
             queue = getattr(self.app, "_pending_input", [])
             if not queue:
                 await asyncio.sleep(0.1)

@@ -1,11 +1,11 @@
 """Wake already-committed parent history without appending another user turn."""
 from uuid import uuid4
-from litetui import hook_host, seat_authority
+from litetui import hook_host, seat_authority, restart_checkpoint
 from litetui.turn_deferral import STREAM_DEFERRED
 
 
 async def wake_parent(app, *, parent, receipts):
-    if (app._chat_running() or getattr(app, '_gui_quitting', False)
+    if (restart_checkpoint.is_held(app) or app._chat_running() or getattr(app, '_gui_quitting', False)
             or getattr(app, '_mcp_maintenance', False)
             or getattr(app, '_pending_input', [])
             or getattr(app, '_stop_requested', False)

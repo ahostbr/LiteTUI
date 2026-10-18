@@ -23,11 +23,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import thinking_probe
 from litetui.picker import PickerScreen
 from litetui.plugins import misc, model_switch
-from litetui.settings import THINKING_LEVELS
+from litetui.settings import Settings, THINKING_LEVELS
 
 
 class _Backend:
@@ -36,7 +37,7 @@ class _Backend:
         self.remote = remote
         self.loaded: list[str] = []
 
-    async def load(self, target, *, notice=None):
+    async def load(self, target, *, ctx=None, notice=None):
         self.loaded.append(target)
 
 
@@ -49,6 +50,7 @@ class _StubApp:
         self._model_thinking_levels = levels
         self._rpc = rpc
         self.backend = _Backend()
+        self.settings = Settings(backend="llamacpp", default_context_length=None)
         self.available_models = list(models or [])
         self.model_id = model_id
         self.model_rows = {}
@@ -57,6 +59,7 @@ class _StubApp:
         self.workers: list = []
         self.connected = 0
         self.ctx_fetches = 0
+        self.model_states: list[str] = []
 
     def system_message(self, text):
         self.messages.append(text)
@@ -69,6 +72,9 @@ class _StubApp:
 
     def fetch_context_window(self):
         self.ctx_fetches += 1
+
+    def _rpc_emit_model_state(self):
+        self.model_states.append(self.model_id)
 
     def run_worker(self, coro, **_kw):
         self.workers.append(coro)
@@ -314,9 +320,9 @@ def test_a_remote_backend_is_untouched(picks):
 
 @pytest.mark.asyncio
 async def test_think_pushes_a_real_picker_screen():
-    from litetui import app as app_mod
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a.convo_dir = None
     a.skills = []
     async with a.run_test() as pilot:
@@ -329,9 +335,9 @@ async def test_think_pushes_a_real_picker_screen():
 
 @pytest.mark.asyncio
 async def test_load_pushes_a_real_picker_screen():
-    from litetui import app as app_mod
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
+    a._connect = lambda: None  # startup discovery is outside this test
     a.convo_dir = None
     a.skills = []
     a.available_models = ["alpha", "beta"]

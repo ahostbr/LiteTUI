@@ -110,7 +110,7 @@ def test_fixture_turn_projects_the_expected_shape():
     ]
     session = only(events, "session")[0]
     assert session.model == "claude-opus-5"
-    assert session.data["cwd"] == "C:/Projects/LiteTUI"
+    assert session.data["cwd"] == "C:/ExampleProjects/LiteTUI"
     assert only(events, "result")[0].is_error is False
 
 
@@ -128,7 +128,7 @@ def test_tool_card_opens_before_the_input_is_final():
     assert (opened.complete, opened.tool_id, opened.tool_name) == (False, "toolu_01", "Read")
     assert opened.tool_input == {}
     assert final.complete is True
-    assert final.tool_input == {"file_path": "C:/Projects/LiteTUI/README.md"}
+    assert final.tool_input == {"file_path": "C:/ExampleProjects/LiteTUI/README.md"}
 
 
 def test_tool_result_is_joined_to_its_tool_by_id():

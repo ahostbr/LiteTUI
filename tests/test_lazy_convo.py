@@ -12,41 +12,47 @@ resumed conversation being appended to rather than replaced.
 from __future__ import annotations
 
 import json
-import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
-
-from litetui import app as app_mod
-from litetui import paths
-from litetui.conversation import ConversationRepository
-
-
-def _fresh_store() -> Path:
-    d = Path(tempfile.mkdtemp(prefix="convos-lazy-"))
-    paths.CONVO_DIR = d
-    return d
 
 
 def _count(d: Path) -> int:
     return len([p for p in d.iterdir() if p.is_dir()]) if d.exists() else 0
 
 
-def _app():
-    a = app_mod.LiteTUI()
+def _app(make_app):
+    a = make_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None
     return a
 
 
+@pytest.fixture
+def owned_home(make_app):
+    app = make_app()
+    home = app._agent_session.memory_root
+    app.store.release()
+    app._agent_session.release()
+    return home
+
+
+def _directories(root):
+    return {path for path in root.iterdir() if path.is_dir()}
+
+
 @pytest.mark.asyncio
-async def test_booting_creates_nothing():
-    d = _fresh_store()
-    a = _app()
+async def test_booting_creates_nothing(make_app, owned_home):
+    before = _directories(owned_home / "conversations")
+    a = _app(make_app)
+    assert a._agent_session.memory_root == owned_home
+    d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
-        assert _count(d) == 0, "booting the app wrote a conversation to disk"
+        assert _directories(d) == before, "booting the app wrote a conversation to disk"
+        assert not list(d.rglob("convo.jsonl")), "the step created a transcript"
         # …but it is STAGED: the footer and /clear need an id to name.
         assert a.convo_id
         assert a.convo_path is not None
@@ -54,10 +60,12 @@ async def test_booting_creates_nothing():
 
 
 @pytest.mark.asyncio
-async def test_commands_before_the_first_message_create_nothing():
+async def test_commands_before_the_first_message_create_nothing(make_app, owned_home):
     """The reported case: launch, look around, resume. Nothing should be born."""
-    d = _fresh_store()
-    a = _app()
+    before = _directories(owned_home / "conversations")
+    a = _app(make_app)
+    assert a._agent_session.memory_root == owned_home
+    d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
         a._handle_command("/help")
@@ -68,24 +76,37 @@ async def test_commands_before_the_first_message_create_nothing():
         await pilot.pause()
         a._handle_command("/clear-screen")
         await pilot.pause()
-        assert _count(d) == 0, "a command created a conversation"
+        assert _directories(d) == before, "a command created a conversation"
+        assert not list(d.rglob("convo.jsonl")), "the step created a transcript"
 
 
 @pytest.mark.asyncio
-async def test_the_first_user_message_creates_exactly_one():
-    d = _fresh_store()
-    a = _app()
+async def test_the_first_user_message_creates_exactly_one(make_app):
+    a = _app(make_app)
+    d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
+        transcript = a.convo_path
+        assert a._convo_pending is True and not transcript.exists()
+        pending_messages = deepcopy(a.conversation)
+        a._materialise_convo()
+        assert transcript.is_file(), "materialization did not create the transcript"
+        assert a._convo_pending is False
+        assert _count(d) == 1
+        materialized = transcript.read_bytes()
+        records = [json.loads(line) for line in materialized.decode("utf-8").splitlines()]
+        meta = [record for record in records if record.get("type") == "meta"]
+        snapshots = [record for record in records if record.get("type") == "snapshot"]
+        assert len(meta) == 1 and meta[0]["id"] == a.convo_id
+        assert len(snapshots) == 1 and snapshots[0]["messages"] == pending_messages
+        # Idempotent — neither another directory nor duplicate records.
         a._materialise_convo()
         assert _count(d) == 1
-        # Idempotent — a second call must not mint another.
-        a._materialise_convo()
-        assert _count(d) == 1
+        assert transcript.read_bytes() == materialized
 
 
 @pytest.mark.asyncio
-async def test_the_system_prompt_survives_deferral():
+async def test_the_system_prompt_survives_deferral(make_app):
     """Deferring the write must not lose what was already in memory.
 
     The system prompt is appended at boot, long before the directory exists.
@@ -93,8 +114,8 @@ async def test_the_system_prompt_survives_deferral():
     Without this the file would open with no system message and a resumed
     conversation would silently lose its instructions.
     """
-    d = _fresh_store()
-    a = _app()
+    a = _app(make_app)
+    d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
         assert any(m.get("role") == "system" for m in a.conversation), "fixture is wrong"
@@ -109,11 +130,11 @@ async def test_the_system_prompt_survives_deferral():
 
 
 @pytest.mark.asyncio
-async def test_resume_adopts_without_minting_a_throwaway():
+async def test_resume_adopts_without_minting_a_throwaway(make_app):
     """The exact reported scenario, end to end."""
-    d = _fresh_store()
 
-    a = _app()
+    a = _app(make_app)
+    d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
         a._materialise_convo()
@@ -121,12 +142,15 @@ async def test_resume_adopts_without_minting_a_throwaway():
         await pilot.pause()
     assert _count(d) == 1
 
-    b = _app()
+    a.store.release()
+    a._agent_session.release()
+    b = _app(make_app)
+    assert b._agent_session.memory_root == d.parent
     async with b.run_test() as pilot:
         await pilot.pause()
         assert _count(d) == 1, "booting to resume minted a throwaway conversation"
-        rows = ConversationRepository.list_all()
-        b._resume(rows[0][0])
+        b._resume(a.convo_path)
+        assert b.convo_path == a.convo_path
         await pilot.pause()
         assert _count(d) == 1
         assert b._convo_pending is False, "a resumed conversation must not be 'pending'"
@@ -139,12 +163,15 @@ async def test_resume_adopts_without_minting_a_throwaway():
 
 
 @pytest.mark.asyncio
-async def test_reading_the_store_never_creates_it():
+async def test_reading_the_store_never_creates_it(make_app, owned_home):
     """Reads must not have side effects — that is how this bug worked."""
-    d = _fresh_store()
-    a = _app()
+    before = _directories(owned_home / "conversations")
+    a = _app(make_app)
+    assert a._agent_session.memory_root == owned_home
+    d = a._agent_session.memory_root / "conversations"
     async with a.run_test() as pilot:
         await pilot.pause()
         a._read_store_file("memory.md", 1000)
         a._read_store_file("soul.md", 1000)
-        assert _count(d) == 0, "reading the store created it"
+        assert _directories(d) == before, "reading the store created it"
+        assert not list(d.rglob("convo.jsonl")), "the step created a transcript"

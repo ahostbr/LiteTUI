@@ -26,6 +26,8 @@ import pytest
 from textual.app import App
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
+
 from litetui import app as m
 
 
@@ -79,7 +81,7 @@ async def test_the_guard_runs_before_textual_tears_the_tree_down(monkeypatch) ->
     monkeypatch.setattr(m.LiteTUI, "_settle_before_teardown", spy_settle)
     monkeypatch.setattr(App, "_shutdown", spy_shutdown)
 
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -108,7 +110,7 @@ async def test_the_control_switch_only_disables_it(monkeypatch) -> None:
     monkeypatch.setattr(side_panel, "await_subtree_composed", spy)
     monkeypatch.setattr(m, "await_subtree_composed", spy)
 
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -118,7 +120,7 @@ async def test_the_control_switch_only_disables_it(monkeypatch) -> None:
     assert waited == [], "the control switch did not disable the wait"
 
     monkeypatch.setenv("LITETUI_T723_GUARD", "on")
-    b = m.LiteTUI()
+    b = owned_app()
     b.available_models = ["a-model"]
     b.model_id = "a-model"
     b._connect = lambda: None

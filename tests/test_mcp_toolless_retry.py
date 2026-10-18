@@ -13,6 +13,7 @@ retry loop, so `_build` returns a scripted stub (same approach as test_mcp_lifec
 from __future__ import annotations
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
 from litetui.mcp_client import MCPBusy, MCPManager
@@ -61,7 +62,7 @@ def mgr(tmp_path, monkeypatch):
 
 @pytest.fixture
 def app(mgr, monkeypatch):
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.mcp = mgr
     a.said = []
     a.system_message = lambda text: a.said.append(str(text))
@@ -202,7 +203,7 @@ async def test_a_human_decision_landing_after_the_reconnect_finishes_is_not_anno
 @pytest.mark.asyncio
 @pytest.mark.parametrize("script", ["tools", "empty"], ids=["CONTROL_healthy_server", "retry_pending"])
 async def test_a_real_mcp_stop_during_the_retry_backoff_is_served_not_refused(tmp_path, monkeypatch, script):
-    """T0124, Sentinel's characterisation: type the real `/mcp stop` (mcp_manage._cmd_mcp, with
+    """T0124, Orchestrator's characterisation: type the real `/mcp stop` (mcp_manage._cmd_mcp, with
     its own busy gate) while the retry is asleep in its 30 s backoff. The control arm has a
     healthy server, so no retry is pending: it says whether the test app itself is idle."""
     import json
@@ -214,7 +215,8 @@ async def test_a_real_mcp_stop_during_the_retry_backoff_is_served_not_refused(tm
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"srv": {"command": "x"}}}), encoding="utf-8")
     monkeypatch.setattr(MCPManager, "_build", lambda self, name, sc: ScriptedServer(name, script))
     monkeypatch.setattr(app_mod, "MCP_RETRY_DELAYS", (30.0, 30.0, 30.0))
-    a = app_mod.LiteTUI()
+    # This characterizes eager startup retry; lazy seats intentionally never dial at boot.
+    a = owned_app(mcp_lazy=False)
     a.available_models, a.model_id = ["a-model"], "a-model"
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None

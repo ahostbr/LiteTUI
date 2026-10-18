@@ -120,11 +120,17 @@ async def test_unanswered_escalates_once_without_changing_reply_authority(
     if sends:
         assert sends[0][0] == GRANDPARENT and "Notification only" in sends[0][1]
     assert app._relay_pending[IDENT][1] == APPROVER
+    # Legacy standalone scheduling does not itself create answer authority.
+    from litetui import approval_authority
+    (tmp_path / f"{APPROVER}.json").write_text(json.dumps({"agent_id": APPROVER}))
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, tmp_path / 'origin')
+    approval_authority.create(app, IDENT, approver=APPROVER, route="spawner", timeout=1.0)
     assert not approval_relay.take_answer(app, {"from": GRANDPARENT, "body": f"APPROVE {IDENT}"})
     assert not future.done()
-    assert approval_relay.take_answer(app, {"from": APPROVER, "body": f"DENY {IDENT}"})
+    assert approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"DENY {IDENT}"})
     assert await waiting is False
-    assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {IDENT}"})
+    assert not approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"APPROVE {IDENT}"})
     assert said
 
 
@@ -333,7 +339,7 @@ async def test_expired_reply_cannot_set_pending_future_or_human_override():
     future = asyncio.get_running_loop().create_future()
     app = SimpleNamespace(_relay_pending={IDENT: (future, APPROVER)},
         _relay_answer_deadlines={IDENT: time.monotonic() - 1})
-    assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {IDENT}"})
+    assert not approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"APPROVE {IDENT}"})
     assert not approval_relay.take_human_answer(app, IDENT, True)
     assert not future.done()
 
@@ -359,6 +365,7 @@ async def test_creation_clock_escalates_while_initial_setup_stalls(tmp_path, mon
     monkeypatch.setattr(delivery, "ESCALATE_AFTER_S", 0.6)
     (tmp_path / f"{APPROVER}.json").write_text(json.dumps(
         {"agent_id": APPROVER, "spawned_by": GRANDPARENT}), encoding="utf-8")
+    (tmp_path / f"{GRANDPARENT}.json").write_text(json.dumps({"agent_id": GRANDPARENT}))
     release = threading.Event()
     escalated = asyncio.Event()
     mounted = asyncio.Event()
@@ -389,6 +396,8 @@ async def test_creation_clock_escalates_while_initial_setup_stalls(tmp_path, mon
         _system=lambda text: None, _begin_wait=lambda *args: None, _end_wait=lambda token: None,
         _edit=lambda *args: persisted.append(time.monotonic()))
     decision = SimpleNamespace(danger="test", capabilities=set(), reason="test only")
+    from approval_store_fixture_t0340 import bind_origin
+    bind_origin(app, harness.AGENTS_DIR / 'origin')
     task = asyncio.create_task(approval_relay.ask_spawner(app, "test_tool", {}, decision, "harness"))
     try:
         await asyncio.wait_for(escalated.wait(), 0.8)
@@ -401,7 +410,7 @@ async def test_creation_clock_escalates_while_initial_setup_stalls(tmp_path, mon
             await asyncio.sleep(0.002)
         assert persisted and persisted[0] - started < 0.65
         ident = next(iter(app._relay_pending))
-        assert approval_relay.take_answer(app, {"from": APPROVER, "body": f"DENY {ident}"})
+        assert approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"DENY {ident}"})
         assert await task == "denied"
         assert not app._relay_pending and not app._relay_answer_deadlines
     finally:
@@ -432,13 +441,23 @@ async def test_creation_expiry_and_cancellation_clear_pending_setup(monkeypatch,
             return False
         finally:
             finished.set()
-    app = SimpleNamespace(seat=SimpleNamespace(agent_id=REQUESTER, name="Worker",
-        registered=True, current_spawner=lambda: APPROVER, send=send),
-        settings=SimpleNamespace(relay_approval_timeout_s=0.08),
-        _system=notices.append, _begin_wait=lambda *args: None, _end_wait=lambda token: None)
+    from test_approval_over_rpc import make_app
+    app = make_app()
+    app.seat.agent_id = REQUESTER
+    app.seat.name = "Worker"
+    app.seat.registered = True
+    app.seat.current_spawner = lambda: APPROVER
+    app.seat.send = send
+    app.settings.relay_approval_timeout_s = 0.08
+    app._system = notices.append
+    app._begin_wait = lambda *args: None
+    app._end_wait = lambda value: None
     decision = SimpleNamespace(danger="test", capabilities=set(), reason="test only")
     monkeypatch.setattr(approval_relay, "record", lambda app, status, *args: outcomes.append(status))
     started = time.monotonic()
+    from approval_store_fixture_t0340 import bind_origin
+    (harness.AGENTS_DIR / f"{APPROVER}.json").write_text(json.dumps({"agent_id": APPROVER}), encoding="utf-8")
+    bind_origin(app, harness.AGENTS_DIR / 'origin', actual_edit=True)
     task = asyncio.create_task(approval_relay.ask_spawner(app, "test_tool", {}, decision, "harness"))
     try:
         await asyncio.wait_for(entered.wait(), 0.5)
@@ -455,7 +474,7 @@ async def test_creation_expiry_and_cancellation_clear_pending_setup(monkeypatch,
             assert time.monotonic() - started < 0.2, "setup delay inflated original expiry"
         assert outcomes == [outcome]
         assert not app._relay_pending and not app._relay_answer_deadlines
-        assert not approval_relay.take_answer(app, {"from": APPROVER, "body": f"APPROVE {ident}"})
+        assert not approval_relay.take_answer(app, {"to": REQUESTER, "from": APPROVER, "body": f"APPROVE {ident}"})
         assert not approval_relay.take_human_answer(app, ident, True)
         release.set()
         assert await asyncio.to_thread(finished.wait, 0.5)

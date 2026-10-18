@@ -1,6 +1,8 @@
 """One-time prompt for the name used in the model's system prompt."""
 from __future__ import annotations
 
+from litetui.steady_input import HostedInput
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -21,7 +23,7 @@ class UserNameScreen(ModalScreen[str | None]):
         with Vertical(id="user-name-box"):
             yield Label("What should LiteTUI call you?")
             yield Static("This is used only in the assistant's system prompt. Leave it blank for no name.")
-            yield Input(placeholder="Your name (optional)", id="user-name-input")
+            yield HostedInput(placeholder="Your name (optional)", id="user-name-input")
             yield Button("Save", variant="primary", id="user-name-save", classes="user-name-actions")
 
     def on_mount(self) -> None:
