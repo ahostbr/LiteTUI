@@ -186,15 +186,8 @@ class FakeBackend:
             raise RuntimeError(self._close_error)
 
 
-from litetui.app import LiteTUI as _PromptComposer
-
-
 class TurnApp:
     """Every attribute here is one stream_turn actually reads."""
-
-    _compose_system_text = _PromptComposer._compose_system_text
-    _with_ordinary_instructions = _PromptComposer._with_ordinary_instructions
-    _ordinary_prompt_text = _PromptComposer._ordinary_prompt_text
 
     def __init__(self, tmp_path, events):
         self.convo_dir = tmp_path

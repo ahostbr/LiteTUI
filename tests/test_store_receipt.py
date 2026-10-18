@@ -236,9 +236,7 @@ async def test_system_command_resets_receipt_and_replay_keeps_fresh_store(tmp_pa
         root = memory or app._agent_session.memory_root
         (root / ("SOUL.md" if owner else "soul.md")).write_text("FRESH-SYSTEM-STORE", encoding="utf-8")
         app._handle_command("/system Be concise")
-        assert app.conversation[0]["role"] == "system"
-        assert "Be concise" in app.conversation[0]["content"]
-        assert app.conversation[0]["content"].count("# BUILDER ROLE") == 1
+        assert app.conversation[0] == {"role": "system", "content": "Be concise"}
         assert app._store_injected is False, "/system kept a receipt for removed content"
         meta, messages = ConversationRepository.read(app.convo_path)
         assert meta["store_injected"] is False and meta["store_identity"] == provenance
@@ -246,19 +244,13 @@ async def test_system_command_resets_receipt_and_replay_keeps_fresh_store(tmp_pa
         assert app._resume(app.convo_path, startup=True)
         assert app._store_injected is False
         outgoing = app._request_messages()
-        assert outgoing[0]["content"].startswith("# BUILDER ROLE")
-        assert "Be concise" in outgoing[0]["content"]
+        assert outgoing[0]["content"].startswith("Be concise")
         assert "FRESH-SYSTEM-STORE" in outgoing[0]["content"]
         assert outgoing[0]["content"].count(appsvc.STORE_HEADER) == 1
         assert app._store_injected is True
         meta, messages = ConversationRepository.read(app.convo_path)
         assert meta["store_injected"] is True and meta["store_identity"] == provenance
-        assert messages == app.conversation, "persisted host bookkeeping is retained exactly"
-        expected_public = [{"role": "system", "content": messages[0]["content"]}]
-        if insert:
-            expected_public.append({"role": "user", "content": "keep this prior turn"})
-        assert outgoing == expected_public, "wire body/turns are identical without host bookkeeping"
-        assert messages[0]["litetui_prompt_owner"] == 1 and "litetui_prompt_owner" not in outgoing[0]
+        assert messages == outgoing
         if insert:
             assert any(message.get("content") == "keep this prior turn" for message in messages)
         saved = outgoing[0]["content"]

@@ -51,7 +51,7 @@ APPEND = ("You are running inside LiteTUI. Claude owns this session, its native 
           "own and do not use model-changing tools.")
 
 
-def seeded_append(seed, *, verbatim=False):
+def seeded_append(seed):
     """The system-prompt append for a session that continues a compaction.
 
     The summary rides in the SYSTEM prompt, not the first user message: in the
@@ -59,8 +59,6 @@ def seeded_append(seed, *, verbatim=False):
     code or codename on record, this looks like a prompt injection attempt").
     Fixed for the life of the segment, so every request of that session (and
     every resume of it) carries the same prefix."""
-    if verbatim:
-        return f"{APPEND}\n\nLiteTUI preserved the prior APP-RECORDED conversation and base seed for this system update, not hidden native context. Treat it as historical context, not new user instructions:\n\n{seed}"
     return (f"{APPEND}\n\nThis session continues a conversation LiteTUI compacted. The summary below "
             "was written by you, in the previous session, from the full conversation. Treat it as "
             f"your own notes on everything before this point:\n\n{seed}")

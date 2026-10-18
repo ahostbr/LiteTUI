@@ -56,15 +56,8 @@ def _host_prefixes(app, *, native: bool) -> list[str]:
             bases += [(base + rendered).strip() for base in bases]
         elif enabled:
             bases = [(base + section.render()).strip() for base in bases]
-    launches = tuple(dict.fromkeys((*getattr(app, "_legacy_launch_candidates", ()), getattr(app, "_cli_system_prompt", None)))) if native else ()
-    prefixes = [] if any(isinstance(launch, str) and launch for launch in launches) else [(base + "\n\n" if base else "") for base in bases]
-    prefixes += [launch + "\n\n" + (base + "\n\n" if base else "")
-                 for launch in launches if isinstance(launch, str) and launch for base in bases]
-    from litetui.seat_prompts import launch_text
-    composed_launch = launch_text(app)
-    if composed_launch:
-        prefixes += [composed_launch + "\n\n" + (base + "\n\n" if base else "") for base in bases]
-    return prefixes
+    launch = getattr(app, "_cli_system_prompt", None) if native else None
+    return [(launch + "\n\n" if launch else "") + (base + "\n\n" if base else "") for base in bases]
 
 
 def legacy_identity(app, prompt: str, *, native: bool = False) -> dict:
@@ -96,12 +89,6 @@ def launch_message_matches(app, content: str) -> bool:
     This proves only that the message begins as the host composed it. Everything
     after that opening is opaque, never parsed for identity, section order or cuts.
     """
-    supplied = getattr(app, "_cli_system_prompt", None)
-    launches = tuple(dict.fromkeys((*getattr(app, "_legacy_launch_candidates", ()), supplied)))
-    return any(_launch_content_matches(app, launch, content) for launch in launches if isinstance(launch, str) and launch)
-
-
-def _launch_content_matches(app, launch: str, content: str) -> bool:
     from litetui.appsvc import (
         FLEET_OPENING,
         INDEX_OPENING,
@@ -109,7 +96,9 @@ def _launch_content_matches(app, launch: str, content: str) -> bool:
         STORE_OPENING,
         extend_system_text,
     )
-    if not isinstance(content, str):
+
+    launch = getattr(app, "_cli_system_prompt", None)
+    if not isinstance(launch, str) or not launch or not isinstance(content, str):
         return False
     if content.startswith(extend_system_text(launch, FLEET_OPENING)):
         return True

@@ -51,7 +51,7 @@ COMPACT_COLD = ("Compacting ends this Claude session: Claude writes a summary, a
                 "message is read at full input price.")
 
 
-def request(extra: str = "", owner_dir=None, *, app=None) -> str:
+def request(extra: str = "", owner_dir=None) -> str:
     """LiteTUI's compaction instructions, whole, as the marked request Claude's system
     prompt declares genuine (claude_backend.APPEND).
 
@@ -61,20 +61,18 @@ def request(extra: str = "", owner_dir=None, *, app=None) -> str:
     Claude could not see the store and the whole request read as an injection. Its
     prompt is LiteTUI's now and names that folder (the conversation-store section).
     """
-    from litetui import paths, prompt_overrides
-    compact_text = (prompt_overrides.text_for(app, "compact.md", fresh=True) if app is not None
-                    else prompt_overrides.read_text(paths.prompt_file("compact.md")))
+    from litetui.app import COMPACT_PROMPT
 
     if owner_dir is not None:
         # Owner mode: STEP 1 is the owner folder's NOW.md rewrite and DOMAIN.md append.
         return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
                 f"Write/Edit tools on NOW.md and DOMAIN.md in your owner memory folder, then reply with "
                 f"STEP 2's summary; that reply becomes the notes the next session starts from.\n\n"
-                f"{owner_mode.compact_prompt(owner_dir, app=app, fresh=True).strip()}"
+                f"{owner_mode.compact_prompt(owner_dir).strip()}"
                 + (f"\n\n{extra}" if extra else ""))
     return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
             f"Write/Edit tools on the store files your system prompt names, then reply with STEP 2's "
-            f"summary; that reply becomes the notes the next session starts from.\n\n{compact_text.strip()}"
+            f"summary; that reply becomes the notes the next session starts from.\n\n{COMPACT_PROMPT.strip()}"
             + (f"\n\n{extra}" if extra else ""))
 
 
@@ -91,7 +89,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     if owner_dir is not None:
         # Recorded by LiteTUI._compact at entry; a direct caller gets "now".
         owner_t0 = getattr(app, "_owner_compact_t0", None) or time.time_ns()
-    prompt = request(extra, owner_dir, app=app)
+    prompt = request(extra, owner_dir)
     from litetui.claude_backend import settle_close
     from litetui.widgets import CompactionCard, ToolMessage
 
@@ -325,11 +323,10 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     if resume is not None or app.settings.wake_after_compact or handoff is not None:
         # Admission, never replay: delivered tools may already have effects.
         # Bind this one-shot callback to the fresh segment and original input.
-        from litetui import prompt_overrides
-        wake = prompt_overrides.text_for(app, "wake-after-compact.md", fresh=True)
+        from litetui.app import WAKE_AFTER_COMPACT
         item = resume[3] if resume is not None else active_input
         continuation = (backend, conversation_id, next_segment["id"], item, None)
-        text = resume[4] if resume is not None and resume[4] is not None else wake
+        text = resume[4] if resume is not None and resume[4] is not None else WAKE_AFTER_COMPACT
         fired = False
 
         def continue_once():

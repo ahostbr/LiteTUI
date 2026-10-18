@@ -50,7 +50,7 @@ _REPO_PROMPTS = ROOT / "prompts"
 PROMPTS_DIR = _PKG_PROMPTS
 
 
-def prompt_file(name: str, *, convo_dir: Path | None = None) -> Path:
+def prompt_file(name: str) -> Path:
     """The prompt named `name`, repo-root copy winning PER FILE (T582).
 
     The anchor used to be all-or-nothing: a repo-root `prompts/` holding ONLY
@@ -61,19 +61,9 @@ def prompt_file(name: str, *, convo_dir: Path | None = None) -> Path:
     `tool-denied.md` -- the exact crash class T135 was written to remove,
     reintroduced by the shape of the anchor rather than by a missing file.
 
-    T0338: ``convo_dir`` is retained as a compatibility keyword for the layer
-    directory; owned-app readers pass the leased agent HOME, not its current
-    conversation or an external owner-memory folder.
-
     Per-file makes that docstring's promise ("override any file") true, and a
     partial override stays partial.
     """
-    from litetui.prompt_overrides import filename, scoped_file
-    name = filename(name)
-    if convo_dir is not None:
-        scoped = scoped_file(convo_dir, name)
-        if scoped is not None:
-            return scoped
     repo = _REPO_PROMPTS / name
     return repo if repo.is_file() else PROMPTS_DIR / name
 

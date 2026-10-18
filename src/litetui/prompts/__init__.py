@@ -22,32 +22,4 @@ holding just that one file moved EVERY read to a directory missing the other
 five -- and ``textfmt.load_prompt`` reads them unguarded. Taking this docstring
 at its word crashed on ``compact.md``. Reads now go through
 ``paths.prompt_file()``, which resolves PER FILE.
-
-T0338 (current): a leased agent HOME owns a complete ``prompts/`` catalog,
-seeded after child lease acquisition and before first system composition. All
-shipped files plus role.md/method.md are editable; ordinary conversations in
-that home share the layer. External --owner/--memory folders are NOT prompt
-homes. The actual launch tier supplies exactly one role header independently
-of editable body text. Selected wrapped cognitive sources resolve to an
-existing pure catalog file, never a guessed heading split.
-
---role-prompt-file supplies default role body; caller --system-prompt[-file]
-replaces that body. --cognitive-file selects one method. --prompts-dir is an
-exclusive direct-CLI full-folder seed. The launch-source manifest prevents
-repeated defaults from erasing live edits; changed launch sources for an
-initialized home explicitly require owner prompt commands/new home.
-
-Snapshots refresh at turn admission, not mid-turn. Reset keeps revision/audit
-history and uses packaged defaults; role/method have no global defaults, so
-their reset is explicitly unsupported (set the desired body instead). Native
-Claude edits use a fresh seeded segment with prior context and frozen store;
-pending deliveries are held, never silently moved or replayed. Selected-policy
-native segments lacking a recorded revision require explicit /claude new even
-when current files are unchanged. A revision includes normalized actual role
-and composer policy version. Repeat updates carry one APP-RECORDED history
-snapshot plus the stable prior base seed, not hidden native/session context.
-Selected methods must remain nonblank at source, publication and composition.
-One leading encoding BOM is normalized in authored parsing/rendering only;
-raw launch-prefix proof and managed-publication hashes retain source text.
-Executable ownership/approval/tool enforcement is not authored prompt prose.
 """

@@ -172,23 +172,6 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
-    def rotate_prompt(self, segment_id: str, *, seed: str, root_seed: str = "") -> dict[str, Any]:
-        """Fresh native context for edited system text; never rebind/replay an entry."""
-        old = self._require_segment(segment_id)
-        if self.pending(segment_id):
-            raise LedgerError("Prompt update held: settle all pending Claude deliveries before changing system")
-        if not isinstance(old.get("prompt_frozen"), dict):
-            raise LedgerError("Legacy Claude segment cannot hot-edit system safely; use /claude new explicitly")
-        new = self.select_segment(old["workspace"], new=True, seed=seed)
-        target = self._require_segment(new["id"])
-        target["seed_verbatim"] = True
-        target["prompt_root_seed"] = root_seed
-        for key in ("prompt_frozen", "store_identity", "store_injected"):
-            if key in old:
-                target[key] = deepcopy(old[key])
-        self._save()
-        return deepcopy(target)
-
     def bind_session(self, segment_id: str, session_id: str) -> dict[str, Any]:
         """Record the native session id, which arrives after the segment does.
 
@@ -213,7 +196,7 @@ class ClaudeLedger:
         self._save()
         return deepcopy(segment)
 
-    def fix_system_prompt(self, segment_id: str, text: str, *, store_identity=None, store_injected=None, host_policy_version=None, prompt_revision=None, prompt_frozen=None) -> str:
+    def fix_system_prompt(self, segment_id: str, text: str, *, store_identity=None, store_injected=None) -> str:
         """Record the segment's system prompt the first time, and return the recorded one.
 
         Fixed for the life of the segment, except the process-specific harness identity
@@ -223,12 +206,6 @@ class ClaudeLedger:
         segment = self._require_segment(segment_id)
         if not segment.get("system_prompt"):
             segment["system_prompt"] = text
-            if prompt_revision is not None:
-                segment["prompt_revision"] = prompt_revision
-            if prompt_frozen is not None:
-                segment["prompt_frozen"] = prompt_frozen
-            if host_policy_version is not None:
-                segment["host_policy_version"] = host_policy_version
             if store_identity is not None:
                 segment["store_identity"] = deepcopy(store_identity)
             if isinstance(store_injected, bool):

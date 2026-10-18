@@ -270,7 +270,6 @@ def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]
         or default_name
     )
     tier = values.get("LITEHARNESS_TIER", "") or DEFAULT_TIER
-    tier = {"owner": "leader", "builder": "worker", "critic": "reviewer", "scout": "thinker"}.get(tier, tier)
     valid = {"orchestrator", "leader", "worker", "thinker", "reviewer"}
     if tier not in valid:
         print(
