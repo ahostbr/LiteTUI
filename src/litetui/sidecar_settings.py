@@ -19,7 +19,12 @@ SECRET_FIELDS = frozenset({"groq_api_key", "cerebras_api_key", "nvidia_api_key",
 
 
 def is_sensitive(name: str) -> bool:
-    return bool(_SENSITIVE_NAME.search(name) or SETTING_SPECS.get(name) and SETTING_SPECS[name].sensitive)
+    spec = SETTING_SPECS.get(name)
+    if spec and spec.sensitive:
+        return True
+    # Keyboard hints are a public boolean, not a credential. Keep the name
+    # heuristic for all other fields and let explicit sensitivity win above.
+    return name != "footer_show_key_hints" and bool(_SENSITIVE_NAME.search(name))
 
 
 def _control(backend, key):
