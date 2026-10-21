@@ -32,6 +32,26 @@ def test_patch_persists_through_authoritative_service_and_applies_runtime(tmp_pa
     assert result["runtime"][0]["status"] == "applied"
 
 
+def test_footer_keyboard_hints_save_true_then_false_through_parent(tmp_path):
+    from litetui.settings_scope import SETTING_SPECS
+    from litetui.sidecar_settings import public_snapshot
+
+    app = host(tmp_path)
+    key = "footer_show_key_hints"
+    assert app.settings.footer_show_key_hints is False
+    for value in (True, False):
+        before = app._settings_service.snapshot("abc")
+        result = apply_patch(app, {
+            "changes": [{"key": key, "scope": SETTING_SPECS[key].scope.value, "value": value}],
+            "expected_revisions": before.revisions,
+        })
+        assert result["saved"] is True
+        saved = app._settings_service.snapshot("abc")
+        assert saved.saved.footer_show_key_hints is value
+        assert app.settings.footer_show_key_hints is value
+        assert public_snapshot(saved)["fields"][key]["effective"] is value
+
+
 def test_custom_theme_color_picker_patch_roundtrips_through_parent(tmp_path):
     from litetui import themes
     from litetui.sidecar_settings import public_snapshot
