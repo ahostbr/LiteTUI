@@ -159,6 +159,24 @@ def test_sound_down_is_a_sentence_not_a_traceback(_dead_ports):
     assert "Traceback" not in out
 
 
+@pytest.mark.parametrize("action,cli_action", [
+    ("families", "list_families"), ("list_families", "list_families"), ("config", "config"),
+])
+def test_model_family_listing_maps_public_action_without_loading(monkeypatch, action, cli_action):
+    from types import SimpleNamespace
+
+    calls = []
+    monkeypatch.setattr(studio_tool.shutil, "which", lambda _name: "lst.exe")
+
+    def invoke(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout='{"families": []}', stderr="", returncode=0)
+
+    monkeypatch.setattr(studio_tool.ttyguard, "run", invoke)
+    assert studio_tool.run({"app": "model", "action": action}) == '{"families": []}'
+    assert calls == [["lst.exe", "run", "model", f"action={cli_action}"]]
+
+
 def test_model_without_lst_names_the_dependency(monkeypatch):
     monkeypatch.setattr(studio_tool.shutil, "which", lambda _n: None)
     out = studio_tool.run({"app": "model", "action": "status"})
