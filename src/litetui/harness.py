@@ -835,7 +835,8 @@ def ancestral_claude_spawner(candidate: str | None) -> str | None:
     if not isinstance(candidate, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", candidate):
         return None
     try:
-        from liteharness.process_ancestry import process_ancestry
+        # Vendored byte-identical copy: LiteTUI's venv has no liteharness (T0106).
+        from litetui.process_ancestry import process_ancestry
 
         path = AGENTS_DIR / f"{candidate}.json"
         if path.resolve().parent != AGENTS_DIR.resolve():
@@ -866,8 +867,8 @@ def ancestral_claude_spawner(candidate: str | None) -> str | None:
             return None
         return candidate
     except Exception:  # noqa: BLE001 - unknown approval authority must refuse
-        # Includes an unavailable/older optional liteharness package, unreadable
-        # presence, and unknown native evidence. Existing no_spawner logging wins.
+        # Includes unreadable presence and unknown native evidence. Existing
+        # no_spawner logging wins.
         return None
 
 

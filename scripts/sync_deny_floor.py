@@ -1,12 +1,12 @@
-"""Copy the canonical deny floor (T1026) and fleet floor (T1043) from
-liteharness-oss into LiteTUI: one rule set each, kept byte-identical.
+"""Copy the canonical deny floor (T1026), fleet floor (T1043) and process
+ancestry proof (T0106) from liteharness-oss into LiteTUI, kept byte-identical.
 
     python scripts/sync_deny_floor.py [path/to/liteharness-oss]
 
 Source, first that exists: the argument, $LITEHARNESS_SRC, then the first
 `liteharness-oss` checkout beside this one or beside any parent of it.
-tests/test_deny_floor.py and tests/test_fleet_floor_t1043.py fail while a
-copy differs from its canonical file.
+tests/test_deny_floor.py, tests/test_fleet_floor_t1043.py and
+tests/test_ancestral_spawner_t0106.py fail while a copy differs from its canonical file.
 """
 import os
 import shutil
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SHARED = ("deny_floor.py", "fleet_policy.py")
+SHARED = ("deny_floor.py", "fleet_policy.py", "process_ancestry.py")
 
 
 def sibling(explicit: str | None = None) -> Path | None:

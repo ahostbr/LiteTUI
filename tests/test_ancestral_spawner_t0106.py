@@ -1,19 +1,31 @@
 """No-marker relay uses the shared process proof, never inherited identity alone.
 
-Run against the coordinated liteharness source checkout via PYTHONPATH to verify
-that candidate. Skips name missing shared API explicitly; this is not proof of an
-installed-package deployment. Native proof inspects this test process only.
+The proof is liteharness's process_ancestry.py, vendored byte-identical because
+LiteTUI's venv has no liteharness: importing it from liteharness made every live
+proof refuse while these arms skipped. Native proof inspects this test process only.
 """
-import builtins
 import json
 import os
+import subprocess
+import sys
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from _owned_seat import owned_app
 
-from litetui import approval_relay, harness, runtime_log, seat_authority, tool_policy
+from litetui import (
+    approval_relay,
+    harness,
+    process_ancestry,
+    runtime_log,
+    seat_authority,
+    tool_policy,
+)
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import sync_deny_floor
 
 CANDIDATE = "11111111-1111-4111-8111-111111111111"
 
@@ -28,8 +40,7 @@ def presence(tmp_path, monkeypatch):
 
 @pytest.fixture
 def live_row(presence):
-    shared = pytest.importorskip("liteharness.process_ancestry", reason="shared ancestry API unavailable; use coordinated source checkout")
-    chain = shared.process_ancestry(os.getpid(), stop_at=os.getppid())
+    chain = process_ancestry.process_ancestry(os.getpid(), stop_at=os.getppid())
     assert len(chain) >= 2, "real current-process ancestry must be inspectable for this integration arm"
     parent = chain[1]
     row = {"agent_id": CANDIDATE, "cli": "claude-code", "session_pid": parent.pid,
@@ -130,16 +141,32 @@ def test_unreadable_and_changed_presence_refuse(presence, live_row, monkeypatch)
     assert harness.ancestral_claude_spawner(CANDIDATE) is None
 
 
-def test_missing_shared_helper_refuses(presence, monkeypatch):
-    original = builtins.__import__
+def test_proof_passes_with_liteharness_not_importable(tmp_path):
+    """The shipped venv's condition: no liteharness. A live parent must still be proven."""
+    probe = (
+        "import json, os, sys; sys.modules['liteharness'] = None\n"
+        "from pathlib import Path\n"
+        "from litetui import harness, process_ancestry\n"
+        "parent = process_ancestry.process_ancestry(os.getpid(), stop_at=os.getppid())[1]\n"
+        f"harness.AGENTS_DIR = Path({str(tmp_path)!r})\n"
+        f"(harness.AGENTS_DIR / '{CANDIDATE}.json').write_text(json.dumps({{'agent_id': '{CANDIDATE}',"
+        " 'cli': 'claude-code', 'session_pid': parent.pid,"
+        " 'session_process_started_at': parent.started_at * 1000}), encoding='utf-8')\n"
+        f"print(harness.ancestral_claude_spawner('{CANDIDATE}'))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == CANDIDATE, out.stderr
 
-    def missing(name, *args, **kwargs):
-        if name == 'liteharness.process_ancestry':
-            raise ImportError('shared helper not installed')
-        return original(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, '__import__', missing)
-    assert harness.ancestral_claude_spawner(CANDIDATE) is None
+def test_the_copy_is_byte_identical_to_liteharness():
+    source = sync_deny_floor.canonical(name="process_ancestry.py")
+    if source is None:
+        pytest.skip("no liteharness-oss checkout found and LITEHARNESS_SRC unset")
+    assert source.is_file(), f"{source} does not exist; set LITEHARNESS_SRC to a checkout that has it"
+    warnings.warn(f"process_ancestry.py compared against {source}", stacklevel=1)
+    assert source.read_bytes() == Path(process_ancestry.__file__).read_bytes(), (
+        f"{source} and src/litetui/process_ancestry.py differ: edit the canonical file "
+        "and run scripts/sync_deny_floor.py")
 
 
 @pytest.mark.asyncio
