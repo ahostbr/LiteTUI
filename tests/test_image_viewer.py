@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from litetui import app as app_mod
+from _owned_seat import owned_app
 from litetui import settings as settings_mod
 from litetui.image_viewer import ImageViewerBody
 from litetui.side_panel import SidePanel
@@ -46,7 +46,7 @@ def _png_b64(width: int = 48, height: int = 32) -> str:
 
 def _make_app():
     """A network-free app: constructed, `_connect` stubbed (suite idiom)."""
-    application = app_mod.LiteTUI()
+    application = owned_app()
     application._connect = lambda: None
     return application
 
@@ -201,7 +201,7 @@ def _spill_and_assert(application, tmp_path):
 def test_spill_writes_png_into_convo_images():
     # A submit persists the attached image under <convo_dir>/images/ as a PNG,
     # so a past "[Image attached]" has a stable file to re-open.
-    application = app_mod.LiteTUI()
+    application = owned_app()
     application._connect = lambda: None
     import tempfile
 

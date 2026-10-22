@@ -16,6 +16,32 @@ def test_snapshot_scope_effective_and_revisions(tmp_path, monkeypatch):
         k for k in SETTING_SPECS if is_sensitive(k) and k not in SECRET_FIELDS}
 
 
+def test_keyboard_hints_are_public_with_the_parent_default_and_footer_metadata(tmp_path):
+    from litetui.settings import Settings
+
+    service = SettingsService(tmp_path)
+    before = service.snapshot("abc").revisions
+    result = public_snapshot(service.snapshot("abc"))
+    field = result["fields"]["footer_show_key_hints"]
+    assert field["saved"] is field["effective"] is Settings().footer_show_key_hints is False
+    assert field["scope"] == SETTING_SPECS["footer_show_key_hints"].scope.value
+    assert "secret" not in field
+    assert any("footer_show_key_hints" in section["fields"]
+               for section in result["ui"]["sections"] if "footer" in section["id"])
+    assert "footer_show_key_hints" in result["ui"]["fields"]
+    assert service.snapshot("abc").revisions == before
+
+
+def test_keyboard_hint_exception_never_overrides_explicit_sensitivity(monkeypatch):
+    from dataclasses import replace
+
+    name = "footer_show_key_hints"
+    assert not is_sensitive(name)
+    monkeypatch.setitem(SETTING_SPECS, name, replace(SETTING_SPECS[name], sensitive=True))
+    assert is_sensitive(name)
+    assert is_sensitive("footer_show_key_hints_api_key")
+
+
 def test_every_public_field_uses_the_same_ui_model_for_label_and_search(tmp_path):
     from litetui.settings_ui_model import SETTINGS_SECTIONS, SETTINGS_TABS
 

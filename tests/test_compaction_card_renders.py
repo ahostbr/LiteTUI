@@ -26,11 +26,14 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
 from litetui import app as m
 
 
-def make_app():
-    a = m.LiteTUI()
+def make_app(backend="lmstudio"):
+    a = owned_app(initial_backend=backend, initial_model="a-model")
+    a.seat.registered = True  # transport is supplied by the fixture
+    a._inbox_monitor = lambda: None
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -175,7 +178,7 @@ async def test_compaction_progress_preserves_output_and_clears_on_exit(
     from types import SimpleNamespace as NS
     from litetui import model_transport
 
-    a = make_app()
+    a = make_app(backend="ninfer")
     a.settings.wake_after_compact = False
     a.settings.clear_screen_after_compact = False
     a.settings.compact_keep_recent = 2
@@ -227,9 +230,10 @@ async def test_compaction_progress_preserves_output_and_clears_on_exit(
 async def test_compaction_does_not_compute_effective_chat_overrides(monkeypatch):
     """An unsupported CLI chat effort must not block or latch compaction."""
     from types import SimpleNamespace as NS
+
     from litetui import model_transport
 
-    a = make_app()
+    a = make_app(backend="codex")
     a.settings.wake_after_compact = False
     a.settings.clear_screen_after_compact = False
     a.settings.compact_keep_recent = 2

@@ -338,7 +338,9 @@ def test_legacy_native_requires_same_launch_prefix(build):
 
     app = build(None)
     app._cli_system_prompt = "Launch role and method"
-    prompt = app._cli_system_prompt + "\n\n" + app._system_prompt_text()
+    # Historical native launch prefix + host registry fold, before T0338
+    # introduced an authoritative role header in _system_prompt_text itself.
+    prompt = app._cli_system_prompt + "\n\n" + app.plugins.compose_prompt()
     assert require_store_match(app, prompt=prompt, convo_id=app.convo_id, native=True)["mode"] == "home"
     app._cli_system_prompt = "Different launch role"
     with pytest.raises(owner_mode.OwnerModeError, match="no verifiable host store slot"):

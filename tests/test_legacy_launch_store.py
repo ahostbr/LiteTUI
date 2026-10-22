@@ -28,6 +28,7 @@ async def apply_launch(app, text, *, accepted=True):
     app._cli_launch_error = None
     app._cli_thinking_level = None
     app._cli_system_prompt = text
+    app._legacy_launch_candidates = (text,) if text else ()
     await LiteTUI._apply_cli_args.__wrapped__(app)
     assert bool(app._cli_launch_error) is (not accepted)
 
@@ -44,9 +45,15 @@ async def legacy_fixture(tmp_path, monkeypatch, build, owner, backend, suffix, l
     first = build(memory, backend)
     async with first.run_test() as pilot:
         await pilot.pause()
-        await apply_launch(first, launch)
-        assert first.conversation[0] == {"role": "system", "content": launch}
-        assert first.conversation[1]["role"] == "system"
+        # Build the pre-T0338 fixture explicitly. The shipped launcher now emits
+        # one canonical system, so asking it to manufacture the retired pair
+        # would no longer test legacy provenance at all.
+        first._cli_system_prompt = launch
+        (first._agent_session.memory_root / "prompts" / "role.md").write_text(launch, encoding="utf-8")
+        host = first.plugins.compose_prompt() + (
+            "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
+        first.conversation[:] = [{"role": "system", "content": launch}, {"role": "system", "content": host}]
+        first._store_injected = False
         first._materialise_convo()
         if suffix == "index":
             root = memory or first._agent_session.memory_root
@@ -54,9 +61,19 @@ async def legacy_fixture(tmp_path, monkeypatch, build, owner, backend, suffix, l
             for name in names:
                 (root / name).write_text("", encoding="utf-8")
         if suffix != "none":
-            first._request_messages()
+            # These are the shipped original suffix injectors; request emission
+            # now refuses a retired two-system pair until canonicalized.
+            first._inject_index_once()
+            first._inject_lore_once()
+            first._inject_store_once()
         if backend == "claude":
-            system_prompt_for(first, ledger_for(first).select_segment(str(Path.cwd())))
+            ledger = ledger_for(first)
+            segment = ledger.select_segment(str(Path.cwd()))
+            # Explicit historical native shape: raw launch then original host,
+            # not the new canonical composer with a midturn stale snapshot.
+            ledger.fix_system_prompt(segment["id"], launch + "\n\n" + host,
+                                     store_identity=first._prompt_store_identity,
+                                     store_injected=first._store_injected)
         first._append({"role": "user", "content": "saved first input"})
         path = first.convo_path
         saved = [dict(message) for message in first.conversation]
@@ -91,12 +108,18 @@ async def test_same_legacy_launch_shape_resumes_without_rewriting_systems(tmp_pa
     async with resumed.run_test() as pilot:
         await pilot.pause()
         assert resumed._resume(path, startup=True)
-        assert resumed._request_messages()[:2] == saved[:2]
+        with pytest.raises(ValueError, match="one initial string system"):
+            resumed._request_messages()
+        assert resumed.conversation[:2] == saved[:2]
         assert ConversationRepository.read(path)[1][:2] == saved[:2]
         if backend == "claude":
             ledger = ledger_for(resumed)
             before = ledger.file.read_bytes()
-            assert system_prompt_for(resumed, ledger.selected) == ledger.selected["system_prompt"]
+            # Store provenance remains readable, but selected-policy execution
+            # cannot bless an unversioned native system from current files.
+            from litetui.claude_turn import UncertainDelivery
+            with pytest.raises(UncertainDelivery, match="/claude new"):
+                system_prompt_for(resumed, ledger.selected)
             assert ledger.file.read_bytes() == before
 
 
@@ -173,10 +196,14 @@ async def test_cli_resume_twice_keeps_message_count_and_receipt(tmp_path, monkey
             receipt = resumed._store_injected
             raw = path.read_bytes()
             await apply_launch(resumed, LAUNCH)
-            assert resumed.conversation == before, "CLI resume stacked another launch message"
             assert resumed._store_injected is receipt
-            assert path.read_bytes() == raw
-            assert resumed.conversation[:2] == saved[:2]
+            assert [i for i, m in enumerate(resumed.conversation) if m["role"] == "system"] == [0]
+            assert resumed.conversation[0]["content"].count("# BUILDER ROLE") == 1
+            if before[0].get("litetui_prompt_version") == 2:
+                assert resumed.conversation == before and path.read_bytes() == raw
+            else:
+                assert len(resumed.conversation) == len(before) - 1
+                assert resumed.conversation[1:] == before[2:]
 
 
 @pytest.mark.asyncio
@@ -198,7 +225,7 @@ async def test_cli_recorded_resume_refuses_different_launch_without_inserting(tm
         await apply_launch(resumed, replacement, accepted=False)
         assert resumed.conversation == before and resumed._store_injected is receipt
         assert path.read_bytes() == raw
-        assert len(said) == 1 and "Launch text mismatch" in said[0] and "omit --convo" in said[0]
+        assert len(said) == 1 and "Launch text mismatch" in said[0] and "new conversation" in said[0]
 
 
 @pytest.mark.asyncio
@@ -238,7 +265,9 @@ async def test_real_fleet_extension_prefix(tmp_path, monkeypatch, build, change,
             resumed._cli_convo_id = path.parent.name
             before = [dict(message) for message in resumed.conversation]
             await apply_launch(resumed, launch)
-            assert resumed.conversation == before
+            assert [i for i, m in enumerate(resumed.conversation) if m["role"] == "system"] == [0]
+            assert resumed.conversation[1:] == before[2:]
+            raw = path.read_bytes()  # canonical launch migration is deliberately persisted
         else:
             assert len(said) == 1 and "Store mismatch" in said[0] and "omit --convo" in said[0]
         assert path.read_bytes() == raw

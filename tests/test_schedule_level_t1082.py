@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as m
 from litetui import cron, goal_loop, gui_rpc, paths, rpc, scheduler, seat_authority, shared_state
 from litetui.plugins.scheduler_ui import JobScreen, _apply_job_edit
@@ -29,7 +30,7 @@ from litetui.tool_policy import AUTONOMOUS, INTERACTIVE, STRICT
 
 
 def _app(profile=AUTONOMOUS, **kw):
-    a = m.LiteTUI(**kw)
+    a = owned_app(**kw)
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

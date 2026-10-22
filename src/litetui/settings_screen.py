@@ -950,6 +950,36 @@ class SettingsBody(Widget):
                             "the next /engine start.",
                             placeholder="blank, or tokens such as 131072",
                         )
+                with TabPane("Xolotl", id="tab-xolotl"):
+                    with VerticalScroll(classes="set-scroll"):
+                        yield self._section_header("xolotl-engine")
+                        yield from self._text_row(
+                            "xolotl_host", "Xolotl host",
+                            "Blank uses the chosen model's own port on this PC (8150). Set it "
+                            "only for a Xolotl server you started yourself somewhere else.",
+                            placeholder="http://127.0.0.1:8150",
+                        )
+                        yield from self._text_row(
+                            "xolotl_root", "Xolotl: checkout folder",
+                            "Blank uses the one LiteSuite's Model Hub names. The Xolotl checkout "
+                            "with the built engine, its serve venv (.venv-serve) and one "
+                            "strata-<model>.json per model. Engine and docs: "
+                            "https://github.com/Indras-Mirror/Xolotl",
+                            placeholder="C:/Users/you/.litesuite/llm/xolotl",
+                        )
+                        yield from self._text_row(
+                            "xolotl_config", "Xolotl: model (strata-<model>.json)",
+                            "Blank uses the one model the checkout holds; /model picks between "
+                            "several. /engine start serves this.",
+                            placeholder="C:/Users/you/.litesuite/llm/xolotl/strata-ds41-1017-v3.json",
+                        )
+                        yield from self._text_row(
+                            "xolotl_max_context", "Xolotl: context length (--ctx)",
+                            "Blank keeps the config's --ctx. A longer context takes VRAM from the "
+                            "expert cache; the RAM it pins is the config's --arena-gib. Applies on "
+                            "the next /engine start.",
+                            placeholder="blank, or tokens such as 262144",
+                        )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
                         yield self._section_header("voice-speak")

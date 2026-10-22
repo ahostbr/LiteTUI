@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+from _owned_seat import owned_app
 from litetui import harness
 
 
@@ -75,7 +76,7 @@ def test_app_constructs_seat_from_marked_identity_and_consumes_it(monkeypatch):
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    app = app_mod.LiteTUI()
+    app = owned_app()
     assert (app.seat.agent_id, app.seat.name, app.seat.tier) == (
         env["LITEHARNESS_AGENT_ID"], "AppPathProbe", "thinker"
     )

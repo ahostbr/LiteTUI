@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from litetui.app import LiteTUI
+from _owned_seat import owned_app
 from litetui.mcp_client import MCPManager
 from litetui.mcp_list import ACTIONS_FOR, MCPListBody
 from litetui.side_panel import show_dialog
@@ -57,7 +57,7 @@ def _app(monkeypatch, tmp_path, servers):
     # on the real 2s settle. _connect is stubbed below, so there is nothing to
     # settle — the wait's condition is already met.
     monkeypatch.setattr("litetui.app._INBOX_SETTLE_S", 0.0)
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     # Point the manager at the tmp repo root; the app built its own against the
     # real one during __init__, which must not be written to by a test.

@@ -5,6 +5,7 @@ import inspect
 import textwrap
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
 from litetui.widgets import AssistantMessage, ToolMessage
@@ -15,7 +16,7 @@ def _plain(value) -> str:
 
 
 def _app():
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     return app

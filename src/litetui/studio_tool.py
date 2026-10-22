@@ -222,7 +222,9 @@ def _model(action: str, args: dict) -> str:
             "checkouts AND installed copies. Install LiteSuite's tools, or ask "
             "the human to."
         )
-    cmd = [lst, "run", "model", f"action={action}"]
+    # Public studio shorthand differs from the litesuite-tools action name.
+    cli_action = "list_families" if action == "families" else action
+    cmd = [lst, "run", "model", f"action={cli_action}"]
     if args.get("prompt"):
         cmd.append(f"prompt={args['prompt']}")
     try:
