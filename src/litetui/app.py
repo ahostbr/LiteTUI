@@ -981,6 +981,14 @@ class LiteTUI(App):
         height: 1;
         background: $footer-background;
     }
+    .footer-version {
+        dock: right;
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        background: $footer-background;
+        color: $text-muted;
+    }
     .pause-button {
         width: auto;
         padding: 0 1;
@@ -6735,6 +6743,9 @@ class LiteTUI(App):
             # timers (cache ticker, Codex events, on_resize) call this constantly.
             if label.content != text:
                 label.content = text
+                # A wider or narrower field moves the room the version needs.
+                for footer in self.query(ContextFooter):
+                    footer.call_after_refresh(footer.sync_version)
 
     @work(exclusive=True, group="ctxload")
     async def apply_context_length(self, force: bool = False) -> None:
