@@ -822,6 +822,55 @@ HARNESS_TOOL_SPEC = tool_schemas.load("harness")
 AGENTS_DIR = Path.home() / ".liteharness" / "agents"
 
 
+def ancestral_claude_spawner(candidate: str | None) -> str | None:
+    """Adopt an unmarked launch's candidate only with live strict ancestry proof.
+
+    Presence birth is milliseconds since epoch. Legacy Claude rows instead carry
+    an ISO registered_at: it must be timezone-aware and not predate the observed
+    process. Missing evidence/package support is a refusal, never an env fallback.
+    """
+    import math
+    import re
+
+    if not isinstance(candidate, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", candidate):
+        return None
+    try:
+        from liteharness.process_ancestry import process_ancestry
+
+        path = AGENTS_DIR / f"{candidate}.json"
+        if path.resolve().parent != AGENTS_DIR.resolve():
+            return None
+        row = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(row, dict) or row.get("agent_id") != candidate
+                or row.get("cli") not in ("claude", "claude-code")
+                or type(row.get("session_pid")) is not int or row["session_pid"] <= 0):
+            return None
+        chain = process_ancestry(os.getpid(), stop_at=row["session_pid"])
+        if not chain or chain[0].pid != os.getpid():
+            return None
+        owner = next((item for item in chain[1:] if item.pid == row["session_pid"]), None)
+        if owner is None:
+            return None
+        if "session_process_started_at" in row:
+            birth = row["session_process_started_at"]
+            if (type(birth) not in (int, float) or not math.isfinite(birth)
+                    or birth <= 0 or abs(birth - owner.started_at * 1000) > 1):
+                return None
+        else:
+            registered = datetime.fromisoformat(row["registered_at"])
+            if (registered.tzinfo is None
+                    or not owner.started_at <= registered.timestamp() <= time.time()):
+                return None
+        # Registration can change while the native observation is in flight.
+        if json.loads(path.read_text(encoding="utf-8")) != row:
+            return None
+        return candidate
+    except Exception:  # noqa: BLE001 - unknown approval authority must refuse
+        # Includes an unavailable/older optional liteharness package, unreadable
+        # presence, and unknown native evidence. Existing no_spawner logging wins.
+        return None
+
+
 def registered_spawner(agent_id: str) -> str | None:
     """Read current launch lineage by exact id, never a name or cached edge."""
     if (not isinstance(agent_id, str) or not agent_id or agent_id.startswith("-")
