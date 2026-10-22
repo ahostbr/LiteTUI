@@ -18,6 +18,18 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+### Added
+- **Xolotl backend** (`--backend xolotl`): DeepSeek-V4.1-Flash on one GPU, a
+  pinned RAM arena and NVMe, through [Xolotl](https://github.com/Indras-Mirror/Xolotl),
+  a Strata fork that serves through Strata's own server (OpenAI `/v1`, Anthropic
+  `/v1/messages`). Listed in `/backend`, the Settings engine picker and its own
+  Xolotl settings tab; `/model` picks a `strata-<model>.json` in the checkout and
+  `/engine start` runs `serve_ds41.py` for it, refusing with the reason when the
+  expert arena (`--arena-gib`), the conversation pool and the engine's own share
+  will not fit in free RAM, commit or VRAM. The checkout is the `xolotl_root`
+  setting, else LiteSuite's `xolotlRoot`. It is the Strata backend with its own
+  launcher, settings and reasoning levels (none to max), not a copy.
+
 ## [0.26.0] - 2026-10-16
 
 Owner mode, a restart checkpoint that waits for the seat to finish, and a long

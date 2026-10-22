@@ -131,7 +131,7 @@ def test_engine_run_off_a_5090_never_says_ninfer(monkeypatch, tmp_path):
     monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path / "llm"))   # never the user's config
     monkeypatch.setattr(StrataBackend, "_health_state", staticmethod(lambda host, timeout=2.0: None))
 
-    # On a backend that has no engine: the refusal points at Strata alone.
+    # On a backend that has no engine: the refusal points at Strata and Xolotl alone.
     other = _EngineApp(SimpleNamespace(name="lmstudio"))
     model_switch._cmd_engine(other, "/engine", "status")
     # On Strata: its real status sentence, then a verb it does not have.
@@ -139,16 +139,16 @@ def test_engine_run_off_a_5090_never_says_ninfer(monkeypatch, tmp_path):
     model_switch._cmd_engine(strata, "/engine", "status")
     model_switch._cmd_engine(strata, "/engine", "bogus")
 
-    assert other.said == ["/engine drives the Strata backend — /backend strata first."]
+    assert other.said == ["/engine drives the Strata or Xolotl backend — /backend strata or /backend xolotl first."]
     assert strata.said[0].startswith("no Strata server at http://127.0.0.1:9.")
     assert strata.said[1] == "/engine start | stop | status"
     assert not any("ninfer" in line.lower() for line in other.said + strata.said)
 
-    # On a 5090 the same refusal names both engines.
+    # On a 5090 the same refusal names every engine.
     monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: True)
     both = _EngineApp(SimpleNamespace(name="lmstudio"))
     model_switch._cmd_engine(both, "/engine", "status")
-    assert "NInfer" in both.said[0] and "Strata" in both.said[0]
+    assert "NInfer" in both.said[0] and "Strata" in both.said[0] and "Xolotl" in both.said[0]
 
 
 @pytest.mark.asyncio
@@ -161,12 +161,12 @@ async def test_the_gui_engine_refusal_never_says_ninfer_off_a_5090(monkeypatch):
     for action in ("status", "start", "stop"):
         with pytest.raises(ValueError) as refused:
             await gui_rpc.async_dispatch(app, {"type": f"gui.engine.{action}"})
-        assert str(refused.value) == "engine operations require the Strata backend"
+        assert str(refused.value) == "engine operations require the Strata or Xolotl backend"
 
     monkeypatch.setattr(gpu_gate, "is_rtx_5090", lambda: True)
     with pytest.raises(ValueError) as refused:
         await gui_rpc.async_dispatch(app, {"type": "gui.engine.status"})
-    assert str(refused.value) == "engine operations require the NInfer or Strata backend"
+    assert str(refused.value) == "engine operations require the NInfer, Strata or Xolotl backend"
 
 
 def test_a_strata_launch_refusal_names_strata_and_not_ninfer(monkeypatch):

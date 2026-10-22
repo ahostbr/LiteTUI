@@ -140,6 +140,15 @@ class Settings:
     strata_root: str = ""
     strata_config: str = ""
     strata_max_context: int | None = None
+    #: Xolotl (https://github.com/Indras-Mirror/Xolotl): DeepSeek-V4.1-Flash on one GPU, a
+    #: pinned RAM arena and NVMe, served by Strata's server. Blank host = the chosen config's
+    #: port on loopback (8150). Blank root = LiteSuite's `xolotlRoot`, else ~/.litesuite/llm/xolotl.
+    #: Blank config = the ONE strata-<model>.json in that checkout. Context None = the config's
+    #: own --ctx; a number replaces it on the next /engine start.
+    xolotl_host: str = ""
+    xolotl_root: str = ""
+    xolotl_config: str = ""
+    xolotl_max_context: int | None = None
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
@@ -588,6 +597,9 @@ ENV_OVERRIDES: dict[str, str] = {
     "strata_host": "LITETUI_STRATA_HOST",
     "strata_root": "LITETUI_STRATA_ROOT",
     "strata_config": "LITETUI_STRATA_CONFIG",
+    "xolotl_host": "LITETUI_XOLOTL_HOST",
+    "xolotl_root": "LITETUI_XOLOTL_ROOT",
+    "xolotl_config": "LITETUI_XOLOTL_CONFIG",
     "backend": "LITETUI_BACKEND",
     "llama_host": "LITETUI_LLAMA_HOST",
     "tool_iterations": "LM_TOOL_ITERS",

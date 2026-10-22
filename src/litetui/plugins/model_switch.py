@@ -190,27 +190,27 @@ def _pick_ninfer_artifact(app) -> None:
          current=str(getattr(app.settings, "ninfer_artifact", "") or ""))
 
 
-def _pick_strata_config(app) -> None:
-    """`/model` on Strata: choose the prepared model the next engine will serve.
+def _pick_server_config(app) -> None:
+    """`/model` on Strata or Xolotl: choose the prepared model the next engine will serve.
 
     The same door as `_pick_ninfer_artifact`, for the same reason: one model per process,
     chosen before the server starts. Here the choice is a `strata-<model>.json` in the
-    install — Strata's setup writes one per model it prepared.
+    install — Strata's setup (and Xolotl's, a Strata fork) writes one per prepared model.
+    Which install, and which setting it saves, is the backend's (`_engine`, `_setting_prefix`).
     """
-    from litetui import strata_engine
-
-    chosen = str(getattr(app.settings, "strata_config", "") or "").strip()
+    backend = app.backend
+    eng, field, label = backend._engine, f"{backend._setting_prefix}_config", backend.label
+    chosen = str(getattr(app.settings, field, "") or "").strip()
     rows = []
-    for path in strata_engine.list_strata_configs(app.settings):
-        ctx = strata_engine.config_context(strata_engine.read_config(path))
+    for path in eng.list_configs(app.settings):
+        ctx = eng.config_context(eng.read_config(path))
         size = f"  · {ctx:,} context" if ctx else ""
         mark = "  · current" if chosen and Path(chosen) == path else ""
         rows.append((str(path), f"{path.stem.removeprefix('strata-')}{size}{mark}"))
     if not rows:
         app.system_message(
-            f"No prepared Strata models in {strata_engine.strata_root(app.settings)} — LiteSuite's "
-            f"Model Hub installs Strata and downloads one ({strata_engine.STRATA_REPO_URL}), or set "
-            "strata_root in /settings."
+            f"No prepared {label} models in {eng.install_root(app.settings)} — {backend._install_where}, "
+            f"or set {backend._setting_prefix}_root in /settings."
         )
         return
 
@@ -218,7 +218,7 @@ def _pick_strata_config(app) -> None:
         if not choice:
             return
         import dataclasses
-        candidate = dataclasses.replace(app.settings, strata_config=choice)
+        candidate = dataclasses.replace(app.settings, **{field: choice})
         if getattr(app, 'convo_dir', None) is None:
             app.settings = candidate        # instance-only, as for the NInfer artifact
         else:
@@ -227,18 +227,18 @@ def _pick_strata_config(app) -> None:
             if result is not None and any(not p.saved for p in result.persistence):
                 return
         app.system_message(
-            f"Strata model set to {Path(choice).stem.removeprefix('strata-')} — /engine start to serve it."
+            f"{label} model set to {Path(choice).stem.removeprefix('strata-')} — /engine start to serve it."
         )
 
-    pick(app, "Select a Strata model (served on the next /engine start)", rows, _picked, current=chosen)
+    pick(app, f"Select a {label} model (served on the next /engine start)", rows, _picked, current=chosen)
 
 
 def _cmd_model(app, name: str, arg: str) -> None:
     if not arg and getattr(app.backend, "name", "") == "ninfer":
         _pick_ninfer_artifact(app)
         return
-    if not arg and getattr(app.backend, "name", "") == "strata":
-        _pick_strata_config(app)
+    if not arg and getattr(app.backend, "name", "") in ("strata", "xolotl"):
+        _pick_server_config(app)
         return
     if arg:
         # Switch by number or name
@@ -315,6 +315,22 @@ def _strata_mark(app) -> str:
     return f"installed, {count} model{'' if count == 1 else 's'} — /engine start"
 
 
+def _xolotl_mark(app) -> str:
+    from litetui import xolotl_engine
+    from litetui.xolotl_backend import XolotlBackend
+
+    host = xolotl_engine.default_host(app.settings)
+    if XolotlBackend._health_state(host, timeout=0.5) is not None:
+        return f"server answering at {host}"
+    root = xolotl_engine.xolotl_root(app.settings)
+    if not xolotl_engine.server_python(root).is_file():
+        return "not installed — set xolotl_root to a built Xolotl checkout"
+    count = len(xolotl_engine.list_xolotl_configs(app.settings))
+    if not count:
+        return "installed, no model configured"
+    return f"installed, {count} model{'' if count == 1 else 's'} — /engine start"
+
+
 def _claude_mark() -> str:
     """Readiness without starting the CLI: SDK importable + subscription login."""
     import importlib.util
@@ -349,15 +365,16 @@ def _set_lanes(app, raw: str) -> str:
 
 
 def _cmd_engine(app, name: str, arg: str) -> None:
-    """/engine start [N]|stop|status|lanes N — the NInfer or Strata process LiteTUI may own."""
+    """/engine start [N]|stop|status|lanes N — the NInfer, Strata or Xolotl process LiteTUI may own."""
     backend = app.backend
     if getattr(backend, "name", "") not in llm_backend.ENGINE_BACKENDS:
         from litetui import gpu_gate
         # T893: NInfer is never named on a box that is not an RTX 5090.
         if gpu_gate.is_rtx_5090():
-            app.system_message("/engine drives the NInfer or Strata backend — /backend ninfer or /backend strata first.")
+            app.system_message("/engine drives the NInfer, Strata or Xolotl backend — /backend ninfer, "
+                               "/backend strata or /backend xolotl first.")
         else:
-            app.system_message("/engine drives the Strata backend — /backend strata first.")
+            app.system_message("/engine drives the Strata or Xolotl backend — /backend strata or /backend xolotl first.")
         return
     is_ninfer = getattr(backend, "name", "") == "ninfer"
     verb, *rest = (arg.strip().lower() or "status").split()
@@ -469,6 +486,7 @@ def backend_rows(app) -> list[tuple[str, str]]:
         "llamacpp": llama_mark,
         "ninfer": _ninfer_mark(app),
         "strata": _strata_mark(app),
+        "xolotl": _xolotl_mark(app),
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
         "cline": cline_backend.auth_status(),
@@ -693,9 +711,9 @@ def _cmd_load(app, name: str, arg: str) -> None:
             "/model picks the artifact, /engine start serves it."
         )
         return
-    if getattr(app.backend, "name", "") == "strata":
+    if getattr(app.backend, "name", "") in ("strata", "xolotl"):
         app.system_message(
-            "Strata serves one model per process — there is nothing to load. "
+            f"{app.backend.label} serves one model per process — there is nothing to load. "
             "/model picks the model, /engine start serves it."
         )
         return

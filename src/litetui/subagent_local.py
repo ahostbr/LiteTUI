@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 REMOTE_BACKENDS = frozenset({'claude', 'codex', 'cline', 'free'})
 #: Engines that load whatever model a request names. "Loaded now" is true for one
 #: moment, so a seat on one of these asks again before every turn (seat_refusal).
-LOADS_ON_REQUEST = frozenset({'lmstudio', 'strata'})
+LOADS_ON_REQUEST = frozenset({'lmstudio', 'strata', 'xolotl'})
 
 
 def resolve_host(host):
