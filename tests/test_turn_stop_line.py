@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui import convo_settings
 from litetui.settings import Settings
@@ -99,7 +100,7 @@ def test_stop_preferences_are_global_defaults_not_conversation_settings() -> Non
 
 
 def test_rpc_mode_does_not_settle_tui_presentation() -> None:
-    app = app_mod.LiteTUI(rpc=True)
+    app = owned_app(rpc=True)
     message = AssistantMessage()
 
     app._settle_turn_stop_line(
@@ -113,7 +114,7 @@ def test_rpc_mode_does_not_settle_tui_presentation() -> None:
 
 
 def test_settlement_is_idempotent() -> None:
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._turn_stop_line_settled = False
     app._scroll_down = lambda: None
     message = AssistantMessage()

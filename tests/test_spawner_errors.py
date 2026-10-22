@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui.spawner_errors import SpawnerErrorReporter
-from litetui.app import LiteTUI
 
 
 def _seat(root, spawner='parent'):
@@ -56,7 +56,7 @@ def test_reporter_never_raises(tmp_path):
 
 @pytest.mark.asyncio
 async def test_system_message_routes_errors_and_ignores_success():
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     seen = []
@@ -72,7 +72,7 @@ async def test_real_missing_read_tool_result_reaches_reporter(tmp_path, monkeypa
     from litetui import model_transport, tool_policy
     from litetui.plugins.core_tools import tool_read
 
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.tools_enabled = True

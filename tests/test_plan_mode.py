@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _owned_seat import owned_app
 from litetui import app as m  # noqa: E402
 from litetui import paths  # noqa: E402
 from litetui import plugins as plugins_mod  # noqa: E402
@@ -34,7 +35,7 @@ from litetui import skills as skills_mod  # noqa: E402
 
 
 def make_app(plan: bool = False):
-    a = m.LiteTUI(plan_mode=plan)
+    a = owned_app(plan_mode=plan)
     a.convo_dir = None
     a.skills = []
     return a

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
+from _owned_seat import owned_app
 import pytest
 from textual.worker import WorkerState
 
@@ -97,7 +98,7 @@ async def test_fresh_bare_app_command_connects_without_materialising(monkeypatch
     server.start = lambda: None
     server.stop = lambda: setattr(server, "stopped", server.stopped + 1)
     monkeypatch.setattr(MCPManager, "_build", lambda *a: server)
-    app = LiteTUI()
+    app = owned_app()
     app.mcp = MCPManager(root)
     app.mcp.reload_configs()
     msgs = []

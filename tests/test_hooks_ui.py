@@ -5,7 +5,7 @@ import pytest
 from _settle import settle_until
 from textual.widgets import Button, Input, Select, Static, Switch, TextArea
 
-from litetui.app import LiteTUI
+from _owned_seat import owned_app
 from litetui.hooks_screen import HooksEditor, HooksScreen
 
 
@@ -17,7 +17,7 @@ def app_fixture(monkeypatch):
     created = []
 
     def build():
-        app = LiteTUI()
+        app = owned_app()
         app._connect = lambda: None
         app._fetch_ctx_window = lambda: None
         app._inbox_monitor = lambda: None

@@ -68,6 +68,7 @@ import re
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as m
 from litetui.picker import PickerBody, PickerScreen
 from litetui.side_panel import DialogController, SidePanel, SwapButton
@@ -121,7 +122,7 @@ def report(tag: str, screen, target) -> None:
 
 
 async def shoot(style: str) -> None:
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["m-a"]
     a.model_id = "m-a"
     a._connect = lambda: None

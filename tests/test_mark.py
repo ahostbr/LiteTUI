@@ -8,6 +8,7 @@ feature — it is the highlight.
 from pathlib import Path
 from types import SimpleNamespace
 
+from _owned_seat import owned_app
 from litetui.app import LiteTUI
 
 REPO = Path(__file__).resolve().parent.parent
@@ -57,7 +58,7 @@ def test_overlay_handoff_is_atomic():
 def test_mark_route_exists_and_waits_outside_the_chat_group():
     # The route lives in the registry since the plugin split.
     from litetui import app as m
-    assert "/mark" in m.LiteTUI().plugins.commands, "/mark is not registered"
+    assert "/mark" in owned_app().plugins.commands, "/mark is not registered"
     # Anchored on `_mark_wait` itself, which is what this gate is ABOUT.
     # It used to slice from `def _start_mark` and read the decorator out of
     # everything that followed — an anchor that S3 moved to mark_plugin.py, so

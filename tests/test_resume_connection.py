@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui import convo_settings, llm_backend, paths
 from litetui.conversation import ConversationRepository
@@ -48,7 +49,7 @@ async def test_resume_connects_saved_selection(tmp_path, monkeypatch, provider, 
     monkeypatch.setattr(paths, 'CONVO_DIR', tmp_path)
     calls = []
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: Backend(settings, calls))
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app.settings = Settings(backend='custom', default_model='global-model', pin_default_model=True)
     app._backend = Backend(app.settings, calls)
     app._connect = lambda: None  # Only suppress mount's initial connection.
@@ -89,7 +90,7 @@ async def test_resume_failure_blocks_send_and_reconnect_recovers(tmp_path, monke
     calls = []
     backend = Backend(Settings(backend='custom'), calls)
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: backend)
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     async with app.run_test() as pilot:
@@ -126,7 +127,7 @@ async def test_native_history_waits_for_connection(tmp_path, monkeypatch):
     backend = Backend(Settings(backend='codex'), calls)
     backend.app_server = SimpleNamespace(close=AsyncMock())
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: backend)
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app._refresh_native_history = lambda path: calls.append(('history', path))
@@ -157,7 +158,7 @@ async def test_cli_resume_validates_effective_model_without_saving(tmp_path, mon
             return [SimpleNamespace(key=m, loaded=True) for m in ('gpt-6-astra', 'saved-model')]
 
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: CatalogBackend(settings, calls))
-    app = app_mod.LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app._probe_thinking = lambda: None
@@ -203,7 +204,7 @@ async def test_real_cli_convo_launch_resumes_once_and_keeps_effective_model(
             return [SimpleNamespace(key=model, loaded=True) for model in catalog]
 
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: CatalogBackend(settings))
-    first = app_mod.LiteTUI()
+    first = owned_app()
     first._connect = lambda: None
     async with first.run_test() as pilot:
         await pilot.pause()
@@ -217,7 +218,7 @@ async def test_real_cli_convo_launch_resumes_once_and_keeps_effective_model(
     before = convo_settings.path_for(path.parent).read_bytes()
     cid = path.parent.name
 
-    app = app_mod.LiteTUI(convo_id=cid, initial_model=requested)
+    app = owned_app(convo_id=cid, initial_model=requested)
     app._fetch_ctx_window = lambda: None
     app._probe_thinking = lambda: None
     async with app.run_test() as pilot:

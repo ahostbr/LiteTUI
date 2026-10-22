@@ -29,21 +29,17 @@ Properties, each with a control:
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from copy import deepcopy
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import llm_backend, paths, settings_runtime
+from litetui import llm_backend, settings_runtime
 from litetui.plugins.model_switch import switch_model
 from litetui.settings import Settings
 from litetui.settings_service import SettingsService
-
-paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-banner-"))
-
 
 # ── fakes ──────────────────────────────────────────────────────────────────
 
@@ -88,7 +84,7 @@ def _rows(*specs: tuple[str, bool]) -> list[llm_backend.ModelRow]:
 def _app(
     rows, *, model_id: str = "", initial_model: str | None = None, **settings
 ) -> app_mod.LiteTUI:
-    a = app_mod.LiteTUI(initial_model=initial_model)
+    a = owned_app(initial_model=initial_model)
     a.settings = Settings(**settings)
     a.backend = _FakeBackend(rows)
     a.model_id = model_id
