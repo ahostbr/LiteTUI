@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, fields as fields_of
 from functools import partial
 from litetui.fmt import fmt_dur
+from litetui.version import __version__
 from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
     TOOL_NAME_DEFAULT,
     _compact_tokens,
@@ -1398,6 +1399,32 @@ class ContextFooter(Footer):
             reserved = 0
         self.app._footer_available_width = max(0, self.size.width - reserved - 1)
         self.call_after_refresh(self.app._refresh_ctx_label)
+        self.call_after_refresh(self.sync_version)
+
+    VERSION_TEXT = f"v{__version__}"
+
+    def sync_version(self) -> None:
+        """Show the version only while the lower row has room for it.
+
+        It is docked at the right edge. The permission label, the manager
+        toggle and the meters keep their cells; the version goes first when
+        they leave less than its width, so a narrow terminal never clips it
+        into "v0.2" or draws it over them. Measured from content widths, not
+        regions, so it holds before the first layout pass.
+        """
+        try:
+            row = self.query_one(".footer-second-row")
+            version = row.query_one(".footer-version")
+        except Exception:
+            return  # not composed yet; compose() draws it
+        viewport = self.app.size
+        fixed = sum(
+            child.get_content_width(viewport, viewport) + child.styles.gutter.width
+            for child in row.children
+            if child is not version and child.display
+            and not child.has_class("footer-hints")
+        )
+        version.display = self.size.width - fixed >= cell_len(self.VERSION_TEXT) + 2
 
     def compose(self) -> ComposeResult:
         app = self.app
@@ -1419,6 +1446,21 @@ class ContextFooter(Footer):
             yield meters
             with Horizontal(classes="footer-hints"):
                 yield from super().compose()
+            yield FooterVersion(self.VERSION_TEXT)
+
+
+class FooterVersion(Static):
+    """The footer's version label. A recompose remounts it displayed, with no
+    resize to follow, so it asks its footer to fit it each time it mounts."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text, classes="footer-version")
+
+    def on_mount(self) -> None:
+        for footer in self.ancestors:
+            if isinstance(footer, ContextFooter):
+                footer.call_after_refresh(footer.sync_version)
+                return
 
 
 class TaskManagerToggle(Static):
