@@ -965,13 +965,13 @@ class SettingsBody(Widget):
                             "with the built engine, its serve venv (.venv-serve) and one "
                             "strata-<model>.json per model. Engine and docs: "
                             "https://github.com/Indras-Mirror/Xolotl",
-                            placeholder="F:/REPO_CLONES/Xolotl",
+                            placeholder="C:/Users/you/.litesuite/llm/xolotl",
                         )
                         yield from self._text_row(
                             "xolotl_config", "Xolotl: model (strata-<model>.json)",
                             "Blank uses the one model the checkout holds; /model picks between "
                             "several. /engine start serves this.",
-                            placeholder="F:/REPO_CLONES/Xolotl/strata-ds41-1017-v3.json",
+                            placeholder="C:/Users/you/.litesuite/llm/xolotl/strata-ds41-1017-v3.json",
                         )
                         yield from self._text_row(
                             "xolotl_max_context", "Xolotl: context length (--ctx)",
