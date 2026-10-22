@@ -5,9 +5,11 @@ Owner (04169351): "whatever agent spawned the light qi instance should be babysi
 Owner (6e280dd4): a typed CONFIRM in an agent-launched seat -> "The launching agent";
 an agent-launched LiteGUI's CONFIRM -> "No, launching agent".
 
-Initial ancestry is recorded ONLY from the marker envelope
-(LITETUI_SPAWN_IDENTITY=1 + LITEHARNESS_SPAWNED_BY), never from an inherited env
-(Dijkstra M1). Each new request resolves the registered seat's current spawned_by;
+Initial ancestry comes from the marker envelope
+(LITETUI_SPAWN_IDENTITY=1 + LITEHARNESS_SPAWNED_BY), or an unmarked launch's
+CLAUDE_CODE_SESSION_ID proven against current presence and live strict process
+ancestry (T0106). An inherited value alone grants nothing. Each new request
+resolves the registered seat's current spawned_by;
 its pending reply authority freezes that destination and up to two registered
 ancestors (eligible at60/120s). Re-registration changes future requests only.
 Missing/invalid presence never uses cached ancestry.

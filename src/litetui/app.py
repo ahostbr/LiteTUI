@@ -1844,16 +1844,15 @@ class LiteTUI(App):
         # lazily at turn time (seat_authority.is_owner): a constructor must not
         # block on a socket.
         self._pty_term = (os.environ.get(seat_authority.PTY_TERM_VAR) or None) if self._owner_seat else None
-        # T1049-B: who babysits this seat's CONFIRMs (approval_relay). The spawner
-        # comes ONLY from the marker envelope (Dijkstra M1: an inherited
-        # CLAUDE_CODE_SESSION_ID or SPAWNED_BY names whoever launched Electron, or a
-        # dead id). "Agent-launched" is the owner test's own markers, read BEFORE the
-        # write below. Both env vars are POPPED (Dijkstra E2): a tool shell's nested
-        # marked launch must not adopt this seat's leader, and a nested --rpc child
-        # must not route to this seat's host. Nothing is lost: `liteharness register`
-        # (cmd_register) never wrote spawned_by from a LiteTUI env (Marquee 26d5b28c).
+        # Marked launches keep their envelope priority. Without a marker, an
+        # inherited Claude ID is only a candidate: current presence and strict
+        # live process ancestry must prove it (T0106). Stale/unknown means none.
+        # Both relay vars are still POPPED below so nested children cannot adopt
+        # this seat's parent/host. Owner rules and launch-marker consumption stay
+        # independent of this initial approval lineage.
         self._spawner_id = ((os.environ.get(approval_relay.SPAWNED_BY_ENV) or "").strip() or None
-                            if self._spawned_marker else None)
+                            if self._spawned_marker else harness_mod.ancestral_claude_spawner(
+                                os.environ.get("CLAUDE_CODE_SESSION_ID")))
         self._agent_launched = any(os.environ.get(name) for name in seat_authority.AGENT_SHELL_MARKERS)
         self._approval_host = os.environ.get(approval_relay.APPROVAL_HOST_ENV) == "1"
         for name in (approval_relay.SPAWNED_BY_ENV, approval_relay.APPROVAL_HOST_ENV):
