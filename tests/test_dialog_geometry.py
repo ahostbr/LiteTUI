@@ -200,7 +200,11 @@ async def test_no_child_is_clipped_by_its_own_container(
     # SCROLLING, and that changes what "clipped" MEANS here: a scrolled child
     # is outside `content_region` and is not clipped, it is reachable. Adopting
     # it rewrites this assertion for scrollable containers. Awaiting a ruling.
-    SHORT_SCREEN_CLIPPERS = {"picker", "tool_approval", "ask_user_question"}
+    # ask_user_question left this set under T0478: AskUserQuestionBody carries
+    # `overflow-y: auto`, so its overflow is reachable, not clipped, and the
+    # strict xfail XPASSes once the app really builds. It had only ever
+    # "xfailed" through the unowned LiteTUI() path, which raises StoreError.
+    SHORT_SCREEN_CLIPPERS = {"picker", "tool_approval"}
     if h == 24 and name in SHORT_SCREEN_CLIPPERS:
         request.node.add_marker(pytest.mark.xfail(
             strict=True,
