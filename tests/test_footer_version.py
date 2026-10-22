@@ -37,12 +37,17 @@ def footer_rows(a) -> list[str]:
     return ["".join(seg.text for seg in strips[y]) for y in (top, top + 1)]
 
 
-async def render_at(make_app, width: int, monkeypatch, version: str | None = None) -> tuple[list[str], bool]:
+async def render_at(make_app, width: int, monkeypatch, version: str | None = None,
+                    history=None) -> tuple[list[str], bool]:
     monkeypatch.setattr(footer_telemetry.Sampler, "sample", lambda self:
                         footer_telemetry.Reading(cpu=25, ram=50))
     if version is not None:
         monkeypatch.setattr(widgets.ContextFooter, "VERSION_TEXT", f"v{version}")
     a = configure(make_app())
+    if history:
+        a.settings.footer_task_manager = True
+        a._sync_footer_sampler = lambda: None  # no real sensors
+        a._footer_telemetry, a._footer_history = history[-1], list(history)  # the app clears its list on exit
     async with a.run_test(size=(width, ROWS)) as pilot:
         a.ctx_max = 200_000
         a.ctx_used = 54_321
@@ -83,3 +88,28 @@ async def test_version_drops_first_at_narrow_widths_without_clipping(make_app, m
     assert not shown
     assert "v0" not in rows[1] and version not in rows[1], rows[1]
     assert "27%" in rows[0] and version not in rows[0], rows[0]
+
+
+#: Widths where the meters used to just fit and leave the version under 9 cells
+#: (T0642-C measured 66-73, 88-95, 106-113 with every sensor reporting). The
+#: meters now give up a reading there instead.
+METER_GAP_WIDTHS = [66, 70, 73, 88, 92, 95, 106, 110, 113]
+FULL_HISTORY = [
+    footer_telemetry.Reading(cpu=10, gpu=20, network=1024, ram=50, vram=30, disk=1024),
+    footer_telemetry.Reading(cpu=65, gpu=75, network=8192, ram=60, vram=40, disk=2048),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", METER_GAP_WIDTHS)
+async def test_meters_yield_a_reading_before_the_version_goes(make_app, monkeypatch, width):
+    rows, shown = await render_at(make_app, width, monkeypatch, history=FULL_HISTORY)
+    assert "meters:on" in rows[1], "meters must be on, or this arm measures nothing"
+    assert shown and rows[1].rstrip().endswith(f"v{__version__}"), rows[1]
+
+
+@pytest.mark.asyncio
+async def test_a_wide_footer_keeps_its_meters_beside_the_version(make_app, monkeypatch):
+    rows, shown = await render_at(make_app, 200, monkeypatch, history=FULL_HISTORY)
+    assert shown and rows[1].rstrip().endswith(f"v{__version__}"), rows[1]
+    assert "CPU" in rows[1] and "VRAM" in rows[1], rows[1]
