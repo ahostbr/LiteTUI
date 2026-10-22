@@ -18,7 +18,18 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-22
+
+The Xolotl backend for DeepSeek-V4.1, the version in the footer, and a long run
+of work on how a seat's role prompt is composed, revised and kept across resume.
+
 ### Added
+- **The version in the footer.** The footer's lower row shows `v<version>` at its
+  right edge, read from `version.py`. It is hidden first when the row is too
+  narrow to hold it beside the permission label, the manager toggle and the meters.
+- **Lore at seat start.** `.agents` seats get the lore file injected at start and
+  after compaction; its path resolves through `lore_file` in
+  `~/.liteharness/config.json`.
 - **Xolotl backend** (`--backend xolotl`): DeepSeek-V4.1-Flash on one GPU, a
   pinned RAM arena and NVMe, through [Xolotl](https://github.com/Indras-Mirror/Xolotl),
   a Strata fork that serves through Strata's own server (OpenAI `/v1`, Anthropic
@@ -29,6 +40,21 @@ fails if this file's top released heading disagrees with it.
   will not fit in free RAM, commit or VRAM. The checkout is the `xolotl_root`
   setting, else LiteSuite's `xolotlRoot`. It is the Strata backend with its own
   launcher, settings and reasoning levels (none to max), not a copy.
+- **Owner-scoped next-turn prompt overrides**, and per-home launch and live seat
+  systems composed from the prompt catalog.
+
+### Changed
+- A seat's role revisions are audited before a named resume; a custom role body
+  survives a default-only resume, and proved storage prefixes are kept.
+- The packaged prompt catalog is pinned independently of install debris, and a
+  test enforces parity between the checkout and the tracked catalog.
+
+### Fixed
+- A path token the policy cannot resolve is refused instead of crashing the seat.
+- A Bash-launched LiteTUI gets its Claude spawner back only with a live
+  process-ancestry proof, vendored so it runs in LiteTUI's own venv.
+- Studio maps model families to the supported `lst` action.
+- Footer keyboard hints are exposed to the sidecar without being treated as secrets.
 
 ## [0.26.0] - 2026-10-16
 
