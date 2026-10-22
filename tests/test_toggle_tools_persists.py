@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as app_mod
-from litetui.app import LiteTUI
 
 
 def _app(monkeypatch):
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     saved = []
     monkeypatch.setattr(
@@ -73,7 +73,7 @@ async def test_the_two_never_disagree_after_a_toggle(monkeypatch):
 async def test_a_failed_save_still_toggles_and_says_so(monkeypatch):
     """Honest degradation. A toggle that lasts one session beats a crash on
     Ctrl+T, but a SILENT half-success is the disagreement this change removes."""
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     said = []
     def _boom(s, root=None):

@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui.plugins import PluginContext
 from litetui.settings import Settings
@@ -79,7 +80,7 @@ def _scripted(chunks):
 
 
 def _app(**overrides):
-    a = app_mod.LiteTUI()
+    a = owned_app()
     base = dict(wake_after_compact=False, show_thinking=True)
     base.update(overrides)
     a.settings = Settings(**base)

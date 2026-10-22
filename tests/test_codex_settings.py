@@ -1,6 +1,7 @@
 from types import SimpleNamespace as NS
 
 import pytest
+from _owned_seat import owned_app
 from textual.app import App
 
 from litetui.codex_settings import CONTROLS, LOCAL_SERVER, loop_description
@@ -70,9 +71,8 @@ async def test_global_reasoning_default_respects_backend_scope(monkeypatch, tmp_
 
     from litetui import convo_settings
     from litetui import settings as settings_mod
-    from litetui.app import LiteTUI
 
-    app = LiteTUI()
+    app = owned_app(initial_backend=backend, initial_model="fixture")
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     notes = []
@@ -82,8 +82,6 @@ async def test_global_reasoning_default_respects_backend_scope(monkeypatch, tmp_
     async with app.run_test() as pilot:
         app.backend = NS(name=backend, remote=True, shutdown=lambda: None)
         app.settings = replace(app.settings, backend=backend, thinking_level="medium")
-        app.convo_dir = tmp_path / "conversation"
-        app.convo_path = app.convo_dir / "convo.jsonl"
         app._adopt_convo_settings(born=True)
         app.thinking_level = mode
         before = convo_settings.load(app.convo_path.parent)

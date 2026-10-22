@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import harness
-from litetui.app import LiteTUI
 
 
 def test_registry_name_reads_only_own_id_and_valid_name(tmp_path, monkeypatch):
@@ -65,7 +65,7 @@ def test_claim_name_failure_does_not_claim_identity(monkeypatch):
 async def test_resume_name_precedence_and_footer(tmp_path, monkeypatch, registry, launch,
                                                  expected, claims):
     monkeypatch.setenv("LITETUI_NO_HARNESS", "1")
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.seat.name = "DefaultSeat"
@@ -106,7 +106,7 @@ async def test_resume_name_precedence_and_footer(tmp_path, monkeypatch, registry
 @pytest.mark.asyncio
 async def test_resume_claims_saved_name_and_repaints_footer(tmp_path, monkeypatch):
     monkeypatch.setenv("LITETUI_NO_HARNESS", "1")  # no real fleet calls in pilot
-    app = LiteTUI()
+    app = owned_app()
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.seat.name = "SolidBolt"

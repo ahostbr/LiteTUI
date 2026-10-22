@@ -8,9 +8,9 @@ from dataclasses import replace
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import convo_settings, paths, settings_runtime
 from litetui import settings as st
-from litetui.app import LiteTUI
 from litetui.plugins import model_switch
 from litetui.settings_service import SettingsService
 
@@ -20,7 +20,7 @@ def saved():
 
 
 def instance(service, name):
-    a = LiteTUI()
+    a = owned_app()
     snapshot = service.create_conversation(name)
     a.convo_dir = service._paths(name)["conversation"].parent
     a.convo_id = name
@@ -188,7 +188,7 @@ def test_ninfer_pick_without_conversation_ignores_previous_save_failure(monkeypa
 def test_commands_before_conversation_exists_do_not_fall_back_to_globals(monkeypatch):
     monkeypatch.delenv("LITETUI_BACKEND", raising=False)
     st.save(st.Settings(backend="lmstudio", default_model="alpha"))
-    a = LiteTUI()
+    a = owned_app()
     a.convo_dir = None
     a._convo_settings = None
     a.connect = lambda: None

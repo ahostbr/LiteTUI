@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui import paths
 from litetui import skills as skills_mod
@@ -26,7 +27,7 @@ def _app_with(tmp_root: Path, monkeypatch):
     # Skills now live under the configured writable data root. Keep immutable
     # resources at their normal anchor and isolate discovery through that seam.
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_root))
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None
@@ -50,7 +51,7 @@ def test_disabled_skills_yield_a_list_not_a_dict():
     """
     from litetui.settings import Settings
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings(skills_enabled=False)
     a.skills = skills_mod.discover(paths.ROOT) if a.settings.skills_enabled else []
     assert isinstance(a.skills, list)

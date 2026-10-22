@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from litetui import app as m
+from _owned_seat import owned_app
 from litetui import ask_user_question as aq
 from litetui import tool_policy
 from litetui.colorpicker import ColorPickerBody
@@ -60,7 +60,7 @@ JOBS = [Job(prompt="say hi", schedule="0 9 * * 1-5", label="morning")]
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None

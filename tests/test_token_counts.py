@@ -32,6 +32,7 @@ import pytest
 
 from rich.text import Text
 
+from _owned_seat import owned_app
 from litetui import appsvc
 from litetui.textfmt import thinking_header_text, token_count_text
 from litetui.turnstats import TpsState
@@ -226,7 +227,7 @@ async def test_THE_APP_actually_tags_its_reasoning_deltas():
     from litetui.settings import Settings
 
     paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-tokcount-"))
-    a = app_mod.LiteTUI()
+    a = owned_app()
     # show_thinking=False DELIBERATELY, and this is a SCOPE LIMIT not a
     # convenience: with it on, this minimal harness stops consuming the stream
     # after the first reasoning delta — no exception, no worker error, just a
