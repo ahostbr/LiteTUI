@@ -90,7 +90,7 @@ def _friendly_label(name: str) -> str:
         return FIELD_LABELS[name]
     words = name.replace("_", " ").split()
     special = {"tts": "Speech", "stt": "Dictation", "mcp": "MCP", "lmstudio": "LM Studio",
-               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "llama": "llama.cpp", "api": "API",
+               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "xolotl": "Xolotl", "llama": "llama.cpp", "api": "API",
                "hf": "Hugging Face", "kv": "KV", "tps": "tokens per second", "pct": "percentage",
                "s": "seconds", "mib": "MiB", "gguf": "GGUF"}
     return " ".join(special.get(word, word) for word in words).capitalize()
@@ -143,6 +143,10 @@ FIELD_DESCRIPTIONS = {
     "strata_root": "Folder Strata's setup prepared; blank uses the one LiteSuite's Model Hub installs.",
     "strata_config": "Prepared model (strata-<model>.json) served at the next Strata engine start.",
     "strata_max_context": "Context tokens requested at Strata startup; blank keeps the model's set-up value.",
+    "xolotl_host": "Address of a Xolotl server started separately; blank uses the chosen model's own port.",
+    "xolotl_root": "The Xolotl checkout (built engine, serve venv, strata-<model>.json); blank uses LiteSuite's.",
+    "xolotl_config": "Prepared model (strata-<model>.json in the checkout) served at the next Xolotl engine start.",
+    "xolotl_max_context": "Context tokens (--ctx) requested at Xolotl startup; blank keeps the config's value.",
     "tts_enabled": "Show Speak on replies; turning it off stops LiteTUI-owned playback, not LiteSuite's queue.",
     "tts_litesuite_first": "Use LiteSuite's selected voice when reachable; off uses only the fallback engine. LiteSuite owns queued playback and stopping it.",
     "tts_engine": "Fallback when LiteSuite is unavailable, or the primary engine when LiteSuite preference is off.",
@@ -333,6 +337,11 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "strata", "Strata", "strata-engine", "Engine",
         "Qwen3.8-Flash-Next on one GPU plus system RAM (github.com/Niko1221/Strata).",
         ("strata_host", "strata_root", "strata_config", "strata_max_context"), scope="device", keywords=("Qwen", "Flash-Next", "engine", "RAM", "context"),
+    ),
+    _section(
+        "xolotl", "Xolotl", "xolotl-engine", "Engine",
+        "DeepSeek-V4.1-Flash on one GPU, a pinned RAM arena and NVMe (github.com/Indras-Mirror/Xolotl).",
+        ("xolotl_host", "xolotl_root", "xolotl_config", "xolotl_max_context"), scope="device", keywords=("DeepSeek", "V4.1", "engine", "RAM", "arena", "context"),
     ),
     _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",

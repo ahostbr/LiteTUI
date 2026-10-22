@@ -2288,6 +2288,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
     ("llamacpp", "llama.cpp (our own llama-server)"),
     ("ninfer", "NInfer (NVFP4 5090 engine)"),
     ("strata", "Strata (Qwen3.8-Flash-Next, GPU + system RAM)"),
+    ("xolotl", "Xolotl (DeepSeek-V4.1-Flash, GPU + RAM arena + NVMe)"),
     ("codex", "Codex (OAuth subscription)"),
     ("claude", "Claude Agent"),
     ("cline", "ClinePass (Cline subscription)"),
@@ -2296,7 +2297,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
 BACKEND_NAMES: tuple[str, ...] = tuple(name for name, _ in BACKENDS)
 #: The backends whose engine is ONE process LiteTUI may start and stop (`/engine`,
 #: `gui.engine.*`, `--start-server`): engine_lifecycle.OwnedEngineLifecycle subclasses.
-ENGINE_BACKENDS: frozenset[str] = frozenset({"ninfer", "strata"})
+ENGINE_BACKENDS: frozenset[str] = frozenset({"ninfer", "strata", "xolotl"})
 
 
 def backend_label(name: str) -> str:
@@ -2388,6 +2389,10 @@ def _make_backend(settings):
         # Lazy for the same reason as NInfer: a broken import must not stop the others booting.
         from litetui.strata_backend import StrataBackend
         return StrataBackend(settings)
+    if settings.backend == "xolotl":
+        # Lazy for the same reason as NInfer: a broken import must not stop the others booting.
+        from litetui.xolotl_backend import XolotlBackend
+        return XolotlBackend(settings)
     if settings.backend != "lmstudio":
         raise BackendError(
             f"That backend is unavailable. Choose one of {', '.join(BACKEND_NAMES)}; "

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-LOCAL_BACKENDS = frozenset({'lmstudio', 'llamacpp', 'ninfer', 'strata', 'custom'})
+LOCAL_BACKENDS = frozenset({'lmstudio', 'llamacpp', 'ninfer', 'strata', 'xolotl', 'custom'})
 
 
 def validate_route(value, *, override=False):
