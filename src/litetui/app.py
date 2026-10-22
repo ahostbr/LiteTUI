@@ -6642,12 +6642,14 @@ class LiteTUI(App):
         separator = "  ·  "
         # The second row owns its own width. Reserve permission text and its
         # one-cell padding, the clickable toggle and its two-cell padding, and
-        # the separator before admitting any whole meter. The status row never
-        # participates in this budget.
+        # the separator and the version label (hidden before it is clipped, so
+        # a reading yields first) before admitting any whole meter. The
+        # status row never participates in this budget.
         available = getattr(self, "_footer_available_width", None)
         if available is not None:
             available -= (self.permission_label_text.cell_len + 1
-                          + len("meters:on") + 2 + Text(separator).cell_len)
+                          + len("meters:on") + 2 + Text(separator).cell_len
+                          + ContextFooter.version_width())
             if available <= 0:
                 return Text()
         history = getattr(self, "_footer_history", [])

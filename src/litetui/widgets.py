@@ -1403,6 +1403,11 @@ class ContextFooter(Footer):
 
     VERSION_TEXT = f"v{__version__}"
 
+    @classmethod
+    def version_width(cls) -> int:
+        """Cells the version label takes, padding included."""
+        return cell_len(cls.VERSION_TEXT) + 2
+
     def sync_version(self) -> None:
         """Show the version only while the lower row has room for it.
 
@@ -1424,7 +1429,7 @@ class ContextFooter(Footer):
             if child is not version and child.display
             and not child.has_class("footer-hints")
         )
-        version.display = self.size.width - fixed >= cell_len(self.VERSION_TEXT) + 2
+        version.display = self.size.width - fixed >= self.version_width()
 
     def compose(self) -> ComposeResult:
         app = self.app
