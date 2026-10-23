@@ -71,8 +71,7 @@ async def _settled_at_the_bottom(a, pilot, log, n: int = 25) -> bool:
     for _ in range(n):
         await pilot.pause()
         now = log.max_scroll_y
-        anchored = (a._follow_anchor is not None
-                    and a._follow_anchor >= now - 2)
+        anchored = log.scroll_y >= now - 2
         if anchored and now == last:
             return True
         last = now
@@ -141,19 +140,32 @@ async def test_log_follows_a_filling_thinking_block() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_reader_who_scrolled_up_is_left_alone() -> None:
-    """The other half of the contract, and the reason the slack existed at all.
-
-    Following must NOT drag a reader back down. If this passes only because the
-    app always scrolls, the fix has traded one bug for a worse one.
-    """
+async def test_lock_on_keeps_following_a_reader_who_scrolled_up() -> None:
+    """Ryan 2026-10-22, option "2": only the button releases the lock; with it ON
+    "you always follow the bottom", so a reader who scrolled up is taken back."""
     a = make_app()
     async with a.run_test(size=(100, 24)) as pilot:
         log = await _fill_and_stream(a, pilot, scroll_up_by=8)
-        assert log.scroll_y < log.max_scroll_y - 2, (
-            "the app yanked a reader who had deliberately scrolled up back to the "
-            "bottom -- following must yield to a human"
+        assert log.scroll_y >= log.max_scroll_y - 2, (
+            f"lock ON but the stream left the log behind: y={log.scroll_y}, "
+            f"max={log.max_scroll_y}"
         )
+
+
+@pytest.mark.asyncio
+async def test_lock_off_leaves_a_reader_who_scrolled_up_alone() -> None:
+    """The other half: with the lock OFF the stream never moves the reader."""
+    a = make_app()
+    a.settings.autoscroll = False
+    async with a.run_test(size=(100, 24)) as pilot:
+        log = await _fill_and_stream(a, pilot, scroll_up_by=8)
+        held_y = log.scroll_y
+        assert held_y < log.max_scroll_y - 2, "the arm never left the bottom; it proves nothing"
+        for i in range(10):
+            a.query_one("#chat-log").mount(m.ChatMessage(f"more output {i}"))
+            a._scroll_down()
+            await pilot.pause()
+        assert log.scroll_y == held_y, "an unlocked reader was moved by streaming output"
 
 
 @pytest.mark.asyncio
