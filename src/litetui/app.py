@@ -8816,11 +8816,17 @@ class LiteTUI(App):
         return ("refuse", None, why)
 
 
-    def _validate_owned_execution(self) -> None:
+    def _validate_owned_execution(self, *, chat_effort: bool = True) -> None:
         if getattr(self, '_agent_session', None) is not None:
             authority = self._agent_session.authority
             if getattr(self.backend, 'name', None) != authority.backend:
                 raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
+            if not chat_effort:
+                # Compaction requests carry compact_thinking_level, never the chat
+                # override, so a chat effort that cannot be sent must not stop it.
+                if self.model_id != authority.model:
+                    raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
+                return
             if authority.backend == 'claude':
                 from litetui.claude_turn import effort_for
                 from types import SimpleNamespace
@@ -10351,7 +10357,7 @@ class LiteTUI(App):
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
         if getattr(self, '_agent_session', None) is not None:
             try:
-                LiteTUI._validate_owned_execution(self)
+                LiteTUI._validate_owned_execution(self, chat_effort=False)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
                 return

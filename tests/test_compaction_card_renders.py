@@ -278,3 +278,53 @@ async def test_compaction_does_not_compute_effective_chat_overrides(monkeypatch)
     assert seen[0]['extra_body']['reasoning_effort'] == 'low'  # lowest allowed, not chat override
     assert a._autocompact_failed_at is None
     assert any('summary survives' in str(msg.get('content')) for msg in a.conversation)
+
+
+def _codex_seat_with_unsupported_chat_effort():
+    from types import SimpleNamespace as NS
+
+    a = make_app(backend="codex")
+    a._backend = NS(
+        name='codex', reasoning_levels=lambda model_id: ['low', 'medium', 'high'],
+        request_overrides=lambda model_id: {'reasoning_effort': 'medium'},
+        shutdown=lambda: None,
+    )
+    a._cli_effective_thinking = 'unsupported-chat-level'
+    return a
+
+
+@pytest.mark.asyncio
+async def test_compaction_still_refuses_a_model_that_disagrees_with_the_seat_authority(monkeypatch):
+    """Skipping the chat-effort agreement for compaction must not skip the authority."""
+    from types import SimpleNamespace as NS
+
+    from litetui import model_transport
+
+    a = _codex_seat_with_unsupported_chat_effort()
+    seen, said = [], []
+    a._system = lambda text, *args, **kw: said.append(str(text))
+
+    async def create(**kw):
+        seen.append(kw)
+        raise AssertionError('a refused compaction must not reach the transport')
+
+    monkeypatch.setattr(model_transport, 'for_app', lambda app: NS(create=create))
+    async with a.run_test():
+        a._model_id = 'some-other-model'  # the model_id setter would move the authority with it
+        a.conversation = [{'role': 'user', 'content': str(i)} for i in range(5)]
+        await m.LiteTUI._compact.__wrapped__(a)
+
+    assert not seen
+    assert any('model disagrees with owned agent authority' in text for text in said), said
+
+
+@pytest.mark.asyncio
+async def test_a_chat_turn_with_an_unsupported_effort_is_still_refused():
+    """The effort agreement is dropped for compaction only, never for chat."""
+    from litetui import llm_backend
+
+    a = _codex_seat_with_unsupported_chat_effort()
+    async with a.run_test():
+        with pytest.raises(llm_backend.BackendError, match='thinking level is unsupported'):
+            m.LiteTUI._validate_owned_execution(a)
+        m.LiteTUI._validate_owned_execution(a, chat_effort=False)
