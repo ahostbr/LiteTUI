@@ -232,7 +232,9 @@ def test_D1_a_scheduled_prompt_starting_with_loop_is_never_dispatched():
     seat, _said_, pending, commands = _seat([job], own=True)
     m.LiteTUI._fire_job(seat, job)
     assert commands == [] and seat.jobs == [job], "the /loop was dispatched"
-    assert pending == [{"content": job.prompt, "text": job.prompt,
+    # "bubble" is the queued card's handle (T0359 75c63679, so Cancel can remove it);
+    # the double's _user_bubble returns None.
+    assert pending == [{"content": job.prompt, "text": job.prompt, "bubble": None,
                         "tool_profile": INTERACTIVE, "source": "scheduled"}]
 
 
@@ -308,7 +310,10 @@ def test_F7_a_spawner_seats_interactive_job_runs_and_its_confirms_go_to_the_spaw
     job = scheduler.Job(prompt="p", schedule="@daily", tool_profile=INTERACTIVE)
     seat, _s, pending, _c = _seat([job])
     seat._spawner_id = "0123456789abcdef"
+    # f0d09c91: the note names the CURRENT registered parent, read from the seat's
+    # own presence, not the launch metadata.
+    seat.seat = SimpleNamespace(current_spawner=lambda: seat._spawner_id)
     m.LiteTUI._fire_job(seat, job)
     assert pending[0]["tool_profile"] == INTERACTIVE
     assert seat_authority.confirm_route(seat) == "spawner"
-    assert "launching agent 01234567" in seat_authority.schedule_note(seat, INTERACTIVE)
+    assert "current registered parent 01234567" in seat_authority.schedule_note(seat, INTERACTIVE)

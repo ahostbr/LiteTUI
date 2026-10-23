@@ -221,7 +221,9 @@ async def test_footer_colours_round_trip_and_preserve_warnings(tmp_path) -> None
     a.thinking_level = "high"
 
     def footer_colour(field):
-        text = a.query_one(".ctx-label").content
+        # Authority and plan live on the second line (ab131c4c), status on the first.
+        text = next(t for t in (a.query_one(sel).content for sel in (".ctx-label", ".permission-label"))
+                    if field in t.plain)
         return text.get_style_at_offset(a.console, text.plain.index(field)).color.triplet.hex
 
     async with a.run_test(size=(76, 30)) as pilot:
@@ -245,12 +247,14 @@ async def test_footer_colours_round_trip_and_preserve_warnings(tmp_path) -> None
         loaded = settings_mod.load(root=tmp_path)
         assert loaded.custom_themes["footer-test"]["footer-foreground"] == "#33ccff"
         assert loaded.custom_themes["footer-test"]["footer-background"] == "#142536"
-        for selector in (".ctx-label", ".palette-button"):
-            assert a.query_one(selector).styles.background.hex == "#142536"
+        # The footer's "commands" button is gone (c01b9ab0, T1113): the label is the footer.
+        assert a.query_one(".ctx-label").styles.background.hex == "#142536"
         assert footer_colour("OpenBolt") == "#33ccff"
         assert footer_colour("27%") == "#33ccff"
         assert footer_colour("autonomous on") == "#7aa2f7"
-        assert a.query_one(".ctx-label").content.cell_len <= 63
+        # The 63 this asserted was 76 columns minus the "commands" button (c01b9ab0);
+        # the label now owns the footer's width.
+        assert 0 < a.query_one(".ctx-label").content.cell_len <= a._footer_available_width
 
         # The setting is a neutral text colour, never a way to hide warnings.
         a.ctx_used = 92000

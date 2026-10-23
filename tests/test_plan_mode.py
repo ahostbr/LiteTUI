@@ -126,11 +126,11 @@ def test_the_footer_names_WHICH_WAY_the_mode_is_set():
     which way it is set (T573 piece 2).
     """
     a = make_app(plan=True)
-    assert "plan:on" in a.ctx_label_text.plain
+    assert "plan:on" in a.permission_label_text.plain
 
     a._plan_mode = False
-    assert "plan:off" in a.ctx_label_text.plain
-    assert "plan:on" not in a.ctx_label_text.plain
+    assert "plan:off" in a.permission_label_text.plain
+    assert "plan:on" not in a.permission_label_text.plain
 
 
 # ── what the card asked for that was already true ──────────────────────────
