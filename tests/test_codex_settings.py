@@ -94,6 +94,8 @@ async def test_global_reasoning_default_respects_backend_scope(monkeypatch, tmp_
         assert convo_settings.load(app.convo_path.parent).thinking_level == expected
         if backend == "codex":
             assert convo_settings.load(app.convo_path.parent) == before
-        assert settings_mod.load(root=tmp_path).thinking_level == default
-        assert convo_settings.born_from(settings_mod.load(root=tmp_path)).thinking_level == default
+        # thinking_level is conversation-scoped (settings_scope.py, 55f20030): the
+        # dialog edit lands on this conversation and its agent, never on the device default.
+        assert settings_mod.load(root=tmp_path).thinking_level == "medium"
+        assert convo_settings.born_from(settings_mod.load(root=tmp_path)).thinking_level == "medium"
         assert any("new conversations" in note for note in notes) == (backend == "codex")

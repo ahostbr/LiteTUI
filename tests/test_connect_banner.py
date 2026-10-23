@@ -29,6 +29,7 @@ Properties, each with a control:
 from __future__ import annotations
 
 import asyncio
+import uuid
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -36,7 +37,7 @@ import pytest
 from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import llm_backend, settings_runtime
+from litetui import llm_backend, paths, settings_runtime
 from litetui.plugins.model_switch import switch_model
 from litetui.settings import Settings
 from litetui.settings_service import SettingsService
@@ -84,10 +85,14 @@ def _rows(*specs: tuple[str, bool]) -> list[llm_backend.ModelRow]:
 def _app(
     rows, *, model_id: str = "", initial_model: str | None = None, **settings
 ) -> app_mod.LiteTUI:
-    a = owned_app(initial_model=initial_model)
+    # An owned agent's model IS its default model, so a "default" the listing may
+    # not serve is the agent's authority; there is no separate unchosen pick.
+    a = owned_app(initial_model=initial_model or settings.get("default_model"))
     a.settings = Settings(**settings)
     a.backend = _FakeBackend(rows)
-    a.model_id = model_id
+    # Backing field: the property setter would publish this as the agent's model,
+    # which is the very default these tests need to stay unserved.
+    a._model_id = model_id
     a.said: list[str] = []
     a._system = lambda msg, *x, **k: a.said.append(str(msg))
     a._update_header = lambda: None      # not part of the pick
@@ -254,10 +259,11 @@ async def test_explicit_model_survives_connection_replacement(
         default_model="pinned/default",
         pin_default_model=True,
     )
-    service = SettingsService(tmp_path)
-    snapshot = service.create_conversation("abc")
+    service = SettingsService(paths.data_root(), agent_session=a._agent_session)
+    convo_id = str(uuid.uuid4())
+    snapshot = service.create_conversation(convo_id)
     a._settings_service = service
-    a.convo_dir = tmp_path / ".convos" / "abc"
+    a.convo_dir = a._agent_session.conversation_directory(convo_id)
     a.settings = deepcopy(snapshot.effective)
     a.settings.default_model = "pinned/default"
     a.settings.pin_default_model = True
@@ -267,6 +273,9 @@ async def test_explicit_model_survives_connection_replacement(
     target = deepcopy(a.settings)
     if replacement == "backend-change":
         target.backend = "codex"
+        # An owned app's authority backend is an invocation value; the saved change
+        # that moves the backend retires it first (settings_runtime.retire_invocation).
+        settings_runtime.retire_invocation(a, target, {"backend"})
     else:
         target.codex_native_engine = True
     monkeypatch.setattr(
@@ -358,10 +367,11 @@ async def test_user_model_pick_survives_connection_replacement(
         default_model="pinned/default",
         pin_default_model=True,
     )
-    service = SettingsService(tmp_path)
-    snapshot = service.create_conversation("abc")
+    service = SettingsService(paths.data_root(), agent_session=a._agent_session)
+    convo_id = str(uuid.uuid4())
+    snapshot = service.create_conversation(convo_id)
     a._settings_service = service
-    a.convo_dir = tmp_path / ".convos" / "abc"
+    a.convo_dir = a._agent_session.conversation_directory(convo_id)
     a.settings = deepcopy(snapshot.effective)
     a.settings.default_model = "pinned/default"
     a.settings.pin_default_model = True
@@ -370,6 +380,9 @@ async def test_user_model_pick_survives_connection_replacement(
     target = deepcopy(a.settings)
     if replacement == "backend-change":
         target.backend = "codex"
+        # An owned app's authority backend is an invocation value; the saved change
+        # that moves the backend retires it first (settings_runtime.retire_invocation).
+        settings_runtime.retire_invocation(a, target, {"backend"})
     else:
         target.codex_native_engine = True
     monkeypatch.setattr(

@@ -22,21 +22,24 @@ import pytest
 
 from _owned_seat import owned_app
 from litetui import app as app_mod
+from litetui import convo_settings
 
 
-def _app(monkeypatch):
+def _app():
     app = owned_app()
     app._connect = lambda: None
-    saved = []
-    monkeypatch.setattr(
-        "litetui.app.settings_mod.save", lambda s, root=None: saved.append(s.tools_enabled)
-    )
-    return app, saved
+    return app
+
+
+def _persisted(app):
+    """tools_enabled is conversation-scoped (settings_scope.py): the toggle lands in
+    this conversation's settings.json, not the device-wide file."""
+    return convo_settings.load(app.convo_dir).execution["tools_enabled"]
 
 
 @pytest.mark.asyncio
-async def test_the_toggle_writes_BOTH_the_runtime_flag_and_the_setting(monkeypatch):
-    app, saved = _app(monkeypatch)
+async def test_the_toggle_writes_BOTH_the_runtime_flag_and_the_setting():
+    app = _app()
     async with app.run_test(size=(100, 35)):
         app.tools_enabled = True
         app.settings.tools_enabled = True
@@ -44,22 +47,22 @@ async def test_the_toggle_writes_BOTH_the_runtime_flag_and_the_setting(monkeypat
         app.action_toggle_tools()
         assert app.tools_enabled is False, "the runtime flag did not move"
         assert app.settings.tools_enabled is False, "the SETTING did not move"
+        assert _persisted(app) is False, "the toggle was not persisted"
 
         app.action_toggle_tools()
         assert app.tools_enabled is True
         assert app.settings.tools_enabled is True
-
-    assert saved == [False, True], f"settings were not persisted per toggle: {saved}"
+        assert _persisted(app) is True, "the second toggle was not persisted"
 
 
 @pytest.mark.asyncio
-async def test_the_two_never_disagree_after_a_toggle(monkeypatch):
+async def test_the_two_never_disagree_after_a_toggle():
     """The property, stated directly rather than via the two writes.
 
     This is what a reader actually cares about, and it stays true even if the
     implementation later routes through some other setter.
     """
-    app, _ = _app(monkeypatch)
+    app = _app()
     async with app.run_test(size=(100, 35)):
         for _ in range(4):
             app.action_toggle_tools()
@@ -73,12 +76,11 @@ async def test_the_two_never_disagree_after_a_toggle(monkeypatch):
 async def test_a_failed_save_still_toggles_and_says_so(monkeypatch):
     """Honest degradation. A toggle that lasts one session beats a crash on
     Ctrl+T, but a SILENT half-success is the disagreement this change removes."""
-    app = owned_app()
-    app._connect = lambda: None
+    app = _app()
     said = []
-    def _boom(s, root=None):
+    def _boom(path, raw):
         raise OSError("read-only settings.json")
-    monkeypatch.setattr("litetui.app.settings_mod.save", _boom)
+    monkeypatch.setattr("litetui.settings_service._write", _boom)
     async with app.run_test(size=(100, 35)):
         app._system = lambda msg, *a, **k: said.append(str(msg))
         before = app.tools_enabled
@@ -89,12 +91,12 @@ async def test_a_failed_save_still_toggles_and_says_so(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_toggle_still_rebuilds_the_system_prompt(monkeypatch):
+async def test_the_toggle_still_rebuilds_the_system_prompt():
     """CONTROL. Persistence was ADDED to this verb; it must not have displaced
     what the verb already did. The prompt swap is the load-bearing half — the
     tools section becomes TOOLS_DISABLED_PROMPT — and a test that only checked
     the new behaviour would not notice it going missing."""
-    app, _ = _app(monkeypatch)
+    app = _app()
     async with app.run_test(size=(100, 35)):
         app.conversation = [{"role": "system", "content": "seed"}]
         app.tools_enabled = True

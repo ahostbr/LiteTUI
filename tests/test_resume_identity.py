@@ -23,6 +23,7 @@ from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui import paths
 from litetui.conversation import ConversationRepository
+from litetui.storage_catalog import conversations
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-resume-id-"))
 
@@ -96,7 +97,11 @@ def test_the_row_carries_both_ids():
     a = owned_app()
     a._new_convo()
     a._materialise_convo()   # creation is lazy now — force it for these assertions
-    rows = ConversationRepository.list_all()
+    # The picker lists the OWNING AGENT's conversations from the storage catalog;
+    # ConversationRepository.list_all() only reads the read-only legacy .convos.
+    session = a._agent_session
+    rows = [(row.transcript, *ConversationRepository.read(row.transcript))
+            for row in conversations(session.store.data_root, agent_id=session.authority.agent_id)]
     assert rows, "no conversations listed"
     path_, meta_, _msgs = rows[0]
     cid = path_.parent.name[:8]

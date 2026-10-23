@@ -10,6 +10,15 @@ from litetui.conversation import ConversationRepository
 from litetui.settings import Settings
 
 
+async def launch_settled(app, pilot):
+    """An owned launch always applies its agent's flags; let that worker end before teardown."""
+    for _ in range(40):
+        done = getattr(app, '_cli_args_done', None)
+        if done is None or done.is_set():
+            break
+        await pilot.pause(0.1)
+
+
 class Backend:
     remote = True
     attached = True
@@ -49,7 +58,8 @@ async def test_resume_connects_saved_selection(tmp_path, monkeypatch, provider, 
     monkeypatch.setattr(paths, 'CONVO_DIR', tmp_path)
     calls = []
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: Backend(settings, calls))
-    app = owned_app()
+    # The owning agent, not the conversation file, decides the resumed selection.
+    app = owned_app(initial_backend=provider, initial_model='saved-model', initial_thinking='high')
     app.settings = Settings(backend='custom', default_model='global-model', pin_default_model=True)
     app._backend = Backend(app.settings, calls)
     app._connect = lambda: None  # Only suppress mount's initial connection.
@@ -62,7 +72,8 @@ async def test_resume_connects_saved_selection(tmp_path, monkeypatch, provider, 
         path = app.convo_path
         convo_settings.save(path.parent, convo_settings.ConvoSettings(
             backend=provider, model='saved-model', thinking_level='high',
-            reasoning_effort='high', execution={'pin_default_model': True}))
+            reasoning_effort='high', execution={'pin_default_model': True}),
+            agent_session=app._agent_session)
         before = convo_settings.path_for(path.parent).read_bytes()
         app._backend = Backend(Settings(backend=provider if same_provider else 'other'), calls)
         app.available_models = ['stale-model']
@@ -82,6 +93,7 @@ async def test_resume_connects_saved_selection(tmp_path, monkeypatch, provider, 
         assert app.backend.settings is app.settings
         assert convo_settings.path_for(path.parent).read_bytes() == before
         assert ConversationRepository.read(path)[1]
+        await launch_settled(app, pilot)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure', ['connection', 'model'])
@@ -90,7 +102,8 @@ async def test_resume_failure_blocks_send_and_reconnect_recovers(tmp_path, monke
     calls = []
     backend = Backend(Settings(backend='custom'), calls)
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: backend)
-    app = owned_app()
+    app = owned_app(initial_backend='custom', initial_thinking='high',
+                    initial_model='missing' if failure == 'model' else 'saved-model')
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     async with app.run_test() as pilot:
@@ -100,15 +113,17 @@ async def test_resume_failure_blocks_send_and_reconnect_recovers(tmp_path, monke
         path = app.convo_path
         convo_settings.save(path.parent, convo_settings.ConvoSettings(
             backend='custom', model='missing' if failure == 'model' else 'saved-model',
-            thinking_level='high'))
+            thinking_level='high'), agent_session=app._agent_session)
         monkeypatch.delenv('LITETUI_BACKEND', raising=False)
         backend.fail = failure == 'connection'
         assert app._resume(path)
         await pilot.pause()
         assert app._resume_connection_error
         assert app.model_id == ('missing' if failure == 'model' else 'saved-model')
-        with pytest.raises(llm_backend.BackendError):
+        app.seat.registered = True  # fleet registration is not the subject
+        with pytest.raises(llm_backend.BackendError) as refused:
             await app._ensure_chat_ready()
+        assert str(refused.value) == app._resume_connection_error
         backend.fail = False
         if failure == 'model':
             app.model_id = 'saved-model'
@@ -127,7 +142,7 @@ async def test_native_history_waits_for_connection(tmp_path, monkeypatch):
     backend = Backend(Settings(backend='codex'), calls)
     backend.app_server = SimpleNamespace(close=AsyncMock())
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: backend)
-    app = owned_app()
+    app = owned_app(initial_backend='codex', initial_model='saved-model', initial_thinking='high')
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app._refresh_native_history = lambda path: calls.append(('history', path))
@@ -137,13 +152,15 @@ async def test_native_history_waits_for_connection(tmp_path, monkeypatch):
         app._append({'role': 'user', 'content': 'saved'})
         path = app.convo_path
         convo_settings.save(path.parent, convo_settings.ConvoSettings(
-            backend='codex', model='saved-model', reasoning_effort='high'))
+            backend='codex', model='saved-model', reasoning_effort='high'),
+            agent_session=app._agent_session)
         monkeypatch.delenv('LITETUI_BACKEND', raising=False)
         assert app._resume(path)
         assert ('history', path) not in calls
         await pilot.pause()
         assert calls.index(('connect', 'codex')) < calls.index(('models', 'codex')) < calls.index(('history', path))
         assert app.thinking_level == 'high'
+        await launch_settled(app, pilot)
 
 
 @pytest.mark.asyncio
@@ -158,7 +175,8 @@ async def test_cli_resume_validates_effective_model_without_saving(tmp_path, mon
             return [SimpleNamespace(key=m, loaded=True) for m in ('gpt-6-astra', 'saved-model')]
 
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: CatalogBackend(settings, calls))
-    app = owned_app()
+    # A launch flag may only restate the agent's model; the agent file is the authority.
+    app = owned_app(initial_backend='codex', initial_model=requested or 'saved-model')
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app._probe_thinking = lambda: None
@@ -168,9 +186,9 @@ async def test_cli_resume_validates_effective_model_without_saving(tmp_path, mon
         app._append({'role': 'user', 'content': 'saved'})
         path = app.convo_path
         saved = 'claude-opus-5-5' if requested else 'saved-model'
-        convo_settings.save(path.parent, convo_settings.ConvoSettings(backend='codex', model=saved))
+        convo_settings.save(path.parent, convo_settings.ConvoSettings(backend='codex', model=saved),
+                              agent_session=app._agent_session)
         before = convo_settings.path_for(path.parent).read_bytes()
-        app._cli_initial_model = requested
         assert app._resume(path, startup=True)
         app.connect()
         await pilot.pause()
@@ -180,11 +198,13 @@ async def test_cli_resume_validates_effective_model_without_saving(tmp_path, mon
         if requested == 'missing-requested':
             assert error and requested in error
             assert saved not in error
+            app.seat.registered = True  # fleet registration is not the subject
             with pytest.raises(llm_backend.BackendError, match=requested):
                 await app._ensure_chat_ready()
         else:
             assert not error
             assert app._gui_connection_success
+        await launch_settled(app, pilot)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('requested,saved,catalog', [
@@ -204,23 +224,27 @@ async def test_real_cli_convo_launch_resumes_once_and_keeps_effective_model(
             return [SimpleNamespace(key=model, loaded=True) for model in catalog]
 
     monkeypatch.setattr(llm_backend, 'make_backend', lambda settings: CatalogBackend(settings))
-    first = owned_app()
+    first = owned_app(initial_backend='codex', initial_model=requested or saved, initial_thinking='default')
     first._connect = lambda: None
+    first._connect_settled = True  # the stubbed connect has nothing to wait for
     async with first.run_test() as pilot:
         await pilot.pause()
         first._materialise_convo()
         first._append({'role': 'user', 'content': 'saved'})
         path = first.convo_path
         convo_settings.save(
-            path.parent, convo_settings.ConvoSettings(backend='codex', model=saved)
+            path.parent, convo_settings.ConvoSettings(backend='codex', model=saved),
+            agent_session=first._agent_session
         )
+        await launch_settled(first, pilot)
         first.store.release()
     before = convo_settings.path_for(path.parent).read_bytes()
     cid = path.parent.name
 
-    app = owned_app(convo_id=cid, initial_model=requested)
+    app = owned_app(convo_id=cid, initial_backend='codex', initial_model=requested, initial_thinking='default')
     app._fetch_ctx_window = lambda: None
     app._probe_thinking = lambda: None
+    app.seat.registered = True  # fleet registration is not the subject
     async with app.run_test() as pilot:
         for _ in range(40):
             await pilot.pause(0.1)
