@@ -80,7 +80,19 @@ def _scripted(chunks):
 
 
 def _app(**overrides):
-    a = owned_app()
+    # An owned seat refuses a turn whose model is not the one it was launched
+    # with (a2f8e823), so the app is born WITH a model or no turn ever streams.
+    a = owned_app(initial_model="a-model")
+    a.model_id = "a-model"
+    # Startup registers the seat and a failed registration blocks every send
+    # ("Owned agent registration blocked"); the fleet transport is not under test.
+    a.seat.registered = True
+    a._inbox_monitor = lambda: None
+
+    async def ready(timeout=None):
+        pass  # the chat-ready door asks live LM Studio whether "a-model" exists
+
+    a._ensure_chat_ready = ready
     base = dict(wake_after_compact=False, show_thinking=True)
     base.update(overrides)
     a.settings = Settings(**base)
@@ -113,8 +125,7 @@ async def test_a_thinking_delta_fires_the_thinking_channel() -> None:
     async with a.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         seen = _watch(a)
-        a.client = type("C", (), {"chat": type("X", (), {"completions": type(
-            "Y", (), {"create": staticmethod(_scripted([_Chunk(reasoning="mulling ")]))})()})()})()
+        a.client.chat.completions.create = _scripted([_Chunk(reasoning="mulling ")])
         a.conversation = [{"role": "system", "content": "s"}]
         a._append({"role": "user", "content": "go"})
         a._stream()
@@ -131,8 +142,7 @@ async def test_a_content_delta_fires_the_output_channel() -> None:
     async with a.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         seen = _watch(a)
-        a.client = type("C", (), {"chat": type("X", (), {"completions": type(
-            "Y", (), {"create": staticmethod(_scripted([_Chunk(content="hello")]))})()})()})()
+        a.client.chat.completions.create = _scripted([_Chunk(content="hello")])
         a.conversation = [{"role": "system", "content": "s"}]
         a._append({"role": "user", "content": "go"})
         a._stream()
@@ -151,8 +161,7 @@ async def test_the_turn_fires_context_before_it_streams() -> None:
     async with a.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         seen = _watch(a)
-        a.client = type("C", (), {"chat": type("X", (), {"completions": type(
-            "Y", (), {"create": staticmethod(_scripted([_Chunk(content="hi")]))})()})()})()
+        a.client.chat.completions.create = _scripted([_Chunk(content="hi")])
         a.conversation = [{"role": "system", "content": "s"}]
         a._append({"role": "user", "content": "go"})
         a._stream()

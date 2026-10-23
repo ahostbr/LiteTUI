@@ -150,10 +150,14 @@ async def test_argument_summary_is_single_line_and_short() -> None:
         assert len(header) < 180
 
 
-def test_assistant_stop_line_remains_the_bubbles_last_child() -> None:
+def test_assistant_stop_line_stays_directly_under_the_answer_body() -> None:
+    # The per-response Speak control (4e0eca68) now closes the bubble, so the
+    # stop line is no longer last; it must still sit directly under the body
+    # and above the control.
     bubble = AssistantMessage()
 
-    assert list(bubble.compose())[-1] is bubble.stop_line
+    order = list(bubble.compose())
+    assert order[-3:] == [bubble.body, bubble.stop_line, bubble.speak_button]
 
 
 def test_tool_widget_reuses_foldblock_instead_of_a_second_toggle() -> None:

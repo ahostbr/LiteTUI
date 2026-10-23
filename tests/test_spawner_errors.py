@@ -72,7 +72,17 @@ async def test_real_missing_read_tool_result_reaches_reporter(tmp_path, monkeypa
     from litetui import model_transport, tool_policy
     from litetui.plugins.core_tools import tool_read
 
-    app = owned_app()
+    # An owned seat only runs a turn on the model it was launched with, from a
+    # registered seat, and the chat-ready door would ask live LM Studio about it.
+    app = owned_app(initial_model='a-model')
+    app.model_id = 'a-model'
+    app.seat.registered = True
+    app._inbox_monitor = lambda: None
+
+    async def ready(timeout=None):
+        pass
+
+    app._ensure_chat_ready = ready
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     app.tools_enabled = True
