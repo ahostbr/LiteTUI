@@ -85,9 +85,11 @@ async def test_open_seat_actual_subprocess_seam_argv_root_and_refusal(tmp_path, 
             calls.append((args, kw))
             return Process()
         monkeypatch.setattr(agent_seat_launch.asyncio, 'create_subprocess_exec', spawn)
+        from litetui import harness
+        monkeypatch.setattr(harness, 'liteharness_command', lambda: ['/fake/liteharness'])
         assert await agent_seat_launch.open_seat(app, BID, CID) == 'fixture launched'
         args, kw = calls[0]
-        assert args[1:4] == ('-m', 'liteharness.cli', 'spawn')
+        assert args[:2] == ('/fake/liteharness', 'spawn')  # the resolved console script, not sys.executable -m
         assert args[args.index('--resume') + 1] == 'OtherAgent'
         assert args[args.index('--convo') + 1] == CID
         assert kw['env']['LITETUI_DATA_ROOT'] == str(tmp_path)

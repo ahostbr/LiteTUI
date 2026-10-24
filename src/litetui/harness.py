@@ -173,6 +173,25 @@ def _liteharness_exe() -> str | None:
     return None
 
 
+def liteharness_command() -> list[str] | None:
+    """The argv prefix that runs the liteharness CLI as a subprocess, or None when it cannot be reached.
+
+    The console script (`_liteharness_exe`) first. `[sys.executable, "-m", "liteharness.cli"]` only when
+    THIS interpreter can really import liteharness: the locked project venv cannot, and launching through
+    it fails with `No module named 'liteharness'` (Ryan 2026-10-24: "Own-seat launch refused ...
+    ModuleNotFoundError", from agent_seat_launch and owner_mode, which spelled it out by hand).
+    """
+    exe = _liteharness_exe()
+    if exe:
+        return [exe]
+    import importlib.util
+    try:
+        reachable = importlib.util.find_spec("liteharness") is not None
+    except (ImportError, ValueError):
+        reachable = False
+    return [sys.executable, "-m", "liteharness.cli"] if reachable else None
+
+
 def _cli(args: list[str], *, timeout: float):
     """THE ONE DOOR to the liteharness CLI. Every subprocess in this module
     goes through here, so the disabled-path check lives in ONE place.

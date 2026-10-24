@@ -13,7 +13,6 @@ refuse BEFORE any agent home or lock is created.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,10 +77,10 @@ def validate_owner_name(raw: str) -> str:
 
 def handoff_command() -> list[str]:
     """The argv prefix that runs the liteharness CLI as a subprocess."""
-    found = shutil.which("liteharness")
-    if found:
-        return [found]
-    return [sys.executable, "-m", "liteharness.cli"]
+    from litetui import harness
+    # The shared resolver: the console script, else this interpreter only if it can import liteharness.
+    # Left unresolvable, the old argv still runs so the probe below fails with its own plain words.
+    return harness.liteharness_command() or [sys.executable, "-m", "liteharness.cli"]
 
 
 def require_handoff() -> None:
