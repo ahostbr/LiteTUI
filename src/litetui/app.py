@@ -5207,6 +5207,11 @@ class LiteTUI(App):
                     self._owned_launch_error = f'Agent execution save failed: {exc}'
                     self._system(self._owned_launch_error)
                     raise
+                # The app just published this authority itself, so the launch values it will be compared with
+                # (validate_execution, at first materialise) follow it; a stale one crashed the first send.
+                for attr, published in (('_cli_initial_backend', backend), ('_cli_initial_model', model)):
+                    if getattr(self, attr, None) is not None:
+                        setattr(self, attr, published)
                 if cleared:  # picks made on the old backend must not come back on the new one
                     self._cli_initial_model = self._user_model_choice = None
                 from litetui.agent_launch_context import apply_settings

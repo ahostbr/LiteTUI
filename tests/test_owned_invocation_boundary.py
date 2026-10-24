@@ -143,3 +143,24 @@ def test_normal_backend_choice_then_new_child_and_adopt_is_valid(tmp_path, monke
             assert session.authority.backend == 'codex'
         finally:
             app.store.release()
+
+
+def test_a_model_the_app_publishes_before_the_first_send_does_not_trip_the_launch_check(tmp_path, monkeypatch):
+    """connect swaps an unserved saved model for a served one before any conversation exists;
+    the first send's materialise then compared the stale launch model to the new authority."""
+    cfg = settings.Settings(default_model='home-model')
+    monkeypatch.setattr(settings, 'load', lambda: cfg)
+    monkeypatch.setattr(paths, 'data_root', lambda: tmp_path)
+    with ordinary(tmp_path, cfg) as session:
+        app = app_module.LiteTUI(agent_session=session, initial_model='home-model')
+        app._system = lambda text: None
+        app.system_message = lambda text: None
+        app.update_header = lambda: None
+        try:
+            app.model_id = 'served-model'
+            assert session.authority.model == 'served-model'
+            app._materialise_convo()
+            app._adopt_convo_settings(born=False)
+            assert app.model_id == 'served-model'
+        finally:
+            app.store.release()
