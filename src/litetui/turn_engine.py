@@ -36,6 +36,8 @@ THE TWO REQUEST BUILDERS ARE SEPARATE ON PURPOSE
 
 from __future__ import annotations
 
+import re
+
 from litetui import llm_backend
 
 
@@ -260,6 +262,24 @@ class TurnEngine:
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
+
+    #: A summary under this many tokens is not worth retrying for.
+    COMPACT_MIN_RETRY_TOKENS = 1024
+
+    @staticmethod
+    def max_tokens_hint(message: str) -> int | None:
+        """The ceiling a server names in its own refusal of max_tokens, or None.
+
+        REACTIVE ONLY: nothing here estimates a prompt size. Strata says
+        "... Send a smaller max_tokens (at most 16300 here)"; OpenAI says "max_tokens is too
+        large ... supports at most 16384 completion tokens". A message that does not talk
+        about max_tokens / completion tokens is not read, so an unrelated "at most" is ignored.
+        """
+        text = message or ""
+        if not re.search(r"max[_ ]tokens|completion tokens", text, re.IGNORECASE):
+            return None
+        found = re.search(r"at most (\d[\d,]*)", text)
+        return int(found.group(1).replace(",", "")) if found else None
 
     @staticmethod
     def compact_request(

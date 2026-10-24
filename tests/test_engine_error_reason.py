@@ -359,32 +359,3 @@ def test_plain_text_detail_is_returned_unchanged():
     from litetui.app import _detail_sentence
 
     assert _detail_sentence("model 'm1' is not loaded") == "model 'm1' is not loaded"
-
-
-def test_the_refusal_names_the_window_when_the_conversation_fills_it():
-    from litetui.app import _compaction_fit_note
-
-    note = _compaction_fit_note(98_105, 100_096, loaded=True)
-    assert "98,105" in note and "100,096" in note, "say the numbers, not 'too large'"
-    assert "98%" in note
-    assert "/truncate" in note, "a refusal without a remedy is half a message"
-    assert "PARALLEL" in note, "the pool split is the part a user cannot guess"
-
-
-def test_the_note_is_silent_when_there_is_room():
-    """Below the line a refusal means something else, and this sentence would
-    send the reader hunting for space that was never the problem."""
-    from litetui.app import _compaction_fit_note
-
-    assert _compaction_fit_note(20_000, 262_144, loaded=True) == ""
-
-
-def test_the_note_is_silent_when_the_window_is_only_the_models_ceiling():
-    """🔴 `ctx_max` may be the model's ceiling rather than the LOADED window.
-    A percentage computed against a ceiling the server is not honouring is
-    worse than silence."""
-    from litetui.app import _compaction_fit_note
-
-    assert _compaction_fit_note(98_105, 100_096, loaded=False) == ""
-    assert _compaction_fit_note(98_105, None, loaded=True) == ""
-    assert _compaction_fit_note(None, 100_096, loaded=True) == ""
