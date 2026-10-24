@@ -2629,6 +2629,11 @@ class LiteTUI(App):
                 return False
             try:
                 session.authority
+                if session.authority.model is None:
+                    # Nothing to register yet: the presence call sends --model, and a seat whose backend was
+                    # just switched has none. Not a failure (a recorded one blocks every send until restart);
+                    # the send that follows a model choice registers it (_ensure_chat_ready).
+                    return False
                 if not self.seat.registered:
                     import threading
                     finished = threading.Event()

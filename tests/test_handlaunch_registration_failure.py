@@ -25,7 +25,8 @@ def test_plain_cli_failed_registration_can_stage_until_normal_shutdown(
     ):
         monkeypatch.delenv(name, raising=False)
     cfg = settings.Settings()
-    cfg.default_model = None
+    # A seat with no model has nothing to register yet (it is skipped, not failed), so the failure path needs one.
+    cfg.default_model = "fixture-model"
     cfg.user_name_asked = True
     cfg.user_name = "Offline fixture"
     monkeypatch.setattr(settings, "load", lambda: cfg)
@@ -81,7 +82,7 @@ def test_plain_cli_failed_registration_can_stage_until_normal_shutdown(
             assert private not in self._owned_launch_error
             assert private not in self._cli_launch_error
             assert private not in messages[0]
-            with pytest.raises(BackendError, match="Choose a model"):
+            with pytest.raises(BackendError, match="registration blocked"):
                 asyncio.run(self._ensure_chat_ready())
             assert (session.memory_root / "settings.json").read_bytes() == before
 
