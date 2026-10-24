@@ -11058,6 +11058,14 @@ class LiteTUI(App):
             note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "
                      "— stop the running engine first (/engine stop), or it keeps "
                      "its current flags.")
+        # Engine settings read only when the engine starts (Strata/Xolotl context, roots, models ...): the
+        # running one keeps its flags, so say how to apply them rather than leave the control looking inert.
+        from litetui.settings_scope import SETTING_SPECS
+        restart = [c for c in changed if c not in spawn and c in SETTING_SPECS
+                   and SETTING_SPECS[c].apply_timing == 'restart']
+        if restart:
+            note += ("\n  " + ", ".join(restart) + " apply on the next start — for an engine: "
+                     "/engine stop, then /engine start.")
         self._system(note)
 
     @staticmethod

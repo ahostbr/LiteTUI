@@ -416,6 +416,21 @@ def loop_model_choices(
 
 
 
+def _blocking_pending_runtime(result) -> bool:
+    """A pending runtime outcome that should keep the dialog open.
+
+    A saved change that simply takes effect later ("Saved; restart required": an engine's context
+    length, a host) is finished business: the app says so in the chat when the dialog closes. Keeping
+    the dialog open for it left no way to leave cleanly (Ryan 2026-10-24). An environment override of
+    a saved value, or any other pending outcome, still blocks.
+    """
+    return any(
+        item.status == "pending"
+        and not (item.action in ("restart", "reconnect", "reload") and (item.reason or "").startswith("Saved;"))
+        for item in result.runtime
+    )
+
+
 class SettingsBody(Widget):
     """Every knob, grouped and scrollable — host-agnostic.
 
@@ -1957,7 +1972,7 @@ class SettingsBody(Widget):
             and not result.runtime
         ) or (
             result.fully_saved
-            and not result.has_pending_runtime
+            and not _blocking_pending_runtime(result)
             and not result.has_runtime_failures
             and not self._settings_adapter.pending_changes
         ):
@@ -2000,7 +2015,7 @@ class SettingsBody(Widget):
             self._show_error(f"Cannot retry — {type(exc).__name__}: {exc}")
             return
         self._last_save_result = result
-        if result.fully_saved and not result.has_pending_runtime and not result.has_runtime_failures:
+        if result.fully_saved and not _blocking_pending_runtime(result) and not result.has_runtime_failures:
             close_dialog(self, self._draft.snapshot())
             return
         self._show_save_result(result)
