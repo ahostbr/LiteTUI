@@ -87,8 +87,11 @@ def owned_app(*args, real_effects=(), **kwargs):
     from litetui import paths, settings
     from litetui.agent_launch_context import ordinary
 
+    # Like cli.py: a spawned launch's identity opens the owned home, then rides to the app.
     session = ordinary(paths.data_root(), settings.load(), notice=lambda _text: None,
-                       backend=kwargs.get("initial_backend"), model=kwargs.get("initial_model"))
+                       spawned_identity=kwargs.get("spawn_identity"),
+                       backend=kwargs.get("initial_backend"), model=kwargs.get("initial_model"),
+                       thinking_level=kwargs.get("initial_thinking"))
     _OPEN.append(session)
     app = app_mod.LiteTUI(*args, agent_session=session, **kwargs)
     _APPS.append(app)

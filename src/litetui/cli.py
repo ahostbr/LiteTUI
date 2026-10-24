@@ -167,6 +167,7 @@ def main() -> None:
     app = None
     owner_lock = None
     owner_notice = None
+    relaunch = None
     try:
         if owner_memory is not None:
             # One seat per memory folder. Taken BEFORE any agent home is opened, so a
@@ -295,6 +296,7 @@ def main() -> None:
             app.run(headless=True)
         else:
             app.run()
+            relaunch = getattr(app, '_relaunch_argv', None)
     finally:
         try:
             if agent_session is not None:
@@ -307,6 +309,13 @@ def main() -> None:
         finally:
             if owner_lock is not None:
                 owner_lock.release()
+
+    if relaunch:
+        # /agent-new NAME: this window continues as the new agent. The leases above are released, so the
+        # child can take its own; this process stays as a thin parent (an engine it started keeps
+        # running and the child attaches to it) and ends with the child's exit code.
+        import subprocess
+        raise SystemExit(subprocess.call(relaunch))
 
 
 if __name__ == "__main__":

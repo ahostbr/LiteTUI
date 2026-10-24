@@ -29,6 +29,7 @@ Properties, each with a control:
 from __future__ import annotations
 
 import asyncio
+import uuid
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -36,7 +37,7 @@ import pytest
 from _owned_seat import owned_app
 
 from litetui import app as app_mod
-from litetui import llm_backend, settings_runtime
+from litetui import llm_backend, paths, settings_runtime
 from litetui.plugins.model_switch import switch_model
 from litetui.settings import Settings
 from litetui.settings_service import SettingsService
@@ -84,10 +85,14 @@ def _rows(*specs: tuple[str, bool]) -> list[llm_backend.ModelRow]:
 def _app(
     rows, *, model_id: str = "", initial_model: str | None = None, **settings
 ) -> app_mod.LiteTUI:
-    a = owned_app(initial_model=initial_model)
+    # An owned agent's model IS its default model, so a "default" the listing may
+    # not serve is the agent's authority; there is no separate unchosen pick.
+    a = owned_app(initial_model=initial_model or settings.get("default_model"))
     a.settings = Settings(**settings)
     a.backend = _FakeBackend(rows)
-    a.model_id = model_id
+    # Backing field: the property setter would publish this as the agent's model,
+    # which is the very default these tests need to stay unserved.
+    a._model_id = model_id
     a.said: list[str] = []
     a._system = lambda msg, *x, **k: a.said.append(str(msg))
     a._update_header = lambda: None      # not part of the pick
@@ -254,10 +259,11 @@ async def test_explicit_model_survives_connection_replacement(
         default_model="pinned/default",
         pin_default_model=True,
     )
-    service = SettingsService(tmp_path)
-    snapshot = service.create_conversation("abc")
+    service = SettingsService(paths.data_root(), agent_session=a._agent_session)
+    convo_id = str(uuid.uuid4())
+    snapshot = service.create_conversation(convo_id)
     a._settings_service = service
-    a.convo_dir = tmp_path / ".convos" / "abc"
+    a.convo_dir = a._agent_session.conversation_directory(convo_id)
     a.settings = deepcopy(snapshot.effective)
     a.settings.default_model = "pinned/default"
     a.settings.pin_default_model = True
@@ -267,6 +273,9 @@ async def test_explicit_model_survives_connection_replacement(
     target = deepcopy(a.settings)
     if replacement == "backend-change":
         target.backend = "codex"
+        # An owned app's authority backend is an invocation value; the saved change
+        # that moves the backend retires it first (settings_runtime.retire_invocation).
+        settings_runtime.retire_invocation(a, target, {"backend"})
     else:
         target.codex_native_engine = True
     monkeypatch.setattr(
@@ -287,9 +296,16 @@ async def test_explicit_model_survives_connection_replacement(
         assert a.model_id == "", "replacement must clear the old catalog selection"
         a.connect()
         await _connect(a, pilot)
+        authority_model = a._agent_session.authority.model
 
-    assert a.model_id == "explicit/model"
-    assert "Connected — model: explicit/model" in a.said
+    if replacement == "backend-change":
+        # Ryan 2026-10-24: a backend switch clears the model; the old id names nothing there.
+        assert a.model_id == ""
+        assert authority_model is None
+        assert "No model chosen for codex. Use /model to choose one." in a.said
+    else:
+        assert a.model_id == "explicit/model"
+        assert "Connected — model: explicit/model" in a.said
 
 
 @pytest.mark.asyncio
@@ -358,10 +374,11 @@ async def test_user_model_pick_survives_connection_replacement(
         default_model="pinned/default",
         pin_default_model=True,
     )
-    service = SettingsService(tmp_path)
-    snapshot = service.create_conversation("abc")
+    service = SettingsService(paths.data_root(), agent_session=a._agent_session)
+    convo_id = str(uuid.uuid4())
+    snapshot = service.create_conversation(convo_id)
     a._settings_service = service
-    a.convo_dir = tmp_path / ".convos" / "abc"
+    a.convo_dir = a._agent_session.conversation_directory(convo_id)
     a.settings = deepcopy(snapshot.effective)
     a.settings.default_model = "pinned/default"
     a.settings.pin_default_model = True
@@ -370,6 +387,9 @@ async def test_user_model_pick_survives_connection_replacement(
     target = deepcopy(a.settings)
     if replacement == "backend-change":
         target.backend = "codex"
+        # An owned app's authority backend is an invocation value; the saved change
+        # that moves the backend retires it first (settings_runtime.retire_invocation).
+        settings_runtime.retire_invocation(a, target, {"backend"})
     else:
         target.codex_native_engine = True
     monkeypatch.setattr(
@@ -389,8 +409,13 @@ async def test_user_model_pick_survives_connection_replacement(
         settings_runtime.prepare_reconnect(a)
         a.connect()
         await _connect(a, pilot)
+        authority_model = a._agent_session.authority.model
 
-    assert a.model_id == "user/pick"
+    if replacement == "backend-change":
+        assert a.model_id == ""  # a pick made on the old backend does not follow the switch
+        assert authority_model is None
+    else:
+        assert a.model_id == "user/pick"
 
 
 def test_send_time_residency_does_not_restore_retired_launch_model():
@@ -408,3 +433,25 @@ def test_send_time_residency_does_not_restore_retired_launch_model():
 
     assert action == "ok"
     assert model == "user/pick"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine,picks", [("ninfer", True), ("strata", True), ("lmstudio", False)])
+async def test_an_engine_backend_picks_its_one_served_model_after_a_backend_switch(engine, picks):
+    """/model on NInfer/Strata/Xolotl chooses an artifact or config, never a model id, so a seat
+    whose model a backend switch cleared could not finish choosing. An engine's served model IS
+    the choice; every other backend still asks (Ryan 2026-10-24)."""
+    a = _app(_rows(("served/model", True)), initial_model="x")
+    a.backend = _FakeBackend(_rows(("served/model", True)), name=engine)
+    auth = a._agent_session.authority
+    a._agent_session.update_execution(backend=engine, model=None, thinking_level=auth.thinking_level)
+    a._handle_command = lambda c: None
+    async with a.run_test() as pilot:
+        for _ in range(60):
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+            if any("Connected — model:" in s or "No model chosen" in s for s in a.said):
+                break
+        chosen = a._agent_session.authority.model
+    assert (chosen == "served/model") is picks
+    assert (a.model_id == "served/model") is picks

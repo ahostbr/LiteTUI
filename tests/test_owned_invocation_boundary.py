@@ -143,3 +143,48 @@ def test_normal_backend_choice_then_new_child_and_adopt_is_valid(tmp_path, monke
             assert session.authority.backend == 'codex'
         finally:
             app.store.release()
+
+
+def test_a_model_the_app_publishes_before_the_first_send_does_not_trip_the_launch_check(tmp_path, monkeypatch):
+    """connect swaps an unserved saved model for a served one before any conversation exists;
+    the first send's materialise then compared the stale launch model to the new authority."""
+    cfg = settings.Settings(default_model='home-model')
+    monkeypatch.setattr(settings, 'load', lambda: cfg)
+    monkeypatch.setattr(paths, 'data_root', lambda: tmp_path)
+    with ordinary(tmp_path, cfg) as session:
+        app = app_module.LiteTUI(agent_session=session, initial_model='home-model')
+        app._system = lambda text: None
+        app.system_message = lambda text: None
+        app.update_header = lambda: None
+        try:
+            app.model_id = 'served-model'
+            assert session.authority.model == 'served-model'
+            app._materialise_convo()
+            app._adopt_convo_settings(born=False)
+            assert app.model_id == 'served-model'
+        finally:
+            app.store.release()
+
+
+@pytest.mark.asyncio
+async def test_a_seat_with_no_model_is_not_registered_and_the_refusal_is_not_remembered(tmp_path, monkeypatch):
+    """After a backend switch the model is cleared, and the presence call's --model had no value to send:
+    a TypeError inside subprocess became a stored registration failure that blocked every later send."""
+    cfg = settings.Settings(default_model='home-model')
+    monkeypatch.setattr(settings, 'load', lambda: cfg)
+    monkeypatch.setattr(paths, 'data_root', lambda: tmp_path)
+    with ordinary(tmp_path, cfg) as session:
+        app = app_module.LiteTUI(agent_session=session, initial_model='home-model')
+        auth = session.authority
+        session.update_execution(backend=auth.backend, model=None, thinking_level=auth.thinking_level)
+        called = []
+        monkeypatch.setattr(app.seat, 'register', lambda: called.append(1) or True)
+        try:
+            assert await app._register_owned_startup() is False
+            assert called == []
+            assert not app._owned_launch_error
+            session.update_execution(backend=auth.backend, model='served-model', thinking_level=auth.thinking_level)
+            assert await app._register_owned_startup() is True    # a later choice registers normally
+            assert called == [1]
+        finally:
+            app.store.release()

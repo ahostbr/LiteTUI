@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from litetui import agent_launch_context, agent_ownership, agent_store
+from litetui import agent_launch_context, agent_ownership, agent_store, llm_backend
 from litetui.app import LiteTUI, ConversationRepository
 from litetui.settings import Settings
 
@@ -510,6 +510,13 @@ async def test_actual_native_entry_refuses_authority_before_provider(owned, monk
         app.backend.name = 'wrong-backend'
     elif backend_name == 'claude':
         app.settings.model_infer_overrides = {'fixture': {'reasoning_effort': 'low'}}
+    if change == 'effort' and route.startswith('compact'):
+        # T0480-C2: compaction carries compact_thinking_level, so the chat-effort
+        # agreement is not asked of it; the same guard still refuses a chat turn.
+        LiteTUI._validate_owned_execution(app, chat_effort=False)
+        with pytest.raises(llm_backend.BackendError, match='effort'):
+            LiteTUI._validate_owned_execution(app)
+        return
     operation = LiteTUI._stream.__wrapped__(app) if route.startswith('stream') else LiteTUI._compact.__wrapped__(app)
     await operation
     assert calls == []

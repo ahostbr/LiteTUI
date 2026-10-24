@@ -86,7 +86,9 @@ def test_assistant_owns_hidden_sibling_line_that_can_be_settled() -> None:
 
     assert str(message.stop_line.content) == "Cooked for 2.0s · 1.0 tok/s"
     assert message.stop_line.styles.display == "block"
-    assert list(message.compose())[-1] is message.stop_line
+    # The Speak control (4e0eca68) closes the bubble; the stop line stays the
+    # sibling directly under the answer body, above it.
+    assert list(message.compose())[-3:] == [message.body, message.stop_line, message.speak_button]
 
 
 def test_stop_preferences_are_global_defaults_not_conversation_settings() -> None:

@@ -18,6 +18,51 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-24
+
+Agents you can create from inside a window (`/agent-new`), and a run of fixes
+for what happens to a seat's model when you switch backends, plus Strata and
+Xolotl settings that now say how and when they apply.
+
+### Added
+- **`/agent-new NAME`, and `/new NAME`.** Creates the agent home NAME (the same
+  home `litetui --create-agent NAME` makes, with this seat's backend, model and
+  thinking level) and continues this window as that agent. The window is
+  relaunched once the old seat has released its home; the launcher process stays
+  as a thin parent, so an engine LiteTUI started (Strata, NInfer) keeps running
+  and the new seat attaches to it instead of reloading the model. Refused with a
+  reason for a bad or existing name, a turn in flight, a spawned or headless
+  seat, or a seat with no model chosen. Plain `/new`, `/clear` and `/reset` are
+  unchanged.
+
+### Changed
+- **Switching backend clears the seat's model** (`model_selection: unchosen`) and
+  says so: `/model` on LM Studio, Codex and the other model-listing backends, and
+  "nothing is serving yet; `/engine start`" on NInfer, Strata and Xolotl. The old
+  backend's model id means nothing on the new one, and it used to be saved as a
+  chosen model there. A backend change also drops launch and `/model` picks made
+  on the old backend.
+- **Strata, Xolotl and NInfer pick their one served model themselves.** `/model`
+  on an engine backend chooses the artifact or config to serve, never a model id,
+  so after a reconnect the seat takes the model the engine serves.
+- **Saving a setting that applies on the next start closes the dialog.** The chat
+  note after Settings closes now names every restart-class setting (Strata and
+  Xolotl context length, roots and configs included) and how to apply it:
+  `/engine stop`, then `/engine start`.
+
+### Fixed
+- Every send on a seat whose saved model its backend does not serve failed with
+  "Selected model disagrees with owned agent authority". It now says what is
+  true: nothing is serving, and how to start it.
+- The first send after a model was published by the app itself (connect
+  replacing an unserved saved model) crashed in the launch check with "Launch
+  override disagrees with agent settings".
+- A seat with no model tried to register presence with `--model None`, stored
+  the failure and blocked every later send with "Owned agent registration
+  blocked". It is now skipped, not failed, until a model exists.
+- Escape and Cancel in Settings no longer call a change that was already saved
+  "unsaved".
+
 ## [0.27.0] - 2026-10-22
 
 The Xolotl backend for DeepSeek-V4.1, the version in the footer, and a long run

@@ -227,7 +227,18 @@ async def test_THE_APP_actually_tags_its_reasoning_deltas():
     from litetui.settings import Settings
 
     paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-tokcount-"))
-    a = owned_app()
+    # Born with a model: an owned seat refuses any turn whose model differs from
+    # its launch authority (a2f8e823), and "" differs from "a-model".
+    a = owned_app(initial_model="a-model")
+    a.model_id = "a-model"
+    # A failed startup registration blocks every send; the transport is not under test.
+    a.seat.registered = True
+    a._inbox_monitor = lambda: None
+
+    async def ready(timeout=None):
+        pass  # the chat-ready door asks live LM Studio whether "a-model" exists
+
+    a._ensure_chat_ready = ready
     # show_thinking=False DELIBERATELY, and this is a SCOPE LIMIT not a
     # convenience: with it on, this minimal harness stops consuming the stream
     # after the first reasoning delta — no exception, no worker error, just a

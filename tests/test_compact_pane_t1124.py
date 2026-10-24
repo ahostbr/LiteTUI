@@ -313,7 +313,10 @@ async def test_real_turn_read_tool_finishes_as_compact_row(monkeypatch, initial_
         assert json.loads(tool._args) == {'path': 'C:/ExampleProjects/LiteTUI/README.md', 'offset': 1, 'limit': 40}
         if initial_width != 46:
             await pilot.resize_terminal(46, 22)
-            await pilot.pause(.3)
+        # Both branches settle: the worker ends while the tool card's mount is
+        # still queued, and the compact header is built by its on_mount.
+        await pilot.pause(.3)
+        assert tool.is_mounted
         assert app._compact_mode and app.query_one(NowCard).display
         assert app.query_one('.compact-footer-hints').display
         assert tool.header.content.plain.startswith('▸ read  README.md:1 +40'), (
@@ -506,10 +509,15 @@ async def test_failed_spawner_send_clears_only_its_wait():
     from litetui import approval_relay, tool_policy
     app = app_for_pilot()
     app._spawner_id = 'KeyStone'
-    app.seat.send = lambda *_: False
+    app.seat.send = lambda *_, **__: False  # the relay passes approval_request=/deadline=/approval_ancestors=
     async with app.run_test(size=(46, 22)) as pilot:
         await pilot.pause(.2)
         question = app._begin_wait('you', 'question')
+        # The approval audit (T0340) fails closed unless the requesting user turn
+        # is already on disk, as it is by the time a real tool asks: a sent
+        # message materialises the staged conversation before it is appended.
+        app._materialise_convo()
+        app._append({'role': 'user', 'content': 'read README'})
         decision = tool_policy.PolicyDecision(tool_policy.CONFIRM, 'interactive', frozenset(), 'approval')
         result = await approval_relay.ask_spawner(app, 'read', {}, decision, 'tool')
         assert result == 'absent'

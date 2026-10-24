@@ -688,6 +688,14 @@ def _sync_seat_resolution(app) -> None:
     app.seat.backend = getattr(getattr(app, "backend", None), "name", None)
 
 
+def _no_model_words(backend: str) -> str:
+    """What to tell a seat whose backend has no chosen model (engine backends pick their one served model themselves)."""
+    if backend in llm_backend.ENGINE_BACKENDS:
+        return (f'Nothing is serving on {backend} yet. /engine start serves the chosen model, and the seat '
+                f'picks it up by itself; /model here chooses which artifact or config to serve.')
+    return f'No model chosen for {backend}. Use /model to choose one (start its engine first if it lists none).'
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -2621,6 +2629,11 @@ class LiteTUI(App):
                 return False
             try:
                 session.authority
+                if session.authority.model is None:
+                    # Nothing to register yet: the presence call sends --model, and a seat whose backend was
+                    # just switched has none. Not a failure (a recorded one blocks every send until restart);
+                    # the send that follows a model choice registers it (_ensure_chat_ready).
+                    return False
                 if not self.seat.registered:
                     import threading
                     finished = threading.Event()
@@ -5194,9 +5207,12 @@ class LiteTUI(App):
         if session is not None and field in ('backend', 'model', 'thinking_level', 'reasoning_effort'):
             authority = session.authority
             backend = value if field == 'backend' else authority.backend
-            model = value if field == 'model' else authority.model
+            # A backend switch clears the model: the old id names nothing on the new
+            # engine, and carrying it forward recorded it as "chosen" there.
+            cleared = field == 'backend' and backend != authority.backend
+            model = None if cleared else (value if field == 'model' else authority.model)
             level = (value or 'default') if field in ('thinking_level', 'reasoning_effort') else authority.thinking_level
-            if model:
+            if model or field != 'model':  # an unchosen seat still persists backend/thinking changes
                 try:
                     if (backend, model, level) != (authority.backend, authority.model, authority.thinking_level):
                         session.update_execution(backend=backend, model=model, thinking_level=level)
@@ -5204,6 +5220,13 @@ class LiteTUI(App):
                     self._owned_launch_error = f'Agent execution save failed: {exc}'
                     self._system(self._owned_launch_error)
                     raise
+                # The app just published this authority itself, so the launch values it will be compared with
+                # (validate_execution, at first materialise) follow it; a stale one crashed the first send.
+                for attr, published in (('_cli_initial_backend', backend), ('_cli_initial_model', model)):
+                    if getattr(self, attr, None) is not None:
+                        setattr(self, attr, published)
+                if cleared:  # picks made on the old backend must not come back on the new one
+                    self._cli_initial_model = self._user_model_choice = None
                 from litetui.agent_launch_context import apply_settings
                 apply_settings(session, self.settings)
                 if (self._owned_launch_error or '').startswith('Agent execution save failed:'):
@@ -5695,9 +5718,10 @@ class LiteTUI(App):
                     f"{selection} model {self.model_id!r} is unavailable on {self.backend.name}. "
                     "Sending is blocked; choose a model with /model or retry /reconnect."
                 )
-            if self.available_models and self._agent_session.authority.model is None:
+            if (self.available_models and self._agent_session.authority.model is None
+                    and getattr(self.backend, 'name', None) not in llm_backend.ENGINE_BACKENDS):
                 self._model_id = ''
-                self._system('Choose a model with /model before sending; agent model is not chosen.')
+                self._system(f'No model chosen for {self.backend.name}. Use /model to choose one.')
                 if not self._rpc:
                     self.call_after_refresh(self._offer_unchosen_model)
             elif self.available_models:
@@ -7250,11 +7274,14 @@ class LiteTUI(App):
         self.backend = llm_backend.make_backend(s)
         # The conversation is NOT touched — history survives an engine switch;
         # only the endpoint and the model list change.
+        self._cli_initial_model = self._user_model_choice = None  # picks belong to the old backend
         self.model_id = ""
         self.available_models = []
         self.model_rows = {}
         self.update_header()
         self.system_message(f"Backend → {choice}; reconnecting…")
+        if getattr(self, '_agent_session', None) is not None and self._agent_session.authority.model is None:
+            self.system_message(_no_model_words(choice))
         self.connect()
 
     def _assistant_bubble(self) -> AssistantMessage:
@@ -8816,11 +8843,23 @@ class LiteTUI(App):
         return ("refuse", None, why)
 
 
-    def _validate_owned_execution(self) -> None:
+    def _validate_owned_execution(self, *, chat_effort: bool = True) -> None:
         if getattr(self, '_agent_session', None) is not None:
             authority = self._agent_session.authority
             if getattr(self.backend, 'name', None) != authority.backend:
                 raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
+            if authority.model is None:
+                raise llm_backend.BackendError(_no_model_words(authority.backend))
+            if not self.model_id:
+                raise llm_backend.BackendError(
+                    f'Nothing is serving on {authority.backend}: saved model {authority.model!r} is not loaded. '
+                    f'Start its engine (/engine start) or choose a model with /model.')
+            if not chat_effort:
+                # Compaction requests carry compact_thinking_level, never the chat
+                # override, so a chat effort that cannot be sent must not stop it.
+                if self.model_id != authority.model:
+                    raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
+                return
             if authority.backend == 'claude':
                 from litetui.claude_turn import effort_for
                 from types import SimpleNamespace
@@ -10351,7 +10390,7 @@ class LiteTUI(App):
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
         if getattr(self, '_agent_session', None) is not None:
             try:
-                LiteTUI._validate_owned_execution(self)
+                LiteTUI._validate_owned_execution(self, chat_effort=False)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
                 return
@@ -10953,11 +10992,7 @@ class LiteTUI(App):
 
         # Apply the ones with immediate effect.
         self.tools_enabled = new.tools_enabled
-        codex_default_changed = (
-            new.thinking_level != old.thinking_level
-            and getattr(getattr(self, "backend", None), "name", old.backend) == "codex"
-        )
-        if new.thinking_level != old.thinking_level and not codex_default_changed:
+        if new.thinking_level != old.thinking_level:
             self.thinking_level = new.thinking_level
             self._reasoning_ignored_warned = False  # re-arm: it is per-config
         # 🔴 THE BACKEND CONTROL IN SETTINGS WAS SILENTLY INERT.
@@ -11023,8 +11058,14 @@ class LiteTUI(App):
             note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "
                      "— stop the running engine first (/engine stop), or it keeps "
                      "its current flags.")
-        if codex_default_changed:
-            note += "\n  Thinking default applies to new conversations; this conversation retains its chosen mode."
+        # Engine settings read only when the engine starts (Strata/Xolotl context, roots, models ...): the
+        # running one keeps its flags, so say how to apply them rather than leave the control looking inert.
+        from litetui.settings_scope import SETTING_SPECS
+        restart = [c for c in changed if c not in spawn and c in SETTING_SPECS
+                   and SETTING_SPECS[c].apply_timing == 'restart']
+        if restart:
+            note += ("\n  " + ", ".join(restart) + " apply on the next start — for an engine: "
+                     "/engine stop, then /engine start.")
         self._system(note)
 
     @staticmethod

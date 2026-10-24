@@ -126,7 +126,7 @@ def _bypass_owned_seat(monkeypatch) -> None:
     async def ready(self, *, timeout=None):
         return None
 
-    monkeypatch.setattr(app_mod.LiteTUI, "_validate_owned_execution", lambda self: None)
+    monkeypatch.setattr(app_mod.LiteTUI, "_validate_owned_execution", lambda self, **kw: None)
     monkeypatch.setattr(app_mod.LiteTUI, "_ensure_chat_ready", ready)
 
 

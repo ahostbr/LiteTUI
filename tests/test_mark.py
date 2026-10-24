@@ -39,9 +39,10 @@ def test_overlay_keeps_its_timed_clickthrough_mode():
 
 
 def test_overlay_ring_stays_in_the_screenshot():
-    """Only the BUTTONS hide before capture. Hiding the ring would ship a
-    screenshot with the highlight removed — a mark with no mark."""
-    hide = PS1.index("$btnSend.Visible = $false")
+    """Only the NOTE window (text box + Send/Cancel, 4c002c96) hides before
+    capture. Hiding the ring would ship a screenshot with the highlight
+    removed — a mark with no mark."""
+    hide = PS1.index("$note.Hide()")
     shot = PS1.index("CopyFromScreen")
     assert hide < shot
     assert "$f.Visible = $false" not in PS1

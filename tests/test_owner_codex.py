@@ -55,7 +55,7 @@ def make_app(tmp_path, owner_dir, monkeypatch):
     async def ready(self, *, timeout=None):
         return None
 
-    monkeypatch.setattr(app_mod.LiteTUI, "_validate_owned_execution", lambda self: None)
+    monkeypatch.setattr(app_mod.LiteTUI, "_validate_owned_execution", lambda self, **kw: None)
     monkeypatch.setattr(app_mod.LiteTUI, "_ensure_chat_ready", ready)
 
     def build(*, owner: bool = True, codex: bool = True) -> app_mod.LiteTUI:

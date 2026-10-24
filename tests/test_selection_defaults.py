@@ -4,6 +4,7 @@ All settings/service paths are temporary via conftest. Backend construction is
 real, but connect/context effects are disabled: no model or server is launched.
 """
 import json
+import uuid
 from dataclasses import replace
 
 import pytest
@@ -19,8 +20,15 @@ def saved():
     return json.loads(st.settings_path().read_text(encoding="utf-8"))
 
 
-def instance(service, name):
+def cid(name):
+    """Owned conversation folders are named by UUID; keep the readable labels stable."""
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"selection-defaults.{name}"))
+
+
+def instance(name, service=None):
+    name = cid(name)
     a = owned_app()
+    service = service or SettingsService(paths.data_root(), agent_session=a._agent_session)
     snapshot = service.create_conversation(name)
     a.convo_dir = service._paths(name)["conversation"].parent
     a.convo_id = name
@@ -42,8 +50,7 @@ def instance(service, name):
 def test_commands_change_only_the_current_seat_and_resume(monkeypatch):
     monkeypatch.delenv("LITETUI_BACKEND", raising=False)
     st.save(st.Settings(backend="lmstudio", default_model="alpha", temperature=.4))
-    service = SettingsService(paths.data_root())
-    a, b = instance(service, "a"), instance(service, "b")
+    a, b = instance("a"), instance("b")
     global_before = st.settings_path().read_bytes()
     b_before = convo_settings.path_for(b.convo_dir).read_bytes()
 
@@ -59,13 +66,21 @@ def test_commands_change_only_the_current_seat_and_resume(monkeypatch):
     assert (a.settings.backend, a.settings.pin_default_model) == ("llamacpp", False)
     assert not saved()["backend_chosen"]
 
-    # Actual resume adoption, without connecting/loading anything.
-    resumed = instance(service, "a")
+    # Actual resume adoption, without connecting/loading anything: the commands
+    # published a's selection to its agent, so a fresh process reopening that
+    # agent (not a conversation file) is what restores it.
+    a.store.release()
+    a._agent_session.release()
+    resumed = instance("a")
     resumed.available_models = []  # A fresh resume has no backend catalog yet.
     resumed._adopt_convo_settings(born=False)
     assert (resumed.backend.name, resumed.model_id) == ("llamacpp", "beta")
     assert st.settings_path().read_bytes() == global_before
-    new = service.create_conversation("new").effective
+    # The agent owns its selection, so its next conversation inherits it; a new
+    # seat (another agent) inherits only the untouched global defaults.
+    same_agent = resumed._settings_service.create_conversation(cid("same-agent")).effective
+    assert (same_agent.backend, same_agent.default_model) == ("llamacpp", "beta")
+    new = instance("new")._settings_service.snapshot(cid("new")).effective
     assert (new.backend, new.default_model, new.pin_default_model) == ("lmstudio", "alpha", False)
     fresh = st.load()
     assert (fresh.backend, fresh.default_model, fresh.pin_default_model) == ("lmstudio", "alpha", False)
@@ -85,8 +100,7 @@ def test_commands_change_only_the_current_seat_and_resume(monkeypatch):
 def test_backend_default_requires_explicit_opt_in(monkeypatch, arg):
     monkeypatch.delenv("LITETUI_BACKEND", raising=False)
     st.save(st.Settings(backend="lmstudio", default_model="alpha", temperature=.4))
-    service = SettingsService(paths.data_root())
-    a, b = instance(service, "a"), instance(service, "b")
+    a, b = instance("a"), instance("b")
     b_before = convo_settings.path_for(b.convo_dir).read_bytes()
     model_switch._cmd_backend(a, "/backend", arg)
     assert a.backend.name == "llamacpp"
@@ -96,13 +110,13 @@ def test_backend_default_requires_explicit_opt_in(monkeypatch, arg):
     assert saved()["temperature"] == .4
     assert convo_settings.path_for(b.convo_dir).read_bytes() == b_before
     assert b.backend.name == "lmstudio"
-    assert service.create_conversation("new").effective.backend == "llamacpp"
+    assert a._settings_service.create_conversation(cid("new")).effective.backend == "llamacpp"
 
 
 def test_default_backend_picker_and_same_backend_opt_in(monkeypatch):
     monkeypatch.delenv("LITETUI_BACKEND", raising=False)
     st.save(st.Settings(backend="lmstudio", default_model="alpha"))
-    a = instance(SettingsService(paths.data_root()), "a")
+    a = instance("a")
     monkeypatch.setattr(model_switch, "backend_rows", lambda app: [("llamacpp", "test")])
     monkeypatch.setattr(model_switch, "pick", lambda app, title, rows, callback, **kw: callback("llamacpp"))
     model_switch._cmd_backend(a, "/backend", "--default")
@@ -124,8 +138,8 @@ def test_explicit_defaults_do_not_copy_environment_or_other_conversation_setting
 @pytest.mark.parametrize("pin", [False, True])
 def test_model_command_and_picker_leave_global_defaults_unchanged(monkeypatch, pin):
     st.save(st.Settings(backend="lmstudio", default_model="alpha", pin_default_model=pin))
-    service = SettingsService(paths.data_root())
-    a = instance(service, "a")
+    a = instance("a")
+    service = a._settings_service
     before = st.settings_path().read_bytes()
     model_switch._cmd_model(a, "/model", "beta")
     assert a.model_id == "beta"
@@ -135,13 +149,13 @@ def test_model_command_and_picker_leave_global_defaults_unchanged(monkeypatch, p
     model_switch._cmd_model(a, "/model", "")
     assert a.model_id == "alpha"
     assert st.settings_path().read_bytes() == before
-    new = service.create_conversation("new").effective
+    new = service.create_conversation(cid("new")).effective
     assert (new.default_model, new.pin_default_model) == ("alpha", pin)
 
 
 def test_invalid_model_and_busy_or_unknown_backend_do_not_change_defaults():
     st.save(st.Settings(backend="lmstudio", default_model="alpha"))
-    a = instance(SettingsService(paths.data_root()), "a")
+    a = instance("a")
     before = st.settings_path().read_bytes()
     assert not model_switch.switch_model(a, "missing")
     model_switch._cmd_backend(a, "/backend", "--default unknown")
@@ -152,15 +166,15 @@ def test_invalid_model_and_busy_or_unknown_backend_do_not_change_defaults():
 
 def test_ninfer_model_picker_persists_only_conversation_artifact(monkeypatch):
     st.save(st.Settings())
-    service = SettingsService(paths.data_root())
-    a = instance(service, "a")
+    a = instance("a")
+    service = a._settings_service
     before = st.settings_path().read_bytes()
     choice = str(paths.data_root() / "chosen.ninfer")
     monkeypatch.setattr(model_switch, "_ninfer_artifact_rows", lambda app: [(choice, "chosen")])
     a._on_settings_saved = lambda candidate: settings_runtime.persist_or_raise(a, candidate)
     monkeypatch.setattr(model_switch, "pick", lambda app, title, rows, callback, **kw: callback(choice))
     model_switch._pick_ninfer_artifact(a)
-    assert service.snapshot("a").saved.ninfer_artifact == choice
+    assert service.snapshot(cid("a")).saved.ninfer_artifact == choice
     assert st.settings_path().read_bytes() == before
 
 
@@ -168,7 +182,7 @@ def test_ninfer_pick_without_conversation_ignores_previous_save_failure(monkeypa
     from litetui.settings_apply import PersistenceDestinationResult, SettingsSaveResult
 
     st.save(st.Settings())
-    a = instance(SettingsService(paths.data_root()), "a")
+    a = instance("a")
     a.convo_dir = None
     a._convo_settings = None
     a._settings_save_result = SettingsSaveResult((PersistenceDestinationResult(
@@ -204,10 +218,9 @@ def test_commands_before_conversation_exists_do_not_fall_back_to_globals(monkeyp
 def test_backend_command_does_not_publish_stale_device_preferences(monkeypatch):
     monkeypatch.delenv("LITETUI_BACKEND", raising=False)
     st.save(st.Settings(backend="lmstudio", default_model="alpha"))
-    service = SettingsService(paths.data_root())
-    a = instance(service, "a")
+    a = instance("a")
     # Another seat changes an explicitly global /settings preference.
-    settings_runtime.persist_or_raise(instance(service, "b"), replace(a.settings, theme_name="ash"))
+    settings_runtime.persist_or_raise(instance("b"), replace(a.settings, theme_name="ash"))
     before = st.settings_path().read_bytes()
     model_switch._cmd_backend(a, "/backend", "llamacpp")
     assert st.settings_path().read_bytes() == before

@@ -66,8 +66,8 @@ def test_existing_litetui_name_env_remains_a_spawn_fallback():
 
 
 def test_app_constructs_seat_from_marked_identity_and_consumes_it(monkeypatch):
-    from litetui import app as app_mod
-
+    # The launch path (cli.py): the marked envelope is consumed once, opens the
+    # owned home under that id and name, and the same tuple rides to the app.
     env = {
         "LITETUI_SPAWN_IDENTITY": "1",
         "LITEHARNESS_AGENT_ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -76,12 +76,15 @@ def test_app_constructs_seat_from_marked_identity_and_consumes_it(monkeypatch):
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    app = owned_app()
+    identity = harness.spawned_seat_identity()
+    assert all(key not in os.environ for key in KEYS)
+    app = owned_app(spawn_identity=identity, initial_backend="lmstudio", initial_model="a-model")
     assert (app.seat.agent_id, app.seat.name, app.seat.tier) == (
         env["LITEHARNESS_AGENT_ID"], "AppPathProbe", "thinker"
     )
-    assert all(key not in os.environ for key in KEYS)
-    assert app._launch_seat_name == "AppPathProbe"
+    assert app._spawned_marker
+    authority = app._agent_session.authority
+    assert (authority.agent_id, authority.name) == (env["LITEHARNESS_AGENT_ID"], "AppPathProbe")
 
 
 def test_invalid_spawn_tier_logs_and_falls_back(capsys):

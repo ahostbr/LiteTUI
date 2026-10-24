@@ -261,9 +261,13 @@ class SettingsService:
                             _, revision_home = _read(self.agent_session.memory_root / 'settings.json')
                             if revision_home != expected_revisions.get('agent'):
                                 raise ValueError('Stale agent revision; reload before retry')
+                            new_backend = authoritative.get('backend', authority.backend)
+                            # A backend switch clears the model unless the same save names one.
+                            model = (authoritative['default_model'] if 'default_model' in authoritative
+                                     else None if new_backend != authority.backend else authority.model)
                             self.agent_session.update_execution(
-                                backend=authoritative.get('backend', authority.backend),
-                                model=authoritative.get('default_model', authority.model),
+                                backend=new_backend,
+                                model=model,
                                 thinking_level=authoritative.get('thinking_level', authority.thinking_level))
                             home = self.agent_session.memory_root / 'settings.json'
                             _, home_revision = _read(home)

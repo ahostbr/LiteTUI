@@ -89,11 +89,13 @@ async def test_global_reasoning_default_respects_backend_scope(monkeypatch, tmp_
         default = "high" if mode == "low" else "low"
         app._on_settings_saved(replace(app.settings, thinking_level=default))
         await pilot.pause()
-        expected = mode if backend == "codex" else default
-        assert app.thinking_level == expected
-        assert convo_settings.load(app.convo_path.parent).thinking_level == expected
-        if backend == "codex":
-            assert convo_settings.load(app.convo_path.parent) == before
-        assert settings_mod.load(root=tmp_path).thinking_level == default
-        assert convo_settings.born_from(settings_mod.load(root=tmp_path)).thinking_level == default
-        assert any("new conversations" in note for note in notes) == (backend == "codex")
+        # A dialog edit applies live on every backend, codex included: the live level,
+        # the conversation file and the owning agent's authority are one value.
+        assert app.thinking_level == default
+        assert convo_settings.load(app.convo_path.parent).thinking_level == default
+        assert app._agent_session.authority.thinking_level == default
+        # thinking_level is conversation-scoped (settings_scope.py, 55f20030): the
+        # dialog edit lands on this conversation and its agent, never on the device default.
+        assert settings_mod.load(root=tmp_path).thinking_level == "medium"
+        assert convo_settings.born_from(settings_mod.load(root=tmp_path)).thinking_level == "medium"
+        assert not any("retains its chosen mode" in note for note in notes)

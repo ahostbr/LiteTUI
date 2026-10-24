@@ -294,6 +294,7 @@ def test_the_navigable_list_is_the_order_the_footer_draws():
     user cannot see. Asserted by reading the drawn label, not by restating the
     list — a second copy of the order is the thing that drifts."""
     a = make_app()
+    a._active_tool_profile = "interactive"  # the shipped default is autonomous
     status = a.ctx_label_text.plain
     permission = a.permission_label_text.plain
     assert "think:" in status

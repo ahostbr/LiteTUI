@@ -246,10 +246,18 @@ _LAUNCH = re.compile(r"(?i)run(?:\.bat)?(?=$|[\s\"'`;&|)}])")
 _PATH_TAIL = re.compile(r"[\w.~$%:\\/-]*\Z")
 #: Words that pass a command on rather than being it (`cmd /d /c type x`).
 _WRAPPERS = frozenset({
-    "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call", "start",
+    "cmd", "cmd.exe", "/c", "/d", "/k", "/s", "/q", "call",
     "powershell", "powershell.exe", "pwsh", "pwsh.exe", "-c", "-command",
     "-nop", "-noprofile", "-noninteractive", "bash", "sh",
+    # T0105 round 2: more shells and evaluators, PowerShell's -File and its cmdlets
+    # that evaluate a string or start a job. Each puts the next word in command position.
+    "zsh", "ksh", "dash", "ash", "fish", "-file", "-f",
+    "invoke-expression", "iex", "start-job", "sajb",
 })
+#: PowerShell host options that take the next word as their value.
+_WRAPPER_VALUES = frozenset({"-executionpolicy", "-ep", "-windowstyle", "-w",
+                             "-workingdirectory", "-wd", "-version", "-inputformat",
+                             "-outputformat"})
 #: Commands that read or inspect a file without running it.
 _READERS = frozenset({
     "cat", "type", "gc", "get-content", "more", "less", "head", "tail", "bat",
@@ -263,6 +271,86 @@ _READERS = frozenset({
     # names in status lines all the time.
     "echo", "write-output", "write-host", "printf",
 })
+#: Readers (and sed) with an exec feature of their own: an option value (`git -c
+#: core.pager=`, `rg --pre`), a `+cmd` / `-c` / `-S` / `!` (less, vim, nano), a
+#: subcommand (`git bisect run`) or sed's `e`. They excuse the launcher path only
+#: in a READ position (T0105); the other readers have no such feature.
+_EXEC_READERS = frozenset({"git", "vim", "vi", "nano", "less", "more", "bat", "rg", "sed"})
+#: git verbs whose operands are paths and revisions. Not a list of the verbs that
+#: run something (bisect run, submodule foreach, rebase -x, difftool): every verb
+#: not listed here is not read.
+_GIT_READ_VERBS = frozenset({
+    "add", "rm", "mv", "restore", "checkout", "reset", "commit", "diff", "show", "log",
+    "blame", "annotate", "status", "ls-files", "ls-tree", "cat-file", "grep", "shortlog",
+    "whatchanged", "check-ignore", "hash-object", "rev-parse", "rev-list", "diff-tree",
+    "diff-files", "diff-index", "update-index",
+})
+#: git options before the verb that take the next word as their value.
+_GIT_VALUE_OPTIONS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace",
+                                "--exec-path", "--config-env", "--super-prefix"})
+#: Heads that run their argument as a command (T0105 round 2). Each entry is
+#: (options that take a value, value-less flags, positionals before the command,
+#: whether NAME=value words are skipped). An option not listed is unknown, and
+#: unknown means the launcher IS the wrapped command: refuse when unsure.
+_RUNNER_SPECS = {
+    "xargs": ("-n -i -l -p -d -s -e -a --max-args --max-procs --delimiter --arg-file "
+              "--max-lines --max-chars --eof", "-0 -t -r -x -o --null --verbose "
+              "--no-run-if-empty --open-tty --exit --interactive --show-limits", 0, False),
+    "nice": ("-n --adjustment", "", 0, False),
+    "ionice": ("-c -n -p -u --class --classdata --pid --uid", "-t --ignore", 0, False),
+    "setsid": ("", "-c -f -w --ctty --fork --wait", 0, False),
+    "stdbuf": ("-i -o -e --input --output --error", "", 0, False),
+    "sudo": ("-u -g -p -c -r -t -d --user --group --prompt --chdir",
+             "-n -b -s -i -k -e -h -a --non-interactive --background --shell --login", 0, False),
+    "doas": ("-u -c", "-n -s", 0, False),
+    "watch": ("-n --interval", "-t -b -e -c -x -p -g -q --no-title", 0, False),
+    "chronic": ("", "-e -v", 0, False),
+    "unbuffer": ("", "-p", 0, False),
+    "flock": ("-w --timeout", "-s -x -u -n -o --shared --exclusive --unlock --nonblock --close",
+              1, False),
+    "strace": ("-o -e -p -s -u -a -b", "-f -ff -t -tt -ttt -T -v -x -xx -y -yy -c -C -d -i -r "
+               "-q -qq -n -z", 0, False),
+    "taskset": ("-c --cpu-list", "-a --all-tasks", 1, False),
+    "chrt": ("", "-b -f -i -o -r -d -m -v --batch --fifo --idle --other --rr --max --verbose",
+             1, False),
+    "cpulimit": ("-l -p -e --limit --pid --exe", "-i -z -b -v --include-children --lazy "
+                 "--background --verbose", 0, False),
+    "timeout": ("-s -k --signal --kill-after", "-f -p -v --foreground --preserve-status "
+                "--verbose", 1, False),
+    "env": ("-u -c --unset --chdir", "-i -0 -v --ignore-environment --null --debug", 0, True),
+    "exec": ("-a", "-c -l", 0, False),
+    "nohup": ("", "", 0, False),
+    "busybox": ("", "", 0, False),
+    "eval": ("", "", 0, False), "source": ("", "", 0, False), ".": ("", "", 0, False),
+}
+_RUNNER_SPECS["ltrace"] = _RUNNER_SPECS["strace"]
+#: Heads whose every argument is the program they start, or whose operands this
+#: scan cannot tell apart (start's title, wmic's verbs). The launcher after one is
+#: a launch.
+_PURE_RUNNERS = frozenset({
+    "start", "wmic", "invoke-wmimethod", "invoke-cimmethod", "schtasks", "at", "runas",
+    "conhost", "wt", "explorer", "rundll32", "mshta", "cscript", "wscript", "forfiles",
+    "script", "parallel", "pcalua",
+})
+_FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+#: Value-less flags (and options that only READ their operand) that may stand right
+#: before the path: any other option word there may take the path as its value
+#: (`vim -c`, `-S`, `less +`, `rg --pre`).
+_PLAIN_FLAGS = {
+    "vim": frozenset("-R -p -o -O -d -b -n -m -M -Z -r -e -E -y -v -N -X".split()),
+    "less": frozenset("-N -n -S -i -I -R -r -M -m -F -X -e -E -s -w -W".split()),
+    "nano": frozenset("-l -m -c -w -i -B -E -S -A -D -L -v".split()),
+    "more": frozenset("-s -d -f -u".split()),
+    "bat": frozenset("-n -p -A -P --number --plain --show-all --no-paging".split()),
+    "rg": frozenset("--files -n -N -i -I -l -L -c -w -F -S -s -u -uu -v -o -q -H --hidden "
+                    "--no-heading --heading --no-filename --count --files-with-matches "
+                    "--no-ignore".split()),
+    # sed -f reads the path as a script file (a bare operand, 8bee16c); it is not run.
+    "sed": frozenset("-n -s -E -r -z -u --quiet --silent -f --file".split()),
+}
+_PLAIN_FLAGS["vi"] = _PLAIN_FLAGS["vim"]
+#: Characters that make quoted text a program or an assignment, not a file name.
+_EXEC_MARKER = re.compile(r"[!+=]")
 
 #: The schedule file as a shell word ends it (T1085).
 #: ...with any Windows alias of it (Dijkstra 69c7c209 A1): a stream suffix
@@ -1292,9 +1380,12 @@ def _owner_command_position(words: list[str]) -> list[str]:
     """
     while words:
         head = words[0]
-        if (head in _WRAPPERS or head in {"nohup", "exec"}
-                or re.fullmatch(r"[a-z_][\w]*=[^$`]*", head)):
+        option_next = words[1:2] != [] and words[1].startswith("-")
+        if (head in _WRAPPERS or re.fullmatch(r"[a-z_][\w]*=[^$`]*", head)
+                or (head in {"nohup", "exec"} and not option_next)):
             words = words[1:]
+        elif head in _WRAPPER_VALUES:
+            words = words[2:]
         elif head == "command":
             if words[1:2] in (["-v"], ["-V"]):
                 return words
@@ -1302,23 +1393,83 @@ def _owner_command_position(words: list[str]) -> list[str]:
         elif head == "time":
             words = words[2:] if words[1:2] == ["-p"] else words[1:]
         elif head == "env":
-            words = words[1:]
-            while words and (words[0] in {"-i", "--ignore-environment", "--"}
-                             or re.fullmatch(r"[a-z_][\w]*=[^$`]*", words[0])):
-                words = words[1:]
+            rest = words[1:]
+            while rest and (rest[0] in {"-i", "--ignore-environment", "--"}
+                            or re.fullmatch(r"[a-z_][\w]*=[^$`]*", rest[0])):
+                rest = rest[1:]
+            # An env option with a value or a string (-u X, -S) is read by the table.
+            words = _peel_runner(words) if rest[:1] and rest[0].startswith("-") else rest
         elif head == "timeout":
             rest = words[1:]
             if rest and re.fullmatch(r"--signal=[a-z0-9]+", rest[0]):
                 rest = rest[1:]
             if not rest or not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", rest[0]):
-                return words
-            words = rest[1:]
+                peeled = _peel_runner(words)
+                if peeled is None:
+                    return words
+                words = peeled
+            else:
+                words = rest[1:]
         else:
-            return words
+            peeled = _peel_runner(words)
+            if peeled is None:
+                return words
+            words = peeled
         if head in {"cmd", "cmd.exe"}:
             while words and re.fullmatch(r"/[ve]:(?:on|off)", words[0]):
                 words = words[1:]
     return words
+
+
+def _peel_runner(words: list[str]) -> list[str] | None:
+    """The command a runner head runs, or None when `words[0]` is not a runner.
+
+    [] means the launcher itself is that command (or the options in front of it
+    are unknown, which is treated the same way). T0105 round 2.
+    """
+    head = words[0].replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".exe")
+    if head in _PURE_RUNNERS:
+        return []
+    if head in _FIND_EXEC:   # `find . -exec cat {} \; -exec run.bat \;`: the segment starts here
+        return words[1:]
+    if head == "find":
+        clause = None
+        for i, word in enumerate(words):
+            if word in _FIND_EXEC:
+                clause = i
+            elif clause is not None and word in {";", "\\;", "+"}:
+                clause = None
+        return None if clause is None else words[clause + 1:]
+    spec = _RUNNER_SPECS.get(head)
+    if spec is None:
+        return None
+    values, flags, positionals, assigns = spec[0].split(), spec[1].split(), spec[2], spec[3]
+    rest, i = words[1:], 0
+    while i < len(rest):
+        word = rest[i]
+        if word == "--":
+            i += 1
+            break
+        if word in {"--help", "--version"}:
+            return [word]   # prints and exits: nothing is run
+        if assigns and re.fullmatch(r"[a-z_][\w]*=[^$`]*", word):
+            i += 1
+        elif word.startswith("-") and len(word) > 1:
+            if word in values:
+                if i + 1 >= len(rest):
+                    return [word]   # the launcher name is this option's VALUE (`sudo -u run`)
+                i += 2
+            elif (word in flags or word.partition("=")[0] in values
+                  or (not word.startswith("--") and word[:2] in values)
+                  or re.fullmatch(r"-\d+", word)):
+                i += 1   # a flag, `--signal=KILL`, `-n5`, `-oL`, nice's `-10`
+            else:
+                return []
+        else:
+            break
+    if len(rest) - i < positionals:
+        return ["<operand>"]   # the launcher name fills a positional (timeout's duration, flock's file)
+    return rest[i + positionals:]
 
 
 def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
@@ -1415,6 +1566,7 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
         r"(?:/c|'/c'|\"/c\")[ \t]*,[ \t]*[\"']?", before, re.IGNORECASE)
     if cmd_wrapper:
         before = ""
+    raw_before = before
     before = before.strip(" \t\"'")
     before = re.sub(r"\d?[<>]{1,2}&?[^\s<>&|]+", "", before)
     position = re.findall(r"[^\s\"'`]+", before.lower())
@@ -1422,8 +1574,18 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
         position[-1] = "-filepath"
     position = [w.lstrip("@^") for w in position if w.lstrip("@^")]
     position = _owner_command_position(position)
-    if position[:1] and position[0] in _READERS:
-        return False
+    if position[:1] and position[0] in _READERS | _EXEC_READERS:
+        if position[0] not in _EXEC_READERS:
+            return False
+        # A bare `{run}` / `{ run }` is brace data in a pattern (T0291A cost corpus),
+        # not a path in an option value.
+        braced = (not prefix and match.group().lower() == "run"
+                  and raw_before.rstrip().endswith("{")
+                  and re.match(r"\s*\}", command[match.end():]) is not None)
+        # ...and so is a quoted literal handed to a native pattern-search head under
+        # a proven PowerShell (`rg 'it''s (run)'`), checked by _pattern_literal_spans.
+        pattern_text = any(a < start < b for a, b in literals)
+        return not (braced or pattern_text or _read_position(position, raw_before))
     # Narrow command positions: direct invocations and cmd's bounded if
     # conditions. Do not turn a later subcommand/argument into argv0.
     if position and position[0] in ("&", "do", "else"):
@@ -1442,6 +1604,49 @@ def _owner_launch(command: str, match: re.Match, base: Path | None, home: Path,
              and ("-filepath" not in position[1:] or position[-1] == "-filepath"))
             or (position[0] in ("invoke-item", "ii") and not position[1:])):
         return False
+    return True
+
+
+def _read_position(position: list[str], raw: str) -> bool:
+    """Is the launcher path an operand this exec-capable reader READS (T0105)?
+
+    `raw` is the segment text in front of the path. Only a path that starts its
+    own word, outside any option value, qualifies; anything doubtful is not a read.
+    """
+    quote, opened = "", 0
+    for i, ch in enumerate(raw):
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'":
+            quote, opened = ch, i
+    if quote:
+        if _EXEC_MARKER.search(raw[opened + 1:]):
+            return False   # vim -c "!path", git -c "alias.x=!path": the quote holds a program
+        raw = raw[:opened]
+    # Glued to `=`, `!`, `+`, `-x` or an escaped space, the path is an option value.
+    if not raw[-1:].isspace() or raw.endswith("\\ "):
+        return False
+    words = raw.split()
+    prev = words[-1].strip("\"'") if words else ""
+    head = position[0]
+    if (head != "git" and prev != "--" and prev not in _PLAIN_FLAGS.get(head, ())
+            and (prev.startswith(("-", "+")) or "!" in prev or "=" in prev)):
+        return False   # the word before it is an option that may take it as its value
+    if head == "git":
+        # Only the verb decides: its options before the path are flags or glued
+        # (`--output=`, `-c k=v`), and the glue was refused above.
+        # Re-tokenise with quotes kept whole: `-C "C:\Program Files\x"` is one word.
+        words = [w.strip("\"'").lower() for w in re.findall(r"\"[^\"]*\"|'[^']*'|\S+", raw)]
+        args, verb, i = words[words.index("git") + 1:] if "git" in words else [], None, 0
+        while i < len(args):
+            if args[i] in _GIT_VALUE_OPTIONS:
+                i += 2
+            elif args[i].startswith("-"):
+                i += 1
+            else:
+                verb = args[i]
+                break
+        return verb in _GIT_READ_VERBS
     return True
 
 
