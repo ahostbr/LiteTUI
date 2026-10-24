@@ -17,10 +17,8 @@ class SettingSpec:
     sensitive: bool = False
 
 
-_CONVERSATION = '''custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host ninfer_executable ninfer_artifact
-ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib
-strata_host strata_root strata_config strata_max_context xolotl_host xolotl_root xolotl_config
-xolotl_max_context default_model default_context_length
+_CONVERSATION = '''custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host
+strata_host xolotl_host default_model default_context_length
 pin_default_model backend codex_native_engine llama_host llama_executable
 llama_attach_hosts llama_models_max llama_load_settings model_infer_overrides
 lms_load_timeout_s max_tokens_tools max_tokens_chat thinking_level
@@ -31,7 +29,12 @@ tool_deny tool_trusted_interpreters tools_disabled tool_context_mode tool_contex
 compact_max_tool_iters owner_domain_cap compact_max_tokens compact_keep_recent compact_thinking_level
 autocompact_enabled autocompact_at_percent wake_after_compact seat_name skills_enabled
 skill_roots mcp_enabled mcp_disabled_servers plugins_disabled'''.split()
-_DEVICE = '''permission_judge small_task_route subagent_route allow_local_subagents claude_executable llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
+# What the engine LiteTUI launches is started with (context length, KV sizing, which artifact/config/install):
+# the engine is one process on this machine, so these are DEVICE settings, as the Settings tabs already say.
+# Kept per conversation they were lost on every new conversation or relaunch, which is born from the global
+# defaults (Ryan 2026-10-24: Strata context set to 100K, engine kept starting at 150K).
+_ENGINE_LAUNCH = '''ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib strata_root strata_config strata_max_context xolotl_root xolotl_config xolotl_max_context'''.split()
+_DEVICE = '''model_context_overrides permission_judge small_task_route subagent_route allow_local_subagents claude_executable llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
 llama_models_dirs enter_interrupts clear_screen_after_compact theme_name custom_themes
 show_thinking show_stop_line show_stop_time autoscroll error_message_style dialog_style dialog_side
 image_viewer_enabled footer_show_seat footer_show_thinking footer_show_bg
@@ -47,7 +50,7 @@ _RESTART = set('strata_root strata_config strata_max_context xolotl_root xolotl_
 
 SETTING_SPECS = {}
 for scope, names in ((SettingScope.CONVERSATION, _CONVERSATION),
-                     (SettingScope.DEVICE, _DEVICE),
+                     (SettingScope.DEVICE, _DEVICE + _ENGINE_LAUNCH),
                      (SettingScope.DEFAULTS, _DEFAULTS)):
     for name in names:
         if name in SETTING_SPECS:

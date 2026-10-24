@@ -34,6 +34,7 @@ from textual.widgets import Input, Label, Select, Static, Switch, TabbedContent,
 
 from litetui import settings_runtime
 from litetui import cline_backend
+from litetui import context_choice
 from litetui import free_tier
 from litetui import llm_backend
 from litetui import model_transport
@@ -170,8 +171,14 @@ def _pick_ninfer_artifact(app) -> None:
     def _picked(choice: str | None) -> None:
         if not choice:
             return
+        # The artifact is the model here; ask what context to serve it at (Ryan 2026-10-24).
+        context_choice.ask(app, "ninfer", Path(choice).stem, lambda tokens: _apply(choice, tokens))
+
+    def _apply(choice: str, tokens: int | None) -> None:
         import dataclasses
         candidate = dataclasses.replace(app.settings, ninfer_artifact=choice)
+        if tokens:
+            candidate = context_choice.settings_after(candidate, "ninfer", Path(choice).stem, tokens)
         if getattr(app, 'convo_dir', None) is None:
             # No conversation yet: do not let /settings' global fallback turn
             # this instance-only /model choice into a startup preference.
@@ -181,8 +188,9 @@ def _pick_ninfer_artifact(app) -> None:
             result = getattr(app, '_settings_save_result', None)
             if result is not None and any(not p.saved for p in result.persistence):
                 return
+        at = f" at {tokens:,} tokens of context" if tokens else ""
         app.system_message(
-            f"NInfer artifact set to {Path(choice).stem} — /engine start to serve it."
+            f"NInfer artifact set to {Path(choice).stem}{at} — /engine start to serve it."
         )
 
     pick(app, "Select a NInfer artifact (served on the next /engine start)",
@@ -217,8 +225,15 @@ def _pick_server_config(app) -> None:
     def _picked(choice: str | None) -> None:
         if not choice:
             return
+        model = Path(choice).stem.removeprefix('strata-')
+        # The config is the model here; ask what context to serve it at (Ryan 2026-10-24).
+        context_choice.ask(app, backend.name, model, lambda tokens: _apply(choice, model, tokens))
+
+    def _apply(choice: str, model: str, tokens: int | None) -> None:
         import dataclasses
         candidate = dataclasses.replace(app.settings, **{field: choice})
+        if tokens:
+            candidate = context_choice.settings_after(candidate, backend.name, model, tokens)
         if getattr(app, 'convo_dir', None) is None:
             app.settings = candidate        # instance-only, as for the NInfer artifact
         else:
@@ -226,11 +241,46 @@ def _pick_server_config(app) -> None:
             result = getattr(app, '_settings_save_result', None)
             if result is not None and any(not p.saved for p in result.persistence):
                 return
+        at = f" at {tokens:,} tokens of context" if tokens else ""
         app.system_message(
-            f"{label} model set to {Path(choice).stem.removeprefix('strata-')} — /engine start to serve it."
+            f"{label} model set to {model}{at} — /engine start to serve it."
         )
 
     pick(app, f"Select a {label} model (served on the next /engine start)", rows, _picked, current=chosen)
+
+
+def _choose_model(app, target: str) -> None:
+    """The human door of /model (typed name or number, and the picker): ask which context length to run the
+    model at, remember it for this model and make it the backend's main setting, then switch.
+
+    `switch_model` stays the door the RPC hosts use and asks nothing; it applies whatever the settings now say.
+    """
+    backend = getattr(app.backend, "name", "")
+
+    def _go(tokens: int | None) -> None:
+        previous = app.settings
+        changed = False
+        if tokens:
+            candidate = context_choice.settings_after(previous, backend, target, tokens)
+            key = context_choice.main_key(backend)
+            changed = getattr(previous, key, None) != tokens
+            try:
+                if getattr(app, "convo_dir", None) is not None:
+                    settings_runtime.persist_or_raise(app, candidate, baseline=previous)
+            except OSError as exc:
+                app.system_message(f"Context length not saved ({exc}); using it for this session only.")
+            app.settings = candidate
+            set_settings = getattr(app.backend, "set_settings", None)
+            if set_settings is not None:
+                set_settings(candidate)
+        unchanged_model = target == app.model_id
+        switch_model(app, target)
+        if tokens and changed and unchanged_model:
+            # Re-picking the model that is already active with a new size: switch_model had nothing to do,
+            # so apply the new window explicitly (an explicit act, like the /settings control).
+            app.apply_context_length(force=True)
+
+    context_choice.ask(app, backend, target, _go)
 
 
 def _cmd_model(app, name: str, arg: str) -> None:
@@ -245,10 +295,12 @@ def _cmd_model(app, name: str, arg: str) -> None:
         if arg.isdigit():
             idx = int(arg) - 1
             if 0 <= idx < len(app.available_models):
-                switch_model(app, app.available_models[idx])
+                _choose_model(app, app.available_models[idx])
             else:
                 app.system_message(f"Invalid number. Use 1-{len(app.available_models)}")
-        elif not switch_model(app, arg):
+        elif arg in app.available_models:
+            _choose_model(app, arg)
+        else:
             app.system_message(f"Model not found: {arg}")
     elif not app.available_models:
         app.system_message(f"No models discovered — {_empty_state_hint(app)}")

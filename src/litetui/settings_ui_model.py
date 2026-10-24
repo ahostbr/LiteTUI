@@ -227,6 +227,7 @@ FIELD_DESCRIPTIONS = {
     "llama_load_settings": "Saved loading parameters applied when opening llama.cpp models.",
     "llama_presets": "Named llama.cpp configurations available for later model loads.",
     "model_infer_overrides": "Inference parameters saved for individual models instead of all models.",
+    "model_context_overrides": "Context length chosen for each model when you pick it with /model; the backend's own context setting follows the latest choice.",
     "mcp_disabled_servers": "Configured MCP server names prevented from starting.",
     "plugins_disabled": "Plugin names skipped when LiteTUI loads extensions.",
     "user_name_asked": "Remember that the first-run name question was already shown.",
@@ -495,7 +496,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
 # These are current Settings fields that the earlier planned IA omitted.
 _EXTRA_FIELDS = (
     ("model", "Model", "model-extra", "Connections & saved engines", "Choose where LiteTUI connects and what it remembers.",
-     ("backend_chosen", "claude_executable", "custom_api_key_env", "custom_base_url", "custom_context_length", "llama_load_settings", "llama_presets", "model_infer_overrides")),
+     ("backend_chosen", "claude_executable", "custom_api_key_env", "custom_base_url", "custom_context_length", "llama_load_settings", "llama_presets", "model_context_overrides", "model_infer_overrides")),
     ("capabilities", "Capabilities", "cap-extra", "Connected extensions", "Choose which extensions and servers can run.",
      ("mcp_disabled_servers", "plugins_disabled", "user_name_asked")),
     ("themes", "Themes", "theme-saved", "Saved themes", "Your custom palettes live here.", ("custom_themes",)),
