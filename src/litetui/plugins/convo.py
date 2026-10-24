@@ -38,7 +38,62 @@ def _convo_meta_bits(path, msgs) -> tuple[str, int, str]:
     return stamp, turns, badge
 
 
+def _cmd_agent_new(app, _name: str, arg: str) -> None:
+    """/agent-new NAME (and /new NAME): create the agent home NAME and continue this window as that agent.
+
+    Same path as `litetui --create-agent NAME`: the new home takes this seat's backend, model and thinking
+    level. The window is relaunched (the cli does it once this app has released its own home), because an
+    agent is one process's owned home and cannot be swapped under a running seat.
+    """
+    import sys
+    import uuid
+
+    from litetui.agent_store import AgentStore, StoreError, name_key, valid_name
+    from litetui.paths import data_root
+
+    wanted = arg.strip()
+    if not wanted:
+        app.system_message("Usage: /agent-new NAME  (creates the agent home NAME and switches this window to it)")
+        return
+    try:
+        wanted = valid_name(wanted)
+    except StoreError:
+        app.system_message(f"{wanted!r} cannot be an agent name: it must be one valid folder name "
+                           "(no slashes, colon, * ? < > | or quotes; no leading or trailing space or dot).")
+        return
+    if getattr(app, "_chat_running", lambda: False)():
+        app.system_message("Finish or stop the current turn before switching agents.")
+        return
+    session = getattr(app, "_agent_session", None)
+    if session is None or getattr(app, "_rpc", False) or getattr(app, "_spawned_marker", False):
+        app.system_message("/agent-new is for a hand-launched window; a spawned or headless seat keeps its agent.")
+        return
+    authority = session.authority
+    if authority.model is None:
+        app.system_message("Choose a model first (/model, or /engine start on an engine backend): "
+                           "a new agent is created with this seat's backend, model and thinking level.")
+        return
+    try:
+        existing = AgentStore(data_root()).list_agents()
+    except (StoreError, OSError) as exc:
+        app.system_message(f"Cannot read the agent catalog: {exc}")
+        return
+    if any(name_key(agent.name) == name_key(wanted) for agent in existing):
+        app.system_message(f"An agent named {wanted} already exists. Open it with: litetui --agent {wanted}")
+        return
+    app._relaunch_argv = [
+        sys.executable, "-m", "litetui", "--create-agent", wanted, "--agent-id", str(uuid.uuid4()),
+        "--backend", authority.backend, "--model", authority.model,
+        "--thinking-level", authority.thinking_level,
+    ]
+    app.system_message(f"Creating agent {wanted} ({authority.backend} / {authority.model}) and switching this window to it ...")
+    app.exit()
+
+
 def _cmd_new(app, name: str, arg: str) -> None:
+    if name == "/new" and arg.strip():
+        _cmd_agent_new(app, name, arg)   # /new NAME makes that agent; plain /new stays a fresh conversation
+        return
     app.conversation.clear()
     app._new_convo()  # a fresh file — never reuse the old one
     app._load_system_prompt()
@@ -273,6 +328,13 @@ def _register(ctx) -> None:
         help="Start fresh. This chat is saved first.",
         group="convo",
         order=10,
+    )
+    ctx.command(
+        ("/agent-new",), _cmd_agent_new,
+        palette="New agent",
+        help="/agent-new NAME creates that agent (its own folder) and switches this window to it.",
+        group="convo",
+        order=11,
     )
     ctx.command(("/system",), _cmd_system)
     ctx.command(
