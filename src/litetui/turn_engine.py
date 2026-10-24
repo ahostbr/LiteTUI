@@ -36,8 +36,6 @@ THE TWO REQUEST BUILDERS ARE SEPARATE ON PURPOSE
 
 from __future__ import annotations
 
-import re
-
 from litetui import llm_backend
 
 
@@ -262,39 +260,6 @@ class TurnEngine:
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
-
-    #: Below this a summary cannot be written at all; compaction refuses instead.
-    COMPACT_MIN_SUMMARY_TOKENS = 1024
-
-    @staticmethod
-    def compact_budget(
-        *,
-        configured: int,
-        ctx_max: int | None,
-        ctx_loaded: bool,
-        prompt_tokens: int,
-    ) -> int | None:
-        """The max_tokens a compaction can send: the configured budget, cut to the room
-        the window has left after the prompt. None when the room is under
-        COMPACT_MIN_SUMMARY_TOKENS (nothing usable fits).
-
-        Strata refuses `prompt + max_tokens > context` ("requests are never truncated"),
-        so a 24,000 budget at 83,692 prompt tokens in a 100,000 window is a 400. Without
-        a loaded window (ctx_max may be the model's ceiling) the budget passes through.
-        """
-        if not (ctx_max and ctx_loaded):
-            return configured
-        margin = 256 + ctx_max // 50  # the prompt count is an estimate
-        room = ctx_max - prompt_tokens - margin
-        if room < TurnEngine.COMPACT_MIN_SUMMARY_TOKENS:
-            return None
-        return min(configured, room)
-
-    @staticmethod
-    def max_tokens_hint(message: str) -> int | None:
-        """The ceiling a server names in its own refusal ("... at most 16300 here"), or None."""
-        found = re.search(r"at most (\d[\d,]*)", message or "")
-        return int(found.group(1).replace(",", "")) if found else None
 
     @staticmethod
     def compact_request(

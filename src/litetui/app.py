@@ -9989,42 +9989,6 @@ class LiteTUI(App):
 
     # ── Compaction ───────────────────────────────────────────────
 
-    def _compact_max_tokens(self, ask: list[dict]) -> int:
-        """The summary budget for one compaction request, cut to the room the window has left.
-
-        A server that never truncates (Strata: "prompt + max tokens exceeds the context")
-        refuses the request outright when the configured budget does not fit after the
-        prompt. The prompt size is estimated from the measured tokens-per-char of the live
-        conversation (ctx_used), so a code-heavy history is not undercounted at 4 chars/token.
-        Raises BackendError, in plain words, when no usable summary fits.
-        """
-        configured = self.settings.compact_max_tokens
-        conv_chars = self._msg_chars(self.conversation)
-        per_char = 0.25
-        if self.ctx_used and conv_chars:
-            per_char = min(1.0, max(0.25, self.ctx_used / conv_chars))
-        prompt_tokens = int(self._msg_chars(ask) * per_char)
-        budget = TurnEngine.compact_budget(
-            configured=configured, ctx_max=self.ctx_max,
-            ctx_loaded=bool(getattr(self, "ctx_loaded", False)),
-            prompt_tokens=prompt_tokens,
-        )
-        if budget is None:
-            raise llm_backend.BackendError(
-                f"The window ({self.ctx_max:,} tokens) has under "
-                f"{TurnEngine.COMPACT_MIN_SUMMARY_TOKENS:,} tokens left after the "
-                f"~{prompt_tokens:,}-token compaction prompt, so no summary fits.\n"
-                "Free room with /truncate, or give the model a larger window (/model, or "
-                "the context setting for this backend in /settings)."
-            )
-        if budget < configured and not getattr(self, "_compact_clamp_said", False):
-            self._compact_clamp_said = True
-            self._system(
-                f"Compact summary budget cut from {configured:,} to {budget:,} tokens "
-                f"to fit the {self.ctx_max:,}-token window."
-            )
-        return budget
-
     @staticmethod
     def _msg_chars(msgs: list[dict]) -> int:
         total = 0
@@ -10568,18 +10532,16 @@ class LiteTUI(App):
             await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
             # A counter, not range(): the owner retry gets its OWN budget of rounds (below),
             # so STEP 1 spending all of compact_max_tool_iters cannot starve the retry.
-            self._compact_clamp_said = False
             round_no, round_budget = 0, self.settings.compact_max_tool_iters
             while round_no < round_budget:
                 round_no += 1
                 round_started = time.perf_counter()
                 first_chunk_s = None
                 round_usage = None
-                round_budget_tokens = self._compact_max_tokens(ask)
                 kwargs = TurnEngine.compact_request(
                     model_id=self.model_id,
                     messages=ask,
-                    max_tokens=round_budget_tokens,
+                    max_tokens=self.settings.compact_max_tokens,
                     thinking_level=self.settings.compact_thinking_level,
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
@@ -10600,17 +10562,7 @@ class LiteTUI(App):
                 # 100% never shows while this prompt is still being sent
                 # (same rule as _stream's clear at request start).
                 self._eta.clear_prefill()
-                try:
-                    stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
-                except Exception as refused:
-                    # The server names the room it has ("... at most 16300 here"): believe it, once.
-                    hint = TurnEngine.max_tokens_hint(str(refused))
-                    if not (hint and TurnEngine.COMPACT_MIN_SUMMARY_TOKENS <= hint < kwargs["max_tokens"]):
-                        raise
-                    self._system(f"Compact summary budget cut to {hint:,} tokens: the server said that is all that fits.")
-                    kwargs["max_tokens"] = hint
-                    self._eta.clear_prefill()
-                    stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
+                stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 provider_metadata = None
                 text_full = ""
                 tool_acc: dict = {}
