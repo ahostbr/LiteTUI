@@ -238,6 +238,9 @@ class Settings:
     #: Per-model Inference-tab overrides, BOTH backends {model_key: {...}}.
     #: Unset field = inherit the global sampling settings below.
     model_infer_overrides: dict = field(default_factory=dict)
+    #: Context length chosen for a model at /model time, keyed "<backend>:<model>" (the model a backend serves:
+    #: its id, or an engine's artifact/config name). The backend's own context setting follows the last choice.
+    model_context_overrides: dict = field(default_factory=dict)
     #: Named presets {name: {"load": {...}, "inference": {...}}} — saved and
     #: applied from /modelcfg.
     llama_presets: dict = field(default_factory=dict)

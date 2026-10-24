@@ -34,7 +34,7 @@ skill_roots mcp_enabled mcp_disabled_servers plugins_disabled'''.split()
 # Kept per conversation they were lost on every new conversation or relaunch, which is born from the global
 # defaults (Ryan 2026-10-24: Strata context set to 100K, engine kept starting at 150K).
 _ENGINE_LAUNCH = '''ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib strata_root strata_config strata_max_context xolotl_root xolotl_config xolotl_max_context'''.split()
-_DEVICE = '''permission_judge small_task_route subagent_route allow_local_subagents claude_executable llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
+_DEVICE = '''model_context_overrides permission_judge small_task_route subagent_route allow_local_subagents claude_executable llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
 llama_models_dirs enter_interrupts clear_screen_after_compact theme_name custom_themes
 show_thinking show_stop_line show_stop_time autoscroll error_message_style dialog_style dialog_side
 image_viewer_enabled footer_show_seat footer_show_thinking footer_show_bg
