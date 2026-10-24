@@ -296,9 +296,16 @@ async def test_explicit_model_survives_connection_replacement(
         assert a.model_id == "", "replacement must clear the old catalog selection"
         a.connect()
         await _connect(a, pilot)
+        authority_model = a._agent_session.authority.model
 
-    assert a.model_id == "explicit/model"
-    assert "Connected — model: explicit/model" in a.said
+    if replacement == "backend-change":
+        # Ryan 2026-10-24: a backend switch clears the model; the old id names nothing there.
+        assert a.model_id == ""
+        assert authority_model is None
+        assert "No model chosen for codex. Use /model to choose one." in a.said
+    else:
+        assert a.model_id == "explicit/model"
+        assert "Connected — model: explicit/model" in a.said
 
 
 @pytest.mark.asyncio
@@ -402,8 +409,13 @@ async def test_user_model_pick_survives_connection_replacement(
         settings_runtime.prepare_reconnect(a)
         a.connect()
         await _connect(a, pilot)
+        authority_model = a._agent_session.authority.model
 
-    assert a.model_id == "user/pick"
+    if replacement == "backend-change":
+        assert a.model_id == ""  # a pick made on the old backend does not follow the switch
+        assert authority_model is None
+    else:
+        assert a.model_id == "user/pick"
 
 
 def test_send_time_residency_does_not_restore_retired_launch_model():

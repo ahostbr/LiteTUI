@@ -69,6 +69,25 @@ def test_missing_model_is_not_explicit_unchosen(tmp_path):
         AgentStore(tmp_path).list_agents()
 
 
+def test_a_backend_switch_clears_the_model_unless_the_same_save_names_one(tmp_path):
+    from litetui.settings_service import SettingsService, SettingChange
+    cfg = settings.Settings()
+    cfg.default_model = 'codex-model'
+    with ordinary(tmp_path, cfg) as session:
+        service = SettingsService(tmp_path, agent_session=session)
+        cid = session.initial_conversation_id
+        service.save_patch(cid, [SettingChange('backend', 'ninfer', 'conversation')], service.snapshot(cid).revisions)
+        raw = json.loads((session.memory_root / 'settings.json').read_text())
+        assert (session.authority.backend, session.authority.model) == ('ninfer', None)
+        assert raw['execution']['model_selection'] == 'unchosen'
+        service.save_patch(cid, [SettingChange('backend', 'codex', 'conversation'),
+                                 SettingChange('default_model', 'picked', 'conversation')],
+                           service.snapshot(cid).revisions)
+        assert (session.authority.backend, session.authority.model) == ('codex', 'picked')
+        session.update_execution(backend='codex', model=None, thinking_level='high')
+        assert session.authority.model is None
+
+
 
 def test_backend_publication_failure_keeps_old_backend_and_admission_open(tmp_path, monkeypatch):
     from types import SimpleNamespace

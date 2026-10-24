@@ -5194,9 +5194,12 @@ class LiteTUI(App):
         if session is not None and field in ('backend', 'model', 'thinking_level', 'reasoning_effort'):
             authority = session.authority
             backend = value if field == 'backend' else authority.backend
-            model = value if field == 'model' else authority.model
+            # A backend switch clears the model: the old id names nothing on the new
+            # engine, and carrying it forward recorded it as "chosen" there.
+            cleared = field == 'backend' and backend != authority.backend
+            model = None if cleared else (value if field == 'model' else authority.model)
             level = (value or 'default') if field in ('thinking_level', 'reasoning_effort') else authority.thinking_level
-            if model:
+            if model or field != 'model':  # an unchosen seat still persists backend/thinking changes
                 try:
                     if (backend, model, level) != (authority.backend, authority.model, authority.thinking_level):
                         session.update_execution(backend=backend, model=model, thinking_level=level)
@@ -5204,6 +5207,8 @@ class LiteTUI(App):
                     self._owned_launch_error = f'Agent execution save failed: {exc}'
                     self._system(self._owned_launch_error)
                     raise
+                if cleared:  # picks made on the old backend must not come back on the new one
+                    self._cli_initial_model = self._user_model_choice = None
                 from litetui.agent_launch_context import apply_settings
                 apply_settings(session, self.settings)
                 if (self._owned_launch_error or '').startswith('Agent execution save failed:'):
@@ -5697,7 +5702,7 @@ class LiteTUI(App):
                 )
             if self.available_models and self._agent_session.authority.model is None:
                 self._model_id = ''
-                self._system('Choose a model with /model before sending; agent model is not chosen.')
+                self._system(f'No model chosen for {self.backend.name}. Use /model to choose one.')
                 if not self._rpc:
                     self.call_after_refresh(self._offer_unchosen_model)
             elif self.available_models:
@@ -7250,11 +7255,15 @@ class LiteTUI(App):
         self.backend = llm_backend.make_backend(s)
         # The conversation is NOT touched — history survives an engine switch;
         # only the endpoint and the model list change.
+        self._cli_initial_model = self._user_model_choice = None  # picks belong to the old backend
         self.model_id = ""
         self.available_models = []
         self.model_rows = {}
         self.update_header()
         self.system_message(f"Backend → {choice}; reconnecting…")
+        if getattr(self, '_agent_session', None) is not None and self._agent_session.authority.model is None:
+            self.system_message(f"No model chosen for {choice}. Use /model to choose one "
+                                f"(start its engine first if it lists none).")
         self.connect()
 
     def _assistant_bubble(self) -> AssistantMessage:
@@ -8821,6 +8830,10 @@ class LiteTUI(App):
             authority = self._agent_session.authority
             if getattr(self.backend, 'name', None) != authority.backend:
                 raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
+            if authority.model is None:
+                raise llm_backend.BackendError(
+                    f'No model chosen for {authority.backend}. Use /model to choose one '
+                    f'(start its engine first if it lists none).')
             if not chat_effort:
                 # Compaction requests carry compact_thinking_level, never the chat
                 # override, so a chat effort that cannot be sent must not stop it.
