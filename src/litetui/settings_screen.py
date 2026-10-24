@@ -59,6 +59,7 @@ from textual.widgets import (
 # by patching THIS module -- i.e. by touching the screen, which is the
 # exact thing the derivation exists to stop being necessary.
 from litetui import free_tier, gpu_gate, llm_backend, stt_backend, tool_policy, voice_backend
+from litetui import strata_options
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.hooks_screen import HooksEditor
@@ -687,6 +688,38 @@ class SettingsBody(Widget):
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
 
+    def _strata_option_rows(self):
+        """Strata's run options (strata_options.py), one collapsible section each."""
+        for section in strata_options.SECTIONS:
+            yield self._section_header(section.section_id)
+            for opt in strata_options.options_for(section.section_id):
+                yield from self._strata_option_row(opt)
+            if section.section_id == "strata-extra":
+                yield from self._text_row(
+                    strata_options.EXTRA_FIELD, strata_options.EXTRA_LABEL, strata_options.EXTRA_HELP,
+                    placeholder="--flag value --other-flag",
+                )
+
+    def _strata_option_row(self, opt):
+        label = f"{opt.label} ({opt.target[1]})"
+        if opt.kind in ("choice", "switch"):
+            locked = settings_mod.source_of(opt.field)
+            with Vertical(classes="set-row"):
+                yield Label(label, classes="set-label")
+                yield Select(
+                    literal_options(strata_options.choice_labels(opt)),
+                    value=getattr(self._start, opt.field) or "",
+                    id=f"f-{opt.field}",
+                    allow_blank=False,
+                    disabled=locked is not None,
+                )
+                yield Static(opt.full_help(), classes="set-help")
+        else:
+            yield from self._text_row(
+                opt.field, label, opt.full_help(),
+                placeholder=opt.placeholder or "blank: as the model's config",
+            )
+
     def _model_pick_row(self, name: str, label: str, sentinel: str, help_text: str):
         """One picker, two fields (T640) — the subagent's and the fold's."""
         locked = settings_mod.source_of(name)
@@ -965,6 +998,7 @@ class SettingsBody(Widget):
                             "the next /engine start.",
                             placeholder="blank, or tokens such as 131072",
                         )
+                        yield from self._strata_option_rows()
                 with TabPane("Xolotl", id="tab-xolotl"):
                     with VerticalScroll(classes="set-scroll"):
                         yield self._section_header("xolotl-engine")
@@ -1806,6 +1840,7 @@ class SettingsBody(Widget):
             raise ValueError("lms_load_timeout_s: under 30s no large model can load")
         if hasattr(out, "tts_timeout"):
             _validate_tts_timeout(out.tts_timeout)
+        strata_options.validate(out)
 
         # The theme creator: a non-empty name mints (or overwrites) a custom
         # theme from the ct-* fields and SELECTS it, so Ctrl+S gives instant

@@ -36,7 +36,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import jobkill, ninfer_engine, ttyguard
+from . import jobkill, ninfer_engine, strata_options, ttyguard
 from .llm_backend import BackendError, _arg_value
 from .ninfer_engine import EngineStartFailed, OwnedEngine
 
@@ -136,7 +136,7 @@ def default_host(settings) -> str:
     return f"http://127.0.0.1:{port if isinstance(port, int) and port > 0 else STRATA_DEFAULT_PORT}"
 
 
-def with_context(cfg: dict, max_context: int | None) -> dict:
+def with_context(cfg: dict, max_context: int | None, *, rope_scaled: bool = False) -> dict:
     """`cfg` with its `--max-context` replaced, or `cfg` itself when nothing changes.
 
     Mirrors what Strata's setup writes for a context: above 8,192 tokens the KV cache is
@@ -147,11 +147,11 @@ def with_context(cfg: dict, max_context: int | None) -> dict:
         return cfg
     if max_context == config_context(cfg):
         return cfg
-    if max_context > STRATA_TRAINED_CONTEXT:
+    if max_context > STRATA_TRAINED_CONTEXT and not rope_scaled:
         raise BackendError(
             f"strata_max_context {max_context} is past the model's trained {STRATA_TRAINED_CONTEXT} "
-            "tokens — that needs RoPE scaling, which Strata's own setup configures "
-            "(run its setup with --context); nothing was started.")
+            "tokens — that needs RoPE scaling: set Strata's RoPE scaling (linear or yarn) in Settings, "
+            "or run Strata's own setup with --context; nothing was started.")
     args = [str(a) for a in cfg["args"]]
     if "--max-context" in args[:-1]:
         args[args.index("--max-context") + 1] = str(max_context)
@@ -318,10 +318,17 @@ def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
         raise BackendError(
             "no Strata model chosen — /model to pick one (each strata-<model>.json in the install "
             "is a prepared model), or set strata_config.")
-    run_cfg = with_context(cfg, getattr(settings, "strata_max_context", None))
+    try:
+        strata_options.validate(settings)
+    except ValueError as exc:
+        raise BackendError(f"{exc}; nothing was started.") from exc
+    rope_scaled = (getattr(settings, "strata_rope_scaling", None) in ("linear", "yarn")
+                   or _arg_value([str(a) for a in cfg["args"]], "--rope-scaling") in ("linear", "yarn"))
+    run_cfg = with_context(cfg, getattr(settings, "strata_max_context", None), rope_scaled=rope_scaled)
+    run_cfg = strata_options.apply(run_cfg, settings)
     run_path = path
     if run_cfg is not cfg:
-        # A context LiteTUI chose: written beside the log, never over the install's own file.
+        # A context or option LiteTUI chose: written beside the log, never over the install's own file.
         run_path = log_path().with_name(f"{path.stem}.litetui.json")
         run_path.parent.mkdir(parents=True, exist_ok=True)
         run_path.write_text(json.dumps(run_cfg, indent=1), encoding="utf-8")
