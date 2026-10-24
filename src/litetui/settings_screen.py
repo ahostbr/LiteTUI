@@ -1922,7 +1922,11 @@ class SettingsBody(Widget):
         if failed:
             messages.append(present(f"Save failed — {failed}", self.app.settings.error_message_style, surface="settings"))
         if result.has_pending_runtime:
-            messages.append("Runtime changes are pending")
+            later = {"restart": "the next engine start", "reconnect": "the next reconnect", "reload": "the next reload"}
+            pending = [item for item in result.runtime if item.status == "pending"]
+            where = sorted({later.get(item.action, "a restart") for item in pending})
+            messages.append(f"Runtime changes are pending: {', '.join(item.field for item in pending)} "
+                            f"apply on {' / '.join(where)}")
         if result.has_runtime_failures:
             runtime_errors = "; ".join(
                 item.reason or f"{item.field}: runtime apply failed"
@@ -1960,6 +1964,17 @@ class SettingsBody(Widget):
             close_dialog(self, new)
             return
         self._show_save_result(result)
+        self._mark_saved_if_persisted(result)
+
+    def _mark_saved_if_persisted(self, result) -> None:
+        """A save that stays open only to report what applies later has still saved what is on screen.
+
+        Without this the as-opened snapshot stayed stale, so Esc/Cancel called a saved change "unsaved",
+        and the Save in that prompt returned the same pending result: the dialog could not be left cleanly.
+        """
+        if (result.fully_saved and not result.has_runtime_failures
+                and not self._settings_adapter.pending_changes):
+            self._capture_initial_state()
 
     def action_save(self) -> None:
         try:
@@ -1989,6 +2004,7 @@ class SettingsBody(Widget):
             close_dialog(self, self._draft.snapshot())
             return
         self._show_save_result(result)
+        self._mark_saved_if_persisted(result)
 
     def action_cancel(self) -> None:
         self.request_cancel()
