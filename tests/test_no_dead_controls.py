@@ -131,6 +131,13 @@ INDIRECT: dict[str, str] = {
     "stop": "sampling_kwargs()",
 }
 
+#: Strata's run options are read by field name from ONE catalog (`getattr(settings, opt.field)` in
+#: strata_options.apply/validate), so no `settings.strata_vram_reserve_mib` spelling exists to find.
+#: The claim "each one reaches the launch" is proven per field by
+#: tests/test_strata_options.py::test_every_catalog_option_reaches_the_launch_config.
+from litetui import strata_options  # noqa: E402
+CATALOG_READ = set(strata_options.FIELD_NAMES)
+
 
 #: Local aliases for the settings object, e.g. `s = self.settings`. Without
 #: these the detector reports a FALSE POSITIVE for every field read through
@@ -174,7 +181,7 @@ def test_every_setting_is_read_somewhere():
     dead = [
         f.name
         for f in fields(Settings)
-        if f.name not in INDIRECT and not _reads(f.name)
+        if f.name not in INDIRECT and f.name not in CATALOG_READ and not _reads(f.name)
     ]
     assert dead == [], (
         "These settings render in /settings and change nothing:\n  "
@@ -255,6 +262,6 @@ def test_no_setting_is_read_only_by_the_settings_screen():
     screen = (ROOT / "src" / "litetui" / "settings_screen.py").read_text(encoding="utf-8")
     assert "f-{name}" in screen or "f-" in screen  # sanity: the screen builds ids
     for f in fields(Settings):
-        if f.name in INDIRECT:
+        if f.name in INDIRECT or f.name in CATALOG_READ:
             continue
         assert _reads(f.name), f"{f.name} is not read anywhere in the runtime"

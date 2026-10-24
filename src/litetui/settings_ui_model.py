@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from litetui import strata_options
+
 SettingScope = Literal["conversation", "defaults", "device", "app", "mixed"]
 
 
@@ -235,6 +237,13 @@ FIELD_DESCRIPTIONS = {
 }
 
 
+# Strata's run options are one catalog (strata_options.py); its words are registered here, not repeated.
+FIELD_LABELS.update({o.field: o.label for o in strata_options.OPTIONS})
+FIELD_LABELS[strata_options.EXTRA_FIELD] = strata_options.EXTRA_LABEL
+FIELD_DESCRIPTIONS.update({o.field: o.full_help() for o in strata_options.OPTIONS})
+FIELD_DESCRIPTIONS[strata_options.EXTRA_FIELD] = strata_options.EXTRA_HELP
+
+
 def _field_description(name: str) -> str:
     return FIELD_DESCRIPTIONS[name]
 
@@ -338,6 +347,15 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "strata", "Strata", "strata-engine", "Engine",
         "Qwen3.8-Flash-Next on one GPU plus system RAM (github.com/Niko1221/Strata).",
         ("strata_host", "strata_root", "strata_config", "strata_max_context"), scope="device", keywords=("Qwen", "Flash-Next", "engine", "RAM", "context"),
+    ),
+    *(
+        _section(
+            "strata", "Strata", sec.section_id, sec.title, sec.summary,
+            tuple(o.field for o in strata_options.options_for(sec.section_id))
+            + ((strata_options.EXTRA_FIELD,) if sec.section_id == "strata-extra" else ()),
+            scope="device", keywords=sec.keywords,
+        )
+        for sec in strata_options.SECTIONS
     ),
     _section(
         "xolotl", "Xolotl", "xolotl-engine", "Engine",
