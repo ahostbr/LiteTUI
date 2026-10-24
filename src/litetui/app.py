@@ -688,6 +688,14 @@ def _sync_seat_resolution(app) -> None:
     app.seat.backend = getattr(getattr(app, "backend", None), "name", None)
 
 
+def _no_model_words(backend: str) -> str:
+    """What to tell a seat whose backend has no chosen model (engine backends pick their one served model themselves)."""
+    if backend in llm_backend.ENGINE_BACKENDS:
+        return (f'Nothing is serving on {backend} yet. /engine start serves the chosen model, and the seat '
+                f'picks it up by itself; /model here chooses which artifact or config to serve.')
+    return f'No model chosen for {backend}. Use /model to choose one (start its engine first if it lists none).'
+
+
 class LiteTUI(App):
     """TUI chat client for LM Studio."""
 
@@ -5705,7 +5713,8 @@ class LiteTUI(App):
                     f"{selection} model {self.model_id!r} is unavailable on {self.backend.name}. "
                     "Sending is blocked; choose a model with /model or retry /reconnect."
                 )
-            if self.available_models and self._agent_session.authority.model is None:
+            if (self.available_models and self._agent_session.authority.model is None
+                    and getattr(self.backend, 'name', None) not in llm_backend.ENGINE_BACKENDS):
                 self._model_id = ''
                 self._system(f'No model chosen for {self.backend.name}. Use /model to choose one.')
                 if not self._rpc:
@@ -7267,8 +7276,7 @@ class LiteTUI(App):
         self.update_header()
         self.system_message(f"Backend → {choice}; reconnecting…")
         if getattr(self, '_agent_session', None) is not None and self._agent_session.authority.model is None:
-            self.system_message(f"No model chosen for {choice}. Use /model to choose one "
-                                f"(start its engine first if it lists none).")
+            self.system_message(_no_model_words(choice))
         self.connect()
 
     def _assistant_bubble(self) -> AssistantMessage:
@@ -8836,9 +8844,7 @@ class LiteTUI(App):
             if getattr(self.backend, 'name', None) != authority.backend:
                 raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
             if authority.model is None:
-                raise llm_backend.BackendError(
-                    f'No model chosen for {authority.backend}. Use /model to choose one '
-                    f'(start its engine first if it lists none).')
+                raise llm_backend.BackendError(_no_model_words(authority.backend))
             if not self.model_id:
                 raise llm_backend.BackendError(
                     f'Nothing is serving on {authority.backend}: saved model {authority.model!r} is not loaded. '

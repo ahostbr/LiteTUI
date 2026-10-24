@@ -433,3 +433,25 @@ def test_send_time_residency_does_not_restore_retired_launch_model():
 
     assert action == "ok"
     assert model == "user/pick"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine,picks", [("ninfer", True), ("strata", True), ("lmstudio", False)])
+async def test_an_engine_backend_picks_its_one_served_model_after_a_backend_switch(engine, picks):
+    """/model on NInfer/Strata/Xolotl chooses an artifact or config, never a model id, so a seat
+    whose model a backend switch cleared could not finish choosing. An engine's served model IS
+    the choice; every other backend still asks (Ryan 2026-10-24)."""
+    a = _app(_rows(("served/model", True)), initial_model="x")
+    a.backend = _FakeBackend(_rows(("served/model", True)), name=engine)
+    auth = a._agent_session.authority
+    a._agent_session.update_execution(backend=engine, model=None, thinking_level=auth.thinking_level)
+    a._handle_command = lambda c: None
+    async with a.run_test() as pilot:
+        for _ in range(60):
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+            if any("Connected — model:" in s or "No model chosen" in s for s in a.said):
+                break
+        chosen = a._agent_session.authority.model
+    assert (chosen == "served/model") is picks
+    assert (a.model_id == "served/model") is picks
