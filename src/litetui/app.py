@@ -8834,6 +8834,10 @@ class LiteTUI(App):
                 raise llm_backend.BackendError(
                     f'No model chosen for {authority.backend}. Use /model to choose one '
                     f'(start its engine first if it lists none).')
+            if not self.model_id:
+                raise llm_backend.BackendError(
+                    f'Nothing is serving on {authority.backend}: saved model {authority.model!r} is not loaded. '
+                    f'Start its engine (/engine start) or choose a model with /model.')
             if not chat_effort:
                 # Compaction requests carry compact_thinking_level, never the chat
                 # override, so a chat effort that cannot be sent must not stop it.
