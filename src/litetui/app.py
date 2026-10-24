@@ -552,35 +552,6 @@ def _detail_sentence(raw: object, *, limit: int = 200) -> str:
     return detail
 
 
-def _compaction_fit_note(used: int | None, mx: int | None, *, loaded: bool) -> str:
-    """Why a compaction was refused, in the numbers the app already holds.
-
-    A compaction sends the HISTORY PLUS a summary prompt, so it needs MORE
-    room than the conversation already occupies. Near the top of the window
-    that is arithmetically impossible, and the server answers 500 - a status
-    that describes the server's surprise and not the user's problem. The app
-    knew `ctx_used` and `ctx_max` the whole time and said neither.
-
-    🔴 `ctx_max` MAY BE THE MODEL'S CEILING RATHER THAN THE LOADED WINDOW, so
-    `loaded` gates every division here. A confident percentage computed
-    against a ceiling the server is not honouring is worse than silence: it
-    sends the reader to look for room that was never there.
-
-    Silent below 80%, where a refusal means something else and this sentence
-    would be a confident wrong lead.
-    """
-    if not (used and mx and loaded) or used < mx * 0.8:
-        return ""
-    return (
-        f"\nThe conversation is {used:,} tokens of a {mx:,} window ({used / mx:.0%}), and a "
-        f"compaction has to send the history PLUS a summary prompt — so it needs more room "
-        f"than the conversation already fills. That is what was refused.\n"
-        f"Free room with /truncate, or give the model a larger window. In LM Studio a "
-        f"PARALLEL setting of N splits the KV pool N ways, so each request gets 1/N of it — "
-        f"check that before raising the context size."
-    )
-
-
 def _media_refused_for_good(e: object) -> bool:
     """True when the engine will refuse this media for the life of the process.
 
@@ -7719,7 +7690,7 @@ class LiteTUI(App):
     def _card_summary_key(answer: str) -> str:
         """Stable id for a summary: a hash of the answer it describes.
 
-        Not the message index - compaction and /truncate renumber the list, and
+        Not the message index - compaction renumbers the list, and
         an index would re-point a stored summary at a different reply.
         """
         return hashlib.sha1((answer or "").strip().encode("utf-8")).hexdigest()[:16]
@@ -10533,6 +10504,8 @@ class LiteTUI(App):
             # A counter, not range(): the owner retry gets its OWN budget of rounds (below),
             # so STEP 1 spending all of compact_max_tool_iters cannot starve the retry.
             round_no, round_budget = 0, self.settings.compact_max_tool_iters
+            learned_cap = None  # the room a server once named; later rounds start from it
+            said_cut = False
             while round_no < round_budget:
                 round_no += 1
                 round_started = time.perf_counter()
@@ -10541,7 +10514,8 @@ class LiteTUI(App):
                 kwargs = TurnEngine.compact_request(
                     model_id=self.model_id,
                     messages=ask,
-                    max_tokens=self.settings.compact_max_tokens,
+                    max_tokens=(min(self.settings.compact_max_tokens, learned_cap)
+                                if learned_cap else self.settings.compact_max_tokens),
                     thinking_level=self.settings.compact_thinking_level,
                     tools_enabled=self.tools_enabled,
                     tools=self._all_tools(),  # advertised even when OFF — see turn_engine
@@ -10562,7 +10536,25 @@ class LiteTUI(App):
                 # 100% never shows while this prompt is still being sent
                 # (same rule as _stream's clear at request start).
                 self._eta.clear_prefill()
-                stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
+                try:
+                    stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
+                except Exception as refused:
+                    # REACTIVE ONLY: no prompt size is estimated anywhere. When a server
+                    # refuses max_tokens and names the room it has ("... at most 16300"),
+                    # believe it and retry once at that number. Anything else is raised as is.
+                    hint = TurnEngine.max_tokens_hint(str(refused))
+                    if not (hint and TurnEngine.COMPACT_MIN_RETRY_TOKENS <= hint < kwargs["max_tokens"]):
+                        raise
+                    if not said_cut:
+                        said_cut = True
+                        self._system(
+                            f"The server has room for {hint:,} tokens of summary, not "
+                            f"{kwargs['max_tokens']:,}; retrying with {hint:,}."
+                        )
+                    learned_cap = hint
+                    kwargs["max_tokens"] = hint
+                    self._eta.clear_prefill()
+                    stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 provider_metadata = None
                 text_full = ""
                 tool_acc: dict = {}
@@ -10729,11 +10721,15 @@ class LiteTUI(App):
                 exc=e,
             )
             card.fail("failed \u2014 conversation unchanged")
+            said = _plain_backend_error(e, self.backend)
+            if said.startswith("Something went wrong talking to the model server"):
+                # The generic sentence hides what the server said; a compaction refusal
+                # is exactly when the server's own words are the useful part.
+                detail = _detail_sentence(e)
+                said = f"{said} The server said: {detail}" if detail else said
             self._system(
                 f"Compact failed — conversation unchanged.\n"
-                f"{_plain_backend_error(e, self.backend)}"
-                + _compaction_fit_note(self.ctx_used, self.ctx_max,
-                                       loaded=getattr(self, "ctx_loaded", False))
+                f"{said}"
             )
             self._emit_compaction("failed",
                                   tokens_before=self.ctx_used,

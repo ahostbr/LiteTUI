@@ -355,7 +355,7 @@ class ConversationRepository:
         ignores record types it does not know, so this is invisible to every
         existing reader and to older builds of the app.
 
-        KEYED BY CONTENT, NOT BY INDEX. Compaction and /truncate renumber the
+        KEYED BY CONTENT, NOT BY INDEX. Compaction renumbers the
         message list, so an index would silently re-point a summary at somebody
         else's reply. A hash of the answer text moves with the text and stops
         matching if the text ever changes, which is the correct failure.
