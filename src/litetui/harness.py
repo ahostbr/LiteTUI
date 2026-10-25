@@ -267,6 +267,25 @@ def tool_process_env(agent_id: str | None, env=None) -> dict[str, str]:
     return child
 
 
+def claude_process_env(agent_id: str | None, environ=None) -> dict[str, str]:
+    """The identity half of `tool_process_env`, as an overlay for the Claude Agent process.
+
+    A host tool is spawned by us, so `tool_process_env` can hand it a scrubbed copy of the environment.
+    Claude's NATIVE Bash is spawned by `claude.exe`, which the SDK starts with `{**os.environ, **options.env}`:
+    it can add or override, never remove. This LiteTUI consumed its own LITEHARNESS_AGENT_ID at launch, so
+    the shell the model typed into had no seat id, and `liteharness`'s `get_agent_id()` fell through to
+    CLAUDE_CODE_SESSION_ID (a Claude session id, not a seat) and refused `clerk forward` with "requires the
+    Clerk's own identity". So: the seat id is set, and any other inherited identity variable is blanked
+    (an empty value is skipped by `get_agent_id()`), the same ones `tool_process_env` scrubs.
+    """
+    source = os.environ if environ is None else environ
+    overlay = {key: "" for key in (*_SPAWN_IDENTITY_ENV, "LITESUITE_AGENT_ID")
+               if source.get(key)}
+    if agent_id:
+        overlay["LITEHARNESS_AGENT_ID"] = agent_id
+    return overlay
+
+
 def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]:
     """Consume an explicit spawn identity, preserving standalone defaults.
 
