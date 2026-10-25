@@ -315,7 +315,15 @@ def main() -> None:
         # child can take its own; this process stays as a thin parent (an engine it started keeps
         # running and the child attaches to it) and ends with the child's exit code.
         import subprocess
-        raise SystemExit(subprocess.call(relaunch))
+        try:
+            code = subprocess.call(relaunch)
+        except (OSError, TypeError, ValueError) as exc:
+            # This app is already gone, so the terminal is all there is to say it on.
+            print(f"litetui: could not continue this window as the new agent: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        if code:
+            print(f"litetui: the new agent's window ended with exit code {code}", file=sys.stderr)
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":
