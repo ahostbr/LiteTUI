@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -815,11 +816,37 @@ def message_text(msg: dict) -> str:
     return ""
 
 
+_ID_TOKEN = re.compile(r"[\w.:@-]+")
+
+
+def _header_id(msg: dict, key: str) -> str | None:
+    """A message or thread id fit to sit in the one-line header, else None.
+
+    Only a plain token: an id with a space, bracket or newline would break the header line (and the
+    markup around it) for every reader, so it is left out rather than escaped.
+    """
+    value = msg.get(key)
+    if isinstance(value, str) and _ID_TOKEN.fullmatch(value.strip()):
+        return value.strip()
+    return None
+
+
 def format_message(msg: dict) -> str:
-    """Render an inbox message for the chat log."""
+    """Render an inbox message for the chat log.
+
+    The header carries the FULL message id (and the thread id when there is one), not just the sender
+    prefix: a seat that must act on a message (`liteharness clerk forward <msg-id>`, `clerk digest`,
+    a reply on the thread) had no way to learn its id except by scanning the maildir by hand.
+    """
     frm = str(msg.get("from") or "?")[:8]
     pri = msg.get("priority") or "normal"
-    return f"[inbox from {frm} · {pri}]\n{message_text(msg)}"
+    parts = [f"inbox from {frm}", str(pri)]
+    mid, thread = _header_id(msg, "id"), _header_id(msg, "thread_id")
+    if mid:
+        parts.append(f"id {mid}")
+    if thread:
+        parts.append(f"thread {thread}")
+    return f"[{' · '.join(parts)}]\n{message_text(msg)}"
 
 
 # ── Agent-facing tool ────────────────────────────────────────────────────────
