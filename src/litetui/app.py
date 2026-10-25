@@ -6182,7 +6182,7 @@ class LiteTUI(App):
             if (getattr(self, '_agent_session', None) is not None
                     and not await self._register_owned_startup()):
                 return
-            if self._cli_convo_id:
+            if getattr(self, '_cli_convo_id', None):
                 from litetui.seat_prompts import rehydrate
                 if not rehydrate(self):
                     self._cli_launch_error = "Launch text mismatch: exact supplied launch provenance could not be proved; resume with identical launch sources or start a new conversation (omit --convo). Nothing was sent"

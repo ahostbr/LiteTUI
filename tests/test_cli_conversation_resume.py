@@ -58,7 +58,9 @@ class _FakeApp(SimpleNamespace):
             _cli_launch_error=None,
             available_models=[],
             _connect_settled=True,
-            conversation=[],
+            # A resumed conversation always carries its system record; _apply_cli_args now proves it (rehydrate).
+            conversation=[{"role": "system", "content": "sys", "litetui_prompt_version": 2,
+                           "litetui_prompt_base": "sys"}],
             convo_id="fresh-conversation",
             commands=[],
             submitted=[],
