@@ -230,7 +230,11 @@ class ClaudeTools:
             tools.append(tool(name, spec.get("description", name), spec.get("parameters", {"type": "object"}))(invoke))
         disabled = frozenset(self.app.settings.tools_disabled or ())
         _, hook_s = _deadlines(self.app)
+        from litetui import harness
+        # Native Bash runs inside claude.exe, not through harness.tool_process_env: give that process the seat's id.
+        seat_id = getattr(getattr(self.app, "seat", None), "agent_id", None)
         return {
+            "env": harness.claude_process_env(seat_id),
             "tools": [n for n in NATIVE_TOOLS if n not in disabled] if self.app.tools_enabled else [],
             "permission_mode": "default",
             "can_use_tool": self.can_use_tool,
