@@ -39,11 +39,22 @@ def _convo_meta_bits(path, msgs) -> tuple[str, int, str]:
 
 
 def _cmd_agent_new(app, _name: str, arg: str) -> None:
-    """/agent-new NAME (and /new NAME): create the agent home NAME and continue this window as that agent.
+    """/agent-new NAME (and /new NAME). Any failure is said in the chat: an exception that escaped a command
+    handler ended the whole app, which the user saw as a silent drop back to the shell."""
+    try:
+        _create_agent_and_relaunch(app, arg)
+    except Exception as exc:  # noqa: BLE001 - this is the boundary between a typed command and the process
+        app._relaunch_argv = None
+        app.system_message(f"/agent-new failed, nothing was changed: {type(exc).__name__}: {exc}")
+
+
+def _create_agent_and_relaunch(app, arg: str) -> None:
+    """Create the agent home NAME and continue this window as that agent.
 
     Same path as `litetui --create-agent NAME`: the new home takes this seat's backend, model and thinking
     level. The window is relaunched (the cli does it once this app has released its own home), because an
-    agent is one process's owned home and cannot be swapped under a running seat.
+    agent is one process's owned home and cannot be swapped under a running seat. The module is `litetui.cli`:
+    the package has no `__main__`, so `-m litetui` exits at once with "No module named litetui.__main__".
     """
     import sys
     import uuid
@@ -82,7 +93,7 @@ def _cmd_agent_new(app, _name: str, arg: str) -> None:
         app.system_message(f"An agent named {wanted} already exists. Open it with: litetui --agent {wanted}")
         return
     app._relaunch_argv = [
-        sys.executable, "-m", "litetui", "--create-agent", wanted, "--agent-id", str(uuid.uuid4()),
+        sys.executable, "-m", "litetui.cli", "--create-agent", wanted, "--agent-id", str(uuid.uuid4()),
         "--backend", authority.backend, "--model", authority.model,
         "--thinking-level", authority.thinking_level,
     ]
