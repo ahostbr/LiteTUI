@@ -217,7 +217,7 @@ def _wait(job: _Job, base: str, job_id: str, budget_s: float, cancel_body: dict 
             got = None
         if got is None:
             unreachable += 1             # one slow answer is normal; a minute of none is a closed app
-            if unreachable >= max(1, int(60 / POLL_S)):
+            if unreachable >= (max(1, int(60 / POLL_S)) if POLL_S > 0 else 30):
                 last["_note"] = "the app stopped answering while the job ran; its last known state is above"
                 return last
         elif "http_status" in got:

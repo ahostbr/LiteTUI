@@ -165,6 +165,28 @@ def test_a_job_past_its_wait_is_cancelled_before_the_seat_comes_back(env):
     assert steps.index(("POST", "/faceswap/video/f1/cancel")) < steps.index(("SEAT", "resume"))
 
 
+def test_an_app_that_closes_mid_job_ends_the_wait_and_the_seat_comes_back(env):
+    env.apps.routes[("POST", "/video/generate")] = (200, {"ok": True, "job_id": "v9"})
+    env.apps.routes[("GET", "/video/status/v9")] = (200, {"ok": True, "status": "running", "progress": 5})
+    polls = []
+    real_poll = studio_tool._Job.poll
+
+    def poll(self, base, job_id):
+        polls.append(job_id)
+        if len(polls) > 2:               # LiteImage was closed after two answers
+            raise studio_tool.urllib.error.URLError(ConnectionRefusedError("closed"))
+        return real_poll(self, base, job_id)
+
+    env.apps.routes[("POST", "/video/cancel/v9")] = (200, {"ok": True})
+    studio_tool._Job.poll = poll
+    try:
+        out = studio_tool.run({"app": "image", "action": "video", "prompt": "rain"},
+                              seat_model="seat", backend=env.seat)
+    finally:
+        studio_tool._Job.poll = real_poll
+    assert "stopped answering" in out and _steps(env.log)[-1] == ("SEAT", "resume")
+
+
 def test_a_seat_that_cannot_be_freed_starts_nothing(env):
     seat = Seat(env.log, refuse="the Strata server at http://127.0.0.1:8080 has no /v1/unload")
     out = studio_tool.run({"app": "image", "action": "generate", "prompt": "x"},
