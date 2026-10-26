@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -68,7 +69,8 @@ class StrataBackend(OwnedEngineLifecycle):
         return f"/model to pick a prepared {self.label} model, then /engine start"
 
     def reload_hint(self, rec: dict | None = None) -> str:
-        return f"/engine start on the {self.label} backend (LiteTUI starts the server for the chosen model)"
+        return (f"POST {self.host()}/v1/load (or Load on the {self.label} server's own page); if no server "
+                f"answers, /engine start on the {self.label} backend")
 
     # -- health --------------------------------------------------------------
 
@@ -242,14 +244,75 @@ class StrataBackend(OwnedEngineLifecycle):
             return None
         return {"identifier": model_id, "context": info[0], "parallel": 1, "status": "idle", "queued": 0}
 
+    # Suspend and resume use the SERVER'S OWN LOAD SWITCH, not the process (T0702).
+    # `POST /v1/unload` ends the engine between requests — RAM and VRAM go back — while the
+    # server keeps answering; `POST /v1/load` starts the engine again on the same spawn config
+    # (serve/server.py `Service.unload` / `ensure_loaded`). Nothing is killed and nothing is
+    # restarted with settings LiteTUI chose, so a server LiteTUI did not start is freed the same
+    # way as one it did. The server refuses (409) while a request runs — that is the
+    # other-seats-mid-stream gate here, so `seat_snapshot`'s "idle" is not trusted for it.
+
+    #: How long a suspend keeps asking while the server says a request is still running.
+    SEAT_BUSY_WAIT_S = 15.0
+    #: A load is an engine start: the launcher's own wait (`STRATA_START_TIMEOUT_S`).
+    SEAT_LOAD_TIMEOUT_S = strata_engine.STRATA_START_TIMEOUT_S
+
+    def _switch(self, verb: str, timeout: float) -> tuple[int | None, dict]:
+        """POST /v1/<verb> (load | unload) -> (HTTP status, JSON body); (None, {}) when nothing
+        answered. JSON with no Origin: the server refuses the switch to anything else."""
+        req = urllib.request.Request(f"{self.host()}/v1/{verb}", data=b"{}", method="POST",
+                                     headers={"Content-Type": "application/json", "User-Agent": "LiteTUI"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                status, raw = r.status, r.read()
+        except urllib.error.HTTPError as e:
+            status, raw = e.code, e.read()
+        except Exception:  # noqa: BLE001 - refused or timed out: nothing usable answered
+            return None, {}
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = {}
+        return status, body if isinstance(body, dict) else {}
+
+    def _switch_refusal(self, verb: str, status: int | None, body: dict) -> str:
+        """The sentence for a load switch that did not do its job."""
+        if status is None:
+            return f"no {self.label} server is answering at {self.host()}"
+        if status in (404, 405, 501):
+            return (f"this {self.label} server has no /v1/{verb} (an older build) — update {self.label} "
+                    f"from {self._install_where}")
+        if status == 409:
+            return f"a request is still running on the {self.label} server — try again when it has finished"
+        message = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else None
+        return f"the {self.label} server did not {verb} the model ({status}: {message or body or 'no reason given'})"
+
     def seat_suspend(self, rec: dict) -> str | None:
-        return (f"suspend unsupported: a {self.label} server holds its model for the life of the process — "
-                "/engine stop frees the RAM and VRAM")
+        deadline = time.monotonic() + self.SEAT_BUSY_WAIT_S
+        while True:
+            status, body = self._switch("unload", timeout=120)
+            if status != 409 or time.monotonic() >= deadline:
+                break
+            time.sleep(1.0)                   # our own turn's request may still be closing
+        if status == 200 and body.get("status") in ("unloaded", "not loaded"):
+            return None
+        if status == 200 and body.get("status") == "unsupported":
+            return (f"this {self.label} engine cannot unload between requests — /engine stop frees its "
+                    "RAM and VRAM")
+        return self._switch_refusal("unload", status, body)
 
     def seat_resume(self, rec: dict) -> str | None:
-        if self.seat_snapshot(rec.get("identifier") or "") is not None:
-            return None
-        return f"the {self.label} server is no longer serving {rec.get('identifier')!r} — " + self.reload_hint(rec)
+        key = rec.get("identifier") or ""
+        if self.seat_snapshot(key) is None:
+            status, body = self._switch("load", timeout=self.SEAT_LOAD_TIMEOUT_S)
+            if status != 200:
+                return self._switch_refusal("load", status, body)
+        got = self.seat_snapshot(key)
+        if got is None:
+            return f"the {self.label} server is not serving {key!r} after the load — " + self.reload_hint(rec)
+        if rec.get("context") and got.get("context") != rec.get("context"):
+            return f"seat reloaded but at context {got.get('context')} instead of {rec['context']}"
+        return None
 
     # -- control, which this engine does not have ------------------------------
 

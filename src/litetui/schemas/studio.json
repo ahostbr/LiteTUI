@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "studio",
-    "description": "Generate media with the LOCAL Lite studio apps — no API keys, no cloud, runs on this machine's GPU.\napp=image (LiteImage): actions status | generate | models | load_model (file_path) | unload_model | config | cancel. Generation is synchronous — the reply carries the saved file path. Generate params: prompt + any of width/height/steps/guidance/negative_prompt/seed/sampler/scheduler/batch/lora_dir/init_image_path/strength/clip_skip/output_path/save_to_gallery. guidance defaults to 3.5 (the LiteImage UI value for flux1-dev; the raw API default of 7.5 overdrives it) — pass explicitly for other model families.\napp=sound (LiteSound): actions status | generate (mode = music|song|sfx|ambient; prompt and/or lyrics; duration seconds) | job (job_id) | jobs | cancel (job_id) | gallery | backends. Generation is ASYNC: generate returns a job_id — poll with action=job until it reports done, then the file path is in the result. Do not spam polls; every few seconds is plenty.\napp=model (LiteModeler, prompt-to-3D): actions status | config | generate (prompt) | families — delegated to the `lst` CLI.\nimage and sound need their app RUNNING (status says). If one is not running, tell the human to open it — do not retry blind. NEVER call LiteImage's HTTP API directly for GPU work: this tool suspends your own LM Studio model first (shared 5090 VRAM) and restores it after; a raw POST would OOM.\nVRAM: on generate/load_model actions this tool SUSPENDS your own model in LM Studio, runs the job to completion, then reloads you at the same context config. You will not notice the gap — but your FIRST reply afterwards re-reads the whole conversation (KV cache is gone), so expect a slow first token and say so if the human wonders. Sound generation is therefore handled to completion INSIDE the call — no polling needed when it returns.",
+    "description": "Generate media with the LOCAL Lite studio apps — no API keys, no cloud, runs on this machine's GPU.\nYOUR MODEL AND VRAM: every GPU action below SUSPENDS your own local model first (LM Studio, llama.cpp, NInfer, Strata or Xolotl — whichever serves you), runs the job TO THE END inside this one call (async jobs too — you get the finished result, not a job id), has the app give its GPU memory back, then reloads you at the same context. Your FIRST reply afterwards re-reads the whole conversation (KV cache is gone): expect a slow first token. If your seat cannot be freed the call says why and nothing is generated. On a cloud backend nothing is suspended and async actions return a job_id to poll with action=job. NEVER call these apps' HTTP APIs directly for GPU work: that skips the suspend and can OOM the card.\nparams = the app's own request fields (they win over the shorthand args). wait_s = longest wait for an async job while you are suspended (default 14400); a job still running then is CANCELLED so you can come back.\napp=image (LiteImage, must be RUNNING): lookups status | models | loras | config | video_readiness | ultratex_status | channels | job (kind, job_id) | cancel (no args = the running image; or kind + job_id) | scrape (params.urls: list a gallery's images) | unload_model. GPU: generate (prompt + any of width/height/steps/guidance/negative_prompt/seed/sampler/scheduler/batch/lora_dir/init_image_path/strength/clip_skip/output_path/save_to_gallery; params: mask_path = inpaint/outpaint, control_net_model + control_image_path + control_strength + use_canny = ControlNet, ref_image_paths = reference/edit models, weight_type), upscale (params: image_path, upscale_model, repeats, tile_size), faceswap (params: source_image, target_image, output_dir, enhance, enhancer, swapper, fidelity, target_face_idx, source_face_indices, swap_all_faces, occlusion), faceswap_scrape (params: urls + target_image — swaps every image of a gallery), load_model (file_path from action=models). GPU async: video (prompt; params: width, height, steps, guidance_scale, seed, negative_prompt, sampling_method, scheduler, init_image_path, strength, frames, flow_shift, fps, chunk_size, lora_dir — uses the video model chosen in LiteImage's Settings, H3 included), video_upscale (params: source, output, width, height, aspect, fit, crop, provider), faceswap_video (params: video_path, target_path, output_path, enhance, enhancer, occlusion, swapper, fidelity, target_face_idx, every_n_frames, output_fps, output_width, output_height, crf), pipeline (params: steps [{op, errorPolicy}], initial_image, metadata, params), pipeline_batch (params: recipe.steps, axes {prompts, seeds, models}, base_params), ultratex (params: the UltraTex job body). EVERY OTHER PANEL FEATURE: ipc (params.channel + params.args = run the Generate / Face Swap / Character Sheet panel's own handler with the payload the panel sends; action=channels lists them and which are GPU work) — generate:start [request: send only what you change, the panel's current settings fill the rest: prompt, kind image|video, faceFix, identity, imageMode, refineWithQwen, extraLoraDirs, initImagePath, strength, refImagePaths, video {frames, fps, cameraPresetIds, cameraMotionStrength, refImagePaths, h3RefStack, refVideoDirs, refVideoAudioPaths, refAudioPaths, h3VideoShift, h3VedaPredictor, h3SemanticBridge, h3SecretSauce, h3MaxVram, extraLoraDirs}], generate:inpaint / generate:controlnet (preprocessor canny|depth|pose) / generate:upscale (dlss5 {runtimeDir}), compare:start, ltx:generate, cloud:image:generate, cloud:video:generate, sprite:run, moss:enhance, faceswap:swap [source, target, {extraTargetPaths, keepMaskPath, …}], faceswap:video-swap [{videoPath, targetPath, options {matchThreshold, sourceEmbedding, keepMaskPath, …}}], faceswap:video-scan-faces, faceswap:processors-start, faceswap:saved-faces-list/save/delete, faceswap:live-start/stop, charsheet:status/get/save/preflight/list-models/make, config:set [{key: keepModelLoaded | videoModelPath | h3MaxVram | videoFaceSharpen, value}]. guidance defaults to 3.5 for generate (the LiteImage UI value for flux1-dev; the raw API default of 7.5 overdrives it) — pass it explicitly for other model families.\napp=director (LiteImage's H3 Director): describe (start here: open view, project summary, engine state; params.project = full for the whole document) | request (params = a Director request object with its own action: list-projects, get-project, create-project, save-project, edit-project, select-project, import-project, import-file, import-asset, list-checkpoints, create-checkpoint, restore-checkpoint, compile, readiness, export-bundle, import-bundle, suggest, … — writes need params.expectedRevision) | ui (no params = read the view; params = a view command: open, layout, tab, view, seek, play, stop, zoom, fit, select, undo, redo, edit, studio) | screenshot | engine (no params = H3 engine status; params.op = validate | install | cancel | activate | model) | jobs | job (job_id) | cancel (job_id; params.projectId). GPU async: generate (params: projectId, expectedRevision, intent = preview | balanced | final, optional seed, continueRender, fromSceneId, toSceneId, seedSnapshotId) | retry (params: jobId, newSeed).\napp=sound (LiteSound, must be RUNNING): status | backends | config | jobs | job (job_id) | cancel (job_id) | gallery | backend_unload. GPU: generate (mode = music | song | sfx | ambient | speech; prompt and/or lyrics; duration seconds; params: genre, mood, backend, format, aceStep, speech) — async, waited on when you are suspended | backend_load (params.backend).\napp=model (LiteModeler through the `lst` CLI): status | config | families | list_models | export_skeleton | export_format; GPU: generate (out = .glb path, AND image = input picture OR prompt = text, which needs LiteImage running; family, seed, shape_steps, texture_steps, sparse_steps, target_faces, texture_size, no_texture, sampler, gguf_quant), batch (dir, out_dir), rig (input, out). Every arg or params field is forwarded to `lst run model`.\nIf an app is not running the call says so — tell the human to open it; do not retry blind.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -10,6 +10,7 @@
           "type": "string",
           "enum": [
             "image",
+            "director",
             "sound",
             "model"
           ]
@@ -17,12 +18,33 @@
         "action": {
           "type": "string"
         },
+        "params": {
+          "type": "object",
+          "description": "The app's own request fields (LiteImage / Director / LiteSound / lst model names). They win over the shorthand args."
+        },
+        "wait_s": {
+          "type": "number",
+          "description": "Longest wait for an async job while your model is suspended (default 14400 s)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "video",
+            "video_upscale",
+            "faceswap_video",
+            "pipeline",
+            "pipeline_batch",
+            "ultratex",
+            "ipc"
+          ],
+          "description": "image job / cancel: which kind of job job_id is"
+        },
         "prompt": {
           "type": "string"
         },
         "mode": {
           "type": "string",
-          "description": "sound: music|song|sfx|ambient"
+          "description": "sound: music|song|sfx|ambient|speech"
         },
         "lyrics": {
           "type": "string",
@@ -34,7 +56,7 @@
         },
         "job_id": {
           "type": "string",
-          "description": "sound: job to poll/cancel"
+          "description": "the job to poll or cancel"
         },
         "width": {
           "type": "number",
@@ -119,6 +141,18 @@
         "file_path": {
           "type": "string",
           "description": "image load_model: checkpoint path (from action=models)"
+        },
+        "out": {
+          "type": "string",
+          "description": "model generate/rig/export: output path"
+        },
+        "image": {
+          "type": "string",
+          "description": "model generate: input image (image-to-3D)"
+        },
+        "family": {
+          "type": "string",
+          "description": "model: trellis2 | triposplat | pixal3d | hunyuan3d-2.1 | hunyuan3d-omni"
         }
       },
       "required": [

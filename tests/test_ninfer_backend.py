@@ -802,16 +802,83 @@ def test_request_overrides_is_the_siblings_merge_not_a_third_spelling(monkeypatc
     assert "temperature" not in got
 
 
-def test_the_seat_cannot_be_suspended_and_says_why(monkeypatch):
+def test_an_attached_seat_cannot_be_suspended_and_says_why(monkeypatch):
     """🔴 REFUSE BY NAME; NEVER REPORT VRAM FREED THAT IS NOT.
 
     `seat_guard.suspend` hands this sentence to `studio_tool`/`listen_tool`,
     which then decide whether to run anyway. Returning None would claim the
-    card was freed and let an image job start against a full one.
+    card was freed and let an image job start against a full one. An engine
+    LiteTUI did not start is not stopped for a generation.
     """
     b = _served(monkeypatch)
     err = b.seat_suspend({"identifier": "qwen3.8-27b"})
-    assert err and "life of the process" in err
+    assert err and "life of the process" in err and "not started by this LiteTUI" in err
+
+
+def test_an_owned_engine_is_stopped_for_a_generation_and_started_again(tmp_path, monkeypatch):
+    """T0702. Ryan 2026-10-26: the studio tool must "correctly unload the local model from
+    vram during generation". ninfer-serve has no unload (its routes are /health and
+    /v1/models), so the only way to free an NInfer seat is to stop the process — which
+    LiteTUI may do only to an engine it started — and start it again on the same settings.
+    The stop claim is held across the generation so /engine start cannot fill the gap."""
+    from litetui import ninfer_engine, seat_guard
+    from litetui.llm_backend import TerminalShutdown
+
+    monkeypatch.setenv("LITESUITE_LLM_DIR", str(tmp_path))
+    monkeypatch.setattr(seat_guard, "BREADCRUMB", tmp_path / "crumb.json")
+    monkeypatch.setattr(ninfer_engine, "running_argv", lambda port: None)
+    host = "http://127.0.0.1:63177"
+    up = {"engine": True}
+
+    def get_json(self, url, timeout=10.0):
+        if not up["engine"]:
+            raise BackendError("nothing answers")
+        return _MODELS_BODY
+
+    def engine(pid):
+        proc = type("P", (), {"pid": pid, "poll": lambda self: None})()
+        return ninfer_engine.OwnedEngine(proc=proc, host=host, log_path="log", log_file=None,
+                                         model_id="qwen3.8-27b", registered=False)
+
+    stopped, started = [], []
+
+    def terminate(owned):
+        stopped.append(owned.proc.pid)
+        up["engine"] = False
+        return TerminalShutdown(owned=True, attempted=True, main_exited=True, retained=False)
+
+    def start(settings, *, healthy, notice=None):
+        started.append(settings)
+        up["engine"] = True
+        return engine(8)
+
+    monkeypatch.setattr(NInferBackend, "_get_json", get_json)
+    monkeypatch.setattr(ninfer_engine, "terminate_owned", terminate)
+    monkeypatch.setattr(ninfer_engine, "start", start)
+    b = NInferBackend(_Settings())
+    b._owned, b._host = engine(7), host
+
+    rec = seat_guard.record("qwen3.8-27b", b)
+    assert seat_guard.suspend(rec, b) is None
+    assert stopped == [7] and b._owned is None
+    with pytest.raises(BackendError, match="stopping"):
+        run(b.start_engine())
+    assert seat_guard.resume(rec, b) is None
+    assert started == [b._settings] and b._owned.proc.pid == 8 and b._host == host
+    assert not b._stopping and not seat_guard.BREADCRUMB.exists()
+
+
+def test_an_unconfirmed_stop_is_not_reported_as_freed(monkeypatch):
+    from litetui import ninfer_engine
+    from litetui.llm_backend import TerminalShutdown
+
+    b = _served(monkeypatch)
+    b._owned = object()
+    monkeypatch.setattr(ninfer_engine, "terminate_owned",
+                        lambda owned: TerminalShutdown(owned=True, attempted=True, retained=True))
+    err = b.seat_suspend({"identifier": "qwen3.8-27b"})
+    assert err and "did not confirm" in err
+    assert not b._stopping, "an unconfirmed stop must release its claim so /engine stop can retry"
 
 
 def test_seat_snapshot_is_resident_or_absent(monkeypatch):
