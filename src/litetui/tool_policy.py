@@ -1470,6 +1470,7 @@ def classify_studio(args: Mapping[str, object], _workspace: Path) -> Iterable[st
     if action in {
         "status", "models", "config", "job", "jobs", "gallery", "backends",
         "families", "list_families", "list_models", "help",
+        "loras", "video_readiness", "ultratex_status", "describe", "screenshot",
     }:
         return (READ_ONLY, NETWORK)
     return (NETWORK, EXTERNAL_WRITE, PROCESS_EXECUTION)
