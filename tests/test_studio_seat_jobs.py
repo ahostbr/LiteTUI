@@ -221,6 +221,39 @@ def test_an_older_liteimage_without_a_release_route_is_named(env):
     assert _steps(env.log)[-1] == ("SEAT", "resume")
 
 
+def _bridge(env, channel, gpu, job_states):
+    env.apps.routes[("GET", "/ipc/channels")] = (200, {"ok": True, "channels": [
+        {"channel": channel, "gpu": gpu, "available": True}]})
+    env.apps.routes[("POST", f"/ipc/{channel}")] = (202, {"ok": True, "job": {"id": "j1", "status": "running"}})
+    env.apps.routes[("GET", "/ipc/jobs/j1")] = env.apps.sequence(*[
+        (200, {"ok": True, "job": {"id": "j1", "status": s, "result": {"imagePaths": ["C:/out/fixed-face.png"]}}})
+        for s in job_states])
+
+
+def test_a_panel_feature_without_a_rest_route_runs_through_the_bridge_with_the_seat_out(env):
+    """Face fix, identity, H3 references... reach LiteImage as the panel's own handler (/ipc)."""
+    _bridge(env, "generate:start", True, ["running", "complete"])
+    request = {"prompt": "portrait", "faceFix": True, "identity": {"kind": "ipadapter", "images": ["C:/me.png"]}}
+    out = studio_tool.run({"app": "image", "action": "ipc",
+                           "params": {"channel": "generate:start", "args": [request]}},
+                          seat_model="seat", backend=env.seat)
+    assert "fixed-face.png" in out
+    sent = next(b for m, p, b in env.log if p == "/ipc/generate:start")
+    assert sent == {"args": [request]}
+    steps = _steps(env.log)
+    assert steps.index(("SEAT", "suspend")) < steps.index(("POST", "/ipc/generate:start"))
+    assert steps[-2:] == [("POST", "/gpu/release"), ("SEAT", "resume")]
+
+
+def test_a_bridged_lookup_never_suspends_and_is_waited_on(env):
+    _bridge(env, "faceswap:saved-faces-list", False, ["complete"])
+    out = studio_tool.run({"app": "image", "action": "ipc",
+                           "params": {"channel": "faceswap:saved-faces-list", "args": []}},
+                          seat_model="seat", backend=env.seat)
+    assert "complete" in out
+    assert ("SEAT", "suspend") not in _steps(env.log)
+
+
 def test_model_generate_forwards_every_field_lst_needs(monkeypatch, env):
     """`lst run model action=generate` REQUIRES `out` and image-or-prompt; the tool used to
     forward the prompt alone, so every generate failed on the missing `out`."""

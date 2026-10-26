@@ -190,6 +190,10 @@ _IMAGE_JOBS = {
                      frozenset({"completed", "failed", "canceled"})),
 }
 
+#: A panel handler run through LiteImage's /ipc bridge (ipc-bridge.ts): every call is a job.
+_IPC_JOB = _Job("/ipc/{channel}", "/ipc/jobs/{id}", "/ipc/jobs/{id}/cancel",
+                _inner("job", "id"), _inner("job", "status"), _TRACKER_DONE)
+
 #: A Director render (director-routes.ts): the job is `value`, its state is `stage`.
 _DIRECTOR_JOB = _Job("/director/request", "/director/jobs/{id}", "/director/jobs/{id}/cancel",
                      _inner("value", "id"), _inner("value", "stage"),
@@ -309,23 +313,62 @@ def _image_body(args: dict) -> dict:
     return body
 
 
+def _ipc_channels() -> dict[str, dict]:
+    """LiteImage's own list of bridged panel channels, with which of them are GPU work."""
+    got = _http("GET", f"{IMAGE_URL}/ipc/channels", timeout=5)
+    return {c.get("channel"): c for c in got.get("channels") or () if isinstance(c, dict)}
+
+
+def _ipc_is_gpu(args: dict) -> bool:
+    """Asked of LiteImage, not kept here: a second list of its channels would drift from the
+    first. Not answering means the call itself will say so — nothing to suspend for."""
+    try:
+        return bool(_ipc_channels().get(_params(args).get("channel"), {}).get("gpu"))
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+def _image_ipc(args: dict, wait: bool) -> str:
+    """Run a panel's own handler through LiteImage's /ipc bridge: params = {channel, args}."""
+    params = _params(args)
+    channel = str(params.get("channel") or "").strip()
+    call_args = params.get("args", [])
+    if not channel or not isinstance(call_args, list):
+        return ("Error: image ipc needs params.channel (action=channels lists them) and params.args, "
+                "the list of arguments the panel passes (usually one object).")
+    path = "/ipc/" + urllib.parse.quote(channel, safe=":")
+    # A lookup or a cloud call holds no GPU: it is waited on here either way. GPU work is waited on
+    # only while the seat is out; otherwise its job id comes back to poll.
+    wait = wait or not _ipc_is_gpu(args)
+    return _submit(_IPC_JOB, IMAGE_URL, path, {"args": call_args}, 30, wait, _budget(args),
+                   "image", "app=image action=job kind=ipc")
+
+
+def _image_job(args: dict) -> _Job | None:
+    kind = (args.get("kind") or "").strip().lower()
+    return _IPC_JOB if kind == "ipc" else _IMAGE_JOBS.get(kind)
+
+
 def _image(action: str, args: dict, wait: bool = False) -> str:
     try:
         if action in _IMAGE_LOOKUPS:
             path, timeout = _IMAGE_LOOKUPS[action]
             return _fmt(_http("GET", f"{IMAGE_URL}{path}", timeout=timeout))
+        if action == "channels":
+            return _fmt({"channels": list(_ipc_channels().values())})
+        if action == "ipc":
+            return _image_ipc(args, wait)
         if action == "cancel":
-            kind = (args.get("kind") or "").strip().lower()
-            if kind:
-                job = _IMAGE_JOBS.get(kind)
+            if args.get("kind"):
+                job = _image_job(args)
                 if job is None or not args.get("job_id"):
-                    return f"Error: image cancel of a job needs kind = {' | '.join(_IMAGE_JOBS)} and job_id."
+                    return f"Error: image cancel of a job needs kind = {' | '.join([*_IMAGE_JOBS, 'ipc'])} and job_id."
                 return _fmt(_http("POST", IMAGE_URL + job.cancel.format(id=args["job_id"]), {}))
             return _fmt(_http("POST", f"{IMAGE_URL}/cancel", body={}))
         if action == "job":
-            job = _IMAGE_JOBS.get((args.get("kind") or "").strip().lower())
+            job = _image_job(args)
             if job is None or not args.get("job_id"):
-                return f"Error: image job needs kind = {' | '.join(_IMAGE_JOBS)} and job_id."
+                return f"Error: image job needs kind = {' | '.join([*_IMAGE_JOBS, 'ipc'])} and job_id."
             return _fmt(job.poll(IMAGE_URL, str(args["job_id"])))
         if action == "load_model":
             file_path = (args.get("file_path") or _params(args).get("file_path") or "").strip()
@@ -365,7 +408,7 @@ def _image(action: str, args: dict, wait: bool = False) -> str:
                            f"app=image action=job kind={action}")
         return (f"Error: unknown image action {action!r} (status, models, loras, config, "
                 f"video_readiness, ultratex_status, generate, upscale, faceswap, faceswap_scrape, "
-                f"scrape, {', '.join(_IMAGE_JOBS)}, job, cancel, load_model, unload_model)")
+                f"scrape, {', '.join(_IMAGE_JOBS)}, channels, ipc, job, cancel, load_model, unload_model)")
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         return _not_running("LiteImage", IMAGE_URL, e)
 
@@ -539,6 +582,8 @@ _APPS = {"image": _image, "director": _director, "sound": _sound, "model": _mode
 def _is_gpu(app: str, action: str, args: dict) -> bool:
     if action in _GPU_ACTIONS.get(app, ()):
         return True
+    if app == "image" and action == "ipc":
+        return _ipc_is_gpu(args)
     # A Director request whose own action renders.
     return app == "director" and action == "request" and \
         _params(args).get("action") in ("generate", "retry-job")
