@@ -609,6 +609,8 @@ def _release_app_gpu(app: str) -> str:
         got = _http("POST", url, {}, timeout=120)
     except (urllib.error.URLError, OSError, TimeoutError):
         return ""                         # not running: it holds nothing
+    except Exception as e:  # noqa: BLE001 - runs in the finally: it must never replace the job's own outcome
+        return f"\n[{what} GPU release failed: {type(e).__name__}: {e}]"
     if got.get("http_status") == 404:
         return (f"\n[{what} has no GPU release route in this build — anything it keeps "
                 "resident stays in VRAM while your model reloads]")
