@@ -638,10 +638,8 @@ class NInferBackend(OwnedEngineLifecycle):
         behaviour with no edit to `llm_backend.py` — the file Sentinel is adding
         the BACKENDS registry to this hour.
         """
-        return (
-            "start the NInfer engine from LiteSuite's Model Hub (Settings → NInfer); "
-            "LiteTUI attaches to it and cannot start it itself"
-        )
+        return ("/engine start on the NInfer backend, or start the engine from LiteSuite's "
+                "Model Hub (Settings → NInfer)")
 
     # -- per-request, and the seat -----------------------------------------
     #
@@ -729,35 +727,39 @@ class NInferBackend(OwnedEngineLifecycle):
         }
 
     def seat_suspend(self, rec: dict) -> str | None:
-        """Refuse by name. THE PROCESS IS THE MODEL -- there is no unload.
+        """THE PROCESS IS THE MODEL -- there is no unload (the binary's routes are
+        /health and /v1/models). So an engine LiteTUI started is STOPPED for the
+        generation and started again by `seat_resume` (T0702, the shared
+        `stop_for_seat`); one it did not start is refused by name.
 
-        ⬜ THE REFUSAL IS THE DESIGNED PATH, NOT A FAILURE.
-        `seat_guard.suspend` returns this sentence to the caller
-        (`studio_tool.py:273`, `listen_tool.py:424`), which then decides whether
-        to generate without freeing the seat -- exactly what an ATTACHED llama
-        server does today (`llm_backend.py:1455`). Raising instead, or returning
-        None as though VRAM had been freed, would both be lies: the second one
-        would let an image job start against a full card.
+        ⬜ THE REFUSAL IS A DESIGNED PATH, NOT A FAILURE. `seat_guard.suspend`
+        returns the sentence to the caller (`studio_tool`, `listen_tool`), which
+        does not start the job. Returning None as though VRAM had been freed would
+        let an image job start against a full card.
         """
-        return (
-            "suspend unsupported: ninfer-serve holds its artifact for the life "
-            "of the process — stop the engine itself (LiteSuite's Model Hub) to "
-            "free that VRAM"
-        )
+        if self._owned is None:
+            return ("suspend unsupported: ninfer-serve holds its artifact for the life of the process "
+                    "and this engine was not started by this LiteTUI — stop it where it was started "
+                    "(LiteSuite's Model Hub) to free that VRAM")
+        return self.stop_for_seat()
 
     def seat_resume(self, rec: dict) -> str | None:
-        """None when the engine is still serving it; a sentence when it is not.
+        """None when the engine is serving the seat again; a sentence when it is not.
 
-        ⬜ REACHABLE EVEN THOUGH `seat_suspend` ALWAYS REFUSES. `resume` runs
-        from the breadcrumb path too, after a crash nobody here observed -- so
-        "nothing was suspended" is an assumption, not a fact, and this asks.
+        ⬜ IT ASKS FIRST. `resume` also runs after a crash nobody here observed, so
+        "the engine is down because we stopped it" is checked, not assumed: only an
+        engine `seat_suspend` stopped is started again.
         """
-        if self.seat_snapshot(rec.get("identifier") or "") is not None:
+        key = rec.get("identifier") or ""
+        if self.seat_snapshot(key) is not None:
             return None
-        return (
-            "the NInfer engine is no longer serving "
-            f"{rec.get('identifier')!r} — " + self.reload_hint(rec)
-        )
+        if self._stopped_for_seat:
+            err = self.start_after_seat()
+            if err:
+                return err
+            if self.seat_snapshot(key) is not None:
+                return None
+        return f"the NInfer engine is no longer serving {key!r} — " + self.reload_hint(rec)
 
     # -- control, which this engine does not have -------------------------
 

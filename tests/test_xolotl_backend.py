@@ -108,7 +108,10 @@ def test_the_control_plane_refuses_with_xolotls_context_setting(server):
     backend = _backend(server["host"])
     with pytest.raises(BackendError, match="xolotl_max_context"):
         asyncio.run(backend.load("x"))
-    assert "a Xolotl server holds its model" in backend.seat_suspend({})
+    # The seat is freed through the server's own /v1/unload (inherited from StrataBackend,
+    # T0702); this fake server has no load switch, so the refusal names the engine.
+    err = backend.seat_suspend({})
+    assert "Xolotl" in err and "no /v1/unload" in err
 
 
 def test_start_goes_through_the_shared_lifecycle_and_the_xolotl_launcher(monkeypatch, server):

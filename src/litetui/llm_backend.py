@@ -1789,19 +1789,24 @@ class LlamaCppBackend(_VramGate):
 
     def seat_snapshot(self, key: str) -> dict | None:
         """seat_guard's record(): the live load config, or None when not
-        loaded. Our router is app-private, and seat_guard runs BETWEEN
-        completions by design, so a loaded model here is idle by
-        construction — the queued-seats hazard is an LM Studio (parallel
-        seats) shape, not ours."""
-        if self.attached:
-            return None
+        loaded. seat_guard runs BETWEEN completions by design, so a loaded
+        model here is idle by construction — the queued-seats hazard is an
+        LM Studio (parallel seats) shape.
+
+        🔴 AN ATTACHED SERVER IS SNAPSHOTTED TOO (T0702). None tells the
+        studio tool "not resident", and it then generated BESIDE the loaded
+        model in silence. A seat on a server we may not manage must reach
+        `seat_suspend`, which frees it through a signed router's own API or
+        refuses by name. A single-model server lists no status: its one model
+        is resident for the life of the process."""
         try:
             info = self._server_models().get(key)
         except BackendError:
             return None
-        if info is None or info.get("status", {}).get("value") != "loaded":
+        status = info.get("status") if info is not None else None
+        if info is None or (status is not None and status.get("value") != "loaded"):
             return None
-        args = info.get("status", {}).get("args", [])
+        args = (status or {}).get("args", [])
         ctx = _arg_value(args, "--ctx-size")
         par = _arg_value(args, "--parallel")
         return {
@@ -1813,9 +1818,10 @@ class LlamaCppBackend(_VramGate):
         }
 
     def seat_suspend(self, rec: dict) -> str | None:
-        if self.attached:
-            return (f"suspend unsupported: {self._owner_label()} owns that "
-                    "server — free VRAM from its own model manager instead")
+        """Unload through the router's own API. `_unload_sync` opens with
+        `_refuse_if_attached`: our router and a router its owner signed for in
+        router.json (LiteSuite's — Ryan 2026-10-26, T0702: "Unload via the
+        router API") are freed; anything else is refused by name."""
         try:
             self._unload_sync(rec["identifier"])
         except BackendError as e:
@@ -2017,40 +2023,42 @@ class LMStudioBackend(_VramGate):
     # -- control ----------------------------------------------------------
 
     async def load(self, key: str, *, ctx: int | None = None, notice=None, _reload: bool = False) -> None:
-        def _load() -> None:
-            lms = self._sdk()
-            config = {"contextLength": ctx} if ctx else None
-            # T873: after `_sdk()`, which is the last thing here that can refuse
-            # before the load itself. This backend has no attached-server guard
-            # — the promise was never wrong here — but the caller passes ONE
-            # notice to whichever backend answers, so it must fire on all of them
-            # or LM Studio users lose the line entirely.
-            if notice is not None:
-                notice()
-            try:
-                lms.load(key, config=config)
-            except Exception as e:
-                runtime_log.record_error(
-                    "lmstudio.load_failed", detail=f"load of {key!r} at {self._host} — {e}",
-                    site="llm_backend")
-                raise BackendError(f"could not load {key!r} in LM Studio — try again in a moment.") from e
         async with self.vram_guard(key, reload=_reload):
-            await asyncio.to_thread(_load)
+            await asyncio.to_thread(self._load_sync, key, ctx, notice)
         # LM Studio takes its load config on the request itself, so THIS is the
         # point at which "what this model was loaded with" is known.
         self._record_load_settings(key, {"ctx": ctx} if ctx else {})
 
+    def _load_sync(self, key: str, ctx: int | None = None, notice=None) -> None:
+        lms = self._sdk()
+        config = {"contextLength": ctx} if ctx else None
+        # T873: after `_sdk()`, which is the last thing here that can refuse
+        # before the load itself. This backend has no attached-server guard
+        # — the promise was never wrong here — but the caller passes ONE
+        # notice to whichever backend answers, so it must fire on all of them
+        # or LM Studio users lose the line entirely.
+        if notice is not None:
+            notice()
+        try:
+            lms.load(key, config=config)
+        except Exception as e:
+            runtime_log.record_error(
+                "lmstudio.load_failed", detail=f"load of {key!r} at {self._host} — {e}",
+                site="llm_backend")
+            raise BackendError(f"could not load {key!r} in LM Studio — try again in a moment.") from e
+
     async def unload(self, key: str) -> None:
-        def _unload() -> None:
-            lms = self._sdk()
-            try:
-                lms.unload(key)
-            except Exception as e:
-                runtime_log.record_error(
-                    "lmstudio.unload_failed", detail=f"unload of {key!r} at {self._host} — {e}",
-                    site="llm_backend")
-                raise BackendError(f"could not unload {key!r} in LM Studio — try again in a moment.") from e
-        await asyncio.to_thread(_unload)
+        await asyncio.to_thread(self._unload_sync, key)
+
+    def _unload_sync(self, key: str) -> None:
+        lms = self._sdk()
+        try:
+            lms.unload(key)
+        except Exception as e:
+            runtime_log.record_error(
+                "lmstudio.unload_failed", detail=f"unload of {key!r} at {self._host} — {e}",
+                site="llm_backend")
+            raise BackendError(f"could not unload {key!r} in LM Studio — try again in a moment.") from e
 
     async def apply_load_settings(self, key: str, cfg: dict, *, notice=None) -> None:
         """The SDK can drive context length (and load fresh); the rest of the
@@ -2100,20 +2108,21 @@ class LMStudioBackend(_VramGate):
 
     def seat_suspend(self, rec: dict) -> str | None:
         try:
-            asyncio.run(self.unload(rec["identifier"]))
+            self._unload_sync(rec["identifier"])
         except BackendError as e:
             return str(e)
-        except RuntimeError:
-            return "seat suspend called from a running event loop — use the async path"
         return None
 
     def seat_resume(self, rec: dict) -> str | None:
+        """Put back the seat `seat_suspend` took out, synchronously and WITHOUT the VRAM gate
+        (T0702). The studio tool calls this on a worker thread; through `load()` the gate
+        asked its second-instance question there — a modal or an RPC future bound to the UI
+        loop — and the seat did not come back. Restoring the weights just removed is not a
+        second set (`second_instance.needs_vram_confirmation`), so there is nothing to ask."""
         try:
-            asyncio.run(self.load(rec["identifier"], ctx=rec.get("context")))
+            self._load_sync(rec["identifier"], rec.get("context"))
         except BackendError as e:
             return str(e)
-        except RuntimeError:
-            return "seat resume called from a running event loop — use the async path"
         got = self.seat_snapshot(rec["identifier"])
         if got is None:
             return "load reported success but the model is not listed"
