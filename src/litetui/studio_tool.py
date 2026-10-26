@@ -287,7 +287,6 @@ _IMAGE_PASSTHROUGH = {
 
 #: Synchronous GPU routes: action -> (path, timeout).
 _IMAGE_SYNC = {
-    "upscale": ("/upscale", IMAGE_GEN_TIMEOUT),
     "faceswap": ("/faceswap", IMAGE_GEN_TIMEOUT),
     # A whole gallery, one swap per image.
     "faceswap_scrape": ("/faceswap/scrape", 3 * 3600),
@@ -344,6 +343,35 @@ def _image_ipc(args: dict, wait: bool) -> str:
                    "image", "app=image action=job kind=ipc")
 
 
+#: upscale params (studio names) -> the Canvas's UpscaleRequest fields.
+_UPSCALE_FIELDS = {"image_path": "imagePath", "width": "width", "height": "height", "upscale_model": "modelPath",
+                   "repeats": "repeats", "tile_size": "tileSize", "output_path": "outputPath"}
+
+
+def _image_upscale(args: dict, wait: bool) -> str:
+    """An image upscale through the Canvas's own handler (generate:upscale over /ipc): the
+    model's factor, or an EXACT size (ESRGAN passes, then one Lanczos resize), then DLSS 5
+    when asked — with the upscale model and DLSS runtime LiteImage's Settings saved. Ryan
+    2026-10-26: "upscale an image to X size and also use dlss5 if i want"."""
+    params = _params(args)
+    request = {}
+    for name, field in _UPSCALE_FIELDS.items():
+        value = params.get(name, args.get(name))
+        if value is not None:
+            request[field] = value
+    if not request.get("imagePath"):
+        return "Error: image upscale needs params.image_path (an absolute path to the picture)."
+    dlss = params.get("dlss5")
+    if dlss:
+        request["dlss5"] = dlss if isinstance(dlss, dict) else {}
+    return _submit(_IPC_JOB, IMAGE_URL, "/ipc/generate:upscale", {"args": [request]}, 30, wait, _budget(args),
+                   "image", "app=image action=job kind=ipc")
+
+
+#: What the video upscaler requires that a caller rarely means to choose: the Generate panel's defaults.
+_VIDEO_UPSCALE_DEFAULTS = {"aspect": "source", "fit": "fit", "crop": None, "provider": "dlss5"}
+
+
 def _image_job(args: dict) -> _Job | None:
     kind = (args.get("kind") or "").strip().lower()
     return _IPC_JOB if kind == "ipc" else _IMAGE_JOBS.get(kind)
@@ -396,6 +424,8 @@ def _image(action: str, args: dict, wait: bool = False) -> str:
             if "guidance_scale" not in body:
                 body["guidance_scale"] = 3.5
             return _fmt(_http("POST", f"{IMAGE_URL}/generate", body, timeout=IMAGE_GEN_TIMEOUT))
+        if action == "upscale":
+            return _image_upscale(args, wait)
         if action in _IMAGE_SYNC:
             path, timeout = _IMAGE_SYNC[action]
             return _fmt(_http("POST", IMAGE_URL + path, _image_body(args), timeout=timeout))
@@ -404,6 +434,11 @@ def _image(action: str, args: dict, wait: bool = False) -> str:
             body = _image_body(args)
             if action == "video" and not body.get("prompt"):
                 return "Error: 'prompt' is required for image video."
+            if action == "video_upscale":
+                body = {**_VIDEO_UPSCALE_DEFAULTS, **_params(args)}
+                if not (body.get("source") and body.get("output") and body.get("width") and body.get("height")):
+                    return ("Error: video_upscale needs params.source and params.output (absolute paths; output a "
+                            "new file) and params.width + params.height (even, 64-7680).")
             return _submit(job, IMAGE_URL, job.submit, body, 60, wait, _budget(args), "image",
                            f"app=image action=job kind={action}")
         return (f"Error: unknown image action {action!r} (status, models, loras, config, "

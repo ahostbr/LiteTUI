@@ -236,11 +236,48 @@ def test_sound_waits_for_its_job_and_releases_its_backend(env):
 
 def test_an_older_liteimage_without_a_release_route_is_named(env):
     del env.apps.routes[("POST", "/gpu/release")]
-    env.apps.routes[("POST", "/upscale")] = (200, {"ok": True, "outputPath": "C:/out/big.png"})
-    out = studio_tool.run({"app": "image", "action": "upscale", "params": {"image_path": "C:/in.png"}},
+    env.apps.routes[("POST", "/faceswap")] = (200, {"ok": True, "outputPath": "C:/out/swapped.png"})
+    out = studio_tool.run({"app": "image", "action": "faceswap",
+                           "params": {"source_image": "C:/in.png", "target_image": "C:/face.png"}},
                           seat_model="seat", backend=env.seat)
-    assert "C:/out/big.png" in out and "no GPU release route" in out
+    assert "C:/out/swapped.png" in out and "no GPU release route" in out
     assert _steps(env.log)[-1] == ("SEAT", "resume")
+
+
+def test_an_image_upscales_to_an_exact_size_with_dlss5_through_the_canvas_path(env):
+    """Ryan 2026-10-26: "i want an agent to be able to directly upscale an image to X size and also
+    use dlss5 if i want". The Canvas's own handler does it (LiteImage generate:upscale): ESRGAN
+    passes to reach the size, one Lanczos resize, DLSS 5 last, the saved model and runtime."""
+    env.apps.routes[("POST", "/ipc/generate:upscale")] = (202, {"ok": True, "job": {"id": "up1", "status": "running"}})
+    env.apps.routes[("GET", "/ipc/jobs/up1")] = env.apps.sequence(
+        (200, {"ok": True, "job": {"id": "up1", "status": "running"}}),
+        (200, {"ok": True, "job": {"id": "up1", "status": "complete", "result": {
+            "result": {"id": "x"}, "followUps": [{"id": "x-sized"}, {"id": "x-dlss5"}],
+            "final": {"imagePath": "C:/out/x_dlss5.png"}}}}))
+    out = studio_tool.run({"app": "image", "action": "upscale", "params": {
+        "image_path": "C:/in.png", "width": 3840, "dlss5": True, "output_path": "C:/final/big.png"}},
+        seat_model="seat", backend=env.seat)
+    assert "C:/out/x_dlss5.png" in out
+    sent = next(b for m, p, b in env.log if p == "/ipc/generate:upscale")
+    assert sent == {"args": [{"imagePath": "C:/in.png", "width": 3840, "outputPath": "C:/final/big.png", "dlss5": {}}]}
+    steps = _steps(env.log)
+    assert steps.index(("SEAT", "suspend")) < steps.index(("POST", "/ipc/generate:upscale"))
+    assert steps[-2:] == [("POST", "/gpu/release"), ("SEAT", "resume")]
+
+
+def test_a_video_upscale_gets_the_panels_defaults_for_what_it_requires(env):
+    env.apps.routes[("POST", "/video/upscale")] = (202, {"ok": True, "job": {"id": "vu1", "status": "queued"}})
+    env.apps.routes[("GET", "/video/upscale/vu1")] = (200, {"ok": True, "job": {"id": "vu1", "status": "complete",
+                                                                             "output": "C:/out/4k.mp4"}})
+    out = studio_tool.run({"app": "image", "action": "video_upscale", "params": {
+        "source": "C:/in.mp4", "output": "C:/out/4k.mp4", "width": 3840, "height": 2160}},
+        seat_model="seat", backend=env.seat)
+    assert "C:/out/4k.mp4" in out
+    sent = next(b for m, p, b in env.log if p == "/video/upscale")
+    assert sent == {"source": "C:/in.mp4", "output": "C:/out/4k.mp4", "width": 3840, "height": 2160,
+                    "aspect": "source", "fit": "fit", "crop": None, "provider": "dlss5"}
+    assert "needs params.source" in studio_tool.run({"app": "image", "action": "video_upscale",
+                                                     "params": {"source": "C:/in.mp4"}})
 
 
 def _bridge(env, channel, gpu, job_states):
