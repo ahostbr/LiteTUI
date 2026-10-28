@@ -2871,10 +2871,17 @@ class LiteTUI(App):
         self._user_bubble(text, False)
         hook_host.start_prompt(self, item)
 
+    def _self_job_here(self, job) -> bool:
+        return sched_mod.self_target_matches(
+            getattr(job, "owner_agent_id", ""), getattr(job, "owner_convo_id", ""),
+            getattr(getattr(self, "seat", None), "agent_id", None), getattr(self, "convo_id", None))
+
     def _fire_job(self, job, *, manual: bool = False) -> None:
         if restart_checkpoint.is_held(self):
             return
         from litetui.shared_state import Lease, OwnershipError
+        if not LiteTUI._self_job_here(self, job):
+            return  # another seat never takes the lease or consumes this job
         if getattr(self, "_gui_schedules_paused", False):
             return
         # T1082 (Dijkstra S1): a seat that cannot grant the job's level says so and
@@ -2894,6 +2901,10 @@ class LiteTUI(App):
                 if not manual and disk is None and job_path.exists():
                     return  # deleted after this process selected its candidate
                 if disk is not None:
+                    if not sched_mod.self_target_matches(
+                            disk.get("owner_agent_id", ""), disk.get("owner_convo_id", ""),
+                            getattr(getattr(self, "seat", None), "agent_id", None), self.convo_id):
+                        return  # re-read authority under the lease, even for a manual fire
                     if not manual and disk.get("kind") == "loop" and disk.get("owner_convo_id") not in ("", None, self.convo_id):
                         return  # a sibling must not pause the owning conversation's loop
                     if not manual and not disk.get("enabled", True):
@@ -2905,11 +2916,11 @@ class LiteTUI(App):
                     if (not manual and disk.get("kind") == "loop" and disk.get("next_run_at")
                             and datetime.fromisoformat(disk["next_run_at"]) > datetime.now()):  # noqa: DTZ005 - scheduler local wall time
                         return
-                    if not manual:
+                    if not manual or disk.get("owner_agent_id"):
                         for field in sched_mod.Job.__dataclass_fields__:
                             if field in disk:
                                 setattr(job, field, disk[field])
-                        if not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
+                        if not manual and not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
                             return
                 return LiteTUI._fire_job_owned(self, job, manual=manual)
         except OwnershipError:
@@ -2936,7 +2947,20 @@ class LiteTUI(App):
         """
         if restart_checkpoint.is_held(self):
             return
+        if not LiteTUI._self_job_here(self, job):
+            return False
         now = datetime.now()
+        # Self jobs never enter the unscoped input queue. One persisted debt
+        # survives refresh and coalesces all busy occurrences until next idle.
+        if getattr(job, "owner_agent_id", "") and self._chat_running():
+            if not job.deferred_slot:
+                job.deferred_slot = sched_mod.slot_of(now)
+                try:
+                    sched_mod.save(self.jobs, paths.data_root())
+                except OSError:
+                    job.deferred_slot = None
+                    self._system("Self schedule could not record its deferred fire.")
+            return False
         # T1082: the level this job RECORDED at creation. Checked before
         # prepare_fire and the stamp, so a skipped job keeps its slot, run_count
         # and next_run_at for an instance that can run it (C5).
@@ -2957,12 +2981,15 @@ class LiteTUI(App):
             self._system(blocked)
             return
         prior_slot, prior_count = getattr(job, "last_fired_slot", None), job.run_count
+        prior_deferred = getattr(job, "deferred_slot", None)
+        job.deferred_slot = None
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
             sched_mod.save(self.jobs, paths.data_root())
         except OSError:
             job.last_fired_slot, job.run_count = prior_slot, prior_count
+            job.deferred_slot = prior_deferred
             self._system("Scheduled work was not delivered because its execution stamp could not be saved.")
             return False
 
@@ -2990,7 +3017,7 @@ class LiteTUI(App):
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         header = f"{source} {label} \u00b7 {job.schedule}"
 
-        if job.new_conversation and not self._chat_running():
+        if job.new_conversation and not getattr(job, "owner_agent_id", "") and not self._chat_running():
             self._handle_command("/new")
 
         if self._chat_running():
@@ -3004,7 +3031,10 @@ class LiteTUI(App):
             )
             return True
         self._user_bubble(text, False, header=header)
-        hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "scheduled"})
+        item = {"content": text, "tool_profile": profile, "source": "scheduled"}
+        if getattr(job, "owner_agent_id", ""):
+            item.update(owner_agent_id=job.owner_agent_id, owner_convo_id=job.owner_convo_id)
+        hook_host.start_prompt(self, item)
         return True
 
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
