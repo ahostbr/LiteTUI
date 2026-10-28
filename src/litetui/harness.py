@@ -59,13 +59,18 @@ HEARTBEAT_EVERY = 12
 #: Why: Docs/adr/0002-tests-must-not-write-the-live-registry.md
 NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
 
+#: T0085: `liteharness spawn --pty --exec litetui` mints a pty-* id and exports it
+#: here. The seat registers under its OWN uuid, so without this in presence nothing
+#: joins the spawner's pty-* row to the seat (no post-launch verify, no kill by id).
+PROVISIONAL_ID_ENV = "LITEHARNESS_PROVISIONAL_ID"
+
 
 def harness_disabled() -> bool:
     return bool(os.environ.get(NO_HARNESS_ENV, "").strip())
 
 
-def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
-    """Merge only recap fields into an existing seat row; never create a row.
+def _merge_presence_fields(path: Path, agent_id: str, fields: dict, prefix: str) -> bool:
+    """Merge only `fields` into an existing seat row; never create a row.
 
     Contract copied from liteharness-oss/liteharness/config.py:merge_presence_fields:
     missing/unreadable/non-dict -> False; re-read before update, atomic temp-file
@@ -79,12 +84,12 @@ def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
         return False
     if not isinstance(row, dict) or row.get("agent_id") != agent_id:
         return False
-    row.update({"last_recap": recap, "last_recap_at": datetime.now(timezone.utc).isoformat()})
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".recap-", suffix=".json")
+    row.update(fields)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=prefix, suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump(row, output, ensure_ascii=False)
-        # A purged seat must not be brought back by a pending recap write.
+        # A purged seat must not be brought back by a pending write.
         if not path.exists():
             return False
         for attempt in range(8):
@@ -99,6 +104,18 @@ def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
         if os.path.exists(temporary):
             os.unlink(temporary)
     return False
+
+
+def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
+    """Merge only the recap fields into an existing seat row."""
+    return _merge_presence_fields(
+        path, agent_id,
+        {"last_recap": recap, "last_recap_at": datetime.now(timezone.utc).isoformat()}, ".recap-")
+
+
+def merge_provisional_presence(path: Path, agent_id: str, provisional_id: str) -> bool:
+    """T0085: merge only provisional_id, joining the spawner's pty-* row to this seat."""
+    return _merge_presence_fields(path, agent_id, {"provisional_id": provisional_id}, ".prov-")
 
 
 class _Refused:
@@ -413,6 +430,8 @@ class Seat:
         self.thinking_level: str | None = None
         # Captured from the explicit spawn marker envelope; never an inherited parent env.
         self.spawned_by: str | None = None
+        # T0085: the spawner's pty-* id, captured (and popped) from the env at startup.
+        self.provisional_id: str | None = None
         # Bound to the launching canvas session, not to a cwd or a possibly
         # inherited environment in later tool subprocesses.
         self.canvas_session = canvas_session
@@ -468,6 +487,22 @@ class Seat:
         if not self.registered:
             return None
         return registered_spawner(self.agent_id)
+
+    def _record_provisional(self, root: Path | None = None) -> bool:
+        """T0085: write provisional_id into this seat's own presence row.
+
+        Only a row the spawner made is ours to claim: `spawn` pre-creates
+        agents/<provisional>.json and a hook deletes it when a seat absorbs it, so a
+        nested `litetui` that inherited another seat's id finds no row and records
+        nothing. `register` starts from the existing row, so the field survives it.
+        """
+        pid = self.provisional_id
+        if not pid or pid == self.agent_id or not re.fullmatch(r"pty-[A-Za-z0-9_-]+", pid):
+            return False
+        agents = (root or Path.home() / ".liteharness") / "agents"
+        if not (agents / f"{pid}.json").exists():
+            return False
+        return merge_provisional_presence(agents / f"{self.agent_id}.json", self.agent_id, pid)
 
     def registry_name(self, root: Path | None = None) -> str | None:
         """Owned folder truth, or legacy registry name without agent context."""
@@ -607,6 +642,7 @@ class Seat:
             if r.returncode == 0:
                 if self._agent_session is None:
                     self.name = _resolved_name(r.stdout) or self.name
+                self._record_provisional()
                 return True
         except Exception:
             pass
@@ -651,6 +687,7 @@ class Seat:
             if self.registered:
                 self.name = got
                 self.error = None
+                self._record_provisional()
             else:
                 if self._agent_session is not None:
                     from litetui.registration_diagnostics import (
