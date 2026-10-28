@@ -118,6 +118,34 @@ def test_resumed_snapshot_is_not_reinjected(make_app):
     assert _records(resumed) == before, "a resumed snapshot must not write an edit record"
 
 
+def test_replayed_snapshot_strips_before_reinjection(make_app):
+    first = make_app()
+    _system_text(first)
+    first._append_to_system(FLEET)  # persist an edit after the initial snapshot
+    saved = first.conversation[0]["content"]
+    meta, messages = ConversationRepository.read(first.convo_path)
+    assert messages[0]["content"] == saved
+    assert saved.endswith("\n")
+
+    resumed = make_app(soul=NEW)
+    resumed.conversation = messages
+    resumed._store_injected = meta["store_injected"]
+    # The fixture's new home refreshes its address, but not the saved snapshot.
+    resumed_text = _system_text(resumed)
+    assert resumed_text.endswith(_store_text(first))
+    assert resumed_text.count(appsvc.STORE_HEADER) == 1
+    # Compaction strips the stored message, not its request-only prompt rewrite.
+    system = resumed.conversation[0]
+    resumed.conversation[0] = {
+        **system, "content": appsvc.strip_store_block(system["content"]),
+    }
+    resumed._store_injected = False
+    refreshed = _system_text(resumed)
+    assert refreshed.count(appsvc.STORE_HEADER) == 1
+    assert NEW in refreshed and OLD not in refreshed
+    assert FLEET in refreshed
+
+
 # (d) local compaction rebuild
 
 def _bypass_owned_seat(monkeypatch) -> None:
