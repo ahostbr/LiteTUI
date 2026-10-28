@@ -10288,14 +10288,14 @@ class LiteTUI(App):
             handoff=request.handoff,
         )
 
-    async def _owner_gate(self, t0_ns: int) -> tuple[bool, str]:
-        """Owner mode: (ok, reason) for "NOW.md was rewritten since t0 and owner-handoff committed it".
+    async def _owner_gate(self, before: bytes) -> tuple[bool, str]:
+        """Owner mode: (ok, reason) for "NOW.md changed during compaction and owner-handoff committed it".
 
         The single gate every backend calls AFTER STEP 1 and BEFORE anything is truncated.
         """
         session = getattr(self, "_agent_session", None)
         agent_id = session.authority.agent_id if session is not None else None
-        return await owner_mode.owner_gate(self._owner_memory_dir, t0_ns, agent_id)
+        return await owner_mode.owner_gate(self._owner_memory_dir, before, agent_id)
 
     async def _owner_drive_turn(self, text: str, *, restart_maintenance=None) -> bool:
         """Owner mode: send `text` as ONE normal user turn through the engine and wait for it.
@@ -10329,7 +10329,8 @@ class LiteTUI(App):
         Codex's own auto-compaction cannot be intercepted (named limit); this runs on a
         manual /compact, which is why the 70% reminder exists.
         """
-        owner_dir, t0 = self._owner_memory_dir, self._owner_compact_t0
+        owner_dir, before = self._owner_memory_dir, self._owner_compact_now
+        assert before is not None, "owner compaction must snapshot NOW.md before STEP 1"
         text = owner_mode.compact_prompt(owner_dir, summary=False, app=self, fresh=True)
         why = None
         for attempt in (1, 2):
@@ -10339,7 +10340,7 @@ class LiteTUI(App):
                 self._system(f"NOW.md was not saved ({why}); asking once more.")
             if not await self._owner_drive_turn(text, restart_maintenance=restart_maintenance):
                 return False, None
-            passed, why = await self._owner_gate(t0)
+            passed, why = await self._owner_gate(before)
             if passed:
                 return True, None
             text = owner_mode.retry_text(why, owner_dir, summary=False)
@@ -10372,16 +10373,22 @@ class LiteTUI(App):
             await LiteTUI._compact_body(self, extra, handoff=handoff, restart_maintenance=restart_maintenance)
 
     async def _compact_body(self, extra: str = "", *, handoff: str | None = None, restart_maintenance=None) -> None:
-        # Owner mode: the time STEP 1 begins. The gate (owner_gate) accepts NOW.md only if it
-        # was rewritten at or after this, and runs before anything is truncated.
-        self._owner_compact_t0 = time.time_ns() if getattr(self, '_owner_memory_dir', None) is not None else None
+        # Snapshot before STEP 1: content, not filesystem clocks, proves a rewrite.
+        self._owner_compact_now: bytes | None = None
+        owner_dir = getattr(self, '_owner_memory_dir', None)
+        if owner_dir is not None:
+            try:
+                self._owner_compact_now = (Path(owner_dir) / owner_mode.NOW).read_bytes()
+            except OSError as exc:
+                self._system(f"Compact failed — NOW.md cannot be read: {exc}")
+                return
         if getattr(self.backend, "owns_native_turns", False):
             # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.
             from litetui.claude_compact import compact
             auto = getattr(self, "_compact_is_auto", False)
             self._compact_is_auto = False
-            await compact(self, extra, auto=auto, handoff=handoff)
+            await compact(self, extra, auto=auto, handoff=handoff, owner_before=self._owner_compact_now)
             return
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
@@ -10453,7 +10460,7 @@ class LiteTUI(App):
         # Owner mode swaps STEP 1 (NOW.md rewrite + DOMAIN.md append in the owner folder).
         owner_dir = getattr(self, '_owner_memory_dir', None)
         compact_text = owner_mode.compact_prompt(owner_dir, app=self, fresh=True) if owner_dir is not None else compact_prompt
-        owner_t0 = getattr(self, '_owner_compact_t0', None) if owner_dir is not None else None
+        owner_before = getattr(self, '_owner_compact_now', None) if owner_dir is not None else None
         owner_failure = None  # why NOW.md was not committed, once the one retry is spent
         owner_retried = False
         owner_first_summary = ""
@@ -10630,10 +10637,10 @@ class LiteTUI(App):
                 if not tool_acc:
                     card.record_round(timing)
                     summary = text_full.strip()
-                    if owner_t0 is not None and summary:
+                    if owner_before is not None and summary:
                         # The model is done with STEP 1 and STEP 2. Before anything is
                         # truncated: did NOW.md change, and did owner-handoff commit it?
-                        passed, why = await self._owner_gate(owner_t0)
+                        passed, why = await self._owner_gate(owner_before)
                         owner_failure = None if passed else why
                         owner_retry_gated = owner_retried
                         if not passed and not owner_retried:
@@ -10704,10 +10711,10 @@ class LiteTUI(App):
                     card.fail("stopped — conversation unchanged")
                     self._system(self._stop_reason or "[stopped by you]")
                     return
-            if owner_t0 is not None and owner_retried and not owner_retry_gated:
+            if owner_before is not None and owner_retried and not owner_retry_gated:
                 # The retry spent its whole budget on tool calls and never summarised, so no
                 # gate has judged what it wrote. Judge it now, before anything is truncated.
-                passed, why = await self._owner_gate(owner_t0)
+                passed, why = await self._owner_gate(owner_before)
                 owner_failure = None if passed else why
         except Exception as e:
             self._autocompact_failed_at = self.ctx_used

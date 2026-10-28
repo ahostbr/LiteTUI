@@ -168,16 +168,16 @@ def test_the_handoff_is_given_the_seats_id_and_the_owner_folder(make_app, owner_
     assert handoff.calls == [(owner_dir, agent_id)]
 
 
-def test_t0_is_recorded_at_the_choke_point(make_app, owner_dir, monkeypatch):
+def test_initial_content_is_recorded_at_the_choke_point(make_app, owner_dir, monkeypatch):
     _bypass_owned_seat(monkeypatch)
     app = make_app()
-    before = time.time_ns()
+    before = (owner_dir / "NOW.md").read_bytes()
     _drive(app, [_write_call(owner_dir), _summary()], owner_dir, monkeypatch, Handoff([]))
-    assert isinstance(app._owner_compact_t0, int) and before <= app._owner_compact_t0 <= time.time_ns()
+    assert app._owner_compact_now == before
 
 
 def test_a_note_that_was_not_rewritten_never_reaches_the_handoff(make_app, owner_dir, monkeypatch):
-    """Summary first with NOW.md untouched: the mtime check fails, the handoff is not run,
+    """Summary first with NOW.md untouched: the content check fails, the handoff is not run,
     the seat is asked once, writes, and only then is the handoff run."""
     _bypass_owned_seat(monkeypatch)
     app = make_app()
@@ -255,7 +255,7 @@ def test_without_owner_mode_nothing_changes(make_app, owner_dir, monkeypatch):
     events, calls, system = _drive(app, [_summary()], owner_dir, monkeypatch, handoff, writes_on=())
     assert handoff.calls == [] and events == ["truncate"]
     assert _last_user(calls[0]) == app_mod.COMPACT_PROMPT
-    assert app._owner_compact_t0 is None and len(calls) == 1
+    assert app._owner_compact_now is None and len(calls) == 1
     assert not any("NOT committed" in m for m in system)
 
 
@@ -285,7 +285,6 @@ def error_events(detail="overloaded"):
 def claude_owner_app(tmp_path, owner_dir, monkeypatch, turns, handoff, write_on=(1,)):
     app, _asked = app_for(tmp_path, summary_events(), monkeypatch=monkeypatch)
     app._owner_memory_dir = owner_dir
-    app._owner_compact_t0 = time.time_ns()
     events = handoff.events
 
     def on_turn(n, _prompt):
@@ -295,9 +294,9 @@ def claude_owner_app(tmp_path, owner_dir, monkeypatch, turns, handoff, write_on=
     app.backend.session = TurnSession(turns, on_turn)
     monkeypatch.setattr(owner_mode, "run_handoff", handoff)
 
-    async def gate(t0):
+    async def gate(before):
         events.append(f"gate-closes={app.backend.closes}")
-        return await owner_mode.owner_gate(owner_dir, t0, "agent-1")
+        return await owner_mode.owner_gate(owner_dir, before, "agent-1")
     app._owner_gate = gate
     original_truncate = app._truncate
 
@@ -312,7 +311,8 @@ def claude_owner_app(tmp_path, owner_dir, monkeypatch, turns, handoff, write_on=
 async def test_claude_writes_then_the_gate_then_the_session_closes_then_truncation(tmp_path, owner_dir, monkeypatch):
     handoff = Handoff([])
     app = claude_owner_app(tmp_path, owner_dir, monkeypatch, [summary_events()], handoff)
-    await claude_compact.compact(app, "", auto=True)
+    app._compact_is_auto = True
+    await app_mod.LiteTUI._compact_body(app)
     assert handoff.events == ["write", "gate-closes=0", "handoff", "truncate"], \
         "the gate ran while the session was still open, before the cut"
     assert app.backend.closes == 1 and app.emitted[-1][0] == "compacted"
@@ -391,36 +391,37 @@ async def test_claude_without_owner_mode_is_unchanged(tmp_path, monkeypatch):
 # =========================== the gate itself ===========================
 
 @pytest.mark.asyncio
-async def test_the_gate_refuses_a_note_older_than_the_compaction(owner_dir, monkeypatch):
+async def test_the_gate_refuses_unchanged_content(owner_dir, monkeypatch):
     handoff = Handoff([])
     monkeypatch.setattr(owner_mode, "run_handoff", handoff)
-    ok, why = await owner_mode.owner_gate(owner_dir, time.time_ns())
+    ok, why = await owner_mode.owner_gate(owner_dir, (owner_dir / "NOW.md").read_bytes())
     assert not ok and "was not rewritten" in why and handoff.calls == []
 
 
 @pytest.mark.asyncio
-async def test_the_gate_commits_a_note_written_after_t0(owner_dir, monkeypatch):
+async def test_the_gate_commits_changed_content(owner_dir, monkeypatch):
     handoff = Handoff([])
     monkeypatch.setattr(owner_mode, "run_handoff", handoff)
-    t0 = time.time_ns()
+    before = (owner_dir / "NOW.md").read_bytes()
     _write_now(owner_dir)
-    ok, _out = await owner_mode.owner_gate(owner_dir, t0, "agent-1")
+    ok, _out = await owner_mode.owner_gate(owner_dir, before, "agent-1")
     assert ok and handoff.calls == [(owner_dir, "agent-1")]
 
 
 @pytest.mark.asyncio
 async def test_the_gate_reports_the_handoffs_own_reason(owner_dir, monkeypatch):
     monkeypatch.setattr(owner_mode, "run_handoff", Handoff([], outcomes=(False,)))
-    t0 = time.time_ns()
+    before = (owner_dir / "NOW.md").read_bytes()
     _write_now(owner_dir)
-    ok, why = await owner_mode.owner_gate(owner_dir, t0)
+    ok, why = await owner_mode.owner_gate(owner_dir, before)
     assert not ok and why.startswith("HANDOFF REFUSED") and "Nothing was committed" in why
 
 
 @pytest.mark.asyncio
 async def test_the_gate_reports_a_missing_note(owner_dir):
+    before = (owner_dir / "NOW.md").read_bytes()
     (owner_dir / "NOW.md").unlink()
-    ok, why = await owner_mode.owner_gate(owner_dir, time.time_ns())
+    ok, why = await owner_mode.owner_gate(owner_dir, before)
     assert not ok and "cannot be read" in why
 
 
@@ -551,13 +552,12 @@ async def test_claude_stop_during_step_one_runs_no_gate_and_no_retry(tmp_path, o
 # -- the gate's edges and the seat id in the subprocess environment -------------------------------
 
 @pytest.mark.asyncio
-async def test_a_note_five_seconds_older_than_t0_is_refused(owner_dir, monkeypatch):
+async def test_touching_unchanged_content_is_refused(owner_dir, monkeypatch):
     handoff = Handoff([])
     monkeypatch.setattr(owner_mode, "run_handoff", handoff)
-    t0 = time.time_ns()
-    ago = (t0 - 5_000_000_000) / 1e9
-    os.utime(owner_dir / "NOW.md", (ago, ago))
-    ok, why = await owner_mode.owner_gate(owner_dir, t0)
+    before = (owner_dir / "NOW.md").read_bytes()
+    (owner_dir / "NOW.md").touch()
+    ok, why = await owner_mode.owner_gate(owner_dir, before)
     assert not ok and "was not rewritten" in why and handoff.calls == []
 
 
@@ -589,3 +589,71 @@ async def test_claude_stop_while_the_handoff_runs_sends_no_retry(tmp_path, owner
     await claude_compact.compact(app, "", auto=True)
     assert len(handoff.calls) == 1 and len(session.queried) == 1, "the refusal is not retried after a stop"
     assert app.backend.closes == 0
+
+
+def test_changed_content_with_old_mtime_passes(make_app, owner_dir, monkeypatch):
+    _bypass_owned_seat(monkeypatch)
+    original = _write_now
+
+    def write_with_old_clock(folder, text=NEW_NOW):
+        original(folder, text)
+        old = time.time() - 3600
+        os.utime(folder / "NOW.md", (old, old))
+
+    monkeypatch.setattr(__import__(__name__), "_write_now", write_with_old_clock)
+    events, _, _ = _drive(make_app(), [_write_call(owner_dir), _summary()],
+                          owner_dir, monkeypatch, Handoff([]))
+    assert events == ["write", "handoff", "truncate"]
+
+
+def test_unchanged_content_with_fresh_mtime_fails(make_app, owner_dir, monkeypatch):
+    _bypass_owned_seat(monkeypatch)
+    app = make_app()
+    future = time.time() + 3600
+    os.utime(owner_dir / "NOW.md", (future, future))
+    handoff = Handoff([])
+    _, _, system = _drive(app, [_summary("first"), _summary("retry")],
+                           owner_dir, monkeypatch, handoff)
+    assert handoff.calls == []
+    assert any("was not rewritten" in note for note in system)
+
+
+def test_unreadable_initial_note_aborts_before_step_one(make_app, owner_dir, monkeypatch):
+    _bypass_owned_seat(monkeypatch)
+    app = make_app()
+    (owner_dir / "NOW.md").unlink()
+    events, calls, system = _drive(app, [_summary()], owner_dir, monkeypatch, Handoff([]))
+    assert events == [] and calls == []
+    assert any("NOW.md cannot be read" in note for note in system)
+
+
+@pytest.mark.asyncio
+async def test_claude_unreadable_initial_note_aborts_before_step_one(tmp_path, owner_dir, monkeypatch):
+    handoff = Handoff([])
+    app = claude_owner_app(tmp_path, owner_dir, monkeypatch, [summary_events()], handoff)
+    session = app.backend.session
+    (owner_dir / "NOW.md").unlink()
+    await claude_compact.compact(app, "", auto=True)
+    assert session.queried == [] and handoff.events == []
+    assert any("NOW.md cannot be read" in note for note in app.notices)
+
+
+@pytest.mark.asyncio
+async def test_claude_empty_initial_content_is_not_resnapshotted(tmp_path, owner_dir, monkeypatch):
+    handoff = Handoff([])
+    app = claude_owner_app(tmp_path, owner_dir, monkeypatch, [summary_events()], handoff, write_on=())
+    # The entry snapshot is empty, and a change has occurred before the Claude layer starts.
+    await claude_compact.compact(app, "", auto=True, owner_before=b"")
+    assert len(handoff.calls) == 1
+    assert app.emitted[-1][0] == "compacted"
+
+
+@pytest.mark.asyncio
+async def test_direct_claude_compaction_ignores_previous_snapshot(tmp_path, owner_dir, monkeypatch):
+    handoff = Handoff([])
+    app = claude_owner_app(tmp_path, owner_dir, monkeypatch,
+                           [summary_events("first"), summary_events("retry")], handoff, write_on=())
+    app._owner_compact_now = b"before the previous compaction"
+    await claude_compact.compact(app, "", auto=True)
+    assert handoff.calls == []
+    assert any("was not rewritten" in note for note in app.notices)
