@@ -3805,7 +3805,12 @@ class LiteTUI(App):
         base = self._system_prompt_text()
         floor = prompt_compiler.compile_prompt_file(
             paths.SYSTEM_PROMPT_FILE, root=paths.ROOT, user_name=self.settings.user_name).strip()
-        return {"role": "system", "content": base, "litetui_prompt_owner": 1, "litetui_prompt_version": 2,
+        # Fleet text is a suffix: request-time base recomposition must preserve it.
+        content = base
+        if getattr(getattr(self, "seat", None), "registered", False):
+            content = appsvc.extend_system_text(
+                base, self._fleet_identity_sentence() + load_prompt("harness-capabilities", app=self))
+        return {"role": "system", "content": content, "litetui_prompt_owner": 1, "litetui_prompt_version": 2,
                 "litetui_prompt_base": base, "litetui_prompt_ordinary_start": len(floor) + 2,
                 "litetui_ordinary_text": self._ordinary_prompt_text("ordinary-instructions").strip(),
                 "litetui_seat_text": self._ordinary_prompt_text("seat-instructions")}
