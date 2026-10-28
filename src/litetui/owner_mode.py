@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from enum import Enum
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -323,28 +324,31 @@ def not_committed_note(reason: str) -> str:
     return f"NOW.md was NOT committed: {reason}"
 
 
-#: File times tick coarsely (NTFS can stamp a write up to a few ms behind the clock that
-#: produced t0), so a write made right after t0 can read as slightly older. A note written
-#: this close to the start of a compaction was not written by STEP 1 anyway; anything older
-#: than this is rejected as unchanged.
-MTIME_SLACK_NS = 50_000_000
+class NowState(Enum):
+    """A snapshot unavailable at entry, distinct from empty bytes and no owner mode."""
+
+    ABSENT = "absent"
 
 
-async def owner_gate(owner_dir, t0_ns: int, agent_id: str | None = None) -> tuple[bool, str]:
+NowSnapshot = bytes | NowState
+
+
+async def owner_gate(owner_dir, before: NowSnapshot, agent_id: str | None = None) -> tuple[bool, str]:
     """After STEP 1, before anything is truncated: did the seat write NOW.md, and did it commit?
 
-    (a) NOW.md's mtime is at or after `t0_ns` (the seat actually rewrote it during
-    this compaction); (b) `liteharness owner-handoff` runs as a subprocess, outside
+    (a) NOW.md is readable and differs from `before` (bytes or NowState.ABSENT)
+    captured when this compaction began;
+    (b) `liteharness owner-handoff` runs as a subprocess, outside
     the tool policy, and validates the template and commits NOW.md and DOMAIN.md.
     Returns (ok, reason); the reason is the first thing that failed.
     """
     import asyncio
     now = Path(owner_dir) / NOW
     try:
-        modified = now.stat().st_mtime_ns
+        current = now.read_bytes()
     except OSError as exc:
         return False, f"NOW.md cannot be read: {exc}"
-    if modified + MTIME_SLACK_NS < t0_ns:
+    if current == before:
         return False, "NOW.md was not rewritten during this compaction (it has not changed since the compaction began)"
     ok, output = await asyncio.to_thread(run_handoff, owner_dir, agent_id)
     if ok:
