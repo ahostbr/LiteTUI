@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from pathlib import Path
 from litetui import paths
 from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
@@ -198,17 +199,25 @@ def store_block(app, live: bool=False) -> str:
     # quietly stopped being true is worse than no instruction at all.
     return STORE_OPENING + '\n\n'.join(parts) + '\n'
 
-def strip_store_block(content: str) -> str:
-    """`content` without its trailing store block; unchanged when it has none.
+def store_block_start(content: str) -> int:
+    """Locate a generated trailing snapshot, never a bare marker in user text.
 
-    INVARIANT: the store block is the LAST thing in message 0, so everything
-    from the blank line before STORE_HEADER onward is the snapshot. The index
-    block, if any, sits before it and stays (found again by its own header).
-    `_inject_store_once` appends it last, and `LiteTUI._append_to_system`
-    inserts any later text in front of it; anything else that extends message 0
-    after the store is injected must do the same or this cut will take it too.
+    The full opening, a home/owner section and the final newline must match.
+    Bodies are opaque: their own headings are not deletion boundaries.
+    INVARIANT: `_inject_store_once` appends the snapshot last; later additions
+    via `_append_to_system` go before this same boundary.
     """
-    cut = content.find('\n\n' + STORE_HEADER)
+    match = re.search(
+        re.escape(STORE_OPENING)
+        + r'### (?:memory|soul|handoff|SOUL|NOW|DOMAIN)\.md \(current contents\)\n\n.+\n\Z',
+        content, re.DOTALL,
+    )
+    return match.start() if match else -1
+
+
+def strip_store_block(content: str) -> str:
+    """`content` without its trailing store block; unchanged when it has none."""
+    cut = store_block_start(content)
     return content if cut < 0 else content[:cut]
 
 
