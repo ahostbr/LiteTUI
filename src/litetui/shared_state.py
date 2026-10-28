@@ -1,6 +1,6 @@
 """OS-owned leases and coordinated writes for terminal and desktop clients.
 
-Locks live on persistent siblings, never on an atomically replaced data file.
+Locks live on persistent files, never on an atomically replaced data file.
 There is no age-based stale eviction: the kernel releases locks when the owning
 process exits. An inaccessible lock is occupied, never permission to steal it.
 """
@@ -64,8 +64,23 @@ class Lease:
 
 
 @contextmanager
-def coordinated_write(path: Path, timeout: float = 10):
-    lease = Lease(Path(str(path) + ".lock"))
+def coordinated_write(path: Path, timeout: float = 10, *, user_file: bool = False):
+    """Serialize writes; user-file locks live outside the edited worktree.
+
+    The user-file namespace is shared across seat data roots, which may themselves
+    be checkouts. Never unlink a released lock: waiters can still hold its inode.
+    Restart old seats on rollout: older edit tools use the sibling namespace and
+    cannot coordinate with user-file locks here. Internal data writers keep their
+    existing sibling locks.
+    """
+    if user_file:
+        import hashlib
+        identity = os.path.normcase(str(Path(path).resolve()))
+        key = hashlib.sha256(os.fsencode(identity)).hexdigest()
+        lock_path = Path.home() / ".litetui" / "file-locks" / (key + ".lock")
+    else:
+        lock_path = Path(str(path) + ".lock")
+    lease = Lease(lock_path)
     deadline = time.monotonic() + timeout
     while True:
         try:
