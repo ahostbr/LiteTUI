@@ -9277,7 +9277,15 @@ class LiteTUI(App):
         native_loop = hasattr(self.backend, "app_server")
         if native_loop:
             self.tps = None
-        for _iteration in range(self.settings.tool_iterations):
+        # OAuth tools run only AFTER a whole stream succeeds. Native turns may
+        # already have effects mid-stream, so never replay those. Typed turns
+        # retain live RPC output; unattended panes stay live but RPC drafts wait.
+        recover_request = (self.backend.name == "codex" and not native_loop
+                           and getattr(self, "_hook_source", None) in tool_policy.UNATTENDED_SOURCES)
+        retry_budget = model_transport.CodexRequestRetry() if recover_request else None
+        retry_kwargs = None
+        _iteration = 0
+        while _iteration < self.settings.tool_iterations:
             # /pause: THE WHOLE LOOP HOLDS HERE. the user, 2026-09-18: "the entire
             # agent loop wrapped in a if not paused statement ... that i can
             # toggle with /pause". One gate covers every model round AND a
@@ -9296,7 +9304,7 @@ class LiteTUI(App):
                 # setting that had nothing to do with it.
                 stopped_early = True
                 break
-            if _iteration and self._autocompact_due() is not None:
+            if _iteration and retry_kwargs is None and self._autocompact_due() is not None:
                 # THE BUDGET IS SPENT INSIDE A TURN, SO IT MUST BE CHECKED
                 # INSIDE ONE. Both _maybe_autocompact calls below sit at
                 # `return` statements, so a turn that keeps calling tools
@@ -9359,6 +9367,49 @@ class LiteTUI(App):
                 graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
             )
 
+            if retry_kwargs is not None:
+                kwargs = retry_kwargs
+            elif recover_request:
+                kwargs["retry_budget"] = retry_budget
+                retry_kwargs = kwargs
+            rpc_deltas = []
+
+            def emit_delta(event):
+                if recover_request:
+                    rpc_deltas.append(event)
+                else:
+                    self._rpc_emit(event)
+
+            async def retry_failed_request(error, failed_stream=None):
+                if (retry_budget is None or self._stop_requested
+                        or not isinstance(error, model_transport.UnattendedRetryableError)):
+                    return False
+                delay = retry_budget.take_delay()
+                if delay is None:
+                    return False
+                # Nothing from this failed request was appended or executed.
+                # Stop pending paints; retain only a visibly discarded pane card.
+                sink.cancel()
+                self._elapsed.stop_body()
+                self._thinking_done()
+                for msg in tool_msgs.values():
+                    self._tool_end(msg)
+                    msg.remove()
+                widget.border_title = "Discarded attempt"
+                widget.set_answer(
+                    f"Attempt {retry_budget.used} failed: {_detail_sentence(error)} "
+                    f"[discarded; retrying in {delay:g}s]")
+                widget.body.styles.text_style = "dim"
+                widget.settled = True
+                if failed_stream is not None and hasattr(failed_stream, "close"):
+                    await failed_stream.close()
+                self._retry_notice(f"Retrying Codex request in {delay:g}s…")
+                try:
+                    await asyncio.sleep(delay)
+                finally:
+                    self._clear_retry_wait()
+                return True
+
             self._tps.start()
             try:
                 # ASK BEFORE OPENING THE STREAM. Inside this try on purpose:
@@ -9373,6 +9424,8 @@ class LiteTUI(App):
                     retry_notice=self._retry_notice, **kwargs
                 )
             except Exception as e:
+                if await retry_failed_request(e):
+                    continue
                 runtime_log.record(
                     "turn_stream_failed",
                     site="app.stream.open",
@@ -9532,7 +9585,7 @@ class LiteTUI(App):
                             self.tps = rate
                         self._glassbox_rate("thinking")
                         reasoning += token
-                        self._rpc_emit({"type": "reasoning_delta", "text": token})
+                        emit_delta({"type": "reasoning_delta", "text": token})
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
                             self._thinking_live = thinking
@@ -9574,7 +9627,7 @@ class LiteTUI(App):
                         text_full += delta.content
                         visible_delta = recap_stream.feed(delta.content)
                         if visible_delta:
-                            self._rpc_emit({"type": "text_delta", "text": visible_delta})
+                            emit_delta({"type": "text_delta", "text": visible_delta})
                         sink.show(recap_stream.visible)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
@@ -9625,6 +9678,8 @@ class LiteTUI(App):
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
                             self._scroll_down()
             except Exception as e:
+                if await retry_failed_request(e, stream):
+                    continue
                 runtime_log.record(
                     "turn_stream_failed",
                     site="app.stream.iterate",
@@ -9695,7 +9750,7 @@ class LiteTUI(App):
                 # reasoning would describe work the card never shows.
                 final_delta = recap_stream.finish()
                 if final_delta:
-                    self._rpc_emit({"type": "text_delta", "text": final_delta})
+                    emit_delta({"type": "text_delta", "text": final_delta})
                 sink.finish(recap_stream.visible)
                 # The completion hook may reject this draft or this may be a
                 # tool round. Keep recap pending until the terminal acceptance gate.
@@ -9710,6 +9765,12 @@ class LiteTUI(App):
                 else:
                     widget.body.styles.display = "none"
             self._scroll_down()
+
+            for event in rpc_deltas:
+                self._rpc_emit(event)
+            _iteration += 1  # failed requests do not spend the tool-round budget
+            retry_kwargs = None
+            retry_budget = model_transport.CodexRequestRetry() if recover_request else None
 
             # Record the assistant turn (content and/or tool_calls) so the
             # model keeps full context across the loop.
