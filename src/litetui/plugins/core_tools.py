@@ -18,7 +18,7 @@ from functools import partial
 from html.parser import HTMLParser
 from pathlib import Path
 
-from litetui import file_state, harness, paths
+from litetui import file_state, harness
 from litetui import ttyguard
 from litetui import tasks as tasks_mod
 from litetui.fmt import fmt_dur
@@ -57,10 +57,10 @@ def _truncate_head(text: str, max_lines: int = TOOL_MAX_LINES, max_bytes: int = 
     return text, truncated
 
 
-def _resolve_path(raw: str, *, workspace: Path | None = None) -> Path:
+def _resolve_path(raw: str) -> Path:
     p = Path(raw).expanduser()
     if not p.is_absolute():
-        p = (workspace if workspace is not None else Path.cwd()) / p
+        p = Path.cwd() / p
     return p
 
 
@@ -363,8 +363,7 @@ def tool_write(args: dict) -> str:
         return "[error] missing 'path'"
     if content is None:
         return "[error] missing 'content'"
-    # Host authorization resolves write paths against paths.ROOT, not process cwd.
-    p = _resolve_path(raw, workspace=paths.ROOT)
+    p = _resolve_path(raw)
     try:
         if p.parent and not p.parent.exists():
             p.parent.mkdir(parents=True, exist_ok=True)

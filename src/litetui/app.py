@@ -3460,6 +3460,13 @@ class LiteTUI(App):
         policy = self.plugins.policy_for(name)
         if policy is None:
             return tool_denied("no-metadata", app=self, name=name), False
+        if name == "write" and isinstance(args.get("path"), str) and args["path"]:
+            # Bind policy and execution to the same cwd-based target, even if cwd changes while approving.
+            from litetui.plugins.core_tools import _resolve_path
+            try:
+                args = {**args, "path": str(_resolve_path(args["path"]))}
+            except (OSError, RuntimeError, ValueError) as exc:
+                return f"[error] write path cannot be resolved: {exc}", False
         hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.STRICT
         authorize = getattr(self, "_authorize_action", partial(LiteTUI._authorize_action, self))
         refusal = await authorize(name, args, policy, profile=hook_profile)

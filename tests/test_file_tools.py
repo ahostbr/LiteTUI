@@ -475,21 +475,17 @@ def test_write_new_file_defaults_to_lf_without_a_convention(tmp_path):
     assert p.read_bytes() == b"new\nbody\n"
 
 
-def test_relative_write_uses_policy_workspace_not_cwd(tmp_path, monkeypatch):
-    from litetui import paths, tool_policy
+def test_relative_write_uses_cwd_not_source_root(tmp_path, monkeypatch):
+    from litetui import paths
     from litetui.plugins import core_tools
 
-    workspace = tmp_path / "workspace"
-    elsewhere = tmp_path / "elsewhere"
-    workspace.mkdir()
-    elsewhere.mkdir()
-    monkeypatch.setattr(paths, "ROOT", workspace)
-    monkeypatch.chdir(elsewhere)
-    args = {"path": "NOW.md", "content": "approved content"}
-    decision = tool_policy.evaluate(tool_policy.STRICT, tool_policy.WRITE_POLICY,
-                                    args, workspace, active_owner_memory_dir=workspace)
-    assert decision.allowed and tool_policy.SELF_STORE in decision.capabilities
-    result = core_tools.tool_write(args)
+    source = tmp_path / "source"
+    worktree = tmp_path / "worktree"
+    source.mkdir()
+    worktree.mkdir()
+    monkeypatch.setattr(paths, "ROOT", source)
+    monkeypatch.chdir(worktree)
+    result = core_tools.tool_write({"path": "NOW.md", "content": "worktree content"})
     assert not result.startswith("[error]"), result
-    assert (workspace / "NOW.md").read_text() == "approved content"
-    assert not (elsewhere / "NOW.md").exists()
+    assert (worktree / "NOW.md").read_text() == "worktree content"
+    assert not (source / "NOW.md").exists()
