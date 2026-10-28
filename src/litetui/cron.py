@@ -31,9 +31,7 @@ from datetime import datetime
 
 from textual import work
 
-from litetui import paths
-from litetui import runtime_log
-from litetui import seat_authority
+from litetui import paths, runtime_log, seat_authority
 from litetui import scheduler as sched_mod
 
 
@@ -166,18 +164,79 @@ class CronService:
             f"  {seat_authority.schedule_note(self._app, job.tool_profile)}"
         )
 
-    def create(self, prompt: str, schedule: str, *, label: str = "", level: str | None = None):
-        """THE cron creation path for /cron add and the sidecar's job_create (T1082):
-        the schedule parsed, the level through schedule_level (none = this seat's; a
-        locked seat is refused autonomous), then saved. ValueError says why not, and
-        nothing is written."""
+    async def schedule_self(self, request: dict) -> dict:
+        """T0495: a scoped request, never a waiver of the jobs.json file guard.
+
+        The tool adapter runs this on the App loop. Approval is mandatory even
+        for autonomous seats; only is_ryans_own grants the direct path. A missing
+        parent is never evidence of a human launch.
+        """
+        from litetui import approval_relay, tool_policy
+
+        if not isinstance(request, dict) or set(request) - {"prompt", "schedule", "label", "level"}:
+            raise ValueError("schedule_self accepts only prompt, schedule, label and level; no target")
+        request = dict(request)  # freeze what the approval describes
+        for field in ("prompt", "schedule"):
+            if not isinstance(request.get(field), str) or not request[field].strip():
+                raise ValueError(f"schedule_self requires a nonempty {field}")
+        if not isinstance(request.get("label", ""), str):
+            raise ValueError("schedule_self label must be a string")  # noqa: TRY004 - invalid JSON request
+        if "level" in request and not isinstance(request["level"], str):
+            raise ValueError("schedule_self level must name a profile")
+        sched_mod.Cron.parse(request["schedule"])
+        app = self._app
+
+        def context():
+            agent = getattr(getattr(app, "seat", None), "agent_id", None)
+            convo = getattr(app, "convo_id", None)
+            store = getattr(app, "store", None)
+            if (not agent or not convo or store is None or store.convo_id != convo
+                    or not store.owned or store.pending or store.loading):
+                raise ValueError("schedule_self requires this seat's owned materialized conversation")
+            ceiling = seat_authority.narrower(seat_authority.schedule_level(app),
+                                             seat_authority.loop_level(app))
+            return agent, convo, ceiling
+
+        agent, convo, ceiling = context()
+        level = request.get("level", ceiling)
+        if level not in tool_policy.PROFILES or seat_authority.narrower(level, ceiling) != level:
+            raise ValueError(f"schedule_self level must be {ceiling} or narrower")
+        if not seat_authority.is_ryans_own(app):
+            decision = tool_policy.PolicyDecision(
+                tool_policy.CONFIRM, ceiling, frozenset({tool_policy.SELF_STORE}),
+                "Self scheduling requires the spawning owner's approval")
+            status = await approval_relay.ask_spawner(
+                app, "schedule_self", {**request, "level": level,
+                                       "owner_agent_id": agent, "owner_convo_id": convo},
+                decision, getattr(app, "_hook_source", None))
+            if status != "approved":
+                raise ValueError(approval_relay.stop_line(app, "schedule_self", status))
+        # No await between this recheck and persistence. A reply cannot bless a
+        # different seat/conversation or a changed authority context.
+        if context() != (agent, convo, ceiling):
+            raise ValueError("schedule_self context changed while awaiting approval")
+        job = self.create(request["prompt"], request["schedule"], label=request.get("label", ""),
+                          level=level, owner_agent_id=agent, owner_convo_id=convo)
+        return {"id": job.id, "schedule": job.schedule, "tool_profile": job.tool_profile,
+                "owner_agent_id": job.owner_agent_id, "owner_convo_id": job.owner_convo_id}
+
+    def create(self, prompt: str, schedule: str, *, label: str = "", level: str | None = None,
+               owner_agent_id: str = "", owner_convo_id: str = ""):
+        """One in-process cron creation path. Manual callers retain their chosen
+        level; schedule_self validates its ceiling and binds its own scope first.
+        No partially created job stays in memory when persistence fails."""
         if not prompt.strip():
             raise ValueError("a scheduled prompt cannot be empty")
         sched_mod.Cron.parse(schedule)
         level = seat_authority.schedule_level(self._app, level)
-        job = sched_mod.Job(prompt=prompt, schedule=schedule, label=label, tool_profile=level)
+        job = sched_mod.Job(prompt=prompt, schedule=schedule, label=label, tool_profile=level,
+                            owner_agent_id=owner_agent_id, owner_convo_id=owner_convo_id)
         self.jobs.append(job)
-        sched_mod.save(self.jobs, paths.data_root())
+        try:
+            sched_mod.save(self.jobs, paths.data_root())
+        except OSError:
+            self.jobs.remove(job)
+            raise
         return job
 
     def list_jobs(self) -> None:

@@ -1,0 +1,18 @@
+{
+  "type": "function",
+  "function": {
+    "name": "schedule_self",
+    "description": "Schedule a recurring cron wake-up prompt into this seat's current owned conversation, never another seat. Requires the current spawning owner's APPROVE for each request, even at autonomous; denied, absent, cancelled or timed-out approval creates nothing. Only Ryan's positively owner-marked unspawned instance schedules directly. The recorded level cannot exceed this seat or its current turn. Jobs fire only while this seat and conversation are open. If due while busy, missed occurrences collapse into one fire on the next idle monitor tick. Direct jobs.json writes remain forbidden to non-owner seats. No target, new-conversation, or loop options.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "prompt": {"type": "string", "minLength": 1},
+        "schedule": {"type": "string", "description": "Five-field cron expression, or @hourly, @daily, @weekly, @monthly."},
+        "label": {"type": "string"},
+        "level": {"type": "string", "enum": ["strict", "interactive", "autonomous"], "description": "Optional narrower level; defaults to the narrower of this seat and its current turn."}
+      },
+      "required": ["prompt", "schedule"],
+      "additionalProperties": false
+    }
+  }
+}

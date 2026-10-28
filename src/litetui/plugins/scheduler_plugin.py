@@ -5,14 +5,21 @@ queued-delivery funnel it feeds) stays app-owned; this plugin owns the
 command surfaces, the palette rows, and WHEN the monitor starts. The
 screens live in plugins.scheduler_ui, moved whole.
 """
+import json
 from functools import partial
 
 from litetui import cron as cron_mod
+from litetui import tool_schemas
 from litetui.plugins import PluginManifest
 from litetui.plugins.scheduler_ui import (
-    CalendarBody, CalendarScreen, JobBody, JobScreen, _apply_job_edit,
+    CalendarBody,
+    CalendarScreen,
+    JobBody,
+    JobScreen,
+    _apply_job_edit,
 )
 from litetui.side_panel import present_dialog
+from litetui.tool_policy import SELF_STORE, ToolPolicy
 
 
 def _cmd_cron(app, name: str, arg: str) -> None:
@@ -40,6 +47,11 @@ def _palette_new_job(app) -> None:
 
 def _register(ctx) -> None:
     app = ctx.app
+    # The service owns the mandatory approval, including autonomous callers.
+    # A generic profile CONFIRM here would ask twice (and misroute hand launches).
+    ctx.tool(tool_schemas.load("schedule_self"),
+             lambda args: json.dumps(app.call_from_thread(app.cron.schedule_self, args)),
+             policy=ToolPolicy(frozenset({SELF_STORE}), "Request an owner-approved self schedule"))
     ctx.command(("/cron",), _cmd_cron)
     ctx.command(
         ("/calendar", "/cal"), _cmd_calendar,
