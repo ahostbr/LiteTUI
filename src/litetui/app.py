@@ -10295,7 +10295,7 @@ class LiteTUI(App):
             handoff=request.handoff,
         )
 
-    async def _owner_gate(self, before: bytes) -> tuple[bool, str]:
+    async def _owner_gate(self, before: owner_mode.NowSnapshot) -> tuple[bool, str]:
         """Owner mode: (ok, reason) for "NOW.md changed during compaction and owner-handoff committed it".
 
         The single gate every backend calls AFTER STEP 1 and BEFORE anything is truncated.
@@ -10337,7 +10337,8 @@ class LiteTUI(App):
         manual /compact, which is why the 70% reminder exists.
         """
         owner_dir, before = self._owner_memory_dir, self._owner_compact_now
-        assert before is not None, "owner compaction must snapshot NOW.md before STEP 1"
+        if before is None:
+            before = owner_mode.NowState.ABSENT
         text = owner_mode.compact_prompt(owner_dir, summary=False, app=self, fresh=True)
         why = None
         for attempt in (1, 2):
@@ -10381,14 +10382,13 @@ class LiteTUI(App):
 
     async def _compact_body(self, extra: str = "", *, handoff: str | None = None, restart_maintenance=None) -> None:
         # Snapshot before STEP 1: content, not filesystem clocks, proves a rewrite.
-        self._owner_compact_now: bytes | None = None
+        self._owner_compact_now: owner_mode.NowSnapshot | None = None
         owner_dir = getattr(self, '_owner_memory_dir', None)
         if owner_dir is not None:
             try:
                 self._owner_compact_now = (Path(owner_dir) / owner_mode.NOW).read_bytes()
-            except OSError as exc:
-                self._system(f"Compact failed — NOW.md cannot be read: {exc}")
-                return
+            except OSError:
+                self._owner_compact_now = owner_mode.NowState.ABSENT
         if getattr(self.backend, "owns_native_turns", False):
             # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.

@@ -318,3 +318,18 @@ def test_a_refused_admission_of_the_driven_turn_runs_no_turn_and_no_compaction(m
     events, calls, system = _drive(app, (True,), owner_dir, monkeypatch, handoff)
     assert "turn" not in events and "compact" not in events and handoff.calls == []
     assert any("not admitted" in m and "not compacted" in m for m in system)
+
+
+@pytest.mark.parametrize("writes_note", [True, False])
+def test_codex_missing_initial_note_does_not_block_compaction(make_app, owner_dir, monkeypatch, writes_note):
+    app = make_app()
+    (owner_dir / "NOW.md").unlink()
+    handoff = Handoff([])
+    events, _, system = _drive(app, (writes_note,), owner_dir, monkeypatch, handoff)
+    assert "compact" in events
+    assert len(handoff.calls) == int(writes_note)
+    if writes_note:
+        assert [event for event in events if event != "turn"] == ["write", "handoff", "compact"]
+        assert not any("NOT committed" in note for note in system)
+    else:
+        assert any("NOW.md was NOT committed: NOW.md cannot be read" in note for note in system)

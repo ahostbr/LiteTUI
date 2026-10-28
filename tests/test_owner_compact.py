@@ -618,24 +618,45 @@ def test_unchanged_content_with_fresh_mtime_fails(make_app, owner_dir, monkeypat
     assert any("was not rewritten" in note for note in system)
 
 
-def test_unreadable_initial_note_aborts_before_step_one(make_app, owner_dir, monkeypatch):
+@pytest.mark.parametrize("writes_note", [True, False])
+def test_missing_initial_note_does_not_block_compaction(make_app, owner_dir, monkeypatch, writes_note):
     _bypass_owned_seat(monkeypatch)
     app = make_app()
     (owner_dir / "NOW.md").unlink()
-    events, calls, system = _drive(app, [_summary()], owner_dir, monkeypatch, Handoff([]))
-    assert events == [] and calls == []
-    assert any("NOW.md cannot be read" in note for note in system)
+    handoff = Handoff([])
+    rounds = [_write_call(owner_dir), _summary()] if writes_note else [_summary(), _summary("retry")]
+    events, _, system = _drive(app, rounds, owner_dir, monkeypatch, handoff)
+    assert events[-1:] == ["truncate"]
+    assert len(handoff.calls) == int(writes_note)
+    if writes_note:
+        assert events == ["write", "handoff", "truncate"]
+        assert not any("NOT committed" in note for note in system)
+    else:
+        assert any("NOW.md was NOT committed: NOW.md cannot be read" in note for note in system)
 
 
 @pytest.mark.asyncio
-async def test_claude_unreadable_initial_note_aborts_before_step_one(tmp_path, owner_dir, monkeypatch):
+@pytest.mark.parametrize("writes_note", [True, False])
+@pytest.mark.parametrize("through_host", [True, False])
+async def test_claude_missing_initial_note_does_not_block_compaction(
+        tmp_path, owner_dir, monkeypatch, writes_note, through_host):
     handoff = Handoff([])
-    app = claude_owner_app(tmp_path, owner_dir, monkeypatch, [summary_events()], handoff)
-    session = app.backend.session
+    turns = [summary_events()] if writes_note else [summary_events(), summary_events("retry")]
+    app = claude_owner_app(tmp_path, owner_dir, monkeypatch, turns, handoff,
+                           write_on=(1,) if writes_note else ())
     (owner_dir / "NOW.md").unlink()
-    await claude_compact.compact(app, "", auto=True)
-    assert session.queried == [] and handoff.events == []
-    assert any("NOW.md cannot be read" in note for note in app.notices)
+    if through_host:
+        app._compact_is_auto = True
+        await app_mod.LiteTUI._compact_body(app)
+    else:
+        await claude_compact.compact(app, "", auto=True)
+    assert handoff.events[-1:] == ["truncate"]
+    assert app.emitted[-1][0] == "compacted"
+    assert len(handoff.calls) == int(writes_note)
+    if writes_note:
+        assert not any("NOT committed" in note for note in app.notices)
+    else:
+        assert any("NOW.md was NOT committed: NOW.md cannot be read" in note for note in app.notices)
 
 
 @pytest.mark.asyncio
@@ -657,3 +678,15 @@ async def test_direct_claude_compaction_ignores_previous_snapshot(tmp_path, owne
     await claude_compact.compact(app, "", auto=True)
     assert handoff.calls == []
     assert any("was not rewritten" in note for note in app.notices)
+
+
+@pytest.mark.asyncio
+async def test_absent_snapshot_is_distinct_from_empty_bytes(owner_dir, monkeypatch):
+    handoff = Handoff([])
+    monkeypatch.setattr(owner_mode, "run_handoff", handoff)
+    (owner_dir / "NOW.md").write_bytes(b"")
+    ok, _ = await owner_mode.owner_gate(owner_dir, owner_mode.NowState.ABSENT)
+    assert ok and len(handoff.calls) == 1
+    ok, reason = await owner_mode.owner_gate(owner_dir, b"")
+    assert not ok and "was not rewritten" in reason
+    assert len(handoff.calls) == 1

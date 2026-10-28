@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from enum import Enum
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -323,10 +324,20 @@ def not_committed_note(reason: str) -> str:
     return f"NOW.md was NOT committed: {reason}"
 
 
-async def owner_gate(owner_dir, before: bytes, agent_id: str | None = None) -> tuple[bool, str]:
+class NowState(Enum):
+    """A snapshot unavailable at entry, distinct from empty bytes and no owner mode."""
+
+    ABSENT = "absent"
+
+
+NowSnapshot = bytes | NowState
+
+
+async def owner_gate(owner_dir, before: NowSnapshot, agent_id: str | None = None) -> tuple[bool, str]:
     """After STEP 1, before anything is truncated: did the seat write NOW.md, and did it commit?
 
-    (a) NOW.md's bytes differ from `before`, captured when this compaction began;
+    (a) NOW.md is readable and differs from `before` (bytes or NowState.ABSENT)
+    captured when this compaction began;
     (b) `liteharness owner-handoff` runs as a subprocess, outside
     the tool policy, and validates the template and commits NOW.md and DOMAIN.md.
     Returns (ok, reason); the reason is the first thing that failed.

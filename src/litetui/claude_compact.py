@@ -80,7 +80,7 @@ def request(extra: str = "", owner_dir=None, *, app=None) -> str:
 
 
 async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None,
-                  owner_before: bytes | None = None) -> None:
+                  owner_before: owner_mode.NowSnapshot | None = None) -> None:
     """Summarise with Claude, then continue in a fresh session seeded with it."""
     # Consume once even on refusal/failure. Maintenance must not arm a later
     # unrelated /compact to resurrect this task.
@@ -93,9 +93,8 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         # A direct caller snapshots this operation, never a previous compaction's app state.
         try:
             owner_before = (Path(owner_dir) / owner_mode.NOW).read_bytes()
-        except OSError as exc:
-            app._system(f"Compact failed — NOW.md cannot be read: {exc}")
-            return
+        except OSError:
+            owner_before = owner_mode.NowState.ABSENT
     prompt = request(extra, owner_dir, app=app)
     from litetui.claude_backend import settle_close
     from litetui.widgets import CompactionCard, ToolMessage
