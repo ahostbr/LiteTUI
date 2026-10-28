@@ -227,6 +227,31 @@ def test_strip_leaves_content_without_the_header_unchanged():
     assert strip_store_block("") == ""
 
 
+@pytest.mark.parametrize("with_store", [False, True])
+@pytest.mark.parametrize("quoted", [appsvc.STORE_HEADER, appsvc.STORE_OPENING.strip()])
+def test_strip_preserves_ordinary_text_with_a_store_marker(make_app, with_store, quoted):
+    app = make_app()
+    ordinary = f"User instructions\n\n{quoted}\n\nKeep this paragraph byte for byte.\n"
+    block = _store_text(app) if with_store else ""
+    app.conversation[0] = {"role": "system", "content": ordinary + block}
+
+    assert appsvc.strip_store_block(app.conversation[0]["content"]) == ordinary
+
+
+@pytest.mark.parametrize("with_store", [False, True])
+def test_late_text_goes_after_ordinary_marker_but_before_store(make_app, with_store):
+    app = make_app()
+    ordinary = f"User instructions\n\n{appsvc.STORE_HEADER}\n\nKeep this paragraph."
+    block = _store_text(app) if with_store else ""
+    app.conversation[0] = {"role": "system", "content": ordinary + block}
+
+    app._append_to_system(FLEET)
+
+    expected = appsvc.extend_system_text(ordinary, FLEET) + block
+    assert app.conversation[0]["content"] == expected
+    assert _replayed_system(app) == expected
+
+
 def test_strip_removes_the_block_and_is_idempotent(make_app):
     from litetui.appsvc import strip_store_block
     app = make_app()
@@ -236,6 +261,27 @@ def test_strip_removes_the_block_and_is_idempotent(make_app):
     once = strip_store_block(full)
     assert once == base
     assert strip_store_block(once) == once
+
+
+@pytest.mark.parametrize("name", ["memory.md", "soul.md", "handoff.md", "SOUL.md", "NOW.md", "DOMAIN.md"])
+def test_strip_recognizes_each_generated_section_and_keeps_bodies_opaque(name):
+    from types import SimpleNamespace
+
+    body = f"A note quoting a marker\n\n{appsvc.STORE_HEADER}\n\nStill part of the note."
+    app = SimpleNamespace(
+        settings=Settings(),
+        _owner_memory_dir="owner" if name.split(".")[0].isupper() else None,
+        _read_store_file=lambda requested, cap: body if requested == name else "",
+    )
+    block = appsvc.store_block(app)
+    assert block
+    assert appsvc.strip_store_block("base prompt" + block) == "base prompt"
+
+
+def test_strip_requires_the_generated_final_newline(make_app):
+    full = "base prompt" + _store_text(make_app())
+    unterminated = full.rstrip("\n")
+    assert appsvc.strip_store_block(unterminated) == unterminated
 
 
 def test_strip_keeps_an_index_block_that_precedes_the_store(make_app):

@@ -4166,9 +4166,9 @@ class LiteTUI(App):
         current = self.conversation[0].get("content") or ""
         if text in current:
             return                      # idempotent across resume/re-register
-        # The store snapshot is always the LAST block (strip_store_block cuts
-        # from its header to the end), so late text goes in front of it.
-        cut = current.find("\n\n" + STORE_HEADER) if isinstance(current, str) else -1
+        # Use the same trailing snapshot boundary as strip_store_block so late
+        # text survives compaction, without treating user marker lines as blocks.
+        cut = appsvc.store_block_start(current) if isinstance(current, str) else -1
         if cut >= 0:
             merged = appsvc.extend_system_text(current[:cut], text) + current[cut:]
         else:
