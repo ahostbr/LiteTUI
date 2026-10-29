@@ -10,6 +10,7 @@ pub mod live;
 pub mod live_chat;
 mod live_process;
 pub mod native_activity;
+pub mod profile_picker;
 pub mod protocol;
 pub mod questions;
 pub mod runtime_state;

@@ -1,5 +1,16 @@
 # LiteTUI Rust terminal port
 
+## Explicit launch-profile selection - 2026-10-29
+
+The previous strict-default gap is closed. Options retain an absent profile until a human confirms the native picker or supplies --tool-profile. Both interactive and one-shot terminal launches ask before constructing the Python runtime; redirected launches require an explicit option. The two PowerShell launchers no longer fill in strict. Invalid explicit choices fail rather than falling back.
+
+The picker shows strict, interactive and autonomous in source order with concise descriptions and tools on/off. A fresh Enter confirms the visible row; Escape or Ctrl+Q cancels. Rendering, navigation, mouse focus, paste, key repeats and modified Enter never launch on their own. Undersized/invalidated geometry prevents invisible confirmation. The runtime independently rejects unresolved selection before canonicalization, state writes, process/job creation or Python-owned hook/plugin activation.
+
+Verification: **293 ordinary Rust tests, 26 controlled-process tests and one controlled PowerShell launcher test passed**, plus fmt/Clippy/build. A process-start tripwire and absent data root verify missing/cancelled selection performs no runtime activation; an explicit-profile success control proves the tripwire is reachable. The launcher test executes both actual scripts with build/runtime call sites substituted by controlled functions and checks absent, strict, interactive, autonomous and invalid arguments. No provider request or hands-on desktop acceptance occurred.
+
+Full parity remains open. Next work is versioned management negotiation/state integration for the remaining runtime controls, followed by conversation resume and the required screen/backend/plugin, host, packaging and performance gates.
+
+
 ## Turn cancellation continuation - 2026-10-29
 
 Interactive Rust now stops an active turn without closing its owned Python session. Escape from the composer, or Ctrl+Escape during a question/approval, opens a native confirmation with Keep going selected. A second confirmed stop asks the source to force interruption. Hidden controls, reported repeats, clipboard chords and bracketed paste cannot confirm or answer the underlying form. Partial output and a Cancelled label survive follow-up prompts and shutdown; earlier tool effects are not undone.
@@ -10,14 +21,14 @@ The real Python authority fixture reproduced a source defect: abort resolved app
 
 Verification: 288 ordinary Rust tests and 24 controlled-process tests passed, including a real Python RPC/authority/store path that cancels, denies, then approves disposable controlled writes across three prompts. Rust fmt, Clippy with warnings denied and build passed. The affected Python run had 159 passes, 7 skips and one unchanged test-runner failure (test_rpc_isolation.py::test_scripts_only_uses_classifier_without_pytest), reproduced with committed RPC loaded in memory. rpc.py has six existing Ruff findings; the lifecycle test has three existing mypy findings, both compared against committed HEAD with zero added. The changed lifecycle test passes Ruff.
 
-This is automated lifecycle/render/input/process evidence, not real-provider cancellation or Windows Terminal/LiteSuite hands-on acceptance. No provider request, merge or cutover was performed. Full parity remains open. The next required launch correction is explicit pre-spawn profile selection: current strict defaults do not satisfy the plan's requirement to prompt when no selection was supplied. Resume, remaining screens/backends/plugins, host acceptance, packaging and resource comparison also remain required.
+This is automated lifecycle/render/input/process evidence, not real-provider cancellation or Windows Terminal/LiteSuite hands-on acceptance. No provider request, merge or cutover was performed. Full parity remains open. The then-open strict-default launch gap is closed by the explicit-selection checkpoint above. Resume, remaining screens/backends/plugins, host acceptance, packaging and resource comparison also remain required.
 
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
 ## Tool-enablement continuation — 2026-10-29
 
-Rust now has explicit tools on/off, tool-profile and workspace launch controls. Tools default off; the launch profile defaults strict. Enabling tools requires an existing absolute workspace. The supported source profiles strict, interactive and autonomous remain distinct choices; Rust does not turn a strict choice into an unattended one. The PowerShell chat launcher exposes the same controls. External MCP remains disabled.
+Rust now has explicit tools on/off, tool-profile and workspace launch controls. Tools default off; this checkpoint originally defaulted the profile to strict, superseded by the explicit-selection checkpoint above. Enabling tools requires an existing absolute workspace. The supported source profiles strict, interactive and autonomous remain distinct choices; Rust does not turn a strict choice into an unattended one. The PowerShell chat launcher exposes the same controls. External MCP remains disabled.
 
 The owned child receives the existing LITETUI_APPROVAL_HOST marker, so source CONFIRM decisions route to Rust's live approval modal. Fresh children do not inherit owner, spawned identity, spawner or seat-name/ID markers. The Python ready event now reports effective tools_enabled, mcp_enabled and approval_route alongside its existing requested/effective profile and cwd. Before admitting any prompt, Rust verifies these facts against the launch intent and workspace. Missing/mismatched facts fail with cleanup and no prompt; every later prompt carries the verified profile. Workspace comparison performs no filesystem access on the reported path. The footer and ready notice display reported tool state rather than a launch-time guess.
 

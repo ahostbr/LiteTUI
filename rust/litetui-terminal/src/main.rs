@@ -591,7 +591,58 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
-fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
+fn choose_profile(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    tools_enabled: bool,
+) -> io::Result<Option<litetui_terminal::tool_mode::Profile>> {
+    use litetui_terminal::profile_picker::{Picker, Selection};
+    let mut picker = Picker::default();
+    loop {
+        terminal.draw(|frame| picker.draw(frame, tools_enabled))?;
+        if event::poll(Duration::from_millis(100))? {
+            match picker.handle(event::read()?) {
+                Selection::Pending => {}
+                Selection::Selected(profile) => return Ok(Some(profile)),
+                Selection::Cancelled => return Ok(None),
+            }
+        }
+    }
+}
+
+/// One-shot terminal launches share the native picker; redirected launches must
+/// name the profile. Cancellation returns before the runtime is constructed.
+fn one_shot_profile(options: &mut litetui_terminal::live::Options) -> io::Result<bool> {
+    if options.prompt.trim().is_empty() {
+        return Err(io::Error::other("--live requires --prompt"));
+    }
+    if options.tool_profile.is_some() {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(io::Error::other(
+            "Redirected launch requires --tool-profile strict|interactive|autonomous; Python was not started",
+        ));
+    }
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore();
+        previous_hook(info);
+    }));
+    let _guard = TerminalGuard;
+    enable_raw_mode()?;
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    terminal.clear()?;
+    options.tool_profile = choose_profile(&mut terminal, options.tools_enabled)?;
+    Ok(options.tool_profile.is_some())
+}
+
+fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
             "--interactive requires a real terminal; --live supports redirected pipes",
@@ -617,6 +668,13 @@ fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
     )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
+    if options.tool_profile.is_none() {
+        options.tool_profile = choose_profile(&mut terminal, options.tools_enabled)?;
+        if options.tool_profile.is_none() {
+            return Ok(());
+        }
+        terminal.clear()?;
+    }
     let mut app = Demo::live(options.backend.clone(), options.model.clone());
     let runtime = litetui_terminal::live::Interactive::start(options);
     runtime.with_cleanup(|runtime| {
@@ -725,14 +783,18 @@ fn main() -> io::Result<()> {
         return run_interactive(litetui_terminal::live::Options::parse(&args[1..])?);
     }
     if args.first().is_some_and(|arg| arg == "--live") {
-        return litetui_terminal::live::run(litetui_terminal::live::Options::parse(&args[1..])?);
+        let mut options = litetui_terminal::live::Options::parse(&args[1..])?;
+        if !one_shot_profile(&mut options)? {
+            return Ok(());
+        }
+        return litetui_terminal::live::run(options);
     }
     match args.as_slice() {
         [] => run(),
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off and profile defaults strict. Tools on requires an absolute existing --workspace. External MCP remains off.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }

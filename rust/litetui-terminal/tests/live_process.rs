@@ -13,6 +13,7 @@ const FIXTURE: &str = r#"
 import json, os, subprocess, sys, time
 from pathlib import Path
 root = Path(os.environ['LITETUI_DATA_ROOT'])
+(root.parent/'python-started').write_text('runtime activated')
 mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')
 def emit(value):
     print(json.dumps(value), flush=True)
@@ -169,6 +170,9 @@ for line in sys.stdin:
         sys.stdout.write(wire); sys.stdout.flush()
 "#;
 fn setup(mode: &str) -> (Command, PathBuf) {
+    setup_with_profile(mode, "strict")
+}
+fn setup_with_profile(mode: &str, profile: &str) -> (Command, PathBuf) {
     let python =
         std::env::var_os("LITETUI_TEST_PYTHON").expect("set LITETUI_TEST_PYTHON for process tests");
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -206,6 +210,8 @@ fn setup(mode: &str) -> (Command, PathBuf) {
             &prompt,
             "--timeout",
             "2",
+            "--tool-profile",
+            profile,
         ]);
     (command, root)
 }
@@ -978,17 +984,11 @@ fn tool_enabled_launch_checks_effective_policy_before_any_prompt() {
 #[test]
 #[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
 fn tool_enabled_launch_passes_explicit_settings_workspace_and_profile() {
-    let (mut command, root) = setup("success");
+    let (mut command, root) = setup_with_profile("success", "interactive");
     let workspace = root.parent().unwrap().join("workspace");
     fs::create_dir(&workspace).unwrap();
     command
-        .args([
-            "--tools",
-            "on",
-            "--tool-profile",
-            "interactive",
-            "--workspace",
-        ])
+        .args(["--tools", "on", "--workspace"])
         .arg(&workspace)
         .env("LITETUI_OWNER", "1")
         .env("LITETUI_SPAWN_IDENTITY", "1")
@@ -1256,4 +1256,96 @@ fn stop_ack_without_terminal_keeps_deadline_and_never_becomes_completion() {
     let commands = fs::read_to_string(root.join("commands.jsonl")).unwrap();
     assert_eq!(commands.matches(r#""type": "prompt""#).count(), 1);
     assert!(commands.contains("shutdown"));
+}
+
+fn missing_profile_args(command: &Command) -> Vec<String> {
+    command
+        .get_args()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .filter(|pair| pair[0] != "--tool-profile")
+        .flatten()
+        .cloned()
+        .collect()
+}
+#[test]
+#[ignore = "controlled Python child tripwire, requires LITETUI_TEST_PYTHON"]
+fn missing_or_cancelled_profile_never_activates_runtime_or_creates_state() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use litetui_terminal::{
+        live::{Interactive, Options},
+        profile_picker::{Picker, Selection},
+    };
+    for cancelled in [false, true] {
+        let (command, root) = setup("success");
+        let options = Options::parse(&missing_profile_args(&command)).unwrap();
+        if cancelled {
+            let mut picker = Picker::default();
+            assert_eq!(
+                picker.handle(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+                Selection::Cancelled
+            );
+        }
+        // Even bypassing the normal frontend, the runtime boundary must refuse.
+        let mut runtime = Interactive::start(options);
+        assert!(
+            runtime
+                .shutdown()
+                .unwrap_err()
+                .to_string()
+                .contains("Select a tool profile")
+        );
+        assert!(runtime.events.try_iter().next().is_none());
+        assert!(
+            !root.exists(),
+            "no runtime settings, hooks, jobs or plugins may activate"
+        );
+        assert!(!root.parent().unwrap().join("python-started").exists());
+    }
+}
+#[test]
+#[ignore = "controlled Python child tripwire, requires LITETUI_TEST_PYTHON"]
+fn redirected_missing_profile_fails_before_spawn_but_explicit_profile_runs() {
+    let (command, root) = setup("success");
+    let missing = missing_profile_args(&command);
+    let output = Command::new(command.get_program())
+        .arg("--live")
+        .args(&missing)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Redirected launch requires --tool-profile")
+    );
+    assert!(!root.exists() && !root.parent().unwrap().join("python-started").exists());
+    let mut empty_prompt = missing.clone();
+    let prompt = empty_prompt
+        .iter()
+        .position(|arg| arg == "--prompt")
+        .unwrap()
+        + 1;
+    empty_prompt[prompt].clear();
+    let invalid = Command::new(command.get_program())
+        .arg("--live")
+        .args(&empty_prompt)
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("--live requires --prompt"));
+    assert!(!root.exists() && !root.parent().unwrap().join("python-started").exists());
+    let output = Command::new(command.get_program())
+        .arg("--live")
+        .args(&missing)
+        .args(["--tool-profile", "strict"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(root.exists() && root.parent().unwrap().join("python-started").exists());
 }

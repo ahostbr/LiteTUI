@@ -35,7 +35,7 @@ fn expected() -> Expected {
 #[test]
 fn tool_mode_defaults_are_explicit_and_bad_or_missing_options_fail() {
     let options = Options::parse(&args()).unwrap();
-    assert!(!options.tools_enabled && options.tool_profile == Profile::Strict);
+    assert!(!options.tools_enabled && options.tool_profile.is_none());
     for tail in [
         vec!["--tools", "yes"],
         vec!["--tool-profile", "unknown"],
@@ -49,7 +49,10 @@ fn tool_mode_defaults_are_explicit_and_bad_or_missing_options_fail() {
     for profile in ["strict", "interactive", "autonomous"] {
         let mut a = args();
         a.extend(["--tool-profile".into(), profile.into()]);
-        assert_eq!(Options::parse(&a).unwrap().tool_profile.as_str(), profile);
+        assert_eq!(
+            Options::parse(&a).unwrap().tool_profile.unwrap().as_str(),
+            profile
+        );
     }
 }
 #[test]
@@ -102,4 +105,10 @@ fn missing_legacy_policy_remains_unknown_in_read_only_projection() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn omitted_profile_is_not_silently_selected_by_argument_parsing() {
+    let options = Options::parse(&args()).unwrap();
+    assert!(options.tool_profile.is_none());
 }

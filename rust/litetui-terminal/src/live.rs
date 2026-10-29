@@ -30,10 +30,15 @@ pub struct Options {
     pub prompt: String,
     pub timeout: Duration,
     pub tools_enabled: bool,
-    pub tool_profile: crate::tool_mode::Profile,
+    pub tool_profile: Option<crate::tool_mode::Profile>,
     pub workspace: Option<PathBuf>,
 }
 impl Options {
+    /// Required at the runtime boundary, before filesystem writes or child creation.
+    pub fn selected_profile(&self) -> io::Result<crate::tool_mode::Profile> {
+        self.tool_profile.ok_or_else(|| io::Error::other(
+            "Select a tool profile before starting Python; use --tool-profile strict|interactive|autonomous"))
+    }
     pub fn parse(args: &[String]) -> io::Result<Self> {
         let mut fields = std::collections::HashMap::new();
         for pair in args.chunks(2) {
@@ -75,12 +80,11 @@ impl Options {
             "off" => false,
             _ => return Err(io::Error::other("--tools must be on or off")),
         };
-        let tool_profile = crate::tool_mode::Profile::parse(
-            fields
-                .remove("--tool-profile")
-                .as_deref()
-                .unwrap_or("strict"),
-        )?;
+        let tool_profile = fields
+            .remove("--tool-profile")
+            .as_deref()
+            .map(crate::tool_mode::Profile::parse)
+            .transpose()?;
         let workspace = fields.remove("--workspace").map(PathBuf::from);
         if tools_enabled && workspace.as_ref().is_none_or(|p| !p.is_absolute()) {
             return Err(io::Error::other(
@@ -719,6 +723,7 @@ fn reader(mut input: impl Read + Send + 'static, stdout: bool, tx: mpsc::SyncSen
 }
 
 fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
+    let profile = options.selected_profile()?;
     let source = options.source.canonicalize()?;
     let python = options.python.canonicalize()?;
     if !source.join("src/litetui/cli.py").is_file()
@@ -757,7 +762,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             "backend": options.backend, "default_model": options.model,
             "backend_chosen": true, "user_name_asked": true,
             "tools_enabled": options.tools_enabled, "mcp_enabled": false, "seat_name": "RustLive",
-            "tool_policy_profile": options.tool_profile.as_str()
+            "tool_policy_profile": profile.as_str()
         }))?,
     )?;
     let mut command = Command::new(&python);
@@ -786,7 +791,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             "--thinking-level",
             "low",
             "--tool-profile",
-            options.tool_profile.as_str(),
+            profile.as_str(),
             "--mcp-servers",
             "none",
         ])
@@ -829,7 +834,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         JsonlDecoder::new(FRAME_BYTES).map_err(|e| io::Error::other(format!("{e:?}")))?;
     let mut turn = Turn::with_policy(crate::tool_mode::Expected {
         enabled: options.tools_enabled,
-        profile: options.tool_profile,
+        profile,
         workspace,
     });
     let mut tail = Vec::new();
@@ -1064,6 +1069,7 @@ impl Frontend for OneShot {
     }
 }
 pub fn run(options: Options) -> io::Result<()> {
+    let profile = options.selected_profile()?;
     if options.prompt.trim().is_empty() {
         return Err(io::Error::other("--live requires --prompt"));
     }
@@ -1083,7 +1089,7 @@ pub fn run(options: Options) -> io::Result<()> {
         frontend.output,
         "Requested tools: {} · profile: {}",
         if options.tools_enabled { "on" } else { "off" },
-        options.tool_profile.as_str()
+        profile.as_str()
     )?;
     drive(options, &mut frontend)?;
     writeln!(

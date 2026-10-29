@@ -38,7 +38,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
         prompt: String::new(),
         timeout: Duration::from_secs(90),
         tools_enabled: false,
-        tool_profile: Default::default(),
+        tool_profile: Some(litetui_terminal::tool_mode::Profile::Strict),
         workspace: None,
     });
     let deadline = Instant::now() + Duration::from_secs(150);
