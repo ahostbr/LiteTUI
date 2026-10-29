@@ -1635,9 +1635,16 @@ fn held_input_continuation_refuses_then_explicitly_runs_and_waits_for_retirement
 fn held_input_reconciliation_requires_positive_history_and_never_resends() {
     saved_conversation_process(SavedInput::Reconcile);
 }
+#[test]
+#[ignore = "controlled real Python CLI restart, no provider"]
+fn held_claude_input_is_inspected_and_cancelled_without_replay() {
+    saved_conversation_process(SavedInput::ClaudeCancel);
+}
+
 #[derive(Clone, Copy)]
 enum SavedInput {
     None,
+    ClaudeCancel,
     Held,
     Cancel,
     Continue,
@@ -1646,7 +1653,8 @@ enum SavedInput {
 
 fn saved_conversation_process(mode: SavedInput) {
     let held = !matches!(mode, SavedInput::None);
-    let cancel_held = matches!(mode, SavedInput::Cancel);
+    let claude_held = matches!(mode, SavedInput::ClaudeCancel);
+    let cancel_held = matches!(mode, SavedInput::Cancel | SavedInput::ClaudeCancel);
     let continue_held = matches!(mode, SavedInput::Continue);
     let reconcile_held = matches!(mode, SavedInput::Reconcile);
     let removed = cancel_held || continue_held || reconcile_held;
@@ -1672,7 +1680,14 @@ fn saved_conversation_process(mode: SavedInput) {
         include_str!("fixtures/resume_runtime.py"),
     )
     .unwrap();
-    if held {
+    if claude_held {
+        fs::write(
+            source.join("src/litetui/fixture-claude-input"),
+            "controlled fixture",
+        )
+        .unwrap();
+    }
+    if held && !claude_held {
         fs::write(
             source.join("src/litetui/fixture-held-input"),
             "controlled fixture",
@@ -1693,8 +1708,12 @@ fn saved_conversation_process(mode: SavedInput) {
         )
         .unwrap();
     }
-    let backend = if held { "codex" } else { "claude" };
-    let model = if held {
+    let backend = if held && !claude_held {
+        "codex"
+    } else {
+        "claude"
+    };
+    let model = if held && !claude_held {
         "gpt-6-astra"
     } else {
         "claude-sonnet-5-5"
@@ -1768,6 +1787,7 @@ fn saved_conversation_process(mode: SavedInput) {
                             use litetui_terminal::restored_queue::{Intent, Update};
                             runtime.queue(Intent::Open)?;
                             let mut cancelling = false;
+                            let mut cancelled_id = String::new();
                             loop {
                                 let event = runtime
                                     .events
@@ -1786,9 +1806,7 @@ fn saved_conversation_process(mode: SavedInput) {
                                 if let Some(menu) = menu {
                                     if cancelling {
                                         assert_eq!(menu.entries.len(), 2);
-                                        assert!(
-                                            !menu.entries.iter().any(|e| e.id == "saved-queued")
-                                        );
+                                        assert!(!menu.entries.iter().any(|e| e.id == cancelled_id));
                                         assert_eq!(
                                             chat.runtime_state
                                                 .startup()
@@ -1799,9 +1817,25 @@ fn saved_conversation_process(mode: SavedInput) {
                                         break;
                                     }
                                     assert_eq!(menu.entries.len(), 3);
+                                    if claude_held {
+                                        assert_eq!(menu.entries[0].provider, "claude");
+                                        assert_eq!(menu.entries[0].state, "prepared");
+                                        assert!(menu.entries[0].can_cancel);
+                                        for entry in &menu.entries[1..] {
+                                            assert_eq!(entry.state, "uncertain");
+                                            assert!(
+                                                !entry.can_cancel
+                                                    && !entry.can_continue
+                                                    && !entry.can_reconcile
+                                            );
+                                        }
+                                    } else {
+                                        assert_eq!(menu.entries[0].id, "saved-queued");
+                                    }
+                                    cancelled_id = menu.entries[0].id.clone();
                                     runtime.queue(Intent::Cancel {
                                         revision: menu.revision,
-                                        entry: "saved-queued".into(),
+                                        entry: cancelled_id.clone(),
                                     })?;
                                     cancelling = true;
                                 }
@@ -1885,7 +1919,9 @@ fn saved_conversation_process(mode: SavedInput) {
         );
         let entries = proof["entries"].as_array().unwrap();
         assert_eq!(entries.len(), if removed { 2 } else { 3 });
-        let states = if reconcile_held {
+        let states = if claude_held {
+            vec!["uncertain", "uncertain"]
+        } else if reconcile_held {
             vec!["queued", "accepted"]
         } else if cancel_held || continue_held {
             vec!["sending", "accepted"]
@@ -1894,8 +1930,26 @@ fn saved_conversation_process(mode: SavedInput) {
         };
         for (entry, state) in entries.iter().zip(states) {
             assert_eq!(entry["state"], state);
-            assert_eq!(entry["revision"], 7);
-            assert_eq!(entry["item"]["content"], format!("UNSENT {state}"));
+            if claude_held {
+                assert!(matches!(
+                    entry["uncertain_from"].as_str(),
+                    Some("submitted" | "acknowledged")
+                ));
+                assert_eq!(
+                    entry["content"],
+                    format!("UNSENT {}", entry["uncertain_from"].as_str().unwrap())
+                );
+            } else {
+                assert_eq!(entry["revision"], 7);
+                assert_eq!(entry["item"]["content"], format!("UNSENT {state}"));
+            }
+        }
+        if claude_held {
+            let selected = proof["journal"]["selected_segment"].as_str().unwrap();
+            let saved = &proof["journal"]["segments"][selected]["entries"];
+            assert_eq!(saved[0]["state"], "terminal");
+            assert_eq!(saved[0]["stop_reason"], "user_cancelled_before_send");
+            assert_eq!(saved[0]["content"], "UNSENT prepared");
         }
     }
     let saved_commands = fs::read(root.join("resume-commands.jsonl")).unwrap();

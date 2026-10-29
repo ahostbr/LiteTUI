@@ -4346,6 +4346,8 @@ class LiteTUI(App):
             self._adopt_convo_settings(born=False)
         finally:
             self._startup_adopting = False
+        from litetui.restored_claude import restore as restore_claude_input
+        restore_claude_input(self)
         self._sync_seat_identity()
         self._refresh_ctx_label()   # resumed into a different conversation
         # The restored system message already names THIS store (it was written

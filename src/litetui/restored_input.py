@@ -66,6 +66,7 @@ def _owned(app, session_id):
 def _inspect(app, session_id):
     store = _owned(app, session_id)
     items = [item for item in app._pending_input if held(item)]
+    claude_items = [item for item in items if "_claude_entry" in item]
     if len(items) > 1000:
         raise ValueError("Too many recovered inputs to inspect")
     current = _records(app.conversation)
@@ -78,6 +79,8 @@ def _inspect(app, session_id):
     materialized = {m.get("codex_delivery", {}).get("id") for m in app.conversation}
     rows, records, seen = [], {}, set()
     for item in items:
+        if "_claude_entry" in item:
+            continue
         entry, ledger = item.get("_codex_entry"), item.get("_codex_ledger")
         if not isinstance(entry, dict) or ledger is None:
             raise ValueError("Unsupported recovered input journal")
@@ -118,17 +121,32 @@ def _inspect(app, session_id):
                              and bool(payload["content"].strip() if isinstance(payload["content"], str) else payload["content"])),
         })
         records[ident] = (item, record)
+    journal = [record[1][0] for record in records.values()]
+    if claude_items:
+        from litetui import restored_claude
+
+        extra, claude_records, document = restored_claude.inspect(app, store, claude_items)
+        if any(row["id"] in seen for row in extra):
+            raise ValueError("Recovered provider input identity collision")
+        rows.extend(extra)
+        records.update(claude_records)
+        journal.append(document)
+        order = {id(item): n for n, item in enumerate(items)}
+        rows.sort(key=lambda row: order[id(records[row["id"]][0])])
+    return snapshot(app, session_id, rows, journal), records
+
+
+def snapshot(app, session_id, rows, journal):
     result = {"session_id": session_id, "backend": app.backend.name, "model": app.model_id,
               "policy": "hold", "held": len(rows), "entries": rows}
     encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
     if len(encoded) > 262144:
         raise ValueError("Recovered input inspection budget exceeded")
-    journal = json.dumps([record[1][0] for record in records.values()],
-                         sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    journal = json.dumps(journal, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")
     if len(journal) > 8 * 1024 * 1024:
         raise ValueError("Recovered input journal budget exceeded")
     result["snapshot"] = hashlib.sha256(encoded + b"\0" + journal).hexdigest()
-    return result, records
+    return result
 
 
 def inspect(app, session_id):
@@ -143,7 +161,11 @@ def cancel(app, cmd):
         raise ValueError("Recovered input changed; refresh before cancelling")
     row = next((row for row in result["entries"] if row["id"] == cmd.get("entry_id")), None)
     if row is None or not row["can_cancel"]:
-        raise ValueError("Only queued or explicitly rejected next-turn input can be cancelled")
+        raise ValueError("Only queued or explicitly rejected next-turn Codex input, or prepared Claude input, can be cancelled")
+    if row.get("provider") == "claude":
+        from litetui import restored_claude
+
+        return restored_claude.cancel(app, cmd, records[row["id"]])
     item, (entry, entries, index) = records[row["id"]]
     # Build persistence against the CURRENT metadata index; restored callbacks
     # may have captured an index before a conversation edit or open.

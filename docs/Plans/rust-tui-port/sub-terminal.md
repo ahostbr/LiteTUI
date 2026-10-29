@@ -12,6 +12,8 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 ## Current implementation checkpoint - 2026-10-29
 
+Claude selected-segment entries now restore under the same launch-local hold policy. F7 exposes prepared and uncertain deliveries with native/segment/workspace identity. Only prepared input offers cancellation, with durable source verification and independent native readback. Ordinary Python policy is unchanged. Explicit Claude continuation and uncertainty resolution remain required; the latest master checkpoint records verification.
+
 F7 now checks native provider history with H then a fresh visible Enter. Only exact positive thread/turn/client-input evidence can record an accepted user message and remove its hold; absent evidence remains held. Rust verifies an independent queue readback and renders an inert previously-accepted row, without executing or resending it. Current verification and remaining scope are in the latest master checkpoint. Claude recovery and session browsing remain required.
 
 F7 now continues the source-offered oldest held input with C then a fresh visible Enter. Rust reserves a distinct live row/command while preserving the draft, labels a pre-start refusal separately, and requires a correlated saved queue read after the exact Python worker retires. Failed/contradictory outcomes stop without replay; uncertain delivery entries remain held. The latest master checkpoint records the native, owned-source and controlled-process evidence. Provider reconciliation, Claude recovery and full parity remain open.

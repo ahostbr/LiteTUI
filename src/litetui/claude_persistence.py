@@ -116,6 +116,11 @@ class ClaudeLedger:
     # ---- reads -----------------------------------------------------------
 
     @property
+    def document(self) -> dict[str, Any]:
+        """A detached delivery snapshot for owned readback; never grants write authority."""
+        return deepcopy(self._data)
+
+    @property
     def selected(self) -> dict[str, Any] | None:
         """The segment this conversation last selected, or None if never.
 

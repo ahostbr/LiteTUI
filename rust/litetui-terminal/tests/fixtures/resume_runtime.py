@@ -19,6 +19,7 @@ source = Path(__import__("litetui").__path__[-1]).parents[1]
 held_fixture = Path(__file__).with_name("fixture-held-input").exists()
 continue_fixture = Path(__file__).with_name("fixture-continue-input").exists()
 reconcile_fixture = Path(__file__).with_name("fixture-reconcile-input").exists()
+claude_fixture = Path(__file__).with_name("fixture-claude-input").exists()
 sys.path.insert(0, str(source / "tests"))
 
 
@@ -107,6 +108,27 @@ async def serve(app):
         app._chat_running = lambda: continuation_worker is not None and not continuation_worker.done()
 
     async def check_held():
+        if claude_fixture and app._cli_convo_id:
+            import copy
+
+            from litetui import claude_turn
+
+            before = copy.deepcopy([item["_claude_entry"] for item in app._pending_input])
+            count = 2 if (root / "queue-cancel-proof.json").exists() else 3
+            assert len(before) == count
+            evidence = app._claude_ledger.file.read_bytes()
+            app._flush_pending_input()
+            assert all(not claude_turn.queue_ready(app, item) for item in app._pending_input)
+            assert not app._deliver_queued_input()
+            claude_turn.command(app, "continue")
+            assert [item["_claude_entry"] for item in app._pending_input] == before
+            assert app._claude_ledger.file.read_bytes() == evidence
+            (root / "held-input-proof.json").write_text(json.dumps({
+                "policy": restored_input.status(app), "entries": before,
+                "explicit_prompts": [m["content"] for m in app.conversation if m["role"] == "user"],
+                "journal": app._claude_ledger.document,
+            }), encoding="utf-8")
+            return
         if not (held_fixture and app._cli_convo_id):
             return
         import copy
@@ -200,6 +222,20 @@ async def serve(app):
                     for state in ("queued", "sending", "accepted")
                 ]}
             app._append(record)
+            if claude_fixture and not app._cli_convo_id:
+                from litetui import claude_turn
+
+                ledger = claude_turn.ledger_for(app)
+                segment = ledger.select_segment(claude_turn.launch_workspace(app))
+                ledger.fix_system_prompt(segment["id"], "Controlled fixture system prompt",
+                                         store_identity=store_identity.capture(app), store_injected=True)
+                ledger.bind_session(segment["id"], "controlled-native-session")
+                for state in ("prepared", "submitted", "acknowledged"):
+                    entry = ledger.prepare(segment["id"], "UNSENT " + state, "strict", "harness")
+                    if state != "prepared":
+                        ledger.update_delivery(entry["id"], "submitted")
+                    if state == "acknowledged":
+                        ledger.update_delivery(entry["id"], "acknowledged")
             app._rpc_emit({"type": "text_delta", "text": answer, "card_index": 0}, origin=origin)
             app.thinking_level = "high"
             app._rpc_emit({"type": "turn_end", "stopReason": "stop", "error": None}, origin=origin)

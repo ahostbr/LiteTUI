@@ -25,6 +25,10 @@ pub enum Intent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub id: String,
+    pub provider: String,
+    pub segment: String,
+    pub workspace: String,
+    pub uncertain_from: String,
     pub state: String,
     pub content: String,
     pub source: String,
@@ -94,23 +98,44 @@ impl Snapshot {
             if !seen.insert(id.clone()) {
                 return Err(fail("Duplicate recovered input identity"));
             }
+            let provider = match row.get("provider") {
+                None => "codex".to_owned(),
+                Some(_) => text(row, "provider", 32, false)?,
+            };
+            let optional = |key, limit| {
+                if row.get(key).is_some() {
+                    text(row, key, limit, true)
+                } else {
+                    Ok(String::new())
+                }
+            };
+            let segment = optional("segment_id", 128)?;
+            let workspace = optional("workspace", 4096)?;
+            let uncertain_from = optional("uncertain_from", 32)?;
             let state = text(row, "state", 32, false)?;
-            if !matches!(
-                state.as_str(),
-                "queued"
-                    | "next_turn"
-                    | "admitting"
-                    | "admitted"
-                    | "sending"
-                    | "uncertain"
-                    | "accepted"
-            ) {
+            let valid = match provider.as_str() {
+                "codex" => matches!(
+                    state.as_str(),
+                    "queued"
+                        | "next_turn"
+                        | "admitting"
+                        | "admitted"
+                        | "sending"
+                        | "uncertain"
+                        | "accepted"
+                ),
+                "claude" => {
+                    !segment.is_empty() && matches!(state.as_str(), "prepared" | "uncertain")
+                }
+                _ => false,
+            };
+            if !valid {
                 return Err(fail("Unknown recovered input state"));
             }
             let can_cancel = row["can_cancel"]
                 .as_bool()
                 .ok_or_else(|| fail("Missing cancellation policy"))?;
-            if can_cancel != matches!(state.as_str(), "queued" | "next_turn") {
+            if can_cancel != matches!(state.as_str(), "queued" | "next_turn" | "prepared") {
                 return Err(fail(
                     "Recovered input cancellation policy disagrees with delivery evidence",
                 ));
@@ -121,7 +146,12 @@ impl Snapshot {
                     .as_bool()
                     .ok_or_else(|| fail("Invalid continuation policy"))?,
             };
-            if can_continue && (!can_cancel || !entries.is_empty() || v["backend"] != "codex") {
+            if can_continue
+                && (!can_cancel
+                    || !entries.is_empty()
+                    || v["backend"] != "codex"
+                    || provider != "codex")
+            {
                 return Err(fail(
                     "Continuation policy disagrees with queue order or delivery evidence",
                 ));
@@ -134,6 +164,7 @@ impl Snapshot {
             };
             if can_reconcile
                 && (can_cancel
+                    || provider != "codex"
                     || v["backend"] != "codex"
                     || row["thread_id"].as_str().is_none_or(str::is_empty)
                     || row["turn_id"].as_str().is_none_or(str::is_empty))
@@ -144,6 +175,10 @@ impl Snapshot {
             }
             entries.push(Entry {
                 id,
+                provider,
+                segment,
+                workspace,
+                uncertain_from,
                 state,
                 can_cancel,
                 can_continue,
@@ -420,16 +455,20 @@ impl View {
             .and_then(|s| s.entries.get(self.cursor));
         let body = match selected {
             Some(e) => format!(
-                "Entry {}/{} | {} | revision {}\nID: {}\nSource: {} | profile: {}\nThread: {}\nTurn: {}\n{}\n\n{}",
+                "Entry {}/{} | {} | revision {}\nID: {}\nProvider: {}\nSource: {} | profile: {}\nThread: {}\nTurn: {}\nSegment: {}\nWorkspace: {}\nUncertain from: {}\n{}\n\n{}",
                 self.cursor + 1,
                 count,
                 e.state,
                 e.revision,
                 e.id,
+                e.provider,
                 e.source,
                 e.profile,
                 e.thread,
                 e.turn,
+                e.segment,
+                e.workspace,
+                e.uncertain_from,
                 if e.can_continue {
                     "Continuation or cancellation available."
                 } else if e.can_cancel {

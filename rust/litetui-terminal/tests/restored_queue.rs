@@ -677,3 +677,98 @@ fn failed_history_query_reads_actual_held_state_without_retry_or_recovery() {
     );
     assert!(m.ready());
 }
+
+fn claude_data() -> Value {
+    let mut value = data();
+    value["backend"] = json!("claude");
+    for (index, state) in ["prepared", "uncertain"].into_iter().enumerate() {
+        let row = &mut value["entries"][index];
+        row["provider"] = json!("claude");
+        row["state"] = json!(state);
+        row["can_continue"] = json!(false);
+        row["can_reconcile"] = json!(false);
+        row["segment_id"] = json!("saved-segment");
+        row["workspace"] = json!("C:\\Saved workspace");
+        row["uncertain_from"] = json!(if index == 0 { "" } else { "acknowledged" });
+    }
+    value
+}
+
+#[test]
+fn claude_delivery_schema_keeps_uncertainty_and_refuses_unimplemented_actions() {
+    let data = claude_data();
+    let snapshot = Snapshot::parse(&data, 11).unwrap();
+    assert_eq!(snapshot.entries[0].provider, "claude");
+    assert!(snapshot.entries[0].can_cancel);
+    assert!(!snapshot.entries[1].can_cancel);
+    assert_eq!(snapshot.entries[1].uncertain_from, "acknowledged");
+    for fault in [
+        "provider",
+        "state",
+        "segment",
+        "cancel",
+        "continue",
+        "reconcile",
+        "workspace",
+    ] {
+        let mut invalid = data.clone();
+        match fault {
+            "provider" => invalid["entries"][0]["provider"] = json!("invented"),
+            "state" => invalid["entries"][0]["state"] = json!("queued"),
+            "segment" => invalid["entries"][0]["segment_id"] = json!(""),
+            "cancel" => invalid["entries"][1]["can_cancel"] = json!(true),
+            "continue" => {
+                invalid["backend"] = json!("codex");
+                invalid["entries"][0]["can_continue"] = json!(true);
+            }
+            "reconcile" => {
+                invalid["backend"] = json!("codex");
+                invalid["entries"][1]["can_reconcile"] = json!(true);
+            }
+            "workspace" => invalid["entries"][0]["workspace"] = json!("x".repeat(4097)),
+            _ => unreachable!(),
+        }
+        assert!(Snapshot::parse(&invalid, 11).is_err(), "{fault}");
+    }
+}
+
+#[test]
+fn claude_inspector_shows_identity_and_only_confirms_prepared_cancellation() {
+    let mut view = View::default();
+    view.open();
+    view.take_intent();
+    view.observe(Update::Snapshot(
+        Snapshot::parse(&claude_data(), 11).unwrap(),
+    ));
+    let rendered = draw(&mut view, 100, 32);
+    assert!(rendered.contains("Provider: claude"));
+    assert!(rendered.contains("Segment: saved-segment"));
+    assert!(rendered.contains("C:\\Saved workspace"));
+    view.key(key(KeyCode::Char('c')));
+    draw(&mut view, 100, 32);
+    view.key(key(KeyCode::Enter));
+    assert!(view.take_intent().is_none());
+    view.key(key(KeyCode::Char('h')));
+    draw(&mut view, 100, 32);
+    view.key(key(KeyCode::Enter));
+    assert!(view.take_intent().is_none());
+    view.key(key(KeyCode::Down));
+    let uncertain = draw(&mut view, 100, 32);
+    assert!(uncertain.contains("Uncertain from: acknowledged"));
+    view.key(key(KeyCode::Delete));
+    draw(&mut view, 100, 32);
+    view.key(key(KeyCode::Enter));
+    assert!(view.take_intent().is_none());
+    view.key(key(KeyCode::Up));
+    draw(&mut view, 36, 14);
+    view.key(key(KeyCode::Delete));
+    assert!(draw(&mut view, 36, 14).contains("Cancel this saved entry?"));
+    view.key(key(KeyCode::Enter));
+    assert_eq!(
+        view.take_intent(),
+        Some(Intent::Cancel {
+            revision: 11,
+            entry: "one".into()
+        })
+    );
+}
