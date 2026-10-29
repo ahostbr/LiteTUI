@@ -136,6 +136,10 @@ impl ContentKind {
 pub enum Observation {
     State(crate::runtime_state::Update),
     Ready,
+    /// Local command reservation; neither source admission nor completion.
+    Submission {
+        id: String,
+    },
     Content {
         card: usize,
         kind: ContentKind,
@@ -143,6 +147,10 @@ pub enum Observation {
     },
     Activity(crate::native_activity::Activity),
     Approval(crate::approvals::Event),
+    ApprovalSettled {
+        event: crate::approvals::Event,
+        outcome: TerminalOutcome,
+    },
     Question {
         event: crate::questions::Event,
         settled: Option<TerminalOutcome>,
@@ -154,12 +162,14 @@ pub enum Observation {
     Information(String),
     /// Source-authoritative approval refusal; settled, but never successful.
     ApprovalStopped(String),
+    Cancelled(String),
     Complete,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum TerminalOutcome {
     Complete,
     ApprovalStopped(String),
+    Cancelled(String),
 }
 #[derive(Default)]
 pub struct Turn {
@@ -179,6 +189,8 @@ pub struct Turn {
     approvals: crate::approvals::Ledger,
     questions: crate::questions::Ledger,
     policy: Option<crate::tool_mode::Expected>,
+    aborts: crate::cancellation::Ledger,
+    stop_requests: usize,
 }
 impl Turn {
     pub fn with_policy(policy: crate::tool_mode::Expected) -> Self {
@@ -215,6 +227,7 @@ impl Turn {
         self.acknowledged = false;
         self.settled = false;
         self.terminal = None;
+        self.stop_requests = 0;
         self.visible_answers.clear();
         self.tools_seen = false;
         self.card_count = 1;
@@ -231,23 +244,42 @@ impl Turn {
             .expect("terminal outcome before settlement")
         {
             TerminalOutcome::Complete => Observation::Complete,
+            TerminalOutcome::Cancelled(reason) => Observation::Cancelled(reason.clone()),
             TerminalOutcome::ApprovalStopped(reason) => {
                 Observation::ApprovalStopped(reason.clone())
             }
         }
     }
+    fn can_settle(&self) -> bool {
+        self.terminal.is_some()
+            && !self.settled
+            && self.aborts.settled()
+            && self.approvals.settled()
+            && self.questions.settled()
+    }
+    /// A stale UI stop must never be applied to a later prompt.
+    pub fn abort(&mut self, prompt_id: &str) -> io::Result<Option<Value>> {
+        if self.closing
+            || !self.sent
+            || self.settled
+            || self.terminal.is_some()
+            || prompt_id != self.command_id
+            || self.stop_requests >= 2
+        {
+            return Ok(None);
+        }
+        let command = self.aborts.request()?;
+        self.stop_requests += 1;
+        Ok(Some(command))
+    }
     pub fn answer(&mut self, decision: crate::questions::Decision) -> io::Result<Option<Value>> {
-        if self.closing {
+        if self.closing || self.stop_requests > 0 {
             return Ok(None);
         }
         self.questions.decide(decision)
     }
     fn question_observation(&mut self, event: crate::questions::Event) -> Observation {
-        let settled = if self.terminal.is_some()
-            && !self.settled
-            && self.approvals.settled()
-            && self.questions.settled()
-        {
+        let settled = if self.can_settle() {
             self.settled = true;
             self.terminal.clone()
         } else {
@@ -256,7 +288,7 @@ impl Turn {
         Observation::Question { event, settled }
     }
     pub fn approve(&mut self, decision: crate::approvals::Decision) -> io::Result<Option<Value>> {
-        if self.closing {
+        if self.closing || self.stop_requests > 0 {
             return Ok(None);
         }
         self.approvals.decide(decision)
@@ -298,15 +330,25 @@ impl Turn {
                 Ok(Observation::Information("shutdown acknowledged".into()))
             }
             "response" => {
+                if let Some(stopped) = self.aborts.response(event)? {
+                    return Ok(if self.can_settle() {
+                        self.settle()
+                    } else {
+                        Observation::Information(
+                            if stopped {
+                                "Stop requested; waiting for source turn settlement."
+                            } else {
+                                "Source was idle at stop request; waiting for turn settlement."
+                            }
+                            .into(),
+                        )
+                    });
+                }
                 if let Some(event) = self.questions.response(event)? {
                     return Ok(self.question_observation(event));
                 }
                 if let Some(event) = self.approvals.response(event)? {
-                    if self.terminal.is_some()
-                        && !self.settled
-                        && self.approvals.settled()
-                        && self.questions.settled()
-                    {
+                    if self.can_settle() {
                         return Ok(self.settle());
                     }
                     return Ok(Observation::Approval(event));
@@ -438,7 +480,18 @@ impl Turn {
                 let event = self.questions.resolved(event)?;
                 Ok(self.question_observation(event))
             }
-            "tool_approval_closed" => Ok(Observation::Approval(self.approvals.close(event)?)),
+            "tool_approval_closed" => {
+                let event = self.approvals.close(event)?;
+                Ok(if self.can_settle() {
+                    self.settled = true;
+                    Observation::ApprovalSettled {
+                        event,
+                        outcome: self.terminal.clone().expect("terminal"),
+                    }
+                } else {
+                    Observation::Approval(event)
+                })
+            }
             "turn_end" if self.started && self.terminal.is_none() => {
                 if self.closing && event["stopReason"] != "stop" {
                     return Ok(Observation::Information(
@@ -446,25 +499,29 @@ impl Turn {
                     ));
                 }
                 if !self.acknowledged
-                    || !self.approvals.all_closed()
-                    || !self.questions.accounted_for()
+                    || (event["stopReason"] != "cancelled"
+                        && (!self.approvals.all_closed() || !self.questions.accounted_for()))
                 {
                     return Err(fail(
                         "Turn ended before prompt admission or input settlement",
                     ));
                 }
                 let outcome = match event["stopReason"].as_str() {
-                    Some("approval") => {
+                    Some("approval" | "cancelled") => {
                         // The source can refuse before asking this frontend (for
                         // example, no approval route). No answer or local denial
                         // is required, and a closure alone never implies this stop.
                         let reason = match event.get("error") {
                             None | Some(Value::Null) => "",
                             Some(Value::String(reason)) if reason.len() <= 16384 => reason,
-                            _ => return Err(fail("Invalid or oversized approval-stop reason")),
+                            _ => return Err(fail("Invalid or oversized turn-stop reason")),
                         };
                         let reason = if reason.is_empty() {
-                            "Runtime stopped the turn for approval."
+                            if event["stopReason"] == "cancelled" {
+                                "Runtime cancelled the turn. Earlier tool effects are retained."
+                            } else {
+                                "Runtime stopped the turn for approval."
+                            }
                         } else {
                             reason
                         };
@@ -473,7 +530,11 @@ impl Turn {
                             .checked_add(reason.len())
                             .filter(|size| *size <= 4 * FRAME_BYTES)
                             .ok_or_else(|| fail("Live content budget exceeded"))?;
-                        TerminalOutcome::ApprovalStopped(reason.to_owned())
+                        if event["stopReason"] == "cancelled" {
+                            TerminalOutcome::Cancelled(reason.to_owned())
+                        } else {
+                            TerminalOutcome::ApprovalStopped(reason.to_owned())
+                        }
                     }
                     Some("stop")
                         if !self.visible_answers.is_empty()
@@ -488,11 +549,11 @@ impl Turn {
                     }
                 };
                 self.terminal = Some(outcome);
-                if self.approvals.settled() && self.questions.settled() {
+                if self.can_settle() {
                     Ok(self.settle())
                 } else {
                     Ok(Observation::Information(
-                        "Turn ended; waiting for outstanding approval-command responses".into(),
+                        "Turn ended; waiting for input closures and command responses".into(),
                     ))
                 }
             }
@@ -782,13 +843,28 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 match command {
                     Input::Prompt(prompt) => {
                         let value = turn.submit(&prompt)?;
+                        let id = value["id"].as_str().expect("reserved ID").to_owned();
                         owned
                             .stdin
                             .as_ref()
                             .expect("owned stdin")
                             .try_send(value)
                             .map_err(io::Error::other)?;
+                        frontend.observe(Observation::Submission { id })?;
                         deadline = Some(Instant::now() + options.timeout);
+                    }
+                    Input::Abort { prompt_id } => {
+                        if let Some(value) = turn.abort(&prompt_id)? {
+                            owned
+                                .stdin
+                                .as_ref()
+                                .expect("owned stdin")
+                                .try_send(value)
+                                .map_err(io::Error::other)?;
+                            let stop_deadline = Instant::now() + Duration::from_secs(20);
+                            deadline =
+                                Some(deadline.map_or(stop_deadline, |d| d.min(stop_deadline)));
+                        }
                     }
                     Input::Approve(decision) => {
                         if let Some(value) = turn.approve(decision)? {
@@ -902,6 +978,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 
 pub enum Input {
     Prompt(String),
+    Abort { prompt_id: String },
     Approve(crate::approvals::Decision),
     Answer(crate::questions::Decision),
     Quit,
@@ -921,8 +998,10 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::State(_) => {} // Read-only footer facts; no one-shot action.
-            Observation::Approval(_) | Observation::Question { .. } => {
+            Observation::State(_) | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
+            Observation::Approval(_)
+            | Observation::ApprovalSettled { .. }
+            | Observation::Question { .. } => {
                 return Err(io::Error::other(
                     "One-shot frontend cannot answer approval or question; use interactive (no answer sent)",
                 ));
@@ -961,6 +1040,12 @@ impl Frontend for OneShot {
             )?,
             Observation::Information(kind) => {
                 writeln!(self.output, "\n[Runtime: {}]", terminal_text(&kind))?
+            }
+            Observation::Cancelled(reason) => {
+                return Err(io::Error::other(format!(
+                    "Turn cancelled: {}",
+                    terminal_text(&reason)
+                )));
             }
             Observation::ApprovalStopped(reason) => {
                 // A settled refusal keeps interactive chat alive, but a one-shot
@@ -1136,6 +1221,14 @@ impl Interactive {
             .try_send(Input::Answer(decision))
             .map_err(io::Error::other)
     }
+    pub fn abort(&self, prompt_id: String) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Abort { prompt_id })
+            .map_err(io::Error::other)
+    }
     pub fn quit(&self) -> io::Result<()> {
         // Cancellation is an out-of-band control, not another queue item.
         self.quitting
@@ -1170,6 +1263,8 @@ fn publish_event(
             Observation::Ready
                 | Observation::Complete
                 | Observation::ApprovalStopped(_)
+                | Observation::Cancelled(_)
+                | Observation::ApprovalSettled { .. }
                 | Observation::Question {
                     settled: Some(_),
                     ..

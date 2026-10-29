@@ -50,6 +50,9 @@ async def main():
             app._active_tool_profile = "strict"
             app._hook_source = "rpc"
             app._stop_requested = False
+            # The fixture task stands in for the provider worker. Stop semantics,
+            # approval waiter release and authority cleanup remain source-owned.
+            app._chat_running = lambda: worker is not None and not worker.done()
             app._system = lambda *_: None
             app.store.stage(str(uuid4()))
             app.store.convo_dir.mkdir()
@@ -81,7 +84,7 @@ async def main():
                           "is_error": not allowed,"card_index": 0})
                 emit({"type": "text_delta","text": "Controlled write allowed" if allowed else "Controlled write denied",
                           "card_index": 0})
-                emit({"type": "turn_end","stopReason": "stop","error": None})
+                emit({"type": "turn_end","stopReason": "cancelled" if app._stop_requested else "stop","error": None})
 
             while line := await asyncio.to_thread(sys.stdin.readline):
                 command = json.loads(line)
@@ -93,13 +96,14 @@ async def main():
                         await worker
                     emit({"type": "response","id": command["id"],"ok": True,"result": {"ok":True}})
                     break
-                if command["type"] == "approve":
+                if command["type"] in {"approve", "abort"}:
                     rpc._dispatch(app, command)
                     continue
                 assert command["type"] == "prompt" and command["tool_profile"] == "strict"
                 if worker is not None:
                     await worker
                 turn += 1
+                app._stop_requested = False
                 app.conversation.append({"role":"user","content":command["message"]})
                 emit({"type": "response","id": command["id"],"ok": True,"result": {"turn":"accepted"}})
                 emit({"type": "turn_start","model": "claude-sonnet-5-5"})

@@ -179,3 +179,33 @@ async def test_rpc_command_ack_and_closure_keep_independent_ids(app, monkeypatch
     assert replies == [{'type': 'response', 'id': 'command-independent', 'ok': True,
                         'result': {'approved': ident, 'allow': False, 'id_key': 'approval_id'}}]
     closed(app, ident, 'denied')
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['pending', 'answered', 'audit-error', 'revoked'])
+async def test_abort_closes_real_rpc_authority_without_inventing_a_human_denial(app, monkeypatch, state):
+    from litetui import rpc
+    replies: list[dict] = []
+    monkeypatch.setattr(rpc, 'rpc_emit', replies.append)
+    app.stop_turn_over_rpc = lambda: True
+    task, ident = await start(app)
+    if state == 'answered':
+        assert tool_approval.resolve_over_rpc(app, ident, True)
+    elif state == 'audit-error':
+        def fail(*_args):
+            raise OSError('injected abort audit failure')
+        app._edit = fail
+    elif state == 'revoked':
+        app.conversation = [{'role': 'user', 'content': 'foreign origin'}]
+    rpc._dispatch(app, {'type': 'abort', 'id': 'stop-command'})
+    answer = await task
+    if state == 'answered':
+        assert answer is tool_approval.ONCE
+        closed(app, ident, 'approved', 'answered')
+    else:
+        assert answer is None
+        closed(app, ident, 'cancelled' if state == 'pending' else state,
+               'audit-error' if state == 'audit-error' else 'cancelled')
+    assert replies == [{'type': 'response', 'id': 'stop-command', 'ok': True,
+                        'result': {'stopped': True, 'cancelled_asks': []}}]
+    if state == 'revoked':
+        assert 'approval_delivery' not in app.conversation[0]

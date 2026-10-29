@@ -63,6 +63,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                     f.key == litetui_terminal::footer::FieldKey::Context && !f.text.contains('—')
                 });
             }
+            Ok(Observation::Submission { .. }) => {}
             Ok(Observation::Ready) => {
                 assert!(saw_ready_facts, "validated facts precede Ready");
                 println!("Ready; submit turn 1");
@@ -79,7 +80,9 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 }
             }
             Ok(Observation::Activity(_)) => panic!("Unexpected tool in tools-disabled smoke"),
-            Ok(Observation::Approval(_)) | Ok(Observation::Question { .. }) => {
+            Ok(Observation::Approval(_))
+            | Ok(Observation::ApprovalSettled { .. })
+            | Ok(Observation::Question { .. }) => {
                 failure =
                     Some("Unexpected approval in tools-disabled smoke; no answer sent".into());
                 break;
@@ -93,7 +96,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 println!("[replacement] {text}");
                 answer = text;
             }
-            Ok(Observation::ApprovalStopped(reason)) => {
+            Ok(Observation::Cancelled(reason) | Observation::ApprovalStopped(reason)) => {
                 failure = Some(format!("Turn stopped for approval: {reason}"));
                 break;
             }

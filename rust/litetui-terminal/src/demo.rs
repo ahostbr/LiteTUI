@@ -176,7 +176,23 @@ impl Demo {
             .is_some_and(|chat| !chat.questions.is_empty())
     }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_approval() || self.has_live_question()
+        self.has_live_approval()
+            || self.has_live_question()
+            || self.stop_open()
+            || self.live.as_ref().is_some_and(|chat| chat.cancelling())
+    }
+    pub fn stop_open(&self) -> bool {
+        self.live.as_ref().is_some_and(|chat| chat.stop_confirm)
+    }
+    pub fn open_stop(&mut self) {
+        if let Some(chat) = self.live.as_mut() {
+            chat.open_stop();
+            if chat.stop_confirm {
+                self.themes_open = false;
+                self.completion.dismiss();
+                self.footer.leave();
+            }
+        }
     }
     pub fn has_live_approval(&self) -> bool {
         self.live

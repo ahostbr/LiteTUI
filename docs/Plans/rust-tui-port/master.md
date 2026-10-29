@@ -1,5 +1,18 @@
 # LiteTUI Rust terminal port
 
+## Turn cancellation continuation - 2026-10-29
+
+Interactive Rust now stops an active turn without closing its owned Python session. Escape from the composer, or Ctrl+Escape during a question/approval, opens a native confirmation with Keep going selected. A second confirmed stop asks the source to force interruption. Hidden controls, reported repeats, clipboard chords and bracketed paste cannot confirm or answer the underlying form. Partial output and a Cancelled label survive follow-up prompts and shutdown; earlier tool effects are not undone.
+
+Each stop is bound locally to the exact reserved prompt command. Stale intent never stops a later turn; at most two explicit requests are sent per turn, without retries. Abort responses only acknowledge the request. Settlement requires the source terminal event, all input closures, and all already-sent decision/stop receipts. Cancellation may precede a closure; the final closure and outcome reach the view together. A natural completion that wins the race remains complete. Waiting keeps the original deadline, capped at twenty seconds after stopping; a settled cancellation releases it for human idle time.
+
+The real Python authority fixture reproduced a source defect: abort resolved approval waiters as DENIED without settling their authority, producing an answered fallback outcome. RPC abort now cancels pending futures so their existing creator records cancellation and cleans up authority. Already answered requests remain unchanged; audit failure and revoked origins preserve their own outcomes. No permission is synthesized by Rust.
+
+Verification: 288 ordinary Rust tests and 24 controlled-process tests passed, including a real Python RPC/authority/store path that cancels, denies, then approves disposable controlled writes across three prompts. Rust fmt, Clippy with warnings denied and build passed. The affected Python run had 159 passes, 7 skips and one unchanged test-runner failure (test_rpc_isolation.py::test_scripts_only_uses_classifier_without_pytest), reproduced with committed RPC loaded in memory. rpc.py has six existing Ruff findings; the lifecycle test has three existing mypy findings, both compared against committed HEAD with zero added. The changed lifecycle test passes Ruff.
+
+This is automated lifecycle/render/input/process evidence, not real-provider cancellation or Windows Terminal/LiteSuite hands-on acceptance. No provider request, merge or cutover was performed. Full parity remains open. The next required launch correction is explicit pre-spawn profile selection: current strict defaults do not satisfy the plan's requirement to prompt when no selection was supplied. Resume, remaining screens/backends/plugins, host acceptance, packaging and resource comparison also remain required.
+
+
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
 ## Tool-enablement continuation — 2026-10-29

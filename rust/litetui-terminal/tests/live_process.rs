@@ -44,6 +44,8 @@ if mode == 'no_read':
     time.sleep(120)
 pending = None
 approval_sequence = 0
+prompt_count = 0
+abort_count = 0
 for line in sys.stdin:
     command = json.loads(line)
     with (root/'commands.jsonl').open('a') as out:
@@ -56,6 +58,23 @@ for line in sys.stdin:
                 emit(dict(type='tool_approval_closed',id=pending,outcome='cancelled',reason='cancelled'))
         emit(dict(type='response',id=command['id'],ok=True,result=dict(ok=True)))
         break
+    if command['type'] == 'abort' and mode.startswith('cancel'):
+        abort_count += 1
+        ack = dict(type='response',id=command['id'],ok=True,
+                   result=dict(stopped=True,cancelled_asks=[pending] if mode == 'cancel_question' else []))
+        if mode == 'cancel_hang' or (mode == 'cancel_force' and abort_count == 1):
+            emit(ack)
+            continue
+        # Exercise terminal-before-closure and receipt-after-terminal ordering.
+        emit(dict(type='turn_end',stopReason='cancelled',error='CancelledError' if mode == 'cancel_force' else None))
+        if pending:
+            if mode == 'cancel_question':
+                emit(dict(type='user_input_resolved',id=pending,cancelled=True,reason='abort'))
+            else:
+                emit(dict(type='tool_approval_closed',id=pending,outcome='denied',reason='cancelled'))
+            pending = None
+        emit(ack)
+        continue
     if command['type'] == 'answer':
         assert command['ask_id'] == pending and command['id'] != pending
         assert command['action'] in ['submit', 'chat', 'cancel']
@@ -99,6 +118,18 @@ for line in sys.stdin:
         continue
     emit(dict(type='response',id=command['id'],ok=True,result=dict(turn='accepted')))
     emit(dict(type='turn_start',model='claude-sonnet-5-5'))
+    prompt_count += 1
+    if mode.startswith('cancel') and prompt_count == 1:
+        if mode == 'cancel_question':
+            pending = 'cancel-ask'
+            emit(dict(type='user_input_requested',id=pending,questions=[dict(
+                label='Scope',question='Fixture?',options=[],selected=[],note='',answered=False,multiSelect=False)]))
+        elif mode == 'cancel_approval':
+            pending = 'cancel-tool'
+            emit(dict(type='tool_approval_requested',id=pending,tool='write',input={},profile='strict',why='fixture',timeout_s=None))
+        else:
+            emit(dict(type='text_delta',text='Partial fixture output',card_index=0))
+        continue
     if mode == 'refused_without_request':
         emit(dict(type='turn_end',stopReason='approval',error='No approval route'))
         continue
@@ -1027,30 +1058,50 @@ fn rust_decisions_cross_real_python_authority_and_owned_store_before_fixture_wri
     let result = runtime.with_cleanup(|runtime| {
         let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
         let mut turns = 0;
-        while turns < 2 {
+        while turns < 3 {
             let observation = runtime
                 .events
                 .recv_timeout(Duration::from_secs(20))
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let ready = matches!(observation, Observation::Ready);
             let asked = matches!(observation, Observation::Approval(Event::Requested(_)));
-            let complete = matches!(observation, Observation::Complete);
+            let complete = matches!(
+                observation,
+                Observation::Complete | Observation::Cancelled(_)
+            );
             chat.observe(observation)?;
             if ready {
-                chat.submit("deny the fixture write")?;
+                chat.submit("cancel the fixture write")?;
                 runtime.submit(chat.take_submission().unwrap())?;
             }
             if asked {
                 assert!(!workspace.join("controlled-write.txt").exists());
-                chat.approvals.choose(turns == 1);
-                runtime.approve(chat.approvals.take_decision().unwrap())?;
+                if turns == 0 {
+                    chat.request_stop()?;
+                    runtime.abort(chat.take_abort().unwrap())?;
+                } else {
+                    chat.approvals.choose(turns == 2);
+                    runtime.approve(chat.approvals.take_decision().unwrap())?;
+                }
             }
             if complete {
-                assert_eq!(workspace.join("controlled-write.txt").exists(), turns == 1);
+                assert_eq!(
+                    chat.rows.last().unwrap().state,
+                    if turns == 0 {
+                        litetui_terminal::live_chat::ReplyState::Cancelled
+                    } else {
+                        litetui_terminal::live_chat::ReplyState::Complete
+                    }
+                );
+                assert_eq!(workspace.join("controlled-write.txt").exists(), turns == 2);
                 assert!(chat.approvals.is_empty());
                 turns += 1;
-                if turns == 1 {
-                    chat.submit("allow the separate fixture write")?;
+                if turns < 3 {
+                    chat.submit(if turns == 1 {
+                        "deny the separate fixture write"
+                    } else {
+                        "allow the separate fixture write"
+                    })?;
                     runtime.submit(chat.take_submission().unwrap())?;
                 }
             }
@@ -1064,8 +1115,145 @@ fn rust_decisions_cross_real_python_authority_and_owned_store_before_fixture_wri
     );
     let store = fs::read_to_string(root.join("authority-store-path.txt")).unwrap();
     let persisted = fs::read_to_string(store).unwrap();
-    assert!(persisted.contains("approved") && persisted.contains("denied"));
+    assert!(
+        persisted.contains("approved")
+            && persisted.contains("denied")
+            && persisted.contains("cancelled")
+    );
     let commands = fs::read_to_string(root.join("commands.jsonl")).unwrap();
-    assert_eq!(commands.lines().count(), 5);
+    assert_eq!(commands.lines().count(), 7);
+    assert_eq!(commands.matches(r#""type": "abort""#).count(), 1);
     assert!(commands.lines().last().unwrap().contains("shutdown"));
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn stopped_turns_keep_one_owned_child_and_require_explicit_followup() {
+    use litetui_terminal::{
+        live::Observation,
+        live_chat::{Chat, ReplyState},
+    };
+    for mode in [
+        "cancel_stream",
+        "cancel_question",
+        "cancel_approval",
+        "cancel_force",
+    ] {
+        let (mut runtime, root) = question_runtime(mode);
+        let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+        let mut requested = false;
+        let mut forced = false;
+        let mut cancelled = false;
+        let mut completed = false;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !completed {
+            assert!(Instant::now() < deadline, "{mode}");
+            let event = runtime.events.recv_timeout(Duration::from_secs(5)).unwrap();
+            let ready = matches!(&event, Observation::Ready);
+            let trigger = matches!(
+                &event,
+                Observation::Content { .. }
+                    | Observation::Question { .. }
+                    | Observation::Approval(_)
+            );
+            let stop_ack = matches!(&event,Observation::Information(text) if text.starts_with("Stop requested"));
+            let stopped = matches!(&event, Observation::Cancelled(_));
+            completed = matches!(&event, Observation::Complete);
+            chat.observe(event).unwrap();
+            if ready {
+                chat.submit("first").unwrap();
+                runtime.submit(chat.take_submission().unwrap()).unwrap();
+            }
+            if trigger && !requested {
+                chat.request_stop().unwrap();
+                runtime.abort(chat.take_abort().unwrap()).unwrap();
+                requested = true;
+                assert!(chat.busy);
+            }
+            if stop_ack && mode == "cancel_force" && !forced {
+                assert!(chat.busy, "ACK alone must not finish turn");
+                chat.request_stop().unwrap();
+                runtime.abort(chat.take_abort().unwrap()).unwrap();
+                forced = true;
+            }
+            if stopped {
+                cancelled = true;
+                assert_eq!(chat.rows[0].state, ReplyState::Cancelled);
+                assert!(!chat.busy && chat.approvals.is_empty() && chat.questions.is_empty());
+                assert!(
+                    chat.take_submission().is_none(),
+                    "never replay cancelled prompt"
+                );
+                if mode == "cancel_stream" {
+                    // Settled cancellation releases the old two-second turn deadline.
+                    std::thread::sleep(Duration::from_millis(2200));
+                }
+                // Delayed first-turn intent must not interrupt the second turn.
+                chat.submit("explicit follow-up").unwrap();
+                runtime.submit(chat.take_submission().unwrap()).unwrap();
+                runtime.abort("rust-live-prompt".into()).unwrap();
+            }
+        }
+        runtime.quit().unwrap();
+        runtime.shutdown().unwrap();
+        assert!(cancelled && requested && (mode != "cancel_force" || forced));
+        assert_eq!(chat.rows.len(), 2);
+        assert_eq!(chat.rows[1].state, ReplyState::Complete);
+        if mode == "cancel_stream" || mode == "cancel_force" {
+            assert_eq!(chat.rows[0].cards[0].answer, "Partial fixture output");
+        }
+        let commands: Vec<serde_json::Value> = fs::read_to_string(root.join("commands.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(commands.iter().filter(|c| c["type"] == "prompt").count(), 2);
+        assert_eq!(
+            commands.iter().filter(|c| c["type"] == "abort").count(),
+            if forced { 2 } else { 1 }
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c["type"] == "answer" || c["type"] == "approve")
+        );
+        assert_eq!(commands.last().unwrap()["type"], "shutdown");
+    }
+}
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn stop_ack_without_terminal_keeps_deadline_and_never_becomes_completion() {
+    use litetui_terminal::{live::Observation, live_chat::Chat};
+    let (mut runtime, root) = question_runtime("cancel_hang");
+    let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+    let start = Instant::now();
+    while let Ok(event) = runtime.events.recv_timeout(Duration::from_secs(5)) {
+        let ready = matches!(&event, Observation::Ready);
+        let text = matches!(&event, Observation::Content { .. });
+        assert!(!matches!(
+            &event,
+            Observation::Complete | Observation::Cancelled(_)
+        ));
+        chat.observe(event).unwrap();
+        if ready {
+            chat.submit("hang").unwrap();
+            runtime.submit(chat.take_submission().unwrap()).unwrap();
+        }
+        if text {
+            chat.request_stop().unwrap();
+            runtime.abort(chat.take_abort().unwrap()).unwrap();
+        }
+    }
+    assert!(chat.busy);
+    assert!(
+        runtime
+            .shutdown()
+            .unwrap_err()
+            .to_string()
+            .contains("deadline")
+    );
+    assert!(start.elapsed() < Duration::from_secs(8));
+    let commands = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert_eq!(commands.matches(r#""type": "prompt""#).count(), 1);
+    assert!(commands.contains("shutdown"));
 }

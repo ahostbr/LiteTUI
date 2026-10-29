@@ -563,6 +563,8 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 crate::live_chat::ReplyState::Sending => "Sending · not yet completed",
                 crate::live_chat::ReplyState::Streaming => "Streaming",
                 crate::live_chat::ReplyState::Complete => "Completed · stop",
+                crate::live_chat::ReplyState::Cancelling => "Stopping · awaiting runtime",
+                crate::live_chat::ReplyState::Cancelled => "Cancelled · partial output retained",
                 crate::live_chat::ReplyState::ApprovalStopped => "Stopped · approval",
                 crate::live_chat::ReplyState::Incomplete => "Incomplete · runtime closed or failed",
             };
@@ -678,7 +680,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         area,
     );
     app.viewport_too_small = area.width < 36 || area.height < 14;
-    if (app.viewport_too_small || app.has_live_approval())
+    if (app.viewport_too_small || app.has_live_approval() || app.stop_open())
         && let Some(chat) = app.live.as_mut()
         && let Some(pending) = chat.questions.current_mut()
     {
@@ -687,7 +689,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     if app.viewport_too_small {
         app.footer.update_visible(&[]);
         app.completion.hide();
-        frame.render_widget(Paragraph::new(if app.live.is_some() { "LIVE RUNTIME\nResize to 36 x 14.\nCtrl+Q exits cleanly.\nTools are disabled." } else if app.themes_open {
+        frame.render_widget(Paragraph::new(if app.live.is_some() { "LIVE RUNTIME\nResize to 36 x 14.\nCtrl+Q exits cleanly.\nInput paused until resized." } else if app.themes_open {
             "LOCAL PREVIEW\nTHEME PICKER PAUSED\nResize to 36 x 14.\nEsc closes dialog.\nCtrl+Q exits."
         } else if app.approval_open {
             "LOCAL PREVIEW\nAPPROVAL PAUSED\nResize to 36 x 14.\nEsc closes dialog.\nCtrl+Q exits."
@@ -719,7 +721,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     );
     frame.render_widget(
         Paragraph::new(if app.live.is_some() {
-            " LIVE · real Python runtime · tools disabled · serialized multi-turn · Ctrl+Q quits"
+            " LIVE · real Python runtime · Ctrl+Esc stops turn · Ctrl+Q quits"
         } else {
             " LOCAL PREVIEW · No model connected · all calls, timings and counts are fixtures"
         })
@@ -914,7 +916,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             Block::default()
                 .borders(Borders::ALL)
                 .title_bottom(if app.live.is_some() {
-                    " F4 themes · Enter sends · Ctrl+Q "
+                    " F4 themes · Esc stops · Ctrl+Q "
                 } else {
                     " F4 themes · F6 approval · Ctrl+Q "
                 })
@@ -972,6 +974,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     if app.themes_open {
         theme_picker(frame, app, area);
     }
+    if app.has_live_input() && app.live.as_ref().is_some_and(|chat| chat.cancelling()) {
+        stopping_dialog(frame, app, area);
+    }
+    if app.stop_open() {
+        stop_dialog(frame, app, area);
+    }
     // Wide glyph continuation cells can be reset by Paragraph; never let them
     // inherit a terminal's potentially light default background.
     for cell in &mut frame.buffer_mut().content {
@@ -979,6 +987,71 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             cell.set_bg(t.background);
         }
     }
+}
+
+fn stopping_dialog(frame: &mut Frame, app: &Demo, area: Rect) {
+    let t = app.palette();
+    let width = area.width.saturating_sub(2).min(54);
+    let height = 8;
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new("Waiting for runtime settlement.\nPartial output is retained.\nInput decisions are paused.\nCtrl+Esc requests forced stop.\nCtrl+Q closes the session.")
+        .style(style(t.foreground,t.surface))
+        .wrap(ratatui::widgets::Wrap { trim:false })
+        .block(Block::default().title(" Stopping turn ").borders(Borders::ALL)),rect);
+}
+
+fn stop_dialog(frame: &mut Frame, app: &Demo, area: Rect) {
+    let t = app.palette();
+    let chat = app.live.as_ref().expect("stop dialog");
+    let width = area.width.saturating_sub(2).min(64);
+    let height = area.height.saturating_sub(2).min(12);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    let title = if chat.cancelling() {
+        " Force stop? "
+    } else {
+        " Stop this turn? "
+    };
+    let text = vec![
+        Line::raw("Partial output stays visible."),
+        Line::raw("Tool effects are not undone."),
+        Line::raw(if chat.cancelling() {
+            "Second stop forces interruption."
+        } else {
+            "Wait for runtime settlement."
+        }),
+        Line::raw(""),
+        Line::raw(if chat.stop_selected {
+            "[  Keep going  ]"
+        } else {
+            "[> Keep going <]"
+        }),
+        Line::raw(if chat.stop_selected {
+            "[> Stop turn <]"
+        } else {
+            "[  Stop turn  ]"
+        }),
+        Line::raw("Tab selects | Enter confirms"),
+        Line::raw("Esc closes | Ctrl+Q quits"),
+    ];
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(style(t.foreground, t.surface))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(Block::default().title(title).borders(Borders::ALL)),
+        rect,
+    );
 }
 
 fn approval(frame: &mut Frame, app: &Demo, area: Rect) {

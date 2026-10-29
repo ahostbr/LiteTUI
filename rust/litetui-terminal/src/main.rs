@@ -112,15 +112,57 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     }
     if app.viewport_too_small {
         if key.code == KeyCode::Esc {
+            if let Some(chat) = app.live.as_mut() {
+                chat.stop_confirm = false;
+            }
             app.approval_open = false;
             app.themes_open = false;
             app.completion.dismiss();
         }
         return false;
     }
+    if key.code == KeyCode::Esc
+        && key.modifiers == KeyModifiers::CONTROL
+        && key.kind == KeyEventKind::Press
+    {
+        app.open_stop();
+        return false;
+    }
+    if app.stop_open() {
+        if key.kind == KeyEventKind::Press && key.modifiers.is_empty() {
+            let chat = app.live.as_mut().expect("stop dialog");
+            match key.code {
+                KeyCode::Esc => chat.stop_confirm = false,
+                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                    chat.stop_selected = !chat.stop_selected
+                }
+                KeyCode::Enter => {
+                    chat.stop_confirm = false;
+                    if chat.stop_selected {
+                        if let Err(error) = chat.request_stop() {
+                            chat.finish(Some(error.to_string()));
+                        }
+                        app.notice = chat.notice.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+        return false;
+    }
+    if app.live.as_ref().is_some_and(|chat| chat.cancelling()) {
+        if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press && key.modifiers.is_empty() {
+            app.open_stop();
+        }
+        return false;
+    }
     if app.has_live_approval() {
         let chat = app.live.as_mut().expect("live approval");
-        if chat.quitting || key.kind != KeyEventKind::Press || !key.modifiers.is_empty() {
+        if chat.quitting
+            || chat.cancelling()
+            || key.kind != KeyEventKind::Press
+            || !key.modifiers.is_empty()
+        {
             return false;
         }
         let current = chat.approvals.current_mut().expect("pending approval");
@@ -143,7 +185,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     }
     if app.has_live_question() {
         let chat = app.live.as_mut().expect("live question");
-        if !chat.quitting {
+        if !chat.quitting && !chat.cancelling() {
             chat.questions.key(key);
         }
         return false;
@@ -333,6 +375,10 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         KeyCode::Backspace => app.composer.delete(Delete::Left),
         KeyCode::Delete => app.composer.delete(Delete::Right),
         KeyCode::Esc => {
+            if app.live.as_ref().is_some_and(|chat| chat.busy) && key.kind == KeyEventKind::Press {
+                app.open_stop();
+                return false;
+            }
             app.notice = if app.live.is_some() {
                 "Live runtime; Ctrl+Q exits cleanly.".into()
             } else {
@@ -362,7 +408,8 @@ fn handle_key(
         return false;
     }
     if app.has_live_input() {
-        if !app.has_live_approval()
+        if !app.stop_open()
+            && !app.has_live_approval()
             && !app.viewport_too_small
             && event.kind == KeyEventKind::Press
             && event.modifiers == KeyModifiers::CONTROL
@@ -370,6 +417,7 @@ fn handle_key(
         {
             let chat = app.live.as_mut().expect("live question");
             if !chat.quitting
+                && !chat.cancelling()
                 && let Some(pending) = chat.questions.current_mut()
                 && !pending.waiting
                 && pending.note_focused()
@@ -442,9 +490,14 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
-    if !app.viewport_too_small && !app.has_live_approval() && app.has_live_question() {
+    if !app.stop_open()
+        && !app.viewport_too_small
+        && !app.has_live_approval()
+        && app.has_live_question()
+    {
         let chat = app.live.as_mut().expect("live question");
         if !chat.quitting
+            && !chat.cancelling()
             && let Some(pending) = chat.questions.current_mut()
         {
             pending.paste(text, false);
@@ -462,9 +515,13 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
-    if !app.viewport_too_small && !app.has_live_approval() && app.has_live_question() {
+    if !app.stop_open()
+        && !app.viewport_too_small
+        && !app.has_live_approval()
+        && app.has_live_question()
+    {
         let chat = app.live.as_mut().expect("live question");
-        if !chat.quitting {
+        if !chat.quitting && !chat.cancelling() {
             chat.questions.mouse(event);
         }
         return;
@@ -626,6 +683,14 @@ fn run_interactive(options: litetui_terminal::live::Options) -> io::Result<()> {
                         }
                     }
                 }
+            }
+            if !quitting
+                && let Some(prompt_id) = app.live.as_mut().expect("live").take_abort()
+                && let Err(error) = runtime.abort(prompt_id)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
             }
             if !quitting
                 && let Some(decision) = app.live.as_mut().expect("live").approvals.take_decision()
@@ -1833,5 +1898,86 @@ mod tests {
         handle_key(&mut app, &mut router, repeat, &mut clipboard);
         assert_eq!(clipboard.reads, 0);
         assert_eq!(app.composer.text(), "preserved draft");
+    }
+    #[test]
+    fn stop_confirmation_defaults_to_keep_going_and_repeats_cannot_force() {
+        use litetui_terminal::live::Observation;
+        let mut app = live_approval_app();
+        app.live.as_mut().unwrap().take_submission();
+        app.observe_live(Observation::Submission {
+            id: "original".into(),
+        })
+        .unwrap();
+        let mut router = KeyRouter::default();
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        router.handle(&mut app, esc);
+        assert!(app.stop_open());
+        router.handle(&mut app, enter);
+        assert!(!app.stop_open() && !app.live.as_ref().unwrap().cancelling());
+        router.handle(&mut app, esc);
+        router.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let mut repeat = enter;
+        repeat.kind = KeyEventKind::Repeat;
+        router.handle(&mut app, repeat);
+        assert!(app.stop_open());
+        router.handle(&mut app, enter);
+        assert_eq!(
+            app.live.as_mut().unwrap().take_abort().as_deref(),
+            Some("original")
+        );
+        router.handle(&mut app, repeat);
+        assert!(app.live.as_mut().unwrap().take_abort().is_none());
+        assert_eq!(app.composer.text(), "preserved draft");
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::CONTROL));
+        router.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        router.handle(&mut app, enter);
+        assert_eq!(
+            app.live.as_mut().unwrap().take_abort().as_deref(),
+            Some("original")
+        );
+        router.handle(&mut app, esc);
+        assert!(!app.stop_open(), "two requests maximum");
+    }
+    #[test]
+    fn stop_dialog_owns_clipboard_hidden_keys_and_does_not_answer_pending_input() {
+        let mut app = live_approval_app();
+        app.live.as_mut().unwrap().take_submission();
+        request_question(&mut app);
+        let mut router = KeyRouter::default();
+        let mut clipboard = TestClipboard {
+            read: Some("secret".into()),
+            ..Default::default()
+        };
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::CONTROL));
+        assert!(app.stop_open());
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paste(&mut app, "bracketed");
+        assert_eq!(clipboard.reads, 0);
+        app.viewport_too_small = true;
+        router.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        router.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.stop_open() && !app.live.as_ref().unwrap().cancelling());
+        app.viewport_too_small = false;
+        router.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        router.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .questions
+                .take_decision()
+                .is_none()
+        );
+        assert_eq!(app.composer.text(), "preserved draft");
+        assert!(router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
     }
 }

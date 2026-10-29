@@ -32,6 +32,8 @@ pub(crate) fn display_units(text: &str) -> io::Result<usize> {
 pub enum ReplyState {
     Sending,
     Streaming,
+    Cancelling,
+    Cancelled,
     Complete,
     ApprovalStopped,
     Incomplete,
@@ -69,6 +71,11 @@ pub struct Chat {
     pub approvals: crate::approvals::View,
     pub questions: crate::questions::View,
     pending: Option<String>,
+    submission_id: Option<String>,
+    stop_requests: usize,
+    stops_sent: usize,
+    pub stop_confirm: bool,
+    pub stop_selected: bool,
     retained_bytes: usize,
     retained_units: usize,
 }
@@ -87,6 +94,11 @@ impl Chat {
             approvals: crate::approvals::View::default(),
             questions: crate::questions::View::default(),
             pending: None,
+            submission_id: None,
+            stop_requests: 0,
+            stops_sent: 0,
+            stop_confirm: false,
+            stop_selected: false,
             retained_bytes: 0,
             retained_units: 0,
         }
@@ -119,6 +131,9 @@ impl Chat {
         self.retained_units += units;
         self.retained_bytes += prompt.len();
         self.pending = Some(prompt.to_owned());
+        self.submission_id = None;
+        self.stop_requests = 0;
+        self.stops_sent = 0;
         self.rows.push(Row {
             prompt: prompt.into(),
             cards: vec![Card::default()],
@@ -134,11 +149,56 @@ impl Chat {
     pub fn take_submission(&mut self) -> Option<String> {
         self.pending.take()
     }
+    pub fn cancelling(&self) -> bool {
+        self.busy && self.stop_requests > 0
+    }
+    pub fn open_stop(&mut self) {
+        if self.busy && !self.closed && !self.quitting && self.stop_requests < 2 {
+            self.stop_confirm = true;
+            self.stop_selected = false;
+        }
+    }
+    pub fn request_stop(&mut self) -> io::Result<()> {
+        self.stop_confirm = false;
+        if !self.busy || self.closed || self.quitting || self.stop_requests >= 2 {
+            return Ok(());
+        }
+        if self.pending.take().is_some() {
+            return self.settle(crate::live::TerminalOutcome::Cancelled(
+                "Cancelled before sending to the runtime.".into(),
+            ));
+        }
+        self.stop_requests += 1;
+        self.approvals.take_decision();
+        self.questions.take_decision();
+        self.rows.last_mut().expect("busy row").state = ReplyState::Cancelling;
+        self.notice =
+            "Stopping; waiting for the runtime. Ctrl+Esc can request a forced stop.".into();
+        Ok(())
+    }
+    pub fn take_abort(&mut self) -> Option<String> {
+        if !self.busy || self.stops_sent >= self.stop_requests {
+            return None;
+        }
+        let id = self.submission_id.clone()?;
+        self.stops_sent += 1;
+        Some(id)
+    }
     pub fn observe(&mut self, observation: Observation) -> io::Result<()> {
         if self.closed {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::Submission { id } => {
+                self.pending_row()?;
+                if self.submission_id.replace(id).is_some() {
+                    return Err(io::Error::other("Duplicate local prompt reservation"));
+                }
+            }
+            Observation::ApprovalSettled { event, outcome } => {
+                self.approvals.observe(event)?;
+                self.settle(outcome)?;
+            }
             Observation::State(update) => self.runtime_state.apply(update),
             Observation::Approval(event) => {
                 if matches!(event, crate::approvals::Event::Requested(_)) {
@@ -152,10 +212,7 @@ impl Chat {
                 }
                 self.notice = self.questions.observe(event)?;
                 if let Some(outcome) = settled {
-                    self.settle(match outcome {
-                        crate::live::TerminalOutcome::Complete => None,
-                        crate::live::TerminalOutcome::ApprovalStopped(reason) => Some(reason),
-                    })?;
+                    self.settle(outcome)?;
                 }
             }
             Observation::Ready => {
@@ -180,12 +237,26 @@ impl Chat {
             Observation::Information(info) => {
                 self.notice = info;
             }
-            Observation::ApprovalStopped(reason) => self.settle(Some(reason))?,
-            Observation::Complete => self.settle(None)?,
+            Observation::ApprovalStopped(reason) => {
+                self.settle(crate::live::TerminalOutcome::ApprovalStopped(reason))?
+            }
+            Observation::Cancelled(reason) => {
+                self.settle(crate::live::TerminalOutcome::Cancelled(reason))?
+            }
+            Observation::Complete => self.settle(crate::live::TerminalOutcome::Complete)?,
         }
         Ok(())
     }
-    fn settle(&mut self, stop_reason: Option<String>) -> io::Result<()> {
+    fn settle(&mut self, outcome: crate::live::TerminalOutcome) -> io::Result<()> {
+        let (state, stop_reason) = match outcome {
+            crate::live::TerminalOutcome::Complete => (ReplyState::Complete, None),
+            crate::live::TerminalOutcome::ApprovalStopped(reason) => {
+                (ReplyState::ApprovalStopped, Some(reason))
+            }
+            crate::live::TerminalOutcome::Cancelled(reason) => {
+                (ReplyState::Cancelled, Some(reason))
+            }
+        };
         if !self.approvals.is_empty() || !self.questions.is_empty() {
             return Err(io::Error::other("Turn settlement with pending input"));
         }
@@ -200,17 +271,17 @@ impl Chat {
         self.retained_units += units;
         self.retained_bytes += reason.len();
         let row = self.rows.last_mut().expect("validated pending row");
-        row.state = if stop_reason.is_some() {
-            ReplyState::ApprovalStopped
-        } else {
-            ReplyState::Complete
-        };
+        row.state = state;
         row.stop_reason = stop_reason;
         for tool in &mut row.tools {
             tool.finish();
         }
         self.busy = false;
-        self.notice = if row.state == ReplyState::ApprovalStopped {
+        self.stop_confirm = false;
+        self.submission_id = None;
+        self.notice = if row.state == ReplyState::Cancelled {
+            "Turn cancelled. Partial output retained. Type another prompt; Ctrl+Q quits."
+        } else if row.state == ReplyState::ApprovalStopped {
             "Turn stopped for approval. Type another prompt; Ctrl+Q quits."
         } else {
             "Reply completed. Type another prompt; Ctrl+Q quits."
@@ -221,7 +292,12 @@ impl Chat {
     fn pending_row(&self) -> io::Result<&Row> {
         self.rows
             .last()
-            .filter(|row| matches!(row.state, ReplyState::Sending | ReplyState::Streaming))
+            .filter(|row| {
+                matches!(
+                    row.state,
+                    ReplyState::Sending | ReplyState::Streaming | ReplyState::Cancelling
+                )
+            })
             .ok_or_else(|| io::Error::other("Content without a pending live row"))
     }
     fn replace_cost(&mut self, old: (usize, usize), new: (usize, usize)) -> io::Result<()> {
@@ -289,7 +365,9 @@ impl Chat {
             body.push_str(&text);
             *work += units;
         }
-        row.state = ReplyState::Streaming;
+        if row.state != ReplyState::Cancelling {
+            row.state = ReplyState::Streaming;
+        }
         self.notice = "Receiving real runtime content…".into();
         Ok(())
     }
@@ -327,7 +405,9 @@ impl Chat {
             row.items.push(Item::Tool(row.tools.len()));
             row.tools.push(tool);
         }
-        row.state = ReplyState::Streaming;
+        if row.state != ReplyState::Cancelling {
+            row.state = ReplyState::Streaming;
+        }
         self.notice = "Native tool observation (not an approval or dispatch)".into();
         Ok(())
     }
@@ -337,6 +417,7 @@ impl Chat {
     }
     pub fn finish(&mut self, failure: Option<String>) {
         self.closed = true;
+        self.stop_confirm = false;
         self.ready = false;
         self.busy = false;
         self.pending = None;
@@ -348,7 +429,7 @@ impl Chat {
             }
             if !matches!(
                 row.state,
-                ReplyState::Complete | ReplyState::ApprovalStopped
+                ReplyState::Complete | ReplyState::ApprovalStopped | ReplyState::Cancelled
             ) {
                 row.state = ReplyState::Incomplete;
             }

@@ -526,7 +526,7 @@ fn approval_stop_never_bypasses_open_requests_or_malformed_reason() {
             .is_err()
         );
     }
-    for stop in ["error", "cancelled", "unknown", "stop"] {
+    for stop in ["error", "unknown", "stop"] {
         let mut turn = started();
         turn.accept(
             &json!({"type":"text_delta","text":"partial answer"}),

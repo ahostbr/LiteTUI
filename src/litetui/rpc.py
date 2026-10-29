@@ -259,10 +259,11 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         for pending in getattr(app, "_gui_model_pending", {}).values():
             if not pending["future"].done():
                 pending["future"].set_result(False)
-        from litetui.tool_approval import DENIED
+        # Cancellation is not a human denial. Let the request creator record
+        # its cancelled closure after releasing the waiter and authority.
         for future in getattr(app, "_approval_waiters", {}).values():
             if not future.done():
-                future.set_result(DENIED)
+                future.cancel()
         cancelled = auq_mod.cancel_pending_asks(app)
         for ask_id in cancelled:
             # The host resolves its own card locally on interrupt, so this is
