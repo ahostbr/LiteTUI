@@ -1552,6 +1552,7 @@ class LiteTUI(App):
         self,
         *,
         rpc: bool = False,
+        hold_restored_input: bool = False,
         first_prompt: str | None = None,
         system_prompt: str | None = None,
         initial_model: str | None = None,
@@ -1581,6 +1582,7 @@ class LiteTUI(App):
                                thinking_level='off' if initial_thinking == 'none' else initial_thinking)
         super().__init__(**app_kwargs)
         self._rpc = rpc
+        self._hold_restored_input = hold_restored_input
         self.last_recap = None
         self._now_turn_active_at: float | None = None
         self._retry_wait_token: object | None = None

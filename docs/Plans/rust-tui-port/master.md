@@ -1,5 +1,17 @@
 # LiteTUI Rust terminal port
 
+## Restored provider-input hold - 2026-10-29
+
+The Rust-owned Python launch now requests --hold-restored-input. Codex journal entries recovered by restore_queue receive a launch-local hold; their delivery state, revision and text are preserved. Both idle delivery and native steering check the hold, as does native recovery. The shared round-boundary queue gate also refuses held input. Ordinary Python launches keep their existing automatic policy, and newly queued explicit input is not marked as recovered.
+
+The flag requires RPC mode and reaches the owned constructor before resume. gui.state reports restored_input policy/count. Rust refuses resumed startup unless that read confirms hold and a bounded nonnegative held count (at most 1,000); missing/automatic/malformed policy cannot enable history or prompts. The ready notice and a persistent held:N footer show actual recovered-input count, including compact terminal layouts. One-shot output reports the count. These are held observations, not acceptance, cancellation or permission to replay.
+
+Verification: **330 ordinary Rust tests and all 34 controlled-process tests passed**. The new native-Codex process fixture uses actual CLI creation/acquisition/resume, source queue restoration/consumers, ownership and journals with providers/visual observers controlled. Queued, sending and accepted entries survive two runtime lifetimes unchanged; consumers remain inert before Ready and during a new explicit turn. Only the two submitted prompts are persisted. The ordinary no-queue resume test still passes. Native history/provider network calls remain tripwired, not live acceptance.
+
+The combined focused Python run produced **193 passes and six baseline fixture failures**, with fifteen passing hold-policy cases including automatic-policy and fresh-explicit-input positive controls. All six failures reproduce with exact committed source loaded from this worktree: two repository fixtures omit an owned session, three native-call doubles omit origin, and one CLI double omits _cli_convo_id. Their tests remain unchanged. Rust fmt/Clippy/build and Python CLI help pass; helper/tests/process fixture are Ruff/mypy clean. Changed Python sources retain the same 118 Ruff and 92 mypy diagnostics as the exact committed baseline.
+
+This closes the automatic recovered-Codex-input gap identified in the previous checkpoint. Explicit queue inspection/reconciliation/continue/discard controls still need native UI and owned operation/readback handling; a hold is not full queue parity. The in-app conversation browser, remaining backends/engines/screens/plugins, both-host acceptance, packaging and measured resources remain open. No provider request, desktop input, merge, push or cutover occurred.
+
 ## Conversation-open lifecycle prerequisite - 2026-10-29
 
 The asynchronous Python conversation-open operation now waits for the destination connection before looking for its native-history worker. The previous implementation looked for history immediately after _resume, before connect could create it, and acknowledged a saved transcript while the provider was still connecting or destined to fail. Open now remains a visible management operation through both waits. Concurrent open/mutation and legacy/GUI prompt paths remain blocked during it.

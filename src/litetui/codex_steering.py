@@ -4,6 +4,7 @@ import asyncio
 import copy
 import uuid
 
+from litetui import restored_input
 from litetui.model_transport import ProviderError
 
 
@@ -170,6 +171,8 @@ class HostSteering:
                 await asyncio.sleep(0.1)
                 continue
             item = queue[0]
+            if restored_input.held(item):
+                return
             if item.get("source") == "interrupted":
                 return
             entry = item.get("_codex_entry")
@@ -271,6 +274,7 @@ def restore_queue(app):
             lambda index=index: save_at(app, index),
         )
         item = {**entry["item"], "_codex_entry": entry, "_codex_ledger": ledger}
+        restored_input.mark(app, item)
         app._pending_input.append(item)
 
 
@@ -279,6 +283,8 @@ async def recover_queue_head(app, server):
     if not app._pending_input:
         return False
     item = app._pending_input[0]
+    if restored_input.held(item):
+        return False
     conversation = app.conversation
     conversation_id = getattr(app, "convo_id", None)
     backend = getattr(app, "backend", None)

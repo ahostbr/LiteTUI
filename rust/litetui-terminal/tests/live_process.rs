@@ -1609,6 +1609,16 @@ fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn(
 #[test]
 #[ignore = "real CLI and owned saved store with controlled provider; requires LITETUI_AUTHORITY_PYTHON"]
 fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
+    saved_conversation_process(false);
+}
+
+#[test]
+#[ignore = "controlled Python process; no provider"]
+fn restored_provider_input_stays_held_before_ready_and_during_an_explicit_turn() {
+    saved_conversation_process(true);
+}
+
+fn saved_conversation_process(held: bool) {
     use litetui_terminal::live::{Interactive, Observation, Options};
     use litetui_terminal::live_chat::Chat;
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
@@ -1631,12 +1641,29 @@ fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
         include_str!("fixtures/resume_runtime.py"),
     )
     .unwrap();
+    if held {
+        fs::write(
+            source.join("src/litetui/fixture-held-input"),
+            "controlled fixture",
+        )
+        .unwrap();
+    }
+    let backend = if held { "codex" } else { "claude" };
+    let model = if held {
+        "gpt-6-astra"
+    } else {
+        "claude-sonnet-5-5"
+    };
     let mut args: Vec<String> = command
         .get_args()
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     args[1] = python.to_string_lossy().into_owned();
+    for (flag, value) in [("--backend", backend), ("--model", model)] {
+        let index = args.iter().position(|arg| arg == flag).unwrap();
+        args[index + 1] = value.into();
+    }
     let mut session = String::new();
     let mut agent = String::new();
     let mut saved_settings = Vec::new();
@@ -1651,7 +1678,7 @@ fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
         let runtime = Interactive::start(options);
         runtime
             .with_cleanup(|runtime| {
-                let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+                let mut chat = Chat::new(backend.into(), model.into());
                 let mut history_seen = false;
                 loop {
                     let event = runtime
@@ -1672,6 +1699,13 @@ fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
                     if ready {
                         assert_eq!(history_seen, pass == 1);
                         let snapshot = chat.runtime_state.startup().unwrap();
+                        assert_eq!(
+                            snapshot.held_restored_input,
+                            Some(if held && pass == 1 { 3 } else { 0 })
+                        );
+                        if held && pass == 1 {
+                            assert!(chat.notice.contains("Restored input held: 3"));
+                        }
                         if pass == 0 {
                             session = snapshot.session.clone();
                         } else {
@@ -1724,14 +1758,34 @@ fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
             );
             let argv = current["argv"].as_array().unwrap();
             assert!(!argv.iter().any(|v| v == "--thinking-level"));
+            assert!(argv.iter().any(|v| v == "--hold-restored-input"));
             assert!(argv.iter().any(|v| v == "--convo"));
+        }
+    }
+    if held {
+        let proof: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("held-input-proof.json")).unwrap()).unwrap();
+        assert_eq!(
+            proof["policy"],
+            serde_json::json!({"policy":"hold","held":3})
+        );
+        assert_eq!(
+            proof["explicit_prompts"],
+            serde_json::json!(["remember SAVED-CONTEXT", "what was saved?"])
+        );
+        let entries = proof["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 3);
+        for (entry, state) in entries.iter().zip(["queued", "sending", "accepted"]) {
+            assert_eq!(entry["state"], state);
+            assert_eq!(entry["revision"], 7);
+            assert_eq!(entry["item"]["content"], format!("UNSENT {state}"));
         }
     }
     let saved_commands = fs::read(root.join("resume-commands.jsonl")).unwrap();
     for (id, model, expected) in [
         (
             "12345678-1234-4123-8123-123456789abc",
-            "claude-sonnet-5-5",
+            model,
             "Owned conversation lookup refused",
         ),
         (session.as_str(), "wrong-model", "Launch override disagrees"),

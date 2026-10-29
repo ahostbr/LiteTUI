@@ -12,7 +12,7 @@ from pathlib import Path
 
 from rich.text import Text
 
-from litetui import claude_cache
+from litetui import claude_cache, restored_input
 from litetui.claude_persistence import ClaudeLedger
 from litetui.event_origin import EventOrigin
 from litetui.stream_sink import StreamSink
@@ -335,6 +335,8 @@ def prepare_input(app, content, profile, source, operation_id=None):
 
 
 def queue_ready(app, item):
+    if restored_input.held(item):
+        return False
     if not item.get("_claude_segment"):
         if not getattr(getattr(app, "backend", None), "owns_native_turns", False):
             return True

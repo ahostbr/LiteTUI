@@ -91,6 +91,21 @@ fn names(value: &Value, key: &str) -> io::Result<Vec<String>> {
         .collect()
 }
 
+fn restored_input(value: &Value) -> io::Result<Option<usize>> {
+    let Some(status) = value.get("restored_input") else {
+        return Ok(None);
+    };
+    let held = status["held"]
+        .as_u64()
+        .filter(|count| *count <= 1000)
+        .ok_or_else(|| fail("Invalid restored-input count"))? as usize;
+    match status["policy"].as_str() {
+        Some("hold") => Ok(Some(held)),
+        Some("automatic") if held == 0 => Ok(None),
+        _ => Err(fail("Invalid restored-input policy")),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub session: String,
@@ -99,6 +114,7 @@ pub struct Snapshot {
     pub profile: String,
     pub mode: String,
     pub writable: bool,
+    pub held_restored_input: Option<usize>,
     pub schedules_paused: bool,
     pub conversations: usize,
     pub jobs: usize,
@@ -131,6 +147,7 @@ impl Snapshot {
             profile: text(value, "tool_profile", 32)?.to_owned(),
             mode: mode.to_owned(),
             writable: boolean(ownership, "writable")?,
+            held_restored_input: restored_input(value)?,
             schedules_paused: boolean(value, "schedules_paused")?,
             conversations: rows(value, "conversations")?,
             jobs: rows(value, "jobs")?,
@@ -364,6 +381,11 @@ impl Management {
                 }
                 self.state_id = None;
                 if let Some(session) = &self.resume {
+                    if snapshot.held_restored_input.is_none() {
+                        return Err(fail(
+                            "Resume requires verified held-input policy; update Python source",
+                        ));
+                    }
                     if !snapshot.writable
                         || !self
                             .operations

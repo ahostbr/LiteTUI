@@ -244,6 +244,15 @@ impl Chat {
                         .tool_description()
                         .unwrap_or_else(|| "Tool policy unavailable.".into())
                 );
+                if let Some(held) = self
+                    .runtime_state
+                    .startup()
+                    .and_then(|s| s.held_restored_input)
+                    && held > 0
+                {
+                    self.notice
+                        .push_str(&format!(" Restored input held: {held}. Nothing replayed."));
+                }
             }
             Observation::Content { card, kind, text } => self.content(Some(card), kind, text)?,
             Observation::Text(text) => self.content(None, ContentKind::AnswerDelta, text)?,

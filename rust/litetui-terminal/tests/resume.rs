@@ -29,14 +29,10 @@ fn transcript() -> Value {
         {"role":"tool","content":"saved result","tool_call_id":"historical-tool"}
     ]})
 }
-fn pending() -> (Management, Value) {
+fn negotiating() -> (Management, Value) {
     let mut m = Management::new(Some(ID.into()));
     let ready = json!({"type":"ready","management_protocols":[1],"capabilities":["hello","state"],
         "conversation_id":ID,"backend":"claude","model":"model-A","tool_profile":"strict"});
-    assert!(matches!(
-        m.accept(ready.clone()).unwrap(),
-        Step::Bootstrap(_)
-    ));
     let hello = m.begin(&ready).unwrap();
     let Step::Write(state) = m
         .accept(
@@ -48,13 +44,26 @@ fn pending() -> (Management, Value) {
     else {
         panic!()
     };
-    let Step::Write(history)=m.accept(json!({"type":"response","id":state["id"],"ok":true,"result":{
-        "session_id":ID,"busy":false,"mode":"normal","tool_profile":"strict","model":{"model":"model-A","backend":"claude"},
+    (m, state["id"].clone())
+}
+fn state() -> Value {
+    json!({"session_id":ID,"busy":false,
+        "mode":"normal","tool_profile":"strict","model":{"model":"model-A","backend":"claude"},
         "ownership":{"writable":true,"data_version":1},"schedules_paused":false,"conversations":[],"jobs":[],"tasks":[],
-        "active_work":[],"pending_approvals":[],"pending_questions":[],"pending_model_loads":[]}})).unwrap() else {panic!()};
+        "restored_input":{"policy":"hold","held":2},
+        "active_work":[],"pending_approvals":[],"pending_questions":[],"pending_model_loads":[]})
+}
+fn pending() -> (Management, Value) {
+    let (mut m, id) = negotiating();
+    let Step::Write(history) = m
+        .accept(json!({"type":"response","id":id,"ok":true,"result":state()}))
+        .unwrap()
+    else {
+        panic!()
+    };
     assert_eq!(history["type"], "gui.conversations.read");
     assert_eq!(history["session_id"], ID);
-    assert_ne!(state["id"], history["id"]);
+    assert_ne!(id, history["id"]);
     (m, history["id"].clone())
 }
 #[test]
@@ -69,6 +78,7 @@ fn resumed_startup_needs_owned_transcript_before_ready_or_prompt() {
         panic!()
     };
     assert_eq!(snapshot.session, ID);
+    assert_eq!(snapshot.held_restored_input, Some(2));
     assert_eq!(history.messages.len(), 3);
     assert!(m.ready());
     m.prompt("fresh-explicit-prompt").unwrap();
@@ -216,4 +226,89 @@ fn saved_history_renders_as_saved_and_never_claims_current_completion() {
     assert!(!text.contains("Completed · stop") && !text.contains("HIDDEN-SYSTEM"));
     assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
     assert!(app.live.as_mut().unwrap().take_submission().is_none());
+}
+
+#[test]
+fn resume_refuses_unverified_or_invalid_restored_input_policy() {
+    for input in [
+        Value::Null,
+        json!({"policy":"automatic","held":0}),
+        json!({"policy":"hold"}),
+        json!({"policy":"hold","held":true}),
+        json!({"policy":"hold","held":-1}),
+        json!({"policy":"hold","held":1001}),
+        json!({"policy":"unknown","held":0}),
+    ] {
+        let (mut m, id) = negotiating();
+        let mut value = state();
+        if input.is_null() {
+            value.as_object_mut().unwrap().remove("restored_input");
+        } else {
+            value["restored_input"] = input;
+        }
+        assert!(
+            m.accept(json!({"type":"response","id":id,"ok":true,"result":value}))
+                .is_err()
+        );
+        assert!(!m.ready());
+        assert!(m.prompt("must-not-send").is_err());
+    }
+}
+
+#[test]
+fn restored_input_is_visible_and_does_not_queue_a_prompt() {
+    let (mut m, id) = pending();
+    let Step::Restored { snapshot, history } = m
+        .accept(json!({"type":"response","id":id,"ok":true,"result":transcript()}))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut chat = Chat::new("claude".into(), "model-A".into());
+    chat.observe(Observation::State(
+        litetui_terminal::runtime_state::Update::from_management(snapshot),
+    ))
+    .unwrap();
+    chat.observe(Observation::History(history)).unwrap();
+    chat.observe(Observation::Ready).unwrap();
+    assert!(chat.notice.contains("Restored input held: 2"));
+    assert!(chat.take_submission().is_none());
+}
+
+#[test]
+fn restored_input_count_remains_in_footer_after_the_startup_notice_changes() {
+    use litetui_terminal::{demo::Demo, runtime_state::Update, ui};
+    use ratatui::{Terminal, backend::TestBackend};
+    let (mut m, id) = pending();
+    let Step::Restored { snapshot, .. } = m
+        .accept(json!({"type":"response","id":id,"ok":true,"result":transcript()}))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut app = Demo::live("claude".into(), "model-A".into());
+    app.observe_live(Observation::State(
+        Update::from_event(
+            &json!({"type":"ready","model":"model-A","conversation_id":ID,"thinking_level":"low"}),
+        )
+        .unwrap()
+        .unwrap(),
+    ))
+    .unwrap();
+    app.observe_live(Observation::State(Update::from_management(snapshot)))
+        .unwrap();
+    app.observe_live(Observation::Ready).unwrap();
+    app.notice = "Another activity".into();
+    for width in [40, 120] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("held:2"), "{width}: {text}");
+    }
 }

@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, get_args, get_origin, get_type_hints
 
-from litetui import settings_runtime
+from litetui import restored_input, settings_runtime
 from litetui import llm_backend, paths, seat_authority, tasks
 from litetui import settings as settings_mod
 from litetui.shared_state import DATA_VERSION, check_data_version
@@ -453,6 +453,7 @@ def dispatch(app, cmd):
                 "settings": _settings(app), "conversations": _conversations(app, "list", {}),
                 "jobs": _jobs(app, "list", {}), "tasks": [t.to_row() for t in app.bg_tasks.values()],
                 "ownership": {"writable": app.store.owned, "data_version": DATA_VERSION},
+                "restored_input": restored_input.status(app),
                 "schedules_paused": bool(getattr(app, "_gui_schedules_paused", False)),
                 "active_work": active_work(app), "usage": getattr(app, "_gui_usage", None),
                 "pending_approvals": [getattr(app, "_gui_approval_details", {}).get(key, {"id": key}) for key, future in getattr(app, "_approval_waiters", {}).items() if not future.done()],

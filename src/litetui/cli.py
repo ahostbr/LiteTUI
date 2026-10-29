@@ -40,6 +40,8 @@ def main() -> None:
     )
     parser.add_argument("--version", "-V", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--rpc", action="store_true", help="headless JSONL-over-stdio mode")
+    parser.add_argument("--hold-restored-input", action="store_true",
+                        help="hold recovered provider input for explicit host reconciliation (requires --rpc)")
     from litetui.llm_backend import BACKEND_NAMES
     from litetui.tool_policy import PROFILE_NAMES
     parser.add_argument("--backend", choices=BACKEND_NAMES, default=None, help='invocation-only backend selection')
@@ -92,6 +94,8 @@ def main() -> None:
     parser.add_argument("--export-output", type=str, help="new Markdown file for --export-conversation")
 
     args = parser.parse_args()
+    if args.hold_restored_input and not args.rpc:
+        parser.error("--hold-restored-input requires --rpc")
     if (args.owner or args.memory) and (args.agent or args.create_agent):
         # First, so --create-agent's own requirements do not answer for a combination
         # that is refused for a different reason.
@@ -257,6 +261,7 @@ def main() -> None:
 
         app = LiteTUI(
             rpc=args.rpc,
+            hold_restored_input=args.hold_restored_input,
             first_prompt=args.prompt,
             system_prompt=system_prompt,
             initial_model=args.model,

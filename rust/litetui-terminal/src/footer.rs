@@ -11,6 +11,7 @@ pub enum FieldKey {
     Context,
     Seat,
     Conversation,
+    RestoredInput,
     Model,
     Thinking,
     Cache,

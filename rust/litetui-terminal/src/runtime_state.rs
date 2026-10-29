@@ -197,6 +197,11 @@ impl State {
                 label(&conversation.chars().take(8).collect::<String>()),
             ));
         }
+        if let Some(held) = self.startup.as_ref().and_then(|s| s.held_restored_input)
+            && held > 0
+        {
+            fields.push(F::new(K::RestoredInput, format!("held:{held}")));
+        }
         fields.push(F::new(K::Model, label(&ready.model)));
         if let Some(thinking) = &ready.thinking {
             fields.push(F::new(K::Thinking, format!("think:{}", label(thinking))));

@@ -803,6 +803,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             "-m",
             "litetui.cli",
             "--rpc",
+            "--hold-restored-input",
             "--backend",
             &options.backend,
             "--model",
@@ -1425,9 +1426,17 @@ fn publish_startup(
     if let Some(update) = facts.take() {
         frontend.observe(Observation::State(update))?;
     }
+    let held = snapshot.held_restored_input;
     frontend.observe(Observation::State(
         crate::runtime_state::Update::from_management(snapshot),
     ))?;
+    if let Some(held) = held
+        && held > 0
+    {
+        frontend.observe(Observation::Information(format!(
+            "Restored input held: {held}. Nothing replayed."
+        )))?;
+    }
     if let Some(history) = history {
         frontend.observe(Observation::History(history))?;
     }
