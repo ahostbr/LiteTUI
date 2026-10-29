@@ -21,6 +21,7 @@ pub struct Update(UpdateKind);
 #[derive(Clone, Debug, PartialEq)]
 enum UpdateKind {
     Ready(ReadyFacts),
+    Startup(crate::management::Snapshot),
     Usage { used: u64, maximum: Option<u64> },
     TurnStarted { reset_rate: bool },
     SettledRate(Option<f64>),
@@ -45,6 +46,9 @@ fn optional_count(event: &Value, key: &str) -> io::Result<Option<u64>> {
     }
 }
 impl Update {
+    pub fn from_management(snapshot: crate::management::Snapshot) -> Self {
+        Self(UpdateKind::Startup(snapshot))
+    }
     /// Extract validated facts; callers check protocol identity/lifecycle separately.
     /// Opaque provider usage keys are not reinterpreted as context/output tokens.
     pub fn from_event(event: &Value) -> io::Result<Option<Self>> {
@@ -101,6 +105,7 @@ impl Update {
 
 #[derive(Default)]
 pub struct State {
+    startup: Option<crate::management::Snapshot>,
     ready: Option<ReadyFacts>,
     usage: Option<(u64, Option<u64>)>,
     rate: Option<f64>,
@@ -108,6 +113,7 @@ pub struct State {
 impl State {
     pub fn apply(&mut self, update: Update) {
         match update.0 {
+            UpdateKind::Startup(snapshot) => self.startup = Some(snapshot),
             UpdateKind::Ready(ready) => {
                 self.ready = Some(ready);
                 self.usage = None;
@@ -121,6 +127,10 @@ impl State {
             }
             UpdateKind::SettledRate(rate) => self.rate = rate,
         }
+    }
+    /// Initial read-only facts, never a substitute for current turn settlement.
+    pub fn startup(&self) -> Option<&crate::management::Snapshot> {
+        self.startup.as_ref()
     }
     pub fn tool_description(&self) -> Option<String> {
         self.ready

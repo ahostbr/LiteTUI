@@ -1,5 +1,17 @@
 # LiteTUI Rust terminal port
 
+## Owned-runtime management integration - 2026-10-29
+
+Live Rust now negotiates gui.hello and reads gui.state over its owned Python process before publishing Ready or admitting a prompt. Protocol/data versions, advertised hello/state operations, startup session/backend/model/profile and idle work/input state are checked. The bounded startup projection retains only explicit facts, never the raw settings snapshot. A fresh pending store may report writable false; neither a snapshot nor advertised capabilities grant authority.
+
+After negotiation, only selected GUI envelopes reach turn rendering. Native and generic turn producers require captured execution/session/operation/hook/source identity; duplicate execution starts, changed origins and late output from another prompt fail. Approval and question closures retain their existing request ledgers and may carry an ambient abort operation. Model changes without an owned management operation remain unsupported. Startup snapshots cannot settle a turn or overwrite newer stream state.
+
+Two process regressions exposed missing mirror accounting: an unpaired raw suffix was initially ignored at clean EOF, then an unpaired event after completion could leave interactive chat silently idle. Both are fixed. Bounded pairing accepts interleaved raw/envelope records without deduplicating equal selected events, rejects unmatched EOF/new prompts, and times out a missing envelope after at most twenty seconds (or the shorter configured timeout). The deadline is not extended by more unmatched records. Limits are 64 unmatched records / 4 MiB serialized payload plus existing frame/ingress/view budgets, not exact heap bounds.
+
+Verification: **304 ordinary Rust tests, 30 controlled-process tests and 89 affected Python tests passed**; Rust fmt/Clippy/build and changed-fixture Ruff/mypy passed. New tests cover negotiation failures/timeouts, snapshot schema/identity/work mismatches, activation races, exact mirror capacity, interleaved pairs, stale origins, no duplicated text, no snapshot-settings disclosure, no prompt before reads, and cleanup without replay. The controlled real-source fixture uses actual Python management handlers/serialization, authority, dispatcher and store to cancel, deny, then approve disposable writes across three prompts. Its provider and unrelated hardware/widget boundaries are controlled; this is not real-provider or desktop acceptance.
+
+This closes management connection startup, not management-screen parity. State refresh, model/backend/settings controls, saved conversation resume, remaining screens/plugins, both-host acceptance, packaging and measured resource comparison remain required. No provider request, merge, push or cutover occurred.
+
 ## Native Claude event attribution - 2026-10-29
 
 Source tracing before management integration found that the worker dropped its captured origin when entering Claude's native turn. Native stream emissions and finalization now carry the scheduled immutable session, operation, hook, source and execution identity through the existing GUI serializer. Legacy raw payloads and direct callers without a captured origin keep their existing shape. Source admission and inactive-conversation guards still apply.

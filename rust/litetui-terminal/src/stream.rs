@@ -418,7 +418,10 @@ fn text_size(text: Option<&str>) -> usize {
     text.map_or(0, str::len)
 }
 
-fn required_uuid4<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, ProjectionFault> {
+pub(crate) fn required_uuid4<'a>(
+    value: &'a Value,
+    key: &'static str,
+) -> Result<&'a str, ProjectionFault> {
     let id = required_text(value, key)?;
     // Python uuid4 canonical lowercase spelling; ID domains remain separate.
     let bytes = id.as_bytes();
@@ -439,7 +442,10 @@ fn required_uuid4<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, Pr
     }
 }
 
-fn origin(frame: &Value, limit: usize) -> Result<(ExecutionId, Origin, usize), ProjectionFault> {
+pub(crate) fn origin(
+    frame: &Value,
+    limit: usize,
+) -> Result<(ExecutionId, Origin, usize), ProjectionFault> {
     let execution = required_uuid4(frame, "execution_id")?;
     let session = required_text(frame, "session_id")?;
     if session.is_empty() {

@@ -1,5 +1,5 @@
-//! Owned Python legacy RPC runtime for one-shot and interactive frontends.
-//! Deliberately not GUI reconciliation or the generic identified-stream reducer.
+//! Owned Python RPC runtime for one-shot and interactive frontends.
+//! Versioned management startup, selected envelopes and serial prompt ownership.
 //! No automatic retries, backend fallback, automatic approvals or local model launches.
 use crate::{
     protocol::JsonlDecoder,
@@ -363,9 +363,7 @@ impl Turn {
                     || event["ok"] != true
                     || event["result"]["turn"] != "accepted"
                 {
-                    return Err(fail(&format!(
-                        "Unexpected/refused prompt response: {event}"
-                    )));
+                    return Err(fail("Unexpected/refused prompt response"));
                 }
                 self.acknowledged = true;
                 Ok(Observation::Information(
@@ -563,7 +561,9 @@ impl Turn {
             }
             // These source-defined observations have no authority in this frontend.
             // Print their kind, rather than silently discarding unsupported state.
-            "usage" | "native_usage" | "native_event" => Ok(Observation::Information(kind.into())),
+            "model_state" | "usage" | "native_usage" | "native_event" => {
+                Ok(Observation::Information(kind.into()))
+            }
             // Unknown input contracts remain unsupported; never auto-answer.
             _ => Err(fail(&format!(
                 "Unsupported or out-of-order live event: {kind}"
@@ -837,18 +837,26 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         profile,
         workspace,
     });
+    let mut management = crate::management::Management::default();
+    let mut startup_facts = None;
+    let mut mirror_deadline = None;
     let mut tail = Vec::new();
     let mut deadline = Some(Instant::now() + options.timeout);
     let result = (|| -> io::Result<()> {
         loop {
             check_deadline(deadline)?;
+            check_mirror_deadline(mirror_deadline)?;
             if !turn.closing
                 && let Some(command) = frontend.command()?
             {
                 match command {
                     Input::Prompt(prompt) => {
+                        if !management.ready() {
+                            return Err(io::Error::other("Management startup is not complete"));
+                        }
                         let value = turn.submit(&prompt)?;
                         let id = value["id"].as_str().expect("reserved ID").to_owned();
+                        management.prompt(&id)?;
                         owned
                             .stdin
                             .as_ref()
@@ -905,6 +913,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 Err(error) => return Err(io::Error::other(error)),
             };
             check_deadline(deadline)?;
+            check_mirror_deadline(mirror_deadline)?;
             let ingress_result = match chunk {
                 Pipe::Stdout(bytes) => ingress.push(1, &bytes),
                 Pipe::Stderr(bytes) => {
@@ -916,6 +925,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 }
                 Pipe::End(false) => continue,
                 Pipe::End(true) => {
+                    management.ensure_drained()?;
                     ingress
                         .finish(1)
                         .map_err(|e| io::Error::other(format!("{e:?}")))?;
@@ -936,14 +946,65 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     .push(&frame, |v| value = Some(v))
                     .map_err(|e| io::Error::other(format!("{e:?}")))?;
                 let event = value.expect("complete nonblank frame");
-                publish_event(
-                    &mut turn,
-                    &event,
-                    &options.backend,
-                    &options.model,
-                    &mut deadline,
-                    frontend,
-                )?;
+                check_mirror_deadline(mirror_deadline)?;
+                use crate::management::Step;
+                match management.accept(event)? {
+                    Step::Bootstrap(ready) => {
+                        turn.accept(&ready, &options.backend, &options.model)?;
+                        startup_facts = crate::runtime_state::Update::from_event(&ready)?;
+                        if !turn.closing {
+                            let hello = management.begin(&ready)?;
+                            owned
+                                .stdin
+                                .as_ref()
+                                .expect("owned stdin")
+                                .try_send(hello)
+                                .map_err(io::Error::other)?;
+                            frontend.observe(Observation::Information(
+                                "Checking runtime state…".into(),
+                            ))?;
+                        }
+                    }
+                    Step::Write(command) => {
+                        if !turn.closing {
+                            owned
+                                .stdin
+                                .as_ref()
+                                .expect("owned stdin")
+                                .try_send(command)
+                                .map_err(io::Error::other)?;
+                        }
+                    }
+                    Step::Initialized(snapshot) => {
+                        if !turn.closing {
+                            if let Some(update) = startup_facts.take() {
+                                frontend.observe(Observation::State(update))?;
+                            }
+                            frontend.observe(Observation::State(
+                                crate::runtime_state::Update::from_management(snapshot),
+                            ))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                            frontend.observe(Observation::Ready)?;
+                        }
+                    }
+                    Step::Event(event) => publish_event(
+                        &mut turn,
+                        &event,
+                        &options.backend,
+                        &options.model,
+                        &mut deadline,
+                        frontend,
+                    )?,
+                    Step::Ignore => {}
+                }
+                if management.has_unpaired() {
+                    mirror_deadline.get_or_insert_with(|| {
+                        Instant::now() + options.timeout.min(Duration::from_secs(20))
+                    });
+                } else {
+                    mirror_deadline = None;
+                }
             }
             // Never admit another command after a fault, including when an
             // accepted prefix contains Ready or Complete. Drain prefix first.
@@ -1243,6 +1304,13 @@ impl Interactive {
     }
 }
 
+fn check_mirror_deadline(deadline: Option<Instant>) -> io::Result<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err(io::Error::other("Runtime GUI envelope deadline elapsed"))
+    } else {
+        Ok(())
+    }
+}
 fn check_deadline(deadline: Option<Instant>) -> io::Result<()> {
     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
         return Err(io::Error::other("Live deadline elapsed; no prompt retry"));

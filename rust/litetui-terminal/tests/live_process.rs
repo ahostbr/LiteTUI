@@ -10,15 +10,32 @@ use std::{
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const FIXTURE: &str = r#"
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys, time, uuid
 from pathlib import Path
 root = Path(os.environ['LITETUI_DATA_ROOT'])
 (root.parent/'python-started').write_text('runtime activated')
 mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')
+gui_enabled = False
+operation = None
+execution = None
+identified = {'turn_start','turn_end','text_delta','reasoning_delta','native_text_snapshot',
+              'native_activity','native_usage','native_event','generic_tool_requested','generic_tool_returned'}
 def emit(value):
+    global execution
     print(json.dumps(value), flush=True)
+    if gui_enabled and value['type'] not in {'response','error'}:
+        if value['type'] == 'turn_start':
+            execution = str(uuid.uuid4())
+        envelope = dict(type='gui.event',event_id=str(uuid.uuid4()),
+                        session_id='controlled-conversation',operation_id=operation,event=value)
+        if value['type'] in identified:
+            envelope.update(execution_id=execution,hook_id=None,source='rpc')
+        if mode == 'management_wrong_origin' and value['type'] == 'text_delta':
+            envelope['operation_id'] = 'unrelated-prompt'
+        print(json.dumps(envelope), flush=True)
 ready = dict(type='ready', protocol_version=1, launch_status='ready', backend='claude', model='claude-sonnet-5-5')
-ready.update(conversation_id='controlled-conversation', thinking_level='low', context_length=200000)
+ready.update(conversation_id='controlled-conversation', thinking_level='low', context_length=200000,
+             management_protocols=[1], capabilities=['hello','state'])
 settings = json.loads((root/'settings.json').read_text())
 for marker in ['LITETUI_OWNER', 'LITETUI_SPAWN_IDENTITY', 'LITEHARNESS_SPAWNED_BY']:
     assert marker not in os.environ, marker
@@ -49,8 +66,40 @@ prompt_count = 0
 abort_count = 0
 for line in sys.stdin:
     command = json.loads(line)
-    with (root/'commands.jsonl').open('a') as out:
+    with (root/'all-commands.jsonl').open('a') as out:
         out.write(json.dumps(command)+'\n')
+    if not command['type'].startswith('gui.'):
+        with (root/'commands.jsonl').open('a') as out:
+            out.write(json.dumps(command)+'\n')
+    else:
+        with (root/'management-commands.jsonl').open('a') as out:
+            out.write(json.dumps(command)+'\n')
+    if command['type'] == 'gui.hello':
+        if mode == 'management_hello_timeout':
+            continue
+        if mode == 'management_activation_race':
+            emit(dict(type='usage', usage=dict(context_tokens=1)))
+        gui_enabled = True
+        emit(dict(type='response',id=command['id'],ok=True,
+                  result=dict(protocol_version=2 if mode == 'management_bad_version' else 1,
+                              data_version=1,capabilities=['hello','state'],operations=['gui.hello','gui.state'])))
+        continue
+    if command['type'] == 'gui.state':
+        state = dict(session_id='controlled-conversation',busy=False,mode='normal',
+                     tool_profile=profile,model=dict(model=ready['model'],backend=ready['backend']),
+                     ownership=dict(writable=True,data_version=1),schedules_paused=False,
+                     conversations=[],jobs=[],tasks=[],active_work=[],pending_approvals=[],
+                     pending_questions=[],pending_model_loads=[],settings={'private_fixture':'do-not-display'})
+        if mode == 'management_state_busy':
+            state['busy'] = True
+        if mode == 'management_state_identity':
+            state['session_id'] = 'another-conversation'
+        if mode == 'management_state_malformed':
+            state['ownership']['writable'] = 'true'
+        emit(dict(type='response',id=command['id'],ok=True,result=state))
+        continue
+    if command['type'] == 'prompt':
+        operation = command['id']
     if command['type'] == 'shutdown':
         if pending:
             if mode.startswith('question'):
@@ -161,6 +210,8 @@ for line in sys.stdin:
     emit(dict(type='native_activity',provider='claude',kind='tool_result',id='fixture-tool',name='Read',complete=True,input=None,result='Fixture failure, nothing executed',is_error=True,card_index=0))
     emit(dict(type='usage',usage=dict(context_tokens=4000,max_context_tokens=(0 if mode == 'bad_usage_state' else 8000))))
     emit(dict(type='turn_end',stopReason='stop',error=None,tps=(-1 if mode == 'bad_rate_state' else 12.3)))
+    if mode == 'management_unpaired_idle':
+        print(json.dumps(dict(type='usage',usage=dict(context_tokens=2))),flush=True)
     if mode == 'truncated':
         sys.stdout.write('{"type":'); sys.stdout.flush(); break
     if mode.startswith('unknown'):
@@ -1348,4 +1399,100 @@ fn redirected_missing_profile_fails_before_spawn_but_explicit_profile_runs() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(root.exists() && root.parent().unwrap().join("python-started").exists());
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn management_faults_never_admit_a_prompt_or_dump_snapshot_settings() {
+    for mode in [
+        "management_bad_version",
+        "management_hello_timeout",
+        "management_state_busy",
+        "management_state_identity",
+        "management_state_malformed",
+        "management_activation_race",
+    ] {
+        let (mut command, root) = setup(mode);
+        let result = command.output().unwrap();
+        assert!(!result.status.success(), "{mode}");
+        let commands = fs::read_to_string(root.join("all-commands.jsonl")).unwrap();
+        assert!(!commands.contains("rust-live-prompt"), "{mode}");
+        assert!(commands.contains("shutdown"), "{mode}");
+        assert!(!String::from_utf8_lossy(&result.stdout).contains("do-not-display"));
+        assert!(!String::from_utf8_lossy(&result.stderr).contains("do-not-display"));
+    }
+}
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn management_reads_precede_prompt_and_selected_envelopes_do_not_double_text() {
+    let (mut command, root) = setup("success");
+    let result = command.output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let commands: Vec<serde_json::Value> = fs::read_to_string(root.join("all-commands.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(
+        commands
+            .iter()
+            .map(|v| v["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["gui.hello", "gui.state", "prompt", "shutdown"]
+    );
+    let output = String::from_utf8_lossy(&result.stdout);
+    assert_eq!(output.matches("After tool").count(), 1);
+    assert!(!output.contains("do-not-display"));
+}
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn management_origin_drift_stops_output_and_cleans_up_without_replay() {
+    let (mut command, root) = setup("management_wrong_origin");
+    let result = command.output().unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("another prompt"));
+    let commands = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert_eq!(commands.matches("rust-live-prompt").count(), 1);
+    assert!(commands.contains("shutdown"));
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn unpaired_gui_event_while_idle_has_a_bounded_failure_deadline() {
+    use litetui_terminal::live::Observation;
+    let (mut runtime, root) = question_runtime("management_unpaired_idle");
+    let until = Instant::now() + Duration::from_secs(7);
+    let mut complete = false;
+    let mut outcome = None;
+    while Instant::now() < until {
+        for event in runtime.events.try_iter() {
+            match event {
+                Observation::Ready => runtime.submit("fixture".into()).unwrap(),
+                Observation::Complete => complete = true,
+                _ => {}
+            }
+        }
+        if let Some(result) = runtime.poll_done() {
+            outcome = Some(result);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = runtime.shutdown(); // Also clean up the failing negative control.
+    assert!(complete);
+    let error = outcome
+        .expect("unpaired envelope remained silently idle")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("GUI envelope deadline") && error.contains("cleanup=Ok"),
+        "{error}"
+    );
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert_eq!(log.matches("rust-live-prompt").count(), 1);
+    assert!(log.contains("shutdown"));
 }
