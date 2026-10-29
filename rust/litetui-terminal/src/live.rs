@@ -148,6 +148,7 @@ pub enum Observation {
     State(crate::runtime_state::Update),
     History(crate::resume::History),
     Controls(crate::model_controls::Update),
+    Queue(crate::restored_queue::Update),
     Ready,
     /// Local command reservation; neither source admission nor completion.
     Submission {
@@ -896,6 +897,29 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             ))?,
                         }
                     }
+                    Input::Queue(intent) => {
+                        let command = if turn.can_manage() {
+                            management.request_queue(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish the current turn before changing held input",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::Queue(
+                                crate::restored_queue::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
+                    }
                     Input::Prompt(prompt) => {
                         if !management.ready() {
                             return Err(io::Error::other("Management startup is not complete"));
@@ -1055,6 +1079,18 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             deadline = None;
                         }
                     }
+                    Step::Queue(update) => {
+                        if !turn.closing {
+                            if let crate::restored_queue::Update::Snapshot(menu) = &update {
+                                frontend.observe(Observation::State(
+                                    crate::runtime_state::Update::from_queue(menu),
+                                ))?;
+                            }
+                            frontend.observe(Observation::Queue(update))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
                     Step::Event(event) => publish_event(
                         &mut turn,
                         &event,
@@ -1111,6 +1147,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 
 pub enum Input {
     Control(crate::model_controls::Intent),
+    Queue(crate::restored_queue::Intent),
     Prompt(String),
     Abort { prompt_id: String },
     Approve(crate::approvals::Decision),
@@ -1132,7 +1169,10 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::State(_) | Observation::Controls(_) | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
+            Observation::State(_)
+            | Observation::Controls(_)
+            | Observation::Queue(_)
+            | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
             Observation::History(history) => {
                 writeln!(
                     self.output,
@@ -1376,6 +1416,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Control(intent))
+            .map_err(io::Error::other)
+    }
+    pub fn queue(&self, intent: crate::restored_queue::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Queue(intent))
             .map_err(io::Error::other)
     }
     pub fn answer(&self, decision: crate::questions::Decision) -> io::Result<()> {

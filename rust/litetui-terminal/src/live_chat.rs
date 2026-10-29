@@ -73,6 +73,7 @@ pub struct Chat {
     pub approvals: crate::approvals::View,
     pub questions: crate::questions::View,
     pub controls: crate::model_controls::View,
+    pub queue: crate::restored_queue::View,
     pending: Option<String>,
     submission_id: Option<String>,
     stop_requests: usize,
@@ -98,6 +99,7 @@ impl Chat {
             approvals: crate::approvals::View::default(),
             questions: crate::questions::View::default(),
             controls: crate::model_controls::View::default(),
+            queue: crate::restored_queue::View::default(),
             pending: None,
             submission_id: None,
             stop_requests: 0,
@@ -109,7 +111,13 @@ impl Chat {
         }
     }
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
-        if !self.ready || self.busy || self.closed || self.quitting || self.controls.owns_input() {
+        if !self.ready
+            || self.busy
+            || self.closed
+            || self.quitting
+            || self.controls.owns_input()
+            || self.queue.owns_input()
+        {
             return Err(io::Error::other(
                 "Wait for the runtime to be ready and the current turn to finish",
             ));
@@ -214,6 +222,10 @@ impl Chat {
                 self.settle(outcome)?;
             }
             Observation::State(update) => self.runtime_state.apply(update),
+            Observation::Queue(update) => {
+                self.queue.observe(update);
+                self.notice = self.queue.notice.clone();
+            }
             Observation::Controls(update) => {
                 if let crate::model_controls::Update::Choices(menu) = &update {
                     self.model = menu.model.clone();
@@ -443,11 +455,13 @@ impl Chat {
     }
     pub fn begin_quit(&mut self) {
         self.controls.finish();
+        self.queue.finish();
         self.quitting = true;
         self.notice = "Closing Python runtime and its owned process tree…".into();
     }
     pub fn finish(&mut self, failure: Option<String>) {
         self.controls.finish();
+        self.queue.finish();
         self.closed = true;
         self.stop_confirm = false;
         self.ready = false;

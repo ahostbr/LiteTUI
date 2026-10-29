@@ -1609,16 +1609,22 @@ fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn(
 #[test]
 #[ignore = "real CLI and owned saved store with controlled provider; requires LITETUI_AUTHORITY_PYTHON"]
 fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
-    saved_conversation_process(false);
+    saved_conversation_process(false, false);
 }
 
 #[test]
 #[ignore = "controlled Python process; no provider"]
 fn restored_provider_input_stays_held_before_ready_and_during_an_explicit_turn() {
-    saved_conversation_process(true);
+    saved_conversation_process(true, false);
 }
 
-fn saved_conversation_process(held: bool) {
+#[test]
+#[ignore = "controlled Python process; no provider"]
+fn held_input_cancellation_is_saved_and_read_back_before_an_explicit_turn() {
+    saved_conversation_process(true, true);
+}
+
+fn saved_conversation_process(held: bool, cancel_held: bool) {
     use litetui_terminal::live::{Interactive, Observation, Options};
     use litetui_terminal::live_chat::Chat;
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
@@ -1719,6 +1725,49 @@ fn saved_conversation_process(held: bool) {
                             let error = refused_resume(competing);
                             assert!(error.contains("Resource owned or inaccessible"), "{error}");
                         }
+                        if cancel_held && pass == 1 {
+                            use litetui_terminal::restored_queue::{Intent, Update};
+                            runtime.queue(Intent::Open)?;
+                            let mut cancelling = false;
+                            loop {
+                                let event = runtime
+                                    .events
+                                    .recv_timeout(Duration::from_secs(20))
+                                    .map_err(std::io::Error::other)?;
+                                let menu = match &event {
+                                    Observation::Queue(Update::Snapshot(menu)) => {
+                                        Some(menu.clone())
+                                    }
+                                    Observation::Queue(Update::Rejected(error)) => {
+                                        panic!("{error}")
+                                    }
+                                    _ => None,
+                                };
+                                chat.observe(event)?;
+                                if let Some(menu) = menu {
+                                    if cancelling {
+                                        assert_eq!(menu.entries.len(), 2);
+                                        assert!(
+                                            !menu.entries.iter().any(|e| e.id == "saved-queued")
+                                        );
+                                        assert_eq!(
+                                            chat.runtime_state
+                                                .startup()
+                                                .unwrap()
+                                                .held_restored_input,
+                                            Some(2)
+                                        );
+                                        break;
+                                    }
+                                    assert_eq!(menu.entries.len(), 3);
+                                    runtime.queue(Intent::Cancel {
+                                        revision: menu.revision,
+                                        entry: "saved-queued".into(),
+                                    })?;
+                                    cancelling = true;
+                                }
+                            }
+                        }
                         let prompt = if pass == 0 {
                             "remember SAVED-CONTEXT"
                         } else {
@@ -1767,15 +1816,20 @@ fn saved_conversation_process(held: bool) {
             serde_json::from_slice(&fs::read(root.join("held-input-proof.json")).unwrap()).unwrap();
         assert_eq!(
             proof["policy"],
-            serde_json::json!({"policy":"hold","held":3})
+            serde_json::json!({"policy":"hold","held":if cancel_held {2} else {3}})
         );
         assert_eq!(
             proof["explicit_prompts"],
             serde_json::json!(["remember SAVED-CONTEXT", "what was saved?"])
         );
         let entries = proof["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 3);
-        for (entry, state) in entries.iter().zip(["queued", "sending", "accepted"]) {
+        assert_eq!(entries.len(), if cancel_held { 2 } else { 3 });
+        let states = if cancel_held {
+            vec!["sending", "accepted"]
+        } else {
+            vec!["queued", "sending", "accepted"]
+        };
+        for (entry, state) in entries.iter().zip(states) {
             assert_eq!(entry["state"], state);
             assert_eq!(entry["revision"], 7);
             assert_eq!(entry["item"]["content"], format!("UNSENT {state}"));
@@ -1822,6 +1876,23 @@ fn saved_conversation_process(held: bool) {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(commands.iter().filter(|v| v["type"] == "prompt").count(), 2);
+    if cancel_held {
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|v| v["type"] == "gui.restored_input.cancel")
+                .count(),
+            1
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|v| v["type"] == "gui.restored_input.list")
+                .count(),
+            2
+        );
+        assert!(root.join("queue-cancel-proof.json").exists());
+    }
     assert_eq!(
         commands
             .iter()

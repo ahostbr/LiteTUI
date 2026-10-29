@@ -165,6 +165,7 @@ pub enum Step {
         history: crate::resume::History,
     },
     Control(Update),
+    Queue(crate::restored_queue::Update),
     Event(Value),
     Ignore,
 }
@@ -186,9 +187,18 @@ struct ControlPending {
     failure: Option<String>,
     succeeded: bool,
 }
+struct QueuePending {
+    id: CommandId,
+    applying: bool,
+    cancelled: Option<String>,
+    failure: Option<String>,
+    succeeded: bool,
+}
 pub struct Management {
     wire: WireClient,
     control: Option<ControlPending>,
+    queue: Option<QueuePending>,
+    queue_menu: Option<crate::restored_queue::Snapshot>,
     menu: Option<Choices>,
     revision: u64,
     phase: Phase,
@@ -217,6 +227,8 @@ impl Default for Management {
             )
             .expect("static delivery policy"),
             control: None,
+            queue: None,
+            queue_menu: None,
             menu: None,
             revision: 0,
             phase: Phase::AwaitReady,
@@ -289,7 +301,10 @@ impl Management {
             .map_err(|_| fail("Cannot begin management negotiation"))
     }
     pub fn ready(&self) -> bool {
-        self.phase == Phase::Active && !self.failed && self.control.is_none()
+        self.phase == Phase::Active
+            && !self.failed
+            && self.control.is_none()
+            && self.queue.is_none()
     }
     pub fn operations(&self) -> &[String] {
         &self.operations
@@ -300,6 +315,7 @@ impl Management {
         }
         self.ensure_drained()?;
         self.menu = None;
+        self.queue_menu = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
         Ok(())
@@ -441,6 +457,17 @@ impl Management {
                 self.control_response(frame)
             }
             Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .queue
+                .as_ref()
+                .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
+            {
+                self.queue_response(frame)
+            }
+            Notice::Response {
                 matched: false,
                 frame,
                 ..
@@ -580,6 +607,7 @@ impl Management {
             succeeded: false,
         });
         self.menu = None;
+        self.queue_menu = None;
         Ok(command)
     }
     fn control_response(&mut self, frame: Value) -> io::Result<Step> {
@@ -650,5 +678,116 @@ impl Management {
         }
         self.menu = Some(menu.clone());
         Ok(Step::Control(Update::Choices(menu)))
+    }
+}
+
+impl Management {
+    pub fn request_queue(&mut self, intent: crate::restored_queue::Intent) -> io::Result<Value> {
+        use crate::restored_queue::{CANCEL, Intent, READ};
+        if !self.ready() {
+            return Err(fail("Wait for the runtime operation to finish"));
+        }
+        self.ensure_drained()?;
+        let (session, _, _, _) = self.expected.as_ref().expect("active");
+        let mut command = json!({"type":READ, "session_id":session});
+        let cancelled = match intent {
+            Intent::Open => None,
+            Intent::Cancel { revision, entry } => {
+                let menu = self
+                    .queue_menu
+                    .as_ref()
+                    .filter(|m| m.revision == revision)
+                    .ok_or_else(|| fail("Held input changed; reopen the inspector"))?;
+                if !menu.entries.iter().any(|e| e.id == entry && e.can_cancel) {
+                    return Err(fail("Entry was not offered for cancellation"));
+                }
+                command["type"] = json!(CANCEL);
+                command["snapshot"] = json!(menu.token);
+                command["entry_id"] = json!(entry);
+                Some(entry)
+            }
+        };
+        if !self.operations.iter().any(|v| v == READ)
+            || (cancelled.is_some() && !self.operations.iter().any(|v| v == CANCEL))
+        {
+            return Err(fail(
+                "The connected runtime does not support held-input controls",
+            ));
+        }
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve queue control"))?;
+        command["id"] = id.to_value();
+        self.queue = Some(QueuePending {
+            id,
+            applying: cancelled.is_some(),
+            cancelled,
+            failure: None,
+            succeeded: false,
+        });
+        self.queue_menu = None;
+        self.menu = None;
+        Ok(command)
+    }
+    fn queue_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::restored_queue::{READ, Snapshot, Update};
+        let mut pending = self.queue.take().expect("matched queue request");
+        let success = frame["ok"] == true;
+        let error = if success {
+            None
+        } else {
+            Some(text(&frame, "error", 4096)?.to_owned())
+        };
+        if pending.applying {
+            pending.applying = false;
+            pending.failure = error;
+            pending.succeeded = success;
+            let id = self
+                .wire
+                .register_request()
+                .map_err(|_| fail("Cannot reserve queue readback"))?;
+            let command = json!({"type":READ,"id":id.to_value(),"session_id":self.expected.as_ref().expect("active").0});
+            pending.id = id;
+            self.queue = Some(pending);
+            return Ok(Step::Write(command));
+        }
+        if let Some(error) = error {
+            return if pending.cancelled.is_some() {
+                Err(fail(&format!(
+                    "Cannot verify saved queue after cancellation: {error}"
+                )))
+            } else {
+                Ok(Step::Queue(Update::Rejected(error)))
+            };
+        }
+        self.ensure_drained()?;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| fail("Queue revision exhausted"))?;
+        let mut snapshot = Snapshot::parse(&frame["result"], self.revision)?;
+        let (session, backend, model, _) = self.expected.as_ref().expect("active");
+        if (&snapshot.session, &snapshot.backend, &snapshot.model) != (session, backend, model) {
+            return Err(fail("Queue readback changed runtime identity"));
+        }
+        if pending.succeeded
+            && snapshot
+                .entries
+                .iter()
+                .any(|e| Some(&e.id) == pending.cancelled.as_ref())
+        {
+            return Err(fail("Runtime still holds the cancelled entry"));
+        }
+        snapshot.message = pending
+            .failure
+            .map(|e| format!("Request failed: {e}. Saved queue read back."))
+            .or_else(|| {
+                pending
+                    .cancelled
+                    .map(|_| "Cancellation saved. Queue read back; nothing replayed.".into())
+            });
+        self.queue_menu = Some(snapshot.clone());
+        Ok(Step::Queue(Update::Snapshot(snapshot)))
     }
 }

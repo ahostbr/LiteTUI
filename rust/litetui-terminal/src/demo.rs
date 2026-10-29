@@ -195,8 +195,29 @@ impl Demo {
             self.footer.leave();
         }
     }
+    pub fn has_live_queue(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.queue.owns_input())
+    }
+    pub fn open_queue(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting {
+                self.notice = "Finish the current turn before opening held input.".into();
+                return;
+            }
+            chat.queue.open();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
     pub fn has_live_input(&self) -> bool {
         self.has_live_controls()
+            || self.has_live_queue()
             || self.has_live_approval()
             || self.has_live_question()
             || self.stop_open()
@@ -207,6 +228,7 @@ impl Demo {
     }
     pub fn open_stop(&mut self) {
         if let Some(chat) = self.live.as_mut() {
+            chat.queue.hide();
             chat.open_stop();
             if chat.stop_confirm {
                 self.themes_open = false;

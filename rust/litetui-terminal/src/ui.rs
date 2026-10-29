@@ -59,7 +59,7 @@ fn padded(text: &str, width: usize) -> String {
         " ".repeat(width.saturating_sub(rendered_width(&value)))
     )
 }
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut result = Vec::new();
     for source in text.split('\n') {
@@ -730,6 +730,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     if app.viewport_too_small {
         if let Some(chat) = app.live.as_mut() {
             chat.controls.hide();
+            chat.queue.hide();
         }
         app.footer.update_visible(&[]);
         app.completion.hide();
@@ -960,7 +961,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             Block::default()
                 .borders(Borders::ALL)
                 .title_bottom(if app.live.is_some() {
-                    " F3 models · F4 themes · Esc stops · Ctrl+Q "
+                    " F3 models · F7 held input · F4 themes · Esc stops · Ctrl+Q "
                 } else {
                     " F4 themes · F6 approval · Ctrl+Q "
                 })
@@ -1017,6 +1018,20 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     if app.themes_open {
         theme_picker(frame, app, area);
+    }
+    if app.has_live_queue()
+        && !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.live.as_ref().is_some_and(|chat| chat.cancelling())
+    {
+        app.live
+            .as_mut()
+            .expect("held input")
+            .queue
+            .draw(frame, area, &t);
+    } else if let Some(chat) = &mut app.live {
+        chat.queue.hide();
     }
     if app.has_live_controls() {
         app.live

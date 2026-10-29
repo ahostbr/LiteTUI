@@ -118,6 +118,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             app.approval_open = false;
             if let Some(chat) = app.live.as_mut() {
                 chat.controls.close();
+                chat.queue.close();
             }
             app.themes_open = false;
             app.completion.dismiss();
@@ -191,6 +192,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         if !chat.quitting && !chat.cancelling() {
             chat.questions.key(key);
         }
+        return false;
+    }
+    if app.has_live_queue() {
+        app.live.as_mut().expect("held input").queue.key(key);
         return false;
     }
     if app.has_live_controls() {
@@ -315,6 +320,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::F(7) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
+            app.open_queue()
+        }
         KeyCode::F(3) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_models(litetui_terminal::model_controls::Kind::Model)
         }
@@ -531,6 +539,14 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_queue()
+        && !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+    {
+        app.live.as_mut().expect("held input").queue.mouse(event);
+        return;
+    }
     if app.has_live_controls() {
         if !app.viewport_too_small {
             app.live
@@ -801,6 +817,14 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
             }
+            if !quitting
+                && let Some(intent) = app.live.as_mut().expect("live").queue.take_intent()
+                && let Err(error) = runtime.queue(intent)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
             if let Some(prompt) = app.live.as_mut().expect("live").take_submission()
                 && let Err(error) = runtime.submit(prompt)
             {
@@ -852,7 +876,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | F7 held input | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -2199,5 +2223,64 @@ mod tests {
             &mut app,
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
         ));
+    }
+
+    #[test]
+    fn held_queue_owns_native_keys_and_preserves_composer_and_clipboard() {
+        use litetui_terminal::{
+            live::Observation,
+            restored_queue::{Intent, Snapshot, Update},
+        };
+        let mut app = Demo::live("codex".into(), "model".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("preserved draft");
+        let mut router = KeyRouter::default();
+        app.live.as_mut().unwrap().busy = true;
+        plain(&mut app, &mut router, KeyCode::F(7));
+        assert!(!app.has_live_queue());
+        app.live.as_mut().unwrap().busy = false;
+        plain(&mut app, &mut router, KeyCode::F(7));
+        assert_eq!(
+            app.live.as_mut().unwrap().queue.take_intent(),
+            Some(Intent::Open)
+        );
+        let snapshot=Snapshot::parse(&serde_json::json!({
+          "session_id":"session","backend":"codex","model":"model","policy":"hold","held":1,"snapshot":"a".repeat(64),
+          "entries":[{"id":"one","revision":1,"state":"queued","content":"SAVED",
+            "source":"queued","tool_profile":"strict","thread_id":"thread","turn_id":"turn","can_cancel":true}]
+        }),1).unwrap();
+        app.observe_live(Observation::Queue(Update::Snapshot(snapshot)))
+            .unwrap();
+        render_footer(&mut app);
+        let mut clipboard = TestClipboard {
+            read: Some("not pasted".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paste(&mut app, "not pasted");
+        assert_eq!(clipboard.reads, 0);
+        plain(&mut app, &mut router, KeyCode::Delete);
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert_eq!(
+            app.live.as_mut().unwrap().queue.take_intent(),
+            Some(Intent::Cancel {
+                revision: 1,
+                entry: "one".into()
+            })
+        );
+        assert_eq!(app.composer.text(), "preserved draft");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(app.has_live_queue());
+        app.observe_live(Observation::Queue(Update::Rejected("changed".into())))
+            .unwrap();
+        assert!(!app.has_live_queue());
     }
 }

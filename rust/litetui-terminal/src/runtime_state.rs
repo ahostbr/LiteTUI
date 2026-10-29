@@ -26,6 +26,7 @@ enum UpdateKind {
         thinking: Option<String>,
     },
     Startup(crate::management::Snapshot),
+    Held(usize),
     Usage {
         used: u64,
         maximum: Option<u64>,
@@ -55,6 +56,9 @@ fn optional_count(event: &Value, key: &str) -> io::Result<Option<u64>> {
     }
 }
 impl Update {
+    pub fn from_queue(snapshot: &crate::restored_queue::Snapshot) -> Self {
+        Self(UpdateKind::Held(snapshot.entries.len()))
+    }
     pub fn from_choices(menu: &crate::model_controls::Choices) -> Self {
         Self(UpdateKind::Choices {
             model: menu.model.clone(),
@@ -144,6 +148,11 @@ impl State {
                 }
             }
             UpdateKind::Startup(snapshot) => self.startup = Some(snapshot),
+            UpdateKind::Held(count) => {
+                if let Some(snapshot) = &mut self.startup {
+                    snapshot.held_restored_input = Some(count);
+                }
+            }
             UpdateKind::Ready(ready) => {
                 self.ready = Some(ready);
                 self.usage = None;

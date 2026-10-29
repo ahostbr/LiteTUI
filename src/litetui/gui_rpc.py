@@ -52,6 +52,7 @@ OPERATIONS = (
     "work.get", "work.cancel",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
+    "restored_input.list", "restored_input.cancel",
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
@@ -485,6 +486,11 @@ def dispatch(app, cmd):
                         "source": "connected backend model metadata"}
         return {"backend": backend, "model": model, "thinking": thinking}
     domain, action = operation.split(".", 1)
+    if domain == "restored_input":
+        _idle(app)
+        if action == "list":
+            return restored_input.inspect(app, cmd.get("session_id"))
+        return restored_input.cancel(app, cmd)
     if domain == "prompt":
         message, behavior = cmd.get("message"), cmd.get("behavior", "normal")
         if not isinstance(message, str) or not message.strip():

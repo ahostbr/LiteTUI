@@ -59,8 +59,9 @@ async def serve(app):
         from types import SimpleNamespace
 
         before = copy.deepcopy([item["_codex_entry"] for item in app._pending_input])
-        assert len(before) == 3 and hasattr(app.backend, "app_server")
-        assert restored_input.status(app) == {"policy": "hold", "held": 3}
+        count = 2 if (root / "queue-cancel-proof.json").exists() else 3
+        assert len(before) == count and hasattr(app.backend, "app_server")
+        assert restored_input.status(app) == {"policy": "hold", "held": count}
         async def denied(*_args, **_kwargs):
             forbidden()
         server = SimpleNamespace(start=denied, request=denied)
@@ -104,6 +105,8 @@ async def serve(app):
             if command["type"].startswith("gui."):
                 with patch("litetui.gpu_gate.is_rtx_5090", return_value=False):
                     result = await gui_rpc.async_dispatch(app, command)
+                if command["type"] == "gui.restored_input.cancel":
+                    (root / "queue-cancel-proof.json").write_text(json.dumps(result), encoding="utf-8")
                 rpc._respond(command["id"], ok=True, result=result)
                 continue
             assert command["type"] == "prompt"

@@ -133,3 +133,139 @@ async def test_hold_policy_does_not_block_new_explicit_queue_input(saved_app, mo
     app._flush_pending_input()
     assert calls == ["new explicit input"]
     assert app._pending_input == []
+
+
+def command(app, action="list", **values):
+    return gui_rpc.dispatch(app, {"type": f"gui.restored_input.{action}",
+                                 "session_id": app.convo_id, **values})
+
+
+def resume_held(app, state="queued"):
+    app._hold_restored_input = True
+    seed(app, state)
+    assert app._resume(app.convo_path, startup=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["queued", "next_turn"])
+async def test_cancel_persists_denial_and_does_not_restore_on_next_open(saved_app, state):
+    app = saved_app
+    resume_held(app, state)
+    before = app.convo_path.read_bytes()
+    view = command(app)
+    assert app.convo_path.read_bytes() == before
+    assert view["held"] == 1
+    assert view["entries"][0]["can_cancel"] is True
+    assert command(app, "cancel", snapshot=view["snapshot"], entry_id="saved-input") == {
+        "cancelled": "saved-input", "session_id": app.convo_id}
+    assert command(app)["held"] == 0
+    saved = ConversationRepository.read(app.convo_path)[1][-1]["provider_metadata"]["steering"][0]
+    assert saved["state"] == "denied"
+    assert saved["revision"] == 3
+    assert saved["admission"] == {"reason": "Cancelled by user"}
+    assert app._resume(app.convo_path, startup=True)
+    assert app._pending_input == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["admitting", "admitted", "sending", "uncertain", "accepted"])
+async def test_provider_evidence_cannot_be_discarded_by_cancel(saved_app, state):
+    app = saved_app
+    resume_held(app, state)
+    view = command(app)
+    assert view["entries"][0]["can_cancel"] is False
+    before = app.convo_path.read_bytes()
+    with pytest.raises(ValueError, match="Only queued"):
+        command(app, "cancel", snapshot=view["snapshot"], entry_id="saved-input")
+    assert app.convo_path.read_bytes() == before
+    assert len(app._pending_input) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["snapshot", "session", "revision", "foreign", "duplicate", "stale_record", "ledger", "materialized", "busy", "persist_error"])
+async def test_cancel_revalidates_identity_authority_and_saved_evidence(saved_app, monkeypatch, fault):
+    app = saved_app
+    resume_held(app)
+    view = command(app)
+    request = {"type": "gui.restored_input.cancel", "session_id": app.convo_id,
+               "snapshot": view["snapshot"], "entry_id": "saved-input"}
+    item = app._pending_input[0]
+    if fault == "snapshot":
+        request["snapshot"] = "stale"
+    elif fault == "session":
+        request["session_id"] = "another-conversation"
+    elif fault == "revision":
+        item["_codex_entry"]["revision"] += 1
+    elif fault == "foreign":
+        item["_codex_entry"]["conversationId"] = "another-conversation"
+    elif fault == "duplicate":
+        app._pending_input.append(item)
+    elif fault == "stale_record":
+        app.conversation[-1]["provider_metadata"]["steering"] = [copy.deepcopy(item["_codex_entry"])]
+    elif fault == "ledger":
+        item["_codex_ledger"].entries = [copy.deepcopy(item["_codex_entry"])]
+    elif fault == "materialized":
+        app.conversation.append({"role": "user", "content": "Already sent", "codex_delivery": {"id": "saved-input"}})
+    elif fault == "busy":
+        monkeypatch.setattr(app, "_chat_running", lambda: True)
+    else:
+        app.store.persist_error = "disk unavailable"
+    before = app.convo_path.read_bytes()
+    with pytest.raises(ValueError):
+        gui_rpc.dispatch(app, request)
+    assert app.convo_path.read_bytes() == before
+    assert app._pending_input[0] is item
+
+
+@pytest.mark.asyncio
+async def test_failed_save_retains_hold_and_refuses_memory_only_readback(saved_app, monkeypatch):
+    app = saved_app
+    resume_held(app)
+    view = command(app)
+    before = app.convo_path.read_bytes()
+    def fail(*_args):
+        raise OSError("disk unavailable")
+    monkeypatch.setattr(codex_steering, "save_at", fail)
+    with pytest.raises(OSError, match="disk unavailable"):
+        command(app, "cancel", snapshot=view["snapshot"], entry_id="saved-input")
+    assert len(app._pending_input) == 1
+    assert app._pending_input[0]["_restored_input_held"]
+    assert app.convo_path.read_bytes() == before
+    with pytest.raises(ValueError, match="durably saved"):
+        command(app)
+
+
+@pytest.mark.asyncio
+async def test_cancel_uses_current_metadata_position_not_restored_callback(saved_app, monkeypatch):
+    app = saved_app
+    resume_held(app)
+    def forbidden():
+        raise AssertionError("Stale callback used")
+    monkeypatch.setattr(app._pending_input[0]["_codex_ledger"], "save", forbidden)
+    view = command(app)
+    command(app, "cancel", snapshot=view["snapshot"], entry_id="saved-input")
+    assert command(app)["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_only_save_is_not_acknowledged_as_cancelled(saved_app, monkeypatch):
+    app = saved_app
+    resume_held(app)
+    view = command(app)
+    monkeypatch.setattr(codex_steering, "save_at", lambda *_args: None)
+    with pytest.raises(OSError, match="verified in the saved journal"):
+        command(app, "cancel", snapshot=view["snapshot"], entry_id="saved-input")
+    assert len(app._pending_input) == 1
+    with pytest.raises(ValueError, match="durably saved"):
+        command(app)
+
+
+@pytest.mark.asyncio
+async def test_changed_hidden_journal_fields_invalidate_snapshot(saved_app):
+    app = saved_app
+    resume_held(app)
+    view = command(app)
+    app._pending_input[0]["_codex_entry"]["item"]["operation_id"] = "new-operation"
+    codex_steering.save_at(app, len(app.conversation) - 1)
+    with pytest.raises(ValueError, match="changed"):
+        command(app, "cancel", snapshot=view["snapshot"], entry_id="saved-input")

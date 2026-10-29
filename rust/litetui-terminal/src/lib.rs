@@ -42,3 +42,5 @@ pub(crate) fn display_control(ch: char) -> bool {
 pub mod tool_mode;
 
 pub mod resume;
+
+pub mod restored_queue;

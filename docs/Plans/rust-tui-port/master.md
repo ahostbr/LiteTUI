@@ -1,5 +1,17 @@
 # LiteTUI Rust terminal port
 
+## Held-input inspection and cancellation - 2026-10-29
+
+F7 now opens a native inspector for recovered provider input while the live runtime is idle. Up/Down chooses an entry; PageUp/PageDown and the wheel inspect the full escaped payload and delivery details. Delete arms cancellation and a fresh Enter confirms the rendered prompt. Escape keeps the item or closes the inspector. Hidden/changed geometry, source refresh, navigation and pointer activity disarm confirmation; held keys cannot confirm it. The composer and clipboard remain isolated until a sent operation has a verified outcome. F4 retains its existing theme shortcut.
+
+Python exposes gui.restored_input.list/cancel. Both require the current owned hold-policy conversation and idle runtime. Inspection checks live journal object ownership against the latest persisted record, refuses materialized/foreign/stale/duplicate entries, and hashes the complete journal plus projection into a snapshot token. Cancellation revalidates that token and only accepts queued or explicitly rejected next_turn input. It records denied through the current metadata index, then reads the persisted journal before removing the held entry. Any ambiguous save retains the hold and refuses later memory-only readback.
+
+Rust gives each operation its own request ID, invalidates selections after another control or prompt, and reads the source queue after either a positive or negative cancellation ACK. A failed or contradictory readback stops the connection without retry. The verified held count updates the footer. Sending, accepted, uncertain and interrupted-admission entries remain inspectable but cannot be discarded. Limits: 1,000 entries, 64 KiB per payload, 256 KiB source projection and 8 MiB journal token input; over-budget content is refused, never silently truncated.
+
+Verification: 342 ordinary Rust tests, all 35 controlled-process tests and 112 focused Python tests passed. Rust fmt/Clippy/build and new helper/tests/fixture Ruff/mypy passed. gui_rpc retains exactly its committed baseline of five Ruff and eight mypy diagnostics. The new controlled process test passed through actual CLI acquisition/resume, source inspection/cancellation, durable storage and Rust readback, then admitted only the next explicit prompt. Provider and visual boundaries remain controlled.
+
+This closes held-input inspection and eligible cancellation, not queue parity. Explicit continuation, positive provider-history reconciliation, Claude prepared-input recovery, session browsing, remaining engines/screens/plugins, both-host acceptance, packaging and measured resources remain required. No provider call, desktop input, merge, push or cutover occurred.
+
 ## Restored provider-input hold - 2026-10-29
 
 The Rust-owned Python launch now requests --hold-restored-input. Codex journal entries recovered by restore_queue receive a launch-local hold; their delivery state, revision and text are preserved. Both idle delivery and native steering check the hold, as does native recovery. The shared round-boundary queue gate also refuses held input. Ordinary Python launches keep their existing automatic policy, and newly queued explicit input is not marked as recovered.

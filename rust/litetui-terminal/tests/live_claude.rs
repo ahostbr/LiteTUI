@@ -65,7 +65,9 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 });
             }
             Ok(Observation::History(_)) => panic!("Unrequested restored history"),
-            Ok(Observation::Controls(_)) => panic!("Unrequested model control response"),
+            Ok(Observation::Controls(_) | Observation::Queue(_)) => {
+                panic!("Unrequested model control response")
+            }
             Ok(Observation::Submission { .. }) => {}
             Ok(Observation::Ready) => {
                 assert!(saw_ready_facts, "validated facts precede Ready");
