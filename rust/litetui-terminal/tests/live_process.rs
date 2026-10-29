@@ -50,14 +50,20 @@ for line in sys.stdin:
             emit(ack)
         emit(closure)
         pending = None
-        emit(dict(type='text_delta',text='Fixture decision observed; nothing executed',card_index=0))
-        emit(dict(type='turn_end',stopReason='stop',error=None))
+        if mode == 'approval_stop':
+            emit(dict(type='turn_end',stopReason='approval',error='Fixture approval stopped; nothing executed'))
+        else:
+            emit(dict(type='text_delta',text='Fixture decision observed; nothing executed',card_index=0))
+            emit(dict(type='turn_end',stopReason='stop',error=None))
         if command['allow']:
             emit(ack)
         continue
     emit(dict(type='response',id=command['id'],ok=True,result=dict(turn='accepted')))
     emit(dict(type='turn_start',model='claude-sonnet-5-5'))
-    if mode.startswith('approval'):
+    if mode == 'refused_without_request':
+        emit(dict(type='turn_end',stopReason='approval',error='No approval route'))
+        continue
+    if mode.startswith('approval') and not (mode == 'approval_stop' and approval_sequence == 2):
         pending = 'fixture-approval-' + str(approval_sequence)
         approval_sequence += 1
         emit(dict(type='tool_approval_requested',id=pending,tool='write',input={'path':'never-executed.txt'},profile='strict',why='fixture only',timeout_s=None))
@@ -522,6 +528,126 @@ fn unanswered_unbounded_approval_does_not_disable_runtime_deadline_or_auto_deny(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert!(!log.contains("approval_id"));
+    assert!(log.contains("shutdown"));
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn stopped_approval_keeps_owned_runtime_alive_for_explicit_followups() {
+    use litetui_terminal::{
+        approvals::Event,
+        live::{Interactive, Observation, Options},
+        live_chat::{Chat, ReplyState},
+    };
+    let (command, root) = setup("approval_stop");
+    let source = root.parent().unwrap().join("source/src/litetui/cli.py");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')",
+            "mode = 'approval_stop'",
+        ),
+    )
+    .unwrap();
+    let args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let mut runtime = Interactive::start(Options::parse(&args).unwrap());
+    let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+    let mut stopped = 0;
+    let mut closures = 0;
+    loop {
+        let observation = runtime
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let ready = matches!(observation, Observation::Ready);
+        let asked = matches!(observation, Observation::Approval(Event::Requested(_)));
+        let refusal = matches!(observation, Observation::ApprovalStopped(_));
+        let complete = matches!(observation, Observation::Complete);
+        if matches!(observation, Observation::Approval(Event::Closed { .. })) {
+            closures += 1;
+        }
+        chat.observe(observation).unwrap();
+        if asked {
+            // The second approval is granted but the source still stops.
+            // Its ACK arrives after the sole terminal event.
+            chat.approvals.choose(stopped == 1);
+            runtime
+                .approve(chat.approvals.take_decision().unwrap())
+                .unwrap();
+        }
+        if refusal {
+            stopped += 1;
+            assert_eq!(closures, stopped);
+            assert_eq!(chat.rows.last().unwrap().state, ReplyState::ApprovalStopped);
+            assert!(chat.rows.last().unwrap().cards[0].answer.is_empty());
+            assert!(!chat.busy && !chat.closed && chat.approvals.is_empty());
+            if stopped == 1 {
+                // The configured deadline is two seconds. Settled refusal must
+                // clear it while the human considers a new explicit prompt.
+                std::thread::sleep(Duration::from_millis(2250));
+                assert!(runtime.poll_done().is_none());
+            }
+        }
+        if ready || refusal {
+            chat.submit(&format!("explicit prompt {stopped}")).unwrap();
+            runtime.submit(chat.take_submission().unwrap()).unwrap();
+        }
+        if complete {
+            assert_eq!(stopped, 2, "a refusal was mistaken for success");
+            break;
+        }
+    }
+    runtime.shutdown().unwrap();
+    chat.finish(None);
+    assert_eq!(
+        chat.rows.iter().map(|row| row.state).collect::<Vec<_>>(),
+        vec![
+            ReplyState::ApprovalStopped,
+            ReplyState::ApprovalStopped,
+            ReplyState::Complete
+        ]
+    );
+    let commands: Vec<serde_json::Value> = fs::read_to_string(root.join("commands.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(commands.len(), 6); // Three prompts, two decisions, one shutdown.
+    assert_eq!(
+        commands
+            .iter()
+            .map(|cmd| cmd["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "prompt", "approve", "prompt", "approve", "prompt", "shutdown"
+        ]
+    );
+    assert_eq!(commands[1]["allow"], false);
+    assert_eq!(commands[3]["allow"], true);
+    assert_ne!(commands[0]["id"], commands[2]["id"]);
+    assert_ne!(commands[2]["id"], commands[4]["id"]);
+    assert!(!root.join("never-executed.txt").exists());
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn one_shot_approval_stop_without_request_is_failure_with_clean_shutdown() {
+    let (mut command, root) = setup("refused_without_request");
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("Turn stopped for approval: No approval route"),
+        "{error}"
+    );
+    assert!(error.contains("cleanup=Ok"), "{error}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("[Turn ended: stop]"));
     let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
     assert!(!log.contains("approval_id"));
     assert!(log.contains("shutdown"));

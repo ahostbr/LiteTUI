@@ -397,3 +397,150 @@ fn request_cannot_collide_with_its_independent_generated_command_id() {
     let command = ledger.decide(decision(id, true)).unwrap().unwrap();
     assert_ne!(command["id"], command["approval_id"]);
 }
+
+#[test]
+fn approval_stop_is_a_settled_non_success_turn_not_a_session_failure() {
+    let mut turn = started();
+    turn.accept(&request("a"), "claude", "fixture").unwrap();
+    let command = turn.approve(decision("a", false)).unwrap().unwrap();
+    turn.accept(&response(&command, true), "claude", "fixture")
+        .unwrap();
+    turn.accept(&closed("a"), "claude", "fixture").unwrap();
+    let stopped = turn.accept(
+        &json!({"type":"turn_end", "stopReason":"approval", "error":"Tool refused"}),
+        "claude",
+        "fixture",
+    );
+    assert!(
+        stopped.is_ok(),
+        "source-authoritative approval stop must preserve session: {stopped:?}"
+    );
+    assert_eq!(
+        stopped.unwrap(),
+        Observation::ApprovalStopped("Tool refused".into())
+    );
+    turn.submit("next explicit user prompt").unwrap();
+}
+
+#[test]
+fn late_ack_preserves_approval_stop_and_only_then_admits_next_turn() {
+    for accepted in [true, false] {
+        let mut turn = started();
+        turn.accept(&request("a"), "claude", "fixture").unwrap();
+        let command = turn.approve(decision("a", false)).unwrap().unwrap();
+        turn.accept(&closed("a"), "claude", "fixture").unwrap();
+        assert!(matches!(
+            turn.accept(
+                &json!({"type":"turn_end", "stopReason":"approval", "error":"Approval timed out"}),
+                "claude",
+                "fixture"
+            )
+            .unwrap(),
+            Observation::Information(_)
+        ));
+        assert!(turn.submit("too early").is_err());
+        assert!(
+            turn.accept(
+                &json!({"type":"text_delta","text":"late"}),
+                "claude",
+                "fixture"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            turn.accept(&response(&command, accepted), "claude", "fixture")
+                .unwrap(),
+            Observation::ApprovalStopped("Approval timed out".into())
+        );
+        assert!(
+            turn.accept(&response(&command, accepted), "claude", "fixture")
+                .is_err()
+        );
+        let next = turn.submit("next explicit prompt").unwrap();
+        turn.accept(
+            &json!({"type":"response","id":next["id"],"ok":true,"result":{"turn":"accepted"}}),
+            "claude",
+            "fixture",
+        )
+        .unwrap();
+        turn.accept(
+            &json!({"type":"turn_start","model":"fixture"}),
+            "claude",
+            "fixture",
+        )
+        .unwrap();
+        turn.accept(
+            &json!({"type":"text_delta","text":"next answer"}),
+            "claude",
+            "fixture",
+        )
+        .unwrap();
+        assert_eq!(
+            turn.accept(
+                &json!({"type":"turn_end","stopReason":"stop"}),
+                "claude",
+                "fixture"
+            )
+            .unwrap(),
+            Observation::Complete
+        );
+    }
+}
+
+#[test]
+fn approval_stop_does_not_require_a_local_request_or_an_answer() {
+    for reason in [Value::Null, json!(""), json!("No approval route")] {
+        let mut turn = started();
+        let expected = reason
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .unwrap_or("Runtime stopped the turn for approval.");
+        assert_eq!(
+            turn.accept(
+                &json!({"type":"turn_end", "stopReason":"approval", "error":reason}),
+                "claude",
+                "fixture"
+            )
+            .unwrap(),
+            Observation::ApprovalStopped(expected.into())
+        );
+        turn.submit("explicit follow-up").unwrap();
+    }
+}
+
+#[test]
+fn approval_stop_never_bypasses_open_requests_or_malformed_reason() {
+    let mut turn = started();
+    turn.accept(&request("a"), "claude", "fixture").unwrap();
+    let terminal = json!({"type":"turn_end","stopReason":"approval","error":"refused"});
+    assert!(turn.accept(&terminal, "claude", "fixture").is_err());
+    assert!(turn.submit("still blocked").is_err());
+    for reason in [json!(true), json!({}), json!(4), json!("x".repeat(16385))] {
+        let mut turn = started();
+        assert!(
+            turn.accept(
+                &json!({"type":"turn_end","stopReason":"approval","error":reason}),
+                "claude",
+                "fixture"
+            )
+            .is_err()
+        );
+    }
+    for stop in ["error", "cancelled", "unknown", "stop"] {
+        let mut turn = started();
+        turn.accept(
+            &json!({"type":"text_delta","text":"partial answer"}),
+            "claude",
+            "fixture",
+        )
+        .unwrap();
+        assert!(
+            turn.accept(
+                &json!({"type":"turn_end","stopReason":stop,"error":"not success"}),
+                "claude",
+                "fixture"
+            )
+            .is_err()
+        );
+    }
+}

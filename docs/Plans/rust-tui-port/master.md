@@ -2,6 +2,14 @@
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
+## Approval-stop continuation — 2026-10-29
+
+Resumed the existing uncommitted approval-stop regression on work/rust-tui-OpenBolt. A source turn_end with stopReason: approval now settles as **stopped, not successful**, preserving its reason and partial reply while keeping interactive chat ready for the next explicit prompt. It requires prompt admission and all request closures; outstanding decision ACKs must settle before the composer is released. Late ACKs preserve the original stop outcome, without requiring another terminal event. Refusal can arrive without a local request or any answer text (for example, no approval route).
+
+The transcript retains an escaped, wrapped approval-stop reason across later prompts and shutdown. Reasons have a 16 KiB wire limit and share emitted/retained/display-work budgets. Pending tool observations remain incomplete. A fully settled refusal clears the old turn deadline while waiting for the human; one-shot mode still exits with failure and cleans up. Other provider errors remain failures. No automatic resubmission, permission grant or tool enablement was added.
+
+The initial worktree failed compilation on two unhandled event matches. After restoring exhaustive matches, three focused regressions reproduced the lifecycle failures before the fix. Verification: **252 ordinary Rust tests + 15 controlled-process tests passed**, plus fmt, Clippy with warnings denied, build, CLI help and plan-document checks. This checkpoint is not a real-provider run or desktop acceptance; the paid Claude smoke was not run. Tools/MCP remain disabled. Next parity work remains approval/tool enablement and structured questions, with source authority and process cleanup preserved.
+
 ## Approval lifecycle checkpoint — current status
 
 Source RPC approvals now close with an additive `tool_approval_closed` event after waiter/spawner/authority removal. Its `outcome` preserves the actual authority decision or finalization failure; its separate `reason` explains why waiting ended. An approved decision can close cancelled, timed out or revoked without executing a tool. Neither closure nor ACK proves execution or a saved standing rule. Origin revocation never writes through the replacement store.

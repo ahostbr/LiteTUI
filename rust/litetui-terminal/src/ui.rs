@@ -563,6 +563,7 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 crate::live_chat::ReplyState::Sending => "Sending · not yet completed",
                 crate::live_chat::ReplyState::Streaming => "Streaming",
                 crate::live_chat::ReplyState::Complete => "Completed · stop",
+                crate::live_chat::ReplyState::ApprovalStopped => "Stopped · approval",
                 crate::live_chat::ReplyState::Incomplete => "Incomplete · runtime closed or failed",
             };
             for item in &row.items {
@@ -587,6 +588,16 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                         );
                     }
                 }
+            }
+            if let Some(reason) = &row.stop_reason {
+                tool_body(
+                    t,
+                    &mut lines,
+                    &format!("Approval stop: {}", display_safe(reason)),
+                    t.error,
+                    width,
+                );
+                lines.push(Line::raw(""));
             }
         }
         return (lines, (0, 0));

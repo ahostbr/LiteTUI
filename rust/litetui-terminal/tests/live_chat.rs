@@ -198,3 +198,119 @@ fn newline_dense_answers_are_bounded_before_layout_and_never_truncated() {
         1000
     );
 }
+
+#[test]
+fn approval_stop_preserves_partial_content_and_reason_across_followup_and_shutdown() {
+    let mut app = Demo::live("claude".into(), "fixture".into());
+    app.observe_live(Observation::Ready).unwrap();
+    app.insert_text("first");
+    app.submit();
+    app.live.as_mut().unwrap().take_submission();
+    app.observe_live(Observation::Text("partial answer".into()))
+        .unwrap();
+    app.observe_live(Observation::ApprovalStopped(
+        "Denied \u{1b}[2J\u{202e}write".into(),
+    ))
+    .unwrap();
+    let chat = app.live.as_ref().unwrap();
+    assert!(chat.ready && !chat.busy && !chat.closed);
+    assert_eq!(chat.rows[0].state, ReplyState::ApprovalStopped);
+    assert_eq!(chat.rows[0].cards[0].answer, "partial answer");
+    assert_eq!(
+        chat.rows[0].stop_reason.as_deref(),
+        Some("Denied \u{1b}[2J\u{202e}write")
+    );
+    let mut terminal = Terminal::new(TestBackend::new(110, 50)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+    let cells = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(cells.contains("Stopped · approval"));
+    assert!(cells.contains(r"Denied \u{1b}[2J\u{202e}write"));
+    assert!(!cells.contains("Completed · stop"));
+    app.insert_text("second");
+    app.submit();
+    app.live.as_mut().unwrap().take_submission();
+    app.observe_live(Observation::Text("next answer".into()))
+        .unwrap();
+    app.observe_live(Observation::Complete).unwrap();
+    app.finish_live(None);
+    let chat = app.live.as_ref().unwrap();
+    assert_eq!(chat.rows[0].state, ReplyState::ApprovalStopped);
+    assert_eq!(chat.rows[1].state, ReplyState::Complete);
+    assert_eq!(chat.rows[1].stop_reason, None);
+    terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+    let cells = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(cells.contains("Stopped · approval") && cells.contains("Completed · stop"));
+    assert!(cells.contains(r"Denied \u{1b}[2J\u{202e}write"));
+}
+
+#[test]
+fn approval_stop_obeys_pending_row_approval_and_display_limits() {
+    use litetui_terminal::approvals::Ledger;
+    let mut chat = Chat::new("claude".into(), "fixture".into());
+    chat.observe(Observation::Ready).unwrap();
+    assert!(
+        chat.observe(Observation::ApprovalStopped("no row".into()))
+            .is_err()
+    );
+    chat.submit("question").unwrap();
+    assert!(
+        chat.observe(Observation::ApprovalStopped("\n".repeat(1024)))
+            .is_err()
+    );
+    assert!(chat.busy);
+    assert_eq!(chat.rows[0].state, ReplyState::Sending);
+    assert!(chat.rows[0].stop_reason.is_none());
+    let mut ledger = Ledger::default();
+    let request = ledger
+        .request(&json!({
+            "type":"tool_approval_requested","id":"open","tool":"write","input":{},
+            "profile":"strict","why":"test","timeout_s":300
+        }))
+        .unwrap();
+    chat.observe(Observation::Approval(request)).unwrap();
+    assert!(
+        chat.observe(Observation::ApprovalStopped("not closed".into()))
+            .is_err()
+    );
+    assert!(chat.busy);
+    chat.observe(Observation::Approval(
+        ledger
+            .close(&json!({
+                "type":"tool_approval_closed","id":"open","outcome":"denied","reason":"answered"
+            }))
+            .unwrap(),
+    ))
+    .unwrap();
+    chat.observe(Observation::ApprovalStopped("refused".into()))
+        .unwrap();
+    assert!(
+        chat.observe(Observation::ApprovalStopped("duplicate".into()))
+            .is_err()
+    );
+}
+
+#[test]
+fn stopped_reasons_share_the_retained_transcript_budget() {
+    let mut chat = Chat::new("claude".into(), "fixture".into());
+    chat.observe(Observation::Ready).unwrap();
+    chat.submit("first").unwrap();
+    chat.observe(Observation::ApprovalStopped("x".repeat(16000)))
+        .unwrap();
+    chat.submit("second").unwrap();
+    chat.observe(Observation::ApprovalStopped("x".repeat(16000)))
+        .unwrap();
+    chat.submit("third").unwrap_err(); // Reasons were retained, not just a transient notice.
+    assert_eq!(chat.rows.len(), 2);
+}

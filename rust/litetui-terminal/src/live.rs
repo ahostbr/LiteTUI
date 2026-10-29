@@ -122,7 +122,13 @@ pub enum Observation {
     Reasoning(String),
     ReasoningSnapshot(String),
     Information(String),
+    /// Source-authoritative approval refusal; settled, but never successful.
+    ApprovalStopped(String),
     Complete,
+}
+enum TerminalOutcome {
+    Complete,
+    ApprovalStopped(String),
 }
 #[derive(Default)]
 pub struct Turn {
@@ -136,8 +142,8 @@ pub struct Turn {
     card_count: usize,
     started: bool,
     acknowledged: bool,
-    complete: bool,
-    terminal_received: bool,
+    settled: bool,
+    terminal: Option<TerminalOutcome>,
     content_bytes: usize,
     approvals: crate::approvals::Ledger,
 }
@@ -147,7 +153,7 @@ impl Turn {
         if !self.ready
             || self.closing
             || !self.approvals.settled()
-            || (self.sent && !self.complete)
+            || (self.sent && !self.settled)
             || prompt.trim().is_empty()
             || prompt.len() > 65536
         {
@@ -167,13 +173,26 @@ impl Turn {
         self.sent = true;
         self.started = false;
         self.acknowledged = false;
-        self.complete = false;
-        self.terminal_received = false;
+        self.settled = false;
+        self.terminal = None;
         self.visible_answers.clear();
         self.tools_seen = false;
         self.card_count = 1;
         self.content_bytes = 0;
         Ok(json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":"strict"}))
+    }
+    fn settle(&mut self) -> Observation {
+        self.settled = true;
+        match self
+            .terminal
+            .as_ref()
+            .expect("terminal outcome before settlement")
+        {
+            TerminalOutcome::Complete => Observation::Complete,
+            TerminalOutcome::ApprovalStopped(reason) => {
+                Observation::ApprovalStopped(reason.clone())
+            }
+        }
     }
     pub fn approve(&mut self, decision: crate::approvals::Decision) -> io::Result<Option<Value>> {
         if self.closing {
@@ -216,9 +235,8 @@ impl Turn {
             }
             "response" => {
                 if let Some(event) = self.approvals.response(event)? {
-                    if self.terminal_received && !self.complete && self.approvals.settled() {
-                        self.complete = true;
-                        return Ok(Observation::Complete);
+                    if self.terminal.is_some() && !self.settled && self.approvals.settled() {
+                        return Ok(self.settle());
                     }
                     return Ok(Observation::Approval(event));
                 }
@@ -245,7 +263,7 @@ impl Turn {
                 Ok(Observation::Information("turn started".into()))
             }
             "text_delta" | "native_text_snapshot" | "reasoning_delta"
-                if self.started && !self.terminal_received =>
+                if self.started && self.terminal.is_none() =>
             {
                 let card = crate::native_activity::card_index(event)?;
                 if card.is_none() && self.tools_seen {
@@ -308,7 +326,7 @@ impl Turn {
                     }
                 })
             }
-            "native_activity" if self.started && !self.terminal_received && backend == "claude" => {
+            "native_activity" if self.started && self.terminal.is_none() && backend == "claude" => {
                 let activity = crate::native_activity::Activity::from_event(event)?;
                 if activity.card >= self.card_count {
                     return Err(fail("Native tool has invalid display ownership"));
@@ -322,7 +340,7 @@ impl Turn {
                 Ok(Observation::Activity(activity))
             }
             "tool_approval_requested"
-                if self.started && !self.terminal_received && !self.closing =>
+                if self.started && self.terminal.is_none() && !self.closing =>
             {
                 let event = self.approvals.request(event)?;
                 if let crate::approvals::Event::Requested(request) = &event {
@@ -335,26 +353,54 @@ impl Turn {
                 Ok(Observation::Approval(event))
             }
             "tool_approval_closed" => Ok(Observation::Approval(self.approvals.close(event)?)),
-            "turn_end" if self.started && !self.terminal_received => {
+            "turn_end" if self.started && self.terminal.is_none() => {
                 if self.closing && event["stopReason"] != "stop" {
                     return Ok(Observation::Information(
                         "turn interrupted while quitting; not completed".into(),
                     ));
                 }
-                if !self.acknowledged
-                    || !self.approvals.all_closed()
-                    || self.visible_answers.is_empty()
-                    || event["stopReason"] != "stop"
-                    || event.get("error").is_some_and(|v| !v.is_null() && v != "")
-                {
-                    return Err(fail(&format!(
-                        "Turn did not complete successfully: {event}"
-                    )));
+                if !self.acknowledged || !self.approvals.all_closed() {
+                    return Err(fail(
+                        "Turn ended before prompt admission or approval closure",
+                    ));
                 }
-                self.terminal_received = true;
+                let outcome = match event["stopReason"].as_str() {
+                    Some("approval") => {
+                        // The source can refuse before asking this frontend (for
+                        // example, no approval route). No answer or local denial
+                        // is required, and a closure alone never implies this stop.
+                        let reason = match event.get("error") {
+                            None | Some(Value::Null) => "",
+                            Some(Value::String(reason)) if reason.len() <= 16384 => reason,
+                            _ => return Err(fail("Invalid or oversized approval-stop reason")),
+                        };
+                        let reason = if reason.is_empty() {
+                            "Runtime stopped the turn for approval."
+                        } else {
+                            reason
+                        };
+                        self.content_bytes = self
+                            .content_bytes
+                            .checked_add(reason.len())
+                            .filter(|size| *size <= 4 * FRAME_BYTES)
+                            .ok_or_else(|| fail("Live content budget exceeded"))?;
+                        TerminalOutcome::ApprovalStopped(reason.to_owned())
+                    }
+                    Some("stop")
+                        if !self.visible_answers.is_empty()
+                            && !event.get("error").is_some_and(|v| !v.is_null() && v != "") =>
+                    {
+                        TerminalOutcome::Complete
+                    }
+                    _ => {
+                        return Err(fail(&format!(
+                            "Turn did not complete successfully: {event}"
+                        )));
+                    }
+                };
+                self.terminal = Some(outcome);
                 if self.approvals.settled() {
-                    self.complete = true;
-                    Ok(Observation::Complete)
+                    Ok(self.settle())
                 } else {
                     Ok(Observation::Information(
                         "Turn ended; waiting for outstanding approval-command responses".into(),
@@ -788,6 +834,14 @@ impl Frontend for OneShot {
             Observation::Information(kind) => {
                 writeln!(self.output, "\n[Runtime: {}]", terminal_text(&kind))?
             }
+            Observation::ApprovalStopped(reason) => {
+                // A settled refusal keeps interactive chat alive, but a one-shot
+                // command must still return failure rather than claim success.
+                return Err(io::Error::other(format!(
+                    "Turn stopped for approval: {}",
+                    terminal_text(&reason)
+                )));
+            }
             Observation::Complete => {
                 writeln!(self.output, "\n[Turn ended: stop]")?;
                 self.next = Some(Input::Quit);
@@ -968,7 +1022,12 @@ fn publish_event(
         frontend.observe(Observation::State(update))?;
     }
     check_deadline(*deadline)?;
-    if !turn.closing && matches!(observation, Observation::Ready | Observation::Complete) {
+    if !turn.closing
+        && matches!(
+            observation,
+            Observation::Ready | Observation::Complete | Observation::ApprovalStopped(_)
+        )
+    {
         *deadline = None;
     }
     frontend.observe(observation)

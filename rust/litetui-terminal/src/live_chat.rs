@@ -33,6 +33,7 @@ pub enum ReplyState {
     Sending,
     Streaming,
     Complete,
+    ApprovalStopped,
     Incomplete,
 }
 #[derive(Default)]
@@ -53,6 +54,7 @@ pub struct Row {
     pub tools: Vec<Tool>,
     pub items: Vec<Item>,
     pub state: ReplyState,
+    pub stop_reason: Option<String>,
 }
 pub struct Chat {
     pub backend: String,
@@ -121,6 +123,7 @@ impl Chat {
             tools: Vec::new(),
             items: vec![Item::Card(0)],
             state: ReplyState::Sending,
+            stop_reason: None,
         });
         self.busy = true;
         self.notice = "Sending prompt (not yet admitted)…".into();
@@ -158,23 +161,42 @@ impl Chat {
             Observation::Information(info) => {
                 self.notice = info;
             }
-            Observation::Complete => {
-                if !self.approvals.is_empty() {
-                    return Err(io::Error::other("Completion with pending approval"));
-                }
-                let row = self
-                    .rows
-                    .last_mut()
-                    .filter(|row| matches!(row.state, ReplyState::Sending | ReplyState::Streaming))
-                    .ok_or_else(|| io::Error::other("Completion without a pending live row"))?;
-                row.state = ReplyState::Complete;
-                for tool in &mut row.tools {
-                    tool.finish();
-                }
-                self.busy = false;
-                self.notice = "Reply completed. Type another prompt; Ctrl+Q quits.".into();
-            }
+            Observation::ApprovalStopped(reason) => self.settle(Some(reason))?,
+            Observation::Complete => self.settle(None)?,
         }
+        Ok(())
+    }
+    fn settle(&mut self, stop_reason: Option<String>) -> io::Result<()> {
+        if !self.approvals.is_empty() {
+            return Err(io::Error::other("Turn settlement with pending approval"));
+        }
+        self.pending_row()?;
+        let reason = stop_reason.as_deref().unwrap_or("");
+        let units = display_units(reason)?;
+        if self.retained_units.saturating_add(units) > DISPLAY_UNITS
+            || self.retained_bytes.saturating_add(reason.len()) > 8 * 1024 * 1024
+        {
+            return Err(io::Error::other("Live transcript/display limit exceeded"));
+        }
+        self.retained_units += units;
+        self.retained_bytes += reason.len();
+        let row = self.rows.last_mut().expect("validated pending row");
+        row.state = if stop_reason.is_some() {
+            ReplyState::ApprovalStopped
+        } else {
+            ReplyState::Complete
+        };
+        row.stop_reason = stop_reason;
+        for tool in &mut row.tools {
+            tool.finish();
+        }
+        self.busy = false;
+        self.notice = if row.state == ReplyState::ApprovalStopped {
+            "Turn stopped for approval. Type another prompt; Ctrl+Q quits."
+        } else {
+            "Reply completed. Type another prompt; Ctrl+Q quits."
+        }
+        .into();
         Ok(())
     }
     fn pending_row(&self) -> io::Result<&Row> {
@@ -304,7 +326,10 @@ impl Chat {
             for tool in &mut row.tools {
                 tool.finish();
             }
-            if row.state != ReplyState::Complete {
+            if !matches!(
+                row.state,
+                ReplyState::Complete | ReplyState::ApprovalStopped
+            ) {
                 row.state = ReplyState::Incomplete;
             }
         }

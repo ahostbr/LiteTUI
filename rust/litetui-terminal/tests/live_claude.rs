@@ -90,6 +90,10 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 println!("[replacement] {text}");
                 answer = text;
             }
+            Ok(Observation::ApprovalStopped(reason)) => {
+                failure = Some(format!("Turn stopped for approval: {reason}"));
+                break;
+            }
             Ok(Observation::Complete) => {
                 println!("\nTurn {} completed", answers.len() + 1);
                 answers.push(std::mem::take(&mut answer));
