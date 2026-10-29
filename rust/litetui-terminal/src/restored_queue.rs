@@ -10,6 +10,7 @@ use ratatui::{
 use serde_json::Value;
 use std::{collections::HashSet, io};
 
+pub const RECONCILE: &str = "gui.restored_input.reconcile";
 pub const READ: &str = "gui.restored_input.list";
 pub const CONTINUE: &str = "gui.restored_input.continue";
 pub const SETTLED: &str = "gui.restored_input.settled";
@@ -19,6 +20,7 @@ pub enum Intent {
     Open,
     Cancel { revision: u64, entry: String },
     Continue { revision: u64, entry: String },
+    Reconcile { revision: u64, entry: String },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -32,6 +34,7 @@ pub struct Entry {
     pub revision: u64,
     pub can_cancel: bool,
     pub can_continue: bool,
+    pub can_reconcile: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -42,6 +45,8 @@ pub struct Snapshot {
     pub model: String,
     pub entries: Vec<Entry>,
     pub message: Option<String>,
+    /// Set only after a verified mutation receipt and independent queue readback.
+    pub recovered: Option<Box<Entry>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -121,11 +126,28 @@ impl Snapshot {
                     "Continuation policy disagrees with queue order or delivery evidence",
                 ));
             }
+            let can_reconcile = match row.get("can_reconcile") {
+                None => false,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| fail("Invalid reconciliation policy"))?,
+            };
+            if can_reconcile
+                && (can_cancel
+                    || v["backend"] != "codex"
+                    || row["thread_id"].as_str().is_none_or(str::is_empty)
+                    || row["turn_id"].as_str().is_none_or(str::is_empty))
+            {
+                return Err(fail(
+                    "Reconciliation policy disagrees with provider identity",
+                ));
+            }
             entries.push(Entry {
                 id,
                 state,
                 can_cancel,
                 can_continue,
+                can_reconcile,
                 revision: row["revision"]
                     .as_u64()
                     .filter(|v| *v < (1u64 << 53))
@@ -145,6 +167,7 @@ impl Snapshot {
             model: text(v, "model", 1024, false)?,
             entries,
             message: None,
+            recovered: None,
         })
     }
 }
@@ -153,6 +176,7 @@ impl Snapshot {
 enum Action {
     Cancel,
     Continue,
+    Reconcile,
 }
 #[derive(Default)]
 pub struct View {
@@ -186,14 +210,18 @@ impl View {
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
     }
-    pub fn continuation_text(&self, intent: &Intent) -> io::Result<&str> {
-        if let Intent::Continue { revision, entry } = intent
+    pub fn selection_text(&self, intent: &Intent) -> io::Result<&str> {
+        if let Intent::Continue { revision, entry } | Intent::Reconcile { revision, entry } = intent
             && let Some(snapshot) = &self.snapshot
             && snapshot.revision == *revision
-            && let Some(row) = snapshot
-                .entries
-                .iter()
-                .find(|e| e.id == *entry && e.can_continue)
+            && let Some(row) = snapshot.entries.iter().find(|e| {
+                e.id == *entry
+                    && if matches!(intent, Intent::Continue { .. }) {
+                        e.can_continue
+                    } else {
+                        e.can_reconcile
+                    }
+            })
         {
             return Ok(&row.content);
         }
@@ -303,6 +331,17 @@ impl View {
                     self.armed = Some(Action::Continue);
                 }
             }
+            KeyCode::Char('h') if key.kind == KeyEventKind::Press => {
+                self.disarm();
+                if self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.entries.get(self.cursor))
+                    .is_some_and(|e| e.can_reconcile)
+                {
+                    self.armed = Some(Action::Reconcile);
+                }
+            }
             KeyCode::Enter
                 if key.kind == KeyEventKind::Press
                     && self.armed.is_some()
@@ -317,6 +356,10 @@ impl View {
                             entry: entry.id.clone(),
                         },
                         Some(Action::Continue) if entry.can_continue => Intent::Continue {
+                            revision: snapshot.revision,
+                            entry: entry.id.clone(),
+                        },
+                        Some(Action::Reconcile) if entry.can_reconcile => Intent::Reconcile {
                             revision: snapshot.revision,
                             entry: entry.id.clone(),
                         },
@@ -391,6 +434,8 @@ impl View {
                     "Continuation or cancellation available."
                 } else if e.can_cancel {
                     "Cancellation available; no provider submission."
+                } else if e.can_reconcile {
+                    "Check provider history; no input will be sent."
                 } else {
                     "Delivery evidence must be reconciled. Cancellation unavailable."
                 },
@@ -429,6 +474,8 @@ impl View {
         );
         let help = if self.armed == Some(Action::Continue) {
             "Enter: confirm continuation | Esc: keep held"
+        } else if self.armed == Some(Action::Reconcile) {
+            "Enter: check history | Esc: keep held"
         } else if self.armed.is_some() {
             "Enter: confirm cancellation | Esc: keep input"
         } else {
@@ -441,10 +488,12 @@ impl View {
         frame.render_widget(
             Paragraph::new(if self.armed == Some(Action::Continue) {
                 "Run this saved input with its source authority?"
+            } else if self.armed == Some(Action::Reconcile) {
+                "Read history; never resend?"
             } else if self.armed.is_some() {
                 "Cancel this saved entry?"
             } else {
-                "C: continue | Del: cancel | R: refresh"
+                "C: continue | H: history | Del: cancel | R: refresh"
             }),
             Rect::new(inner.x, inner.bottom() - 3, inner.width, 1),
         );

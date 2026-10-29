@@ -193,11 +193,16 @@ pub struct Continuation {
     pub session: String,
     pub entry: String,
 }
+struct Reconciliation {
+    entry: crate::restored_queue::Entry,
+    accepted: Option<bool>,
+}
 struct QueuePending {
     id: CommandId,
     applying: bool,
     cancelled: Option<String>,
     continued: Option<(String, String, bool)>,
+    reconciled: Option<Reconciliation>,
     failure: Option<String>,
     succeeded: bool,
 }
@@ -693,17 +698,38 @@ impl Management {
 
 impl Management {
     pub fn request_queue(&mut self, intent: crate::restored_queue::Intent) -> io::Result<Value> {
-        use crate::restored_queue::{CANCEL, Intent, READ};
+        use crate::restored_queue::{CANCEL, Intent, READ, RECONCILE};
         if !self.ready() {
             return Err(fail("Wait for the runtime operation to finish"));
         }
         self.ensure_drained()?;
         let (session, _, _, _) = self.expected.as_ref().expect("active");
         let mut command = json!({"type":READ, "session_id":session});
+        let mut reconciled = None;
         let cancelled = match intent {
             Intent::Open => None,
             Intent::Continue { .. } => {
                 return Err(fail("Continuation must reserve an execution command"));
+            }
+            Intent::Reconcile { revision, entry } => {
+                let menu = self
+                    .queue_menu
+                    .as_ref()
+                    .filter(|m| m.revision == revision)
+                    .ok_or_else(|| fail("Held input changed; reopen the inspector"))?;
+                let row = menu
+                    .entries
+                    .iter()
+                    .find(|e| e.id == entry && e.can_reconcile)
+                    .ok_or_else(|| fail("Entry was not offered for history reconciliation"))?;
+                command["type"] = json!(RECONCILE);
+                command["snapshot"] = json!(menu.token);
+                command["entry_id"] = json!(entry);
+                reconciled = Some(Reconciliation {
+                    entry: row.clone(),
+                    accepted: None,
+                });
+                None
             }
             Intent::Cancel { revision, entry } => {
                 let menu = self
@@ -721,7 +747,10 @@ impl Management {
             }
         };
         if !self.operations.iter().any(|v| v == READ)
-            || (cancelled.is_some() && !self.operations.iter().any(|v| v == CANCEL))
+            || !self
+                .operations
+                .iter()
+                .any(|v| Some(v.as_str()) == command["type"].as_str())
         {
             return Err(fail(
                 "The connected runtime does not support held-input controls",
@@ -734,7 +763,8 @@ impl Management {
         command["id"] = id.to_value();
         self.queue = Some(QueuePending {
             id,
-            applying: cancelled.is_some(),
+            applying: cancelled.is_some() || reconciled.is_some(),
+            reconciled,
             cancelled,
             continued: None,
             failure: None,
@@ -754,6 +784,21 @@ impl Management {
             Some(text(&frame, "error", 4096)?.to_owned())
         };
         if pending.applying {
+            if let Some(check) = &mut pending.reconciled
+                && success
+            {
+                let result = &frame["result"];
+                if result["entry_id"] != check.entry.id
+                    || result["session_id"] != self.expected.as_ref().expect("active").0
+                {
+                    return Err(fail("History reconciliation receipt changed identity"));
+                }
+                check.accepted = Some(
+                    result["reconciled"]
+                        .as_bool()
+                        .ok_or_else(|| fail("Missing history reconciliation outcome"))?,
+                );
+            }
             pending.applying = false;
             pending.failure = error;
             pending.succeeded = success;
@@ -767,7 +812,10 @@ impl Management {
             return Ok(Step::Write(command));
         }
         if let Some(error) = error {
-            return if pending.cancelled.is_some() || pending.continued.is_some() {
+            return if pending.cancelled.is_some()
+                || pending.continued.is_some()
+                || pending.reconciled.is_some()
+            {
                 Err(fail(&format!(
                     "Cannot verify saved queue after mutation: {error}"
                 )))
@@ -805,6 +853,21 @@ impl Management {
                 ));
             }
         }
+        if let Some(check) = &pending.reconciled {
+            let held = snapshot.entries.iter().find(|e| e.id == check.entry.id);
+            match check.accepted {
+                Some(true) if held.is_none() => {
+                    snapshot.recovered = Some(Box::new(check.entry.clone()))
+                }
+                Some(false) if held == Some(&check.entry) => {}
+                None => {}
+                _ => {
+                    return Err(fail(
+                        "Saved queue contradicts provider-history reconciliation",
+                    ));
+                }
+            }
+        }
         snapshot.message = pending
             .failure
             .map(|e| format!("Request failed: {e}. Saved queue read back."))
@@ -815,6 +878,18 @@ impl Management {
             });
         if pending.continued.is_some() {
             snapshot.message = Some("Continuation settled; saved queue read back.".into());
+        }
+        if let Some(check) = pending.reconciled
+            && let Some(accepted) = check.accepted
+        {
+            snapshot.message = Some(
+                if accepted {
+                    "Provider history confirmed acceptance. Recorded locally; nothing resent."
+                } else {
+                    "No matching acceptance found. Input remains held; nothing resent."
+                }
+                .into(),
+            );
         }
         self.queue_menu = Some(snapshot.clone());
         Ok(Step::Queue(Update::Snapshot(snapshot)))
@@ -886,6 +961,7 @@ impl Management {
             applying: false,
             cancelled: None,
             continued: Some((operation, entry, refused)),
+            reconciled: None,
             failure: None,
             succeeded: false,
         });

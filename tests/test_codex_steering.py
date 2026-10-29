@@ -372,19 +372,24 @@ async def test_failed_journal_write_keeps_queue_and_does_not_send():
 
 
 @pytest.mark.asyncio
-async def test_uncertain_delivery_survives_actual_conversation_store_reload(tmp_path):
+async def test_uncertain_delivery_survives_actual_conversation_store_reload(make_app):
+    from litetui import store_identity
     from litetui.conversation import ConversationRepository
 
-    store = ConversationRepository()
-    store.convo_dir = tmp_path
-    store.convo_path = tmp_path / "conversation.jsonl"
+    app = make_app(initial_backend="codex", initial_model="fixture-model")
+    app._system = lambda *_: None
     message = {
         "role": "user",
         "content": "original",
         "provider_metadata": {"steering": []},
     }
     try:
-        store.record_msg(message)
+        app.conversation = [message]
+        app._prompt_store_identity = store_identity.capture(app)
+        app._store_injected = True
+        app._materialise_convo()
+        store = app.store
+        assert store.owned and store.agent_session is app._agent_session
         ledger = SteeringLedger(
             message["provider_metadata"]["steering"],
             lambda: store.record_edit(0, message),
@@ -406,7 +411,8 @@ async def test_uncertain_delivery_survives_actual_conversation_store_reload(tmp_
         assert restored["item"]["content"] == "queued"
         assert restored["admission"]["source"] == "queued"
     finally:
-        store.release()
+        await app.client.close()
+        app.store.release()
 
 
 @pytest.mark.asyncio

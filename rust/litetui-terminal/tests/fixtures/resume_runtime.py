@@ -18,6 +18,7 @@ os.environ["LITETUI_DISABLE_UPDATE_CHECK"] = "1"
 source = Path(__import__("litetui").__path__[-1]).parents[1]
 held_fixture = Path(__file__).with_name("fixture-held-input").exists()
 continue_fixture = Path(__file__).with_name("fixture-continue-input").exists()
+reconcile_fixture = Path(__file__).with_name("fixture-reconcile-input").exists()
 sys.path.insert(0, str(source / "tests"))
 
 
@@ -53,6 +54,25 @@ async def serve(app):
         app.conversation = [{"role": "system", "content": "Controlled fixture system prompt"}]
         app._prompt_store_identity = store_identity.capture(app)
         app._store_injected = True
+    reconciliation_count = 0
+    if reconcile_fixture:
+        from types import SimpleNamespace
+
+        async def history_start():
+            pass
+
+        async def history_request(method, params):
+            assert method in ("thread/read", "thread/turns/list"), "Reconciliation attempted a provider mutation"
+            with (root / "history-requests.jsonl").open("a", encoding="utf-8") as log:
+                log.write(json.dumps({"method": method, "params": params}) + "\n")
+            if method == "thread/read":
+                return {"thread": {"id": "held-thread", "historyMode": "paginated"}}
+            return {"data": [{"id": "held-turn", "items": (
+                [{"type": "userMessage", "clientId": "saved-sending"}] if reconciliation_count > 1 else [])}],
+                    "nextCursor": None}
+        app.backend.app_server = SimpleNamespace(start=history_start, request=history_request)
+        app._stream = forbidden
+
     continuation_count = 0
     continuation_worker = None
     retire = asyncio.Event()
@@ -93,7 +113,7 @@ async def serve(app):
         from types import SimpleNamespace
 
         before = copy.deepcopy([item["_codex_entry"] for item in app._pending_input])
-        count = 2 if any((root / name).exists() for name in ("queue-cancel-proof.json", "queue-continue-proof.json")) else 3
+        count = 2 if any((root / name).exists() for name in ("queue-cancel-proof.json", "queue-continue-proof.json", "queue-reconcile-proof.json")) else 3
         assert len(before) == count and hasattr(app.backend, "app_server")
         assert restored_input.status(app) == {"policy": "hold", "held": count}
         async def denied(*_args, **_kwargs):
@@ -137,6 +157,8 @@ async def serve(app):
             if command["type"] == "gui.conversations.read" and (root / "hold-history").exists():
                 continue
             if command["type"].startswith("gui."):
+                if reconcile_fixture and command["type"] == "gui.restored_input.reconcile":
+                    reconciliation_count += 1
                 if (continue_fixture and command["type"] == "gui.restored_input.settled"
                         and continuation_worker is not None):
                     assert not continuation_worker.done(), "settlement did not wait for worker retirement"
@@ -151,6 +173,11 @@ async def serve(app):
                 else:
                     with patch("litetui.gpu_gate.is_rtx_5090", return_value=False):
                         result = await gui_rpc.async_dispatch(app, command)
+                if reconcile_fixture and command["type"] == "gui.restored_input.reconcile":
+                    with (root / "reconcile-receipts.jsonl").open("a", encoding="utf-8") as log:
+                        log.write(json.dumps(result) + "\n")
+                    if result["reconciled"]:
+                        (root / "queue-reconcile-proof.json").write_text(json.dumps(result), encoding="utf-8")
                 if command["type"] == "gui.restored_input.cancel":
                     (root / "queue-cancel-proof.json").write_text(json.dumps(result), encoding="utf-8")
                 rpc._respond(command["id"], ok=True, result=result)

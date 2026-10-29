@@ -419,3 +419,45 @@ fn only_local_continuation_rejection_can_settle_before_submission() {
     assert_eq!(chat.rows[0].state, ReplyState::Refused);
     assert!(chat.submit("next").is_ok());
 }
+
+#[test]
+fn reconciled_input_is_a_saved_observation_without_execution_or_draft_submission() {
+    use litetui_terminal::restored_queue::{Snapshot, Update};
+    let mut app = Demo::live("codex".into(), "model".into());
+    app.observe_live(Observation::Ready).unwrap();
+    app.insert_text("HUMAN DRAFT");
+    let value = json!({"session_id":"session","backend":"codex","model":"model","policy":"hold",
+        "held":1,"snapshot":"a".repeat(64),"entries":[{"id":"saved","state":"uncertain","revision":2,
+        "content":"Previously sent input","source":"queued","tool_profile":"strict",
+        "thread_id":"thread","turn_id":"turn","can_cancel":false,"can_reconcile":true}]});
+    let mut snapshot = Snapshot::parse(&value, 1).unwrap();
+    snapshot.recovered = Some(Box::new(snapshot.entries.remove(0)));
+    app.observe_live(Observation::Queue(Update::Snapshot(snapshot.clone())))
+        .unwrap();
+    let chat = app.live.as_mut().unwrap();
+    assert!(!chat.busy && !chat.queue_pending());
+    assert!(chat.take_submission().is_none());
+    assert_eq!(chat.rows[0].state, ReplyState::Reconciled);
+    assert!(chat.rows[0].cards.is_empty() && chat.rows[0].tools.is_empty());
+    assert_eq!(app.composer.text(), "HUMAN DRAFT");
+    let mut terminal = Terminal::new(TestBackend::new(110, 35)).unwrap();
+    terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("Previously accepted") && text.contains("not resent"));
+    assert!(!text.contains("Completed · stop") && !text.contains("Assistant ·"));
+    assert!(
+        app.observe_live(Observation::Queue(Update::Snapshot(snapshot)))
+            .is_err()
+    );
+    app.submit();
+    assert_eq!(
+        app.live.as_mut().unwrap().take_submission().as_deref(),
+        Some("HUMAN DRAFT")
+    );
+}

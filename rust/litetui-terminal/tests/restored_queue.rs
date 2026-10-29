@@ -28,7 +28,7 @@ fn connected() -> Management {
         &hello,
         json!({"protocol_version":1,"data_version":1,
       "capabilities":["hello","state"],"operations":["gui.hello","gui.state","gui.restored_input.list","gui.restored_input.cancel",
-        "gui.models.list","gui.models.select","gui.restored_input.continue","gui.restored_input.settled"]}),
+        "gui.models.list","gui.models.select","gui.restored_input.continue","gui.restored_input.settled","gui.restored_input.reconcile"]}),
     ) else {
         panic!()
     };
@@ -362,7 +362,7 @@ fn continuation_requires_source_offer_and_fresh_visible_confirmation() {
         }
     );
     assert_eq!(
-        v.continuation_text(&intent).unwrap(),
+        v.selection_text(&intent).unwrap(),
         data()["entries"][0]["content"].as_str().unwrap()
     );
     assert!(v.owns_input());
@@ -505,4 +505,175 @@ fn inconsistent_continuation_readback_never_reenables_submission() {
         assert!(!m.ready());
         assert!(m.prompt("unsafe").is_err());
     }
+}
+
+fn reconcilable_data() -> Value {
+    let mut value = data();
+    value["entries"][1]["can_reconcile"] = json!(true);
+    value
+}
+fn checking(m: &mut Management) -> Value {
+    let command = m.request_queue(Intent::Open).unwrap();
+    let Step::Queue(Update::Snapshot(snapshot)) = reply(m, &command, reconcilable_data()) else {
+        panic!()
+    };
+    assert!(
+        m.request_queue(Intent::Reconcile {
+            revision: snapshot.revision,
+            entry: "one".into()
+        })
+        .is_err()
+    );
+    assert!(
+        m.request_queue(Intent::Reconcile {
+            revision: snapshot.revision + 1,
+            entry: "two".into()
+        })
+        .is_err()
+    );
+    m.request_queue(Intent::Reconcile {
+        revision: snapshot.revision,
+        entry: "two".into(),
+    })
+    .unwrap()
+}
+#[test]
+fn provider_history_requires_visible_confirmation_and_source_eligibility() {
+    for (width, height, disarm) in [(100, 30, false), (100, 30, true), (36, 14, false)] {
+        let mut v = view();
+        v.observe(Update::Snapshot(
+            Snapshot::parse(&reconcilable_data(), 9).unwrap(),
+        ));
+        draw(&mut v, width, height);
+        v.key(key(KeyCode::Down));
+        v.key(key(KeyCode::Char('h')));
+        v.key(key(KeyCode::Enter));
+        assert!(v.take_intent().is_none());
+        assert!(draw(&mut v, width, height).contains("Read history; never resend?"));
+        if disarm {
+            draw(&mut v, 80, 24);
+        }
+        v.key(key(KeyCode::Enter));
+        let intent = v.take_intent();
+        if disarm {
+            assert!(intent.is_none());
+        } else {
+            assert_eq!(
+                intent,
+                Some(Intent::Reconcile {
+                    revision: 9,
+                    entry: "two".into()
+                })
+            );
+        }
+    }
+    for fault in ["cancellable", "backend", "thread", "turn", "flag"] {
+        let mut value = reconcilable_data();
+        match fault {
+            "cancellable" => value["entries"][0]["can_reconcile"] = json!(true),
+            "backend" => value["backend"] = json!("claude"),
+            "thread" => value["entries"][1]["thread_id"] = json!(""),
+            "turn" => value["entries"][1]["turn_id"] = json!(""),
+            "flag" => value["entries"][1]["can_reconcile"] = json!(1),
+            _ => unreachable!(),
+        }
+        assert!(Snapshot::parse(&value, 1).is_err(), "{fault}");
+    }
+}
+#[test]
+fn history_reconciliation_ack_requires_readback_before_recovering_transcript() {
+    for accepted in [false, true] {
+        let mut m = connected();
+        let command = checking(&mut m);
+        assert_eq!(command["type"], "gui.restored_input.reconcile");
+        assert!(command.get("message").is_none());
+        assert!(!m.ready() && m.prompt("early").is_err());
+        let Step::Write(read) = reply(
+            &mut m,
+            &command,
+            json!({"session_id":"session","entry_id":"two","reconciled":accepted}),
+        ) else {
+            panic!()
+        };
+        assert_eq!(read["type"], "gui.restored_input.list");
+        assert_ne!(read["id"], command["id"]);
+        assert!(!m.ready());
+        let mut value = reconcilable_data();
+        if accepted {
+            value["entries"].as_array_mut().unwrap().pop();
+            value["held"] = json!(1);
+        }
+        let Step::Queue(Update::Snapshot(snapshot)) = reply(&mut m, &read, value) else {
+            panic!()
+        };
+        assert_eq!(snapshot.recovered.is_some(), accepted);
+        if accepted {
+            assert_eq!(snapshot.recovered.unwrap().content, "POSSIBLY SENT");
+        } else {
+            assert!(snapshot.message.unwrap().contains("remains held"));
+        }
+        assert!(m.ready());
+    }
+}
+#[test]
+fn failed_or_contradictory_history_reconciliation_cannot_claim_a_recovered_input() {
+    for fault in [
+        "receipt-entry",
+        "receipt-session",
+        "receipt-outcome",
+        "still-held",
+        "missing-held",
+        "changed-held",
+        "failed-read",
+    ] {
+        let mut m = connected();
+        let command = checking(&mut m);
+        let mut result = json!({"session_id":"session","entry_id":"two","reconciled":true});
+        match fault {
+            "receipt-entry" => result["entry_id"] = json!("foreign"),
+            "receipt-session" => result["session_id"] = json!("foreign"),
+            "receipt-outcome" => result["reconciled"] = json!("yes"),
+            "missing-held" | "changed-held" => result["reconciled"] = json!(false),
+            _ => {}
+        }
+        let step =
+            m.accept(json!({"type":"response","id":command["id"],"ok":true,"result":result}));
+        if fault.starts_with("receipt") {
+            assert!(step.is_err());
+            continue;
+        }
+        let Step::Write(read) = step.unwrap() else {
+            panic!()
+        };
+        let mut value = reconcilable_data();
+        if fault == "missing-held" {
+            value["entries"].as_array_mut().unwrap().pop();
+            value["held"] = json!(1);
+        }
+        if fault == "changed-held" {
+            value["entries"][1]["revision"] = json!(5);
+        }
+        assert!(m.accept(json!({"type":"response","id":read["id"],"ok":fault!="failed-read","error":"disk failed","result":value})).is_err(),"{fault}");
+        assert!(!m.ready());
+    }
+}
+#[test]
+fn failed_history_query_reads_actual_held_state_without_retry_or_recovery() {
+    let mut m = connected();
+    let command = checking(&mut m);
+    let Step::Write(read) = m
+        .accept(
+            json!({"type":"response","id":command["id"],"ok":false,"error":"history unavailable"}),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    let Step::Queue(Update::Snapshot(snapshot)) = reply(&mut m, &read, reconcilable_data()) else {
+        panic!()
+    };
+    assert!(
+        snapshot.recovered.is_none() && snapshot.message.unwrap().contains("history unavailable")
+    );
+    assert!(m.ready());
 }

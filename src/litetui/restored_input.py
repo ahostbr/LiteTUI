@@ -9,6 +9,7 @@ from litetui.conversation import ConversationRepository
 
 _STATES = {"queued", "admitting", "admitted", "next_turn", "sending", "uncertain", "accepted"}
 _CANCELLABLE = {"queued", "next_turn"}
+_RECONCILABLE = {"admitting", "admitted", "sending", "uncertain", "accepted"}
 
 
 def held(item):
@@ -107,6 +108,10 @@ def _inspect(app, session_id):
             "source": _text(payload.get("source", ""), 128, empty=True),
             "tool_profile": _text(payload.get("tool_profile", ""), 128, empty=True),
             "can_cancel": state in _CANCELLABLE,
+            "can_reconcile": (state in _RECONCILABLE and app.backend.name == "codex"
+                              and hasattr(app.backend, "app_server")
+                              and bool(entry.get("threadId")) and bool(entry.get("turnId"))
+                              and isinstance(payload.get("content"), (str, list))),
             "can_continue": (state in _CANCELLABLE and item is app._pending_input[0]
                              and app.backend.name == "codex" and hasattr(app.backend, "app_server")
                              and isinstance(payload.get("content"), (str, list))
@@ -311,4 +316,88 @@ async def settled(app, cmd):
     result = inspect(app, cmd["session_id"])
     result.update(operation_id=attempt["operation"], entry_id=attempt["entry"],
                   continuation_outcome=attempt["outcome"])
+    return result
+
+
+class _HistoryReader:
+    """Bound the existing reader and permit only observational native requests."""
+
+    def __init__(self, server):
+        self.server = server
+        self.requests = 0
+        self.bytes = 0
+
+    async def request(self, method, params):
+        if method not in ("thread/read", "thread/turns/list") or self.requests >= 100:
+            raise ValueError("Recovered-input history read limit exceeded")
+        self.requests += 1
+        response = await self.server.request(method, params)
+        self.bytes += len(json.dumps(response, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        if self.bytes > 8 * 1024 * 1024:
+            raise ValueError("Recovered-input history byte limit exceeded")
+        return response
+
+
+async def reconcile(app, cmd):
+    """Observe positive provider acceptance; never send, retry or start a turn."""
+    from litetui import codex_history, codex_steering
+
+    operation = _text(cmd.get("id"), 128)
+    before, records = _inspect(app, cmd.get("session_id"))
+    if cmd.get("snapshot") != before["snapshot"]:
+        raise ValueError("Recovered input changed; refresh before checking history")
+    row = next((row for row in before["entries"] if row["id"] == cmd.get("entry_id")), None)
+    if row is None or not row["can_reconcile"]:
+        raise ValueError("This recovered input is not eligible for provider-history reconciliation")
+    if getattr(app, "_mcp_maintenance", False) or getattr(app, "_gui_quitting", False):
+        raise ValueError("Runtime maintenance or shutdown is active")
+    item, (entry, entries, index) = records[row["id"]]
+    conversation, backend, model = app.conversation, app.backend, app.model_id
+    owner, store, server = app._agent_session, app.store, app.backend.app_server
+
+    def current():
+        from litetui.gui_rpc import _idle
+
+        _idle(app)
+        app._validate_owned_execution()
+        if (app.conversation is not conversation or app.backend is not backend
+                or app.model_id != model or app._agent_session is not owner or app.store is not store
+                or app.backend.app_server is not server):
+            raise ValueError("Conversation changed during recovered-input history read")
+        fresh, fresh_records = _inspect(app, before["session_id"])
+        if (fresh["snapshot"] != before["snapshot"]
+                or fresh_records.get(row["id"], (None,))[0] is not item):
+            raise ValueError("Recovered input changed during history read")
+
+    current()
+    await server.start()
+    current()
+    history = await codex_history.read(_HistoryReader(server), entry["threadId"])
+    current()
+    result = {"session_id": before["session_id"], "entry_id": row["id"], "reconciled": False}
+    if not codex_steering.accepted_in_history(entry, history):
+        return result
+    # This records an already accepted input, not a new admission. Do not run
+    # prompt hooks, change active authority, emit turn events or schedule work.
+    try:
+        _persist(app, entry, entries, index, "accepted", reconciliation_operation_id=operation)
+        message = {
+            "role": "user", "content": copy.deepcopy(entry["item"]["content"]),
+            "codex_delivery": {"id": entry["id"], "threadId": entry["threadId"], "state": "accepted"},
+            "provider_metadata": {"provider": "codex", "app_server_thread_id": entry["threadId"],
+                                  "instructions_digest": entry.get("instructions_digest"),
+                                  "reconciled_turn_id": entry["turnId"]},
+        }
+        app._append(message)
+        _owned(app, before["session_id"])
+        meta, messages = ConversationRepository.read(store.convo_path)
+        delivered = [m for m in messages if m.get("codex_delivery", {}).get("id") == entry["id"]]
+        if (meta.get("id") != before["session_id"] or len(delivered) != 1
+                or any(delivered[0].get(key) != value for key, value in message.items())):
+            raise OSError("Reconciled input was not durably materialized")
+    except (Exception, asyncio.CancelledError):
+        app._restored_input_error = True
+        raise
+    codex_steering.remove_item(app._pending_input, item)
+    result["reconciled"] = True
     return result

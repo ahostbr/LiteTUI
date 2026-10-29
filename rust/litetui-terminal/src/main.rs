@@ -827,10 +827,21 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         .as_mut()
                         .expect("live")
                         .prepare_continuation(&intent)
+                } else if matches!(
+                    intent,
+                    litetui_terminal::restored_queue::Intent::Reconcile { .. }
+                ) {
+                    app.live
+                        .as_ref()
+                        .expect("live")
+                        .prepare_reconciliation(&intent)
                 } else {
                     Ok(())
                 };
                 if let Err(error) = prepared {
+                    app.live.as_mut().expect("live").queue.observe(
+                        litetui_terminal::restored_queue::Update::Rejected(error.to_string()),
+                    );
                     app.notice = error.to_string();
                 } else if let Err(error) = runtime.queue(intent) {
                     view_failure = Some(error.to_string());

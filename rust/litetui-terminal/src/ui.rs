@@ -609,7 +609,14 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 crate::live_chat::ReplyState::ApprovalStopped => "Stopped · approval",
                 crate::live_chat::ReplyState::Incomplete => "Incomplete · runtime closed or failed",
                 crate::live_chat::ReplyState::Refused => "Not started · admission refused",
+                crate::live_chat::ReplyState::Reconciled => {
+                    "Previously accepted · verified in provider history · not resent"
+                }
             };
+            if row.state == crate::live_chat::ReplyState::Reconciled {
+                tool_body(t, &mut lines, state, t.tool_text, width);
+                lines.push(Line::raw(""));
+            }
             for item in &row.items {
                 match *item {
                     crate::live_chat::Item::Tool(index) => {
@@ -637,7 +644,17 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 tool_body(
                     t,
                     &mut lines,
-                    &format!("Approval stop: {}", display_safe(reason)),
+                    &format!(
+                        "{}: {}",
+                        if row.state == crate::live_chat::ReplyState::Refused {
+                            "Input not started"
+                        } else if row.state == crate::live_chat::ReplyState::Cancelled {
+                            "Turn cancelled"
+                        } else {
+                            "Approval stop"
+                        },
+                        display_safe(reason)
+                    ),
                     t.error,
                     width,
                 );

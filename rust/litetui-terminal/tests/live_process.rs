@@ -1609,28 +1609,47 @@ fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn(
 #[test]
 #[ignore = "real CLI and owned saved store with controlled provider; requires LITETUI_AUTHORITY_PYTHON"]
 fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
-    saved_conversation_process(false, false, false);
+    saved_conversation_process(SavedInput::None);
 }
 
 #[test]
 #[ignore = "controlled Python process; no provider"]
 fn restored_provider_input_stays_held_before_ready_and_during_an_explicit_turn() {
-    saved_conversation_process(true, false, false);
+    saved_conversation_process(SavedInput::Held);
 }
 
 #[test]
 #[ignore = "controlled Python process; no provider"]
 fn held_input_cancellation_is_saved_and_read_back_before_an_explicit_turn() {
-    saved_conversation_process(true, true, false);
+    saved_conversation_process(SavedInput::Cancel);
 }
 
 #[test]
 #[ignore = "controlled Python process; no provider"]
 fn held_input_continuation_refuses_then_explicitly_runs_and_waits_for_retirement() {
-    saved_conversation_process(true, false, true);
+    saved_conversation_process(SavedInput::Continue);
 }
 
-fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool) {
+#[test]
+#[ignore = "controlled Python process; no provider"]
+fn held_input_reconciliation_requires_positive_history_and_never_resends() {
+    saved_conversation_process(SavedInput::Reconcile);
+}
+#[derive(Clone, Copy)]
+enum SavedInput {
+    None,
+    Held,
+    Cancel,
+    Continue,
+    Reconcile,
+}
+
+fn saved_conversation_process(mode: SavedInput) {
+    let held = !matches!(mode, SavedInput::None);
+    let cancel_held = matches!(mode, SavedInput::Cancel);
+    let continue_held = matches!(mode, SavedInput::Continue);
+    let reconcile_held = matches!(mode, SavedInput::Reconcile);
+    let removed = cancel_held || continue_held || reconcile_held;
     use litetui_terminal::live::{Interactive, Observation, Options};
     use litetui_terminal::live_chat::Chat;
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
@@ -1663,6 +1682,13 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
     if continue_held {
         fs::write(
             source.join("src/litetui/fixture-continue-input"),
+            "controlled fixture",
+        )
+        .unwrap();
+    }
+    if reconcile_held {
+        fs::write(
+            source.join("src/litetui/fixture-reconcile-input"),
             "controlled fixture",
         )
         .unwrap();
@@ -1784,6 +1810,9 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
                         if continue_held && pass == 1 {
                             continue_saved_input(runtime, &mut chat)?;
                         }
+                        if reconcile_held && pass == 1 {
+                            reconcile_saved_input(runtime, &mut chat)?;
+                        }
                         let prompt = if pass == 0 {
                             "remember SAVED-CONTEXT"
                         } else {
@@ -1798,6 +1827,8 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
                                 chat.rows.last().unwrap().cards[0].answer,
                                 if continue_held {
                                     "Earlier: remember SAVED-CONTEXT | UNSENT queued"
+                                } else if reconcile_held {
+                                    "Earlier: remember SAVED-CONTEXT | UNSENT sending"
                                 } else {
                                     "Earlier: remember SAVED-CONTEXT"
                                 }
@@ -1836,22 +1867,27 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
             serde_json::from_slice(&fs::read(root.join("held-input-proof.json")).unwrap()).unwrap();
         assert_eq!(
             proof["policy"],
-            serde_json::json!({"policy":"hold","held":if cancel_held || continue_held {2} else {3}})
+            serde_json::json!({"policy":"hold","held":if removed {2} else {3}})
         );
         assert_eq!(
             proof["explicit_prompts"],
             if continue_held {
                 serde_json::json!(["remember SAVED-CONTEXT", "UNSENT queued", "what was saved?"])
+            } else if reconcile_held {
+                serde_json::json!([
+                    "remember SAVED-CONTEXT",
+                    "UNSENT sending",
+                    "what was saved?"
+                ])
             } else {
                 serde_json::json!(["remember SAVED-CONTEXT", "what was saved?"])
             }
         );
         let entries = proof["entries"].as_array().unwrap();
-        assert_eq!(
-            entries.len(),
-            if cancel_held || continue_held { 2 } else { 3 }
-        );
-        let states = if cancel_held || continue_held {
+        assert_eq!(entries.len(), if removed { 2 } else { 3 });
+        let states = if reconcile_held {
+            vec!["queued", "accepted"]
+        } else if cancel_held || continue_held {
             vec!["sending", "accepted"]
         } else {
             vec!["queued", "sending", "accepted"]
@@ -1900,6 +1936,12 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
         prompts,
         if continue_held {
             vec!["remember SAVED-CONTEXT", "UNSENT queued", "what was saved?"]
+        } else if reconcile_held {
+            vec![
+                "remember SAVED-CONTEXT",
+                "UNSENT sending",
+                "what was saved?",
+            ]
         } else {
             vec!["remember SAVED-CONTEXT", "what was saved?"]
         }
@@ -1910,6 +1952,52 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(commands.iter().filter(|v| v["type"] == "prompt").count(), 2);
+    if reconcile_held {
+        let receipts: Vec<serde_json::Value> =
+            fs::read_to_string(root.join("reconcile-receipts.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0]["reconciled"], false);
+        assert_eq!(receipts[1]["reconciled"], true);
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|v| v["type"] == "gui.restored_input.reconcile")
+                .count(),
+            2
+        );
+        let methods: Vec<String> = fs::read_to_string(root.join("history-requests.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["method"]
+                    .as_str()
+                    .unwrap()
+                    .into()
+            })
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                "thread/read",
+                "thread/turns/list",
+                "thread/read",
+                "thread/turns/list"
+            ]
+        );
+        let delivered: Vec<_> = records
+            .iter()
+            .filter(|v| v["message"]["codex_delivery"]["id"] == "saved-sending")
+            .collect();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0]["message"]["codex_delivery"]["state"],
+            "accepted"
+        );
+    }
     if continue_held {
         let continued: Vec<_> = commands
             .iter()
@@ -1981,7 +2069,10 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
     let before = fs::read(root.join("resume-commands.jsonl")).unwrap();
     let mut timeout = Options::parse(&args).unwrap();
     timeout.resume = Some(session.clone());
-    timeout.timeout = Duration::from_secs(4);
+    // This deadline includes Python imports and owned startup. Four seconds
+    // sometimes expired before gui.hello, measuring startup instead of the
+    // deliberately missing history response. Keep explicit phase assertions.
+    timeout.timeout = Duration::from_secs(15);
     let error = refused_resume(timeout);
     assert!(
         error.contains("deadline elapsed") && error.contains("cleanup=Ok"),
@@ -1989,8 +2080,68 @@ fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool
     );
     let after = fs::read(root.join("resume-commands.jsonl")).unwrap();
     let suffix = String::from_utf8_lossy(&after[before.len()..]);
-    assert!(suffix.contains("gui.conversations.read") && suffix.contains("shutdown"));
+    assert!(
+        suffix.contains("gui.conversations.read") && suffix.contains("shutdown"),
+        "Expected history-stage timeout: {error}; commands after hold: {suffix}"
+    );
     assert!(!suffix.contains("\"type\": \"prompt\""));
+}
+
+fn reconcile_saved_input(
+    runtime: &litetui_terminal::live::Interactive,
+    chat: &mut litetui_terminal::live_chat::Chat,
+) -> std::io::Result<()> {
+    use litetui_terminal::{
+        live::Observation,
+        live_chat::ReplyState,
+        restored_queue::{Intent, Update},
+    };
+    runtime.queue(Intent::Open)?;
+    let mut attempts = 0;
+    loop {
+        let event = runtime
+            .events
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(std::io::Error::other)?;
+        assert!(!matches!(
+            event,
+            Observation::Submission { .. }
+                | Observation::Complete
+                | Observation::Text(_)
+                | Observation::Refused(_)
+        ));
+        let menu = if let Observation::Queue(Update::Snapshot(m)) = &event {
+            Some(m.clone())
+        } else {
+            None
+        };
+        chat.observe(event)?;
+        if let Some(menu) = menu {
+            assert!(!chat.busy && chat.take_submission().is_none());
+            if attempts == 2 {
+                assert_eq!(menu.entries.len(), 2);
+                assert!(!menu.entries.iter().any(|e| e.id == "saved-sending"));
+                assert_eq!(chat.rows.len(), 1);
+                assert_eq!(chat.rows[0].state, ReplyState::Reconciled);
+                break;
+            }
+            assert!(chat.rows.is_empty());
+            let entry = menu
+                .entries
+                .iter()
+                .find(|e| e.id == "saved-sending")
+                .unwrap();
+            assert!(entry.can_reconcile);
+            let intent = Intent::Reconcile {
+                revision: menu.revision,
+                entry: entry.id.clone(),
+            };
+            chat.prepare_reconciliation(&intent)?;
+            runtime.queue(intent)?;
+            attempts += 1;
+        }
+    }
+    Ok(())
 }
 
 fn continue_saved_input(

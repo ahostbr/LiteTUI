@@ -39,6 +39,7 @@ pub enum ReplyState {
     ApprovalStopped,
     Incomplete,
     Refused,
+    Reconciled,
 }
 #[derive(Default)]
 pub struct Card {
@@ -78,6 +79,7 @@ pub struct Chat {
     pending: Option<String>,
     submission_id: Option<String>,
     queue_pending: bool,
+    recovered_inputs: std::collections::HashSet<String>,
     stop_requests: usize,
     stops_sent: usize,
     pub stop_confirm: bool,
@@ -105,6 +107,7 @@ impl Chat {
             pending: None,
             submission_id: None,
             queue_pending: false,
+            recovered_inputs: std::collections::HashSet::new(),
             stop_requests: 0,
             stops_sent: 0,
             stop_confirm: false,
@@ -137,19 +140,7 @@ impl Chat {
                 "Enter ordinary prompt text; slash commands are not wired yet (64 KiB maximum)",
             ));
         }
-        if self.rows.len() >= 100
-            || self.retained_bytes.saturating_add(prompt.len()) > RETAINED_BYTES
-        {
-            return Err(io::Error::other(
-                "Live transcript limit reached; no prompt was sent",
-            ));
-        }
-        let units = display_units(prompt)?.saturating_add(320);
-        if self.retained_units.saturating_add(units) > DISPLAY_UNITS {
-            return Err(io::Error::other(
-                "Live display-line/work limit reached; no prompt sent",
-            ));
-        }
+        let units = self.prompt_budget(prompt)?;
         self.retained_units += units;
         self.retained_bytes += prompt.len();
         self.pending = Some(prompt.to_owned());
@@ -168,6 +159,55 @@ impl Chat {
         self.notice = "Sending prompt (not yet admitted)…".into();
         Ok(())
     }
+    fn prompt_budget(&self, prompt: &str) -> io::Result<usize> {
+        if self.rows.len() >= 100
+            || self.retained_bytes.saturating_add(prompt.len()) > RETAINED_BYTES
+        {
+            return Err(io::Error::other(
+                "Live transcript limit reached; no prompt was sent",
+            ));
+        }
+        let units = display_units(prompt)?.saturating_add(320);
+        if self.retained_units.saturating_add(units) > DISPLAY_UNITS {
+            return Err(io::Error::other(
+                "Live display-line/work limit reached; no prompt sent",
+            ));
+        }
+        Ok(units)
+    }
+    pub fn prepare_reconciliation(&self, intent: &crate::restored_queue::Intent) -> io::Result<()> {
+        if !self.ready || self.busy || self.closed || self.quitting || self.queue_pending {
+            return Err(io::Error::other(
+                "Finish the current operation before checking provider history",
+            ));
+        }
+        self.prompt_budget(self.queue.selection_text(intent)?)?;
+        Ok(())
+    }
+    fn record_reconciled(&mut self, entry: &crate::restored_queue::Entry) -> io::Result<()> {
+        if !self.ready
+            || self.busy
+            || self.closed
+            || self.quitting
+            || self.queue_pending
+            || self.recovered_inputs.contains(&entry.id)
+        {
+            return Err(io::Error::other("Unexpected or duplicate reconciled input"));
+        }
+        let units = self.prompt_budget(&entry.content)?;
+        self.retained_units += units;
+        self.retained_bytes += entry.content.len();
+        self.recovered_inputs.insert(entry.id.clone());
+        self.rows.push(Row {
+            prompt: entry.content.clone(),
+            cards: Vec::new(),
+            tools: Vec::new(),
+            items: Vec::new(),
+            state: ReplyState::Reconciled,
+            stop_reason: None,
+        });
+        Ok(())
+    }
     pub fn queue_pending(&self) -> bool {
         self.queue_pending
     }
@@ -175,7 +215,7 @@ impl Chat {
         &mut self,
         intent: &crate::restored_queue::Intent,
     ) -> io::Result<()> {
-        let prompt = self.queue.continuation_text(intent)?.to_owned();
+        let prompt = self.queue.selection_text(intent)?.to_owned();
         self.queue.finish();
         self.reserve_row(&prompt, true)?;
         self.pending = None; // The queue command carries identity, never a duplicate prompt.
@@ -247,6 +287,11 @@ impl Chat {
             }
             Observation::State(update) => self.runtime_state.apply(update),
             Observation::Queue(update) => {
+                if let crate::restored_queue::Update::Snapshot(snapshot) = &update
+                    && let Some(entry) = &snapshot.recovered
+                {
+                    self.record_reconciled(entry)?;
+                }
                 if let crate::restored_queue::Update::ContinuationRejected(reason) = &update {
                     if !self.queue_pending || !self.busy || self.submission_id.is_some() {
                         return Err(io::Error::other("Unexpected local continuation refusal"));

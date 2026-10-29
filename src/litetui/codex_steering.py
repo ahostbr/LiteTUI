@@ -109,22 +109,26 @@ class SteeringLedger:
         return entry["state"]
 
     def reconcile(self, entry, history):
-        thread = history.get("thread") or {}
-        if thread.get("id") != entry["threadId"]:
-            return False
-        for turn in thread.get("turns", []):
-            if turn.get("id") != entry["turnId"]:
-                continue
-            if any(
-                item.get("type") == "userMessage"
-                and item.get("clientId") == entry["id"]
-                for item in turn.get("items", [])
-            ):
-                self.transition(entry, "accepted")
-                return True
+        if accepted_in_history(entry, history.get("thread")):
+            self.transition(entry, "accepted")
+            return True
         # An absent item in a partial, compacted or rolled-back history is not
         # proof that input was never accepted. Preserve the uncertain delivery.
         return False
+
+
+def accepted_in_history(entry, thread):
+    """One exact native thread/turn/client identity; absence proves nothing."""
+    if not isinstance(thread, dict) or thread.get("id") != entry["threadId"]:
+        return False
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return False
+    matching = [turn for turn in turns if isinstance(turn, dict) and turn.get("id") == entry["turnId"]]
+    if len(matching) != 1 or not isinstance(matching[0].get("items"), list):
+        return False
+    return sum(isinstance(item, dict) and item.get("type") == "userMessage"
+               and item.get("clientId") == entry["id"] for item in matching[0]["items"]) == 1
 
 
 class HostSteering:
@@ -250,7 +254,7 @@ def accept_steered(app, item):
 
 def restore_queue(app):
     """Restore journaled input without dispatching tools or sending model input."""
-    found = {}
+    found: dict[str, tuple[dict, list, int]] = {}
     materialized = {m.get("codex_delivery", {}).get("id") for m in app.conversation}
     queued = {i.get("_codex_entry", {}).get("id") for i in app._pending_input}
     for index, message in enumerate(app.conversation):
