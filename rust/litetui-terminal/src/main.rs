@@ -817,13 +817,26 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
             }
-            if !quitting
-                && let Some(intent) = app.live.as_mut().expect("live").queue.take_intent()
-                && let Err(error) = runtime.queue(intent)
+            if !quitting && let Some(intent) = app.live.as_mut().expect("live").queue.take_intent()
             {
-                view_failure = Some(error.to_string());
-                app.finish_live(view_failure.clone());
-                let _ = runtime.quit();
+                let prepared = if matches!(
+                    intent,
+                    litetui_terminal::restored_queue::Intent::Continue { .. }
+                ) {
+                    app.live
+                        .as_mut()
+                        .expect("live")
+                        .prepare_continuation(&intent)
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = prepared {
+                    app.notice = error.to_string();
+                } else if let Err(error) = runtime.queue(intent) {
+                    view_failure = Some(error.to_string());
+                    app.finish_live(view_failure.clone());
+                    let _ = runtime.quit();
+                }
             }
             if let Some(prompt) = app.live.as_mut().expect("live").take_submission()
                 && let Err(error) = runtime.submit(prompt)

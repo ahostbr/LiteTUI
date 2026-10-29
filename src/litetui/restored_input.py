@@ -200,8 +200,7 @@ async def continue_input(app, cmd):
     if delivery["source"] == "scheduled":
         refusal = seat_authority.withheld(app, requested_profile or tool_policy.STRICT)
         if refusal:
-            return {"turn": "refused", "entry_id": row["id"], "session_id": app.convo_id,
-                    "reason": refusal, "held": status(app)["held"]}
+            return _receipt(app, operation, row["id"], "refused", reason=refusal)
     delivery.update(operation_id=operation, _codex_entry=entry, _codex_ledger=item["_codex_ledger"])
     reasons: list[str] = []
 
@@ -239,9 +238,8 @@ async def continue_input(app, cmd):
         if accepted is None:
             before_accept()
             _persist(app, entry, entries, index, original_state, continuation_outcome="refused")
-            return {"turn": "refused", "entry_id": row["id"], "session_id": app.convo_id,
-                    "reason": reasons[-1] if reasons else "Prompt was not admitted",
-                    "held": status(app)["held"]}
+            return _receipt(app, operation, row["id"], "refused",
+                            reason=reasons[-1] if reasons else "Prompt was not admitted")
         # Admission materializes the original input exactly once. Verify it was
         # durably appended before scheduling a provider-capable worker.
         meta, messages = ConversationRepository.read(store.convo_path)
@@ -255,9 +253,62 @@ async def continue_input(app, cmd):
                  admission={**entry.get("admission", {}), "turn_id": accepted.hook_id},
                  continuation_outcome="admitted")
         app._pending_input.pop(0)
-        app._stream(origin=accepted)
-        return {"turn": "accepted", "entry_id": row["id"], "session_id": app.convo_id,
-                "held": status(app)["held"]}
+        worker = app._stream(origin=accepted)
+        return _receipt(app, operation, row["id"], "accepted", worker=worker)
     except (Exception, asyncio.CancelledError):
         app._restored_input_error = True
         raise
+
+def _receipt(app, operation, entry_id, outcome, *, worker=None, reason=None):
+    app._restored_input_attempt = {
+        "operation": operation, "entry": entry_id, "outcome": outcome, "worker": worker,
+        "conversation": app.conversation, "session_id": app.convo_id,
+        "backend": app.backend, "model": app.model_id, "store": app.store,
+        "owner": app._agent_session,
+    }
+    result = {"turn": outcome, "entry_id": entry_id, "session_id": app.convo_id,
+              "held": status(app)["held"]}
+    if reason is not None:
+        result["reason"] = reason
+    return result
+
+
+async def settled(app, cmd):
+    """Read after the exact continuation worker retires, never just turn_end."""
+    from textual.worker import WorkerCancelled
+
+    from litetui.gui_rpc import _idle
+
+    attempt = getattr(app, "_restored_input_attempt", None)
+    if (attempt is None or cmd.get("operation_id") != attempt["operation"]
+            or cmd.get("entry_id") != attempt["entry"] or cmd.get("session_id") != attempt["session_id"]):
+        raise ValueError("Unknown continuation settlement request")
+
+    def current():
+        _owned(app, cmd["session_id"])
+        if (app._restored_input_attempt is not attempt
+                or app.conversation is not attempt["conversation"] or app.backend is not attempt["backend"]
+                or app.model_id != attempt["model"] or app.store is not attempt["store"]
+                or app._agent_session is not attempt["owner"]):
+            raise ValueError("Continuation identity changed before queue readback")
+
+    current()
+    if attempt["outcome"] == "accepted":
+        worker = attempt["worker"]
+        if worker is None:
+            raise ValueError("Continuation worker is unavailable")
+        try:
+            # Textual wait() catches cancellation and cancels its underlying
+            # worker task. Shield it so cancellation of this read cannot stop
+            # execution or masquerade as successful worker retirement.
+            await asyncio.shield(worker.wait())
+        except WorkerCancelled:
+            # The caller's asyncio cancellation is NOT swallowed. A cancelled
+            # Textual worker is retired; Rust separately requires turn settlement.
+            pass
+    current()
+    _idle(app)
+    result = inspect(app, cmd["session_id"])
+    result.update(operation_id=attempt["operation"], entry_id=attempt["entry"],
+                  continuation_outcome=attempt["outcome"])
+    return result

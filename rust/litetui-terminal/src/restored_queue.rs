@@ -1,4 +1,4 @@
-//! Explicit inspection/cancellation of held input. This surface never submits it.
+//! Source-owned held-input inspection and explicit cancel/continue intents.
 use crate::{live::terminal_text, theme::Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -11,11 +11,14 @@ use serde_json::Value;
 use std::{collections::HashSet, io};
 
 pub const READ: &str = "gui.restored_input.list";
+pub const CONTINUE: &str = "gui.restored_input.continue";
+pub const SETTLED: &str = "gui.restored_input.settled";
 pub const CANCEL: &str = "gui.restored_input.cancel";
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     Open,
     Cancel { revision: u64, entry: String },
+    Continue { revision: u64, entry: String },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -28,6 +31,7 @@ pub struct Entry {
     pub turn: String,
     pub revision: u64,
     pub can_cancel: bool,
+    pub can_continue: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -43,6 +47,7 @@ pub struct Snapshot {
 pub enum Update {
     Snapshot(Snapshot),
     Rejected(String),
+    ContinuationRejected(String),
 }
 fn fail(message: &str) -> io::Error {
     io::Error::other(message.to_owned())
@@ -105,10 +110,22 @@ impl Snapshot {
                     "Recovered input cancellation policy disagrees with delivery evidence",
                 ));
             }
+            let can_continue = match row.get("can_continue") {
+                None => false,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| fail("Invalid continuation policy"))?,
+            };
+            if can_continue && (!can_cancel || !entries.is_empty() || v["backend"] != "codex") {
+                return Err(fail(
+                    "Continuation policy disagrees with queue order or delivery evidence",
+                ));
+            }
             entries.push(Entry {
                 id,
                 state,
                 can_cancel,
+                can_continue,
                 revision: row["revision"]
                     .as_u64()
                     .filter(|v| *v < (1u64 << 53))
@@ -132,6 +149,11 @@ impl Snapshot {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Action {
+    Cancel,
+    Continue,
+}
 #[derive(Default)]
 pub struct View {
     open: bool,
@@ -143,7 +165,7 @@ pub struct View {
     intent: Option<Intent>,
     visible: bool,
     geometry: Option<Rect>,
-    armed: bool,
+    armed: Option<Action>,
     confirmation_visible: bool,
     pub notice: String,
 }
@@ -164,6 +186,19 @@ impl View {
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
     }
+    pub fn continuation_text(&self, intent: &Intent) -> io::Result<&str> {
+        if let Intent::Continue { revision, entry } = intent
+            && let Some(snapshot) = &self.snapshot
+            && snapshot.revision == *revision
+            && let Some(row) = snapshot
+                .entries
+                .iter()
+                .find(|e| e.id == *entry && e.can_continue)
+        {
+            return Ok(&row.content);
+        }
+        Err(fail("Continuation selection is unavailable"))
+    }
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.intent.take()
     }
@@ -181,7 +216,7 @@ impl View {
     }
     pub fn hide(&mut self) {
         self.visible = false;
-        self.armed = false;
+        self.armed = None;
         self.confirmation_visible = false;
     }
     pub fn observe(&mut self, update: Update) {
@@ -198,14 +233,14 @@ impl View {
                     .unwrap_or_else(|| "Saved queue verified. Nothing replayed.".into());
                 self.snapshot = Some(snapshot);
             }
-            Update::Rejected(message) => {
+            Update::Rejected(message) | Update::ContinuationRejected(message) => {
                 self.snapshot = None;
                 self.notice = message;
             }
         }
     }
     fn disarm(&mut self) {
-        self.armed = false;
+        self.armed = None;
         self.confirmation_visible = false;
     }
     pub fn key(&mut self, key: KeyEvent) {
@@ -213,7 +248,7 @@ impl View {
             return;
         }
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
-            if self.armed {
+            if self.armed.is_some() {
                 self.disarm();
             } else {
                 self.close();
@@ -254,22 +289,42 @@ impl View {
                     .and_then(|s| s.entries.get(self.cursor))
                     .is_some_and(|e| e.can_cancel)
                 {
-                    self.armed = true;
+                    self.armed = Some(Action::Cancel);
+                }
+            }
+            KeyCode::Char('c') if key.kind == KeyEventKind::Press => {
+                self.disarm();
+                if self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.entries.get(self.cursor))
+                    .is_some_and(|e| e.can_continue)
+                {
+                    self.armed = Some(Action::Continue);
                 }
             }
             KeyCode::Enter
-                if key.kind == KeyEventKind::Press && self.armed && self.confirmation_visible =>
+                if key.kind == KeyEventKind::Press
+                    && self.armed.is_some()
+                    && self.confirmation_visible =>
             {
                 if let Some(snapshot) = &self.snapshot
                     && let Some(entry) = snapshot.entries.get(self.cursor)
-                    && entry.can_cancel
                 {
-                    self.intent = Some(Intent::Cancel {
-                        revision: snapshot.revision,
-                        entry: entry.id.clone(),
-                    });
+                    let intent = match self.armed {
+                        Some(Action::Cancel) if entry.can_cancel => Intent::Cancel {
+                            revision: snapshot.revision,
+                            entry: entry.id.clone(),
+                        },
+                        Some(Action::Continue) if entry.can_continue => Intent::Continue {
+                            revision: snapshot.revision,
+                            entry: entry.id.clone(),
+                        },
+                        _ => return,
+                    };
+                    self.intent = Some(intent);
                     self.waiting = true;
-                    self.notice = "Cancelling; waiting for saved queue readback…".into();
+                    self.notice = "Waiting for runtime verification…".into();
                     self.hide();
                 }
             }
@@ -332,7 +387,9 @@ impl View {
                 e.profile,
                 e.thread,
                 e.turn,
-                if e.can_cancel {
+                if e.can_continue {
+                    "Continuation or cancellation available."
+                } else if e.can_cancel {
                     "Cancellation available; no provider submission."
                 } else {
                     "Delivery evidence must be reconciled. Cancellation unavailable."
@@ -370,7 +427,9 @@ impl View {
             ),
             Rect::new(inner.x, inner.y, inner.width, body_height),
         );
-        let help = if self.armed {
+        let help = if self.armed == Some(Action::Continue) {
+            "Enter: confirm continuation | Esc: keep held"
+        } else if self.armed.is_some() {
             "Enter: confirm cancellation | Esc: keep input"
         } else {
             "Up/Down: entry | PgUp/PgDn: inspect"
@@ -380,10 +439,12 @@ impl View {
             Rect::new(inner.x, inner.bottom() - 4, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new(if self.armed {
+            Paragraph::new(if self.armed == Some(Action::Continue) {
+                "Run this saved input with its source authority?"
+            } else if self.armed.is_some() {
                 "Cancel this saved entry?"
             } else {
-                "Del: cancel | R: refresh | Esc: close"
+                "C: continue | Del: cancel | R: refresh"
             }),
             Rect::new(inner.x, inner.bottom() - 3, inner.width, 1),
         );
@@ -392,6 +453,6 @@ impl View {
             Rect::new(inner.x, inner.bottom() - 2, inner.width, 2),
         );
         self.visible = self.open && !self.waiting;
-        self.confirmation_visible = self.visible && self.armed;
+        self.confirmation_visible = self.visible && self.armed.is_some();
     }
 }

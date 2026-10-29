@@ -52,7 +52,7 @@ OPERATIONS = (
     "work.get", "work.cancel",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
-    "restored_input.list", "restored_input.cancel", "restored_input.continue",
+    "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled",
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
@@ -714,7 +714,7 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    blocking = operation in {"gui.restored_input.continue", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -735,6 +735,8 @@ async def _async_dispatch(app, cmd):
     if operation == "gui.restored_input.continue":
         _idle(app)
         return await restored_input.continue_input(app, cmd)
+    if operation == "gui.restored_input.settled":
+        return await restored_input.settled(app, cmd)
     if operation == "gui.backend.set":
         _idle(app)
         candidate = _validate(app, {"backend": cmd.get("name")})

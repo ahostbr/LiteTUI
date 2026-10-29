@@ -185,7 +185,7 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
                 self.notice = "Finish the current turn before opening model controls.".into();
                 return;
             }
@@ -205,7 +205,7 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
                 self.notice = "Finish the current turn before opening held input.".into();
                 return;
             }

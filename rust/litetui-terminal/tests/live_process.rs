@@ -1609,22 +1609,28 @@ fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn(
 #[test]
 #[ignore = "real CLI and owned saved store with controlled provider; requires LITETUI_AUTHORITY_PYTHON"]
 fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
-    saved_conversation_process(false, false);
+    saved_conversation_process(false, false, false);
 }
 
 #[test]
 #[ignore = "controlled Python process; no provider"]
 fn restored_provider_input_stays_held_before_ready_and_during_an_explicit_turn() {
-    saved_conversation_process(true, false);
+    saved_conversation_process(true, false, false);
 }
 
 #[test]
 #[ignore = "controlled Python process; no provider"]
 fn held_input_cancellation_is_saved_and_read_back_before_an_explicit_turn() {
-    saved_conversation_process(true, true);
+    saved_conversation_process(true, true, false);
 }
 
-fn saved_conversation_process(held: bool, cancel_held: bool) {
+#[test]
+#[ignore = "controlled Python process; no provider"]
+fn held_input_continuation_refuses_then_explicitly_runs_and_waits_for_retirement() {
+    saved_conversation_process(true, false, true);
+}
+
+fn saved_conversation_process(held: bool, cancel_held: bool, continue_held: bool) {
     use litetui_terminal::live::{Interactive, Observation, Options};
     use litetui_terminal::live_chat::Chat;
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
@@ -1650,6 +1656,13 @@ fn saved_conversation_process(held: bool, cancel_held: bool) {
     if held {
         fs::write(
             source.join("src/litetui/fixture-held-input"),
+            "controlled fixture",
+        )
+        .unwrap();
+    }
+    if continue_held {
+        fs::write(
+            source.join("src/litetui/fixture-continue-input"),
             "controlled fixture",
         )
         .unwrap();
@@ -1768,6 +1781,9 @@ fn saved_conversation_process(held: bool, cancel_held: bool) {
                                 }
                             }
                         }
+                        if continue_held && pass == 1 {
+                            continue_saved_input(runtime, &mut chat)?;
+                        }
                         let prompt = if pass == 0 {
                             "remember SAVED-CONTEXT"
                         } else {
@@ -1779,8 +1795,12 @@ fn saved_conversation_process(held: bool, cancel_held: bool) {
                     if done {
                         if pass == 1 {
                             assert_eq!(
-                                chat.rows[0].cards[0].answer,
-                                "Earlier: remember SAVED-CONTEXT"
+                                chat.rows.last().unwrap().cards[0].answer,
+                                if continue_held {
+                                    "Earlier: remember SAVED-CONTEXT | UNSENT queued"
+                                } else {
+                                    "Earlier: remember SAVED-CONTEXT"
+                                }
                             );
                         }
                         break;
@@ -1816,15 +1836,22 @@ fn saved_conversation_process(held: bool, cancel_held: bool) {
             serde_json::from_slice(&fs::read(root.join("held-input-proof.json")).unwrap()).unwrap();
         assert_eq!(
             proof["policy"],
-            serde_json::json!({"policy":"hold","held":if cancel_held {2} else {3}})
+            serde_json::json!({"policy":"hold","held":if cancel_held || continue_held {2} else {3}})
         );
         assert_eq!(
             proof["explicit_prompts"],
-            serde_json::json!(["remember SAVED-CONTEXT", "what was saved?"])
+            if continue_held {
+                serde_json::json!(["remember SAVED-CONTEXT", "UNSENT queued", "what was saved?"])
+            } else {
+                serde_json::json!(["remember SAVED-CONTEXT", "what was saved?"])
+            }
         );
         let entries = proof["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), if cancel_held { 2 } else { 3 });
-        let states = if cancel_held {
+        assert_eq!(
+            entries.len(),
+            if cancel_held || continue_held { 2 } else { 3 }
+        );
+        let states = if cancel_held || continue_held {
             vec!["sending", "accepted"]
         } else {
             vec!["queued", "sending", "accepted"]
@@ -1869,13 +1896,54 @@ fn saved_conversation_process(held: bool, cancel_held: bool) {
         .filter(|v| v["type"] == "msg" && v["message"]["role"] == "user")
         .map(|v| v["message"]["content"].as_str().unwrap())
         .collect();
-    assert_eq!(prompts, ["remember SAVED-CONTEXT", "what was saved?"]);
+    assert_eq!(
+        prompts,
+        if continue_held {
+            vec!["remember SAVED-CONTEXT", "UNSENT queued", "what was saved?"]
+        } else {
+            vec!["remember SAVED-CONTEXT", "what was saved?"]
+        }
+    );
     let commands: Vec<serde_json::Value> = fs::read_to_string(root.join("resume-commands.jsonl"))
         .unwrap()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(commands.iter().filter(|v| v["type"] == "prompt").count(), 2);
+    if continue_held {
+        let continued: Vec<_> = commands
+            .iter()
+            .filter(|v| v["type"] == "gui.restored_input.continue")
+            .collect();
+        let settled: Vec<_> = commands
+            .iter()
+            .filter(|v| v["type"] == "gui.restored_input.settled")
+            .collect();
+        assert_eq!(continued.len(), 2);
+        assert_eq!(settled.len(), 2);
+        assert_ne!(continued[0]["id"], continued[1]["id"]);
+        assert_ne!(continued[0]["snapshot"], continued[1]["snapshot"]);
+        for (sent, read) in continued.iter().zip(settled.iter()) {
+            assert_eq!(sent["id"], read["operation_id"]);
+            assert!(sent.get("message").is_none() && sent.get("tool_profile").is_none());
+        }
+        let proof: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("queue-continue-proof.json")).unwrap())
+                .unwrap();
+        assert_eq!(proof["source"], "queued");
+        assert_eq!(proof["profile"], "strict");
+        assert_eq!(proof["operation"], continued[1]["id"]);
+        assert_eq!(proof["delivered"].as_array().unwrap().len(), 1);
+        assert_eq!(proof["delivered"][0]["content"], "UNSENT queued");
+        let receipts: Vec<serde_json::Value> =
+            fs::read_to_string(root.join("continue-receipts.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+        assert_eq!(receipts[0]["turn"], "refused");
+        assert_eq!(receipts[1]["turn"], "accepted");
+    }
     if cancel_held {
         assert_eq!(
             commands
@@ -1923,6 +1991,71 @@ fn saved_conversation_process(held: bool, cancel_held: bool) {
     let suffix = String::from_utf8_lossy(&after[before.len()..]);
     assert!(suffix.contains("gui.conversations.read") && suffix.contains("shutdown"));
     assert!(!suffix.contains("\"type\": \"prompt\""));
+}
+
+fn continue_saved_input(
+    runtime: &litetui_terminal::live::Interactive,
+    chat: &mut litetui_terminal::live_chat::Chat,
+) -> std::io::Result<()> {
+    use litetui_terminal::{
+        live::Observation,
+        live_chat::ReplyState,
+        restored_queue::{Intent, Update},
+    };
+    runtime.queue(Intent::Open)?;
+    let mut attempts = 0;
+    let mut terminal = false;
+    loop {
+        let event = runtime
+            .events
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(std::io::Error::other)?;
+        let menu = if let Observation::Queue(Update::Snapshot(menu)) = &event {
+            Some(menu.clone())
+        } else {
+            None
+        };
+        if matches!(event, Observation::Refused(_) | Observation::Complete) {
+            terminal = true;
+        }
+        chat.observe(event)?;
+        if terminal && menu.is_none() {
+            assert!(chat.queue_pending());
+            assert!(chat.submit("too early").is_err());
+        }
+        if let Some(menu) = menu {
+            if attempts > 0 {
+                assert!(terminal, "readback arrived before the turn settled");
+                assert!(!chat.queue_pending());
+                assert_eq!(
+                    chat.rows.last().unwrap().state,
+                    if attempts == 1 {
+                        ReplyState::Refused
+                    } else {
+                        ReplyState::Complete
+                    }
+                );
+            }
+            if attempts == 2 {
+                assert_eq!(menu.entries.len(), 2);
+                assert!(!menu.entries.iter().any(|e| e.id == "saved-queued"));
+                break;
+            }
+            let entry = &menu.entries[0];
+            assert_eq!(entry.id, "saved-queued");
+            assert!(entry.can_continue);
+            let intent = Intent::Continue {
+                revision: menu.revision,
+                entry: entry.id.clone(),
+            };
+            chat.prepare_continuation(&intent)?;
+            assert!(chat.take_submission().is_none());
+            runtime.queue(intent)?;
+            attempts += 1;
+            terminal = false;
+        }
+    }
+    Ok(())
 }
 
 fn refused_resume(options: litetui_terminal::live::Options) -> String {

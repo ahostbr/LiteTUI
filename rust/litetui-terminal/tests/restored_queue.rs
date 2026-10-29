@@ -10,7 +10,7 @@ fn data() -> Value {
     json!({"session_id":"session","backend":"codex","model":"model","policy":"hold","held":2,"snapshot":"a".repeat(64),
     "entries":[
       {"id":"one","state":"queued","revision":2,"content":"SAVED CONTENT\nliteral \\n and \u{1b}[31m red",
-       "source":"queued","tool_profile":"strict","thread_id":"thread","turn_id":"turn","can_cancel":true},
+       "source":"queued","tool_profile":"strict","thread_id":"thread","turn_id":"turn","can_cancel":true,"can_continue":true},
       {"id":"two","state":"uncertain","revision":4,"content":"POSSIBLY SENT",
        "source":"queued","tool_profile":"strict","thread_id":"thread","turn_id":"turn","can_cancel":false}
     ]})
@@ -28,7 +28,7 @@ fn connected() -> Management {
         &hello,
         json!({"protocol_version":1,"data_version":1,
       "capabilities":["hello","state"],"operations":["gui.hello","gui.state","gui.restored_input.list","gui.restored_input.cancel",
-        "gui.models.list","gui.models.select"]}),
+        "gui.models.list","gui.models.select","gui.restored_input.continue","gui.restored_input.settled"]}),
     ) else {
         panic!()
     };
@@ -338,4 +338,171 @@ fn failed_inspection_never_reports_empty_and_full_error_is_inspectable() {
     draw(&mut v, 80, 24);
     v.key(key(KeyCode::Enter));
     assert!(v.take_intent().is_none());
+}
+
+#[test]
+fn continuation_requires_source_offer_and_fresh_visible_confirmation() {
+    let mut v = view();
+    draw(&mut v, 100, 30);
+    v.key(key(KeyCode::Char('c')));
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    assert!(draw(&mut v, 100, 30).contains("Run this saved input"));
+    let mut repeat = key(KeyCode::Enter);
+    repeat.kind = KeyEventKind::Repeat;
+    v.key(repeat);
+    assert!(v.take_intent().is_none());
+    v.key(key(KeyCode::Enter));
+    let intent = v.take_intent().unwrap();
+    assert_eq!(
+        intent,
+        Intent::Continue {
+            revision: 7,
+            entry: "one".into()
+        }
+    );
+    assert_eq!(
+        v.continuation_text(&intent).unwrap(),
+        data()["entries"][0]["content"].as_str().unwrap()
+    );
+    assert!(v.owns_input());
+    for fault in ["legacy", "unsafe", "later", "backend", "invalid"] {
+        let mut value = data();
+        match fault {
+            "legacy" => {
+                value["entries"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("can_continue");
+            }
+            "unsafe" => {
+                value["entries"][0]["state"] = json!("sending");
+                value["entries"][0]["can_cancel"] = json!(false);
+            }
+            "later" => {
+                value["entries"][1]["can_continue"] = json!(true);
+            }
+            "backend" => value["backend"] = json!("claude"),
+            "invalid" => value["entries"][0]["can_continue"] = json!(1),
+            _ => unreachable!(),
+        }
+        if fault == "legacy" {
+            let mut v = view();
+            v.observe(Update::Snapshot(Snapshot::parse(&value, 9).unwrap()));
+            draw(&mut v, 100, 30);
+            v.key(key(KeyCode::Char('c')));
+            draw(&mut v, 100, 30);
+            v.key(key(KeyCode::Enter));
+            assert!(v.take_intent().is_none());
+        } else {
+            assert!(Snapshot::parse(&value, 9).is_err(), "{fault}");
+        }
+    }
+}
+
+#[test]
+fn continue_and_cancel_confirmations_cannot_be_swapped_without_redrawing() {
+    let mut v = view();
+    draw(&mut v, 100, 30);
+    v.key(key(KeyCode::Delete));
+    draw(&mut v, 100, 30);
+    v.key(key(KeyCode::Char('c')));
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    draw(&mut v, 100, 30);
+    v.key(key(KeyCode::Enter));
+    assert!(matches!(v.take_intent(), Some(Intent::Continue { .. })));
+}
+
+fn continuing(m: &mut Management) -> Value {
+    let snapshot = open(m);
+    assert!(
+        m.prepare_continuation(snapshot.revision + 1, "one")
+            .is_err()
+    );
+    assert!(m.prepare_continuation(snapshot.revision, "two").is_err());
+    let prepared = m.prepare_continuation(snapshot.revision, "one").unwrap();
+    assert_eq!(prepared.prompt, data()["entries"][0]["content"]);
+    let command = m
+        .begin_continuation(prepared, "continue-operation")
+        .unwrap();
+    assert_eq!(command["type"], "gui.restored_input.continue");
+    assert_eq!(command["snapshot"], "a".repeat(64));
+    assert!(command.get("message").is_none() && command.get("tool_profile").is_none());
+    assert!(!m.ready() && m.needs_continuation_readback());
+    assert!(m.prompt("early").is_err());
+    command
+}
+fn settled_value(refused: bool) -> Value {
+    let mut result = data();
+    result["snapshot"] = json!("b".repeat(64));
+    if !refused {
+        result["entries"].as_array_mut().unwrap().remove(0);
+        result["held"] = json!(1);
+    }
+    result["operation_id"] = json!("continue-operation");
+    result["entry_id"] = json!("one");
+    result["continuation_outcome"] = json!(if refused { "refused" } else { "accepted" });
+    result
+}
+#[test]
+fn continuation_ack_and_terminal_require_separate_correlated_queue_readback() {
+    for refused in [false, true] {
+        let mut m = connected();
+        let command = continuing(&mut m);
+        assert!(matches!(
+            reply(
+                &mut m,
+                &command,
+                json!({"turn":if refused {"refused"} else {"accepted"}})
+            ),
+            Step::Event(_)
+        ));
+        assert!(!m.ready()); // The execution reducer owns the admission receipt.
+        let read = m.read_continuation(refused).unwrap();
+        assert_eq!(read["type"], "gui.restored_input.settled");
+        assert_eq!(read["operation_id"], command["id"]);
+        assert_eq!(read["entry_id"], "one");
+        assert_ne!(read["id"], command["id"]);
+        assert!(m.prompt("still-early").is_err());
+        let Step::Queue(Update::Snapshot(snapshot)) = reply(&mut m, &read, settled_value(refused))
+        else {
+            panic!()
+        };
+        assert_eq!(snapshot.entries.iter().any(|e| e.id == "one"), refused);
+        assert!(snapshot.message.unwrap().contains("saved queue read back"));
+        assert!(m.ready());
+        m.prompt("explicit-next").unwrap();
+    }
+}
+#[test]
+fn inconsistent_continuation_readback_never_reenables_submission() {
+    for fault in [
+        "operation",
+        "entry",
+        "outcome",
+        "membership",
+        "failed",
+        "session",
+    ] {
+        let mut m = connected();
+        continuing(&mut m);
+        let read = m.read_continuation(false).unwrap();
+        let mut value = settled_value(false);
+        match fault {
+            "operation" => value["operation_id"] = json!("foreign"),
+            "entry" => value["entry_id"] = json!("foreign"),
+            "outcome" => value["continuation_outcome"] = json!("refused"),
+            "membership" => {
+                value = settled_value(true);
+                value["continuation_outcome"] = json!("accepted");
+            }
+            "session" => value["session_id"] = json!("foreign"),
+            _ => {}
+        }
+        let frame = json!({"type":"response","id":read["id"],"ok":fault!="failed","result":value,"error":"unavailable"});
+        assert!(m.accept(frame).is_err(), "{fault}");
+        assert!(!m.ready());
+        assert!(m.prompt("unsafe").is_err());
+    }
 }

@@ -1,5 +1,17 @@
 # LiteTUI Rust terminal port
 
+## Native held-input continuation and worker retirement - 2026-10-29
+
+The native F7 inspector now offers C then a fresh Enter for the source-approved oldest held Codex input. Confirmation must be visible and is invalidated by geometry, selection, source or pointer changes. The selected saved content gets its own live row; the human's composer draft remains intact. Rust sends only the source session/entry/snapshot and a new command ID. Saved source and tool authority remain Python-owned. A literal slash in saved content stays content, without invoking the unported slash-command surface.
+
+The execution reducer distinguishes a structured pre-start refusal from a started/completed turn. Refused rows say Not started; accepted admission still requires the captured turn origin and normal execution/approval/question/stop settlement. A negative command response can follow partial persistence or scheduling and stops the connection as uncertain. No automatic retry or payload substitution occurs.
+
+After execution or known refusal settles, Rust sends gui.restored_input.settled with the exact operation and entry. Python waits for the actual worker returned by _stream, then revalidates owner/conversation/backend/model and reads the saved queue. It serializes mutations through this wait. The wait is shielded: Textual's Worker.wait catches caller cancellation and can cancel its underlying task, so cancelling the read must not cancel execution. An already retired cancelled worker can be read; caller cancellation and failed/missing workers cannot manufacture success. Rust checks the correlated outcome and whether the target remains held before releasing the next submission.
+
+Verification: 351 ordinary Rust tests and 130 focused Python cases passed. Rust fmt/Clippy/build and CLI help pass. Source helper, new tests and controlled fixture pass Ruff/mypy; gui_rpc retains exactly its committed five Ruff/eight mypy diagnostics. The new controlled process passed through actual owned CLI/resume/journals and source admission: first refusal, fresh explicit retry, exactly one materialization, terminal event before worker retirement, mandatory settlement readback, then a new explicit prompt. All 36 controlled-process tests passed, including the new continuation scenario.
+
+This closes native eligible continuation, not provider-history reconciliation or full port parity. Uncertain/sending/accepted records stay held. Claude prepared-input recovery, session browsing, remaining engines/screens/plugins, both-host acceptance, packaging and measured resources remain open. No provider request or desktop interaction was used for this checkpoint; changes remain local to work/rust-tui-OpenBolt.
+
 ## Explicit recovered-input continuation: source contract - 2026-10-29
 
 The Python authority now exposes gui.restored_input.continue for one explicit attempt on the oldest eligible held Codex input. The request supplies the current session, entry ID, snapshot token and a fresh string command ID. Payload/source/profile overrides on the request do not replace saved input. Eligibility excludes uncertain/sending/accepted/admitting entries, later queue items, incompatible engines and empty/unsupported content. Scheduled work that the current seat cannot grant remains held.

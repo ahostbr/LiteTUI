@@ -314,3 +314,108 @@ fn stopped_reasons_share_the_retained_transcript_budget() {
     chat.submit("third").unwrap_err(); // Reasons were retained, not just a transient notice.
     assert_eq!(chat.rows.len(), 2);
 }
+
+#[test]
+fn native_continuation_preserves_draft_and_blocks_until_saved_queue_readback() {
+    use litetui_terminal::restored_queue::{Intent, Snapshot, Update};
+    for refused in [false, true] {
+        let mut app = Demo::live("codex".into(), "model".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("UNSENT HUMAN DRAFT");
+        let value = json!({"session_id":"session","backend":"codex","model":"model","policy":"hold",
+            "held":1,"snapshot":"a".repeat(64),"entries":[
+                {"id":"saved","state":"queued","revision":1,"content":"/literal recovered input","source":"queued",
+                "tool_profile":"strict","thread_id":"thread","turn_id":"turn","can_cancel":true,"can_continue":true}]});
+        app.observe_live(Observation::Queue(Update::Snapshot(
+            Snapshot::parse(&value, 1).unwrap(),
+        )))
+        .unwrap();
+        app.live
+            .as_mut()
+            .unwrap()
+            .prepare_continuation(&Intent::Continue {
+                revision: 1,
+                entry: "saved".into(),
+            })
+            .unwrap();
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
+        app.observe_live(Observation::Submission {
+            id: "continued".into(),
+        })
+        .unwrap();
+        if refused {
+            app.observe_live(Observation::Refused("below floor".into()))
+                .unwrap();
+            assert_eq!(
+                app.live.as_ref().unwrap().rows[0].state,
+                ReplyState::Refused
+            );
+            let mut terminal = Terminal::new(TestBackend::new(110, 35)).unwrap();
+            terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("Not started"));
+        } else {
+            app.observe_live(Observation::Text("continued reply".into()))
+                .unwrap();
+            app.observe_live(Observation::Complete).unwrap();
+        }
+        assert!(app.live.as_ref().unwrap().queue_pending());
+        assert!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .notice
+                .contains("Checking saved input")
+        );
+        app.submit();
+        assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        assert!(app.live.as_mut().unwrap().submit("too early").is_err());
+        app.observe_live(Observation::Queue(Update::Snapshot(
+            Snapshot::parse(&value, 2).unwrap(),
+        )))
+        .unwrap();
+        assert!(!app.live.as_ref().unwrap().queue_pending());
+        app.submit();
+        assert_eq!(
+            app.live.as_mut().unwrap().take_submission().as_deref(),
+            Some("UNSENT HUMAN DRAFT")
+        );
+    }
+}
+#[test]
+fn only_local_continuation_rejection_can_settle_before_submission() {
+    use litetui_terminal::restored_queue::{Intent, Snapshot, Update};
+    let mut chat = Chat::new("codex".into(), "model".into());
+    chat.observe(Observation::Ready).unwrap();
+    let snapshot = Snapshot::parse(&json!({"session_id":"session","backend":"codex","model":"model","policy":"hold",
+        "held":1,"snapshot":"a".repeat(64),"entries":[
+            {"id":"saved","state":"queued","revision":1,"content":"saved","source":"queued",
+            "tool_profile":"strict","thread_id":"thread","turn_id":"turn","can_cancel":true,"can_continue":true}]}), 1).unwrap();
+    chat.observe(Observation::Queue(Update::Snapshot(snapshot)))
+        .unwrap();
+    chat.prepare_continuation(&Intent::Continue {
+        revision: 1,
+        entry: "saved".into(),
+    })
+    .unwrap();
+    chat.observe(Observation::Queue(Update::Rejected(
+        "unrelated read rejected".into(),
+    )))
+    .unwrap();
+    assert!(chat.busy && chat.queue_pending());
+    chat.observe(Observation::Queue(Update::ContinuationRejected(
+        "stale selection".into(),
+    )))
+    .unwrap();
+    assert!(!chat.busy && !chat.queue_pending());
+    assert_eq!(chat.rows[0].state, ReplyState::Refused);
+    assert!(chat.submit("next").is_ok());
+}

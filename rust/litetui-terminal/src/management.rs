@@ -187,10 +187,17 @@ struct ControlPending {
     failure: Option<String>,
     succeeded: bool,
 }
+pub struct Continuation {
+    pub command: Value,
+    pub prompt: String,
+    pub session: String,
+    pub entry: String,
+}
 struct QueuePending {
     id: CommandId,
     applying: bool,
     cancelled: Option<String>,
+    continued: Option<(String, String, bool)>,
     failure: Option<String>,
     succeeded: bool,
 }
@@ -199,6 +206,7 @@ pub struct Management {
     control: Option<ControlPending>,
     queue: Option<QueuePending>,
     queue_menu: Option<crate::restored_queue::Snapshot>,
+    continuation: Option<(String, String)>,
     menu: Option<Choices>,
     revision: u64,
     phase: Phase,
@@ -229,6 +237,7 @@ impl Default for Management {
             control: None,
             queue: None,
             queue_menu: None,
+            continuation: None,
             menu: None,
             revision: 0,
             phase: Phase::AwaitReady,
@@ -305,6 +314,7 @@ impl Management {
             && !self.failed
             && self.control.is_none()
             && self.queue.is_none()
+            && self.continuation.is_none()
     }
     pub fn operations(&self) -> &[String] {
         &self.operations
@@ -692,6 +702,9 @@ impl Management {
         let mut command = json!({"type":READ, "session_id":session});
         let cancelled = match intent {
             Intent::Open => None,
+            Intent::Continue { .. } => {
+                return Err(fail("Continuation must reserve an execution command"));
+            }
             Intent::Cancel { revision, entry } => {
                 let menu = self
                     .queue_menu
@@ -723,6 +736,7 @@ impl Management {
             id,
             applying: cancelled.is_some(),
             cancelled,
+            continued: None,
             failure: None,
             succeeded: false,
         });
@@ -753,9 +767,9 @@ impl Management {
             return Ok(Step::Write(command));
         }
         if let Some(error) = error {
-            return if pending.cancelled.is_some() {
+            return if pending.cancelled.is_some() || pending.continued.is_some() {
                 Err(fail(&format!(
-                    "Cannot verify saved queue after cancellation: {error}"
+                    "Cannot verify saved queue after mutation: {error}"
                 )))
             } else {
                 Ok(Step::Queue(Update::Rejected(error)))
@@ -779,6 +793,18 @@ impl Management {
         {
             return Err(fail("Runtime still holds the cancelled entry"));
         }
+        if let Some((operation, entry, refused)) = &pending.continued {
+            let result = &frame["result"];
+            if result["operation_id"] != *operation
+                || result["entry_id"] != *entry
+                || result["continuation_outcome"] != if *refused { "refused" } else { "accepted" }
+                || snapshot.entries.iter().any(|row| row.id == *entry) != *refused
+            {
+                return Err(fail(
+                    "Continuation readback disagrees with its execution receipt",
+                ));
+            }
+        }
         snapshot.message = pending
             .failure
             .map(|e| format!("Request failed: {e}. Saved queue read back."))
@@ -787,7 +813,82 @@ impl Management {
                     .cancelled
                     .map(|_| "Cancellation saved. Queue read back; nothing replayed.".into())
             });
+        if pending.continued.is_some() {
+            snapshot.message = Some("Continuation settled; saved queue read back.".into());
+        }
         self.queue_menu = Some(snapshot.clone());
         Ok(Step::Queue(Update::Snapshot(snapshot)))
+    }
+}
+
+impl Management {
+    pub fn prepare_continuation(&self, revision: u64, entry: &str) -> io::Result<Continuation> {
+        use crate::restored_queue::{CONTINUE, SETTLED};
+        if !self.ready() {
+            return Err(fail("Runtime is not ready for continuation"));
+        }
+        self.ensure_drained()?;
+        if ![CONTINUE, SETTLED]
+            .iter()
+            .all(|op| self.operations.iter().any(|value| value == op))
+        {
+            return Err(fail(
+                "Runtime lacks continuation/settlement support; update Python source",
+            ));
+        }
+        let menu = self
+            .queue_menu
+            .as_ref()
+            .filter(|m| m.revision == revision)
+            .ok_or_else(|| fail("Held input changed; reopen the inspector"))?;
+        let row = menu
+            .entries
+            .iter()
+            .find(|row| row.id == entry && row.can_continue)
+            .ok_or_else(|| fail("Entry was not offered for continuation"))?;
+        Ok(Continuation {
+            command: json!({"type":CONTINUE,"session_id":menu.session,"entry_id":row.id,"snapshot":menu.token}),
+            prompt: row.content.clone(),
+            session: menu.session.clone(),
+            entry: row.id.clone(),
+        })
+    }
+    pub fn begin_continuation(
+        &mut self,
+        mut prepared: Continuation,
+        id: &str,
+    ) -> io::Result<Value> {
+        self.prompt(id)?;
+        self.continuation = Some((id.to_owned(), prepared.entry));
+        prepared.command["id"] = json!(id);
+        Ok(prepared.command)
+    }
+    pub fn needs_continuation_readback(&self) -> bool {
+        self.continuation.is_some()
+    }
+    pub fn read_continuation(&mut self, refused: bool) -> io::Result<Value> {
+        let (operation, entry) = self
+            .continuation
+            .take()
+            .ok_or_else(|| fail("No continuation to settle"))?;
+        if self.queue.is_some() || self.control.is_some() {
+            return Err(fail("Concurrent continuation readback"));
+        }
+        self.ensure_drained()?;
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve continuation readback"))?;
+        let command = json!({"type":crate::restored_queue::SETTLED,"id":id.to_value(),
+            "session_id":self.expected.as_ref().expect("active").0,"operation_id":operation,"entry_id":entry});
+        self.queue = Some(QueuePending {
+            id,
+            applying: false,
+            cancelled: None,
+            continued: Some((operation, entry, refused)),
+            failure: None,
+            succeeded: false,
+        });
+        Ok(command)
     }
 }

@@ -38,6 +38,7 @@ pub enum ReplyState {
     Complete,
     ApprovalStopped,
     Incomplete,
+    Refused,
 }
 #[derive(Default)]
 pub struct Card {
@@ -76,6 +77,7 @@ pub struct Chat {
     pub queue: crate::restored_queue::View,
     pending: Option<String>,
     submission_id: Option<String>,
+    queue_pending: bool,
     stop_requests: usize,
     stops_sent: usize,
     pub stop_confirm: bool,
@@ -102,6 +104,7 @@ impl Chat {
             queue: crate::restored_queue::View::default(),
             pending: None,
             submission_id: None,
+            queue_pending: false,
             stop_requests: 0,
             stops_sent: 0,
             stop_confirm: false,
@@ -111,18 +114,24 @@ impl Chat {
         }
     }
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
+        self.reserve_row(prompt, false)
+    }
+    fn reserve_row(&mut self, prompt: &str, recovered: bool) -> io::Result<()> {
         if !self.ready
             || self.busy
             || self.closed
             || self.quitting
             || self.controls.owns_input()
             || self.queue.owns_input()
+            || self.queue_pending
         {
             return Err(io::Error::other(
                 "Wait for the runtime to be ready and the current turn to finish",
             ));
         }
-        if prompt.trim().is_empty() || prompt.len() > 65536 || prompt.trim_start().starts_with('/')
+        if prompt.trim().is_empty()
+            || prompt.len() > 65536
+            || (!recovered && prompt.trim_start().starts_with('/'))
         {
             return Err(io::Error::other(
                 "Enter ordinary prompt text; slash commands are not wired yet (64 KiB maximum)",
@@ -157,6 +166,21 @@ impl Chat {
         });
         self.busy = true;
         self.notice = "Sending prompt (not yet admitted)…".into();
+        Ok(())
+    }
+    pub fn queue_pending(&self) -> bool {
+        self.queue_pending
+    }
+    pub fn prepare_continuation(
+        &mut self,
+        intent: &crate::restored_queue::Intent,
+    ) -> io::Result<()> {
+        let prompt = self.queue.continuation_text(intent)?.to_owned();
+        self.queue.finish();
+        self.reserve_row(&prompt, true)?;
+        self.pending = None; // The queue command carries identity, never a duplicate prompt.
+        self.queue_pending = true;
+        self.notice = "Continuing saved input; waiting for admission…".into();
         Ok(())
     }
     pub fn take_submission(&mut self) -> Option<String> {
@@ -223,6 +247,16 @@ impl Chat {
             }
             Observation::State(update) => self.runtime_state.apply(update),
             Observation::Queue(update) => {
+                if let crate::restored_queue::Update::ContinuationRejected(reason) = &update {
+                    if !self.queue_pending || !self.busy || self.submission_id.is_some() {
+                        return Err(io::Error::other("Unexpected local continuation refusal"));
+                    }
+                    self.settle(crate::live::TerminalOutcome::Refused(reason.clone()))?;
+                    self.queue_pending = false;
+                } else if matches!(update, crate::restored_queue::Update::Snapshot(_)) && !self.busy
+                {
+                    self.queue_pending = false;
+                }
                 self.queue.observe(update);
                 self.notice = self.queue.notice.clone();
             }
@@ -285,6 +319,9 @@ impl Chat {
             Observation::Cancelled(reason) => {
                 self.settle(crate::live::TerminalOutcome::Cancelled(reason))?
             }
+            Observation::Refused(reason) => {
+                self.settle(crate::live::TerminalOutcome::Refused(reason))?
+            }
             Observation::Complete => self.settle(crate::live::TerminalOutcome::Complete)?,
         }
         Ok(())
@@ -292,6 +329,7 @@ impl Chat {
     fn settle(&mut self, outcome: crate::live::TerminalOutcome) -> io::Result<()> {
         let (state, stop_reason) = match outcome {
             crate::live::TerminalOutcome::Complete => (ReplyState::Complete, None),
+            crate::live::TerminalOutcome::Refused(reason) => (ReplyState::Refused, Some(reason)),
             crate::live::TerminalOutcome::ApprovalStopped(reason) => {
                 (ReplyState::ApprovalStopped, Some(reason))
             }
@@ -321,7 +359,11 @@ impl Chat {
         self.busy = false;
         self.stop_confirm = false;
         self.submission_id = None;
-        self.notice = if row.state == ReplyState::Cancelled {
+        self.notice = if row.state == ReplyState::Refused {
+            "Input was not started. Checking saved input before another prompt."
+        } else if self.queue_pending {
+            "Turn ended. Checking saved input before another prompt."
+        } else if row.state == ReplyState::Cancelled {
             "Turn cancelled. Partial output retained. Type another prompt; Ctrl+Q quits."
         } else if row.state == ReplyState::ApprovalStopped {
             "Turn stopped for approval. Type another prompt; Ctrl+Q quits."
@@ -462,6 +504,7 @@ impl Chat {
     pub fn finish(&mut self, failure: Option<String>) {
         self.controls.finish();
         self.queue.finish();
+        self.queue_pending = false;
         self.closed = true;
         self.stop_confirm = false;
         self.ready = false;

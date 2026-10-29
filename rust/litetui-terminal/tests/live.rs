@@ -185,3 +185,78 @@ fn explicit_tool_launch_options_are_accepted() {
     .collect::<Vec<_>>();
     assert!(Options::parse(&args).is_ok());
 }
+
+#[test]
+fn continuation_refusal_is_not_a_completed_turn_and_rejects_late_execution() {
+    let mut turn = Turn::default();
+    accept(&mut turn, ready()).unwrap();
+    let id = turn
+        .submit_continuation("saved", "session", "entry")
+        .unwrap();
+    let refused = json!({"type":"response","id":id,"ok":true,
+        "result":{"turn":"refused","session_id":"session","entry_id":"entry","held":1,"reason":"below floor"}});
+    assert_eq!(
+        accept(&mut turn, refused.clone()).unwrap(),
+        Observation::Refused("below floor".into())
+    );
+    assert!(
+        accept(
+            &mut turn,
+            json!({"type":"turn_start","model":"claude-sonnet-5-5"})
+        )
+        .is_err()
+    );
+    assert!(accept(&mut turn, refused).is_err());
+    assert!(turn.submit("next explicit").is_ok());
+}
+#[test]
+fn continuation_receipt_validates_identity_and_does_not_hide_failed_execution() {
+    for fault in ["session", "entry", "held", "reason", "negative", "started"] {
+        let mut turn = Turn::default();
+        accept(&mut turn, ready()).unwrap();
+        let id = turn
+            .submit_continuation("saved", "session", "entry")
+            .unwrap();
+        let mut frame = json!({"type":"response","id":id,"ok":true,
+            "result":{"turn":"refused","session_id":"session","entry_id":"entry","held":1,"reason":"below floor"}});
+        match fault {
+            "session" => frame["result"]["session_id"] = json!("foreign"),
+            "entry" => frame["result"]["entry_id"] = json!("foreign"),
+            "held" => frame["result"]["held"] = json!(-1),
+            "reason" => frame["result"]["reason"] = json!(""),
+            "negative" => frame["ok"] = json!(false),
+            "started" => {
+                accept(
+                    &mut turn,
+                    json!({"type":"turn_start","model":"claude-sonnet-5-5"}),
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(accept(&mut turn, frame).is_err(), "{fault}");
+        assert!(turn.submit("next").is_err());
+    }
+}
+#[test]
+fn continuation_refusal_waits_for_stop_receipt_without_faking_turn_end() {
+    let mut turn = Turn::default();
+    accept(&mut turn, ready()).unwrap();
+    let id = turn
+        .submit_continuation("saved", "session", "entry")
+        .unwrap();
+    let abort = turn.abort(&id).unwrap().unwrap();
+    assert!(matches!(accept(&mut turn, json!({"type":"response","id":id,"ok":true,
+        "result":{"turn":"refused","session_id":"session","entry_id":"entry","held":1,"reason":"stopped"}})).unwrap(),
+        Observation::Information(_)));
+    assert!(turn.submit("early").is_err());
+    assert_eq!(
+        accept(
+            &mut turn,
+            json!({"type":"response","id":abort["id"],"ok":true,
+        "result":{"stopped":true,"cancelled_asks":[]}})
+        )
+        .unwrap(),
+        Observation::Refused("stopped".into())
+    );
+}

@@ -177,6 +177,7 @@ pub enum Observation {
     /// Source-authoritative approval refusal; settled, but never successful.
     ApprovalStopped(String),
     Cancelled(String),
+    Refused(String),
     Complete,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -184,6 +185,7 @@ pub enum TerminalOutcome {
     Complete,
     ApprovalStopped(String),
     Cancelled(String),
+    Refused(String),
 }
 #[derive(Default)]
 pub struct Turn {
@@ -192,6 +194,7 @@ pub struct Turn {
     closing: bool,
     sequence: u64,
     command_id: String,
+    continued_input: Option<(String, String)>,
     visible_answers: std::collections::BTreeSet<usize>,
     tools_seen: bool,
     card_count: usize,
@@ -239,6 +242,7 @@ impl Turn {
             .sequence
             .checked_add(1)
             .ok_or_else(|| io::Error::other("Command ID exhausted"))?;
+        self.continued_input = None;
         self.sent = true;
         self.started = false;
         self.acknowledged = false;
@@ -253,6 +257,16 @@ impl Turn {
             json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":self.policy.as_ref().map_or("strict",|p|p.profile.as_str())}),
         )
     }
+    pub fn submit_continuation(
+        &mut self,
+        prompt: &str,
+        session: &str,
+        entry: &str,
+    ) -> io::Result<String> {
+        let command = self.submit(prompt)?;
+        self.continued_input = Some((session.to_owned(), entry.to_owned()));
+        Ok(command["id"].as_str().expect("reserved").to_owned())
+    }
     fn settle(&mut self) -> Observation {
         self.settled = true;
         match self
@@ -261,6 +275,7 @@ impl Turn {
             .expect("terminal outcome before settlement")
         {
             TerminalOutcome::Complete => Observation::Complete,
+            TerminalOutcome::Refused(reason) => Observation::Refused(reason.clone()),
             TerminalOutcome::Cancelled(reason) => Observation::Cancelled(reason.clone()),
             TerminalOutcome::ApprovalStopped(reason) => {
                 Observation::ApprovalStopped(reason.clone())
@@ -370,6 +385,39 @@ impl Turn {
                     }
                     return Ok(Observation::Approval(event));
                 }
+                if let Some((session, entry)) = &self.continued_input
+                    && event["id"] == self.command_id
+                    && self.sent
+                    && !self.acknowledged
+                    && event["ok"] == true
+                {
+                    let result = &event["result"];
+                    if result["session_id"] != *session
+                        || result["entry_id"] != *entry
+                        || result["held"].as_u64().is_none_or(|n| n > 1000)
+                    {
+                        return Err(fail("Continuation receipt identity/count is invalid"));
+                    }
+                    if result["turn"] == "refused" {
+                        if self.started || self.terminal.is_some() {
+                            return Err(fail("Refusal after execution started"));
+                        }
+                        let reason = result["reason"]
+                            .as_str()
+                            .filter(|s| !s.is_empty() && s.len() <= 4096)
+                            .ok_or_else(|| fail("Missing continuation refusal reason"))?
+                            .to_owned();
+                        self.acknowledged = true;
+                        self.terminal = Some(TerminalOutcome::Refused(reason));
+                        return Ok(if self.can_settle() {
+                            self.settle()
+                        } else {
+                            Observation::Information(
+                                "Input refused; waiting for input/stop receipts.".into(),
+                            )
+                        });
+                    }
+                }
                 if event["id"] != self.command_id
                     || !self.sent
                     || self.acknowledged
@@ -383,7 +431,9 @@ impl Turn {
                     "prompt acknowledged (not completion)".into(),
                 ))
             }
-            "turn_start" if self.sent && !self.started => {
+            "turn_start"
+                if self.sent && !self.started && self.terminal.is_none() && !self.settled =>
+            {
                 if event["model"] != model {
                     return Err(fail("Turn model differs from requested model"));
                 }
@@ -897,6 +947,38 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             ))?,
                         }
                     }
+                    Input::Queue(crate::restored_queue::Intent::Continue { revision, entry }) => {
+                        let prepared = if turn.can_manage() {
+                            management.prepare_continuation(revision, &entry)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish the current turn before continuing held input",
+                            ))
+                        };
+                        match prepared {
+                            Ok(prepared) => {
+                                let id = turn.submit_continuation(
+                                    &prepared.prompt,
+                                    &prepared.session,
+                                    &prepared.entry,
+                                )?;
+                                let command = management.begin_continuation(prepared, &id)?;
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(command)
+                                    .map_err(io::Error::other)?;
+                                frontend.observe(Observation::Submission { id })?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::Queue(
+                                crate::restored_queue::Update::ContinuationRejected(
+                                    error.to_string(),
+                                ),
+                            ))?,
+                        }
+                    }
                     Input::Queue(intent) => {
                         let command = if turn.can_manage() {
                             management.request_queue(intent)
@@ -1101,6 +1183,21 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     )?,
                     Step::Ignore => {}
                 }
+                if !turn.closing
+                    && turn.settled
+                    && !management.has_unpaired()
+                    && management.needs_continuation_readback()
+                {
+                    let refused = matches!(turn.terminal, Some(TerminalOutcome::Refused(_)));
+                    let command = management.read_continuation(refused)?;
+                    owned
+                        .stdin
+                        .as_ref()
+                        .expect("owned stdin")
+                        .try_send(command)
+                        .map_err(io::Error::other)?;
+                    deadline = Some(Instant::now() + options.timeout);
+                }
                 if management.has_unpaired() {
                     mirror_deadline.get_or_insert_with(|| {
                         Instant::now() + options.timeout.min(Duration::from_secs(20))
@@ -1250,6 +1347,9 @@ impl Frontend for OneShot {
                     "Turn stopped for approval: {}",
                     terminal_text(&reason)
                 )));
+            }
+            Observation::Refused(reason) => {
+                return Err(io::Error::other(format!("Input not started: {reason}")));
             }
             Observation::Complete => {
                 writeln!(self.output, "\n[Turn ended: stop]")?;
@@ -1513,6 +1613,7 @@ fn publish_event(
                 | Observation::Complete
                 | Observation::ApprovalStopped(_)
                 | Observation::Cancelled(_)
+                | Observation::Refused(_)
                 | Observation::ApprovalSettled { .. }
                 | Observation::Question {
                     settled: Some(_),

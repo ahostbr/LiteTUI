@@ -12,6 +12,8 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 ## Current implementation checkpoint - 2026-10-29
 
+F7 now continues the source-offered oldest held input with C then a fresh visible Enter. Rust reserves a distinct live row/command while preserving the draft, labels a pre-start refusal separately, and requires a correlated saved queue read after the exact Python worker retires. Failed/contradictory outcomes stop without replay; uncertain delivery entries remain held. The latest master checkpoint records the native, owned-source and controlled-process evidence. Provider reconciliation, Claude recovery and full parity remain open.
+
 Source-side explicit continuation now has a durable claim/admission/materialization contract and a distinct not-started refusal response. It preserves saved source/profile while capturing the fresh command ID. The Rust F7 Continue binding/reducer is the next implementation step; it must not treat refusal or a positive admission ACK as completed execution. Current inspect/cancel behavior remains unchanged. See the latest master checkpoint for evidence and remaining scope.
 
 The latest master checkpoint adds F7 held-input inspection and explicit eligible cancellation. Full escaped content and delivery evidence are scrollable. Delete followed by a fresh visible Enter cancels only source-offered queued/next_turn entries, after current ownership/journal validation and durable denial. A separate correlated readback updates held count; ambiguous storage or readback never permits retry or silently releases the hold. Pending operations retain composer ownership. Continuation, uncertain-send reconciliation and Claude prepared-input recovery remain open.

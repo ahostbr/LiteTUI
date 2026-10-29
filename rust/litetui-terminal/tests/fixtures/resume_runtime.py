@@ -17,6 +17,7 @@ os.environ["LITETUI_NO_HARNESS"] = "1"
 os.environ["LITETUI_DISABLE_UPDATE_CHECK"] = "1"
 source = Path(__import__("litetui").__path__[-1]).parents[1]
 held_fixture = Path(__file__).with_name("fixture-held-input").exists()
+continue_fixture = Path(__file__).with_name("fixture-continue-input").exists()
 sys.path.insert(0, str(source / "tests"))
 
 
@@ -52,6 +53,39 @@ async def serve(app):
         app.conversation = [{"role": "system", "content": "Controlled fixture system prompt"}]
         app._prompt_store_identity = store_identity.capture(app)
         app._store_injected = True
+    continuation_count = 0
+    continuation_worker = None
+    retire = asyncio.Event()
+
+    def stream(*, origin):
+        nonlocal continuation_worker
+        from types import SimpleNamespace
+
+        captured = origin.scheduled()
+        async def execute():
+            app._rpc_emit({"type": "turn_start", "model": app.model_id}, origin=captured)
+            answer = "Controlled continued reply"
+            app._append({"role": "assistant", "content": answer})
+            app._rpc_emit({"type": "text_delta", "text": answer, "card_index": 0}, origin=captured)
+            app._rpc_emit({"type": "turn_end", "stopReason": "stop", "error": None}, origin=captured)
+            # Deliberately keep the worker alive after turn_end. Only the
+            # separate source settlement request releases this fixture barrier.
+            await retire.wait()
+            (root / "queue-continue-proof.json").write_text(json.dumps({
+                "operation": captured.operation_id, "source": captured.source,
+                "profile": app._active_tool_profile,
+                "delivered": [m for m in app.conversation if m.get("codex_delivery")],
+            }), encoding="utf-8")
+        task = asyncio.create_task(execute())
+        continuation_worker = task
+        async def wait():
+            await task
+        return SimpleNamespace(wait=wait)
+
+    if continue_fixture:
+        app._stream = stream
+        app._chat_running = lambda: continuation_worker is not None and not continuation_worker.done()
+
     async def check_held():
         if not (held_fixture and app._cli_convo_id):
             return
@@ -59,7 +93,7 @@ async def serve(app):
         from types import SimpleNamespace
 
         before = copy.deepcopy([item["_codex_entry"] for item in app._pending_input])
-        count = 2 if (root / "queue-cancel-proof.json").exists() else 3
+        count = 2 if any((root / name).exists() for name in ("queue-cancel-proof.json", "queue-continue-proof.json")) else 3
         assert len(before) == count and hasattr(app.backend, "app_server")
         assert restored_input.status(app) == {"policy": "hold", "held": count}
         async def denied(*_args, **_kwargs):
@@ -103,8 +137,20 @@ async def serve(app):
             if command["type"] == "gui.conversations.read" and (root / "hold-history").exists():
                 continue
             if command["type"].startswith("gui."):
-                with patch("litetui.gpu_gate.is_rtx_5090", return_value=False):
-                    result = await gui_rpc.async_dispatch(app, command)
+                if (continue_fixture and command["type"] == "gui.restored_input.settled"
+                        and continuation_worker is not None):
+                    assert not continuation_worker.done(), "settlement did not wait for worker retirement"
+                    retire.set()
+                if continue_fixture and command["type"] == "gui.restored_input.continue":
+                    continuation_count += 1
+                    with patch.object(seat_authority, "floor_refusal",
+                                      return_value="controlled floor refusal" if continuation_count == 1 else None):
+                        result = await gui_rpc.async_dispatch(app, command)
+                    with (root / "continue-receipts.jsonl").open("a", encoding="utf-8") as log:
+                        log.write(json.dumps(result) + "\n")
+                else:
+                    with patch("litetui.gpu_gate.is_rtx_5090", return_value=False):
+                        result = await gui_rpc.async_dispatch(app, command)
                 if command["type"] == "gui.restored_input.cancel":
                     (root / "queue-cancel-proof.json").write_text(json.dumps(result), encoding="utf-8")
                 rpc._respond(command["id"], ok=True, result=result)
