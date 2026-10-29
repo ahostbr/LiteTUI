@@ -147,11 +147,13 @@ async def test_uncertain_deliveries_cannot_be_cancelled_or_continued(saved_app, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", ["snapshot", "session", "id", "queue", "disk", "owner", "busy"])
-async def test_stale_or_foreign_cancellation_cannot_change_saved_delivery(saved_app, fault):
+@pytest.mark.parametrize("action", ["cancel", "resolve"])
+async def test_stale_or_foreign_cancellation_cannot_change_saved_delivery(saved_app, fault, action):
     app = saved_app
-    entry = seed(app)
+    entry = seed(app, "prepared" if action == "cancel" else "uncertain")
     assert app._resume(app.convo_path, startup=True)
     command = cancel_command(app, entry)
+    command["type"] = f"gui.restored_input.{action}"
     owner = app._agent_session
     if fault in ("snapshot", "session", "id"):
         command[{"session": "session_id", "id": "entry_id"}.get(fault, fault)] = "foreign"
@@ -175,11 +177,13 @@ async def test_stale_or_foreign_cancellation_cannot_change_saved_delivery(saved_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("after_write", [False, True])
-async def test_ambiguous_cancellation_latches_uncertainty_and_never_retries(saved_app, monkeypatch, after_write):
+@pytest.mark.parametrize("action", ["cancel", "resolve"])
+async def test_ambiguous_cancellation_latches_uncertainty_and_never_retries(saved_app, monkeypatch, after_write, action):
     app = saved_app
-    entry = seed(app)
+    entry = seed(app, "prepared" if action == "cancel" else "uncertain")
     assert app._resume(app.convo_path, startup=True)
     command = cancel_command(app, entry)
+    command["type"] = f"gui.restored_input.{action}"
     save = app._claude_ledger._save
     calls = []
     def failed():
@@ -265,3 +269,48 @@ async def test_ledger_document_is_detached_and_full_snapshot_catches_hidden_chan
     with pytest.raises(ValueError, match="changed"):
         gui_rpc.dispatch(app, command)
     assert len(app._pending_input) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["submitted", "acknowledged", "uncertain"])
+async def test_resolution_is_selected_durable_and_never_claims_provider_effects(saved_app, state):
+    app = saved_app
+    prepared = seed(app, content="KEEP PREPARED")
+    target = seed(app, state, content="UNCERTAIN TARGET")
+    other = seed(app, "submitted", content="KEEP UNCERTAIN")
+    assert app._resume(app.convo_path, startup=True)
+    before = app.convo_path.read_bytes()
+    authority = (app._active_tool_profile, app._hook_turn_id, getattr(app, "_gui_operation_id", None))
+    command = cancel_command(app, target)
+    command["type"] = "gui.restored_input.resolve"
+    assert read(app)["entries"][1]["can_resolve"]
+    result = await gui_rpc.async_dispatch(app, command)
+    assert result == {"resolved": target["id"], "session_id": app.convo_id,
+                      "replayed": False, "effects_verified": False}
+    assert app.convo_path.read_bytes() == before
+    assert authority == (app._active_tool_profile, app._hook_turn_id, getattr(app, "_gui_operation_id", None))
+    closed = next(e for e in app._claude_ledger.selected["entries"] if e["id"] == target["id"])
+    assert closed["state"] == "terminal" and closed["stop_reason"] == "user_resolved_without_replay"
+    assert closed["content"] == target["content"] and closed["uncertain_from"]
+    assert [r["id"] for r in read(app)["entries"]] == [prepared["id"], other["id"]]
+    with pytest.raises(ValueError):
+        await gui_rpc.async_dispatch(app, command)
+    assert app._resume(app.convo_path, startup=True)
+    assert [r["id"] for r in read(app)["entries"]] == [prepared["id"], other["id"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+async def test_resolution_cannot_close_prepared_or_another_provider(saved_app, provider):
+    from test_rust_restored_input import seed as seed_codex
+
+    app = saved_app
+    target = seed(app) if provider == "claude" else seed_codex(app, "uncertain")
+    assert app._resume(app.convo_path, startup=True)
+    command = cancel_command(app, target)
+    command["type"] = "gui.restored_input.resolve"
+    before = app.convo_path.read_bytes()
+    assert not read(app)["entries"][0].get("can_resolve", False)
+    with pytest.raises(ValueError, match="Only an uncertain Claude"):
+        await gui_rpc.async_dispatch(app, command)
+    assert app.convo_path.read_bytes() == before and len(app._pending_input) == 1

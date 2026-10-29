@@ -180,6 +180,19 @@ def cancel(app, cmd):
     return {"cancelled": row["id"], "session_id": result["session_id"]}
 
 
+def resolve(app, cmd):
+    """Close only the selected uncertain Claude delivery, without claiming its effects."""
+    from litetui import restored_claude
+
+    result, records = _inspect(app, cmd.get("session_id"))
+    if cmd.get("snapshot") != result["snapshot"]:
+        raise ValueError("Recovered input changed; refresh before resolving")
+    row = next((row for row in result["entries"] if row["id"] == cmd.get("entry_id")), None)
+    if row is None or row.get("provider") != "claude" or not row.get("can_resolve"):
+        raise ValueError("Only an uncertain Claude delivery can be resolved without replay")
+    return restored_claude.resolve(app, cmd, records[row["id"]])
+
+
 def _persist(app, entry, entries, index, state, **values):
     """Verify both the write receipt and the saved value before any side effect."""
     from litetui.codex_steering import SteeringLedger, save_at

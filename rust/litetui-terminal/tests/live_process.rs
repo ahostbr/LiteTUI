@@ -1641,10 +1641,17 @@ fn held_claude_input_is_inspected_and_cancelled_without_replay() {
     saved_conversation_process(SavedInput::ClaudeCancel);
 }
 
+#[test]
+#[ignore = "controlled real Python CLI restart, no provider"]
+fn held_claude_uncertainty_is_explicitly_resolved_without_replay() {
+    saved_conversation_process(SavedInput::ClaudeResolve);
+}
+
 #[derive(Clone, Copy)]
 enum SavedInput {
     None,
     ClaudeCancel,
+    ClaudeResolve,
     Held,
     Cancel,
     Continue,
@@ -1653,11 +1660,12 @@ enum SavedInput {
 
 fn saved_conversation_process(mode: SavedInput) {
     let held = !matches!(mode, SavedInput::None);
-    let claude_held = matches!(mode, SavedInput::ClaudeCancel);
+    let claude_held = matches!(mode, SavedInput::ClaudeCancel | SavedInput::ClaudeResolve);
+    let resolve_held = matches!(mode, SavedInput::ClaudeResolve);
     let cancel_held = matches!(mode, SavedInput::Cancel | SavedInput::ClaudeCancel);
     let continue_held = matches!(mode, SavedInput::Continue);
     let reconcile_held = matches!(mode, SavedInput::Reconcile);
-    let removed = cancel_held || continue_held || reconcile_held;
+    let removed = cancel_held || resolve_held || continue_held || reconcile_held;
     use litetui_terminal::live::{Interactive, Observation, Options};
     use litetui_terminal::live_chat::Chat;
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
@@ -1783,7 +1791,7 @@ fn saved_conversation_process(mode: SavedInput) {
                             let error = refused_resume(competing);
                             assert!(error.contains("Resource owned or inaccessible"), "{error}");
                         }
-                        if cancel_held && pass == 1 {
+                        if (cancel_held || resolve_held) && pass == 1 {
                             use litetui_terminal::restored_queue::{Intent, Update};
                             runtime.queue(Intent::Open)?;
                             let mut cancelling = false;
@@ -1806,6 +1814,7 @@ fn saved_conversation_process(mode: SavedInput) {
                                 if let Some(menu) = menu {
                                     if cancelling {
                                         assert_eq!(menu.entries.len(), 2);
+                                        assert!(menu.recovered.is_none() && chat.rows.is_empty());
                                         assert!(!menu.entries.iter().any(|e| e.id == cancelled_id));
                                         assert_eq!(
                                             chat.runtime_state
@@ -1832,10 +1841,23 @@ fn saved_conversation_process(mode: SavedInput) {
                                     } else {
                                         assert_eq!(menu.entries[0].id, "saved-queued");
                                     }
-                                    cancelled_id = menu.entries[0].id.clone();
-                                    runtime.queue(Intent::Cancel {
-                                        revision: menu.revision,
-                                        entry: cancelled_id.clone(),
+                                    assert!(
+                                        chat.rows.is_empty(),
+                                        "Recovery invented an execution row"
+                                    );
+                                    cancelled_id =
+                                        menu.entries[usize::from(resolve_held)].id.clone();
+                                    runtime.queue(if resolve_held {
+                                        assert!(menu.entries[1].can_resolve);
+                                        Intent::Resolve {
+                                            revision: menu.revision,
+                                            entry: cancelled_id.clone(),
+                                        }
+                                    } else {
+                                        Intent::Cancel {
+                                            revision: menu.revision,
+                                            entry: cancelled_id.clone(),
+                                        }
                                     })?;
                                     cancelling = true;
                                 }
@@ -1919,7 +1941,9 @@ fn saved_conversation_process(mode: SavedInput) {
         );
         let entries = proof["entries"].as_array().unwrap();
         assert_eq!(entries.len(), if removed { 2 } else { 3 });
-        let states = if claude_held {
+        let states = if resolve_held {
+            vec!["prepared", "uncertain"]
+        } else if claude_held {
             vec!["uncertain", "uncertain"]
         } else if reconcile_held {
             vec!["queued", "accepted"]
@@ -1930,7 +1954,9 @@ fn saved_conversation_process(mode: SavedInput) {
         };
         for (entry, state) in entries.iter().zip(states) {
             assert_eq!(entry["state"], state);
-            if claude_held {
+            if claude_held && state == "prepared" {
+                assert_eq!(entry["content"], "UNSENT prepared");
+            } else if claude_held {
                 assert!(matches!(
                     entry["uncertain_from"].as_str(),
                     Some("submitted" | "acknowledged")
@@ -1947,9 +1973,24 @@ fn saved_conversation_process(mode: SavedInput) {
         if claude_held {
             let selected = proof["journal"]["selected_segment"].as_str().unwrap();
             let saved = &proof["journal"]["segments"][selected]["entries"];
-            assert_eq!(saved[0]["state"], "terminal");
-            assert_eq!(saved[0]["stop_reason"], "user_cancelled_before_send");
-            assert_eq!(saved[0]["content"], "UNSENT prepared");
+            let closed = &saved[usize::from(resolve_held)];
+            assert_eq!(closed["state"], "terminal");
+            assert_eq!(
+                closed["stop_reason"],
+                if resolve_held {
+                    "user_resolved_without_replay"
+                } else {
+                    "user_cancelled_before_send"
+                }
+            );
+            assert_eq!(
+                closed["content"],
+                if resolve_held {
+                    "UNSENT submitted"
+                } else {
+                    "UNSENT prepared"
+                }
+            );
         }
     }
     let saved_commands = fs::read(root.join("resume-commands.jsonl")).unwrap();
@@ -2086,11 +2127,16 @@ fn saved_conversation_process(mode: SavedInput) {
         assert_eq!(receipts[0]["turn"], "refused");
         assert_eq!(receipts[1]["turn"], "accepted");
     }
-    if cancel_held {
+    if cancel_held || resolve_held {
         assert_eq!(
             commands
                 .iter()
-                .filter(|v| v["type"] == "gui.restored_input.cancel")
+                .filter(|v| v["type"]
+                    == if resolve_held {
+                        "gui.restored_input.resolve"
+                    } else {
+                        "gui.restored_input.cancel"
+                    })
                 .count(),
             1
         );
@@ -2101,7 +2147,14 @@ fn saved_conversation_process(mode: SavedInput) {
                 .count(),
             2
         );
-        assert!(root.join("queue-cancel-proof.json").exists());
+        assert!(
+            root.join(if resolve_held {
+                "queue-resolve-proof.json"
+            } else {
+                "queue-cancel-proof.json"
+            })
+            .exists()
+        );
     }
     assert_eq!(
         commands

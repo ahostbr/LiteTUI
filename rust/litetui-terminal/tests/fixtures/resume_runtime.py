@@ -74,6 +74,9 @@ async def serve(app):
         app.backend.app_server = SimpleNamespace(start=history_start, request=history_request)
         app._stream = forbidden
 
+    if claude_fixture:
+        app._stream = forbidden
+
     continuation_count = 0
     continuation_worker = None
     retire = asyncio.Event()
@@ -114,7 +117,7 @@ async def serve(app):
             from litetui import claude_turn
 
             before = copy.deepcopy([item["_claude_entry"] for item in app._pending_input])
-            count = 2 if (root / "queue-cancel-proof.json").exists() else 3
+            count = 2 if any((root / name).exists() for name in ("queue-cancel-proof.json", "queue-resolve-proof.json")) else 3
             assert len(before) == count
             evidence = app._claude_ledger.file.read_bytes()
             app._flush_pending_input()
@@ -202,6 +205,9 @@ async def serve(app):
                         (root / "queue-reconcile-proof.json").write_text(json.dumps(result), encoding="utf-8")
                 if command["type"] == "gui.restored_input.cancel":
                     (root / "queue-cancel-proof.json").write_text(json.dumps(result), encoding="utf-8")
+                if command["type"] == "gui.restored_input.resolve":
+                    assert result["replayed"] is False and result["effects_verified"] is False
+                    (root / "queue-resolve-proof.json").write_text(json.dumps(result), encoding="utf-8")
                 rpc._respond(command["id"], ok=True, result=result)
                 continue
             assert command["type"] == "prompt"

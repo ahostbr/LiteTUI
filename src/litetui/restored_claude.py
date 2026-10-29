@@ -51,7 +51,8 @@ def _row(segment, entry):
         "turn_id": "", "segment_id": text(segment.get("id"), 128),
         "workspace": text(segment.get("workspace"), 4096, empty=True),
         "uncertain_from": text(entry.get("uncertain_from") or "", 32, empty=True),
-        "can_cancel": state == "prepared", "can_continue": False, "can_reconcile": False,
+        "can_cancel": state == "prepared", "can_resolve": state == "uncertain",
+        "can_continue": False, "can_reconcile": False,
     }
 
 
@@ -119,23 +120,34 @@ def inspect(app, store, items):
 
 def cancel(app, cmd, record):
     """Close one never-submitted delivery and verify the durable result before removal."""
+    return _close(app, cmd, record, "prepared", "user_cancelled_before_send", "cancelled")
+
+
+def resolve(app, cmd, record):
+    """Record an explicit resolution; provider effects remain unverified."""
+    result = _close(app, cmd, record, "uncertain", "user_resolved_without_replay", "resolved")
+    result.update(replayed=False, effects_verified=False)
+    return result
+
+
+def _close(app, cmd, record, expected_state, reason, receipt_key):
     item, entry = record
     store = restored_input._owned(app, cmd.get("session_id"))
     ledger = app._claude_ledger
-    if entry["state"] != "prepared":
-        raise ValueError("A possibly sent Claude input cannot be cancelled")
+    if entry["state"] != expected_state:
+        raise ValueError("Claude delivery is ineligible for this recovery action")
     # Called only after the shared snapshot and full journal comparison, with no await.
     try:
-        saved = ledger.update_delivery(entry["id"], "terminal", stop_reason="user_cancelled_before_send")
+        saved = ledger.update_delivery(entry["id"], "terminal", stop_reason=reason)
         restored_input._owned(app, cmd.get("session_id"))
         disk = _read(store)
         if disk.document != ledger.document:
-            raise OSError("Claude cancellation was not durably saved")
+            raise OSError("Claude recovery action was not durably saved")
         segment = disk.segment(entry["segment_id"])
         if segment is None or sum(candidate == saved for candidate in segment["entries"]) != 1:
-            raise OSError("Claude cancellation could not be verified")
+            raise OSError("Claude recovery action could not be verified")
     except Exception:
         app._restored_input_error = True
         raise
     app._pending_input[:] = [candidate for candidate in app._pending_input if candidate is not item]
-    return {"cancelled": entry["id"], "session_id": app.convo_id}
+    return {receipt_key: entry["id"], "session_id": app.convo_id}

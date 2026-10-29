@@ -32,7 +32,9 @@ Cancellation is verified in Python's saved journal and then read back by Rust be
 
 **Continuation verification (2026-10-29):** 351 ordinary Rust and 130 focused Python tests passed, with Rust fmt/Clippy/build/help and new source/tests/fixture Ruff/mypy clean. GUI diagnostics match the existing five Ruff/eight mypy findings. The owned-source process test verifies refusal, explicit retry, one saved materialization and worker-retirement readback before a follow-up. All 36 controlled-process tests passed. Providers and desktop interaction remain controlled; full parity is not complete.
 
-Claude saved entries also appear here after resume, including native session, segment, workspace and uncertainty origin. Submitted/acknowledged entries remain uncertain and held. A prepared entry can be cancelled with durable verification; native Claude continuation and uncertainty resolution remain pending.
+Claude saved entries also appear here after resume, including native session, segment, workspace and uncertainty origin. Submitted/acknowledged entries remain uncertain and held. A prepared entry can be cancelled with durable verification. **X**, then a fresh **Enter**, explicitly resolves one uncertain Claude delivery without replay; its provider effects remain unverified. The source saves that decision before Rust reads the queue again. Native Claude continuation remains pending.
+
+**Claude resolution verification (2026-10-29):** 361 ordinary Rust tests and 111 focused Python cases pass. The controlled owned CLI restart test verifies selected-only durable resolution, no execution row or replay, preserved other holds and clean shutdown. Current shared-process evidence is in the latest plan checkpoint. Provider and host acceptance remain open.
 
 **Claude recovery verification (2026-10-29):** 358 ordinary Rust tests pass, and 176 focused Python cases pass across the combined run plus the documented five-case wording-fix rerun. The new controlled owned CLI restart/cancellation scenario passes. Full affected process evidence and baseline lint/type counts are recorded in the latest plan checkpoint. No provider or desktop acceptance is implied.
 

@@ -1,5 +1,15 @@
 # LiteTUI Rust terminal port
 
+## Explicit Claude uncertainty resolution - 2026-10-29
+
+F7 now offers X then a fresh visible Enter for one uncertain Claude delivery. This records the user's decision to close that delivery without replay; it does not verify provider effects or invent a completed turn. The confirmation fits the minimum inspector size and inherits disarming on selection, geometry, source and pointer changes. Prepared entries and other providers cannot use this action.
+
+The source requires the exact owned session, selected entry and current full-journal snapshot, then persists terminal/user_resolved_without_replay and verifies the entire durable ledger before removing that hold. Other prepared and uncertain entries remain in order. The receipt explicitly reports replayed:false and effects_verified:false. Rust validates that receipt and separately reads the saved queue; malformed/contradictory receipts or uncertain readback stop the connection. Negative receipts still require actual queue readback. Resolution never creates a recovered transcript or execution row.
+
+Verification: 361 ordinary Rust tests, 111 focused Python cases and the new controlled owned CLI restart/resolution scenario passed. Rust fmt/Clippy and focused recovery helper/test/fixture Ruff/mypy pass. gui_rpc retains exactly its committed five Ruff/eight mypy findings. All seven affected controlled owned-session process scenarios passed: Claude cancel/resolve, Codex hold/cancel/continue/reconcile, and ordinary saved-session reopen. Build and CLI help also pass. No provider request or desktop interaction was used.
+
+Claude continuation is the next recovery step, with requirements established from the current source: hook_host.accept_prompt_origin always appends a user record, so continuation must reuse a matching already-materialized Claude delivery rather than duplicate it; claude_turn.stream_turn may return at its cache warning before turn_start, so native execution needs an explicit not-started outcome; and a retired worker can leave a prepared or uncertain ledger entry that settlement must retain visibly. The ledger records submitted before querying the provider; preserve that ordering. These are implementation requirements, not completed behavior. Session browsing, remaining engines/screens/plugins, both-host acceptance, packaging and resource comparisons remain open.
+
 ## Claude ledger holds and prepared cancellation - 2026-10-29
 
 The Rust-owned resume policy now restores pending entries from the selected Claude ledger segment into held input after adopting the saved conversation settings. Prepared entries stay prepared; the ledger's established load rule presents submitted/acknowledged entries as uncertain with their original uncertain_from evidence. Discovery is read-only and repeated discovery is idempotent. Idle flush, native queue readiness, round-boundary delivery and the old continue command cannot release these launch-local holds. Ordinary Python launches retain their existing policy.

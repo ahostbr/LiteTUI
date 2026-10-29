@@ -16,11 +16,14 @@ fn data() -> Value {
     ]})
 }
 fn connected() -> Management {
+    connected_backend("codex")
+}
+fn connected_backend(backend: &str) -> Management {
     let mut m = Management::default();
     let hello = m
         .begin(
             &json!({"management_protocols":[1],"capabilities":["hello","state"],
-      "conversation_id":"session","backend":"codex","model":"model","tool_profile":"strict"}),
+      "conversation_id":"session","backend":backend,"model":"model","tool_profile":"strict"}),
         )
         .unwrap();
     let Step::Write(state) = reply(
@@ -28,7 +31,7 @@ fn connected() -> Management {
         &hello,
         json!({"protocol_version":1,"data_version":1,
       "capabilities":["hello","state"],"operations":["gui.hello","gui.state","gui.restored_input.list","gui.restored_input.cancel",
-        "gui.models.list","gui.models.select","gui.restored_input.continue","gui.restored_input.settled","gui.restored_input.reconcile"]}),
+        "gui.models.list","gui.models.select","gui.restored_input.continue","gui.restored_input.settled","gui.restored_input.reconcile","gui.restored_input.resolve"]}),
     ) else {
         panic!()
     };
@@ -36,7 +39,7 @@ fn connected() -> Management {
         &mut m,
         &state,
         json!({"session_id":"session","busy":false,"mode":"normal","tool_profile":"strict",
-      "model":{"backend":"codex","model":"model"},"ownership":{"data_version":1,"writable":true},
+      "model":{"backend":backend,"model":"model"},"ownership":{"data_version":1,"writable":true},
       "restored_input":{"policy":"hold","held":2},"schedules_paused":false,"conversations":[],"jobs":[],"tasks":[],
       "active_work":[],"pending_approvals":[],"pending_questions":[],"pending_model_loads":[]}),
     );
@@ -771,4 +774,146 @@ fn claude_inspector_shows_identity_and_only_confirms_prepared_cancellation() {
             entry: "one".into()
         })
     );
+}
+
+fn resolvable_data() -> Value {
+    let mut value = claude_data();
+    value["entries"][1]["can_resolve"] = json!(true);
+    value
+}
+fn resolving(m: &mut Management) -> Value {
+    let read = m.request_queue(Intent::Open).unwrap();
+    let Step::Queue(Update::Snapshot(menu)) = reply(m, &read, resolvable_data()) else {
+        panic!()
+    };
+    assert!(
+        m.request_queue(Intent::Resolve {
+            revision: menu.revision,
+            entry: "one".into()
+        })
+        .is_err()
+    );
+    assert!(
+        m.request_queue(Intent::Resolve {
+            revision: menu.revision + 1,
+            entry: "two".into()
+        })
+        .is_err()
+    );
+    m.request_queue(Intent::Resolve {
+        revision: menu.revision,
+        entry: "two".into(),
+    })
+    .unwrap()
+}
+#[test]
+fn resolution_requires_explicit_visible_confirmation_without_licensing_resend() {
+    for resize in [false, true] {
+        let mut v = view();
+        v.observe(Update::Snapshot(
+            Snapshot::parse(&resolvable_data(), 15).unwrap(),
+        ));
+        draw(&mut v, 36, 14);
+        v.key(key(KeyCode::Down));
+        v.key(key(KeyCode::Char('x')));
+        v.key(key(KeyCode::Enter));
+        assert!(v.take_intent().is_none());
+        assert!(draw(&mut v, 36, 14).contains("Resolve without replay?"));
+        if resize {
+            draw(&mut v, 100, 30);
+        }
+        v.key(KeyEvent::new_with_kind(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        ));
+        assert!(v.take_intent().is_none());
+        v.key(key(KeyCode::Enter));
+        assert_eq!(
+            v.take_intent(),
+            if resize {
+                None
+            } else {
+                Some(Intent::Resolve {
+                    revision: 15,
+                    entry: "two".into(),
+                })
+            }
+        );
+    }
+    for fault in ["prepared", "codex", "flag"] {
+        let mut data = resolvable_data();
+        match fault {
+            "prepared" => data["entries"][0]["can_resolve"] = json!(true),
+            "codex" => data["entries"][1]["provider"] = json!("codex"),
+            "flag" => data["entries"][1]["can_resolve"] = json!(1),
+            _ => unreachable!(),
+        }
+        assert!(Snapshot::parse(&data, 1).is_err(), "{fault}");
+    }
+}
+#[test]
+fn resolution_receipt_and_independent_queue_read_never_create_a_recovered_turn() {
+    for success in [true, false] {
+        let mut m = connected_backend("claude");
+        let command = resolving(&mut m);
+        assert_eq!(command["type"], "gui.restored_input.resolve");
+        assert!(m.prompt("early").is_err());
+        let Step::Write(read) = m.accept(json!({"type":"response","id":command["id"],"ok":success,
+            "result":{"resolved":"two","session_id":"session","replayed":false,"effects_verified":false},
+            "error":"controlled refusal"})).unwrap() else { panic!() };
+        assert_ne!(read["id"], command["id"]);
+        assert_eq!(read["type"], "gui.restored_input.list");
+        assert!(!m.ready());
+        let mut data = resolvable_data();
+        if success {
+            data["entries"].as_array_mut().unwrap().pop();
+            data["held"] = json!(1);
+        }
+        let Step::Queue(Update::Snapshot(menu)) = reply(&mut m, &read, data) else {
+            panic!()
+        };
+        assert!(menu.recovered.is_none());
+        assert!(menu.message.unwrap().contains(if success {
+            "effects remain unverified"
+        } else {
+            "Request failed"
+        }));
+        assert!(m.ready());
+    }
+}
+#[test]
+fn resolution_rejects_forged_receipts_and_uncertain_readback() {
+    for fault in [
+        "entry", "session", "replay", "effects", "missing", "held", "read",
+    ] {
+        let mut m = connected_backend("claude");
+        let command = resolving(&mut m);
+        let mut receipt = json!({"resolved":"two","session_id":"session","replayed":false,"effects_verified":false});
+        match fault {
+            "entry" => receipt["resolved"] = json!("foreign"),
+            "session" => receipt["session_id"] = json!("foreign"),
+            "replay" => receipt["replayed"] = json!(true),
+            "effects" => receipt["effects_verified"] = json!(true),
+            "missing" => {
+                receipt.as_object_mut().unwrap().remove("effects_verified");
+            }
+            _ => {}
+        }
+        let result =
+            m.accept(json!({"type":"response","id":command["id"],"ok":true,"result":receipt}));
+        if matches!(fault, "held" | "read") {
+            let Step::Write(read) = result.unwrap() else {
+                panic!()
+            };
+            assert!(
+                m.accept(json!({"type":"response","id":read["id"],"ok":fault=="held",
+                "error":"controlled missing read","result":resolvable_data()}))
+                    .is_err()
+            );
+        } else {
+            assert!(result.is_err(), "{fault}");
+        }
+        assert!(!m.ready());
+    }
 }

@@ -197,10 +197,14 @@ struct Reconciliation {
     entry: crate::restored_queue::Entry,
     accepted: Option<bool>,
 }
+struct QueueClosure {
+    entry: String,
+    resolved: bool,
+}
 struct QueuePending {
     id: CommandId,
     applying: bool,
-    cancelled: Option<String>,
+    closed: Option<QueueClosure>,
     continued: Option<(String, String, bool)>,
     reconciled: Option<Reconciliation>,
     failure: Option<String>,
@@ -698,7 +702,7 @@ impl Management {
 
 impl Management {
     pub fn request_queue(&mut self, intent: crate::restored_queue::Intent) -> io::Result<Value> {
-        use crate::restored_queue::{CANCEL, Intent, READ, RECONCILE};
+        use crate::restored_queue::{CANCEL, Intent, READ, RECONCILE, RESOLVE};
         if !self.ready() {
             return Err(fail("Wait for the runtime operation to finish"));
         }
@@ -706,7 +710,8 @@ impl Management {
         let (session, _, _, _) = self.expected.as_ref().expect("active");
         let mut command = json!({"type":READ, "session_id":session});
         let mut reconciled = None;
-        let cancelled = match intent {
+        let resolving = matches!(intent, Intent::Resolve { .. });
+        let closed = match intent {
             Intent::Open => None,
             Intent::Continue { .. } => {
                 return Err(fail("Continuation must reserve an execution command"));
@@ -731,19 +736,31 @@ impl Management {
                 });
                 None
             }
-            Intent::Cancel { revision, entry } => {
+            Intent::Cancel { revision, entry } | Intent::Resolve { revision, entry } => {
                 let menu = self
                     .queue_menu
                     .as_ref()
                     .filter(|m| m.revision == revision)
                     .ok_or_else(|| fail("Held input changed; reopen the inspector"))?;
-                if !menu.entries.iter().any(|e| e.id == entry && e.can_cancel) {
-                    return Err(fail("Entry was not offered for cancellation"));
+                if !menu.entries.iter().any(|e| {
+                    e.id == entry
+                        && if resolving {
+                            e.can_resolve
+                        } else {
+                            e.can_cancel
+                        }
+                }) {
+                    return Err(fail(
+                        "Entry was not offered for the requested recovery action",
+                    ));
                 }
-                command["type"] = json!(CANCEL);
+                command["type"] = json!(if resolving { RESOLVE } else { CANCEL });
                 command["snapshot"] = json!(menu.token);
                 command["entry_id"] = json!(entry);
-                Some(entry)
+                Some(QueueClosure {
+                    entry,
+                    resolved: resolving,
+                })
             }
         };
         if !self.operations.iter().any(|v| v == READ)
@@ -763,9 +780,9 @@ impl Management {
         command["id"] = id.to_value();
         self.queue = Some(QueuePending {
             id,
-            applying: cancelled.is_some() || reconciled.is_some(),
+            applying: closed.is_some() || reconciled.is_some(),
             reconciled,
-            cancelled,
+            closed,
             continued: None,
             failure: None,
             succeeded: false,
@@ -784,6 +801,21 @@ impl Management {
             Some(text(&frame, "error", 4096)?.to_owned())
         };
         if pending.applying {
+            if let Some(closed) = &pending.closed
+                && closed.resolved
+                && success
+            {
+                let result = &frame["result"];
+                if result["resolved"] != closed.entry
+                    || result["session_id"] != self.expected.as_ref().expect("active").0
+                    || result["replayed"] != false
+                    || result["effects_verified"] != false
+                {
+                    return Err(fail(
+                        "Resolution receipt changed identity or claimed provider effects",
+                    ));
+                }
+            }
             if let Some(check) = &mut pending.reconciled
                 && success
             {
@@ -812,7 +844,7 @@ impl Management {
             return Ok(Step::Write(command));
         }
         if let Some(error) = error {
-            return if pending.cancelled.is_some()
+            return if pending.closed.is_some()
                 || pending.continued.is_some()
                 || pending.reconciled.is_some()
             {
@@ -837,9 +869,9 @@ impl Management {
             && snapshot
                 .entries
                 .iter()
-                .any(|e| Some(&e.id) == pending.cancelled.as_ref())
+                .any(|e| Some(&e.id) == pending.closed.as_ref().map(|c| &c.entry))
         {
-            return Err(fail("Runtime still holds the cancelled entry"));
+            return Err(fail("Runtime still holds the closed entry"));
         }
         if let Some((operation, entry, refused)) = &pending.continued {
             let result = &frame["result"];
@@ -872,9 +904,13 @@ impl Management {
             .failure
             .map(|e| format!("Request failed: {e}. Saved queue read back."))
             .or_else(|| {
-                pending
-                    .cancelled
-                    .map(|_| "Cancellation saved. Queue read back; nothing replayed.".into())
+                pending.closed.map(|closed| {
+                    if closed.resolved {
+                        "Marked resolved without replay; provider effects remain unverified.".into()
+                    } else {
+                        "Cancellation saved. Queue read back; nothing replayed.".into()
+                    }
+                })
             });
         if pending.continued.is_some() {
             snapshot.message = Some("Continuation settled; saved queue read back.".into());
@@ -959,7 +995,7 @@ impl Management {
         self.queue = Some(QueuePending {
             id,
             applying: false,
-            cancelled: None,
+            closed: None,
             continued: Some((operation, entry, refused)),
             reconciled: None,
             failure: None,

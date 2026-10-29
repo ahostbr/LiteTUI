@@ -52,7 +52,7 @@ OPERATIONS = (
     "work.get", "work.cancel",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
-    "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile",
+    "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile", "restored_input.resolve",
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
@@ -492,6 +492,8 @@ def dispatch(app, cmd):
             return restored_input.inspect(app, cmd.get("session_id"))
         if action == "cancel":
             return restored_input.cancel(app, cmd)
+        if action == "resolve":
+            return restored_input.resolve(app, cmd)
         raise ValueError("Continuation requires asynchronous dispatch")
     if domain == "prompt":
         message, behavior = cmd.get("message"), cmd.get("behavior", "normal")

@@ -10,6 +10,7 @@ use ratatui::{
 use serde_json::Value;
 use std::{collections::HashSet, io};
 
+pub const RESOLVE: &str = "gui.restored_input.resolve";
 pub const RECONCILE: &str = "gui.restored_input.reconcile";
 pub const READ: &str = "gui.restored_input.list";
 pub const CONTINUE: &str = "gui.restored_input.continue";
@@ -19,6 +20,7 @@ pub const CANCEL: &str = "gui.restored_input.cancel";
 pub enum Intent {
     Open,
     Cancel { revision: u64, entry: String },
+    Resolve { revision: u64, entry: String },
     Continue { revision: u64, entry: String },
     Reconcile { revision: u64, entry: String },
 }
@@ -37,6 +39,7 @@ pub struct Entry {
     pub turn: String,
     pub revision: u64,
     pub can_cancel: bool,
+    pub can_resolve: bool,
     pub can_continue: bool,
     pub can_reconcile: bool,
 }
@@ -173,8 +176,24 @@ impl Snapshot {
                     "Reconciliation policy disagrees with provider identity",
                 ));
             }
+            let can_resolve = match row.get("can_resolve") {
+                None => false,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| fail("Invalid resolution policy"))?,
+            };
+            if can_resolve
+                && (provider != "claude"
+                    || state != "uncertain"
+                    || can_cancel
+                    || can_continue
+                    || can_reconcile)
+            {
+                return Err(fail("Resolution policy disagrees with delivery evidence"));
+            }
             entries.push(Entry {
                 id,
+                can_resolve,
                 provider,
                 segment,
                 workspace,
@@ -210,6 +229,7 @@ impl Snapshot {
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
     Cancel,
+    Resolve,
     Continue,
     Reconcile,
 }
@@ -355,6 +375,17 @@ impl View {
                     self.armed = Some(Action::Cancel);
                 }
             }
+            KeyCode::Char('x') if key.kind == KeyEventKind::Press => {
+                self.disarm();
+                if self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.entries.get(self.cursor))
+                    .is_some_and(|e| e.can_resolve)
+                {
+                    self.armed = Some(Action::Resolve);
+                }
+            }
             KeyCode::Char('c') if key.kind == KeyEventKind::Press => {
                 self.disarm();
                 if self
@@ -387,6 +418,10 @@ impl View {
                 {
                     let intent = match self.armed {
                         Some(Action::Cancel) if entry.can_cancel => Intent::Cancel {
+                            revision: snapshot.revision,
+                            entry: entry.id.clone(),
+                        },
+                        Some(Action::Resolve) if entry.can_resolve => Intent::Resolve {
                             revision: snapshot.revision,
                             entry: entry.id.clone(),
                         },
@@ -475,6 +510,8 @@ impl View {
                     "Cancellation available; no provider submission."
                 } else if e.can_reconcile {
                     "Check provider history; no input will be sent."
+                } else if e.can_resolve {
+                    "Resolve without replay. Provider effects remain unverified."
                 } else {
                     "Delivery evidence must be reconciled. Cancellation unavailable."
                 },
@@ -515,6 +552,8 @@ impl View {
             "Enter: confirm continuation | Esc: keep held"
         } else if self.armed == Some(Action::Reconcile) {
             "Enter: check history | Esc: keep held"
+        } else if self.armed == Some(Action::Resolve) {
+            "Enter: resolve | Esc: keep held"
         } else if self.armed.is_some() {
             "Enter: confirm cancellation | Esc: keep input"
         } else {
@@ -529,8 +568,12 @@ impl View {
                 "Run this saved input with its source authority?"
             } else if self.armed == Some(Action::Reconcile) {
                 "Read history; never resend?"
+            } else if self.armed == Some(Action::Resolve) {
+                "Resolve without replay?"
             } else if self.armed.is_some() {
                 "Cancel this saved entry?"
+            } else if selected.is_some_and(|e| e.can_resolve) {
+                "X: resolve | R: refresh"
             } else {
                 "C: continue | H: history | Del: cancel | R: refresh"
             }),
