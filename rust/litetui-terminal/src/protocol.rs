@@ -359,6 +359,10 @@ impl WireClient {
 
     /// Correlate a future read request. This does not send or authorize anything.
     pub fn register_read(&mut self) -> Result<CommandId, ClientError> {
+        self.register_request()
+    }
+    /// Correlation only; the owning controller validates and authorizes the operation.
+    pub fn register_request(&mut self) -> Result<CommandId, ClientError> {
         if !self.ready_for_reads() {
             return Err(ClientError::NotReady);
         }

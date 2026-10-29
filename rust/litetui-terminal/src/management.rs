@@ -1,5 +1,6 @@
 //! Owned-runtime negotiation and bounded startup facts. A snapshot is not a
 //! stream barrier or an authority grant. Only a fresh idle session is admitted.
+use crate::model_controls::{Choices, Intent, Kind, Update};
 use crate::protocol::{CommandId, Delivery, Notice, WireClient};
 use crate::stream::{ExecutionId, Origin};
 use serde_json::{Value, json};
@@ -142,6 +143,7 @@ pub enum Step {
     Bootstrap(Value),
     Write(Value),
     Initialized(Snapshot),
+    Control(Update),
     Event(Value),
     Ignore,
 }
@@ -153,8 +155,20 @@ enum Phase {
     Active,
 }
 
+struct ControlPending {
+    id: CommandId,
+    kind: Kind,
+    applying: bool,
+    selection: Option<String>,
+    mutation_id: Option<CommandId>,
+    failure: Option<String>,
+    succeeded: bool,
+}
 pub struct Management {
     wire: WireClient,
+    control: Option<ControlPending>,
+    menu: Option<Choices>,
+    revision: u64,
     phase: Phase,
     expected: Option<(String, String, String, String)>,
     state_id: Option<CommandId>,
@@ -177,6 +191,9 @@ impl Default for Management {
                     .map(|name| ((*name).to_owned(), Delivery::Mirrored)),
             )
             .expect("static delivery policy"),
+            control: None,
+            menu: None,
+            revision: 0,
             phase: Phase::AwaitReady,
             expected: None,
             state_id: None,
@@ -231,7 +248,7 @@ impl Management {
             .map_err(|_| fail("Cannot begin management negotiation"))
     }
     pub fn ready(&self) -> bool {
-        self.phase == Phase::Active && !self.failed
+        self.phase == Phase::Active && !self.failed && self.control.is_none()
     }
     pub fn operations(&self) -> &[String] {
         &self.operations
@@ -241,6 +258,7 @@ impl Management {
             return Err(fail("Management is not ready for a prompt"));
         }
         self.ensure_drained()?;
+        self.menu = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
         Ok(())
@@ -325,6 +343,17 @@ impl Management {
                 Ok(Step::Initialized(snapshot))
             }
             Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .control
+                .as_ref()
+                .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
+            {
+                self.control_response(frame)
+            }
+            Notice::Response {
                 matched: false,
                 frame,
                 ..
@@ -369,9 +398,20 @@ impl Management {
             .map_err(|_| fail("GUI event lacks a canonical emission identity"))?;
         let kind = event["type"].as_str().expect("wire validated");
         if kind == "model_state" && (event["backend"] != *backend || event["model"] != *model) {
-            return Err(fail(
-                "Runtime model changed outside an owned management operation",
-            ));
+            let owned_change = event["backend"] == *backend
+                && self.control.as_ref().is_some_and(|pending| {
+                    pending.kind == Kind::Model
+                        && pending.selection.as_deref() == event["model"].as_str()
+                        && pending
+                            .mutation_id
+                            .as_ref()
+                            .is_some_and(|id| frame["operation_id"] == id.to_value())
+                });
+            if !owned_change {
+                return Err(fail(
+                    "Runtime model changed outside an owned management operation",
+                ));
+            }
         }
         if IDENTIFIED.contains(&kind) {
             let (execution, origin, _) = crate::stream::origin(frame, 4096)
@@ -394,5 +434,134 @@ impl Management {
             }
         }
         Ok(())
+    }
+}
+
+impl Management {
+    pub fn model(&self) -> Option<&str> {
+        self.expected.as_ref().map(|v| v.2.as_str())
+    }
+    pub fn request_control(&mut self, intent: Intent) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail("Wait for the runtime operation to finish"));
+        }
+        self.ensure_drained()?;
+        let (kind, selection) = match intent {
+            Intent::Open(kind) => (kind, None),
+            Intent::Select { revision, value } => {
+                let menu = self
+                    .menu
+                    .as_ref()
+                    .filter(|m| m.revision == revision)
+                    .ok_or_else(|| fail("Choices changed; reopen the selector"))?;
+                if !menu.rows.iter().any(|row| row.value == value) {
+                    return Err(fail("Choice was not offered by the current runtime"));
+                }
+                (menu.kind, Some(value))
+            }
+        };
+        let operation = if selection.is_some() {
+            kind.apply()
+        } else {
+            kind.read()
+        };
+        if !self.operations.iter().any(|v| v == operation)
+            || !self.operations.iter().any(|v| v == kind.read())
+        {
+            return Err(fail("The connected runtime does not support this control"));
+        }
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve model control"))?;
+        let mut command = json!({"type":operation,"id":id.to_value()});
+        if let Some(value) = &selection {
+            command[if kind == Kind::Model { "slug" } else { "level" }] =
+                Value::String(value.clone());
+        } else if kind == Kind::Thinking {
+            let (_, backend, model, _) = self.expected.as_ref().expect("active");
+            command["backend"] = json!(backend);
+            command["model"] = json!(model);
+        }
+        self.control = Some(ControlPending {
+            id: id.clone(),
+            kind,
+            applying: selection.is_some(),
+            mutation_id: selection.as_ref().map(|_| id),
+            selection,
+            failure: None,
+            succeeded: false,
+        });
+        self.menu = None;
+        Ok(command)
+    }
+    fn control_response(&mut self, frame: Value) -> io::Result<Step> {
+        let mut pending = self.control.take().expect("matched control");
+        let success = frame["ok"] == true;
+        let error = if success {
+            None
+        } else {
+            Some(text(&frame, "error", 4096)?.to_owned())
+        };
+        if pending.applying {
+            pending.applying = false;
+            pending.failure = error;
+            pending.succeeded = success;
+            let id = self
+                .wire
+                .register_request()
+                .map_err(|_| fail("Cannot reserve selection readback"))?;
+            let mut command = json!({"type":pending.kind.read(),"id":id.to_value()});
+            if pending.kind == Kind::Thinking {
+                let (_, backend, model, _) = self.expected.as_ref().expect("active");
+                command["backend"] = json!(backend);
+                command["model"] = json!(model);
+            }
+            pending.id = id;
+            self.control = Some(pending);
+            return Ok(Step::Write(command));
+        }
+        if let Some(error) = error {
+            return if pending.selection.is_some() {
+                Err(fail(&format!(
+                    "Cannot verify runtime after selection: {error}"
+                )))
+            } else {
+                Ok(Step::Control(Update::Rejected(error)))
+            };
+        }
+        self.ensure_drained()?;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| fail("Choice revision exhausted"))?;
+        let (session, backend, model, _) = self.expected.as_ref().expect("active");
+        let mut menu = Choices::parse(pending.kind, &frame["result"], self.revision, session)?;
+        if menu.backend != *backend {
+            return Err(fail("Control readback changed the backend unexpectedly"));
+        }
+        if menu.model != *model
+            && !(pending.kind == Kind::Model
+                && pending.selection.as_deref() == Some(menu.model.as_str()))
+        {
+            return Err(fail("Control readback changed the model unexpectedly"));
+        }
+        if pending.succeeded && pending.selection.as_deref() != Some(menu.current.as_str()) {
+            return Err(fail("Runtime did not retain the requested selection"));
+        }
+        if let Some(error) = pending.failure {
+            menu.message = Some(format!(
+                "Request failed: {error}. Current setting read back from runtime."
+            ));
+        } else if pending.selection.is_some() {
+            menu.message = Some(format!("Current setting: {}", menu.current));
+        }
+        if menu.model != *model {
+            self.expected.as_mut().expect("active").2 = menu.model.clone();
+            self.origin = None;
+            self.prompt = None;
+        }
+        self.menu = Some(menu.clone());
+        Ok(Step::Control(Update::Choices(menu)))
     }
 }

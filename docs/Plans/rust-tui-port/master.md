@@ -1,5 +1,17 @@
 # LiteTUI Rust terminal port
 
+## Native model and thinking controls - 2026-10-29
+
+F3 now opens the native model selector from an idle live conversation. Tab reads thinking choices; the thinking footer opens them directly. Choices come from the connected Python runtime. Arrows or a paired mouse click select a row, and a fresh Enter applies it. Refresh, resize, source updates, modifiers and held confirmation keys cannot apply a hidden or stale choice. The composer and clipboard stay isolated while the selector owns input. Horizontal inspection exposes full escaped model names, current values, capability notes and errors across compact layouts and themes.
+
+Every mutation has an independent command ID and a mandatory correlated readback before another prompt is admitted. A source model-state event can precede its ACK and is accepted only for that owned selection. Neither an ACK nor a failed command determines the effective value: readback does. Failed mutations are displayed with the actual current setting; uncertain or contradictory readbacks fail the connection without retry/rollback. Closing the selector cannot cancel an already-sent operation or unlock the composer early. Choices are bounded to 512 models / 32 thinking levels / 64 KiB retained metadata. Backend and engine switching remain pending.
+
+Python capability reads now report the current thinking selection. Source regressions also exposed two defects: rejected owned writes changed a reasoning override before publication, and a late context-info response could overwrite a new model/backend. Overrides now change after successful publication, and context responses retain their request identity. Seven new regression cases failed against the exact committed source functions; all eight new cases pass with the fixes, including the unchanged-context positive control.
+
+Verification: **319 ordinary Rust tests and all 31 controlled-process tests passed**; Rust fmt/Clippy/build and CLI help passed. The affected Python runs cover **112 unique passing tests and two reproduced baseline failures** in the old thinking conversation-reopen fixtures, which omit the required owned_session argument. Changed Python lint adds no findings (117 existing across app/gui_rpc); focused type checking adds none (77 existing across those same modules). New tests, the thinking helper and the controlled fixture are lint/type clean. The process fixture invokes actual Python management handlers, source setters, authority, serializer and owned settings persistence, then checks that the next controlled turn sees the selected values. Provider and unrelated hardware/widget boundaries remain controlled.
+
+This is model/thinking control implementation, not full parity or provider/desktop acceptance. Saved conversation resume, all backend/engine controls, remaining screens/plugins, host acceptance, packaging and resource comparisons remain required. No paid/provider request, desktop input, merge, push or cutover occurred.
+
 ## Owned-runtime management integration - 2026-10-29
 
 Live Rust now negotiates gui.hello and reads gui.state over its owned Python process before publishing Ready or admitting a prompt. Protocol/data versions, advertised hello/state operations, startup session/backend/model/profile and idle work/input state are checked. The bounded startup projection retains only explicit facts, never the raw settings snapshot. A fresh pending store may report writable false; neither a snapshot nor advertised capabilities grant authority.

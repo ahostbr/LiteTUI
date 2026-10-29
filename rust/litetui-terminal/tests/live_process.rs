@@ -1062,50 +1062,8 @@ fn tool_enabled_launch_passes_explicit_settings_workspace_and_profile() {
 #[test]
 #[ignore = "real Python authority/store with fake provider; requires LITETUI_AUTHORITY_PYTHON"]
 fn rust_decisions_cross_real_python_authority_and_owned_store_before_fixture_writes() {
-    use litetui_terminal::{
-        approvals::Event,
-        live::{Interactive, Observation, Options},
-        live_chat::Chat,
-    };
-    let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON")
-        .expect("explicit Python with LiteTUI dependencies");
-    // setup itself uses the stdlib fixture interpreter variable.
-    let (command, root) = setup("success");
-    let source = root.parent().unwrap().join("source");
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../src/litetui")
-        .canonicalize()
-        .unwrap();
-    fs::write(
-        source.join("src/litetui/__init__.py"),
-        format!(
-            "__path__.append({})\n",
-            serde_json::to_string(&actual.to_string_lossy()).unwrap()
-        ),
-    )
-    .unwrap();
-    fs::write(
-        source.join("src/litetui/cli.py"),
-        include_str!("fixtures/native_authority_runtime.py"),
-    )
-    .unwrap();
-    let workspace = root.parent().unwrap().join("workspace");
-    fs::create_dir(&workspace).unwrap();
-    let mut args: Vec<String> = command
-        .get_args()
-        .skip(1)
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    args[1] = python.to_string_lossy().into_owned();
-    args.extend([
-        "--tools".into(),
-        "on".into(),
-        "--workspace".into(),
-        workspace.to_string_lossy().into_owned(),
-    ]);
-    let mut options = Options::parse(&args).unwrap();
-    options.timeout = Duration::from_secs(15);
-    let runtime = Interactive::start(options);
+    use litetui_terminal::{approvals::Event, live::Observation, live_chat::Chat};
+    let (runtime, root, workspace) = authority_runtime("authority");
     let result = runtime.with_cleanup(|runtime| {
         let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
         let mut turns = 0;
@@ -1495,4 +1453,155 @@ fn unpaired_gui_event_while_idle_has_a_bounded_failure_deadline() {
     let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
     assert_eq!(log.matches("rust-live-prompt").count(), 1);
     assert!(log.contains("shutdown"));
+}
+
+fn authority_runtime(mode: &str) -> (litetui_terminal::live::Interactive, PathBuf, PathBuf) {
+    use litetui_terminal::live::{Interactive, Options};
+    let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON")
+        .expect("explicit Python with LiteTUI dependencies");
+    // setup itself uses the stdlib fixture interpreter variable.
+    let (command, root) = setup("success");
+    let source = root.parent().unwrap().join("source");
+    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../src/litetui")
+        .canonicalize()
+        .unwrap();
+    fs::write(
+        source.join("src/litetui/__init__.py"),
+        format!(
+            "__path__.append({})\n",
+            serde_json::to_string(&actual.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        source.join("src/litetui/cli.py"),
+        include_str!("fixtures/native_authority_runtime.py")
+            .replace("MODE = \"authority\"", &format!("MODE = {mode:?}")),
+    )
+    .unwrap();
+    let workspace = root.parent().unwrap().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let mut args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    args[1] = python.to_string_lossy().into_owned();
+    args.extend([
+        "--tools".into(),
+        "on".into(),
+        "--workspace".into(),
+        workspace.to_string_lossy().into_owned(),
+    ]);
+    let mut options = Options::parse(&args).unwrap();
+    options.timeout = Duration::from_secs(15);
+    let runtime = Interactive::start(options);
+    (runtime, root, workspace)
+}
+
+#[test]
+#[ignore = "real Python management/authority with controlled provider; requires LITETUI_AUTHORITY_PYTHON"]
+fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn() {
+    use litetui_terminal::{
+        live::Observation,
+        live_chat::Chat,
+        model_controls::{Intent, Kind, Update},
+    };
+    for mode in ["controls", "controls_refuse"] {
+        let (runtime, root, _) = authority_runtime(mode);
+        let mut expected_level = String::new();
+        let result = runtime.with_cleanup(|runtime| {
+            let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+            let mut phase = 0;
+            loop {
+                let event = runtime
+                    .events
+                    .recv_timeout(Duration::from_secs(20))
+                    .map_err(std::io::Error::other)?;
+                let ready = matches!(&event, Observation::Ready);
+                let complete = matches!(&event, Observation::Complete);
+                let menu = if let Observation::Controls(Update::Choices(menu)) = &event {
+                    Some(menu.clone())
+                } else {
+                    None
+                };
+                chat.observe(event)?;
+                if ready {
+                    runtime.control(Intent::Open(Kind::Model))?;
+                    phase = 1;
+                }
+                if let Some(menu) = menu {
+                    match phase {
+                        1 => {
+                            runtime.control(Intent::Select {
+                                revision: menu.revision,
+                                value: "claude-opus-5".into(),
+                            })?;
+                            phase = 2;
+                        }
+                        2 => {
+                            assert_eq!(menu.current, "claude-opus-5");
+                            assert_eq!(chat.model, "claude-opus-5");
+                            runtime.control(Intent::Open(Kind::Thinking))?;
+                            phase = 3;
+                        }
+                        3 => {
+                            expected_level = if mode == "controls" {
+                                "high".into()
+                            } else {
+                                menu.current.clone()
+                            };
+                            runtime.control(Intent::Select {
+                                revision: menu.revision,
+                                value: "high".into(),
+                            })?;
+                            phase = 4;
+                        }
+                        4 => {
+                            assert_eq!(menu.current, expected_level.as_str());
+                            if mode == "controls_refuse" {
+                                assert!(
+                                    menu.message
+                                        .unwrap()
+                                        .contains("controlled owned-write refusal")
+                                );
+                            }
+                            chat.submit("report receiving state")?;
+                            runtime.submit(chat.take_submission().unwrap())?;
+                            phase = 5;
+                        }
+                        _ => panic!("unexpected control response"),
+                    }
+                }
+                if complete {
+                    assert_eq!(phase, 5);
+                    assert_eq!(
+                        chat.rows[0].cards[0].answer,
+                        format!("claude-opus-5 / {}", expected_level.as_str())
+                    );
+                    break;
+                }
+            }
+            Ok(())
+        });
+        assert!(result.is_ok(), "{result:?}");
+        let path = fs::read_to_string(root.join("control-settings-path.txt")).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(settings["execution"]["model"], "claude-opus-5");
+        assert_eq!(
+            settings["execution"]["thinking_level"],
+            expected_level.as_str()
+        );
+        let commands: Vec<serde_json::Value> = fs::read_to_string(root.join("all-commands.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        for kind in ["gui.models.select", "gui.thinking.set", "prompt"] {
+            assert_eq!(commands.iter().filter(|v| v["type"] == kind).count(), 1);
+        }
+        assert_eq!(commands.last().unwrap()["type"], "shutdown");
+    }
 }

@@ -10,6 +10,7 @@ pub mod live;
 pub mod live_chat;
 mod live_process;
 pub mod management;
+pub mod model_controls;
 pub mod native_activity;
 pub mod profile_picker;
 pub mod protocol;

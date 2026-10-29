@@ -63,6 +63,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                     f.key == litetui_terminal::footer::FieldKey::Context && !f.text.contains('—')
                 });
             }
+            Ok(Observation::Controls(_)) => panic!("Unrequested model control response"),
             Ok(Observation::Submission { .. }) => {}
             Ok(Observation::Ready) => {
                 assert!(saw_ready_facts, "validated facts precede Ready");

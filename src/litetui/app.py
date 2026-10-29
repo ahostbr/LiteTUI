@@ -6703,10 +6703,13 @@ class LiteTUI(App):
         if not self.model_id:
             return
         mid = self.model_id
+        backend = self.backend
         try:
-            got = await self.backend.model_info(mid)
+            got = await backend.model_info(mid)
         except Exception:
             got = None  # server hiccup — footer just shows "?" for the window size
+        if self.backend is not backend or self.model_id != mid:
+            return  # A late model-info response cannot overwrite the new selection.
         if got:
             self.ctx_max, self.model_type, self.ctx_loaded = got
         else:

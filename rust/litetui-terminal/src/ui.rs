@@ -687,6 +687,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         pending.invalidate_hits();
     }
     if app.viewport_too_small {
+        if let Some(chat) = app.live.as_mut() {
+            chat.controls.hide();
+        }
         app.footer.update_visible(&[]);
         app.completion.hide();
         frame.render_widget(Paragraph::new(if app.live.is_some() { "LIVE RUNTIME\nResize to 36 x 14.\nCtrl+Q exits cleanly.\nInput paused until resized." } else if app.themes_open {
@@ -916,7 +919,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             Block::default()
                 .borders(Borders::ALL)
                 .title_bottom(if app.live.is_some() {
-                    " F4 themes · Esc stops · Ctrl+Q "
+                    " F3 models · F4 themes · Esc stops · Ctrl+Q "
                 } else {
                     " F4 themes · F6 approval · Ctrl+Q "
                 })
@@ -973,6 +976,13 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     if app.themes_open {
         theme_picker(frame, app, area);
+    }
+    if app.has_live_controls() {
+        app.live
+            .as_mut()
+            .expect("live controls")
+            .controls
+            .draw(frame, area, &t);
     }
     if app.has_live_input() && app.live.as_ref().is_some_and(|chat| chat.cancelling()) {
         stopping_dialog(frame, app, area);

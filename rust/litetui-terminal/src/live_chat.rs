@@ -70,6 +70,7 @@ pub struct Chat {
     pub runtime_state: crate::runtime_state::State,
     pub approvals: crate::approvals::View,
     pub questions: crate::questions::View,
+    pub controls: crate::model_controls::View,
     pending: Option<String>,
     submission_id: Option<String>,
     stop_requests: usize,
@@ -93,6 +94,7 @@ impl Chat {
             runtime_state: crate::runtime_state::State::default(),
             approvals: crate::approvals::View::default(),
             questions: crate::questions::View::default(),
+            controls: crate::model_controls::View::default(),
             pending: None,
             submission_id: None,
             stop_requests: 0,
@@ -104,7 +106,7 @@ impl Chat {
         }
     }
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
-        if !self.ready || self.busy || self.closed || self.quitting {
+        if !self.ready || self.busy || self.closed || self.quitting || self.controls.owns_input() {
             return Err(io::Error::other(
                 "Wait for the runtime to be ready and the current turn to finish",
             ));
@@ -200,6 +202,13 @@ impl Chat {
                 self.settle(outcome)?;
             }
             Observation::State(update) => self.runtime_state.apply(update),
+            Observation::Controls(update) => {
+                if let crate::model_controls::Update::Choices(menu) = &update {
+                    self.model = menu.model.clone();
+                }
+                self.controls.observe(update);
+                self.notice = self.controls.notice.clone();
+            }
             Observation::Approval(event) => {
                 if matches!(event, crate::approvals::Event::Requested(_)) {
                     self.pending_row()?;
@@ -412,10 +421,12 @@ impl Chat {
         Ok(())
     }
     pub fn begin_quit(&mut self) {
+        self.controls.finish();
         self.quitting = true;
         self.notice = "Closing Python runtime and its owned process tree…".into();
     }
     pub fn finish(&mut self, failure: Option<String>) {
+        self.controls.finish();
         self.closed = true;
         self.stop_confirm = false;
         self.ready = false;

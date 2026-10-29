@@ -10,6 +10,12 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 - Goal: full baseline UI parity on Windows, verified in LiteSuite's embedded terminal and Windows Terminal. Preserve familiar layout/keys. Python remains installed temporarily. Preserve custom plugin behavior but allow its UI source to change. Use separate fresh data; never reset old state. All backend and authority behavior remains in scope.
 - No timeline until inventory is reconciled. No “MVP complete” substituting for parity. Later phases may not proceed with missing contract details.
 
+## Current implementation checkpoint - 2026-10-29
+
+The latest checkpoint in [master.md](master.md) supersedes the historical implementation descriptions below. Live model and thinking selectors now use the owned management connection, source-derived choices, independent mutation/readback requests and actual effective settings. F3 opens models; Tab switches to thinking, and the thinking footer opens it directly. Only a fresh visible confirmation applies a choice. Pending verification keeps input owned; unknown readback outcomes stop the connection without replay.
+
+The controlled process exercises actual source setters and owned persistence, then uses the selected values on the next controlled turn. Backend/engine switching, general settings and remaining management screens are not closed by this checkpoint. Automated rendering/contract evidence does not establish either-host acceptance or full parity. See the master checkpoint for exact test counts and baseline failures.
+
 ## Existing components to retain
 
 Paths below are relative to this worktree.

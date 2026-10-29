@@ -139,6 +139,7 @@ impl ContentKind {
 #[derive(Debug, PartialEq)]
 pub enum Observation {
     State(crate::runtime_state::Update),
+    Controls(crate::model_controls::Update),
     Ready,
     /// Local command reservation; neither source admission nor completion.
     Submission {
@@ -197,6 +198,9 @@ pub struct Turn {
     stop_requests: usize,
 }
 impl Turn {
+    fn can_manage(&self) -> bool {
+        self.ready && !self.closing && (!self.sent || self.settled)
+    }
     pub fn with_policy(policy: crate::tool_mode::Expected) -> Self {
         Self {
             policy: Some(policy),
@@ -850,6 +854,29 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 && let Some(command) = frontend.command()?
             {
                 match command {
+                    Input::Control(intent) => {
+                        let command = if turn.can_manage() {
+                            management.request_control(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish the current turn before changing model controls",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::Controls(
+                                crate::model_controls::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
+                    }
                     Input::Prompt(prompt) => {
                         if !management.ready() {
                             return Err(io::Error::other("Management startup is not complete"));
@@ -988,11 +1015,23 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             frontend.observe(Observation::Ready)?;
                         }
                     }
+                    Step::Control(update) => {
+                        if !turn.closing {
+                            if let crate::model_controls::Update::Choices(menu) = &update {
+                                frontend.observe(Observation::State(
+                                    crate::runtime_state::Update::from_choices(menu),
+                                ))?;
+                            }
+                            frontend.observe(Observation::Controls(update))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
                     Step::Event(event) => publish_event(
                         &mut turn,
                         &event,
                         &options.backend,
-                        &options.model,
+                        management.model().unwrap_or(&options.model),
                         &mut deadline,
                         frontend,
                     )?,
@@ -1043,6 +1082,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    Control(crate::model_controls::Intent),
     Prompt(String),
     Abort { prompt_id: String },
     Approve(crate::approvals::Decision),
@@ -1064,7 +1104,7 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::State(_) | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
+            Observation::State(_) | Observation::Controls(_) | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
             Observation::Approval(_)
             | Observation::ApprovalSettled { .. }
             | Observation::Question { .. } => {
@@ -1278,6 +1318,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Approve(decision))
+            .map_err(io::Error::other)
+    }
+    pub fn control(&self, intent: crate::model_controls::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Control(intent))
             .map_err(io::Error::other)
     }
     pub fn answer(&self, decision: crate::questions::Decision) -> io::Result<()> {

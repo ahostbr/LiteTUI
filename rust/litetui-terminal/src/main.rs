@@ -116,6 +116,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 chat.stop_confirm = false;
             }
             app.approval_open = false;
+            if let Some(chat) = app.live.as_mut() {
+                chat.controls.close();
+            }
             app.themes_open = false;
             app.completion.dismiss();
         }
@@ -190,6 +193,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         }
         return false;
     }
+    if app.has_live_controls() {
+        app.live.as_mut().expect("live controls").controls.key(key);
+        return false;
+    }
     if app.themes_open {
         match key.code {
             KeyCode::Esc => app.themes_open = false,
@@ -262,6 +269,12 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     if key.code == KeyCode::Enter && app.footer.owns_enter() {
         if key.kind == KeyEventKind::Press && key.modifiers.is_empty() {
             let (_, intent) = app.footer.activate();
+            if intent == Some(litetui_terminal::footer::FooterAction::Thinking)
+                && app.live.is_some()
+            {
+                app.open_models(litetui_terminal::model_controls::Kind::Thinking);
+                return false;
+            }
             app.notice = match intent {
                 Some(intent) => {
                     format!("Not applied: {intent:?} (runtime controls not wired).")
@@ -302,6 +315,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::F(3) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
+            app.open_models(litetui_terminal::model_controls::Kind::Model)
+        }
         KeyCode::F(4) => app.open_themes(),
         KeyCode::F(5) => app.reset(),
         KeyCode::F(6) => app.open_approval(),
@@ -515,6 +531,16 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_controls() {
+        if !app.viewport_too_small {
+            app.live
+                .as_mut()
+                .expect("live controls")
+                .controls
+                .mouse(event);
+        }
+        return;
+    }
     if !app.stop_open()
         && !app.viewport_too_small
         && !app.has_live_approval()
@@ -766,6 +792,14 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
             }
+            if !quitting
+                && let Some(intent) = app.live.as_mut().expect("live").controls.take_intent()
+                && let Err(error) = runtime.control(intent)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
             if let Some(prompt) = app.live.as_mut().expect("live").take_submission()
                 && let Err(error) = runtime.submit(prompt)
             {
@@ -794,7 +828,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -2037,6 +2071,106 @@ mod tests {
                 .is_none()
         );
         assert_eq!(app.composer.text(), "preserved draft");
+        assert!(router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
+    }
+    fn control_menu() -> litetui_terminal::model_controls::Choices {
+        use litetui_terminal::model_controls::{Choices, Kind};
+        Choices::parse(
+            Kind::Model,
+            &serde_json::json!({
+            "backend":"claude","model":"model-A","models":[
+                {"slug":"model-A","name":"Model A","current":true,"loaded":null},
+                {"slug":"model-B","name":"Model B","current":false,"loaded":null}
+            ]}),
+            1,
+            "session",
+        )
+        .unwrap()
+    }
+    #[test]
+    fn native_model_controls_own_confirmation_repeats_paste_and_clipboard() {
+        use litetui_terminal::{
+            live::Observation,
+            model_controls::{Intent, Kind, Update},
+        };
+        let mut app = Demo::live("claude".into(), "model-A".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("preserved draft");
+        let mut router = KeyRouter::default();
+        plain(&mut app, &mut router, KeyCode::F(3));
+        assert_eq!(
+            app.live.as_mut().unwrap().controls.take_intent(),
+            Some(Intent::Open(Kind::Model))
+        );
+        app.observe_live(Observation::Controls(Update::Choices(control_menu())))
+            .unwrap();
+        render_footer(&mut app);
+        let mut clipboard = TestClipboard {
+            read: Some("not pasted".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paste(&mut app, "also not pasted");
+        assert_eq!(clipboard.reads, 0);
+        assert_eq!(app.composer.text(), "preserved draft");
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(matches!(
+            app.live.as_mut().unwrap().controls.take_intent(),
+            Some(Intent::Select { .. })
+        ));
+        app.observe_live(Observation::Controls(Update::Choices(control_menu())))
+            .unwrap();
+        render_footer(&mut app);
+        router.handle(
+            &mut app,
+            KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Repeat),
+        );
+        assert!(app.live.as_mut().unwrap().controls.take_intent().is_none());
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        plain(&mut app, &mut router, KeyCode::Esc);
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new_with_kind(
+                KeyCode::Char('v'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Repeat,
+            ),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 0);
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert_eq!(
+            app.live.as_mut().unwrap().take_submission().as_deref(),
+            Some("preserved draft")
+        );
+    }
+    #[test]
+    fn native_model_controls_cannot_open_during_turn_or_confirm_when_hidden() {
+        use litetui_terminal::{live::Observation, model_controls::Update};
+        let mut app = Demo::live("claude".into(), "model-A".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.live.as_mut().unwrap().busy = true;
+        let mut router = KeyRouter::default();
+        plain(&mut app, &mut router, KeyCode::F(3));
+        assert!(!app.has_live_controls());
+        app.live.as_mut().unwrap().busy = false;
+        plain(&mut app, &mut router, KeyCode::F(3));
+        app.live.as_mut().unwrap().controls.take_intent();
+        app.observe_live(Observation::Controls(Update::Choices(control_menu())))
+            .unwrap();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(app.live.as_mut().unwrap().controls.take_intent().is_none());
         assert!(router.handle(
             &mut app,
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)

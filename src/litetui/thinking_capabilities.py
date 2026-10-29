@@ -83,6 +83,9 @@ def set_thinking(app, level):
         if level not in thinking_capabilities(app)["levels"]:
             raise ValueError("Thinking level is not supported by the active backend/model")
         value = level
+    # Publish through the source-owned setter before changing any runtime
+    # override. A rejected owned write must not alter the next turn's effort.
+    app.thinking_level = value
     # A per-model override takes precedence over the global level in TurnEngine.
     overrides = getattr(getattr(app, "settings", None), "model_infer_overrides", {})
     entry = overrides.get(getattr(app, "model_id", None), {})
@@ -90,7 +93,6 @@ def set_thinking(app, level):
         entry.pop("reasoning_effort", None)
     elif "reasoning_effort" in entry:
         entry["reasoning_effort"] = "none" if value == "off" else value
-    app.thinking_level = value
     if value is None:
         remember = getattr(app, "_remember_for_this_convo", None)
         if callable(remember):

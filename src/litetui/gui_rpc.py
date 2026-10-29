@@ -474,6 +474,7 @@ def dispatch(app, cmd):
             raise ValueError("Requested backend catalogue is not connected; capability unavailable")
         if model == app.model_id:
             thinking = thinking_capabilities(app)
+            thinking["level"] = app.thinking_level
         else:
             reader = getattr(app.backend, "reasoning_levels", None)
             if not callable(reader) or model not in getattr(app.backend, "models", {}):

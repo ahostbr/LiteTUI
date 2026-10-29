@@ -21,9 +21,18 @@ pub struct Update(UpdateKind);
 #[derive(Clone, Debug, PartialEq)]
 enum UpdateKind {
     Ready(ReadyFacts),
+    Choices {
+        model: String,
+        thinking: Option<String>,
+    },
     Startup(crate::management::Snapshot),
-    Usage { used: u64, maximum: Option<u64> },
-    TurnStarted { reset_rate: bool },
+    Usage {
+        used: u64,
+        maximum: Option<u64>,
+    },
+    TurnStarted {
+        reset_rate: bool,
+    },
     SettledRate(Option<f64>),
 }
 fn optional_text(event: &Value, key: &str, limit: usize) -> io::Result<Option<String>> {
@@ -46,6 +55,13 @@ fn optional_count(event: &Value, key: &str) -> io::Result<Option<u64>> {
     }
 }
 impl Update {
+    pub fn from_choices(menu: &crate::model_controls::Choices) -> Self {
+        Self(UpdateKind::Choices {
+            model: menu.model.clone(),
+            thinking: (menu.kind == crate::model_controls::Kind::Thinking)
+                .then(|| menu.current.clone()),
+        })
+    }
     pub fn from_management(snapshot: crate::management::Snapshot) -> Self {
         Self(UpdateKind::Startup(snapshot))
     }
@@ -113,6 +129,20 @@ pub struct State {
 impl State {
     pub fn apply(&mut self, update: Update) {
         match update.0 {
+            UpdateKind::Choices { model, thinking } => {
+                if let Some(ready) = self.ready.as_mut() {
+                    if ready.model != model {
+                        ready.model = model;
+                        ready.context_ceiling = None;
+                        ready.thinking = None;
+                        self.usage = None;
+                        self.rate = None;
+                    }
+                    if let Some(level) = thinking {
+                        ready.thinking = Some(level);
+                    }
+                }
+            }
             UpdateKind::Startup(snapshot) => self.startup = Some(snapshot),
             UpdateKind::Ready(ready) => {
                 self.ready = Some(ready);

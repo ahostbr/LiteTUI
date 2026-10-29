@@ -175,8 +175,29 @@ impl Demo {
             .as_ref()
             .is_some_and(|chat| !chat.questions.is_empty())
     }
+    pub fn has_live_controls(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.controls.owns_input())
+    }
+    pub fn open_models(&mut self, kind: crate::model_controls::Kind) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting {
+                self.notice = "Finish the current turn before opening model controls.".into();
+                return;
+            }
+            chat.controls.open(kind);
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_approval()
+        self.has_live_controls()
+            || self.has_live_approval()
             || self.has_live_question()
             || self.stop_open()
             || self.live.as_ref().is_some_and(|chat| chat.cancelling())
