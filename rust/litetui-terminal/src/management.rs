@@ -143,6 +143,10 @@ pub enum Step {
     Bootstrap(Value),
     Write(Value),
     Initialized(Snapshot),
+    Restored {
+        snapshot: Snapshot,
+        history: crate::resume::History,
+    },
     Control(Update),
     Event(Value),
     Ignore,
@@ -152,6 +156,7 @@ enum Phase {
     AwaitReady,
     Hello,
     State,
+    History,
     Active,
 }
 
@@ -172,6 +177,9 @@ pub struct Management {
     phase: Phase,
     expected: Option<(String, String, String, String)>,
     state_id: Option<CommandId>,
+    resume: Option<String>,
+    startup: Option<Snapshot>,
+    history_id: Option<CommandId>,
     operations: Vec<String>,
     prompt: Option<String>,
     origin: Option<(ExecutionId, Origin)>,
@@ -197,6 +205,9 @@ impl Default for Management {
             phase: Phase::AwaitReady,
             expected: None,
             state_id: None,
+            resume: None,
+            startup: None,
+            history_id: None,
             operations: Vec::new(),
             prompt: None,
             origin: None,
@@ -208,6 +219,12 @@ impl Default for Management {
     }
 }
 impl Management {
+    pub fn new(resume: Option<String>) -> Self {
+        Self {
+            resume,
+            ..Self::default()
+        }
+    }
     // Called only after Turn and the read-only ready-fact parser validate readiness.
     pub fn begin(&mut self, ready: &Value) -> io::Result<Value> {
         if self.failed || self.phase != Phase::AwaitReady {
@@ -242,6 +259,13 @@ impl Management {
             text(ready, "model", 1024)?.to_owned(),
             text(ready, "tool_profile", 32)?.to_owned(),
         ));
+        if self
+            .resume
+            .as_deref()
+            .is_some_and(|id| ready["conversation_id"] != id)
+        {
+            return Err(fail("Runtime did not resume the requested conversation"));
+        }
         self.phase = Phase::Hello;
         self.wire
             .begin_hello()
@@ -339,8 +363,49 @@ impl Management {
                     ));
                 }
                 self.state_id = None;
+                if let Some(session) = &self.resume {
+                    if !snapshot.writable
+                        || !self
+                            .operations
+                            .iter()
+                            .any(|op| op == "gui.conversations.read")
+                    {
+                        return Err(fail(
+                            "Resume requires writable owned state and transcript read support",
+                        ));
+                    }
+                    let id = self
+                        .wire
+                        .register_read()
+                        .map_err(|_| fail("Cannot reserve saved transcript read"))?;
+                    let command = json!({"type":"gui.conversations.read","id":id.to_value(),"session_id":session});
+                    self.history_id = Some(id);
+                    self.startup = Some(snapshot);
+                    self.phase = Phase::History;
+                    return Ok(Step::Write(command));
+                }
                 self.phase = Phase::Active;
                 Ok(Step::Initialized(snapshot))
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self.phase == Phase::History && id == self.history_id => {
+                if frame["ok"] != true {
+                    return Err(fail("Runtime rejected saved transcript read"));
+                }
+                self.ensure_drained()?;
+                let history = crate::resume::History::parse(
+                    &frame["result"],
+                    self.resume.as_deref().expect("resume"),
+                )?;
+                self.history_id = None;
+                self.phase = Phase::Active;
+                Ok(Step::Restored {
+                    snapshot: self.startup.take().expect("startup"),
+                    history,
+                })
             }
             Notice::Response {
                 id,

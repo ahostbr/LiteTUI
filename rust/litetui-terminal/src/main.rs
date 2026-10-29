@@ -702,8 +702,9 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
         terminal.clear()?;
     }
     let mut app = Demo::live(options.backend.clone(), options.model.clone());
+    let retained_root = options.data_root.clone();
     let runtime = litetui_terminal::live::Interactive::start(options);
-    runtime.with_cleanup(|runtime| {
+    let outcome = runtime.with_cleanup(|runtime| {
         let mut input = KeyRouter::default();
         let mut clipboard = litetui_terminal::clipboard::SystemClipboard::new(1024 * 1024);
         let mut result: Option<io::Result<()>> = None;
@@ -808,7 +809,30 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 let _ = runtime.quit();
             }
         }
-    })
+    });
+    drop(terminal);
+    drop(_guard);
+    println!(
+        "Retained data root: {}",
+        litetui_terminal::live::terminal_text(&retained_root.to_string_lossy())
+    );
+    if let Some(chat) = &app.live
+        && let Some(state) = chat.runtime_state.startup()
+    {
+        println!(
+            "Conversation: {}",
+            litetui_terminal::live::terminal_text(&state.session)
+        );
+        println!(
+            "Backend/model: {} / {}",
+            litetui_terminal::live::terminal_text(&chat.backend),
+            litetui_terminal::live::terminal_text(&chat.model)
+        );
+        println!(
+            "Resume saved messages with --resume <conversation> and this --data-root, --backend and --model."
+        );
+    }
+    outcome
 }
 
 fn main() -> io::Result<()> {
@@ -828,7 +852,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <NEW absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }

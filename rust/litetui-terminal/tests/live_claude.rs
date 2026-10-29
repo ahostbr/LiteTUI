@@ -30,6 +30,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
     ));
     println!("Real Claude multi-turn data: {}", root.display());
     let mut runtime = Interactive::start(Options {
+        resume: None,
         python,
         source,
         data_root: root,
@@ -63,6 +64,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                     f.key == litetui_terminal::footer::FieldKey::Context && !f.text.contains('—')
                 });
             }
+            Ok(Observation::History(_)) => panic!("Unrequested restored history"),
             Ok(Observation::Controls(_)) => panic!("Unrequested model control response"),
             Ok(Observation::Submission { .. }) => {}
             Ok(Observation::Ready) => {

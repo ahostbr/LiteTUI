@@ -32,6 +32,7 @@ pub struct Options {
     pub tools_enabled: bool,
     pub tool_profile: Option<crate::tool_mode::Profile>,
     pub workspace: Option<PathBuf>,
+    pub resume: Option<String>,
 }
 impl Options {
     /// Required at the runtime boundary, before filesystem writes or child creation.
@@ -54,6 +55,7 @@ impl Options {
                     "--tools",
                     "--tool-profile",
                     "--workspace",
+                    "--resume",
                 ]
                 .contains(&pair[0].as_str())
                 || fields.insert(pair[0].as_str(), pair[1].clone()).is_some()
@@ -75,6 +77,10 @@ impl Options {
         let backend = required("--backend")?;
         let model = required("--model")?;
         let prompt = fields.remove("--prompt").unwrap_or_default();
+        let resume = fields.remove("--resume");
+        if let Some(id) = &resume {
+            crate::resume::conversation_id(id)?;
+        }
         let tools_enabled = match fields.remove("--tools").as_deref().unwrap_or("off") {
             "on" => true,
             "off" => false,
@@ -115,6 +121,7 @@ impl Options {
             tools_enabled,
             tool_profile,
             workspace,
+            resume,
         })
     }
 }
@@ -139,6 +146,7 @@ impl ContentKind {
 #[derive(Debug, PartialEq)]
 pub enum Observation {
     State(crate::runtime_state::Update),
+    History(crate::resume::History),
     Controls(crate::model_controls::Update),
     Ready,
     /// Local command reservation; neither source admission nor completion.
@@ -735,7 +743,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         || !options.data_root.is_absolute()
     {
         return Err(io::Error::other(
-            "Expected Python executable, LiteTUI source tree, and absolute NEW data root",
+            "Expected Python executable, LiteTUI source tree, and absolute data root (new unless --resume)",
         ));
     }
     let workspace = match &options.workspace {
@@ -752,23 +760,30 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             ));
         }
     };
-    // Fail if the final path already exists: never resume/reuse a live seat.
-    if let Some(parent) = options.data_root.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::create_dir(&options.data_root)?;
-    let root = options.data_root.canonicalize()?;
-    // Explicit isolated overrides; all other values come from shipped Settings
-    // defaults in settings.load(). NEVER copy or load the user's live settings.
-    fs::write(
-        root.join("settings.json"),
-        serde_json::to_vec_pretty(&json!({
-            "backend": options.backend, "default_model": options.model,
-            "backend_chosen": true, "user_name_asked": true,
-            "tools_enabled": options.tools_enabled, "mcp_enabled": false, "seat_name": "RustLive",
-            "tool_policy_profile": profile.as_str()
-        }))?,
-    )?;
+    let root = if let Some(id) = &options.resume {
+        crate::resume::conversation_id(id)?;
+        let root = options.data_root.canonicalize()?;
+        crate::resume::validate_root(&root, options.tools_enabled)?;
+        root
+    } else {
+        // Fresh launch never adopts an existing seat or rewrites its settings.
+        if let Some(parent) = options.data_root.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::create_dir(&options.data_root)?;
+        let root = options.data_root.canonicalize()?;
+        fs::write(
+            root.join("settings.json"),
+            serde_json::to_vec_pretty(&json!({
+                "backend": options.backend, "default_model": options.model,
+                "backend_chosen": true, "user_name_asked": true,
+                "tools_enabled": options.tools_enabled, "mcp_enabled": false, "seat_name": "RustLive",
+                "tool_policy_profile": profile.as_str()
+            }))?,
+        )?;
+        crate::resume::mark_fresh(&root)?;
+        root
+    };
     let mut command = Command::new(&python);
     command
         .current_dir(&workspace)
@@ -792,8 +807,6 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             &options.backend,
             "--model",
             &options.model,
-            "--thinking-level",
-            "low",
             "--tool-profile",
             profile.as_str(),
             "--mcp-servers",
@@ -802,6 +815,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(id) = &options.resume {
+        command.args(["--convo", id]);
+    } else {
+        command.args(["--thinking-level", "low"]);
+    }
     let (job, mut child) = crate::live_process::Job::spawn(&mut command)?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
@@ -841,7 +859,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         profile,
         workspace,
     });
-    let mut management = crate::management::Management::default();
+    let mut management = crate::management::Management::new(options.resume.clone());
     let mut startup_facts = None;
     let mut mirror_deadline = None;
     let mut tail = Vec::new();
@@ -1004,15 +1022,24 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Step::Initialized(snapshot) => {
                         if !turn.closing {
-                            if let Some(update) = startup_facts.take() {
-                                frontend.observe(Observation::State(update))?;
-                            }
-                            frontend.observe(Observation::State(
-                                crate::runtime_state::Update::from_management(snapshot),
-                            ))?;
-                            check_deadline(deadline)?;
-                            deadline = None;
-                            frontend.observe(Observation::Ready)?;
+                            publish_startup(
+                                frontend,
+                                &mut startup_facts,
+                                snapshot,
+                                None,
+                                &mut deadline,
+                            )?;
+                        }
+                    }
+                    Step::Restored { snapshot, history } => {
+                        if !turn.closing {
+                            publish_startup(
+                                frontend,
+                                &mut startup_facts,
+                                snapshot,
+                                Some(history),
+                                &mut deadline,
+                            )?;
                         }
                     }
                     Step::Control(update) => {
@@ -1105,6 +1132,28 @@ impl Frontend for OneShot {
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
             Observation::State(_) | Observation::Controls(_) | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
+            Observation::History(history) => {
+                writeln!(
+                    self.output,
+                    "Restored conversation {}",
+                    terminal_text(&history.session)
+                )?;
+                for message in history.messages {
+                    writeln!(
+                        self.output,
+                        "Saved {}: {}",
+                        terminal_text(&message.role),
+                        terminal_text(&message.text)
+                    )?;
+                    if !message.details.is_empty() {
+                        writeln!(
+                            self.output,
+                            "Saved details: {}",
+                            terminal_text(&message.details)
+                        )?;
+                    }
+                }
+            }
             Observation::Approval(_)
             | Observation::ApprovalSettled { .. }
             | Observation::Question { .. } => {
@@ -1364,6 +1413,27 @@ fn check_deadline(deadline: Option<Instant>) -> io::Result<()> {
         return Err(io::Error::other("Live deadline elapsed; no prompt retry"));
     }
     Ok(())
+}
+fn publish_startup(
+    frontend: &mut impl Frontend,
+    facts: &mut Option<crate::runtime_state::Update>,
+    snapshot: crate::management::Snapshot,
+    history: Option<crate::resume::History>,
+    deadline: &mut Option<Instant>,
+) -> io::Result<()> {
+    check_deadline(*deadline)?;
+    if let Some(update) = facts.take() {
+        frontend.observe(Observation::State(update))?;
+    }
+    frontend.observe(Observation::State(
+        crate::runtime_state::Update::from_management(snapshot),
+    ))?;
+    if let Some(history) = history {
+        frontend.observe(Observation::History(history))?;
+    }
+    check_deadline(*deadline)?;
+    *deadline = None;
+    frontend.observe(Observation::Ready)
 }
 fn publish_event(
     turn: &mut Turn,

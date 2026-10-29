@@ -548,6 +548,47 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
     let t = app.palette();
     if let Some(chat) = &app.live {
         let mut lines = Vec::new();
+        if let Some(history) = &chat.history {
+            tool_body(
+                t,
+                &mut lines,
+                &format!("Saved conversation · {}", display_safe(&history.session)),
+                t.title,
+                width,
+            );
+            for message in &history.messages {
+                let label = format!("Saved {}", display_safe(&message.role));
+                if message.role == "assistant" {
+                    assistant_card(
+                        t,
+                        &mut lines,
+                        &label,
+                        &[],
+                        &display_safe(&message.text),
+                        "Saved transcript · outcome not inferred",
+                        width,
+                    );
+                } else {
+                    tool_body(
+                        t,
+                        &mut lines,
+                        &format!("{label}: {}", display_safe(&message.text)),
+                        t.foreground,
+                        width,
+                    );
+                }
+                if !message.details.is_empty() {
+                    tool_body(
+                        t,
+                        &mut lines,
+                        &format!("Saved details: {}", display_safe(&message.details)),
+                        t.tool_text,
+                        width,
+                    );
+                }
+                lines.push(Line::raw(""));
+            }
+        }
         for row in &chat.rows {
             for text in wrap(
                 &format!("You: {}", display_safe(&row.prompt)),

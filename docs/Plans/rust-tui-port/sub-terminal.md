@@ -12,6 +12,8 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 ## Current implementation checkpoint - 2026-10-29
 
+Saved-conversation restart is now implemented for versioned retained Rust roots. The CLI accepts an exact --resume UUID; the PowerShell launcher forwards -DataRoot/-Resume and explicit backend/model. Python owns acquisition and resume. A correlated owned history read precedes Ready, saved thinking survives, and prior prompts are never resubmitted. Saved text/details render before new turns; richer native history, images, large-history paging and conversation browsing remain open. See the newest master checkpoint for process evidence and Python fixture baseline failures.
+
 The latest checkpoint in [master.md](master.md) supersedes the historical implementation descriptions below. Live model and thinking selectors now use the owned management connection, source-derived choices, independent mutation/readback requests and actual effective settings. F3 opens models; Tab switches to thinking, and the thinking footer opens it directly. Only a fresh visible confirmation applies a choice. Pending verification keeps input owned; unknown readback outcomes stop the connection without replay.
 
 The controlled process exercises actual source setters and owned persistence, then uses the selected values on the next controlled turn. Backend/engine switching, general settings and remaining management screens are not closed by this checkpoint. Automated rendering/contract evidence does not establish either-host acceptance or full parity. See the master checkpoint for exact test counts and baseline failures.

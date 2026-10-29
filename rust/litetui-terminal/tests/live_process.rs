@@ -1605,3 +1605,251 @@ fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn(
         assert_eq!(commands.last().unwrap()["type"], "shutdown");
     }
 }
+
+#[test]
+#[ignore = "real CLI and owned saved store with controlled provider; requires LITETUI_AUTHORITY_PYTHON"]
+fn saved_conversation_reopens_same_owned_store_before_next_explicit_prompt() {
+    use litetui_terminal::live::{Interactive, Observation, Options};
+    use litetui_terminal::live_chat::Chat;
+    let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
+    let (command, root) = setup("success");
+    let source = root.parent().unwrap().join("source");
+    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../src/litetui")
+        .canonicalize()
+        .unwrap();
+    fs::write(
+        source.join("src/litetui/__init__.py"),
+        format!(
+            "__path__.append({})\n",
+            serde_json::to_string(&actual.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        source.join("src/litetui/cli.py"),
+        include_str!("fixtures/resume_runtime.py"),
+    )
+    .unwrap();
+    let mut args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    args[1] = python.to_string_lossy().into_owned();
+    let mut session = String::new();
+    let mut agent = String::new();
+    let mut saved_settings = Vec::new();
+    for pass in 0..2 {
+        let mut options = Options::parse(&args).unwrap();
+        options.timeout = Duration::from_secs(15);
+        options.resume = if pass == 0 {
+            None
+        } else {
+            Some(session.clone())
+        };
+        let runtime = Interactive::start(options);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+                let mut history_seen = false;
+                loop {
+                    let event = runtime
+                        .events
+                        .recv_timeout(Duration::from_secs(20))
+                        .map_err(std::io::Error::other)?;
+                    let ready = matches!(&event, Observation::Ready);
+                    let done = matches!(&event, Observation::Complete);
+                    if let Observation::History(h) = &event {
+                        assert_eq!(pass, 1);
+                        assert_eq!(h.session, session);
+                        assert_eq!(h.messages.len(), 2);
+                        assert_eq!(h.messages[0].text, "remember SAVED-CONTEXT");
+                        assert_eq!(h.messages[1].text, "Saved first reply");
+                        history_seen = true;
+                    }
+                    chat.observe(event)?;
+                    if ready {
+                        assert_eq!(history_seen, pass == 1);
+                        let snapshot = chat.runtime_state.startup().unwrap();
+                        if pass == 0 {
+                            session = snapshot.session.clone();
+                        } else {
+                            assert_eq!(snapshot.session, session);
+                        }
+                        assert!(chat.take_submission().is_none());
+                        if pass == 1 {
+                            let mut competing = Options::parse(&args).unwrap();
+                            competing.resume = Some(session.clone());
+                            competing.timeout = Duration::from_secs(10);
+                            let error = refused_resume(competing);
+                            assert!(error.contains("Resource owned or inaccessible"), "{error}");
+                        }
+                        let prompt = if pass == 0 {
+                            "remember SAVED-CONTEXT"
+                        } else {
+                            "what was saved?"
+                        };
+                        chat.submit(prompt)?;
+                        runtime.submit(chat.take_submission().unwrap())?;
+                    }
+                    if done {
+                        if pass == 1 {
+                            assert_eq!(
+                                chat.rows[0].cards[0].answer,
+                                "Earlier: remember SAVED-CONTEXT"
+                            );
+                        }
+                        break;
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let launches: Vec<serde_json::Value> = fs::read_to_string(root.join("launches.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let current = launches.last().unwrap();
+        if pass == 0 {
+            agent = current["agent"].as_str().unwrap().into();
+            saved_settings = fs::read(root.join("settings.json")).unwrap();
+        } else {
+            assert_eq!(current["agent"], agent);
+            assert_eq!(current["thinking"], "high");
+            assert_eq!(
+                fs::read(root.join("settings.json")).unwrap(),
+                saved_settings
+            );
+            let argv = current["argv"].as_array().unwrap();
+            assert!(!argv.iter().any(|v| v == "--thinking-level"));
+            assert!(argv.iter().any(|v| v == "--convo"));
+        }
+    }
+    let saved_commands = fs::read(root.join("resume-commands.jsonl")).unwrap();
+    for (id, model, expected) in [
+        (
+            "12345678-1234-4123-8123-123456789abc",
+            "claude-sonnet-5-5",
+            "Owned conversation lookup refused",
+        ),
+        (session.as_str(), "wrong-model", "Launch override disagrees"),
+    ] {
+        let mut options = Options::parse(&args).unwrap();
+        options.resume = Some(id.into());
+        options.model = model.into();
+        let error = refused_resume(options);
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(
+            fs::read(root.join("settings.json")).unwrap(),
+            saved_settings
+        );
+        assert_eq!(
+            fs::read(root.join("resume-commands.jsonl")).unwrap(),
+            saved_commands
+        );
+    }
+    let transcript = fs::read_to_string(root.join("resume-transcript-path.txt")).unwrap();
+    let records: Vec<serde_json::Value> = fs::read_to_string(transcript)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let prompts: Vec<&str> = records
+        .iter()
+        .filter(|v| v["type"] == "msg" && v["message"]["role"] == "user")
+        .map(|v| v["message"]["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(prompts, ["remember SAVED-CONTEXT", "what was saved?"]);
+    let commands: Vec<serde_json::Value> = fs::read_to_string(root.join("resume-commands.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(commands.iter().filter(|v| v["type"] == "prompt").count(), 2);
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|v| v["type"] == "gui.conversations.read")
+            .count(),
+        1
+    );
+    assert_eq!(
+        commands.iter().filter(|v| v["type"] == "shutdown").count(),
+        2
+    );
+    // An admitted owned resume still cannot enable the composer without history.
+    fs::write(
+        root.join("hold-history"),
+        "controlled missing read response",
+    )
+    .unwrap();
+    let before = fs::read(root.join("resume-commands.jsonl")).unwrap();
+    let mut timeout = Options::parse(&args).unwrap();
+    timeout.resume = Some(session.clone());
+    timeout.timeout = Duration::from_secs(4);
+    let error = refused_resume(timeout);
+    assert!(
+        error.contains("deadline elapsed") && error.contains("cleanup=Ok"),
+        "{error}"
+    );
+    let after = fs::read(root.join("resume-commands.jsonl")).unwrap();
+    let suffix = String::from_utf8_lossy(&after[before.len()..]);
+    assert!(suffix.contains("gui.conversations.read") && suffix.contains("shutdown"));
+    assert!(!suffix.contains("\"type\": \"prompt\""));
+}
+
+fn refused_resume(options: litetui_terminal::live::Options) -> String {
+    use litetui_terminal::live::{Interactive, Observation};
+    Interactive::start(options)
+        .with_cleanup(|runtime| {
+            while let Ok(event) = runtime.events.recv_timeout(Duration::from_secs(20)) {
+                if matches!(event, Observation::Ready | Observation::History(_)) {
+                    return Err(std::io::Error::other("Unexpected resume activation"));
+                }
+            }
+            Err(std::io::Error::other("Resume correctly never became ready"))
+        })
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+#[ignore = "controlled child launch tripwire; no provider"]
+fn unmarked_or_mismatched_resume_root_never_starts_python_or_overwrites_files() {
+    use litetui_terminal::{live::Options, resume};
+    for mode in ["missing-marker", "bad-settings", "matching-settings"] {
+        let (command, root) = setup("success");
+        fs::create_dir(&root).unwrap();
+        let settings = br#"{"tools_enabled":false,"mcp_enabled":false,"retained":"sentinel"}"#;
+        fs::write(root.join("settings.json"), settings).unwrap();
+        if mode != "missing-marker" {
+            resume::mark_fresh(&root).unwrap();
+        }
+        let args: Vec<String> = command
+            .get_args()
+            .skip(1)
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        let mut options = Options::parse(&args).unwrap();
+        options.resume = Some("12345678-1234-4123-8123-123456789abc".into());
+        if mode == "bad-settings" {
+            fs::write(
+                root.join("settings.json"),
+                br#"{"tools_enabled":true,"mcp_enabled":true}"#,
+            )
+            .unwrap();
+        }
+        let before = fs::read(root.join("settings.json")).unwrap();
+        let error = refused_resume(options);
+        if mode == "matching-settings" {
+            // Positive control reaches the process; its deliberately wrong ready ID refuses.
+            assert!(root.parent().unwrap().join("python-started").is_file());
+            assert!(error.contains("did not resume"), "{error}");
+        } else {
+            assert!(!root.parent().unwrap().join("python-started").exists());
+        }
+        assert_eq!(fs::read(root.join("settings.json")).unwrap(), before);
+    }
+}

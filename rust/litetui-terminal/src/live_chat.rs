@@ -9,7 +9,8 @@ use unicode_width::UnicodeWidthChar;
 // minimum-width row, escaped controls pay their expansion, every scalar pays
 // at least one unit (including combining marks), and every card pays overhead.
 // Reject before allocating/wrapping an oversized view; never silently truncate.
-const DISPLAY_UNITS: usize = 32768;
+pub(crate) const DISPLAY_UNITS: usize = 32768;
+pub(crate) const RETAINED_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) fn display_units(text: &str) -> io::Result<usize> {
     text.chars().try_fold(0usize, |total, ch| {
         let cost = if ch == '\n' {
@@ -62,6 +63,7 @@ pub struct Chat {
     pub backend: String,
     pub model: String,
     pub rows: Vec<Row>,
+    pub history: Option<crate::resume::History>,
     pub ready: bool,
     pub busy: bool,
     pub closed: bool,
@@ -86,6 +88,7 @@ impl Chat {
             backend,
             model,
             rows: Vec::new(),
+            history: None,
             ready: false,
             busy: false,
             closed: false,
@@ -118,7 +121,7 @@ impl Chat {
             ));
         }
         if self.rows.len() >= 100
-            || self.retained_bytes.saturating_add(prompt.len()) > 8 * 1024 * 1024
+            || self.retained_bytes.saturating_add(prompt.len()) > RETAINED_BYTES
         {
             return Err(io::Error::other(
                 "Live transcript limit reached; no prompt was sent",
@@ -191,6 +194,15 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::History(history) => {
+                if self.ready || self.busy || !self.rows.is_empty() || self.history.is_some() {
+                    return Err(io::Error::other("Saved history arrived outside startup"));
+                }
+                self.retained_bytes = history.bytes;
+                self.retained_units = history.units;
+                self.notice = format!("Restored {} saved messages.", history.messages.len());
+                self.history = Some(history);
+            }
             Observation::Submission { id } => {
                 self.pending_row()?;
                 if self.submission_id.replace(id).is_some() {
@@ -273,7 +285,7 @@ impl Chat {
         let reason = stop_reason.as_deref().unwrap_or("");
         let units = display_units(reason)?;
         if self.retained_units.saturating_add(units) > DISPLAY_UNITS
-            || self.retained_bytes.saturating_add(reason.len()) > 8 * 1024 * 1024
+            || self.retained_bytes.saturating_add(reason.len()) > RETAINED_BYTES
         {
             return Err(io::Error::other("Live transcript/display limit exceeded"));
         }
@@ -318,7 +330,7 @@ impl Chat {
             .retained_units
             .saturating_sub(old.1)
             .saturating_add(new.1);
-        if bytes > 8 * 1024 * 1024 {
+        if bytes > RETAINED_BYTES {
             return Err(io::Error::other("Live transcript text limit exceeded"));
         }
         if units > DISPLAY_UNITS {
