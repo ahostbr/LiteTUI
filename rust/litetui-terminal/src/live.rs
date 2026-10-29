@@ -117,6 +117,10 @@ pub enum Observation {
     },
     Activity(crate::native_activity::Activity),
     Approval(crate::approvals::Event),
+    Question {
+        event: crate::questions::Event,
+        settled: Option<TerminalOutcome>,
+    },
     Text(String),
     Snapshot(String),
     Reasoning(String),
@@ -126,7 +130,8 @@ pub enum Observation {
     ApprovalStopped(String),
     Complete,
 }
-enum TerminalOutcome {
+#[derive(Clone, Debug, PartialEq)]
+pub enum TerminalOutcome {
     Complete,
     ApprovalStopped(String),
 }
@@ -146,6 +151,7 @@ pub struct Turn {
     terminal: Option<TerminalOutcome>,
     content_bytes: usize,
     approvals: crate::approvals::Ledger,
+    questions: crate::questions::Ledger,
 }
 impl Turn {
     /// Reserve a new command ID exactly once. Neither a write nor admission.
@@ -153,6 +159,7 @@ impl Turn {
         if !self.ready
             || self.closing
             || !self.approvals.settled()
+            || !self.questions.settled()
             || (self.sent && !self.settled)
             || prompt.trim().is_empty()
             || prompt.len() > 65536
@@ -194,6 +201,25 @@ impl Turn {
             }
         }
     }
+    pub fn answer(&mut self, decision: crate::questions::Decision) -> io::Result<Option<Value>> {
+        if self.closing {
+            return Ok(None);
+        }
+        self.questions.decide(decision)
+    }
+    fn question_observation(&mut self, event: crate::questions::Event) -> Observation {
+        let settled = if self.terminal.is_some()
+            && !self.settled
+            && self.approvals.settled()
+            && self.questions.settled()
+        {
+            self.settled = true;
+            self.terminal.clone()
+        } else {
+            None
+        };
+        Observation::Question { event, settled }
+    }
     pub fn approve(&mut self, decision: crate::approvals::Decision) -> io::Result<Option<Value>> {
         if self.closing {
             return Ok(None);
@@ -234,8 +260,15 @@ impl Turn {
                 Ok(Observation::Information("shutdown acknowledged".into()))
             }
             "response" => {
+                if let Some(event) = self.questions.response(event)? {
+                    return Ok(self.question_observation(event));
+                }
                 if let Some(event) = self.approvals.response(event)? {
-                    if self.terminal.is_some() && !self.settled && self.approvals.settled() {
+                    if self.terminal.is_some()
+                        && !self.settled
+                        && self.approvals.settled()
+                        && self.questions.settled()
+                    {
                         return Ok(self.settle());
                     }
                     return Ok(Observation::Approval(event));
@@ -352,6 +385,21 @@ impl Turn {
                 }
                 Ok(Observation::Approval(event))
             }
+            "user_input_requested" if self.started && self.terminal.is_none() && !self.closing => {
+                let event = self.questions.request(event)?;
+                if let crate::questions::Event::Requested(request) = &event {
+                    self.content_bytes = self
+                        .content_bytes
+                        .checked_add(request.text_bytes())
+                        .filter(|size| *size <= 4 * FRAME_BYTES)
+                        .ok_or_else(|| fail("Live content budget exceeded"))?;
+                }
+                Ok(self.question_observation(event))
+            }
+            "user_input_resolved" => {
+                let event = self.questions.resolved(event)?;
+                Ok(self.question_observation(event))
+            }
             "tool_approval_closed" => Ok(Observation::Approval(self.approvals.close(event)?)),
             "turn_end" if self.started && self.terminal.is_none() => {
                 if self.closing && event["stopReason"] != "stop" {
@@ -359,9 +407,12 @@ impl Turn {
                         "turn interrupted while quitting; not completed".into(),
                     ));
                 }
-                if !self.acknowledged || !self.approvals.all_closed() {
+                if !self.acknowledged
+                    || !self.approvals.all_closed()
+                    || !self.questions.accounted_for()
+                {
                     return Err(fail(
-                        "Turn ended before prompt admission or approval closure",
+                        "Turn ended before prompt admission or input settlement",
                     ));
                 }
                 let outcome = match event["stopReason"].as_str() {
@@ -399,7 +450,7 @@ impl Turn {
                     }
                 };
                 self.terminal = Some(outcome);
-                if self.approvals.settled() {
+                if self.approvals.settled() && self.questions.settled() {
                     Ok(self.settle())
                 } else {
                     Ok(Observation::Information(
@@ -410,7 +461,7 @@ impl Turn {
             // These source-defined observations have no authority in this frontend.
             // Print their kind, rather than silently discarding unsupported state.
             "usage" | "native_usage" | "native_event" => Ok(Observation::Information(kind.into())),
-            // Structured questions remain unsupported; never auto-answer.
+            // Unknown input contracts remain unsupported; never auto-answer.
             _ => Err(fail(&format!(
                 "Unsupported or out-of-order live event: {kind}"
             ))),
@@ -684,6 +735,16 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                         // No deadline extension, no implicit denial on expiry.
                     }
+                    Input::Answer(decision) => {
+                        if let Some(value) = turn.answer(decision)? {
+                            owned
+                                .stdin
+                                .as_ref()
+                                .expect("owned stdin")
+                                .try_send(value)
+                                .map_err(io::Error::other)?;
+                        }
+                    }
                     Input::Quit => {
                         turn.closing = true;
                         deadline = Some(Instant::now() + Duration::from_secs(20));
@@ -776,6 +837,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 pub enum Input {
     Prompt(String),
     Approve(crate::approvals::Decision),
+    Answer(crate::questions::Decision),
     Quit,
 }
 trait Frontend {
@@ -794,9 +856,9 @@ impl Frontend for OneShot {
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
             Observation::State(_) => {} // Read-only footer facts; no one-shot action.
-            Observation::Approval(_) => {
+            Observation::Approval(_) | Observation::Question { .. } => {
                 return Err(io::Error::other(
-                    "One-shot frontend cannot answer approval; use interactive (no answer sent)",
+                    "One-shot frontend cannot answer approval or question; use interactive (no answer sent)",
                 ));
             }
             Observation::Content { card, kind, text } => writeln!(
@@ -994,6 +1056,14 @@ impl Interactive {
             .try_send(Input::Approve(decision))
             .map_err(io::Error::other)
     }
+    pub fn answer(&self, decision: crate::questions::Decision) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Answer(decision))
+            .map_err(io::Error::other)
+    }
     pub fn quit(&self) -> io::Result<()> {
         // Cancellation is an out-of-band control, not another queue item.
         self.quitting
@@ -1025,7 +1095,13 @@ fn publish_event(
     if !turn.closing
         && matches!(
             observation,
-            Observation::Ready | Observation::Complete | Observation::ApprovalStopped(_)
+            Observation::Ready
+                | Observation::Complete
+                | Observation::ApprovalStopped(_)
+                | Observation::Question {
+                    settled: Some(_),
+                    ..
+                }
         )
     {
         *deadline = None;

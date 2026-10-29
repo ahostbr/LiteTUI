@@ -2,6 +2,18 @@
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
+## Structured-question continuation — 2026-10-29
+
+Interactive Rust now consumes the source user_input_requested / answer / user_input_resolved protocol. The form supports up to eight questions, single/multiple choices, free-text and masked secret notes, navigation, clearing, submit, partial discussion and cancellation. Submit requires every question to have an answer; Chat about this permits partial answers. Cancel sends no selected options or notes. No request receives an automatic answer.
+
+Answer command IDs remain separate from source ask IDs. A validated successful ACK closes the form; source cancellation can close it before a delayed positive/negative response. A turn_end racing ahead of an already-sent answer ACK stays pending until the form and both input ledgers settle. The last ACK delivers form closure and the saved terminal outcome together, so the frontend cannot settle while still displaying the question. The runtime deadline remains active while waiting for input; timeout and one-shot refusal clean up without answering.
+
+Keyboard, bracketed paste, explicit clipboard reads and mouse input stay within the active form. Secret notes are masked and omitted from answer debug output; copy chords cannot expose them or copy the underlying draft. Hidden forms and reported repeats cannot submit. Question changes, scrolling, keyboard input, geometry changes and overlay hiding invalidate mouse presses. Compact forms retain the active question tab and scroll long notes to the caret. Request text, option counts, pending requests and note sizes are bounded and rejected explicitly.
+
+Verification: **270 ordinary Rust tests, 19 controlled-process tests and 21 focused Python source-contract/lifecycle tests passed**, plus Rust fmt/Clippy/build and focused Python Ruff/mypy. The initial source-question regression reproduced the unsupported-event failure; a compact note regression reproduced the hidden editing caret. The Python fixture uses the real source question serializer and answer dispatcher. Controlled children exercise submit/chat/cancel across three turns, both ACK orders, source cancellation, deadline expiry and one-shot refusal. These are protocol/process/render/input checks, not a real tool-enabled provider run or Windows Terminal/LiteSuite hands-on acceptance.
+
+Tools/MCP remain disabled. Next work is tool/profile enablement with source authority and lifecycle guarantees, followed by the remaining full-parity requirements. This checkpoint does not complete the port.
+
 ## Approval-stop continuation — 2026-10-29
 
 Resumed the existing uncommitted approval-stop regression on work/rust-tui-OpenBolt. A source turn_end with stopReason: approval now settles as **stopped, not successful**, preserving its reason and partial reply while keeping interactive chat ready for the next explicit prompt. It requires prompt admission and all request closures; outstanding decision ACKs must settle before the composer is released. Late ACKs preserve the original stop outcome, without requiring another terminal event. Refusal can arrive without a local request or any answer text (for example, no approval route).

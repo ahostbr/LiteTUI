@@ -67,6 +67,7 @@ pub struct Chat {
     pub notice: String,
     pub runtime_state: crate::runtime_state::State,
     pub approvals: crate::approvals::View,
+    pub questions: crate::questions::View,
     pending: Option<String>,
     retained_bytes: usize,
     retained_units: usize,
@@ -84,6 +85,7 @@ impl Chat {
             notice: "Connecting real owned Python runtime…".into(),
             runtime_state: crate::runtime_state::State::default(),
             approvals: crate::approvals::View::default(),
+            questions: crate::questions::View::default(),
             pending: None,
             retained_bytes: 0,
             retained_units: 0,
@@ -144,6 +146,18 @@ impl Chat {
                 }
                 self.notice = self.approvals.observe(event)?;
             }
+            Observation::Question { event, settled } => {
+                if matches!(event, crate::questions::Event::Requested(_)) {
+                    self.pending_row()?;
+                }
+                self.notice = self.questions.observe(event)?;
+                if let Some(outcome) = settled {
+                    self.settle(match outcome {
+                        crate::live::TerminalOutcome::Complete => None,
+                        crate::live::TerminalOutcome::ApprovalStopped(reason) => Some(reason),
+                    })?;
+                }
+            }
             Observation::Ready => {
                 self.ready = true;
                 self.notice = "Connected. Enter sends; Ctrl+Q quits. Tools are disabled.".into();
@@ -167,8 +181,8 @@ impl Chat {
         Ok(())
     }
     fn settle(&mut self, stop_reason: Option<String>) -> io::Result<()> {
-        if !self.approvals.is_empty() {
-            return Err(io::Error::other("Turn settlement with pending approval"));
+        if !self.approvals.is_empty() || !self.questions.is_empty() {
+            return Err(io::Error::other("Turn settlement with pending input"));
         }
         self.pending_row()?;
         let reason = stop_reason.as_deref().unwrap_or("");
@@ -322,6 +336,7 @@ impl Chat {
         self.busy = false;
         self.pending = None;
         self.approvals.clear();
+        self.questions.clear();
         for row in &mut self.rows {
             for tool in &mut row.tools {
                 tool.finish();

@@ -678,6 +678,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         area,
     );
     app.viewport_too_small = area.width < 36 || area.height < 14;
+    if (app.viewport_too_small || app.has_live_approval())
+        && let Some(chat) = app.live.as_mut()
+        && let Some(pending) = chat.questions.current_mut()
+    {
+        pending.invalidate_hits();
+    }
     if app.viewport_too_small {
         app.footer.update_visible(&[]);
         app.completion.hide();
@@ -915,7 +921,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 .border_style(style(t.thinking_border, t.surface)),
         );
     frame.render_widget(composer, areas[4]);
-    if !app.approval_open && !app.themes_open {
+    if !app.approval_open && !app.has_live_input() && !app.themes_open {
         frame.set_cursor_position((
             areas[4].x + 1 + (cursor_cells - input_scroll) as u16,
             areas[4].y + 1,
@@ -960,6 +966,8 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     if app.has_live_approval() {
         live_approval(frame, app, area);
+    } else if app.has_live_question() {
+        live_question(frame, app, area);
     }
     if app.themes_open {
         theme_picker(frame, app, area);
@@ -1221,5 +1229,243 @@ fn live_approval(frame: &mut Frame, app: &mut Demo, area: Rect) {
     frame.render_widget(
         Paragraph::new(controls).style(style(t.foreground, t.surface)),
         parts[1],
+    );
+}
+
+fn live_question(frame: &mut Frame, app: &mut Demo, area: Rect) {
+    use crate::questions::{Hit, HitTarget};
+    let t = app.palette().clone();
+    let pending = app
+        .live
+        .as_mut()
+        .expect("live question")
+        .questions
+        .current_mut()
+        .expect("visible question");
+    let width = area.width.saturating_sub(4).min(88);
+    let height = area.height.saturating_sub(2).min(32);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" Question ")
+        .style(style(t.foreground, t.surface))
+        .border_style(style(t.tool_text, t.surface));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    let parts = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ])
+    .split(inner);
+    let mut hits = Vec::new();
+    let mut tabs = Vec::new();
+    let mut x = parts[0].x;
+    let tab_count = (parts[0].width as usize / 5).max(1);
+    let first_tab = pending.active.saturating_sub(tab_count - 1);
+    for i in first_tab..pending.request.questions.len() {
+        let text = format!(
+            "[{}{}] ",
+            i + 1,
+            if pending.answered(i) { "*" } else { " " }
+        );
+        let len = text.len() as u16;
+        if x.saturating_add(len) > parts[0].right() {
+            break;
+        }
+        tabs.push(Span::styled(
+            text,
+            style(
+                if i == pending.active {
+                    t.tool_text
+                } else {
+                    MUTED
+                },
+                t.surface,
+            )
+            .add_modifier(if i == pending.active {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+        ));
+        hits.push(Hit {
+            rect: Rect::new(x, parts[0].y, len, 1),
+            target: HitTarget::Question(i),
+        });
+        x += len;
+    }
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(tabs),
+            Line::raw(if pending.focus == 0 {
+                "> Left/Right: change question"
+            } else {
+                "  Tab/Up/Down: move focus"
+            }),
+        ]),
+        parts[0],
+    );
+    let question = pending.question();
+    let count = question.options.len();
+    let mut body: Vec<(String, Option<usize>)> = Vec::new();
+    let body_width = parts[1].width.saturating_sub(2) as usize;
+    let mut add = |text: String, focus: Option<usize>| {
+        let start = body.len();
+        for line in wrap(&text, body_width) {
+            body.push((line, focus));
+        }
+        start
+    };
+    add(
+        format!(
+            "{}: {}",
+            display_safe(&question.label),
+            display_safe(&question.text)
+        ),
+        None,
+    );
+    add(
+        if question.multi_select {
+            "Select any options, or enter a note."
+        } else {
+            "Select one option, or enter a note."
+        }
+        .into(),
+        None,
+    );
+    for (i, option) in question.options.iter().enumerate() {
+        add(
+            format!(
+                "{} [{}] {}{}",
+                if pending.focus == i + 1 { ">" } else { " " },
+                if pending.answers[pending.active].contains(&i) {
+                    "x"
+                } else {
+                    " "
+                },
+                display_safe(&option.title),
+                if option.description.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", display_safe(&option.description))
+                }
+            ),
+            Some(i + 1),
+        );
+    }
+    let note = &pending.notes[pending.active];
+    let before = note.before_cursor();
+    let after = &note.text()[before.len()..];
+    let note_label = format!(
+        "{} {}: ",
+        if pending.note_focused() { ">" } else { " " },
+        if question.secret {
+            "Secret note (hidden)"
+        } else {
+            "Type something"
+        }
+    );
+    let before_display = if question.secret {
+        "*".repeat(before.chars().count())
+    } else {
+        display_safe(before)
+    };
+    let after_display = if question.secret {
+        "*".repeat(after.chars().count())
+    } else {
+        display_safe(after)
+    };
+    let prefix = format!(
+        "{note_label}{before_display}{}",
+        if pending.note_focused() { "│" } else { "" }
+    );
+    let note_start = add(format!("{prefix}{after_display}"), Some(count + 1));
+    let caret_row = note_start + wrap(&prefix, body_width).len() - 1;
+    for (focus, label) in [
+        (count + 2, "Clear this answer"),
+        (
+            count + 3,
+            if pending.active + 1 < pending.request.questions.len() {
+                "Next question"
+            } else {
+                "Submit answers"
+            },
+        ),
+        (count + 4, "Chat about this"),
+        (count + 5, "Cancel without answers"),
+    ] {
+        add(
+            format!(
+                "{} [ {} ]",
+                if pending.focus == focus { ">" } else { " " },
+                label
+            ),
+            Some(focus),
+        );
+    }
+    let visible = parts[1].height as usize;
+    if pending.follow_focus {
+        let focus_row = if pending.note_focused() {
+            Some(caret_row)
+        } else {
+            body.iter()
+                .position(|(_, focus)| *focus == Some(pending.focus))
+        };
+        if let Some(index) = focus_row {
+            if index < pending.scroll {
+                pending.scroll = index;
+            } else if index >= pending.scroll + visible {
+                pending.scroll = index.saturating_sub(visible.saturating_sub(1));
+            }
+        } else if pending.focus == 0 {
+            pending.scroll = 0;
+        }
+        pending.follow_focus = false;
+    }
+    pending.scroll = pending.scroll.min(body.len().saturating_sub(visible));
+    let mut lines = Vec::new();
+    for (offset, (line, focus)) in body.iter().skip(pending.scroll).take(visible).enumerate() {
+        if let Some(focus) = focus {
+            hits.push(Hit {
+                rect: Rect::new(parts[1].x, parts[1].y + offset as u16, parts[1].width, 1),
+                target: HitTarget::Control(*focus),
+            });
+        }
+        lines.push(Line::styled(
+            format!(" {line}"),
+            style(
+                if *focus == Some(pending.focus) {
+                    t.tool_text
+                } else {
+                    t.foreground
+                },
+                t.surface,
+            ),
+        ));
+    }
+    pending.set_hits(hits);
+    frame.render_widget(Paragraph::new(lines), parts[1]);
+    let footer = if pending.waiting {
+        "Answer sent; waiting for source response."
+    } else if !pending.notice.is_empty() {
+        pending.notice.as_str()
+    } else {
+        "Enter/Space selects · Esc cancels · Ctrl+Q quits"
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::raw(clip_label(footer, parts[2].width as usize)),
+            Line::raw("PgUp/PgDn scroll · * answered · notes may be partial"),
+            Line::raw("Submit requires every answer; Chat allows discussion."),
+        ])
+        .style(style(t.foreground, t.surface)),
+        parts[2],
     );
 }

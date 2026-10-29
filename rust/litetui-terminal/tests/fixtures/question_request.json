@@ -1,0 +1,34 @@
+{
+  "type": "user_input_requested",
+  "id": "ask-000000000000",
+  "questions": [
+    {
+      "label": "Scope",
+      "question": "Which files?",
+      "options": [
+        {
+          "title": "Source",
+          "description": "Implementation"
+        },
+        {
+          "title": "Tests",
+          "description": "Regression coverage"
+        }
+      ],
+      "selected": [],
+      "note": "",
+      "answered": false,
+      "multiSelect": true
+    },
+    {
+      "label": "Token",
+      "question": "Enter a fixture token",
+      "options": [],
+      "selected": [],
+      "note": "",
+      "answered": false,
+      "multiSelect": false,
+      "isSecret": true
+    }
+  ]
+}

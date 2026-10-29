@@ -148,6 +148,10 @@ impl Demo {
         if matches!(
             observation,
             crate::live::Observation::Approval(crate::approvals::Event::Requested(_))
+                | crate::live::Observation::Question {
+                    event: crate::questions::Event::Requested(_),
+                    ..
+                }
         ) {
             self.themes_open = false;
             self.completion.dismiss();
@@ -165,6 +169,14 @@ impl Demo {
             self.scroll = usize::MAX;
         }
         Ok(())
+    }
+    pub fn has_live_question(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| !chat.questions.is_empty())
+    }
+    pub fn has_live_input(&self) -> bool {
+        self.has_live_approval() || self.has_live_question()
     }
     pub fn has_live_approval(&self) -> bool {
         self.live

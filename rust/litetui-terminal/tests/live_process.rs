@@ -37,9 +37,35 @@ for line in sys.stdin:
         out.write(json.dumps(command)+'\n')
     if command['type'] == 'shutdown':
         if pending:
-            emit(dict(type='tool_approval_closed',id=pending,outcome='cancelled',reason='cancelled'))
+            if mode.startswith('question'):
+                emit(dict(type='user_input_resolved',id=pending,cancelled=True))
+            else:
+                emit(dict(type='tool_approval_closed',id=pending,outcome='cancelled',reason='cancelled'))
         emit(dict(type='response',id=command['id'],ok=True,result=dict(ok=True)))
         break
+    if command['type'] == 'answer':
+        assert command['ask_id'] == pending and command['id'] != pending
+        assert command['action'] in ['submit', 'chat', 'cancel']
+        if command['action'] == 'submit':
+            assert command['answers'] == [dict(selected=[0, 1],note='both'), dict(selected=[],note='fixture-secret')]
+        elif command['action'] == 'chat':
+            assert command['answers'] == [dict(selected=[1],note='discuss'), dict(selected=[],note='')]
+        else:
+            assert command['answers'] == []
+        ack = dict(type='response',id=command['id'],ok=True,result=dict(answered=pending,id_key='ask_id'))
+        if mode == 'question_cancelled':
+            emit(dict(type='user_input_resolved',id=pending,cancelled=True))
+            emit(dict(type='turn_end',stopReason='approval',error='Fixture cancelled'))
+            emit(dict(type='response',id=command['id'],ok=False,error='Unknown ask'))
+        else:
+            if approval_sequence % 2:
+                emit(ack)
+            emit(dict(type='text_delta',text='Fixture question handled; no tool executed',card_index=0))
+            emit(dict(type='turn_end',stopReason='stop',error=None))
+            if not approval_sequence % 2:
+                emit(ack)
+        pending = None
+        continue
     if command['type'] == 'approve':
         assert command['approval_id'] == pending and command['id'] != pending
         assert command['remember'] is False and type(command['allow']) is bool
@@ -67,6 +93,18 @@ for line in sys.stdin:
         pending = 'fixture-approval-' + str(approval_sequence)
         approval_sequence += 1
         emit(dict(type='tool_approval_requested',id=pending,tool='write',input={'path':'never-executed.txt'},profile='strict',why='fixture only',timeout_s=None))
+        continue
+    if mode.startswith('question'):
+        pending = 'fixture-question-' + str(approval_sequence)
+        approval_sequence += 1
+        questions = [
+            dict(label='Scope',question='Which files?',options=[
+                dict(title='Source',description='Implementation'),
+                dict(title='Tests',description='Regression coverage'),
+            ],selected=[],note='',answered=False,multiSelect=True),
+            dict(label='Token',question='Fixture only',options=[],selected=[],note='',answered=False,multiSelect=False,isSecret=True),
+        ]
+        emit(dict(type='user_input_requested',id=pending,questions=questions))
         continue
     if mode == 'timeout':
         continue
@@ -650,5 +688,219 @@ fn one_shot_approval_stop_without_request_is_failure_with_clean_shutdown() {
     assert!(!String::from_utf8_lossy(&output.stdout).contains("[Turn ended: stop]"));
     let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
     assert!(!log.contains("approval_id"));
+    assert!(log.contains("shutdown"));
+}
+
+fn question_runtime(mode: &str) -> (litetui_terminal::live::Interactive, PathBuf) {
+    use litetui_terminal::live::{Interactive, Options};
+    let (command, root) = setup(mode);
+    let source = root.parent().unwrap().join("source/src/litetui/cli.py");
+    let script = fs::read_to_string(&source).unwrap().replace(
+        "mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')",
+        &format!("mode = '{mode}'"),
+    );
+    fs::write(source, script).unwrap();
+    let args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    (Interactive::start(Options::parse(&args).unwrap()), root)
+}
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn question_actions_cross_owned_process_and_ack_races_keep_three_turns_separate() {
+    use litetui_terminal::{
+        live::{Observation, TerminalOutcome},
+        live_chat::Chat,
+        questions::{Action, Answer, Decision, Event},
+    };
+    use std::collections::BTreeSet;
+    let (mut runtime, root) = question_runtime("question");
+    let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+    let mut turns = 0;
+    while turns < 3 {
+        let observation = runtime
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let ready = matches!(observation, Observation::Ready);
+        let requested = if let Observation::Question {
+            event: Event::Requested(request),
+            ..
+        } = &observation
+        {
+            Some(request.id.clone())
+        } else {
+            None
+        };
+        let complete = matches!(
+            observation,
+            Observation::Complete
+                | Observation::Question {
+                    settled: Some(TerminalOutcome::Complete),
+                    ..
+                }
+        );
+        chat.observe(observation).unwrap();
+        if ready {
+            chat.submit("first").unwrap();
+            runtime.submit(chat.take_submission().unwrap()).unwrap();
+        }
+        if let Some(id) = requested {
+            std::thread::sleep(Duration::from_millis(75));
+            let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+            assert_eq!(
+                log.lines().filter(|line| line.contains("ask_id")).count(),
+                turns
+            );
+            let action = [Action::Submit, Action::Chat, Action::Cancel][turns];
+            let answers = match action {
+                Action::Submit => vec![
+                    Answer {
+                        selected: BTreeSet::from([0, 1]),
+                        note: "both".into(),
+                    },
+                    Answer {
+                        selected: BTreeSet::new(),
+                        note: "fixture-secret".into(),
+                    },
+                ],
+                Action::Chat => vec![
+                    Answer {
+                        selected: BTreeSet::from([1]),
+                        note: "discuss".into(),
+                    },
+                    Answer {
+                        selected: BTreeSet::new(),
+                        note: String::new(),
+                    },
+                ],
+                Action::Cancel => Vec::new(),
+            };
+            runtime
+                .answer(Decision {
+                    id,
+                    action,
+                    answers,
+                })
+                .unwrap();
+        }
+        if complete {
+            assert!(chat.questions.is_empty());
+            assert!(!chat.busy);
+            turns += 1;
+            if turns < 3 {
+                chat.submit("follow-up").unwrap();
+                runtime.submit(chat.take_submission().unwrap()).unwrap();
+            }
+        }
+    }
+    runtime.shutdown().unwrap();
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    let commands: Vec<serde_json::Value> = log
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(commands.len(), 7);
+    let answers: Vec<_> = commands.iter().filter(|c| c["type"] == "answer").collect();
+    assert_eq!(answers.len(), 3);
+    assert_ne!(answers[0]["id"], answers[1]["id"]);
+    assert_ne!(answers[0]["ask_id"], answers[1]["ask_id"]);
+    assert_eq!(answers[2]["answers"], serde_json::json!([]));
+    assert_eq!(commands[6]["type"], "shutdown");
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn source_question_cancellation_before_negative_ack_releases_form_and_turn() {
+    use litetui_terminal::{
+        live::{Observation, TerminalOutcome},
+        live_chat::{Chat, ReplyState},
+        questions::{Action, Decision, Event},
+    };
+    let (mut runtime, _) = question_runtime("question_cancelled");
+    let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+    loop {
+        let observation = runtime
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let ready = matches!(observation, Observation::Ready);
+        let requested = if let Observation::Question {
+            event: Event::Requested(request),
+            ..
+        } = &observation
+        {
+            Some(request.id.clone())
+        } else {
+            None
+        };
+        let settled = matches!(
+            &observation,
+            Observation::Question {
+                settled: Some(TerminalOutcome::ApprovalStopped(_)),
+                ..
+            }
+        );
+        chat.observe(observation).unwrap();
+        if ready {
+            chat.submit("first").unwrap();
+            runtime.submit(chat.take_submission().unwrap()).unwrap();
+        }
+        if let Some(id) = requested {
+            runtime
+                .answer(Decision {
+                    id,
+                    action: Action::Cancel,
+                    answers: Vec::new(),
+                })
+                .unwrap();
+        }
+        if settled {
+            assert!(!chat.busy && chat.questions.is_empty());
+            assert!(matches!(chat.rows[0].state, ReplyState::ApprovalStopped));
+            break;
+        }
+    }
+    runtime.shutdown().unwrap();
+}
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn unanswered_question_keeps_deadline_without_automatic_answer() {
+    use litetui_terminal::live::Observation;
+    let (mut runtime, root) = question_runtime("question");
+    let mut asked = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline);
+        for observation in runtime.events.try_iter() {
+            match observation {
+                Observation::Ready => runtime.submit("test".into()).unwrap(),
+                Observation::Question { .. } => asked = true,
+                _ => {}
+            }
+        }
+        if let Some(result) = runtime.poll_done() {
+            assert!(asked);
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Live deadline elapsed") && error.contains("cleanup=Ok"));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert!(!log.contains("ask_id"));
+    assert!(log.contains("shutdown"));
+}
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn one_shot_refuses_question_without_answering() {
+    let (mut command, root) = setup("question");
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot answer"));
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert!(!log.contains("ask_id"));
     assert!(log.contains("shutdown"));
 }

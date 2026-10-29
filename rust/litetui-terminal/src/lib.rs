@@ -10,6 +10,7 @@ pub mod live_chat;
 mod live_process;
 pub mod native_activity;
 pub mod protocol;
+pub mod questions;
 pub mod runtime_state;
 pub mod session;
 pub mod stream;

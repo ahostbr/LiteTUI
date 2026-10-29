@@ -544,3 +544,24 @@ fn approval_stop_never_bypasses_open_requests_or_malformed_reason() {
         );
     }
 }
+
+#[test]
+fn structured_question_request_is_not_a_session_failure() {
+    let mut turn = started();
+    let requested = turn.accept(
+        &json!({
+            "type":"user_input_requested","id":"ask-question","questions":[{
+                "label":"Scope","question":"Which files?","options":[
+                    {"title":"Source","description":"Implementation"},
+                    {"title":"Tests","description":"Regression coverage"}
+                ],"selected":[],"note":"","answered":false,"multiSelect":true
+            }]
+        }),
+        "claude",
+        "fixture",
+    );
+    assert!(
+        requested.is_ok(),
+        "a source question must be answerable: {requested:?}"
+    );
+}

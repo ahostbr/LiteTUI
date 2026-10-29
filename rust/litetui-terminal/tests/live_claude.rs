@@ -76,7 +76,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 }
             }
             Ok(Observation::Activity(_)) => panic!("Unexpected tool in tools-disabled smoke"),
-            Ok(Observation::Approval(_)) => {
+            Ok(Observation::Approval(_)) | Ok(Observation::Question { .. }) => {
                 failure =
                     Some("Unexpected approval in tools-disabled smoke; no answer sent".into());
                 break;
