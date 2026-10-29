@@ -1,5 +1,13 @@
 # LiteTUI Rust terminal port
 
+## Native Claude event attribution - 2026-10-29
+
+Source tracing before management integration found that the worker dropped its captured origin when entering Claude's native turn. Native stream emissions and finalization now carry the scheduled immutable session, operation, hook, source and execution identity through the existing GUI serializer. Legacy raw payloads and direct callers without a captured origin keep their existing shape. Source admission and inactive-conversation guards still apply.
+
+New regressions first reproduced the missing-origin signature and forwarding gap. Five tests now verify worker forwarding, normal completion, provider error, cancellation propagation and rejection of a callback after a conversation change. They exercise real native-turn processing and RPC serialization with controlled provider/widget boundaries, covering answer/reasoning/tool/usage/diagnostic events and answer reconciliation. Envelopes retain the captured origin through finalization; each preceding raw event stays unchanged.
+
+Verification: **89 affected Python tests and 293 ordinary Rust tests passed**. Ruff is clean for the native producer and new tests; app.py retains the same 112 baseline findings. Focused mypy retains the same eleven native-producer findings as committed HEAD, with no added findings; the new tests are clean. No real provider or desktop acceptance was run. Other producer families retain their existing attribution contracts. Versioned management integration and full parity remain open.
+
 ## Explicit launch-profile selection - 2026-10-29
 
 The previous strict-default gap is closed. Options retain an absent profile until a human confirms the native picker or supplies --tool-profile. Both interactive and one-shot terminal launches ask before constructing the Python runtime; redirected launches require an explicit option. The two PowerShell launchers no longer fill in strict. Invalid explicit choices fail rather than falling back.

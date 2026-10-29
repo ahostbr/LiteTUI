@@ -7,12 +7,14 @@ import os
 import re
 import tempfile
 import time
+from functools import partial
 from pathlib import Path
 
 from rich.text import Text
 
 from litetui import claude_cache
 from litetui.claude_persistence import ClaudeLedger
+from litetui.event_origin import EventOrigin
 from litetui.stream_sink import StreamSink
 
 
@@ -504,9 +506,13 @@ async def _query_with_store_notice(session, ledger, entry_id, content, notice):
         ledger.mark_store_notice_delivered()
 
 
-async def stream_turn(app):
+async def stream_turn(app, *, origin: EventOrigin | None = None):
     from litetui.claude_backend import settle_close
 
+    # The scheduled turn owns its attribution, including late output and cleanup.
+    # Direct legacy callers without an origin keep their existing raw contract.
+    emit = partial(app._rpc_emit, origin=origin) if origin is not None else app._rpc_emit
+    end = partial(app._emit_turn_end, origin=origin) if origin is not None else app._emit_turn_end
     backend = app.backend
     ledger = ledger_for(app)
     # Admission is what creates the durable entry (prepare_input at the submit
@@ -537,7 +543,7 @@ async def stream_turn(app):
     app._turn_stop_line_settled = False
     app._turn_abandoned = False
     app.tps = None
-    app._rpc_emit({"type": "turn_start", "model": app.model_id, "provider": "claude"})
+    emit({"type": "turn_start", "model": app.model_id, "provider": "claude"})
     widget = app._assistant_bubble()
     app._active_turn_widget = widget
     app._elapsed.start(widget.body, started_at=started)
@@ -628,7 +634,7 @@ async def stream_turn(app):
                 tool_below = False
                 # Even a recap-only/suppressed answer allocates a real card.
                 # Announce ownership before a subsequent tool can refer to it.
-                app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
+                emit({"type": "native_text_snapshot", "provider": "claude",
                                "message_id": None, "text": "", "card_index": len(cards) - 1})
             cards[-1][1].append(key)
             return widget
@@ -652,12 +658,12 @@ async def stream_turn(app):
             if replace or not answer.startswith(stream.raw):
                 stream = recap_streams[card] = RecapStream()
                 stream.feed(answer)
-                app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
+                emit({"type": "native_text_snapshot", "provider": "claude",
                                "message_id": message_id, "text": stream.visible, "card_index": card_index(card)})
             else:
                 visible_delta = stream.feed(answer[len(stream.raw):])
                 if visible_delta:
-                    app._rpc_emit({"type": "text_delta", "text": visible_delta, "card_index": card_index(card)})
+                    emit({"type": "text_delta", "text": visible_delta, "card_index": card_index(card)})
             sink_for(card).show(stream.visible)
 
         def stop_live_clocks():
@@ -714,7 +720,7 @@ async def stream_turn(app):
                     # The native snapshot can replace a divergent prefix. Keep
                     # that distinction on the wire as well as in ThinkingBlock;
                     # append-only hosts otherwise display the trace twice.
-                    app._rpc_emit({"type": "reasoning_delta", "text": event.text,
+                    emit({"type": "reasoning_delta", "text": event.text,
                                    "reconcile": "replace" if snapshot else "append",
                                    "card_index": card_index(card)})
                     if stale and thinking is not None:
@@ -752,7 +758,7 @@ async def stream_turn(app):
                         thinking.finalize()
                         thinking.freeze_header()
                 elif event.kind in {"tool_use", "tool_result"}:
-                    app._rpc_emit({"type": "native_activity", "provider": "claude", "kind": event.kind,
+                    emit({"type": "native_activity", "provider": "claude", "kind": event.kind,
                                    "id": event.tool_id, "name": event.tool_name, "complete": event.complete,
                                    "input": event.tool_input, "result": event.tool_result,
                                    "is_error": event.is_error,
@@ -803,12 +809,12 @@ async def stream_turn(app):
                                 await session.interrupt()
                     if event.usage and (event.usage.source == "message" or event.usage.max_context_tokens):
                         app._refresh_ctx_label()
-                    app._rpc_emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
+                    emit({"type": "native_usage", "provider": "claude", "data": asdict(event.usage) if event.usage else {}})
                 elif event.kind in {"diagnostic", "notice", "rate_limit", "task", "session", "user_text"}:
                     # Native Claude rate_limit is a status transition (including allowed_warning),
                     # not a confirmed retry-begin/retry-end. Keep it diagnostic: claiming a
                     # WAITING banner here would invent a blocked state with no reliable exit.
-                    app._rpc_emit({"type": "native_event", "provider": "claude", "kind": event.kind,
+                    emit({"type": "native_event", "provider": "claude", "kind": event.kind,
                                    "detail": event.detail, "data": event.data})
                     if event.kind == "diagnostic":
                         app._system("Claude diagnostic: " + event.detail)
@@ -882,11 +888,11 @@ async def stream_turn(app):
                         # without a text delta. Reproject the saved card text.
                         stream = recap_streams[card] = RecapStream()
                         stream.feed(card_answer)
-                        app._rpc_emit({"type": "native_text_snapshot", "provider": "claude",
+                        emit({"type": "native_text_snapshot", "provider": "claude",
                                        "message_id": None, "text": stream.visible, "card_index": card_index(card)})
                     final_delta = stream.finish()
                     if final_delta:
-                        app._rpc_emit({"type": "text_delta", "text": final_delta, "card_index": card_index(card)})
+                        emit({"type": "text_delta", "text": final_delta, "card_index": card_index(card)})
                     shown, recap = stream.visible, stream.recap
                 else:
                     shown, recap = split_recap(card_answer, final=True)
@@ -909,7 +915,7 @@ async def stream_turn(app):
                 widget.body.content = Text(failure, style="bold red")
         widget.settled = True
         app._settle_turn_stop_line(widget, started_at=started, final_tps=None, stopped=reason != "stop")
-        app._emit_turn_end(reason, None, error=failure)
+        end(reason, None, error=failure)
         if (interrupted_for_compact and terminal and not failure
                 and not app._stop_requested and not app._turn_abandoned):
             app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, None)

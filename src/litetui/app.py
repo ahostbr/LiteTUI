@@ -9049,7 +9049,7 @@ class LiteTUI(App):
                 return
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import stream_turn
-            await stream_turn(self)
+            await stream_turn(self, origin=origin)
             return
         emit = partial(self._rpc_emit, origin=origin)
         end = partial(self._emit_turn_end, origin=origin)
