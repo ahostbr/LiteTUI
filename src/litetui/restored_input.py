@@ -1,5 +1,7 @@
 """Launch-local holds and owned, revision-checked recovery controls."""
 
+import asyncio
+import copy
 import hashlib
 import json
 
@@ -105,6 +107,10 @@ def _inspect(app, session_id):
             "source": _text(payload.get("source", ""), 128, empty=True),
             "tool_profile": _text(payload.get("tool_profile", ""), 128, empty=True),
             "can_cancel": state in _CANCELLABLE,
+            "can_continue": (state in _CANCELLABLE and item is app._pending_input[0]
+                             and app.backend.name == "codex" and hasattr(app.backend, "app_server")
+                             and isinstance(payload.get("content"), (str, list))
+                             and bool(payload["content"].strip() if isinstance(payload["content"], str) else payload["content"])),
         })
         records[ident] = (item, record)
     result = {"session_id": session_id, "backend": app.backend.name, "model": app.model_id,
@@ -127,8 +133,6 @@ def inspect(app, session_id):
 
 def cancel(app, cmd):
     """Persist denial before removing a never-sent item. Never retry on failure."""
-    from litetui.codex_steering import SteeringLedger, save_at
-
     result, records = _inspect(app, cmd.get("session_id"))
     if cmd.get("snapshot") != result["snapshot"]:
         raise ValueError("Recovered input changed; refresh before cancelling")
@@ -138,13 +142,8 @@ def cancel(app, cmd):
     item, (entry, entries, index) = records[row["id"]]
     # Build persistence against the CURRENT metadata index; restored callbacks
     # may have captured an index before a conversation edit or open.
-    ledger = SteeringLedger(entries, lambda: save_at(app, index))
     try:
-        ledger.transition(entry, "denied", admission={"reason": "Cancelled by user"})
-        meta, messages = ConversationRepository.read(app.store.convo_path)
-        saved = _records(messages).get(row["id"])
-        if meta.get("id") != result["session_id"] or saved is None or saved[0] != entry:
-            raise OSError("Cancellation could not be verified in the saved journal")
+        _persist(app, entry, entries, index, "denied", admission={"reason": "Cancelled by user"})
     except Exception:
         # transition mutates before saving. Do not expose that memory as durable
         # evidence or remove the held item after an ambiguous storage failure.
@@ -152,3 +151,113 @@ def cancel(app, cmd):
         raise
     app._pending_input[:] = [candidate for candidate in app._pending_input if candidate is not item]
     return {"cancelled": row["id"], "session_id": result["session_id"]}
+
+
+def _persist(app, entry, entries, index, state, **values):
+    """Verify both the write receipt and the saved value before any side effect."""
+    from litetui.codex_steering import SteeringLedger, save_at
+
+    current = _records(app.conversation).get(entry["id"])
+    if current is None or current[0] is not entry or current[1] is not entries or current[2] != index:
+        raise ValueError("Recovered input metadata moved before persistence")
+    SteeringLedger(entries, lambda: save_at(app, index)).transition(entry, state, **values)
+    meta, messages = ConversationRepository.read(app.store.convo_path)
+    saved = _records(messages).get(entry["id"])
+    if meta.get("id") != app.convo_id or saved is None or saved[0] != entry:
+        raise OSError("Recovered input transition could not be verified in the saved journal")
+
+
+async def continue_input(app, cmd):
+    """One explicit attempt; original source/profile survive a new operation ID.
+
+    Admission refusal has a structured, not-started result. Exceptions after
+    the durable claim are uncertain and never release the item for replay.
+    """
+    from dataclasses import replace
+
+    from litetui import hook_host, seat_authority, tool_policy
+
+    operation = _text(cmd.get("id"), 128)
+    result, records = _inspect(app, cmd.get("session_id"))
+    if cmd.get("snapshot") != result["snapshot"]:
+        raise ValueError("Recovered input changed; refresh before continuing")
+    row = next((row for row in result["entries"] if row["id"] == cmd.get("entry_id")), None)
+    if row is None or not row["can_continue"]:
+        raise ValueError("Only the eligible oldest recovered Codex input can continue")
+    item, (entry, entries, index) = records[row["id"]]
+    app._validate_owned_execution()
+    if getattr(app, "_mcp_maintenance", False) or getattr(app, "_gui_quitting", False):
+        raise ValueError("Runtime maintenance or shutdown is active")
+    conversation, backend, model = app.conversation, app.backend, app.model_id
+    session, store = app._agent_session, app.store
+    original_state = entry["state"]
+    # Never relabel recovered unattended work as an attended RPC prompt.
+    delivery = copy.deepcopy(entry["item"])
+    delivery["source"] = hook_host._turn_source(delivery)
+    requested_profile = delivery.get("tool_profile")
+    if requested_profile is not None and requested_profile not in tool_policy.PROFILES:
+        raise ValueError("Invalid saved tool profile")
+    if delivery["source"] == "scheduled":
+        refusal = seat_authority.withheld(app, requested_profile or tool_policy.STRICT)
+        if refusal:
+            return {"turn": "refused", "entry_id": row["id"], "session_id": app.convo_id,
+                    "reason": refusal, "held": status(app)["held"]}
+    delivery.update(operation_id=operation, _codex_entry=entry, _codex_ledger=item["_codex_ledger"])
+    reasons: list[str] = []
+
+    def identity():
+        if (app.conversation is not conversation or app.backend is not backend
+                or app.model_id != model or app._agent_session is not session or app.store is not store
+                or app.convo_id != result["session_id"]):
+            raise ValueError("Conversation changed during recovered-input admission")
+        _owned(app, result["session_id"])
+        app._validate_owned_execution()
+
+    try:
+        _persist(app, entry, entries, index, "admitting", continuation_operation_id=operation,
+                 continuation_outcome="admitting")
+        claimed = copy.deepcopy(entry)
+
+        def before_accept():
+            identity()
+            if (not app._pending_input or app._pending_input[0] is not item
+                    or entry != claimed):
+                raise ValueError("Recovered input changed during admission")
+            _inspect(app, result["session_id"])
+
+        before_accept()
+        state = hook_host.snapshot(app)
+        if original_state == "next_turn" or not state.hooks and not state.error:
+            accepted = hook_host.accept_prompt_origin(app, delivery, on_refused=reasons.append)
+            if accepted is not None and original_state == "next_turn":
+                app._hook_turn_id = entry.get("admission", {}).get("turn_id", app._hook_turn_id)
+                accepted = replace(accepted, hook_id=app._hook_turn_id)
+        else:
+            accepted = await hook_host.admit_prompt_origin(
+                app, delivery, on_refused=reasons.append, before_accept=before_accept)
+        identity()
+        if accepted is None:
+            before_accept()
+            _persist(app, entry, entries, index, original_state, continuation_outcome="refused")
+            return {"turn": "refused", "entry_id": row["id"], "session_id": app.convo_id,
+                    "reason": reasons[-1] if reasons else "Prompt was not admitted",
+                    "held": status(app)["held"]}
+        # Admission materializes the original input exactly once. Verify it was
+        # durably appended before scheduling a provider-capable worker.
+        meta, messages = ConversationRepository.read(store.convo_path)
+        delivered = [m for m in messages if m.get("codex_delivery", {}).get("id") == row["id"]]
+        if (meta.get("id") != app.convo_id or len(delivered) != 1
+                or delivered[0].get("content") != delivery["content"]):
+            raise OSError("Continued input was not durably materialized")
+        if entry != claimed or not app._pending_input or app._pending_input[0] is not item:
+            raise ValueError("Recovered input changed after admission")
+        _persist(app, entry, entries, index, "admitted",
+                 admission={**entry.get("admission", {}), "turn_id": accepted.hook_id},
+                 continuation_outcome="admitted")
+        app._pending_input.pop(0)
+        app._stream(origin=accepted)
+        return {"turn": "accepted", "entry_id": row["id"], "session_id": app.convo_id,
+                "held": status(app)["held"]}
+    except (Exception, asyncio.CancelledError):
+        app._restored_input_error = True
+        raise

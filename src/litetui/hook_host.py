@@ -143,7 +143,7 @@ def _turn_source(item) -> str:
     return "goal" if item.get("goal_continuation") else "unlabelled"
 
 
-def refuse_below_floor(app, item) -> bool:
+def refuse_below_floor(app, item, *, on_refused=None) -> bool:
     """T1043: True (and the item retained, said and reported) when the seat is
     below the fleet floor. Nothing is appended and nothing reaches the model."""
     why = seat_authority.floor_refusal(app, _turn_source(item))
@@ -156,6 +156,9 @@ def refuse_below_floor(app, item) -> bool:
     # Through the one turn_end door, WITH the reason: a supervising parent maps a
     # not-started fleet_floor turn_end to a failed child carrying this text
     # (Dijkstra Q3) instead of "Child completed without a started turn".
+    if on_refused is not None:
+        on_refused(why)
+        return True
     end = getattr(app, "_emit_turn_end", None)
     if end is not None:
         end("fleet_floor", None, None, error=why)
@@ -169,7 +172,7 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
     return accept_prompt_origin(app, item, native_accepted=native_accepted) is not None
 
 
-def accept_prompt_origin(app, item, *, native_accepted=False, origin=None) -> EventOrigin | None:
+def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_refused=None) -> EventOrigin | None:
     """Accept input and return its captured origin, without scheduling execution.
 
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
@@ -177,7 +180,7 @@ def accept_prompt_origin(app, item, *, native_accepted=False, origin=None) -> Ev
     """
     if origin is None:
         origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
-    if not native_accepted and refuse_below_floor(app, item):
+    if not native_accepted and refuse_below_floor(app, item, on_refused=on_refused):
         return None
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
@@ -228,23 +231,27 @@ async def admit_prompt(app, item) -> bool:
     return await admit_prompt_origin(app, item) is not None
 
 
-async def admit_prompt_origin(app, item) -> EventOrigin | None:
+async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None) -> EventOrigin | None:
     # Capture input metadata before the first suspension, not from mutable app
     # fields after hooks or lifecycle work have run.
     origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
     # T1043: before the prompt_before hooks, so no hook runs for a refused turn.
-    if refuse_below_floor(app, item):
+    if refuse_below_floor(app, item, on_refused=on_refused):
         return None
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
     app._stop_requested = False
     await drain_lifecycle(app)
+    if before_accept is not None:
+        before_accept()
     ctx = {**context(app), "source": item.get("source", "queued"), "turn_id": str(uuid.uuid4())}
     result = await dispatch(app, "prompt_before", {"prompt": item["content"]},
                             profile=seat_authority.turn_profile(app, _turn_source(item), item.get("tool_profile")),
                             captured=ctx)
+    if before_accept is not None:
+        before_accept()
     if result.allowed and not app._stop_requested:
-        accepted = accept_prompt_origin(app, item, origin=origin)
+        accepted = accept_prompt_origin(app, item, origin=origin, on_refused=on_refused)
         if accepted is None:
             return None
         app._hook_turn_id = ctx["turn_id"]
@@ -253,7 +260,10 @@ async def admit_prompt_origin(app, item) -> EventOrigin | None:
         return accepted
     app.rejected_prompts.append({**item, "reason": result.reason})
     app._system(f"[prompt rejected; retained in /hooks] {result.reason}")
-    app._rpc_emit({"type": "turn_end", "stopReason": "hook_denied"})
+    if on_refused is not None:
+        on_refused(result.reason or ("Stopped by user" if app._stop_requested else "Prompt refused"))
+    else:
+        app._rpc_emit({"type": "turn_end", "stopReason": "hook_denied"})
     return None
 
 

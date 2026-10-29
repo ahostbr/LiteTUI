@@ -1,5 +1,17 @@
 # LiteTUI Rust terminal port
 
+## Explicit recovered-input continuation: source contract - 2026-10-29
+
+The Python authority now exposes gui.restored_input.continue for one explicit attempt on the oldest eligible held Codex input. The request supplies the current session, entry ID, snapshot token and a fresh string command ID. Payload/source/profile overrides on the request do not replace saved input. Eligibility excludes uncertain/sending/accepted/admitting entries, later queue items, incompatible engines and empty/unsupported content. Scheduled work that the current seat cannot grant remains held.
+
+Continuation verifies owned execution, saves and reads back an admitting claim before hooks, preserves the original source and requested authority, and revalidates conversation/queue/journal identity across admission awaits. Successful admission must materialize exactly one matching user record durably before the current-index journal becomes admitted and the existing _stream entry point is invoked. The new operation ID becomes captured origin; the saved original input metadata is retained. A repeated request cannot replay the entry.
+
+Known floor/hook/stop refusals retain the hold and return turn:refused with a reason, without emitting a turn_end for an execution that never began. A fresh snapshot is required after a refused claimed attempt. Interrupted admission or ambiguous storage/scheduling failures latch uncertainty and never automatically retry. Legacy callers retain their existing refusal behavior through optional admission-result/guard callbacks.
+
+The native Rust Continue action remains unwired. Its next integration must reserve a turn ID and visible row from the selected source entry, handle a correlated not-started refusal separately from completion, preserve the draft, and refresh queue facts after settlement. The existing F7 inspect/cancel surface is unchanged. This source checkpoint does not establish continuation through Rust, a provider, or either terminal host.
+
+Verification: 144 focused Python cases passed, including 35 new continuation cases. New tests use the actual owned constructor, resume, journals, authority resolver and RPC dispatcher; hook/provider/worker/visual boundaries are explicitly controlled. All 35 existing controlled-process regressions passed. Source helper and new tests pass Ruff/mypy; GUI/admission diagnostics match committed baseline (five Ruff and eight mypy findings, all in gui_rpc).
+
 ## Held-input inspection and cancellation - 2026-10-29
 
 F7 now opens a native inspector for recovered provider input while the live runtime is idle. Up/Down chooses an entry; PageUp/PageDown and the wheel inspect the full escaped payload and delivery details. Delete arms cancellation and a fresh Enter confirms the rendered prompt. Escape keeps the item or closes the inspector. Hidden/changed geometry, source refresh, navigation and pointer activity disarm confirmation; held keys cannot confirm it. The composer and clipboard remain isolated until a sent operation has a verified outcome. F4 retains its existing theme shortcut.
