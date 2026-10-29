@@ -238,8 +238,8 @@ def _conversations(app, action, cmd):
         path = _session_path(session_id, app)
         if not path.is_file():
             raise ValueError("Conversation does not exist")
-        app._resume(path)
-        if app.convo_id != session_id:
+        resumed = app._resume(path)
+        if not resumed or app.convo_id != session_id:
             raise ValueError("Conversation could not be resumed")
         return _read_session(session_id, app)
     if session_id != app.convo_id:
@@ -705,7 +705,7 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    blocking = operation in {"gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -768,17 +768,39 @@ async def _async_dispatch(app, cmd):
                 backend.end_stop()
         raise ValueError("Unsupported engine operation")
     if operation == "gui.conversations.open":
-        result = dispatch(app, cmd)
+        dispatch(app, cmd)
         conversation = app.conversation
         backend = app.backend
         session_id = app.convo_id
+        model = app.model_id
+        connection = getattr(app, "_resume_connect_worker", None)
+        if connection is None:
+            reason = getattr(app, "_resume_backend_error", None)
+            raise ValueError(reason or "Conversation connection did not start")
+
+        def unchanged():
+            if (app.conversation is not conversation or app.backend is not backend
+                    or app.convo_id != session_id or app.model_id != model
+                    or getattr(app, "_resume_connect_worker", None) is not connection):
+                raise ValueError("Conversation changed while it was opening")
+
+        # _resume starts connect; connect creates the native-history worker.
+        # Looking for history first acknowledges success before either can fail.
+        await connection.wait()
+        unchanged()
+        reason = (getattr(app, "_resume_backend_error", None)
+                  or getattr(app, "_resume_connection_error", None))
+        if (reason or not getattr(app, "_connect_settled", False)
+                or not getattr(app, "_gui_connection_success", False)):
+            raise ValueError(reason or "Conversation connection did not complete")
         worker = getattr(app, "_native_history_worker", None)
         if worker is not None:
             await worker.wait()
-            if (app.conversation is not conversation or app.backend is not backend
-                    or app.convo_id != session_id):
+            unchanged()
+            if getattr(app, "_native_history_worker", None) is not worker:
                 raise ValueError("Conversation changed while native history was loading")
-            return dispatch(app, {"type": "gui.conversations.read", "session_id": session_id})
+        result = dispatch(app, {"type": "gui.conversations.read", "session_id": session_id})
+        result["connected"] = True
         return result
     if operation == "gui.models.reconnect":
         _idle(app)

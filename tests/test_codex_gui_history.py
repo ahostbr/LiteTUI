@@ -11,7 +11,13 @@ from litetui import gui_rpc
 async def test_gui_open_waits_for_history_and_rejects_cross_conversation_response(monkeypatch, switch):
     refreshed = asyncio.Event()
     waiting = asyncio.Event()
-    app = SimpleNamespace(conversation=[], backend=object(), convo_id="original")
+    async def connected():
+        pass
+
+    app = SimpleNamespace(conversation=[], backend=object(), convo_id="original",
+                          model_id="saved-model", _connect_settled=True,
+                          _gui_connection_success=True,
+                          _resume_connect_worker=SimpleNamespace(wait=connected))
     requests = []
 
     async def wait():
@@ -40,12 +46,19 @@ async def test_gui_open_waits_for_history_and_rejects_cross_conversation_respons
             await task
         assert requests == ["gui.conversations.open"]
     else:
-        assert await task == {"messages": ["reconciled"]}
+        assert await task == {"messages": ["reconciled"], "connected": True}
         assert requests == ["gui.conversations.open", "gui.conversations.read"]
 
 
 @pytest.mark.asyncio
 async def test_non_native_open_keeps_existing_response(monkeypatch):
-    app = SimpleNamespace(conversation=[], backend=object(), convo_id="local")
+    async def connected():
+        pass
+
+    app = SimpleNamespace(conversation=[], backend=object(), convo_id="local",
+                          model_id="saved-model", _connect_settled=True,
+                          _gui_connection_success=True,
+                          _resume_connect_worker=SimpleNamespace(wait=connected))
     monkeypatch.setattr(gui_rpc, "dispatch", lambda app, cmd: {"messages": ["local"]})
-    assert await gui_rpc._async_dispatch(app, {"type": "gui.conversations.open"}) == {"messages": ["local"]}
+    assert await gui_rpc._async_dispatch(app, {"type": "gui.conversations.open"}) == {
+        "messages": ["local"], "connected": True}
