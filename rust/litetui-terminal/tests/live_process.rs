@@ -18,6 +18,19 @@ def emit(value):
     print(json.dumps(value), flush=True)
 ready = dict(type='ready', protocol_version=1, launch_status='ready', backend='claude', model='claude-sonnet-5-5')
 ready.update(conversation_id='controlled-conversation', thinking_level='low', context_length=200000)
+settings = json.loads((root/'settings.json').read_text())
+for marker in ['LITETUI_OWNER', 'LITETUI_SPAWN_IDENTITY', 'LITEHARNESS_SPAWNED_BY']:
+    assert marker not in os.environ, marker
+profile = sys.argv[sys.argv.index('--tool-profile')+1]
+ready.update(tools_enabled=settings['tools_enabled'], mcp_enabled=settings['mcp_enabled'],
+             tool_profile=profile, tool_profile_requested=profile,
+             approval_route='host' if os.environ.get('LITETUI_APPROVAL_HOST') == '1' else 'refuse',
+             cwd=os.getcwd())
+
+if mode.startswith('policy_'):
+    field = mode.removeprefix('policy_')
+    ready[field] = {'tools_enabled':False,'tool_profile':'autonomous',
+                   'approval_route':'spawner','mcp_enabled':True}[field]
 if mode == 'bad_ready_state':
     ready['context_length'] = True
 if mode == 'blocked':
@@ -903,4 +916,156 @@ fn one_shot_refuses_question_without_answering() {
     let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
     assert!(!log.contains("ask_id"));
     assert!(log.contains("shutdown"));
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn tool_enabled_launch_checks_effective_policy_before_any_prompt() {
+    for field in [
+        "tools_enabled",
+        "tool_profile",
+        "approval_route",
+        "mcp_enabled",
+    ] {
+        let (mut command, root) = setup(&format!("policy_{field}"));
+        let workspace = root
+            .parent()
+            .unwrap()
+            .join("source")
+            .canonicalize()
+            .unwrap();
+        command
+            .args(["--tools", "on", "--workspace"])
+            .arg(&workspace);
+        let output = command.output().unwrap();
+        assert!(!output.status.success(), "{field}");
+        let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+        assert!(!log.contains("rust-live-prompt"), "{field}");
+        assert!(log.contains("shutdown"));
+    }
+}
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn tool_enabled_launch_passes_explicit_settings_workspace_and_profile() {
+    let (mut command, root) = setup("success");
+    let workspace = root.parent().unwrap().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    command
+        .args([
+            "--tools",
+            "on",
+            "--tool-profile",
+            "interactive",
+            "--workspace",
+        ])
+        .arg(&workspace)
+        .env("LITETUI_OWNER", "1")
+        .env("LITETUI_SPAWN_IDENTITY", "1")
+        .env("LITEHARNESS_SPAWNED_BY", "must-not-inherit");
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["tools_enabled"], true);
+    assert_eq!(settings["tool_policy_profile"], "interactive");
+    let log = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    let prompt: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(prompt["tool_profile"], "interactive");
+}
+
+#[test]
+#[ignore = "real Python authority/store with fake provider; requires LITETUI_AUTHORITY_PYTHON"]
+fn rust_decisions_cross_real_python_authority_and_owned_store_before_fixture_writes() {
+    use litetui_terminal::{
+        approvals::Event,
+        live::{Interactive, Observation, Options},
+        live_chat::Chat,
+    };
+    let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON")
+        .expect("explicit Python with LiteTUI dependencies");
+    // setup itself uses the stdlib fixture interpreter variable.
+    let (command, root) = setup("success");
+    let source = root.parent().unwrap().join("source");
+    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../src/litetui")
+        .canonicalize()
+        .unwrap();
+    fs::write(
+        source.join("src/litetui/__init__.py"),
+        format!(
+            "__path__.append({})\n",
+            serde_json::to_string(&actual.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        source.join("src/litetui/cli.py"),
+        include_str!("fixtures/native_authority_runtime.py"),
+    )
+    .unwrap();
+    let workspace = root.parent().unwrap().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let mut args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    args[1] = python.to_string_lossy().into_owned();
+    args.extend([
+        "--tools".into(),
+        "on".into(),
+        "--workspace".into(),
+        workspace.to_string_lossy().into_owned(),
+    ]);
+    let mut options = Options::parse(&args).unwrap();
+    options.timeout = Duration::from_secs(15);
+    let runtime = Interactive::start(options);
+    let result = runtime.with_cleanup(|runtime| {
+        let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+        let mut turns = 0;
+        while turns < 2 {
+            let observation = runtime
+                .events
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let ready = matches!(observation, Observation::Ready);
+            let asked = matches!(observation, Observation::Approval(Event::Requested(_)));
+            let complete = matches!(observation, Observation::Complete);
+            chat.observe(observation)?;
+            if ready {
+                chat.submit("deny the fixture write")?;
+                runtime.submit(chat.take_submission().unwrap())?;
+            }
+            if asked {
+                assert!(!workspace.join("controlled-write.txt").exists());
+                chat.approvals.choose(turns == 1);
+                runtime.approve(chat.approvals.take_decision().unwrap())?;
+            }
+            if complete {
+                assert_eq!(workspace.join("controlled-write.txt").exists(), turns == 1);
+                assert!(chat.approvals.is_empty());
+                turns += 1;
+                if turns == 1 {
+                    chat.submit("allow the separate fixture write")?;
+                    runtime.submit(chat.take_submission().unwrap())?;
+                }
+            }
+        }
+        Ok(())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        fs::read_to_string(workspace.join("controlled-write.txt")).unwrap(),
+        "controlled fixture"
+    );
+    let store = fs::read_to_string(root.join("authority-store-path.txt")).unwrap();
+    let persisted = fs::read_to_string(store).unwrap();
+    assert!(persisted.contains("approved") && persisted.contains("denied"));
+    let commands = fs::read_to_string(root.join("commands.jsonl")).unwrap();
+    assert_eq!(commands.lines().count(), 5);
+    assert!(commands.lines().last().unwrap().contains("shutdown"));
 }

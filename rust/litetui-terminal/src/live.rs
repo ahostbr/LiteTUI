@@ -29,6 +29,9 @@ pub struct Options {
     pub model: String,
     pub prompt: String,
     pub timeout: Duration,
+    pub tools_enabled: bool,
+    pub tool_profile: crate::tool_mode::Profile,
+    pub workspace: Option<PathBuf>,
 }
 impl Options {
     pub fn parse(args: &[String]) -> io::Result<Self> {
@@ -43,6 +46,9 @@ impl Options {
                     "--model",
                     "--prompt",
                     "--timeout",
+                    "--tools",
+                    "--tool-profile",
+                    "--workspace",
                 ]
                 .contains(&pair[0].as_str())
                 || fields.insert(pair[0].as_str(), pair[1].clone()).is_some()
@@ -64,6 +70,23 @@ impl Options {
         let backend = required("--backend")?;
         let model = required("--model")?;
         let prompt = fields.remove("--prompt").unwrap_or_default();
+        let tools_enabled = match fields.remove("--tools").as_deref().unwrap_or("off") {
+            "on" => true,
+            "off" => false,
+            _ => return Err(io::Error::other("--tools must be on or off")),
+        };
+        let tool_profile = crate::tool_mode::Profile::parse(
+            fields
+                .remove("--tool-profile")
+                .as_deref()
+                .unwrap_or("strict"),
+        )?;
+        let workspace = fields.remove("--workspace").map(PathBuf::from);
+        if tools_enabled && workspace.as_ref().is_none_or(|p| !p.is_absolute()) {
+            return Err(io::Error::other(
+                "Tools on requires an explicit absolute --workspace",
+            ));
+        }
         let seconds: u64 = fields
             .remove("--timeout")
             .unwrap_or_else(|| "180".into())
@@ -85,6 +108,9 @@ impl Options {
             model,
             prompt,
             timeout: Duration::from_secs(seconds),
+            tools_enabled,
+            tool_profile,
+            workspace,
         })
     }
 }
@@ -152,8 +178,15 @@ pub struct Turn {
     content_bytes: usize,
     approvals: crate::approvals::Ledger,
     questions: crate::questions::Ledger,
+    policy: Option<crate::tool_mode::Expected>,
 }
 impl Turn {
+    pub fn with_policy(policy: crate::tool_mode::Expected) -> Self {
+        Self {
+            policy: Some(policy),
+            ..Self::default()
+        }
+    }
     /// Reserve a new command ID exactly once. Neither a write nor admission.
     pub fn submit(&mut self, prompt: &str) -> io::Result<Value> {
         if !self.ready
@@ -186,7 +219,9 @@ impl Turn {
         self.tools_seen = false;
         self.card_count = 1;
         self.content_bytes = 0;
-        Ok(json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":"strict"}))
+        Ok(
+            json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":self.policy.as_ref().map_or("strict",|p|p.profile.as_str())}),
+        )
     }
     fn settle(&mut self) -> Observation {
         self.settled = true;
@@ -247,6 +282,9 @@ impl Turn {
                     || event["model"] != model
                 {
                     return Err(fail(&format!("Unexpected/blocked runtime ready: {event}")));
+                }
+                if let Some(policy) = &self.policy {
+                    policy.validate(event)?;
                 }
                 self.ready = true;
                 Ok(Observation::Ready)
@@ -621,14 +659,29 @@ fn reader(mut input: impl Read + Send + 'static, stdout: bool, tx: mpsc::SyncSen
 
 fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let source = options.source.canonicalize()?;
+    let python = options.python.canonicalize()?;
     if !source.join("src/litetui/cli.py").is_file()
-        || !options.python.is_file()
+        || !python.is_file()
         || !options.data_root.is_absolute()
     {
         return Err(io::Error::other(
             "Expected Python executable, LiteTUI source tree, and absolute NEW data root",
         ));
     }
+    let workspace = match &options.workspace {
+        Some(path) if path.is_absolute() && path.is_dir() => path.canonicalize()?,
+        Some(_) => {
+            return Err(io::Error::other(
+                "Workspace must be an existing absolute directory",
+            ));
+        }
+        None if !options.tools_enabled => source.clone(),
+        None => {
+            return Err(io::Error::other(
+                "Tools on requires an explicit absolute --workspace",
+            ));
+        }
+    };
     // Fail if the final path already exists: never resume/reuse a live seat.
     if let Some(parent) = options.data_root.parent() {
         fs::create_dir_all(parent)?;
@@ -642,13 +695,22 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         serde_json::to_vec_pretty(&json!({
             "backend": options.backend, "default_model": options.model,
             "backend_chosen": true, "user_name_asked": true,
-            "tools_enabled": false, "mcp_enabled": false, "seat_name": "RustLive"
+            "tools_enabled": options.tools_enabled, "mcp_enabled": false, "seat_name": "RustLive",
+            "tool_policy_profile": options.tool_profile.as_str()
         }))?,
     )?;
-    let mut command = Command::new(&options.python);
+    let mut command = Command::new(&python);
     command
-        .current_dir(&source)
+        .current_dir(&workspace)
         .env("LITETUI_DATA_ROOT", &root)
+        .env("LITETUI_APPROVAL_HOST", "1")
+        // A fresh owned child has its own identity and this frontend's approval route.
+        .env_remove("LITETUI_OWNER")
+        .env_remove("LITETUI_SPAWN_IDENTITY")
+        .env_remove("LITEHARNESS_SPAWNED_BY")
+        .env_remove("LITEHARNESS_AGENT_ID")
+        .env_remove("LITEHARNESS_AGENT_NAME")
+        .env_remove("LITETUI_SEAT_NAME")
         .env("PYTHONPATH", source.join("src"))
         .env("PYTHONUTF8", "1")
         .env("PYTHONUNBUFFERED", "1")
@@ -663,7 +725,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             "--thinking-level",
             "low",
             "--tool-profile",
-            "strict",
+            options.tool_profile.as_str(),
             "--mcp-servers",
             "none",
         ])
@@ -704,7 +766,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     .map_err(|e| io::Error::other(format!("{e:?}")))?;
     let mut decoder =
         JsonlDecoder::new(FRAME_BYTES).map_err(|e| io::Error::other(format!("{e:?}")))?;
-    let mut turn = Turn::default();
+    let mut turn = Turn::with_policy(crate::tool_mode::Expected {
+        enabled: options.tools_enabled,
+        profile: options.tool_profile,
+        workspace,
+    });
     let mut tail = Vec::new();
     let mut deadline = Some(Instant::now() + options.timeout);
     let result = (|| -> io::Result<()> {
@@ -923,10 +989,16 @@ pub fn run(options: Options) -> io::Result<()> {
     };
     writeln!(
         frontend.output,
-        "LiteTUI Rust LIVE — one prompt, legacy RPC, tools disabled\nBackend: {} / {}\nData: {}",
+        "LiteTUI Rust LIVE — one prompt, legacy RPC\nBackend: {} / {}\nData: {}",
         terminal_text(&options.backend),
         terminal_text(&options.model),
         terminal_text(&options.data_root.to_string_lossy())
+    )?;
+    writeln!(
+        frontend.output,
+        "Requested tools: {} · profile: {}",
+        if options.tools_enabled { "on" } else { "off" },
+        options.tool_profile.as_str()
     )?;
     drive(options, &mut frontend)?;
     writeln!(

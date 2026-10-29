@@ -441,6 +441,10 @@ async def test_mounted_ready_uses_real_connect_hooks_and_owned_shutdown(tmp_path
         ready = next(row for row in runtime.records if row.get("type") == "ready")
         assert ready["launch_status"] == "ready", (
             ready.get("launch_error"), ready.get("model_note"), runtime.effects.denied, runtime.discovery)
+        assert ready["tools_enabled"] is app.tools_enabled
+        assert ready["mcp_enabled"] is app.settings.mcp_enabled
+        from litetui.seat_authority import confirm_route
+        assert ready["approval_route"] == confirm_route(app)
         assert app._gui_connection_success
         assert app.model_id == MODEL
         assert runtime.discovery

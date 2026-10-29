@@ -160,7 +160,12 @@ impl Chat {
             }
             Observation::Ready => {
                 self.ready = true;
-                self.notice = "Connected. Enter sends; Ctrl+Q quits. Tools are disabled.".into();
+                self.notice = format!(
+                    "Connected. Enter sends; Ctrl+Q quits. {}",
+                    self.runtime_state
+                        .tool_description()
+                        .unwrap_or_else(|| "Tool policy unavailable.".into())
+                );
             }
             Observation::Content { card, kind, text } => self.content(Some(card), kind, text)?,
             Observation::Text(text) => self.content(None, ContentKind::AnswerDelta, text)?,

@@ -14,6 +14,7 @@ struct ReadyFacts {
     conversation: Option<String>,
     thinking: Option<String>,
     context_ceiling: Option<u64>,
+    tools: Option<crate::tool_mode::Facts>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Update(UpdateKind);
@@ -49,6 +50,7 @@ impl Update {
     pub fn from_event(event: &Value) -> io::Result<Option<Self>> {
         Ok(match event.get("type").and_then(Value::as_str) {
             Some("ready") => Some(UpdateKind::Ready(ReadyFacts {
+                tools: crate::tool_mode::Facts::from_ready(event)?,
                 model: optional_text(event, "model", 1024)?
                     .ok_or_else(|| io::Error::other("Ready model missing"))?,
                 conversation: optional_text(event, "conversation_id", 128)?,
@@ -120,6 +122,13 @@ impl State {
             UpdateKind::SettledRate(rate) => self.rate = rate,
         }
     }
+    pub fn tool_description(&self) -> Option<String> {
+        self.ready
+            .as_ref()?
+            .tools
+            .as_ref()
+            .map(|facts| facts.description())
+    }
     pub fn footer_fields(&self) -> Vec<F> {
         let Some(ready) = &self.ready else {
             return Vec::new();
@@ -155,7 +164,17 @@ impl State {
         if let Some(rate) = self.rate {
             fields.push(F::new(K::Throughput, format!("{rate:.1} tok/s")));
         }
-        // No seat registration, authority glyph, plan, cache or background facts
+        if let Some(tools) = &ready.tools {
+            fields.push(F::new(
+                K::Authority,
+                format!(
+                    "tools:{} · {}",
+                    if tools.enabled { "on" } else { "off" },
+                    tools.profile.as_str()
+                ),
+            ));
+        }
+        // No seat registration, plan, cache or background facts
         // are available in these events. Never infer them from launch arguments.
         fields
     }

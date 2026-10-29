@@ -34,3 +34,5 @@ pub(crate) fn display_control(ch: char) -> bool {
     ch.is_control()
         || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
+
+pub mod tool_mode;

@@ -2,6 +2,16 @@
 
 **T0565 · Tier 2 / High · P0 CLOSED · P1 interactive multi-turn implemented/tested; Ryan hands-on pending**
 
+## Tool-enablement continuation — 2026-10-29
+
+Rust now has explicit tools on/off, tool-profile and workspace launch controls. Tools default off; the launch profile defaults strict. Enabling tools requires an existing absolute workspace. The supported source profiles strict, interactive and autonomous remain distinct choices; Rust does not turn a strict choice into an unattended one. The PowerShell chat launcher exposes the same controls. External MCP remains disabled.
+
+The owned child receives the existing LITETUI_APPROVAL_HOST marker, so source CONFIRM decisions route to Rust's live approval modal. Fresh children do not inherit owner, spawned identity, spawner or seat-name/ID markers. The Python ready event now reports effective tools_enabled, mcp_enabled and approval_route alongside its existing requested/effective profile and cwd. Before admitting any prompt, Rust verifies these facts against the launch intent and workspace. Missing/mismatched facts fail with cleanup and no prompt; every later prompt carries the verified profile. Workspace comparison performs no filesystem access on the reported path. The footer and ready notice display reported tool state rather than a launch-time guess.
+
+Verification: **276 ordinary Rust tests, 22 controlled-process tests and 103 affected Python tests passed**, plus fmt/Clippy/build, focused Ruff/mypy, launcher parse/negative checks and documentation checks. The missing launch option was reproduced before implementation. Four controlled mismatch cases prove no prompt is sent. A combined Rust/Python process test uses the actual owned constructor/store, native Claude permission gate, shared authorization function, RPC decision dispatcher and persisted authority records: first deny leaves the disposable file absent; a separate explicit allow permits the controlled executor to write it; both outcomes persist and shutdown completes. The provider/native filesystem executor is substituted and network/provider subprocess calls are tripwired. Separate real mounted-ready tests cover the producer. This is not a real-provider tool call or desktop acceptance. app.py retains **112 pre-existing Ruff findings, zero added**, compared with the exact pre-change blob.
+
+The launcher still uses fresh isolated data, serialized legacy turns and a contained Python runtime. External MCP, cancel/resume, dynamic settings/management, other backend/event parity and the remaining terminal/visual/performance gates are open. Tool launch controls are progress toward the port, not completion of the full target.
+
 ## Structured-question continuation — 2026-10-29
 
 Interactive Rust now consumes the source user_input_requested / answer / user_input_resolved protocol. The form supports up to eight questions, single/multiple choices, free-text and masked secret notes, navigation, clearing, submit, partial discussion and cancellation. Submit requires every question to have an answer; Chat about this permits partial answers. Cancel sends no selected options or notes. No request receives an automatic answer.

@@ -159,3 +159,29 @@ fn options_require_explicit_frontier_route_and_bounded_deadline() {
     timeout.extend(["--timeout".into(), "0".into()]);
     assert!(Options::parse(&timeout).is_err());
 }
+
+#[test]
+fn explicit_tool_launch_options_are_accepted() {
+    let args = [
+        "--python",
+        "python",
+        "--source",
+        "source",
+        "--data-root",
+        "data",
+        "--backend",
+        "claude",
+        "--model",
+        "fixture",
+        "--tools",
+        "on",
+        "--tool-profile",
+        "strict",
+        "--workspace",
+        "C:/fixture",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    assert!(Options::parse(&args).is_ok());
+}

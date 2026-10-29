@@ -5888,6 +5888,10 @@ class LiteTUI(App):
             # to be derived from reading defaults instead of read. null here means
             # NOBODY ASKED.
             "tool_profile_requested": getattr(self, "_cli_tool_profile", None) or None,
+            # Report effective runtime facts for native frontends before admission.
+            "tools_enabled": bool(self.tools_enabled),
+            "mcp_enabled": bool(self.settings.mcp_enabled),
+            "approval_route": seat_authority.confirm_route(self),
         })
         self._rpc_ready_sent = True
 

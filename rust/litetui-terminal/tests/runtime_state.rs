@@ -182,3 +182,31 @@ fn real_state_reaches_footer_renderer_and_closure_removes_controls() {
     assert!(app.footer_fields.is_empty());
     assert_eq!(app.notice, "closed for test");
 }
+
+#[test]
+fn footer_and_ready_notice_use_reported_tool_policy() {
+    let mut app = Demo::live("claude".into(), "reported-model".into());
+    app.observe_live(Observation::State(update(json!({
+        "type":"ready","model":"reported-model","tools_enabled":true,"mcp_enabled":false,
+        "tool_profile":"strict","approval_route":"host",
+    }))))
+    .unwrap();
+    app.observe_live(Observation::Ready).unwrap();
+    assert!(app.notice.contains("Tools on") && app.notice.contains("strict"));
+    assert_eq!(
+        field(&app.live.as_ref().unwrap().runtime_state, K::Authority).as_deref(),
+        Some("tools:on · strict")
+    );
+    let mut terminal = Terminal::new(TestBackend::new(110, 35)).unwrap();
+    terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let cells = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(cells.contains("tools:on") && cells.contains("strict"));
+    app.finish_live(None);
+    assert!(app.footer_fields.is_empty());
+}
