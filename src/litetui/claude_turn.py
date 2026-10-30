@@ -522,20 +522,31 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
     # unhandled AttributeError inside a Textual worker tells nobody anything.
     item = getattr(app, "_claude_active_input", None)
     if not isinstance(item, dict) or not (item.get("_claude_entry") or {}).get("id"):
-        app._system("Claude turn started without admission; nothing was sent. Submit again, or /claude status.")
+        reason = "Claude turn started without admission; nothing was sent. Submit again, or /claude status."
+        app._system(reason)
+        if origin is not None:
+            emit({"type": "turn_refused", "provider": "claude", "reason": reason})
         return
     entry_id = item["_claude_entry"]["id"]
     segment = ledger.segment(item["_claude_segment"])
     # T911: WARN FIRST. Before a bubble, a turn_start or any byte to Claude, so a
     # cancel leaves nothing half-started and the entry stays `prepared`.
     if segment is not None and not await _cache_ok(app, backend, segment):
-        if getattr(app, "_rpc", None):
-            # A headless host confirms by sending again, which prepares a new
-            # entry; closing this one keeps /claude continue from sending both.
+        if getattr(app, "_rpc", None) and not item.get("_restored_claude_continuation"):
+            # Ordinary headless prompts confirm by sending a new input. A
+            # recovered continuation reuses its original durable entry instead;
+            # settlement re-holds it for a fresh explicit continuation attempt.
             ledger.update_delivery(entry_id, "terminal", stop_reason="not_sent_cache_warning")
         else:
             app._system("Not sent: cancelled at the cache warning. Your message is kept; "
                         "/claude continue sends it when you are ready.")
+        # A scheduled invocation can be refused before turn_start. This is not
+        # turn_end, admission failure, or evidence that a provider ran the input.
+        # Keep its captured origin even if the warning awaited a UI decision.
+        if origin is not None:
+            emit({"type": "turn_refused", "provider": "claude",
+                  "reason": "Not sent: cancelled at the Claude cache warning. "
+                            "Submit again explicitly if you want to continue."})
         return
     started = time.monotonic()
     app._active_turn_started_at = started
@@ -600,7 +611,8 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
             # succeeds, so a failed compact leaves /claude continue recoverable.
             terminal = True
             reason = "cancelled"
-            if item["_claude_entry"].get("operation_id") is not None:
+            if (item["_claude_entry"].get("operation_id") is not None
+                    or item.get("_restored_claude_continuation")):
                 app._system("Claude input is held unsent: context needs compaction, but this RPC operation "
                             "cannot transfer across sessions. Inspect /claude status, then /claude new and resend "
                             "as a NEW RPC operation_id. The old input stays saved without replay; "

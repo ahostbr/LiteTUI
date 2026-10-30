@@ -608,7 +608,8 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 crate::live_chat::ReplyState::Cancelled => "Cancelled · partial output retained",
                 crate::live_chat::ReplyState::ApprovalStopped => "Stopped · approval",
                 crate::live_chat::ReplyState::Incomplete => "Incomplete · runtime closed or failed",
-                crate::live_chat::ReplyState::Refused => "Not started · admission refused",
+                crate::live_chat::ReplyState::Refused => "Not started · source refused",
+                crate::live_chat::ReplyState::Failed => "Failed · partial output retained",
                 crate::live_chat::ReplyState::Reconciled => {
                     "Previously accepted · verified in provider history · not resent"
                 }

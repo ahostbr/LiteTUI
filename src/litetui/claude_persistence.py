@@ -307,6 +307,32 @@ class ClaudeLedger:
         self._save()
         return deepcopy(entry)
 
+    def record_continuation(self, id: str, operation: str, outcome: str) -> dict[str, Any]:
+        """Record explicit local admission without pretending bytes were submitted.
+
+        Prepared remains prepared until stream_turn durably marks submitted
+        immediately before query. The original payload, origin and operation
+        are immutable; a retry gets a new invocation ID, not a new delivery.
+        """
+        entry = self._find_entry(id)
+        if entry is None or entry["state"] != PREPARED:
+            raise LedgerError("Only a prepared Claude delivery can continue")
+        if not isinstance(operation, str) or not operation or len(operation.encode("utf-8")) > 128:
+            raise LedgerError("Invalid Claude continuation operation")
+        if outcome not in {"admitting", "admitted", "refused"}:
+            raise LedgerError("Invalid Claude continuation outcome")
+        if outcome == "admitting":
+            if any(operation in (other.get("operation_id"), other.get("continuation_operation_id"))
+                   for segment in self._data["segments"].values() for other in segment["entries"]):
+                raise LedgerError("Claude continuation requires a fresh operation ID")
+        elif (entry.get("continuation_operation_id") != operation
+              or entry.get("continuation_outcome") != "admitting"):
+            raise LedgerError("Claude continuation admission identity changed")
+        entry.update(continuation_operation_id=operation, continuation_outcome=outcome,
+                     continuation_at=time.time())
+        self._save()
+        return deepcopy(entry)
+
     def update_delivery(self, id: str, state: str, **metadata: Any) -> dict[str, Any]:
         """Advance one entry along the delivery chain, recording `metadata`.
 

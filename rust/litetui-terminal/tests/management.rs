@@ -277,3 +277,46 @@ fn unpaired_payload_bytes_have_an_exact_aggregate_limit() {
     assert!(client.has_unpaired());
     assert!(client.accept(json!({"type":"usage"})).is_err());
 }
+
+#[test]
+fn prestart_refusal_establishes_only_its_captured_execution_origin() {
+    let refusal =
+        json!({"type":"turn_refused","provider":"claude","reason":"Not sent: cache warning"});
+    let mut client = connected();
+    client.prompt("prompt-A").unwrap();
+    assert!(matches!(pair(&mut client, &refusal), Step::Event(event) if event == refusal));
+    assert!(client.ensure_drained().is_ok());
+    for bad in [
+        refusal.clone(),
+        json!({"type":"turn_start","model":"model-A"}),
+    ] {
+        let mut client = connected();
+        client.prompt("prompt-A").unwrap();
+        pair(&mut client, &refusal);
+        assert!(matches!(client.accept(bad.clone()).unwrap(), Step::Ignore));
+        assert!(client.accept(envelope(&bad)).is_err());
+    }
+    let mut client = started();
+    assert!(matches!(
+        client.accept(refusal.clone()).unwrap(),
+        Step::Ignore
+    ));
+    assert!(client.accept(envelope(&refusal)).is_err());
+    for fault in ["session", "operation", "execution", "source"] {
+        let mut client = connected();
+        client.prompt("prompt-A").unwrap();
+        let mut frame = envelope(&refusal);
+        match fault {
+            "session" => frame["session_id"] = json!("other"),
+            "operation" => frame["operation_id"] = json!("other"),
+            "execution" => frame["execution_id"] = json!(null),
+            "source" => frame["source"] = json!(42),
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            client.accept(refusal.clone()).unwrap(),
+            Step::Ignore
+        ));
+        assert!(client.accept(frame).is_err(), "{fault}");
+    }
+}

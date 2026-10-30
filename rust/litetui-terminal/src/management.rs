@@ -14,6 +14,7 @@ const MIRRORED: &[&str] = &[
     "model_state",
     "usage",
     "turn_start",
+    "turn_refused",
     "turn_end",
     "text_delta",
     "reasoning_delta",
@@ -34,6 +35,7 @@ const MIRRORED: &[&str] = &[
 ];
 const IDENTIFIED: &[&str] = &[
     "turn_start",
+    "turn_refused",
     "turn_end",
     "text_delta",
     "reasoning_delta",
@@ -192,6 +194,7 @@ pub struct Continuation {
     pub prompt: String,
     pub session: String,
     pub entry: String,
+    record: crate::restored_queue::Entry,
 }
 struct Reconciliation {
     entry: crate::restored_queue::Entry,
@@ -205,7 +208,7 @@ struct QueuePending {
     id: CommandId,
     applying: bool,
     closed: Option<QueueClosure>,
-    continued: Option<(String, String, bool)>,
+    continued: Option<(String, crate::restored_queue::Entry, bool)>,
     reconciled: Option<Reconciliation>,
     failure: Option<String>,
     succeeded: bool,
@@ -215,7 +218,7 @@ pub struct Management {
     control: Option<ControlPending>,
     queue: Option<QueuePending>,
     queue_menu: Option<crate::restored_queue::Snapshot>,
-    continuation: Option<(String, String)>,
+    continuation: Option<(String, crate::restored_queue::Entry)>,
     menu: Option<Choices>,
     revision: u64,
     phase: Phase,
@@ -554,7 +557,7 @@ impl Management {
             {
                 return Err(fail("Runtime event belongs to another prompt operation"));
             }
-            if kind == "turn_start" {
+            if matches!(kind, "turn_start" | "turn_refused") {
                 if self.origin.is_some()
                     || self.executions.len() >= 1000
                     || !self.executions.insert(execution.as_str().to_owned())
@@ -876,13 +879,39 @@ impl Management {
         if let Some((operation, entry, refused)) = &pending.continued {
             let result = &frame["result"];
             if result["operation_id"] != *operation
-                || result["entry_id"] != *entry
+                || result["entry_id"] != entry.id
                 || result["continuation_outcome"] != if *refused { "refused" } else { "accepted" }
-                || snapshot.entries.iter().any(|row| row.id == *entry) != *refused
             {
                 return Err(fail(
                     "Continuation readback disagrees with its execution receipt",
                 ));
+            }
+            let held = snapshot.entries.iter().find(|row| row.id == entry.id);
+            if entry.provider == "claude" {
+                let state = result["continuation_state"].as_str();
+                if result["continuation_provider"] != "claude"
+                    || !matches!(state, Some("prepared" | "uncertain" | "terminal"))
+                    || (*refused && state != Some("prepared"))
+                    || held.is_some() != (state != Some("terminal"))
+                {
+                    return Err(fail(
+                        "Claude continuation readback lacks consistent delivery evidence",
+                    ));
+                }
+                if let Some(row) = held
+                    && (Some(row.state.as_str()) != state
+                        || row.provider != entry.provider
+                        || row.content != entry.content
+                        || row.source != entry.source
+                        || row.profile != entry.profile
+                        || row.segment != entry.segment
+                        || row.workspace != entry.workspace
+                        || (!entry.thread.is_empty() && row.thread != entry.thread))
+                {
+                    return Err(fail("Held Claude delivery changed after continuation"));
+                }
+            } else if held.is_some() != *refused {
+                return Err(fail("Continuation readback disagrees with held input"));
             }
         }
         if let Some(check) = &pending.reconciled {
@@ -912,8 +941,14 @@ impl Management {
                     }
                 })
             });
-        if pending.continued.is_some() {
-            snapshot.message = Some("Continuation settled; saved queue read back.".into());
+        if let Some((_, entry, _)) = &pending.continued {
+            snapshot.message = Some(match snapshot.entries.iter().find(|row| row.id == entry.id) {
+                Some(row) if row.provider == "claude" && row.state == "prepared" =>
+                    "Continuation settled; input remains unsent and held. Saved queue read back.".into(),
+                Some(row) if row.provider == "claude" && row.state == "uncertain" =>
+                    "Continuation settled; delivery is uncertain and held without replay. Saved queue read back.".into(),
+                _ => "Continuation settled; saved queue read back.".into(),
+            });
         }
         if let Some(check) = pending.reconciled
             && let Some(accepted) = check.accepted
@@ -962,6 +997,7 @@ impl Management {
             prompt: row.content.clone(),
             session: menu.session.clone(),
             entry: row.id.clone(),
+            record: row.clone(),
         })
     }
     pub fn begin_continuation(
@@ -970,7 +1006,7 @@ impl Management {
         id: &str,
     ) -> io::Result<Value> {
         self.prompt(id)?;
-        self.continuation = Some((id.to_owned(), prepared.entry));
+        self.continuation = Some((id.to_owned(), prepared.record));
         prepared.command["id"] = json!(id);
         Ok(prepared.command)
     }
@@ -991,7 +1027,7 @@ impl Management {
             .register_request()
             .map_err(|_| fail("Cannot reserve continuation readback"))?;
         let command = json!({"type":crate::restored_queue::SETTLED,"id":id.to_value(),
-            "session_id":self.expected.as_ref().expect("active").0,"operation_id":operation,"entry_id":entry});
+            "session_id":self.expected.as_ref().expect("active").0,"operation_id":operation,"entry_id":entry.id});
         self.queue = Some(QueuePending {
             id,
             applying: false,

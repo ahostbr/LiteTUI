@@ -39,6 +39,7 @@ pub enum ReplyState {
     ApprovalStopped,
     Incomplete,
     Refused,
+    Failed,
     Reconciled,
 }
 #[derive(Default)]
@@ -367,6 +368,9 @@ impl Chat {
             Observation::Refused(reason) => {
                 self.settle(crate::live::TerminalOutcome::Refused(reason))?
             }
+            Observation::Failed(reason) => {
+                self.settle(crate::live::TerminalOutcome::Failed(reason))?
+            }
             Observation::Complete => self.settle(crate::live::TerminalOutcome::Complete)?,
         }
         Ok(())
@@ -375,6 +379,7 @@ impl Chat {
         let (state, stop_reason) = match outcome {
             crate::live::TerminalOutcome::Complete => (ReplyState::Complete, None),
             crate::live::TerminalOutcome::Refused(reason) => (ReplyState::Refused, Some(reason)),
+            crate::live::TerminalOutcome::Failed(reason) => (ReplyState::Failed, Some(reason)),
             crate::live::TerminalOutcome::ApprovalStopped(reason) => {
                 (ReplyState::ApprovalStopped, Some(reason))
             }
@@ -404,10 +409,12 @@ impl Chat {
         self.busy = false;
         self.stop_confirm = false;
         self.submission_id = None;
-        self.notice = if row.state == ReplyState::Refused {
-            "Input was not started. Checking saved input before another prompt."
-        } else if self.queue_pending {
+        self.notice = if self.queue_pending {
             "Turn ended. Checking saved input before another prompt."
+        } else if row.state == ReplyState::Refused {
+            "Input was not started. Submit again explicitly to continue; Ctrl+Q quits."
+        } else if row.state == ReplyState::Failed {
+            "Turn failed. Partial output retained. Check recovery before retrying; Ctrl+Q quits."
         } else if row.state == ReplyState::Cancelled {
             "Turn cancelled. Partial output retained. Type another prompt; Ctrl+Q quits."
         } else if row.state == ReplyState::ApprovalStopped {

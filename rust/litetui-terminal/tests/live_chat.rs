@@ -461,3 +461,69 @@ fn reconciled_input_is_a_saved_observation_without_execution_or_draft_submission
         Some("HUMAN DRAFT")
     );
 }
+
+#[test]
+fn source_refusal_and_failure_render_without_completion_or_automatic_retry() {
+    for failed in [false, true] {
+        let mut app = Demo::live("claude".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("original request");
+        app.submit();
+        assert_eq!(
+            app.live.as_mut().unwrap().take_submission().as_deref(),
+            Some("original request")
+        );
+        app.insert_text("UNSENT DRAFT");
+        if failed {
+            app.observe_live(Observation::Text("PARTIAL ANSWER".into()))
+                .unwrap();
+            app.observe_live(Observation::Failed(
+                "Lost provider connection \u{1b}[31m".into(),
+            ))
+            .unwrap();
+        } else {
+            app.observe_live(Observation::Information(
+                "Claude cache warning: effort changes".into(),
+            ))
+            .unwrap();
+            assert!(app.live.as_mut().unwrap().take_submission().is_none());
+            app.observe_live(Observation::Refused("Nothing was sent \u{1b}[31m".into()))
+                .unwrap();
+        }
+        let chat = app.live.as_mut().unwrap();
+        assert_eq!(
+            chat.rows[0].state,
+            if failed {
+                ReplyState::Failed
+            } else {
+                ReplyState::Refused
+            }
+        );
+        assert!(chat.take_submission().is_none());
+        assert!(
+            !chat.notice.contains("completed") && !chat.notice.contains("Checking saved input")
+        );
+        let mut terminal = Terminal::new(TestBackend::new(110, 35)).unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains(if failed { "Failed" } else { "Not started" }));
+        assert!(text.contains("\\u{1b}[31m"));
+        if failed {
+            assert!(text.contains("PARTIAL ANSWER"));
+        }
+        assert!(!text.contains("Completed · stop"));
+        assert_eq!(app.composer.text(), "UNSENT DRAFT");
+        app.submit();
+        assert_eq!(
+            app.live.as_mut().unwrap().take_submission().as_deref(),
+            Some("UNSENT DRAFT")
+        );
+        assert_eq!(app.live.as_ref().unwrap().rows.len(), 2);
+    }
+}

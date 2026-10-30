@@ -18,13 +18,13 @@ mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')
 gui_enabled = False
 operation = None
 execution = None
-identified = {'turn_start','turn_end','text_delta','reasoning_delta','native_text_snapshot',
+identified = {'turn_start','turn_refused','turn_end','text_delta','reasoning_delta','native_text_snapshot',
               'native_activity','native_usage','native_event','generic_tool_requested','generic_tool_returned'}
 def emit(value):
     global execution
     print(json.dumps(value), flush=True)
     if gui_enabled and value['type'] not in {'response','error'}:
-        if value['type'] == 'turn_start':
+        if value['type'] in {'turn_start', 'turn_refused'}:
             execution = str(uuid.uuid4())
         envelope = dict(type='gui.event',event_id=str(uuid.uuid4()),
                         session_id='controlled-conversation',operation_id=operation,event=value)
@@ -164,6 +164,18 @@ for line in sys.stdin:
             emit(dict(type='text_delta',text='Fixture decision observed; nothing executed',card_index=0))
             emit(dict(type='turn_end',stopReason='stop',error=None))
         if command['allow']:
+            emit(ack)
+        continue
+    if mode.startswith('cache_refused') and prompt_count == 0:
+        prompt_count += 1
+        ack = dict(type='response',id=command['id'],ok=True,result=dict(turn='accepted'))
+        if mode != 'cache_refused_before_ack':
+            emit(ack)
+        emit(dict(type='cache_warning',provider='claude',kind='resume',reason='Controlled cold resume warning'))
+        if mode == 'cache_refused_no_terminal':
+            continue
+        emit(dict(type='turn_refused',provider='claude',reason='Not sent: controlled cache warning'))
+        if mode == 'cache_refused_before_ack':
             emit(ack)
         continue
     emit(dict(type='response',id=command['id'],ok=True,result=dict(turn='accepted')))
@@ -1152,6 +1164,7 @@ fn stopped_turns_keep_one_owned_child_and_require_explicit_followup() {
         let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
         let mut requested = false;
         let mut forced = false;
+        let mut first_submission = None;
         let mut cancelled = false;
         let mut completed = false;
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1165,6 +1178,9 @@ fn stopped_turns_keep_one_owned_child_and_require_explicit_followup() {
                     | Observation::Question { .. }
                     | Observation::Approval(_)
             );
+            if let Observation::Submission { id } = &event {
+                first_submission.get_or_insert_with(|| id.clone());
+            }
             let stop_ack = matches!(&event,Observation::Information(text) if text.starts_with("Stop requested"));
             let stopped = matches!(&event, Observation::Cancelled(_));
             completed = matches!(&event, Observation::Complete);
@@ -1200,7 +1216,9 @@ fn stopped_turns_keep_one_owned_child_and_require_explicit_followup() {
                 // Delayed first-turn intent must not interrupt the second turn.
                 chat.submit("explicit follow-up").unwrap();
                 runtime.submit(chat.take_submission().unwrap()).unwrap();
-                runtime.abort("rust-live-prompt".into()).unwrap();
+                runtime
+                    .abort(first_submission.clone().expect("first prompt reserved"))
+                    .unwrap();
             }
         }
         runtime.quit().unwrap();
@@ -1647,11 +1665,25 @@ fn held_claude_uncertainty_is_explicitly_resolved_without_replay() {
     saved_conversation_process(SavedInput::ClaudeResolve);
 }
 
+#[test]
+#[ignore = "controlled real Python CLI/cache/stream/owned restart, no provider"]
+fn held_claude_continuation_keeps_cache_refusal_then_reuses_saved_message_on_explicit_retry() {
+    saved_conversation_process(SavedInput::ClaudeContinue);
+}
+
+#[test]
+#[ignore = "controlled owned Claude failure and saved uncertainty; no provider"]
+fn held_claude_failed_continuation_reads_uncertainty_then_resolves_without_replay() {
+    saved_conversation_process(SavedInput::ClaudeUncertain);
+}
+
 #[derive(Clone, Copy)]
 enum SavedInput {
     None,
     ClaudeCancel,
     ClaudeResolve,
+    ClaudeContinue,
+    ClaudeUncertain,
     Held,
     Cancel,
     Continue,
@@ -1660,10 +1692,25 @@ enum SavedInput {
 
 fn saved_conversation_process(mode: SavedInput) {
     let held = !matches!(mode, SavedInput::None);
-    let claude_held = matches!(mode, SavedInput::ClaudeCancel | SavedInput::ClaudeResolve);
+    let claude_uncertain = matches!(mode, SavedInput::ClaudeUncertain);
+    let restart_refusal = matches!(mode, SavedInput::ClaudeContinue);
+    let claude_continue = matches!(
+        mode,
+        SavedInput::ClaudeContinue | SavedInput::ClaudeUncertain
+    );
+    let claude_held = matches!(
+        mode,
+        SavedInput::ClaudeCancel
+            | SavedInput::ClaudeResolve
+            | SavedInput::ClaudeContinue
+            | SavedInput::ClaudeUncertain
+    );
     let resolve_held = matches!(mode, SavedInput::ClaudeResolve);
     let cancel_held = matches!(mode, SavedInput::Cancel | SavedInput::ClaudeCancel);
-    let continue_held = matches!(mode, SavedInput::Continue);
+    let continue_held = matches!(
+        mode,
+        SavedInput::Continue | SavedInput::ClaudeContinue | SavedInput::ClaudeUncertain
+    );
     let reconcile_held = matches!(mode, SavedInput::Reconcile);
     let removed = cancel_held || resolve_held || continue_held || reconcile_held;
     use litetui_terminal::live::{Interactive, Observation, Options};
@@ -1699,6 +1746,13 @@ fn saved_conversation_process(mode: SavedInput) {
         fs::write(
             source.join("src/litetui/fixture-held-input"),
             "controlled fixture",
+        )
+        .unwrap();
+    }
+    if claude_uncertain {
+        fs::write(
+            source.join("src/litetui/fixture-fail-query"),
+            "controlled failure",
         )
         .unwrap();
     }
@@ -1739,7 +1793,9 @@ fn saved_conversation_process(mode: SavedInput) {
     let mut session = String::new();
     let mut agent = String::new();
     let mut saved_settings = Vec::new();
-    for pass in 0..2 {
+    let mut original_prompt_id = String::new();
+    let mut prior_continuation_id = String::new();
+    for pass in 0..if restart_refusal { 3 } else { 2 } {
         let mut options = Options::parse(&args).unwrap();
         options.timeout = Duration::from_secs(15);
         options.resume = if pass == 0 {
@@ -1760,22 +1816,25 @@ fn saved_conversation_process(mode: SavedInput) {
                     let ready = matches!(&event, Observation::Ready);
                     let done = matches!(&event, Observation::Complete);
                     if let Observation::History(h) = &event {
-                        assert_eq!(pass, 1);
+                        assert!(pass > 0);
                         assert_eq!(h.session, session);
-                        assert_eq!(h.messages.len(), 2);
+                        assert_eq!(h.messages.len(), if claude_continue { 3 } else { 2 });
                         assert_eq!(h.messages[0].text, "remember SAVED-CONTEXT");
                         assert_eq!(h.messages[1].text, "Saved first reply");
+                        if claude_continue {
+                            assert_eq!(h.messages[2].text, "UNSENT prepared");
+                        }
                         history_seen = true;
                     }
                     chat.observe(event)?;
                     if ready {
-                        assert_eq!(history_seen, pass == 1);
+                        assert_eq!(history_seen, pass > 0);
                         let snapshot = chat.runtime_state.startup().unwrap();
                         assert_eq!(
                             snapshot.held_restored_input,
-                            Some(if held && pass == 1 { 3 } else { 0 })
+                            Some(if held && pass > 0 { 3 } else { 0 })
                         );
-                        if held && pass == 1 {
+                        if held && pass > 0 {
                             assert!(chat.notice.contains("Restored input held: 3"));
                         }
                         if pass == 0 {
@@ -1863,8 +1922,19 @@ fn saved_conversation_process(mode: SavedInput) {
                                 }
                             }
                         }
-                        if continue_held && pass == 1 {
-                            continue_saved_input(runtime, &mut chat)?;
+                        if continue_held && pass > 0 {
+                            continue_saved_input(
+                                runtime,
+                                &mut chat,
+                                claude_continue,
+                                claude_uncertain,
+                                restart_refusal && pass == 1,
+                            )?;
+                            if restart_refusal && pass == 1 {
+                                // Stop after the verified refusal. The next attempt
+                                // must survive a real Python/Rust process restart.
+                                break;
+                            }
                         }
                         if reconcile_held && pass == 1 {
                             reconcile_saved_input(runtime, &mut chat)?;
@@ -1878,10 +1948,12 @@ fn saved_conversation_process(mode: SavedInput) {
                         runtime.submit(chat.take_submission().unwrap())?;
                     }
                     if done {
-                        if pass == 1 {
+                        if pass > 0 {
                             assert_eq!(
                                 chat.rows.last().unwrap().cards[0].answer,
-                                if continue_held {
+                                if claude_continue {
+                                    "Earlier: remember SAVED-CONTEXT | UNSENT prepared"
+                                } else if continue_held {
                                     "Earlier: remember SAVED-CONTEXT | UNSENT queued"
                                 } else if reconcile_held {
                                     "Earlier: remember SAVED-CONTEXT | UNSENT sending"
@@ -1905,7 +1977,49 @@ fn saved_conversation_process(mode: SavedInput) {
         if pass == 0 {
             agent = current["agent"].as_str().unwrap().into();
             saved_settings = fs::read(root.join("settings.json")).unwrap();
+            let commands: Vec<serde_json::Value> =
+                fs::read_to_string(root.join("resume-commands.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+            original_prompt_id = commands.iter().find(|c| c["type"] == "prompt").unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .into();
         } else {
+            if claude_continue {
+                assert_eq!(
+                    current["restored_operations"][0]["operation_id"],
+                    original_prompt_id
+                );
+            }
+            if restart_refusal && pass == 1 {
+                let commands: Vec<serde_json::Value> =
+                    fs::read_to_string(root.join("resume-commands.jsonl"))
+                        .unwrap()
+                        .lines()
+                        .map(|line| serde_json::from_str(line).unwrap())
+                        .collect();
+                let continued: Vec<_> = commands
+                    .iter()
+                    .filter(|c| c["type"] == "gui.restored_input.continue")
+                    .collect();
+                assert_eq!(continued.len(), 1);
+                prior_continuation_id = continued[0]["id"].as_str().unwrap().into();
+                assert_ne!(prior_continuation_id, original_prompt_id);
+                assert!(
+                    !root.join("claude-query-proof.jsonl").exists(),
+                    "refused lifetime sent input"
+                );
+            }
+            if restart_refusal && pass == 2 {
+                assert_eq!(
+                    current["restored_operations"][0]["continuation_operation_id"],
+                    prior_continuation_id
+                );
+                assert_eq!(current["restored_operations"][0]["state"], "prepared");
+            }
             assert_eq!(current["agent"], agent);
             assert_eq!(current["thinking"], "high");
             assert_eq!(
@@ -1927,7 +2041,13 @@ fn saved_conversation_process(mode: SavedInput) {
         );
         assert_eq!(
             proof["explicit_prompts"],
-            if continue_held {
+            if claude_continue {
+                serde_json::json!([
+                    "remember SAVED-CONTEXT",
+                    "UNSENT prepared",
+                    "what was saved?"
+                ])
+            } else if continue_held {
                 serde_json::json!(["remember SAVED-CONTEXT", "UNSENT queued", "what was saved?"])
             } else if reconcile_held {
                 serde_json::json!([
@@ -1941,7 +2061,9 @@ fn saved_conversation_process(mode: SavedInput) {
         );
         let entries = proof["entries"].as_array().unwrap();
         assert_eq!(entries.len(), if removed { 2 } else { 3 });
-        let states = if resolve_held {
+        let states = if claude_continue {
+            vec!["prepared", "prepared"]
+        } else if resolve_held {
             vec!["prepared", "uncertain"]
         } else if claude_held {
             vec!["uncertain", "uncertain"]
@@ -1952,9 +2074,11 @@ fn saved_conversation_process(mode: SavedInput) {
         } else {
             vec!["queued", "sending", "accepted"]
         };
-        for (entry, state) in entries.iter().zip(states) {
+        for (index, (entry, state)) in entries.iter().zip(states).enumerate() {
             assert_eq!(entry["state"], state);
-            if claude_held && state == "prepared" {
+            if claude_continue {
+                assert_eq!(entry["content"], format!("UNSENT later-{}", index + 1));
+            } else if claude_held && state == "prepared" {
                 assert_eq!(entry["content"], "UNSENT prepared");
             } else if claude_held {
                 assert!(matches!(
@@ -1977,7 +2101,11 @@ fn saved_conversation_process(mode: SavedInput) {
             assert_eq!(closed["state"], "terminal");
             assert_eq!(
                 closed["stop_reason"],
-                if resolve_held {
+                if claude_uncertain {
+                    "user_resolved_without_replay"
+                } else if claude_continue {
+                    "stop"
+                } else if resolve_held {
                     "user_resolved_without_replay"
                 } else {
                     "user_cancelled_before_send"
@@ -2029,7 +2157,13 @@ fn saved_conversation_process(mode: SavedInput) {
         .collect();
     assert_eq!(
         prompts,
-        if continue_held {
+        if claude_continue {
+            vec![
+                "remember SAVED-CONTEXT",
+                "UNSENT prepared",
+                "what was saved?",
+            ]
+        } else if continue_held {
             vec!["remember SAVED-CONTEXT", "UNSENT queued", "what was saved?"]
         } else if reconcile_held {
             vec![
@@ -2102,10 +2236,31 @@ fn saved_conversation_process(mode: SavedInput) {
             .iter()
             .filter(|v| v["type"] == "gui.restored_input.settled")
             .collect();
-        assert_eq!(continued.len(), 2);
-        assert_eq!(settled.len(), 2);
-        assert_ne!(continued[0]["id"], continued[1]["id"]);
-        assert_ne!(continued[0]["snapshot"], continued[1]["snapshot"]);
+        let attempt_count = if restart_refusal { 3 } else { 2 };
+        assert_eq!(continued.len(), attempt_count);
+        assert_eq!(settled.len(), attempt_count);
+        for pair in continued.windows(2) {
+            assert_ne!(pair[0]["id"], pair[1]["id"]);
+            assert_ne!(pair[0]["snapshot"], pair[1]["snapshot"]);
+        }
+        if claude_continue {
+            let command_ids: std::collections::HashSet<_> = commands
+                .iter()
+                .filter(|c| {
+                    matches!(
+                        c["type"].as_str(),
+                        Some("prompt" | "gui.restored_input.continue")
+                    )
+                })
+                .map(|c| c["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                command_ids.len(),
+                attempt_count + 2,
+                "execution command IDs repeated across lifetimes"
+            );
+            assert!(continued.iter().all(|c| c["id"] != original_prompt_id));
+        }
         for (sent, read) in continued.iter().zip(settled.iter()) {
             assert_eq!(sent["id"], read["operation_id"]);
             assert!(sent.get("message").is_none() && sent.get("tool_profile").is_none());
@@ -2113,19 +2268,104 @@ fn saved_conversation_process(mode: SavedInput) {
         let proof: serde_json::Value =
             serde_json::from_slice(&fs::read(root.join("queue-continue-proof.json")).unwrap())
                 .unwrap();
-        assert_eq!(proof["source"], "queued");
+        assert_eq!(
+            proof["source"],
+            if claude_continue { "harness" } else { "queued" }
+        );
         assert_eq!(proof["profile"], "strict");
-        assert_eq!(proof["operation"], continued[1]["id"]);
+        assert_eq!(proof["operation"], continued.last().unwrap()["id"]);
         assert_eq!(proof["delivered"].as_array().unwrap().len(), 1);
-        assert_eq!(proof["delivered"][0]["content"], "UNSENT queued");
+        assert_eq!(
+            proof["delivered"][0]["content"],
+            if claude_continue {
+                "UNSENT prepared"
+            } else {
+                "UNSENT queued"
+            }
+        );
         let receipts: Vec<serde_json::Value> =
             fs::read_to_string(root.join("continue-receipts.jsonl"))
                 .unwrap()
                 .lines()
                 .map(|l| serde_json::from_str(l).unwrap())
                 .collect();
-        assert_eq!(receipts[0]["turn"], "refused");
-        assert_eq!(receipts[1]["turn"], "accepted");
+        assert_eq!(
+            receipts[0]["turn"],
+            if claude_continue {
+                "accepted"
+            } else {
+                "refused"
+            }
+        );
+        assert_eq!(receipts.last().unwrap()["turn"], "accepted");
+        assert_eq!(receipts.len(), attempt_count);
+        if claude_continue {
+            let settled: Vec<serde_json::Value> =
+                fs::read_to_string(root.join("settled-receipts.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+            assert_eq!(settled.len(), attempt_count);
+            for refusal in &settled[..attempt_count - 1] {
+                assert_eq!(refusal["continuation_provider"], "claude");
+                assert_eq!(refusal["continuation_state"], "prepared");
+                assert_eq!(refusal["continuation_outcome"], "accepted");
+                assert_eq!(refusal["held"], 3);
+            }
+            assert_eq!(
+                settled.last().unwrap()["continuation_state"],
+                if claude_uncertain {
+                    "uncertain"
+                } else {
+                    "terminal"
+                }
+            );
+            assert_eq!(
+                settled.last().unwrap()["held"],
+                if claude_uncertain { 3 } else { 2 }
+            );
+            if claude_uncertain {
+                assert_eq!(
+                    commands
+                        .iter()
+                        .filter(|command| command["type"] == "gui.restored_input.resolve")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    commands
+                        .iter()
+                        .filter(|command| command["type"] == "gui.restored_input.list")
+                        .count(),
+                    2
+                );
+                let resolved: serde_json::Value = serde_json::from_slice(
+                    &fs::read(root.join("queue-resolve-proof.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(resolved["replayed"], false);
+                assert_eq!(resolved["effects_verified"], false);
+            }
+            let queried: Vec<serde_json::Value> =
+                fs::read_to_string(root.join("claude-query-proof.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+            assert_eq!(
+                queried.len(),
+                1,
+                "cache refusal and restart must not send the delivery"
+            );
+            assert_eq!(queried[0]["entry"]["state"], "submitted");
+            assert_eq!(queried[0]["entry"]["operation_id"], original_prompt_id);
+            assert_eq!(
+                queried[0]["entry"]["continuation_operation_id"],
+                continued.last().unwrap()["id"]
+            );
+            assert_eq!(queried[0]["delivered"].as_array().unwrap().len(), 1);
+        }
     }
     if cancel_held || resolve_held {
         assert_eq!(
@@ -2161,11 +2401,11 @@ fn saved_conversation_process(mode: SavedInput) {
             .iter()
             .filter(|v| v["type"] == "gui.conversations.read")
             .count(),
-        1
+        if restart_refusal { 2 } else { 1 }
     );
     assert_eq!(
         commands.iter().filter(|v| v["type"] == "shutdown").count(),
-        2
+        if restart_refusal { 3 } else { 2 }
     );
     // An admitted owned resume still cannot enable the composer without history.
     fs::write(
@@ -2254,6 +2494,9 @@ fn reconcile_saved_input(
 fn continue_saved_input(
     runtime: &litetui_terminal::live::Interactive,
     chat: &mut litetui_terminal::live_chat::Chat,
+    claude: bool,
+    uncertain: bool,
+    stop_after_refusal: bool,
 ) -> std::io::Result<()> {
     use litetui_terminal::{
         live::Observation,
@@ -2263,6 +2506,8 @@ fn continue_saved_input(
     runtime.queue(Intent::Open)?;
     let mut attempts = 0;
     let mut terminal = false;
+    let mut selected = String::new();
+    let mut resolving = false;
     loop {
         let event = runtime
             .events
@@ -2273,11 +2518,14 @@ fn continue_saved_input(
         } else {
             None
         };
-        if matches!(event, Observation::Refused(_) | Observation::Complete) {
+        if matches!(
+            event,
+            Observation::Refused(_) | Observation::Complete | Observation::Failed(_)
+        ) {
             terminal = true;
         }
         chat.observe(event)?;
-        if terminal && menu.is_none() {
+        if terminal && menu.is_none() && !resolving {
             assert!(chat.queue_pending());
             assert!(chat.submit("too early").is_err());
         }
@@ -2289,18 +2537,60 @@ fn continue_saved_input(
                     chat.rows.last().unwrap().state,
                     if attempts == 1 {
                         ReplyState::Refused
+                    } else if uncertain {
+                        ReplyState::Failed
                     } else {
                         ReplyState::Complete
                     }
                 );
             }
+            if attempts == 1 && stop_after_refusal {
+                assert_eq!(menu.entries.len(), 3);
+                assert_eq!(menu.entries[0].state, "prepared");
+                assert!(menu.entries[0].can_continue);
+                break;
+            }
             if attempts == 2 {
+                if uncertain && !resolving {
+                    assert_eq!(menu.entries.len(), 3);
+                    let entry = &menu.entries[0];
+                    assert_eq!(entry.id, selected);
+                    assert_eq!(entry.state, "uncertain");
+                    assert_eq!(entry.uncertain_from, "submitted");
+                    assert!(!entry.can_continue && !entry.can_cancel && entry.can_resolve);
+                    assert!(menu.entries.iter().all(|entry| !entry.can_continue));
+                    assert!(
+                        chat.prepare_continuation(&Intent::Continue {
+                            revision: menu.revision,
+                            entry: selected.clone(),
+                        })
+                        .is_err()
+                    );
+                    runtime.queue(Intent::Resolve {
+                        revision: menu.revision,
+                        entry: selected.clone(),
+                    })?;
+                    resolving = true;
+                    continue;
+                }
                 assert_eq!(menu.entries.len(), 2);
-                assert!(!menu.entries.iter().any(|e| e.id == "saved-queued"));
+                assert!(!menu.entries.iter().any(|e| e.id == selected));
                 break;
             }
             let entry = &menu.entries[0];
-            assert_eq!(entry.id, "saved-queued");
+            if attempts == 0 {
+                selected = entry.id.clone();
+            }
+            assert_eq!(entry.id, selected);
+            assert_eq!(entry.provider, if claude { "claude" } else { "codex" });
+            assert_eq!(
+                entry.content,
+                if claude {
+                    "UNSENT prepared"
+                } else {
+                    "UNSENT queued"
+                }
+            );
             assert!(entry.can_continue);
             let intent = Intent::Continue {
                 revision: menu.revision,
@@ -2367,5 +2657,102 @@ fn unmarked_or_mismatched_resume_root_never_starts_python_or_overwrites_files() 
             assert!(!root.parent().unwrap().join("python-started").exists());
         }
         assert_eq!(fs::read(root.join("settings.json")).unwrap(), before);
+    }
+}
+
+#[test]
+#[ignore = "controlled Python child; no provider"]
+fn cache_refusal_before_or_after_admission_never_retries_and_allows_explicit_followup() {
+    use litetui_terminal::{
+        live::Observation,
+        live_chat::{Chat, ReplyState},
+    };
+    for mode in ["cache_refused_before_ack", "cache_refused_after_ack"] {
+        let (runtime, root) = question_runtime(mode);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut chat = Chat::new("claude".into(), "claude-sonnet-5-5".into());
+                let mut warned = false;
+                let mut refused = false;
+                loop {
+                    let event = runtime
+                        .events
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(std::io::Error::other)?;
+                    let ready = matches!(event, Observation::Ready);
+                    let complete = matches!(event, Observation::Complete);
+                    let refusal = matches!(event, Observation::Refused(_));
+                    if let Observation::Information(reason) = &event {
+                        warned |= reason.contains("Controlled cold resume warning");
+                    }
+                    chat.observe(event)?;
+                    if ready {
+                        chat.submit("first explicit input")?;
+                        runtime.submit(chat.take_submission().unwrap())?;
+                    }
+                    if refusal {
+                        assert!(warned && !refused);
+                        refused = true;
+                        assert_eq!(chat.rows.len(), 1);
+                        assert_eq!(chat.rows[0].state, ReplyState::Refused);
+                        let sent: Vec<serde_json::Value> =
+                            fs::read_to_string(root.join("commands.jsonl"))?
+                                .lines()
+                                .map(|line| serde_json::from_str(line).unwrap())
+                                .collect();
+                        assert_eq!(sent.iter().filter(|v| v["type"] == "prompt").count(), 1);
+                        assert!(chat.take_submission().is_none());
+                        chat.submit("second explicit input")?;
+                        runtime.submit(chat.take_submission().unwrap())?;
+                    }
+                    if complete {
+                        assert!(refused);
+                        assert_eq!(chat.rows.len(), 2);
+                        assert_eq!(chat.rows[1].state, ReplyState::Complete);
+                        break;
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let sent: Vec<serde_json::Value> = fs::read_to_string(root.join("commands.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[2]["type"], "shutdown");
+        assert_ne!(sent[0]["id"], sent[1]["id"]);
+    }
+}
+
+#[test]
+#[ignore = "controlled Python child; no provider"]
+fn one_shot_cache_refusal_is_failure_and_warning_alone_cannot_finish() {
+    for mode in ["cache_refused_before_ack", "cache_refused_no_terminal"] {
+        let (mut command, root) = setup(mode);
+        let result = command.output().unwrap();
+        assert!(!result.status.success());
+        let output = format!(
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            output.contains(if mode == "cache_refused_no_terminal" {
+                "deadline elapsed"
+            } else {
+                "Input not started"
+            }),
+            "{output}"
+        );
+        assert!(!output.contains("[Turn ended: stop]"), "{output}");
+        let sent: Vec<serde_json::Value> = fs::read_to_string(root.join("commands.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(sent.iter().filter(|v| v["type"] == "prompt").count(), 1);
+        assert_eq!(sent.last().unwrap()["type"], "shutdown");
     }
 }

@@ -53,13 +53,13 @@ async def saved_app(make_app, monkeypatch):
         await app.client.close()
 
 
-def seed(app, state="prepared", *, content="UNSENT CLAUDE INPUT"):
+def seed(app, state="prepared", *, content="UNSENT CLAUDE INPUT", profile="strict", source="harness", operation=None):
     ledger = claude_turn.ledger_for(app)
     segment = ledger.select_segment(claude_turn.launch_workspace(app))
     ledger.fix_system_prompt(segment["id"], "Fixture system",
                              store_identity=store_identity.capture(app), store_injected=True)
     ledger.bind_session(segment["id"], "saved-native-session")
-    entry = ledger.prepare(segment["id"], content, "strict", "harness")
+    entry = ledger.prepare(segment["id"], content, profile, source, operation_id=operation)
     if state in ("submitted", "acknowledged", "uncertain"):
         ledger.update_delivery(entry["id"], "submitted")
     if state == "acknowledged":
@@ -94,7 +94,8 @@ async def test_owned_resume_exposes_held_evidence_without_sending_or_rewriting(s
     row = result["entries"][0]
     assert result["held"] == 1 and row["id"] == entry["id"] and row["provider"] == "claude"
     assert row["can_cancel"] is (state == "prepared")
-    assert row["can_continue"] is row["can_reconcile"] is False
+    assert row["can_continue"] is (state == "prepared")
+    assert row["can_reconcile"] is False
     assert row["thread_id"] == "saved-native-session" and row["segment_id"] == entry["segment_id"]
     assert row["uncertain_from"] == ("" if state == "prepared" else "submitted" if state == "uncertain" else state)
     app._flush_pending_input()

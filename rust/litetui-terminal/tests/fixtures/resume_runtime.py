@@ -20,6 +20,7 @@ held_fixture = Path(__file__).with_name("fixture-held-input").exists()
 continue_fixture = Path(__file__).with_name("fixture-continue-input").exists()
 reconcile_fixture = Path(__file__).with_name("fixture-reconcile-input").exists()
 claude_fixture = Path(__file__).with_name("fixture-claude-input").exists()
+fail_query_fixture = Path(__file__).with_name("fixture-fail-query").exists()
 sys.path.insert(0, str(source / "tests"))
 
 
@@ -86,19 +87,73 @@ async def serve(app):
         from types import SimpleNamespace
 
         captured = origin.scheduled()
+        retire.clear()
         async def execute():
-            app._rpc_emit({"type": "turn_start", "model": app.model_id}, origin=captured)
-            answer = "Controlled continued reply"
-            app._append({"role": "assistant", "content": answer})
-            app._rpc_emit({"type": "text_delta", "text": answer, "card_index": 0}, origin=captured)
-            app._rpc_emit({"type": "turn_end", "stopReason": "stop", "error": None}, origin=captured)
+            if claude_fixture:
+                from test_claude_turn import FakeBubble
+
+                from litetui import claude_turn
+                from litetui.claude_events import ClaudeEvent
+
+                class Session:
+                    session_id = "controlled-native-session"
+
+                    async def get_context_usage(self):
+                        return {"maxTokens": 200000, "totalTokens": 1000}
+
+                    async def query(self, entry_id, content):
+                        document = json.loads(app._claude_ledger.file.read_text(encoding="utf-8"))
+                        segment = document["segments"][document["selected_segment"]]
+                        entry = next(e for e in segment["entries"] if e["id"] == entry_id)
+                        assert entry["state"] == "submitted", "query happened before durable submission"
+                        assert content == entry["content"] == "UNSENT prepared"
+                        delivered = [m for m in app.conversation if m.get("claude_delivery", {}).get("id") == entry_id]
+                        assert len(delivered) == 1, "saved user delivery was duplicated"
+                        with (root / "claude-query-proof.jsonl").open("a", encoding="utf-8") as log:
+                            log.write(json.dumps({"entry": entry, "delivered": delivered}) + "\n")
+                        if fail_query_fixture:
+                            raise RuntimeError("Controlled Claude failure after submitted")
+
+                    async def events(self):
+                        yield object()
+
+                    async def interrupt(self):
+                        forbidden()
+
+                async def session_for(_app, _backend, _segment, _effort):
+                    bridge = SimpleNamespace(stop=lambda: None)
+                    normalizer = SimpleNamespace(push=lambda _: [
+                        ClaudeEvent(kind="text_delta", text="Controlled continued reply", message_id="continued-answer"),
+                        ClaudeEvent(kind="result", is_error=False, data={"subtype": "success"}),
+                    ])
+                    return Session(), bridge, normalizer
+
+                app._assistant_bubble = FakeBubble
+                app._elapsed = SimpleNamespace(start=lambda *_a, **_kw: None, stop_body=lambda: None)
+                app._thinking_done = lambda: None
+                app._settle_turn_stop_line = lambda *_a, **_kw: None
+                app._scroll_down = lambda **_kw: None
+                app.set_timer = lambda *_a, **_kw: SimpleNamespace(stop=lambda: None)
+                app._autocompact_due = lambda: None
+                with patch.object(claude_turn, "session_for", session_for), \
+                        patch.object(claude_turn, "after_turn", lambda *_: None):
+                    await claude_turn.stream_turn(app, origin=captured)
+            else:
+                app._rpc_emit({"type": "turn_start", "model": app.model_id}, origin=captured)
+                answer = "Controlled continued reply"
+                app._append({"role": "assistant", "content": answer})
+                app._rpc_emit({"type": "text_delta", "text": answer, "card_index": 0}, origin=captured)
+                app._rpc_emit({"type": "turn_end", "stopReason": "stop", "error": None}, origin=captured)
             # Deliberately keep the worker alive after turn_end. Only the
             # separate source settlement request releases this fixture barrier.
             await retire.wait()
             (root / "queue-continue-proof.json").write_text(json.dumps({
                 "operation": captured.operation_id, "source": captured.source,
                 "profile": app._active_tool_profile,
-                "delivered": [m for m in app.conversation if m.get("codex_delivery")],
+                "state": (next(e["state"] for e in app._claude_ledger.selected["entries"]
+                               if e["id"] == app._claude_active_input["_claude_entry"]["id"])
+                          if claude_fixture else None),
+                "delivered": [m for m in app.conversation if m.get("claude_delivery" if claude_fixture else "codex_delivery")],
             }), encoding="utf-8")
         task = asyncio.create_task(execute())
         continuation_worker = task
@@ -117,7 +172,9 @@ async def serve(app):
             from litetui import claude_turn
 
             before = copy.deepcopy([item["_claude_entry"] for item in app._pending_input])
-            count = 2 if any((root / name).exists() for name in ("queue-cancel-proof.json", "queue-resolve-proof.json")) else 3
+            continuation = root / "queue-continue-proof.json"
+            completed = continuation.exists() and json.loads(continuation.read_text(encoding="utf-8"))["state"] == "terminal"
+            count = 2 if completed or any((root / name).exists() for name in ("queue-cancel-proof.json", "queue-resolve-proof.json")) else 3
             assert len(before) == count
             evidence = app._claude_ledger.file.read_bytes()
             app._flush_pending_input()
@@ -170,7 +227,12 @@ async def serve(app):
     with (root / "launches.jsonl").open("a", encoding="utf-8") as log:
         log.write(json.dumps({"session": app.convo_id, "agent": app._agent_session.authority.agent_id,
                              "thinking": app.thinking_level, "argv": sys.argv,
-                             "held": restored_input.status(app)}) + "\n")
+                             "held": restored_input.status(app),
+                             "restored_operations": [
+                                 {key: item["_claude_entry"].get(key) for key in (
+                                     "id", "operation_id", "continuation_operation_id", "state")}
+                                 for item in app._pending_input if "_claude_entry" in item
+                             ]}) + "\n")
     try:
         while line := await asyncio.to_thread(sys.stdin.readline):
             command = json.loads(line)
@@ -191,7 +253,7 @@ async def serve(app):
                 if continue_fixture and command["type"] == "gui.restored_input.continue":
                     continuation_count += 1
                     with patch.object(seat_authority, "floor_refusal",
-                                      return_value="controlled floor refusal" if continuation_count == 1 else None):
+                                      return_value="controlled floor refusal" if continuation_count == 1 and not claude_fixture else None):
                         result = await gui_rpc.async_dispatch(app, command)
                     with (root / "continue-receipts.jsonl").open("a", encoding="utf-8") as log:
                         log.write(json.dumps(result) + "\n")
@@ -208,6 +270,9 @@ async def serve(app):
                 if command["type"] == "gui.restored_input.resolve":
                     assert result["replayed"] is False and result["effects_verified"] is False
                     (root / "queue-resolve-proof.json").write_text(json.dumps(result), encoding="utf-8")
+                if continue_fixture and command["type"] == "gui.restored_input.settled":
+                    with (root / "settled-receipts.jsonl").open("a", encoding="utf-8") as log:
+                        log.write(json.dumps(result) + "\n")
                 rpc._respond(command["id"], ok=True, result=result)
                 continue
             assert command["type"] == "prompt"
@@ -236,12 +301,22 @@ async def serve(app):
                 ledger.fix_system_prompt(segment["id"], "Controlled fixture system prompt",
                                          store_identity=store_identity.capture(app), store_injected=True)
                 ledger.bind_session(segment["id"], "controlled-native-session")
-                for state in ("prepared", "submitted", "acknowledged"):
-                    entry = ledger.prepare(segment["id"], "UNSENT " + state, "strict", "harness")
-                    if state != "prepared":
-                        ledger.update_delivery(entry["id"], "submitted")
-                    if state == "acknowledged":
-                        ledger.update_delivery(entry["id"], "acknowledged")
+                for index, state in enumerate(("prepared", "submitted", "acknowledged")):
+                    content = "UNSENT " + (state if not continue_fixture or index == 0 else "later-" + str(index))
+                    entry = ledger.prepare(segment["id"], content, "strict", "harness",
+                                           operation_id=command["id"] if continue_fixture and index == 0 else None)
+                    if continue_fixture:
+                        if index == 0:
+                            # This prepared input was already accepted locally before
+                            # the prior runtime stopped. Continuation must reuse it.
+                            app._append({"role": "user", "content": content, "claude_delivery": {
+                                "id": entry["id"], "segment_id": segment["id"], "state": "prepared",
+                            }})
+                    else:
+                        if state != "prepared":
+                            ledger.update_delivery(entry["id"], "submitted")
+                        if state == "acknowledged":
+                            ledger.update_delivery(entry["id"], "acknowledged")
             app._rpc_emit({"type": "text_delta", "text": answer, "card_index": 0}, origin=origin)
             app.thinking_level = "high"
             app._rpc_emit({"type": "turn_end", "stopReason": "stop", "error": None}, origin=origin)

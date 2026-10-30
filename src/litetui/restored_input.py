@@ -223,7 +223,11 @@ async def continue_input(app, cmd):
         raise ValueError("Recovered input changed; refresh before continuing")
     row = next((row for row in result["entries"] if row["id"] == cmd.get("entry_id")), None)
     if row is None or not row["can_continue"]:
-        raise ValueError("Only the eligible oldest recovered Codex input can continue")
+        raise ValueError("Only the eligible oldest recovered Codex input or prepared Claude input can continue")
+    if row.get("provider") == "claude":
+        from litetui import restored_claude
+
+        return await restored_claude.continue_input(app, cmd, records[row["id"]])
     item, (entry, entries, index) = records[row["id"]]
     app._validate_owned_execution()
     if getattr(app, "_mcp_maintenance", False) or getattr(app, "_gui_quitting", False):
@@ -348,9 +352,14 @@ async def settled(app, cmd):
             pass
     current()
     _idle(app)
+    evidence = {}
+    if "claude" in attempt:
+        from litetui import restored_claude
+
+        evidence = restored_claude.settled(app, attempt)
     result = inspect(app, cmd["session_id"])
     result.update(operation_id=attempt["operation"], entry_id=attempt["entry"],
-                  continuation_outcome=attempt["outcome"])
+                  continuation_outcome=attempt["outcome"], **evidence)
     return result
 
 

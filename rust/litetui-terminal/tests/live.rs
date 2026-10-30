@@ -7,13 +7,13 @@ fn ready() -> serde_json::Value {
 fn accept(turn: &mut Turn, value: serde_json::Value) -> std::io::Result<Observation> {
     turn.accept(&value, "claude", "claude-sonnet-5-5")
 }
-fn started() -> Turn {
+fn started_with_id() -> (Turn, String) {
     let mut turn = Turn::default();
     assert_eq!(accept(&mut turn, ready()).unwrap(), Observation::Ready);
-    turn.submit("Hello").unwrap();
+    let prompt = turn.submit("Hello").unwrap();
     accept(
         &mut turn,
-        json!({"type":"response","id":"rust-live-prompt","ok":true,"result":{"turn":"accepted"}}),
+        json!({"type":"response","id":prompt["id"],"ok":true,"result":{"turn":"accepted"}}),
     )
     .unwrap();
     accept(
@@ -21,7 +21,10 @@ fn started() -> Turn {
         json!({"type":"turn_start","model":"claude-sonnet-5-5"}),
     )
     .unwrap();
-    turn
+    (turn, prompt["id"].as_str().unwrap().to_owned())
+}
+fn started() -> Turn {
+    started_with_id().0
 }
 #[test]
 fn real_native_shapes_stream_and_complete_but_ack_does_not_complete() {
@@ -259,4 +262,215 @@ fn continuation_refusal_waits_for_stop_receipt_without_faking_turn_end() {
         .unwrap(),
         Observation::Refused("stopped".into())
     );
+}
+
+#[test]
+fn scheduled_claude_refusal_waits_for_admission_and_allows_only_explicit_followup() {
+    for ack_first in [false, true] {
+        for continuation in [false, true] {
+            let mut turn = Turn::default();
+            accept(&mut turn, ready()).unwrap();
+            let id = if continuation {
+                turn.submit_continuation("saved", "session", "entry")
+                    .unwrap()
+            } else {
+                turn.submit("fresh").unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            };
+            let ack = json!({"type":"response","id":id,"ok":true,
+                "result":{"turn":"accepted","session_id":"session","entry_id":"entry","held":0}});
+            if ack_first {
+                accept(&mut turn, ack.clone()).unwrap();
+            }
+            assert!(matches!(
+                accept(
+                    &mut turn,
+                    json!({"type":"cache_warning","provider":"claude",
+                "reason":"Effort changes the cache","kind":"effort"})
+                )
+                .unwrap(),
+                Observation::Information(_)
+            ));
+            assert!(turn.submit("automatic retry forbidden").is_err());
+            let refused = json!({"type":"turn_refused","provider":"claude","reason":"Not sent"});
+            let observation = accept(&mut turn, refused.clone()).unwrap();
+            if ack_first {
+                assert_eq!(observation, Observation::Refused("Not sent".into()));
+            } else {
+                assert!(matches!(observation, Observation::Information(_)));
+                assert!(turn.submit("still waiting for ACK").is_err());
+                assert_eq!(
+                    accept(&mut turn, ack).unwrap(),
+                    Observation::Refused("Not sent".into())
+                );
+            }
+            for late in [
+                refused,
+                json!({"type":"turn_start","model":"claude-sonnet-5-5"}),
+                json!({"type":"text_delta","text":"late"}),
+                json!({"type":"turn_end","stopReason":"stop"}),
+            ] {
+                assert!(accept(&mut turn, late).is_err());
+            }
+            let next = turn.submit("explicit next prompt").unwrap();
+            assert_ne!(next["id"], id);
+        }
+    }
+}
+
+#[test]
+fn prestart_warning_and_refusal_require_valid_provider_reason_and_order() {
+    for kind in ["cache_warning", "turn_refused"] {
+        for fault in [
+            "empty",
+            "whitespace",
+            "oversized",
+            "missing",
+            "provider",
+            "before-submit",
+            "after-start",
+            "backend",
+        ] {
+            let mut turn = Turn::default();
+            accept(&mut turn, ready()).unwrap();
+            if fault != "before-submit" {
+                turn.submit("hello").unwrap();
+            }
+            if fault == "after-start" {
+                accept(
+                    &mut turn,
+                    json!({"type":"turn_start","model":"claude-sonnet-5-5"}),
+                )
+                .unwrap();
+            }
+            let mut event = json!({"type":kind,"provider":"claude","reason":"Not sent"});
+            match fault {
+                "empty" => event["reason"] = json!(""),
+                "whitespace" => event["reason"] = json!(" \n"),
+                "oversized" => event["reason"] = json!("x".repeat(4097)),
+                "missing" => {
+                    event.as_object_mut().unwrap().remove("reason");
+                }
+                "provider" => event["provider"] = json!("codex"),
+                _ => {}
+            }
+            assert!(
+                turn.accept(
+                    &event,
+                    if fault == "backend" {
+                        "codex"
+                    } else {
+                        "claude"
+                    },
+                    "claude-sonnet-5-5"
+                )
+                .is_err(),
+                "{kind}: {fault}"
+            );
+        }
+    }
+}
+
+#[test]
+fn scheduled_refusal_waits_for_existing_stop_receipt() {
+    let mut turn = Turn::default();
+    accept(&mut turn, ready()).unwrap();
+    let id = turn.submit("hello").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let abort = turn.abort(&id).unwrap().unwrap();
+    accept(
+        &mut turn,
+        json!({"type":"response","id":id,"ok":true,"result":{"turn":"accepted"}}),
+    )
+    .unwrap();
+    assert!(matches!(
+        accept(
+            &mut turn,
+            json!({"type":"turn_refused","provider":"claude","reason":"Not sent"})
+        )
+        .unwrap(),
+        Observation::Information(_)
+    ));
+    assert!(turn.submit("too early").is_err());
+    assert_eq!(
+        accept(
+            &mut turn,
+            json!({"type":"response","id":abort["id"],"ok":true,
+        "result":{"stopped":false,"cancelled_asks":[]}})
+        )
+        .unwrap(),
+        Observation::Refused("Not sent".into())
+    );
+}
+
+#[test]
+fn failed_native_turn_retains_partial_output_and_waits_for_stop_settlement() {
+    for stopping in [false, true] {
+        let (mut turn, id) = started_with_id();
+        accept(&mut turn, json!({"type":"text_delta","text":"partial"})).unwrap();
+        let abort = if stopping {
+            turn.abort(&id).unwrap()
+        } else {
+            None
+        };
+        let failure =
+            json!({"type":"turn_end","stopReason":"error","error":"Provider connection lost"});
+        let observation = accept(&mut turn, failure.clone()).unwrap();
+        if let Some(abort) = abort {
+            assert!(matches!(observation, Observation::Information(_)));
+            assert!(turn.submit("too early").is_err());
+            assert_eq!(
+                accept(
+                    &mut turn,
+                    json!({"type":"response","id":abort["id"],"ok":true,
+                "result":{"stopped":true,"cancelled_asks":[]}})
+                )
+                .unwrap(),
+                Observation::Failed("Provider connection lost".into())
+            );
+        } else {
+            assert_eq!(
+                observation,
+                Observation::Failed("Provider connection lost".into())
+            );
+        }
+        assert!(accept(&mut turn, failure).is_err());
+        assert!(accept(&mut turn, json!({"type":"text_delta","text":"late"})).is_err());
+        assert!(turn.submit("explicit next prompt").is_ok());
+    }
+    for reason in [
+        json!(null),
+        json!(""),
+        json!(" \n"),
+        json!(12),
+        json!("x".repeat(16385)),
+    ] {
+        assert!(
+            accept(
+                &mut started(),
+                json!({"type":"turn_end","stopReason":"error","error":reason})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn prompt_identities_are_fresh_across_reconstructed_runtime_instances() {
+    let mut ids = std::collections::HashSet::new();
+    for _ in 0..128 {
+        let mut turn = Turn::default();
+        accept(&mut turn, ready()).unwrap();
+        let id = turn
+            .submit_continuation("saved", "same-session", "same-entry")
+            .unwrap();
+        let suffix = id.strip_prefix("rust-live-prompt-").unwrap();
+        assert_eq!(suffix.len(), 32);
+        assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(ids.insert(id));
+    }
 }

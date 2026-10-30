@@ -104,3 +104,109 @@ async def test_real_worker_passes_its_captured_origin_to_native_stream(tmp_path,
     origin = EventOrigin(session_id="source-session", operation_id="A").scheduled()
     await LiteTUI._stream_worker(app, origin)
     assert seen == [origin]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovered", [False, True])
+async def test_cache_warning_refuses_scheduled_invocation_without_start_or_provider_send(tmp_path, monkeypatch, recovered):
+    from test_claude_turn import effort_app
+
+    from litetui import claude_cache, claude_turn
+    from litetui.claude_persistence import ClaudeLedger
+
+    actual_confirm = claude_cache.confirm_cold
+    app, session, _ = effort_app(tmp_path, monkeypatch, answer=False)
+    monkeypatch.setattr(claude_cache, "confirm_cold", actual_confirm)
+    app._rpc = True
+    app._gui_rpc_enabled = True
+    app._gui_operation_id = "ambient"
+    wire = io.StringIO()
+    monkeypatch.setattr(rpc, "_real_stdout", wire)
+    app._rpc_emit = partial(LiteTUI._rpc_emit, app)
+    app._claude_active_input["_restored_claude_continuation"] = recovered
+    entry = app._claude_active_input["_claude_entry"]
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("A cache refusal cannot start the provider or create an answer")
+    app._assistant_bubble = forbidden
+    session.query = forbidden
+    origin = EventOrigin(session_id="convo", operation_id="fresh-invocation",
+                         hook_id="saved-hook", source="harness").scheduled()
+    await claude_turn.stream_turn(app, origin=origin)
+
+    rows = [json.loads(line) for line in wire.getvalue().splitlines()]
+    envelopes = [row for row in rows if row["type"] == "gui.event"]
+    assert [row["event"]["type"] for row in envelopes] == ["cache_warning", "turn_refused"]
+    refusal = envelopes[-1]
+    assert {key: refusal[key] for key in origin.envelope_fields()} == origin.envelope_fields()
+    assert rows[-2] == refusal["event"]
+    assert refusal["event"]["provider"] == "claude" and refusal["event"]["reason"]
+    assert session.queried == session.efforts == []
+    assert app.appended == [] and app.backend.closes == 0
+    segment = ClaudeLedger(tmp_path).segment(entry["segment_id"])
+    assert segment is not None
+    saved = segment["entries"][0]
+    assert saved["id"] == entry["id"]
+    assert saved["state"] == ("prepared" if recovered else "terminal")
+    assert not any(row.get("type") in {"turn_start", "turn_end", "text_delta"} for row in rows)
+    assert app._claude_cache_ack[0] == "effort"  # still requires a new explicit invocation
+
+
+@pytest.mark.asyncio
+async def test_refusal_cannot_hide_ambiguous_cache_warning_persistence(tmp_path, monkeypatch):
+    from test_claude_turn import effort_app
+
+    from litetui import claude_cache, claude_turn
+
+    actual_confirm = claude_cache.confirm_cold
+    app, _, _ = effort_app(tmp_path, monkeypatch, answer=False)
+    monkeypatch.setattr(claude_cache, "confirm_cold", actual_confirm)
+    app._rpc = app._gui_rpc_enabled = True
+    app._gui_operation_id = "ambient"
+    wire = io.StringIO()
+    monkeypatch.setattr(rpc, "_real_stdout", wire)
+    app._rpc_emit = partial(LiteTUI._rpc_emit, app)
+
+    def fail(*_args, **_kwargs):
+        raise OSError("Controlled persistence failure")
+    monkeypatch.setattr(app._claude_ledger, "update_delivery", fail)
+    with pytest.raises(OSError, match="Controlled persistence"):
+        await claude_turn.stream_turn(app, origin=EventOrigin(
+            session_id="convo", operation_id="attempt").scheduled())
+    rows = [json.loads(line) for line in wire.getvalue().splitlines()]
+    assert [row["type"] for row in rows] == ["cache_warning", "gui.event"]
+
+
+@pytest.mark.asyncio
+async def test_missing_admission_refuses_with_captured_origin_without_fake_completion(tmp_path, monkeypatch):
+    from litetui import claude_turn
+
+    app = turn_app(tmp_path)
+    app._claude_active_input = None
+    app._rpc = app._gui_rpc_enabled = True
+    app._gui_operation_id = "other"
+    wire = io.StringIO()
+    monkeypatch.setattr(rpc, "_real_stdout", wire)
+    app._rpc_emit = partial(LiteTUI._rpc_emit, app)
+    origin = EventOrigin(session_id="convo", operation_id="invocation", source="rpc").scheduled()
+    await claude_turn.stream_turn(app, origin=origin)
+    raw, envelope = [json.loads(line) for line in wire.getvalue().splitlines()]
+    assert raw["type"] == "turn_refused" and "without admission" in raw["reason"]
+    assert envelope["event"] == raw
+    assert {key: envelope[key] for key in origin.envelope_fields()} == origin.envelope_fields()
+    assert app.backend.session.queried == []
+
+
+@pytest.mark.asyncio
+async def test_recovered_compaction_refusal_keeps_original_entry_without_migration(tmp_path, monkeypatch):
+    from litetui import claude_turn
+
+    app = turn_app(tmp_path)
+    app._claude_active_input["_restored_claude_continuation"] = True
+    assert app._claude_active_input["_claude_entry"].get("operation_id") is None
+    app._autocompact_due = lambda: "controlled full context"
+    await claude_turn.stream_turn(app)
+    assert app.backend.session.queried == []
+    assert app._claude_compact_resume is None
+    assert app._claude_ledger.pending(app._claude_ledger.selected["id"])[0]["state"] == "prepared"
+    assert app.emitted[-1] == {"turn_end": "cancelled"}

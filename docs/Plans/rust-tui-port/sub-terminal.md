@@ -12,6 +12,8 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 ## Current implementation checkpoint - 2026-10-29
 
+Claude prepared continuation now preserves original message/delivery identity, source authority and a held queue barrier through worker retirement. Pre-start cache refusal and started-turn failure have distinct native outcomes; independent readback retains unsent/uncertain evidence. Prompt operation IDs are fresh across launches. The newest master checkpoint records full verification and the remaining parity work; bounded conversation browsing and portable packaging are now executing in parallel under the user's explicit /ls-max-parallel request.
+
 F7 X then fresh visible Enter now resolves one uncertain Claude delivery without replay or any claim about provider effects. Source persistence and independent native readback are mandatory; other holds remain. Claude continuation still needs existing-message reuse, a native pre-start refusal outcome for cache warnings, and settlement that preserves unsent/uncertain ledger entries. See the latest master checkpoint for evidence and full remaining scope.
 
 Claude selected-segment entries now restore under the same launch-local hold policy. F7 exposes prepared and uncertain deliveries with native/segment/workspace identity. Only prepared input offers cancellation, with durable source verification and independent native readback. Ordinary Python policy is unchanged. Explicit Claude continuation and uncertainty resolution remain required; the latest master checkpoint records verification.

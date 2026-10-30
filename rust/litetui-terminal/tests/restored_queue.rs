@@ -917,3 +917,190 @@ fn resolution_rejects_forged_receipts_and_uncertain_readback() {
         assert!(!m.ready());
     }
 }
+
+fn continuable_claude_data() -> Value {
+    let mut value = claude_data();
+    value["entries"][0]["can_continue"] = json!(true);
+    value["entries"][1]["state"] = json!("prepared");
+    value["entries"][1]["can_cancel"] = json!(true);
+    value["entries"][1]["uncertain_from"] = json!("");
+    value
+}
+fn continuing_claude(m: &mut Management) -> Value {
+    let read = m.request_queue(Intent::Open).unwrap();
+    let Step::Queue(Update::Snapshot(snapshot)) = reply(m, &read, continuable_claude_data()) else {
+        panic!()
+    };
+    let prepared = m.prepare_continuation(snapshot.revision, "one").unwrap();
+    let command = m.begin_continuation(prepared, "claude-continue").unwrap();
+    assert_eq!(command["type"], "gui.restored_input.continue");
+    assert!(command.get("message").is_none());
+    command
+}
+fn claude_settlement(state: &str, refused: bool) -> Value {
+    let mut value = continuable_claude_data();
+    value["snapshot"] = json!("c".repeat(64));
+    value["operation_id"] = json!("claude-continue");
+    value["entry_id"] = json!("one");
+    value["continuation_provider"] = json!("claude");
+    value["continuation_outcome"] = json!(if refused { "refused" } else { "accepted" });
+    value["continuation_state"] = json!(state);
+    if state == "terminal" {
+        value["entries"].as_array_mut().unwrap().remove(0);
+        value["held"] = json!(1);
+    } else if state == "uncertain" {
+        let row = &mut value["entries"][0];
+        row["state"] = json!("uncertain");
+        row["can_cancel"] = json!(false);
+        row["can_continue"] = json!(false);
+        row["can_resolve"] = json!(true);
+        row["uncertain_from"] = json!("submitted");
+    }
+    value
+}
+#[test]
+fn claude_continue_requires_visible_confirmation_and_never_offers_uncertain_replay() {
+    for (width, height) in [(100, 30), (36, 14)] {
+        let mut v = view();
+        v.observe(Update::Snapshot(
+            Snapshot::parse(&continuable_claude_data(), 17).unwrap(),
+        ));
+        draw(&mut v, width, height);
+        v.key(key(KeyCode::Char('c')));
+        v.key(key(KeyCode::Enter));
+        assert!(v.take_intent().is_none(), "confirmation was not drawn");
+        let rendered = draw(&mut v, width, height);
+        assert!(rendered.contains("confirm continuation"), "{rendered}");
+        v.key(key(KeyCode::Enter));
+        assert_eq!(
+            v.take_intent(),
+            Some(Intent::Continue {
+                revision: 17,
+                entry: "one".into()
+            })
+        );
+    }
+    for fault in ["later", "uncertain", "backend", "blocked"] {
+        let mut value = continuable_claude_data();
+        match fault {
+            "later" => value["entries"][1]["can_continue"] = json!(true),
+            "uncertain" => {
+                value["entries"][0]["state"] = json!("uncertain");
+                value["entries"][0]["can_cancel"] = json!(false);
+            }
+            "backend" => value["backend"] = json!("codex"),
+            "blocked" => {
+                value["entries"][1]["state"] = json!("uncertain");
+                value["entries"][1]["can_cancel"] = json!(false);
+            }
+            _ => unreachable!(),
+        }
+        assert!(Snapshot::parse(&value, 1).is_err(), "{fault}");
+    }
+}
+#[test]
+fn claude_settlement_keeps_unsent_or_uncertain_input_and_distinguishes_admission() {
+    for (state, refused) in [
+        ("prepared", false),
+        ("prepared", true),
+        ("uncertain", false),
+        ("terminal", false),
+    ] {
+        let mut m = connected_backend("claude");
+        let command = continuing_claude(&mut m);
+        assert!(matches!(
+            reply(
+                &mut m,
+                &command,
+                json!({"turn":if refused {"refused"} else {"accepted"}})
+            ),
+            Step::Event(_)
+        ));
+        let read = m.read_continuation(refused).unwrap();
+        assert_eq!(read["entry_id"], "one");
+        assert_eq!(read["operation_id"], command["id"]);
+        assert!(!m.ready() && m.prompt("too-early").is_err());
+        let Step::Queue(Update::Snapshot(snapshot)) =
+            reply(&mut m, &read, claude_settlement(state, refused))
+        else {
+            panic!()
+        };
+        assert_eq!(
+            snapshot.entries.iter().any(|e| e.id == "one"),
+            state != "terminal"
+        );
+        assert!(snapshot.recovered.is_none());
+        if state != "terminal" {
+            assert!(snapshot.message.unwrap().contains(if state == "prepared" {
+                "unsent and held"
+            } else {
+                "uncertain and held"
+            }));
+        }
+        assert!(m.ready());
+    }
+}
+#[test]
+fn claude_settlement_rejects_missing_or_contradictory_delivery_and_saved_identity() {
+    for fault in [
+        "missing-provider",
+        "provider",
+        "missing-state",
+        "state",
+        "refused-terminal",
+        "missing-held",
+        "still-held",
+        "entry-state",
+        "content",
+        "source",
+        "profile",
+        "segment",
+        "workspace",
+        "thread",
+        "operation",
+        "entry",
+        "admission",
+    ] {
+        let mut m = connected_backend("claude");
+        continuing_claude(&mut m);
+        let refused = fault == "refused-terminal";
+        let read = m.read_continuation(refused).unwrap();
+        let mut value = claude_settlement("prepared", refused);
+        match fault {
+            "missing-provider" => {
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("continuation_provider");
+            }
+            "provider" => value["continuation_provider"] = json!("codex"),
+            "missing-state" => {
+                value.as_object_mut().unwrap().remove("continuation_state");
+            }
+            "state" => value["continuation_state"] = json!("submitted"),
+            "refused-terminal" => value = claude_settlement("terminal", true),
+            "missing-held" => {
+                value["entries"].as_array_mut().unwrap().remove(0);
+                value["held"] = json!(1);
+            }
+            "still-held" => value["continuation_state"] = json!("terminal"),
+            "entry-state" => value["continuation_state"] = json!("uncertain"),
+            "content" => value["entries"][0]["content"] = json!("changed"),
+            "source" => value["entries"][0]["source"] = json!("rpc"),
+            "profile" => value["entries"][0]["tool_profile"] = json!("autonomous"),
+            "segment" => value["entries"][0]["segment_id"] = json!("other"),
+            "workspace" => value["entries"][0]["workspace"] = json!("other"),
+            "thread" => value["entries"][0]["thread_id"] = json!("other"),
+            "operation" => value["operation_id"] = json!("other"),
+            "entry" => value["entry_id"] = json!("other"),
+            "admission" => value["continuation_outcome"] = json!("refused"),
+            _ => unreachable!(),
+        }
+        assert!(
+            m.accept(json!({"type":"response","id":read["id"],"ok":true,"result":value}))
+                .is_err(),
+            "{fault}"
+        );
+        assert!(!m.ready() && m.prompt("unsafe").is_err());
+    }
+}

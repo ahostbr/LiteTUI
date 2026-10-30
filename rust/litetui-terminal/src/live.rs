@@ -20,6 +20,38 @@ const FRAME_BYTES: usize = 2 * 1024 * 1024;
 const PROMPT_ID: &str = "rust-live-prompt";
 const SHUTDOWN_ID: &str = "rust-live-shutdown";
 
+fn fresh_prompt_id() -> io::Result<String> {
+    let mut bytes = [0u8; 16];
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Security::Cryptography::{
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+        };
+        // The provider chooses its system RNG when the handle is null; the
+        // buffer is valid for the full length and remains owned by this call.
+        let status = unsafe {
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::other(format!(
+                "Cannot reserve prompt identity: {status}"
+            )));
+        }
+    }
+    #[cfg(unix)]
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    #[cfg(not(any(windows, unix)))]
+    return Err(io::Error::other(
+        "No supported source of fresh prompt identities",
+    ));
+    Ok(format!("{PROMPT_ID}-{:032x}", u128::from_be_bytes(bytes)))
+}
+
 #[derive(Debug)]
 pub struct Options {
     pub python: PathBuf,
@@ -178,6 +210,7 @@ pub enum Observation {
     ApprovalStopped(String),
     Cancelled(String),
     Refused(String),
+    Failed(String),
     Complete,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -186,13 +219,13 @@ pub enum TerminalOutcome {
     ApprovalStopped(String),
     Cancelled(String),
     Refused(String),
+    Failed(String),
 }
 #[derive(Default)]
 pub struct Turn {
     ready: bool,
     sent: bool,
     closing: bool,
-    sequence: u64,
     command_id: String,
     continued_input: Option<(String, String)>,
     visible_answers: std::collections::BTreeSet<usize>,
@@ -200,6 +233,7 @@ pub struct Turn {
     card_count: usize,
     started: bool,
     acknowledged: bool,
+    admission_refused: bool,
     settled: bool,
     terminal: Option<TerminalOutcome>,
     content_bytes: usize,
@@ -233,19 +267,14 @@ impl Turn {
                 "Runtime is not idle, or prompt is empty/too large",
             ));
         }
-        self.command_id = if self.sequence == 0 {
-            PROMPT_ID.into()
-        } else {
-            format!("{PROMPT_ID}-{}", self.sequence)
-        };
-        self.sequence = self
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("Command ID exhausted"))?;
+        // Provider journals outlive this process. An ordinal, timestamp or PID
+        // can alias a saved operation after restart; reserve fresh OS randomness.
+        self.command_id = fresh_prompt_id()?;
         self.continued_input = None;
         self.sent = true;
         self.started = false;
         self.acknowledged = false;
+        self.admission_refused = false;
         self.settled = false;
         self.terminal = None;
         self.stop_requests = 0;
@@ -276,6 +305,7 @@ impl Turn {
         {
             TerminalOutcome::Complete => Observation::Complete,
             TerminalOutcome::Refused(reason) => Observation::Refused(reason.clone()),
+            TerminalOutcome::Failed(reason) => Observation::Failed(reason.clone()),
             TerminalOutcome::Cancelled(reason) => Observation::Cancelled(reason.clone()),
             TerminalOutcome::ApprovalStopped(reason) => {
                 Observation::ApprovalStopped(reason.clone())
@@ -284,6 +314,7 @@ impl Turn {
     }
     fn can_settle(&self) -> bool {
         self.terminal.is_some()
+            && self.acknowledged
             && !self.settled
             && self.aborts.settled()
             && self.approvals.settled()
@@ -408,6 +439,7 @@ impl Turn {
                             .ok_or_else(|| fail("Missing continuation refusal reason"))?
                             .to_owned();
                         self.acknowledged = true;
+                        self.admission_refused = true;
                         self.terminal = Some(TerminalOutcome::Refused(reason));
                         return Ok(if self.can_settle() {
                             self.settle()
@@ -427,9 +459,45 @@ impl Turn {
                     return Err(fail("Unexpected/refused prompt response"));
                 }
                 self.acknowledged = true;
-                Ok(Observation::Information(
-                    "prompt acknowledged (not completion)".into(),
-                ))
+                Ok(if self.can_settle() {
+                    self.settle()
+                } else {
+                    Observation::Information("prompt acknowledged (not completion)".into())
+                })
+            }
+            "cache_warning" | "turn_refused"
+                if backend == "claude"
+                    && self.sent
+                    && !self.started
+                    && self.terminal.is_none()
+                    && !self.settled =>
+            {
+                if event["provider"] != "claude" {
+                    return Err(fail("Pre-start observation belongs to another provider"));
+                }
+                let reason = event["reason"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty() && s.len() <= 4096)
+                    .ok_or_else(|| fail("Invalid pre-start refusal/warning reason"))?
+                    .to_owned();
+                self.content_bytes = self
+                    .content_bytes
+                    .checked_add(reason.len())
+                    .filter(|size| *size <= 4 * FRAME_BYTES)
+                    .ok_or_else(|| fail("Live content budget exceeded"))?;
+                if kind == "cache_warning" {
+                    return Ok(Observation::Information(format!(
+                        "Claude cache warning: {reason}"
+                    )));
+                }
+                self.terminal = Some(TerminalOutcome::Refused(reason));
+                Ok(if self.can_settle() {
+                    self.settle()
+                } else {
+                    Observation::Information(
+                        "Input not started; waiting for admission and input/stop receipts.".into(),
+                    )
+                })
             }
             "turn_start"
                 if self.sent && !self.started && self.terminal.is_none() && !self.settled =>
@@ -600,6 +668,18 @@ impl Turn {
                         } else {
                             TerminalOutcome::ApprovalStopped(reason.to_owned())
                         }
+                    }
+                    Some("error") => {
+                        let reason = event["error"]
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty() && s.len() <= 16384)
+                            .ok_or_else(|| fail("Missing or oversized runtime failure reason"))?;
+                        self.content_bytes = self
+                            .content_bytes
+                            .checked_add(reason.len())
+                            .filter(|size| *size <= 4 * FRAME_BYTES)
+                            .ok_or_else(|| fail("Live content budget exceeded"))?;
+                        TerminalOutcome::Failed(reason.to_owned())
                     }
                     Some("stop")
                         if !self.visible_answers.is_empty()
@@ -1188,8 +1268,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     && !management.has_unpaired()
                     && management.needs_continuation_readback()
                 {
-                    let refused = matches!(turn.terminal, Some(TerminalOutcome::Refused(_)));
-                    let command = management.read_continuation(refused)?;
+                    // A scheduled worker may refuse before starting after its
+                    // admission was accepted. Preserve the admission receipt.
+                    let command = management.read_continuation(turn.admission_refused)?;
                     owned
                         .stdin
                         .as_ref()
@@ -1348,8 +1429,17 @@ impl Frontend for OneShot {
                     terminal_text(&reason)
                 )));
             }
+            Observation::Failed(reason) => {
+                return Err(io::Error::other(format!(
+                    "Turn failed: {}",
+                    terminal_text(&reason)
+                )));
+            }
             Observation::Refused(reason) => {
-                return Err(io::Error::other(format!("Input not started: {reason}")));
+                return Err(io::Error::other(format!(
+                    "Input not started: {}",
+                    terminal_text(&reason)
+                )));
             }
             Observation::Complete => {
                 writeln!(self.output, "\n[Turn ended: stop]")?;
@@ -1614,6 +1704,7 @@ fn publish_event(
                 | Observation::ApprovalStopped(_)
                 | Observation::Cancelled(_)
                 | Observation::Refused(_)
+                | Observation::Failed(_)
                 | Observation::ApprovalSettled { .. }
                 | Observation::Question {
                     settled: Some(_),

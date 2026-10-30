@@ -1,5 +1,19 @@
 # LiteTUI Rust terminal port
 
+## Claude continuation, refusal and failure settlement - 2026-10-29
+
+F7 C then a fresh visible Enter now continues the source-offered oldest prepared Claude input. Original delivery, source, requested profile, segment and workspace remain authoritative. The source verifies the entire owned journal and any already-materialized user record, runs normal admission hooks/authority, records durable admission, and reuses the original message instead of appending a duplicate. An original held item stays at the queue head through worker retirement so idle flush cannot start later input. Submission is still recorded before the provider query.
+
+A cache warning now has an attributed turn_refused outcome before turn_start. Rust displays Not started and waits for the admission response and outstanding input/stop receipts; the warning alone cannot settle or retry. A recovered entry stays prepared and needs another explicit action. Pre-query compaction cannot migrate or automatically resume it. A started turn ending with a bounded source error becomes Failed, preserving partial output and enabling the independent retirement/readback path rather than claiming completion.
+
+Claude settlement independently reports the original admission outcome and current prepared/uncertain/terminal delivery state. Prepared and uncertain entries stay held and visible; only verified terminal evidence removes the barrier. Native readback rejects changed identity, payload, source, profile, segment, workspace or existing native thread. Uncertainty never offers continuation. Explicit resolution still records no provider-effect claim and never replays input.
+
+Every ordinary or continued prompt now reserves a fresh 128-bit OS-random operation ID. Process-local ordinals could collide with a saved original or cache-refused continuation after restart. The controlled three-lifetime regression retains both prior IDs and verifies a new explicit attempt can proceed without duplicating the user record. No weak timestamp/PID fallback is used.
+
+Verification: 371 ordinary Rust tests and Rust fmt/Clippy/build/CLI help pass. The combined source regression run passed 286 cases; 11 legacy Hooks UI cases fail immediately at the existing owned-constructor guard, before changed code. Both their test module and app.py match committed HEAD. Focused changed source/tests pass Ruff and mypy; claude_turn.py retains exactly its 11 committed mypy findings. New controlled processes cover cache ACK ordering, warning-only timeout, explicit retry, saved-message reuse, submitted-before-query, actual worker retirement, and a failed query followed by held uncertainty and explicit resolution. All 43 controlled child-process scenarios passed in one complete run (334.09 seconds), including the new recovery cases and existing policy, authority, stop, prompt, cleanup and restart gates.
+
+Independent review found the restart identity collision, which is fixed and exercised across actual runtime lifetimes. Source/provider and UI boundaries remain controlled: this is no real-provider or desktop-host acceptance. The user-authorized parallel wave now proceeds with bounded conversation browsing and portable packaging; remaining backends/engines, settings/screens/plugins, image/voice/input/theme parity, both-host acceptance and resource measurements are still required for the full port.
+
 ## Explicit Claude uncertainty resolution - 2026-10-29
 
 F7 now offers X then a fresh visible Enter for one uncertain Claude delivery. This records the user's decision to close that delivery without replay; it does not verify provider effects or invent a completed turn. The confirmation fits the minimum inspector size and inherits disarming on selection, geometry, source and pointer changes. Prepared entries and other providers cannot use this action.

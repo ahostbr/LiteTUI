@@ -104,6 +104,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
             Ok(
                 Observation::Cancelled(reason)
                 | Observation::Refused(reason)
+                | Observation::Failed(reason)
                 | Observation::ApprovalStopped(reason),
             ) => {
                 failure = Some(format!("Turn stopped for approval: {reason}"));

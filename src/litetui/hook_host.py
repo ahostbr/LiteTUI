@@ -172,7 +172,8 @@ def accept_prompt(app, item, *, native_accepted=False) -> bool:
     return accept_prompt_origin(app, item, native_accepted=native_accepted) is not None
 
 
-def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_refused=None) -> EventOrigin | None:
+def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_refused=None,
+                         persist_user=None) -> EventOrigin | None:
     """Accept input and return its captured origin, without scheduling execution.
 
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
@@ -216,7 +217,9 @@ def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_re
             if not hasattr(app, "_codex_delivery_bubbles"):
                 app._codex_delivery_bubbles = {}
             app._codex_delivery_bubbles[entry["id"]] = item["bubble"]
-    app._append(message)
+    # Only an internal caller can supply a persistence strategy. Never accept
+    # a wire/item flag that could skip durable user-message materialization.
+    (persist_user or app._append)(message)
     ident = item.get("approval_request_id")
     if ident:
         from litetui import approval_delivery
@@ -231,7 +234,8 @@ async def admit_prompt(app, item) -> bool:
     return await admit_prompt_origin(app, item) is not None
 
 
-async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None) -> EventOrigin | None:
+async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
+                              persist_user=None) -> EventOrigin | None:
     # Capture input metadata before the first suspension, not from mutable app
     # fields after hooks or lifecycle work have run.
     origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
@@ -251,7 +255,8 @@ async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None)
     if before_accept is not None:
         before_accept()
     if result.allowed and not app._stop_requested:
-        accepted = accept_prompt_origin(app, item, origin=origin, on_refused=on_refused)
+        accepted = accept_prompt_origin(app, item, origin=origin, on_refused=on_refused,
+                                        persist_user=persist_user)
         if accepted is None:
             return None
         app._hook_turn_id = ctx["turn_id"]

@@ -534,14 +534,16 @@ fn approval_stop_never_bypasses_open_requests_or_malformed_reason() {
             "fixture",
         )
         .unwrap();
-        assert!(
-            turn.accept(
-                &json!({"type":"turn_end","stopReason":stop,"error":"not success"}),
-                "claude",
-                "fixture"
-            )
-            .is_err()
+        let outcome = turn.accept(
+            &json!({"type":"turn_end","stopReason":stop,"error":"not success"}),
+            "claude",
+            "fixture",
         );
+        if stop == "error" {
+            assert_eq!(outcome.unwrap(), Observation::Failed("not success".into()));
+        } else {
+            assert!(outcome.is_err());
+        }
     }
 }
 

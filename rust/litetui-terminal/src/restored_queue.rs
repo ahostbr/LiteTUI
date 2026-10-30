@@ -152,8 +152,8 @@ impl Snapshot {
             if can_continue
                 && (!can_cancel
                     || !entries.is_empty()
-                    || v["backend"] != "codex"
-                    || provider != "codex")
+                    || v["backend"] != provider
+                    || (provider == "claude" && state != "prepared"))
             {
                 return Err(fail(
                     "Continuation policy disagrees with queue order or delivery evidence",
@@ -212,6 +212,17 @@ impl Snapshot {
                 thread: text(row, "thread_id", 128, true)?,
                 turn: text(row, "turn_id", 128, true)?,
             });
+        }
+        if entries
+            .iter()
+            .any(|row| row.provider == "claude" && row.can_continue)
+            && entries
+                .iter()
+                .any(|row| row.provider == "claude" && row.state == "uncertain")
+        {
+            return Err(fail(
+                "Claude continuation offered while uncertain input is held",
+            ));
         }
         Ok(Self {
             revision,

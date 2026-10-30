@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 fn accept(turn: &mut Turn, event: Value) -> std::io::Result<litetui_terminal::live::Observation> {
     turn.accept(&event, "claude", "fixture")
 }
-fn started() -> Turn {
+fn started() -> (Turn, String) {
     let mut turn = Turn::default();
     accept(&mut turn,json!({"type":"ready","protocol_version":1,"launch_status":"ready","backend":"claude","model":"fixture"})).unwrap();
     let prompt = turn.submit("fixture").unwrap();
@@ -13,11 +13,11 @@ fn started() -> Turn {
     )
     .unwrap();
     accept(&mut turn, json!({"type":"turn_start","model":"fixture"})).unwrap();
-    turn
+    (turn, prompt["id"].as_str().unwrap().to_owned())
 }
 #[test]
 fn source_cancellation_does_not_destroy_the_session_or_require_answer_text() {
-    let mut turn = started();
+    let (mut turn, _prompt_id) = started();
     assert!(
         accept(
             &mut turn,
@@ -38,8 +38,8 @@ fn end() -> Value {
 fn abort_ack_and_terminal_both_required_in_either_order() {
     use litetui_terminal::live::Observation;
     for terminal_first in [false, true] {
-        let mut turn = started();
-        let command = turn.abort("rust-live-prompt").unwrap().unwrap();
+        let (mut turn, _prompt_id) = started();
+        let command = turn.abort(&_prompt_id).unwrap().unwrap();
         let (first, last) = if terminal_first {
             (end(), ack(&command, false))
         } else {
@@ -56,7 +56,7 @@ fn abort_ack_and_terminal_both_required_in_either_order() {
         ));
         assert!(turn.submit("explicit next prompt").is_ok());
         assert!(
-            turn.abort("rust-live-prompt").unwrap().is_none(),
+            turn.abort(&_prompt_id).unwrap().is_none(),
             "stale intent cannot stop new prompt"
         );
         assert!(
@@ -67,12 +67,12 @@ fn abort_ack_and_terminal_both_required_in_either_order() {
 }
 #[test]
 fn force_requires_a_second_request_and_all_receipts_remain_accounted_for() {
-    let mut turn = started();
+    let (mut turn, _prompt_id) = started();
     assert!(turn.abort("wrong-target").unwrap().is_none());
-    let first = turn.abort("rust-live-prompt").unwrap().unwrap();
-    let second = turn.abort("rust-live-prompt").unwrap().unwrap();
+    let first = turn.abort(&_prompt_id).unwrap().unwrap();
+    let second = turn.abort(&_prompt_id).unwrap().unwrap();
     assert_ne!(first["id"], second["id"]);
-    assert!(turn.abort("rust-live-prompt").unwrap().is_none());
+    assert!(turn.abort(&_prompt_id).unwrap().is_none());
     accept(&mut turn, ack(&second, true)).unwrap();
     accept(&mut turn, end()).unwrap();
     assert!(turn.submit("wait").is_err());
@@ -88,8 +88,8 @@ fn malformed_stop_receipts_do_not_settle_or_extend_authority() {
         json!({"stopped":true}),
         json!({"stopped":true,"cancelled_asks":[false]}),
     ] {
-        let mut turn = started();
-        let command = turn.abort("rust-live-prompt").unwrap().unwrap();
+        let (mut turn, _prompt_id) = started();
+        let command = turn.abort(&_prompt_id).unwrap().unwrap();
         let mut event = ack(&command, true);
         event["result"] = response;
         assert!(accept(&mut turn, event).is_err());
@@ -104,7 +104,7 @@ fn cancellation_can_precede_input_closure_but_cannot_release_the_view_early() {
         live_chat::Chat,
     };
     for question in [true, false] {
-        let mut turn = started();
+        let (mut turn, _prompt_id) = started();
         let mut chat = Chat::new("claude".into(), "fixture".into());
         chat.observe(Observation::Ready).unwrap();
         chat.submit("fixture").unwrap();
@@ -116,7 +116,7 @@ fn cancellation_can_precede_input_closure_but_cannot_release_the_view_early() {
         };
         let id = request["id"].clone();
         chat.observe(accept(&mut turn, request).unwrap()).unwrap();
-        let command = turn.abort("rust-live-prompt").unwrap().unwrap();
+        let command = turn.abort(&_prompt_id).unwrap().unwrap();
         chat.observe(accept(&mut turn, ack(&command, true)).unwrap())
             .unwrap();
         chat.observe(accept(&mut turn, end()).unwrap()).unwrap();
@@ -224,8 +224,8 @@ fn stop_confirmation_is_visible_at_minimum_viewport_and_removed_on_settlement() 
 #[test]
 fn natural_completion_winning_a_stop_race_is_still_completion() {
     use litetui_terminal::live::Observation;
-    let mut turn = started();
-    let command = turn.abort("rust-live-prompt").unwrap().unwrap();
+    let (mut turn, _prompt_id) = started();
+    let command = turn.abort(&_prompt_id).unwrap().unwrap();
     accept(
         &mut turn,
         json!({"type":"text_delta","text":"complete answer"}),
@@ -248,7 +248,7 @@ fn stop_waits_for_the_answer_command_already_sent_before_cancellation() {
         live::{Observation, TerminalOutcome},
         questions::{Action, Decision},
     };
-    let mut turn = started();
+    let (mut turn, _prompt_id) = started();
     let request: Value =
         serde_json::from_str(include_str!("fixtures/question_request.json")).unwrap();
     let id = request["id"].as_str().unwrap().to_owned();
@@ -261,7 +261,7 @@ fn stop_waits_for_the_answer_command_already_sent_before_cancellation() {
         })
         .unwrap()
         .unwrap();
-    let abort = turn.abort("rust-live-prompt").unwrap().unwrap();
+    let abort = turn.abort(&_prompt_id).unwrap().unwrap();
     accept(
         &mut turn,
         json!({"type":"user_input_resolved","id":id,"cancelled":true,"reason":"abort"}),
