@@ -34,6 +34,7 @@ import os
 import subprocess
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import jobkill, ninfer_engine, ttyguard
@@ -278,9 +279,23 @@ def _refuse(message: str) -> None:
     raise BackendError(message)
 
 
-def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
-    """(argv, cwd, the config that will run, host) for the next start, or BackendError
-    naming what is missing. Pure apart from reading the install; spawns nothing."""
+@dataclass(frozen=True)
+class LaunchInspection:
+    """A fresh launch description; it grants no readiness or resource admission."""
+
+    argv: tuple[str, ...]
+    cwd: Path
+    config: dict
+    host: str
+    derived_config: Path | None
+
+
+def inspect_launch(settings) -> LaunchInspection:
+    """Read the next launch recipe without writing configs or probing resources.
+
+    A context override names its future derived config but leaves it absent.
+    Actual startup still owns resource checks, materialization and process creation.
+    """
     root = strata_root(settings)
     python = server_python(root)
     server = root / "serve" / "server.py"
@@ -295,18 +310,30 @@ def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
             "no Strata model chosen — /model to pick one (each strata-<model>.json in the install "
             "is a prepared model), or set strata_config.")
     run_cfg = with_context(cfg, getattr(settings, "strata_max_context", None))
+    derived = None
     run_path = path
     if run_cfg is not cfg:
-        # A context LiteTUI chose: written beside the log, never over the install's own file.
-        run_path = log_path().with_name(f"{path.stem}.litetui.json")
-        run_path.parent.mkdir(parents=True, exist_ok=True)
-        run_path.write_text(json.dumps(run_cfg, indent=1), encoding="utf-8")
+        # Only describe the destination here; review must not materialize it.
+        derived = run_path = log_path().with_name(f"{path.stem}.litetui.json")
     host = default_host(settings)
     port = host.rsplit(":", 1)[-1]
     if not port.isdigit():
         raise BackendError(f"strata_host {host} names no port — use http://127.0.0.1:<port>.")
     argv = [str(python), str(server), "--engine", "strata", "--config", str(run_path), "--port", port]
-    return argv, root, run_cfg, host
+    return LaunchInspection(tuple(argv), root, run_cfg, host, derived)
+
+
+def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
+    """Materialize any derived config for an actual launch; spawns nothing.
+
+    Inspection callers must use inspect_launch instead. The existing startup
+    interface keeps its tuple and exact configuration/argument behavior.
+    """
+    plan = inspect_launch(settings)
+    if plan.derived_config is not None:
+        plan.derived_config.parent.mkdir(parents=True, exist_ok=True)
+        plan.derived_config.write_text(json.dumps(plan.config, indent=1), encoding="utf-8")
+    return list(plan.argv), plan.cwd, plan.config, plan.host
 
 
 def _last_words(fresh: str, limit: int = 400) -> str:

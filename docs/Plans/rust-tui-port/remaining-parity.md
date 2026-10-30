@@ -103,9 +103,13 @@ owns output budgets. Canonical scopes/timing and backend controls own eligibilit
 
 Engine controls need a management-only stopped-engine launch state: current ready
 admission rejects a stopped service, and F9 intentionally requires a loaded model.
-Inspect must be read-only: Strata launch_plan currently writes a derived config,
-and NInfer refuse_reason can remove stale registry state. Split pure planning from
-action-time effects. Start/stop must use retained owned handles and resource gates,
+Inspect must be read-only: Strata now exposes inspect_launch, which describes the
+canonical recipe and any future derived config without writing it or probing
+resources. Its legacy launch_plan materializes that config only for actual startup.
+This shared path passes eight new and eighteen existing controlled regressions;
+review descriptions still need owned snapshot/revision binding before native engine
+actions. NInfer refuse_reason can remove stale registry state, so keep that
+action-time admission path out of inspection. Start/stop must use retained owned handles and resource gates,
 settle cancellation and independently verify connection/model/history/policy.
 NInfer explicit endpoints can override a newly started owned port; local Strata
 startup needs a loopback host. Do not widen persistent connect-only authority.
