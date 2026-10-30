@@ -36,7 +36,7 @@ def current_operation(app):
 
 OPERATIONS = (
     "hello", "state", "prompt.submit", "settings.get", "settings.validate", "settings.apply",
-    "conversations.list", "conversations.read", "conversations.open", "conversations.create",
+    "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
     "hooks.get", "hooks.validate", "hooks.apply", "hooks.repair", "hooks.test",
@@ -199,8 +199,23 @@ def _validate_model_fields(values, rows):
             raise ValueError(f"{name}: invalid {kind} value")
 
 
+def _tool_policy(app):
+    """Current effective facts, matching ready rather than saved preferences."""
+    return {
+        "tools_enabled": bool(getattr(app, "tools_enabled", False)),
+        "mcp_enabled": bool(app.settings.mcp_enabled),
+        "tool_profile": str(getattr(app, "_active_tool_profile", None)),
+        "tool_profile_requested": getattr(app, "_cli_tool_profile", None) or None,
+        "approval_route": seat_authority.confirm_route(app), "cwd": os.getcwd(),
+    }
+
+
 def _conversations(app, action, cmd):
     from litetui.conversation import ConversationRepository
+    if action in ("page", "preview"):
+        from litetui import conversation_page
+
+        return conversation_page.page(app, cmd) if action == "page" else conversation_page.preview(app, cmd)
     if action == "list":
         session = getattr(app, '_agent_session', None)
         if session is not None:
@@ -236,6 +251,10 @@ def _conversations(app, action, cmd):
         app._materialise_convo()
         return _read_session(app.convo_id, app)
     if action == "open":
+        if "from_session_id" in cmd or "snapshot" in cmd:
+            from litetui import conversation_page
+
+            conversation_page.validate_open(app, cmd)
         path = _session_path(session_id, app)
         if not path.is_file():
             raise ValueError("Conversation does not exist")
@@ -447,13 +466,20 @@ def dispatch(app, cmd):
         return {"protocol_version": PROTOCOL_VERSION, "data_version": DATA_VERSION,
                 "capabilities": list(OPERATIONS), "operations": [f"gui.{name}" for name in OPERATIONS]}
     if operation == "state":
+        include_conversations = cmd.get("include_conversations", True)
+        if type(include_conversations) is not bool:
+            raise ValueError("include_conversations must be a boolean")
         return {"session_id": app.convo_id, "busy": app._chat_running() or bool(getattr(app, "_gui_management_busy", False)), "mode": "plan" if app._plan_mode else "normal",
                 # T1049 (Dijkstra F1): the LOCKED seat profile. LiteGUI echoes this on
                 # every prompt (App.tsx:144); the raw choice made a locked seat refuse every Send.
                 "tool_profile": seat_authority.seat_profile(app), "model": app._rpc_model_state(),
-                "settings": _settings(app), "conversations": _conversations(app, "list", {}),
+                "settings": _settings(app),
+                "conversations": _conversations(app, "list", {}) if include_conversations else [],
                 "jobs": _jobs(app, "list", {}), "tasks": [t.to_row() for t in app.bg_tasks.values()],
-                "ownership": {"writable": app.store.owned, "data_version": DATA_VERSION},
+                "ownership": {"writable": app.store.owned, "data_version": DATA_VERSION,
+                              "agent_id": app._agent_session.authority.agent_id
+                              if getattr(app, "_agent_session", None) is not None else None},
+                "tool_policy": _tool_policy(app),
                 "restored_input": restored_input.status(app),
                 "schedules_paused": bool(getattr(app, "_gui_schedules_paused", False)),
                 "active_work": active_work(app), "usage": getattr(app, "_gui_usage", None),

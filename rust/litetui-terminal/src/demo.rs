@@ -144,7 +144,8 @@ impl Demo {
         app
     }
     pub fn observe_live(&mut self, observation: crate::live::Observation) -> std::io::Result<()> {
-        let following = self.scroll >= self.max_scroll;
+        let following = self.scroll >= self.max_scroll
+            || matches!(&observation, crate::live::Observation::Opened(_));
         if matches!(
             observation,
             crate::live::Observation::Approval(crate::approvals::Event::Requested(_))
@@ -195,6 +196,26 @@ impl Demo {
             self.footer.leave();
         }
     }
+    pub fn has_live_browser(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.browser.owns_input())
+    }
+    pub fn open_browser(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+                self.notice = "Finish the current turn before browsing conversations.".into();
+                return;
+            }
+            chat.browser.open();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
     pub fn has_live_queue(&self) -> bool {
         self.live
             .as_ref()
@@ -216,7 +237,8 @@ impl Demo {
         }
     }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_controls()
+        self.has_live_browser()
+            || self.has_live_controls()
             || self.has_live_queue()
             || self.has_live_approval()
             || self.has_live_question()

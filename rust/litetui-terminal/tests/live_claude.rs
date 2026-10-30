@@ -65,7 +65,12 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 });
             }
             Ok(Observation::History(_)) => panic!("Unrequested restored history"),
-            Ok(Observation::Controls(_) | Observation::Queue(_)) => {
+            Ok(
+                Observation::Controls(_)
+                | Observation::Queue(_)
+                | Observation::Browser(_)
+                | Observation::Opened(_),
+            ) => {
                 panic!("Unrequested model control response")
             }
             Ok(Observation::Submission { .. }) => {}

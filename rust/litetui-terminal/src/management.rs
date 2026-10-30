@@ -168,6 +168,8 @@ pub enum Step {
     },
     Control(Update),
     Queue(crate::restored_queue::Update),
+    Browser(crate::conversation_browser::Update),
+    Opened(Box<crate::conversation_browser::Opened>),
     Event(Value),
     Ignore,
 }
@@ -213,11 +215,39 @@ struct QueuePending {
     failure: Option<String>,
     succeeded: bool,
 }
+enum BrowserRequest {
+    Preview {
+        target: String,
+        agent: String,
+        snapshot: String,
+    },
+    Page {
+        previous: Option<crate::conversation_browser::Page>,
+        cursor: Option<String>,
+    },
+    Open {
+        target: String,
+        agent: String,
+        mutation: CommandId,
+        stage: u8,
+        history: Option<crate::resume::History>,
+        state: Option<Snapshot>,
+        policy: Option<Value>,
+        model: Option<String>,
+    },
+}
+struct BrowserPending {
+    id: CommandId,
+    request: BrowserRequest,
+}
 pub struct Management {
     wire: WireClient,
     control: Option<ControlPending>,
     queue: Option<QueuePending>,
     queue_menu: Option<crate::restored_queue::Snapshot>,
+    browser: Option<BrowserPending>,
+    browser_page: Option<crate::conversation_browser::Page>,
+    browser_authority: Option<(String, bool)>,
     continuation: Option<(String, crate::restored_queue::Entry)>,
     menu: Option<Choices>,
     revision: u64,
@@ -249,6 +279,9 @@ impl Default for Management {
             control: None,
             queue: None,
             queue_menu: None,
+            browser: None,
+            browser_page: None,
+            browser_authority: None,
             continuation: None,
             menu: None,
             revision: 0,
@@ -324,6 +357,7 @@ impl Management {
     pub fn ready(&self) -> bool {
         self.phase == Phase::Active
             && !self.failed
+            && self.browser.is_none()
             && self.control.is_none()
             && self.queue.is_none()
             && self.continuation.is_none()
@@ -338,6 +372,7 @@ impl Management {
         self.ensure_drained()?;
         self.menu = None;
         self.queue_menu = None;
+        self.browser_page = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
         Ok(())
@@ -390,7 +425,8 @@ impl Management {
                     .wire
                     .register_read()
                     .map_err(|_| fail("Cannot reserve state read"))?;
-                let command = json!({"type":"gui.state","id":id.to_value()});
+                let command =
+                    json!({"type":"gui.state","id":id.to_value(),"include_conversations":false});
                 self.state_id = Some(id);
                 self.phase = Phase::State;
                 Ok(Step::Write(command))
@@ -417,6 +453,10 @@ impl Management {
                         "Runtime state differs from validated startup identity/policy",
                     ));
                 }
+                self.browser_authority = frame["result"]["ownership"]["agent_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 128)
+                    .map(|id| (id.to_owned(), snapshot.schedules_paused));
                 self.state_id = None;
                 if let Some(session) = &self.resume {
                     if snapshot.held_restored_input.is_none() {
@@ -490,6 +530,17 @@ impl Management {
                 self.queue_response(frame)
             }
             Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .browser
+                .as_ref()
+                .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
+            {
+                self.browser_response(frame)
+            }
+            Notice::Response {
                 matched: false,
                 frame,
                 ..
@@ -515,7 +566,15 @@ impl Management {
                 let (_, bytes) = self.mirrors.remove(index);
                 self.mirror_bytes -= bytes;
                 self.validate_event(&frame, &event)?;
-                Ok(Step::Event(event))
+                if self
+                    .browser
+                    .as_ref()
+                    .is_some_and(|pending| matches!(pending.request, BrowserRequest::Open { .. }))
+                {
+                    Ok(Step::Ignore)
+                } else {
+                    Ok(Step::Event(event))
+                }
             }
             Notice::Fault { reason, .. } => {
                 Err(fail(&format!("Management protocol fault: {reason:?}")))
@@ -527,6 +586,39 @@ impl Management {
     }
     fn validate_event(&mut self, frame: &Value, event: &Value) -> io::Result<()> {
         let (session, backend, model, _) = self.expected.as_ref().expect("begun");
+        if let Some(BrowserPending {
+            request:
+                BrowserRequest::Open {
+                    target,
+                    mutation,
+                    model: transition_model,
+                    ..
+                },
+            ..
+        }) = self.browser.as_mut()
+        {
+            crate::stream::required_uuid4(frame, "event_id")
+                .map_err(|_| fail("Conversation transition lacks emission identity"))?;
+            let event_session = frame["session_id"].as_str();
+            let kind = event["type"].as_str();
+            if !matches!(kind, Some("model_state" | "usage"))
+                || frame["operation_id"] != mutation.to_value()
+                || !matches!(frame.get("execution_id"), None | Some(Value::Null))
+                || !(event_session == Some(session.as_str())
+                    || event_session == Some(target.as_str()))
+            {
+                return Err(fail("Unexpected event during owned conversation opening"));
+            }
+            if kind == Some("model_state") {
+                if event_session != Some(target.as_str()) || event["backend"] != *backend {
+                    return Err(fail(
+                        "Conversation transition changed backend or session unexpectedly",
+                    ));
+                }
+                *transition_model = Some(text(event, "model", 1024)?.to_owned());
+            }
+            return Ok(());
+        }
         if frame.get("session_id").and_then(Value::as_str) != Some(session.as_str()) {
             return Err(fail("Event belongs to another conversation"));
         }
@@ -630,6 +722,7 @@ impl Management {
         });
         self.menu = None;
         self.queue_menu = None;
+        self.browser_page = None;
         Ok(command)
     }
     fn control_response(&mut self, frame: Value) -> io::Result<Step> {
@@ -791,6 +884,7 @@ impl Management {
             succeeded: false,
         });
         self.queue_menu = None;
+        self.browser_page = None;
         self.menu = None;
         Ok(command)
     }
@@ -1038,5 +1132,283 @@ impl Management {
             succeeded: false,
         });
         Ok(command)
+    }
+}
+
+impl Management {
+    pub fn request_browser(
+        &mut self,
+        intent: crate::conversation_browser::Intent,
+    ) -> io::Result<Value> {
+        use crate::conversation_browser::{Intent, OPEN, PAGE, PREVIEW};
+        if !self.ready() {
+            return Err(fail("Wait for the runtime operation to finish"));
+        }
+        self.ensure_drained()?;
+        if self.browser_authority.is_none() {
+            return Err(fail(
+                "Runtime omitted owned-agent browser authority; update Python source",
+            ));
+        }
+
+        if ![
+            PAGE,
+            PREVIEW,
+            OPEN,
+            "gui.state",
+            crate::restored_queue::READ,
+        ]
+        .iter()
+        .all(|op| self.operations.iter().any(|value| value == op))
+        {
+            return Err(fail(
+                "Connected runtime does not support the conversation browser",
+            ));
+        }
+        let (session, _, _, _) = self.expected.as_ref().expect("active");
+        let (operation, request, mut command) = match intent {
+            Intent::Refresh => (
+                PAGE,
+                BrowserRequest::Page {
+                    previous: None,
+                    cursor: None,
+                },
+                json!({"session_id":session,"cursor":null}),
+            ),
+            Intent::Page { revision, cursor } => {
+                let page = self
+                    .browser_page
+                    .as_ref()
+                    .filter(|page| page.revision == revision)
+                    .ok_or_else(|| fail("Conversation page changed; refresh the browser"))?;
+                if page.previous.as_deref() != Some(cursor.as_str())
+                    && page.next.as_deref() != Some(cursor.as_str())
+                {
+                    return Err(fail("Conversation page cursor was not offered"));
+                }
+                (
+                    PAGE,
+                    BrowserRequest::Page {
+                        previous: Some(page.clone()),
+                        cursor: Some(cursor.clone()),
+                    },
+                    json!({"session_id":session,"cursor":cursor}),
+                )
+            }
+            Intent::Open {
+                revision,
+                session: target,
+            } => {
+                let page = self
+                    .browser_page
+                    .as_ref()
+                    .ok_or_else(|| fail("Refresh the conversation browser before opening"))?;
+                page.selection(revision, &target)?;
+                (
+                    PREVIEW,
+                    BrowserRequest::Preview {
+                        target: target.clone(),
+                        agent: page.agent.clone(),
+                        snapshot: page.snapshot.clone(),
+                    },
+                    json!({"session_id":target,"from_session_id":session,"snapshot":page.snapshot}),
+                )
+            }
+        };
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve conversation operation"))?;
+        command["type"] = json!(operation);
+        command["id"] = id.to_value();
+        self.browser = Some(BrowserPending { id, request });
+        self.menu = None;
+        self.queue_menu = None;
+        Ok(command)
+    }
+    fn browser_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::conversation_browser::{Opened, Page, Update};
+        let mut pending = self.browser.take().expect("matched browser");
+        self.ensure_drained()?;
+        let success = frame["ok"] == true;
+        match &mut pending.request {
+            BrowserRequest::Preview {
+                target,
+                agent,
+                snapshot,
+            } => {
+                if !success {
+                    self.browser_page = None;
+                    return Ok(Step::Browser(Update::Rejected(
+                        text(&frame, "error", 4096)?.to_owned(),
+                    )));
+                }
+                let result = &frame["result"];
+                let current = &self.expected.as_ref().expect("active").0;
+                if result["session_id"] != *target
+                    || result["from_session_id"] != *current
+                    || result["agent_id"] != *agent
+                    || result["snapshot"] != *snapshot
+                    || result["read_only"] != false
+                {
+                    return Err(fail(
+                        "Conversation preview changed selection or owned authority",
+                    ));
+                }
+                if let Err(error) = crate::resume::History::parse(result, target) {
+                    self.browser_page = None;
+                    return Ok(Step::Browser(Update::Rejected(format!(
+                        "Conversation cannot be displayed: {error}. Current conversation remains open."
+                    ))));
+                }
+                let id = self
+                    .wire
+                    .register_request()
+                    .map_err(|_| fail("Cannot reserve verified conversation open"))?;
+                let command = json!({"type":crate::conversation_browser::OPEN,"id":id.to_value(),"session_id":target,
+                    "from_session_id":current,"snapshot":snapshot});
+                self.browser = Some(BrowserPending {
+                    id: id.clone(),
+                    request: BrowserRequest::Open {
+                        target: target.clone(),
+                        agent: agent.clone(),
+                        mutation: id,
+                        stage: 0,
+                        history: None,
+                        state: None,
+                        policy: None,
+                        model: None,
+                    },
+                });
+                Ok(Step::Write(command))
+            }
+            BrowserRequest::Page { previous, cursor } => {
+                if !success {
+                    self.browser_page = None;
+                    return Ok(Step::Browser(Update::Rejected(
+                        text(&frame, "error", 4096)?.to_owned(),
+                    )));
+                }
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| fail("Conversation revision exhausted"))?;
+                let page = Page::parse(
+                    &frame["result"],
+                    self.revision,
+                    &self.expected.as_ref().expect("active").0,
+                )?;
+                if self
+                    .browser_authority
+                    .as_ref()
+                    .map(|value| value.0.as_str())
+                    != Some(page.agent.as_str())
+                {
+                    return Err(fail("Conversation page changed owned agent"));
+                }
+                if let (Some(previous), Some(cursor)) = (previous, cursor) {
+                    page.follows(previous, cursor)?;
+                }
+                self.browser_page = Some(page.clone());
+                Ok(Step::Browser(Update::Page(page)))
+            }
+            BrowserRequest::Open {
+                target,
+                agent,
+                stage,
+                history,
+                state,
+                policy,
+                model: transition_model,
+                ..
+            } => {
+                if !success {
+                    return Err(fail(&format!(
+                        "Conversation open/readback failed; session is uncertain: {}",
+                        text(&frame, "error", 4096)?
+                    )));
+                }
+                let result = &frame["result"];
+                match *stage {
+                    0 => {
+                        *history = Some(crate::conversation_browser::connected_history(
+                            result, target,
+                        )?);
+                    }
+                    1 => {
+                        let snapshot = Snapshot::parse(result)?;
+                        let (_, backend, model, profile) = self.expected.as_ref().expect("active");
+                        if snapshot.session != *target
+                            || snapshot.backend != *backend
+                            || snapshot.profile != *profile
+                            || !snapshot.writable
+                            || snapshot.held_restored_input.is_none()
+                            || self.browser_authority.as_ref().map(|value| value.1)
+                                != Some(snapshot.schedules_paused)
+                            || result["ownership"]["agent_id"] != *agent
+                            || (snapshot.model != *model
+                                && transition_model.as_ref() != Some(&snapshot.model))
+                            || transition_model
+                                .as_ref()
+                                .is_some_and(|value| value != &snapshot.model)
+                        {
+                            return Err(fail(
+                                "Opened conversation state contradicts its owned identity, policy, or model transition",
+                            ));
+                        }
+                        *policy = Some(result["tool_policy"].clone());
+                        *state = Some(snapshot);
+                    }
+                    2 => {
+                        self.revision = self
+                            .revision
+                            .checked_add(1)
+                            .ok_or_else(|| fail("Conversation revision exhausted"))?;
+                        let queue = crate::restored_queue::Snapshot::parse(result, self.revision)?;
+                        let snapshot = state.take().expect("state read");
+                        if queue.session != snapshot.session
+                            || queue.backend != snapshot.backend
+                            || queue.model != snapshot.model
+                            || Some(queue.entries.len()) != snapshot.held_restored_input
+                        {
+                            return Err(fail(
+                                "Opened conversation held-input readback contradicts state",
+                            ));
+                        }
+                        self.expected = Some((
+                            snapshot.session.clone(),
+                            snapshot.backend.clone(),
+                            snapshot.model.clone(),
+                            snapshot.profile.clone(),
+                        ));
+                        self.prompt = None;
+                        self.origin = None;
+                        self.menu = None;
+                        self.browser_page = None;
+                        self.queue_menu = Some(queue.clone());
+                        return Ok(Step::Opened(Box::new(Opened {
+                            snapshot,
+                            history: history.take().expect("connected history"),
+                            queue,
+                            policy: policy.take().expect("policy read"),
+                        })));
+                    }
+                    _ => return Err(fail("Invalid conversation opening phase")),
+                }
+                *stage += 1;
+                let id = self
+                    .wire
+                    .register_read()
+                    .map_err(|_| fail("Cannot reserve conversation readback"))?;
+                let command = if *stage == 1 {
+                    json!({"type":"gui.state","id":id.to_value(),"include_conversations":false})
+                } else {
+                    json!({"type":crate::restored_queue::READ,"id":id.to_value(),"session_id":target})
+                };
+                pending.id = id;
+                self.browser = Some(pending);
+                Ok(Step::Write(command))
+            }
+        }
     }
 }

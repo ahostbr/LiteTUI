@@ -181,6 +181,8 @@ pub enum Observation {
     History(crate::resume::History),
     Controls(crate::model_controls::Update),
     Queue(crate::restored_queue::Update),
+    Browser(crate::conversation_browser::Update),
+    Opened(Box<crate::conversation_browser::Opened>),
     Ready,
     /// Local command reservation; neither source admission nor completion.
     Submission {
@@ -1004,6 +1006,29 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 && let Some(command) = frontend.command()?
             {
                 match command {
+                    Input::Browser(intent) => {
+                        let command = if turn.can_manage() {
+                            management.request_browser(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish the current turn before browsing conversations",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::Browser(
+                                crate::conversation_browser::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
+                    }
                     Input::Control(intent) => {
                         let command = if turn.can_manage() {
                             management.request_control(intent)
@@ -1229,6 +1254,24 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             )?;
                         }
                     }
+                    Step::Browser(update) => {
+                        if !turn.closing {
+                            frontend.observe(Observation::Browser(update))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
+                    Step::Opened(opened) => {
+                        if !turn.closing {
+                            turn.policy
+                                .as_ref()
+                                .expect("launch policy")
+                                .validate(&opened.policy)?;
+                            frontend.observe(Observation::Opened(opened))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
                     Step::Control(update) => {
                         if !turn.closing {
                             if let crate::model_controls::Update::Choices(menu) = &update {
@@ -1326,6 +1369,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 pub enum Input {
     Control(crate::model_controls::Intent),
     Queue(crate::restored_queue::Intent),
+    Browser(crate::conversation_browser::Intent),
     Prompt(String),
     Abort { prompt_id: String },
     Approve(crate::approvals::Decision),
@@ -1348,6 +1392,8 @@ impl Frontend for OneShot {
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
             Observation::State(_)
+            | Observation::Browser(_)
+            | Observation::Opened(_)
             | Observation::Controls(_)
             | Observation::Queue(_)
             | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
@@ -1606,6 +1652,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Control(intent))
+            .map_err(io::Error::other)
+    }
+    pub fn browser(&self, intent: crate::conversation_browser::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Browser(intent))
             .map_err(io::Error::other)
     }
     pub fn queue(&self, intent: crate::restored_queue::Intent) -> io::Result<()> {

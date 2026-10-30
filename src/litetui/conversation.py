@@ -29,11 +29,24 @@ class ConversationRepository:
     """Reads conversation stores. Owns no widgets and no live state."""
 
     @staticmethod
-    def read(path: Path) -> tuple[dict, list[dict]]:
+    def read(path: Path, *, max_bytes: int | None = None) -> tuple[dict, list[dict]]:
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
+            raise ValueError("Transcript byte limit must be a positive integer")
         meta: dict = {}
         msgs: list[dict] = []
+        from typing import BinaryIO
+
         with path.open("rb") as f:
-            for line in f:
+            lines: BinaryIO = f
+            if max_bytes is not None:
+                from io import BytesIO
+
+                # Bound the actual read, not only a prior stat that can race growth.
+                data = f.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise ValueError("Transcript exceeds the requested byte limit")
+                lines = BytesIO(data)
+            for line in lines:
                 line = line.strip()
                 if not line:
                     continue

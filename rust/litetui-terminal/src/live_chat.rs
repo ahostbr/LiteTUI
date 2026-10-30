@@ -77,6 +77,7 @@ pub struct Chat {
     pub questions: crate::questions::View,
     pub controls: crate::model_controls::View,
     pub queue: crate::restored_queue::View,
+    pub browser: crate::conversation_browser::View,
     pending: Option<String>,
     submission_id: Option<String>,
     queue_pending: bool,
@@ -105,6 +106,7 @@ impl Chat {
             questions: crate::questions::View::default(),
             controls: crate::model_controls::View::default(),
             queue: crate::restored_queue::View::default(),
+            browser: crate::conversation_browser::View::default(),
             pending: None,
             submission_id: None,
             queue_pending: false,
@@ -127,6 +129,7 @@ impl Chat {
             || self.quitting
             || self.controls.owns_input()
             || self.queue.owns_input()
+            || self.browser.owns_input()
             || self.queue_pending
         {
             return Err(io::Error::other(
@@ -218,6 +221,7 @@ impl Chat {
     ) -> io::Result<()> {
         let prompt = self.queue.selection_text(intent)?.to_owned();
         self.queue.finish();
+        self.browser.finish();
         self.reserve_row(&prompt, true)?;
         self.pending = None; // The queue command carries identity, never a duplicate prompt.
         self.queue_pending = true;
@@ -267,6 +271,40 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::Browser(update) => {
+                self.browser.observe(update)?;
+                self.notice = self.browser.notice.clone();
+            }
+            Observation::Opened(opened) => {
+                if !self.ready || self.busy || self.queue_pending || self.pending.is_some() {
+                    return Err(io::Error::other(
+                        "Conversation opened while a turn was pending",
+                    ));
+                }
+                self.browser
+                    .observe(crate::conversation_browser::Update::Opened {
+                        session: opened.snapshot.session.clone(),
+                    })?;
+                self.backend = opened.snapshot.backend.clone();
+                self.model = opened.snapshot.model.clone();
+                self.runtime_state.opened(opened.snapshot);
+                self.controls = crate::model_controls::View::default();
+                self.queue = crate::restored_queue::View::default();
+                self.queue
+                    .observe(crate::restored_queue::Update::Snapshot(opened.queue));
+                self.rows.clear();
+                self.recovered_inputs.clear();
+                self.submission_id = None;
+                self.stop_requests = 0;
+                self.stops_sent = 0;
+                self.approvals.clear();
+                self.questions.clear();
+                self.retained_bytes = opened.history.bytes;
+                self.retained_units = opened.history.units;
+                self.history = Some(opened.history);
+                self.notice =
+                    "Conversation opened and held input verified. Nothing replayed.".into();
+            }
             Observation::History(history) => {
                 if self.ready || self.busy || !self.rows.is_empty() || self.history.is_some() {
                     return Err(io::Error::other("Saved history arrived outside startup"));
@@ -550,12 +588,14 @@ impl Chat {
     pub fn begin_quit(&mut self) {
         self.controls.finish();
         self.queue.finish();
+        self.browser.finish();
         self.quitting = true;
         self.notice = "Closing Python runtime and its owned process tree…".into();
     }
     pub fn finish(&mut self, failure: Option<String>) {
         self.controls.finish();
         self.queue.finish();
+        self.browser.finish();
         self.queue_pending = false;
         self.closed = true;
         self.stop_confirm = false;

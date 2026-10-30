@@ -3,28 +3,28 @@
 Source audit: 2026-10-29, work/rust-tui-OpenBolt, continuation base d821a158.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
-continuation and pre-start refusal handling are committed; session browsing is
-under integration validation and portable staging has passed independent review.
+continuation and pre-start refusal handling are committed; bounded session browsing has
+passed independent review and the full controlled process gate and portable staging has passed independent review.
 
 ## Current boundary
 
 Rust has owned Windows Python startup, bounded transport and verified event mirrors,
 captured execution origins, multiple text turns, reasoning/tools, cancellation,
 approvals/questions, composer/transcript, model/thinking controls, static themes,
-exact-UUID resume and held-input recovery. Automated evidence does not replace
+exact-UUID resume, held-input recovery and bounded F8 session browsing with preflight. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
 Current anchors: live.rs Options::parse accepts Claude/Codex only; live_chat.rs
 Chat::submit explicitly refuses slash commands; management.rs handles startup,
-model/thinking and restored input; resume.rs has bounded saved-history projection,
-not session browsing/pagination. Source gui_rpc.py OPERATIONS is authoritative.
+model/thinking and restored input; resume.rs still has bounded saved-history projection; conversation_browser.rs pages
+the catalog and validates history before opening. Source gui_rpc.py OPERATIONS is authoritative.
 Historical inventory.md checkboxes are discovery data, not current feature status.
 
 ## Independent implementation packages
 
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
-| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Source connection/history barrier and recovered-input policy first. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
+| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight is implemented; expand history and session actions next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
 | Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Source-derived startup/event contracts before lifting the two-backend gate. Custom, LM Studio, llama.cpp, NInfer, Strata, Cline and Free remain. Distinguish owned engine processes from shared services. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | Native requested/effective/reconnect/restart UI. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |

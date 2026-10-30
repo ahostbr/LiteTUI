@@ -131,6 +131,19 @@ pub struct State {
     rate: Option<f64>,
 }
 impl State {
+    /// Called only after the source open, effective policy, state and held-input barriers.
+    pub fn opened(&mut self, snapshot: crate::management::Snapshot) {
+        if let Some(ready) = self.ready.as_mut() {
+            ready.model = snapshot.model.clone();
+            ready.conversation = Some(snapshot.session.clone());
+            ready.context_ceiling = None;
+            ready.thinking = None;
+        }
+        self.startup = Some(snapshot);
+        self.usage = None;
+        self.rate = None;
+    }
+
     pub fn apply(&mut self, update: Update) {
         match update.0 {
             UpdateKind::Choices { model, thinking } => {

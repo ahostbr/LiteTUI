@@ -1,9 +1,9 @@
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind,
+        self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -24,6 +24,7 @@ fn restore() {
     let _ = execute!(
         stdout(),
         DisableMouseCapture,
+        DisableFocusChange,
         DisableBracketedPaste,
         LeaveAlternateScreen,
         Show
@@ -119,6 +120,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             if let Some(chat) = app.live.as_mut() {
                 chat.controls.close();
                 chat.queue.close();
+                chat.browser.close();
             }
             app.themes_open = false;
             app.completion.dismiss();
@@ -192,6 +194,14 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         if !chat.quitting && !chat.cancelling() {
             chat.questions.key(key);
         }
+        return false;
+    }
+    if app.has_live_browser() {
+        app.live
+            .as_mut()
+            .expect("conversation browser")
+            .browser
+            .key(key);
         return false;
     }
     if app.has_live_queue() {
@@ -320,6 +330,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::F(8) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
+            app.open_browser();
+        }
         KeyCode::F(7) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_queue()
         }
@@ -539,6 +552,16 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_browser() {
+        if !app.viewport_too_small {
+            app.live
+                .as_mut()
+                .expect("conversation browser")
+                .browser
+                .mouse(event);
+        }
+        return;
+    }
     if app.has_live_queue()
         && !app.stop_open()
         && !app.has_live_approval()
@@ -604,7 +627,8 @@ fn run() -> io::Result<()> {
         stdout(),
         EnterAlternateScreen,
         EnableBracketedPaste,
-        EnableMouseCapture
+        EnableMouseCapture,
+        EnableFocusChange
     )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
@@ -676,7 +700,8 @@ fn one_shot_profile(options: &mut litetui_terminal::live::Options) -> io::Result
         stdout(),
         EnterAlternateScreen,
         EnableBracketedPaste,
-        EnableMouseCapture
+        EnableMouseCapture,
+        EnableFocusChange
     )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
@@ -706,7 +731,8 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
         stdout(),
         EnterAlternateScreen,
         EnableBracketedPaste,
-        EnableMouseCapture
+        EnableMouseCapture,
+        EnableFocusChange
     )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
@@ -771,6 +797,10 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         mouse(&mut app, event);
                         false
                     }
+                    Event::FocusLost | Event::Resize(..) => {
+                        app.live.as_mut().expect("live").browser.hide();
+                        false
+                    }
                     _ => false,
                 };
                 if quit && !quitting {
@@ -804,6 +834,14 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
             if !quitting
                 && let Some(answer) = app.live.as_mut().expect("live").questions.take_decision()
                 && let Err(error) = runtime.answer(answer)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
+            if !quitting
+                && let Some(intent) = app.live.as_mut().expect("live").browser.take_intent()
+                && let Err(error) = runtime.browser(intent)
             {
                 view_failure = Some(error.to_string());
                 app.finish_live(view_failure.clone());
@@ -900,7 +938,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | F7 held input | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | F7 held input | F8 conversations | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one frontier prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -2306,5 +2344,81 @@ mod tests {
         app.observe_live(Observation::Queue(Update::Rejected("changed".into())))
             .unwrap();
         assert!(!app.has_live_queue());
+    }
+    #[test]
+    fn conversation_browser_owns_f8_keys_draft_clipboard_and_visible_confirmation() {
+        use litetui_terminal::{
+            conversation_browser::{Intent, Page, Update},
+            live::Observation,
+        };
+        let mut app = Demo::live("codex".into(), "model".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("preserved draft");
+        let mut router = KeyRouter::default();
+        app.live.as_mut().unwrap().busy = true;
+        plain(&mut app, &mut router, KeyCode::F(8));
+        assert!(!app.has_live_browser());
+        app.live.as_mut().unwrap().busy = false;
+        plain(&mut app, &mut router, KeyCode::F(8));
+        assert_eq!(
+            app.live.as_mut().unwrap().browser.take_intent(),
+            Some(Intent::Refresh)
+        );
+        let current = "00000000-0000-4000-8000-000000000001";
+        let target = "00000000-0000-4000-8000-000000000002";
+        let page=Page::parse(&serde_json::json!({"session_id":current,"agent_id":current,"snapshot":"a".repeat(64),"offset":0,"total":1,
+            "entries":[{"session_id":target,"agent_id":current,"agent_name":"Agent","title":"Saved target","message_count":2,"updated_at":1,
+            "current":false,"can_open":true,"reason":""}],"previous_cursor":null,"next_cursor":null}),1,current).unwrap();
+        app.observe_live(Observation::Browser(Update::Page(page)))
+            .unwrap();
+        render_footer(&mut app);
+        let mut clipboard = TestClipboard {
+            read: Some("not pasted".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paste(&mut app, "not pasted");
+        assert_eq!(clipboard.reads, 0);
+        plain(&mut app, &mut router, KeyCode::Char('o'));
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
+        render_footer(&mut app);
+        app.live.as_mut().unwrap().browser.hide(); // focus lost invalidates drawn confirmation
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Char('o'));
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert_eq!(
+            app.live.as_mut().unwrap().browser.take_intent(),
+            Some(Intent::Open {
+                revision: 1,
+                session: target.into()
+            })
+        );
+        assert_eq!(app.composer.text(), "preserved draft");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(app.has_live_browser());
+        app.observe_live(Observation::Browser(Update::Rejected(
+            "selection changed".into(),
+        )))
+        .unwrap();
+        assert!(!app.has_live_browser());
+        assert_eq!(app.composer.text(), "preserved draft");
+        plain(&mut app, &mut router, KeyCode::F(8));
+        assert!(app.has_live_browser());
+        let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
+        small.draw(|f| ui::draw(f, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.has_live_browser());
+        assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
+        assert_eq!(app.composer.text(), "preserved draft");
     }
 }

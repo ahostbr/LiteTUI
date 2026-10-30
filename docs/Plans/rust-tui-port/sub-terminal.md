@@ -12,6 +12,8 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 ## Current implementation checkpoint - 2026-10-29
 
+F8 now pages the owned source catalog and preflights selected history without mutation before guarded open, connected history, fresh state/policy and held-input readback. The draft survives, and oversized previews leave the original session usable. Independent review passed. Larger-history paging and remaining session actions are still open; see the newest master checkpoint for verification and limits.
+
 Portable staging now verifies a supplied executable and tracked runtime/resources with exact hashes, preserves external Python and retained data, and keeps helper outputs outside the immutable package. Both alias directions and PowerShell screenshot defaults are covered; 33 staging and 47 helper tests passed with independent review signoff. Full installation/provenance/host/resource acceptance remains pending. See the newest master checkpoint and remaining-parity.md.
 
 Claude prepared continuation now preserves original message/delivery identity, source authority and a held queue barrier through worker retirement. Pre-start cache refusal and started-turn failure have distinct native outcomes; independent readback retains unsent/uncertain evidence. Prompt operation IDs are fresh across launches. The newest master checkpoint records full verification and the remaining parity work; bounded conversation browsing and portable packaging are now executing in parallel under the user's explicit /ls-max-parallel request.

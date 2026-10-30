@@ -2756,3 +2756,381 @@ fn one_shot_cache_refusal_is_failure_and_warning_alone_cannot_finish() {
         assert_eq!(sent.last().unwrap()["type"], "shutdown");
     }
 }
+
+fn owned_browser_process(fault: &str) {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use litetui_terminal::{
+        conversation_browser::Intent,
+        demo::Demo,
+        live::{Interactive, Observation, Options},
+        ui,
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+    let display_budget = fault == "budget";
+    let fails = !fault.is_empty() && !display_budget;
+    let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
+    let (command, root) = setup("success");
+    let source = root.parent().unwrap().join("source");
+    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../src/litetui")
+        .canonicalize()
+        .unwrap();
+    fs::write(
+        source.join("src/litetui/__init__.py"),
+        format!(
+            "__path__.append({})\n",
+            serde_json::to_string(&actual.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        source.join("src/litetui/cli.py"),
+        include_str!("fixtures/browser_runtime.py"),
+    )
+    .unwrap();
+    if !fault.is_empty() {
+        fs::write(
+            source.join(format!("src/litetui/fixture-browser-{fault}")),
+            "controlled fault",
+        )
+        .unwrap();
+    }
+    let mut args: Vec<String> = command
+        .get_args()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    args[1] = python.to_string_lossy().into_owned();
+    for (flag, value) in [("--backend", "codex"), ("--model", "gpt-6-astra")] {
+        let index = args.iter().position(|arg| arg == flag).unwrap();
+        args[index + 1] = value.into();
+    }
+    let mut options = Options::parse(&args).unwrap();
+    options.timeout = Duration::from_secs(20);
+    let runtime = Interactive::start(options);
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("codex".into(), "gpt-6-astra".into());
+        app.insert_text("UNSENT HUMAN DRAFT");
+        loop {
+            let event = runtime
+                .events
+                .recv_timeout(Duration::from_secs(25))
+                .map_err(std::io::Error::other)?;
+            let ready = matches!(event, Observation::Ready);
+            app.observe_live(event)?;
+            if ready {
+                break;
+            }
+        }
+        let identity: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("browser-identity.json"))?)?;
+        let target = identity["target"].as_str().unwrap();
+        app.open_browser();
+        runtime.browser(app.live.as_mut().unwrap().browser.take_intent().unwrap())?;
+        let mut pages = 0;
+        loop {
+            let event = runtime
+                .events
+                .recv_timeout(Duration::from_secs(25))
+                .map_err(std::io::Error::other)?;
+            let got_page = matches!(
+                event,
+                Observation::Browser(litetui_terminal::conversation_browser::Update::Page(_))
+            );
+            assert!(!matches!(
+                event,
+                Observation::Opened(_) | Observation::Submission { .. }
+            ));
+            app.observe_live(event)?;
+            if !got_page {
+                continue;
+            }
+            pages += 1;
+            let page = app.live.as_ref().unwrap().browser.page.as_ref().unwrap();
+            assert_eq!(page.total, 53);
+            assert_eq!(page.agent, identity["agent"]);
+            if page.entries.iter().any(|row| row.session == target) {
+                break;
+            }
+            let intent = Intent::Page {
+                revision: page.revision,
+                cursor: page.next.clone().expect("next source page"),
+            };
+            runtime.browser(intent)?;
+        }
+        assert_eq!(pages, 2, "fixture target should be on bounded second page");
+        assert!(!root.join("connect-entered").exists());
+        let mut terminal = Terminal::new(TestBackend::new(110, 35)).unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        let browser = &mut app.live.as_mut().unwrap().browser;
+        let index = browser
+            .page
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|row| row.session == target)
+            .unwrap();
+        browser.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        for _ in 0..index {
+            browser.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        browser.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        app.live
+            .as_mut()
+            .unwrap()
+            .browser
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        runtime.browser(
+            app.live
+                .as_mut()
+                .unwrap()
+                .browser
+                .take_intent()
+                .expect("fresh visible confirmation"),
+        )?;
+        if display_budget {
+            loop {
+                let event = runtime
+                    .events
+                    .recv_timeout(Duration::from_secs(25))
+                    .map_err(std::io::Error::other)?;
+                let rejected = matches!(
+                    &event,
+                    Observation::Browser(litetui_terminal::conversation_browser::Update::Rejected(
+                        _
+                    ))
+                );
+                assert!(!matches!(
+                    &event,
+                    Observation::Opened(_) | Observation::Submission { .. }
+                ));
+                if let Observation::Browser(
+                    litetui_terminal::conversation_browser::Update::Rejected(reason),
+                ) = &event
+                {
+                    assert!(
+                        reason.contains("display")
+                            && reason.contains("Current conversation remains open"),
+                        "{reason}"
+                    );
+                }
+                app.observe_live(event)?;
+                if rejected {
+                    break;
+                }
+            }
+            assert_eq!(
+                app.live
+                    .as_ref()
+                    .unwrap()
+                    .runtime_state
+                    .startup()
+                    .unwrap()
+                    .session,
+                identity["current"]
+            );
+            assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
+            assert!(!root.join("connect-entered").exists());
+            app.live.as_mut().unwrap().browser.close();
+            app.submit();
+            runtime.submit(app.live.as_mut().unwrap().take_submission().unwrap())?;
+            loop {
+                let event = runtime
+                    .events
+                    .recv_timeout(Duration::from_secs(25))
+                    .map_err(std::io::Error::other)?;
+                let done = matches!(event, Observation::Complete);
+                app.observe_live(event)?;
+                if done {
+                    break;
+                }
+            }
+            runtime.quit()?;
+            return Ok(());
+        }
+        for gate in ["connect", "history"] {
+            if gate == "history" && fault == "failure" {
+                break;
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !root.join(format!("{gate}-entered")).exists() {
+                assert!(Instant::now() < deadline, "{gate} barrier never entered");
+                assert!(
+                    runtime.events.try_recv().is_err(),
+                    "open completed before {gate} barrier"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                runtime
+                    .events
+                    .recv_timeout(Duration::from_millis(100))
+                    .is_err(),
+                "open completed while {gate} worker waited"
+            );
+            assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
+            assert!(app.live.as_mut().unwrap().submit("must not send").is_err());
+            fs::write(
+                root.join(format!("release-{gate}")),
+                "explicit controlled release",
+            )?;
+        }
+        if !fault.is_empty() {
+            loop {
+                match runtime.events.recv_timeout(Duration::from_secs(25)) {
+                    Ok(event) => {
+                        assert!(!matches!(
+                            event,
+                            Observation::Opened(_) | Observation::Submission { .. }
+                        ));
+                        app.observe_live(event)?;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(error) => return Err(std::io::Error::other(error)),
+                }
+            }
+            assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
+            return Ok(());
+        }
+        loop {
+            let event = runtime
+                .events
+                .recv_timeout(Duration::from_secs(25))
+                .map_err(std::io::Error::other)?;
+            let opened = matches!(event, Observation::Opened(_));
+            app.observe_live(event)?;
+            if opened {
+                break;
+            }
+        }
+        let chat = app.live.as_ref().unwrap();
+        assert_eq!(chat.history.as_ref().unwrap().session, target);
+        assert!(
+            chat.history
+                .as_ref()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|message| message.text == "Source history barrier completed")
+        );
+        assert_eq!(
+            chat.runtime_state.startup().unwrap().held_restored_input,
+            Some(1)
+        );
+        let held: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("browser-held.json"))?)?;
+        assert_eq!(held["entries"][0]["content"], "UNSENT browser hold");
+        assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
+        app.submit();
+        runtime.submit(app.live.as_mut().unwrap().take_submission().unwrap())?;
+        loop {
+            let event = runtime
+                .events
+                .recv_timeout(Duration::from_secs(25))
+                .map_err(std::io::Error::other)?;
+            let done = matches!(event, Observation::Complete);
+            app.observe_live(event)?;
+            if done {
+                break;
+            }
+        }
+        runtime.quit()?;
+        Ok(())
+    });
+    if !fails {
+        result.unwrap();
+    } else {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains(if fault == "failure" {
+                "Controlled browser connection failure"
+            } else {
+                "tool mode/profile/approval route differs"
+            }),
+            "{error}"
+        );
+    }
+    let commands: Vec<serde_json::Value> = fs::read_to_string(root.join("browser-commands.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|cmd| cmd["type"] == "gui.conversations.open")
+            .count(),
+        usize::from(!display_budget)
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|cmd| cmd["type"] == "gui.conversations.page")
+            .count(),
+        2
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|cmd| cmd["type"] == "prompt")
+            .count(),
+        usize::from(!fails)
+    );
+    assert!(
+        commands
+            .iter()
+            .filter(|cmd| cmd["type"] == "gui.state")
+            .all(|cmd| cmd["include_conversations"] == false)
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|cmd| cmd["type"] == "gui.restored_input.continue")
+    );
+    if !fails {
+        let proof: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("browser-proof.json")).unwrap()).unwrap();
+        assert_eq!(proof["held"]["held"], usize::from(!display_budget));
+        let prompts: Vec<&str> = proof["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .map(|m| m["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            prompts,
+            [
+                if display_budget {
+                    "Current saved conversation"
+                } else {
+                    "Saved browser target"
+                },
+                "UNSENT HUMAN DRAFT"
+            ]
+        );
+    }
+}
+#[test]
+#[ignore = "actual owned CLI with controlled connection/history workers; dependency Python required"]
+fn owned_conversation_browser_pages_opens_waits_reads_back_and_preserves_draft() {
+    owned_browser_process("");
+}
+#[test]
+#[ignore = "actual owned CLI with controlled failing connection; dependency Python required"]
+fn owned_conversation_browser_connection_failure_never_releases_old_view_as_current() {
+    owned_browser_process("failure");
+}
+#[test]
+#[ignore = "actual owned CLI with contradictory effective policy; dependency Python required"]
+fn owned_conversation_browser_policy_drift_closes_before_any_prompt() {
+    owned_browser_process("policy");
+}
+
+#[test]
+#[ignore = "actual owned CLI preview rejecting unsupported display budget; dependency Python required"]
+fn owned_conversation_browser_preview_budget_refusal_keeps_original_session_usable() {
+    owned_browser_process("budget");
+}
