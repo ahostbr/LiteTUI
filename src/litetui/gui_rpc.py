@@ -38,6 +38,7 @@ OPERATIONS = (
     "hello", "state", "backends.list", "prompt.submit", "settings.get", "settings.validate", "settings.apply",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
+    "conversations.native_snapshot", "conversations.native_validate", "conversations.native_apply",
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
     "hooks.get", "hooks.validate", "hooks.apply", "hooks.repair", "hooks.test",
     "mcp.list", "mcp.connect", "mcp.disconnect", "mcp.reconnect", "mcp.reload", "mcp.add", "mcp.remove",
@@ -470,6 +471,8 @@ def dispatch(app, cmd):
     """Execute nonblocking operations on the existing app loop."""
     from litetui import native_engine
     native_engine.operation_allowed(app, str(cmd.get("type", "")))
+    from litetui import conversation_transition
+    conversation_transition.require_execution(app)
     operation = str(cmd.get("type", ""))[4:]
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
@@ -765,7 +768,9 @@ async def async_dispatch(app, cmd):
     operation = cmd["type"]
     from litetui import native_engine
     native_engine.operation_allowed(app, operation)
-    blocking = operation in {"gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    from litetui import conversation_transition
+    conversation_transition.require_execution(app)
+    blocking = operation in {"gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.conversations.native_apply"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -792,6 +797,17 @@ async def _async_dispatch(app, cmd):
     operation = cmd["type"]
     from litetui import native_engine
     native_engine.operation_allowed(app, operation)
+    from litetui import conversation_transition
+    conversation_transition.require_execution(app)
+    if operation.startswith("gui.conversations.native_"):
+        from litetui import conversation_transition
+
+        action = operation.rsplit("_", 1)[1]
+        if action == "apply":
+            return await conversation_transition.apply(app, cmd)
+        if action in {"snapshot", "validate"}:
+            return getattr(conversation_transition, action)(app, cmd)
+        raise ValueError("Unknown native conversation operation")
     if operation.startswith("gui.engine.native_"):
         from litetui import native_engine
         name = operation.rsplit("_", 1)[1]

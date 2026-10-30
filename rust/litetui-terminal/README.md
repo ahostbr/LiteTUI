@@ -389,3 +389,26 @@ of held input, with durable readback before a new engine review. Continue remain
 disabled until prompt-ready. Unsupported cross-provider uncertain entries stay held; this slice offers no
 adapter for them. Recovery must use an authorized original-provider path. Nothing is
 automatically cancelled or replayed.
+
+### Reviewed New and Rename
+
+In live chat, open F8 and press N for a new session or E to rename the current one.
+Pending conversations are supported. Rename has its own lossless title draft; the
+review shows the exact normalized saved name. Read each review page, then press a
+fresh Enter on the final page to apply once. F5 refreshes and Escape closes the
+review. The main chat draft is preserved. Direct /new and /rename slash routes
+remain unavailable in this checkpoint.
+
+New settles the old provider and lifecycle hooks, creates the reviewed UUID and
+rebinds conversation/task persistence. Rename preserves history and provider
+continuity. Both require independent source readback before chat resumes. No new
+provider turn runs until a fresh explicit prompt. Active work, held input and an
+engine-management capability prevent session mutations; uncertain outcomes require
+reopening rather than automatic replay.
+
+Ctrl+Q and runtime EOF join a pending session action and provider/hook cleanup
+before storage release. Shutdown proof explicitly leaves saved effects unverified;
+after terminal restoration, an interrupted-action notice directs you to reopen and
+inspect the saved session. Missing cleanup proof is a failure and retains ownership
+until the existing bounded process supervisor takes over. Controlled subprocess
+coverage is separate from real-provider and both-terminal-host acceptance.

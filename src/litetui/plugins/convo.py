@@ -39,6 +39,9 @@ def _convo_meta_bits(path, msgs) -> tuple[str, int, str]:
 
 
 def _cmd_new(app, name: str, arg: str) -> None:
+    from litetui.conversation_transition import require_execution
+
+    require_execution(app)
     app.conversation.clear()
     app._new_convo()  # a fresh file — never reuse the old one
     app._load_system_prompt()
@@ -172,9 +175,18 @@ def _cmd_convos(app, name: str, arg: str) -> None:
 _NAME_MAX = 60
 
 
+def normalize_title(value: str) -> str:
+    """Canonical explicit conversation title, shared by reviewed clients."""
+    wanted = " ".join(value.split())
+    return wanted[:_NAME_MAX].rstrip() + "\u2026" if len(wanted) > _NAME_MAX else wanted
+
+
 def _cmd_rename(app, name: str, arg: str) -> None:
     """Name the CURRENT conversation, so it can be found by what it was for."""
-    wanted = " ".join(arg.split())          # collapse newlines and runs of spaces
+    from litetui.conversation_transition import require_execution
+
+    require_execution(app)
+    wanted = normalize_title(arg)
     if not wanted:
         current = ""
         if app.convo_path is not None and app.convo_path.exists():
@@ -188,8 +200,6 @@ def _cmd_rename(app, name: str, arg: str) -> None:
             else "This conversation has no name. Give it one with /rename <name>."
         )
         return
-    if len(wanted) > _NAME_MAX:
-        wanted = wanted[:_NAME_MAX].rstrip() + "\u2026"
     # A conversation staged but not yet on disk has nowhere to put the record.
     # Materialising first means naming a fresh conversation works exactly like
     # naming an old one, instead of silently doing nothing.

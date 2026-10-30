@@ -55,13 +55,18 @@ def _reader_loop(app: LiteTUI) -> None:
             rpc_emit({"type": "error", "error": "missing 'type' field"})
             continue
         app.call_from_thread(_dispatch, app, cmd)
-    # stdin closed: use the same joined engine shutdown as an explicit request.
+    # stdin closed: join the same owned mutations as an explicit shutdown request.
     app.call_from_thread(_exit_after_engine, app)
 
 
+def _request_joined_shutdown(app, respond=None):
+    from litetui import conversation_shutdown, native_engine_shutdown
+    return (conversation_shutdown.request_shutdown(app, respond)
+            or native_engine_shutdown.request_shutdown(app, respond))
+
+
 def _exit_after_engine(app):
-    from litetui.native_engine_shutdown import request_shutdown
-    if not request_shutdown(app):
+    if not _request_joined_shutdown(app):
         app.exit()
 
 
@@ -119,13 +124,14 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     if cmd_type in {"prompt", "set", "set_model", "reconnect", "set_thinking", "set_settings", "run_command", "use_skill"}:
         try:
             native_engine.operation_allowed(app, cmd_type)
+            from litetui import conversation_transition
+            conversation_transition.require_execution(app)
         except ValueError as exc:
             _respond(cmd_id, ok=False, error=str(exc))
             return
 
     if cmd_type == "shutdown":
-        from litetui.native_engine_shutdown import request_shutdown
-        if not request_shutdown(app, lambda **fields: _respond(cmd_id, **fields)):
+        if not _request_joined_shutdown(app, lambda **fields: _respond(cmd_id, **fields)):
             _respond(cmd_id, ok=True, result={"ok": True})
             app.exit()
     elif cmd_type == "prompt":

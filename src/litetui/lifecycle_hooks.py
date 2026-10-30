@@ -292,9 +292,16 @@ class HookResult:
     truncated: bool = False
 
 
-async def run_hook(hook: Hook, event: dict, workspace: Path, *, cancelled=lambda: False) -> HookResult:
+async def run_hook(hook: Hook, event: dict, workspace: Path, *, cancelled=lambda: False, on_settled=None) -> HookResult:
     """Run an already-authorized script, draining bounded pipes off the UI thread."""
     cancel = threading.Event()
+    settlement = {"process_started": False, "process_exited": False, "pipes_settled": False,
+                  "kill_requested": False, "kill_confirmed": None}
+
+    def terminal(result):
+        if on_settled is not None:
+            on_settled(result, dict(settlement))
+        return result
 
     def execute():
         started = time.monotonic()
@@ -303,6 +310,7 @@ async def run_hook(hook: Hook, event: dict, workspace: Path, *, cancelled=lambda
             cwd = workspace / cwd
         proc = ttyguard.popen([hook.executable, *hook.argv], cwd=cwd,
                               env={**os.environ, **dict(hook.env)}, kill_on_close=True)
+        settlement["process_started"] = True
         captured = [bytearray(), bytearray()]
         overflow = [False, False]
 
@@ -341,11 +349,14 @@ async def run_hook(hook: Hook, event: dict, workspace: Path, *, cancelled=lambda
                 cancel.set()
             timed_out = time.monotonic() - started >= hook.timeout
             if cancel.is_set() or timed_out:
-                ttyguard.kill_tree(proc.pid, proc)
+                settlement["kill_requested"] = True
+                settlement["kill_confirmed"] = ttyguard.kill_tree(proc.pid, proc)
                 break
             cancel.wait(.025)
         for worker in workers:
             worker.join(timeout=1)
+        settlement["process_exited"] = proc.poll() is not None
+        settlement["pipes_settled"] = not any(worker.is_alive() for worker in workers)
         # Job handles are integers, not RAII objects. Release even on success;
         # a hook cannot leave detached children or one kernel handle per event.
         job = getattr(proc, "_litetui_job", None)
@@ -381,10 +392,10 @@ async def run_hook(hook: Hook, event: dict, workspace: Path, *, cancelled=lambda
 
     future = asyncio.create_task(asyncio.to_thread(execute))
     try:
-        return await asyncio.shield(future)
+        return terminal(await asyncio.shield(future))
     except asyncio.CancelledError:
         cancel.set()
-        await asyncio.shield(future)
+        terminal(await asyncio.shield(future))
         raise
     except (OSError, ValueError) as exc:
-        return HookResult(False, f"hook launch failed: {type(exc).__name__}: {exc}")
+        return terminal(HookResult(False, f"hook launch failed: {type(exc).__name__}: {exc}"))

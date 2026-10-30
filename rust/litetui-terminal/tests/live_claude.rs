@@ -74,6 +74,8 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 | Observation::Backend(_)
                 | Observation::BackendChanged(_)
                 | Observation::Browser(_)
+                | Observation::ConversationChanged(_)
+                | Observation::ConversationUnverified(_)
                 | Observation::Opened(_),
             ) => {
                 panic!("Unrequested model control response")

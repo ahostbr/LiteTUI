@@ -23,12 +23,17 @@ def require_open(app):
     from litetui import native_engine
 
     native_engine.require_open(app)
+    from litetui import conversation_transition
+    conversation_transition.require_open(app)
     reason = getattr(app, "_backend_transition_error", None)
     if reason:
         raise ValueError(reason)
 
 
 def submission_refusal(app, *, initializing=False):
+    from litetui import conversation_transition
+    if reason := conversation_transition.submission_refusal(app):
+        return reason
     reason = getattr(app, "_backend_transition_error", None)
     if reason:
         return reason

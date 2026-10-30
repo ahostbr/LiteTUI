@@ -546,3 +546,92 @@ fn programmatic_launch_intent_is_revalidated_before_paths_or_persistence() {
     assert!(error.to_string().contains("Local auto"), "{error}");
     assert!(!root.exists());
 }
+
+#[test]
+fn native_codex_start_metadata_tracks_distinct_active_provider_turns_without_completion() {
+    fn codex(start: bool) -> Turn {
+        let mut t = Turn::default();
+        t.accept(&json!({"type":"ready","protocol_version":1,"launch_status":"ready","backend":"codex","model":"chosen"}),"codex","chosen").unwrap();
+        let p = t.submit("explicit").unwrap();
+        t.accept(
+            &json!({"type":"response","id":p["id"],"ok":true,"result":{"turn":"accepted"}}),
+            "codex",
+            "chosen",
+        )
+        .unwrap();
+        if start {
+            t.accept(
+                &json!({"type":"turn_start","model":"chosen"}),
+                "codex",
+                "chosen",
+            )
+            .unwrap();
+        }
+        t
+    }
+    let event = json!({"type":"native_turn_started","eventVersion":1,"provider":"codex","threadId":"thread-one","turnId":"turn-one"});
+    let mut t = codex(true);
+    assert_eq!(
+        t.accept(&event, "codex", "chosen").unwrap(),
+        Observation::Information("Codex native turn started".into())
+    );
+    assert!(t.submit("must remain busy").is_err());
+    for round in 1..=3 {
+        let mut correction = event.clone();
+        correction["turnId"] = json!(format!("correction-{round}"));
+        assert!(t.accept(&correction, "codex", "chosen").is_ok());
+    }
+    assert!(t.accept(&event, "codex", "chosen").is_err());
+    assert!(codex(false).accept(&event, "codex", "chosen").is_err());
+    assert!(codex(true).accept(&event, "claude", "chosen").is_err());
+    for (key, value) in [
+        ("provider", json!("claude")),
+        ("eventVersion", json!(2)),
+        ("threadId", json!("")),
+        ("turnId", json!("x".repeat(4097))),
+        ("turnId", json!("unsafe\nidentifier")),
+    ] {
+        let mut e = event.clone();
+        e[key] = value;
+        assert!(codex(true).accept(&e, "codex", "chosen").is_err(), "{key}");
+    }
+    let mut t = codex(true);
+    t.accept(
+        &json!({"type":"text_delta","text":"actual answer"}),
+        "codex",
+        "chosen",
+    )
+    .unwrap();
+    t.accept(
+        &json!({"type":"turn_end","stopReason":"stop","error":null}),
+        "codex",
+        "chosen",
+    )
+    .unwrap();
+    assert!(t.accept(&event, "codex", "chosen").is_err());
+    // Effective backend can change after startup; the reducer uses its current argument.
+    let mut t = started();
+    assert!(t.accept(&event, "codex", "claude-sonnet-5-5").is_ok());
+}
+
+#[test]
+fn native_codex_provider_turn_metadata_has_both_count_and_byte_bounds() {
+    for large in [false, true] {
+        let mut t = started();
+        let count = if large { 8 } else { 1024 };
+        for index in 0..count {
+            let thread = if large {
+                "a".repeat(4096)
+            } else {
+                "thread".into()
+            };
+            let turn = if large {
+                format!("{index:04096}")
+            } else {
+                format!("{index}")
+            };
+            t.accept(&json!({"type":"native_turn_started","eventVersion":1,"provider":"codex","threadId":thread,"turnId":turn}),"codex","current").unwrap();
+        }
+        assert!(t.accept(&json!({"type":"native_turn_started","eventVersion":1,"provider":"codex","threadId":"thread","turnId":"over-budget"}),"codex","current").is_err());
+    }
+}

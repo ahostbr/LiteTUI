@@ -72,6 +72,7 @@ pub struct Chat {
     pub closed: bool,
     pub quitting: bool,
     pub notice: String,
+    pub conversation_exit_notice: Option<String>,
     pub runtime_state: crate::runtime_state::State,
     pub approvals: crate::approvals::View,
     pub questions: crate::questions::View,
@@ -106,6 +107,7 @@ impl Chat {
             closed: false,
             quitting: false,
             notice: "Connecting real owned Python runtime…".into(),
+            conversation_exit_notice: None,
             runtime_state: crate::runtime_state::State::default(),
             approvals: crate::approvals::View::default(),
             questions: crate::questions::View::default(),
@@ -285,6 +287,30 @@ impl Chat {
         self.stops_sent += 1;
         Some(id)
     }
+    fn install_conversation(
+        &mut self,
+        snapshot: crate::management::Snapshot,
+        history: crate::resume::History,
+        queue: crate::restored_queue::Snapshot,
+    ) {
+        self.backend = snapshot.backend.clone();
+        self.model = snapshot.model.clone();
+        self.runtime_state.opened(snapshot);
+        self.controls = crate::model_controls::View::default();
+        self.queue = crate::restored_queue::View::default();
+        self.queue
+            .observe(crate::restored_queue::Update::Snapshot(queue));
+        self.rows.clear();
+        self.recovered_inputs.clear();
+        self.submission_id = None;
+        self.stop_requests = 0;
+        self.stops_sent = 0;
+        self.approvals.clear();
+        self.questions.clear();
+        self.retained_bytes = history.bytes;
+        self.retained_units = history.units;
+        self.history = Some(history);
+    }
     pub fn observe(&mut self, observation: Observation) -> io::Result<()> {
         if self.closed {
             return Err(io::Error::other("Observation after live view closed"));
@@ -375,6 +401,23 @@ impl Chat {
                 self.browser.observe(update)?;
                 self.notice = self.browser.notice.clone();
             }
+            Observation::ConversationChanged(changed) => {
+                if !self.ready || self.busy || self.queue_pending || self.pending.is_some() {
+                    return Err(io::Error::other(
+                        "Conversation mutated while a turn was pending",
+                    ));
+                }
+                self.browser.action_completed(&changed)?;
+                if changed.action == crate::conversation_actions::Action::New {
+                    self.install_conversation(changed.snapshot, changed.history, changed.queue);
+                    self.notice =
+                        "New conversation verified. Composer kept; no prompt sent.".into();
+                } else {
+                    self.queue
+                        .observe(crate::restored_queue::Update::Snapshot(changed.queue));
+                    self.notice = format!("Conversation renamed: {}", changed.current.title);
+                }
+            }
             Observation::Opened(opened) => {
                 if !self.ready || self.busy || self.queue_pending || self.pending.is_some() {
                     return Err(io::Error::other(
@@ -385,23 +428,7 @@ impl Chat {
                     .observe(crate::conversation_browser::Update::Opened {
                         session: opened.snapshot.session.clone(),
                     })?;
-                self.backend = opened.snapshot.backend.clone();
-                self.model = opened.snapshot.model.clone();
-                self.runtime_state.opened(opened.snapshot);
-                self.controls = crate::model_controls::View::default();
-                self.queue = crate::restored_queue::View::default();
-                self.queue
-                    .observe(crate::restored_queue::Update::Snapshot(opened.queue));
-                self.rows.clear();
-                self.recovered_inputs.clear();
-                self.submission_id = None;
-                self.stop_requests = 0;
-                self.stops_sent = 0;
-                self.approvals.clear();
-                self.questions.clear();
-                self.retained_bytes = opened.history.bytes;
-                self.retained_units = opened.history.units;
-                self.history = Some(opened.history);
+                self.install_conversation(opened.snapshot, opened.history, opened.queue);
                 self.notice =
                     "Conversation opened and held input verified. Nothing replayed.".into();
             }
@@ -494,6 +521,10 @@ impl Chat {
                 self.content(None, ContentKind::ReasoningSnapshot, text)?
             }
             Observation::Activity(activity) => self.activity(activity)?,
+            Observation::ConversationUnverified(info) => {
+                self.conversation_exit_notice = Some(info.clone());
+                self.notice = info;
+            }
             Observation::Information(info) => {
                 self.notice = info;
             }

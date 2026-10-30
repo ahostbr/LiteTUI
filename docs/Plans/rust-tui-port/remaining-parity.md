@@ -1,6 +1,6 @@
 # Remaining LiteTUI Rust parity work
 
-Source audit: 2026-10-30, work/rust-tui-OpenBolt, prior checkpoint 43bb9611.
+Source audit: 2026-10-30, work/rust-tui-OpenBolt, prior checkpoint 1f14b8c6.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
 continuation and pre-start refusal handling are committed; bounded session browsing has
@@ -13,7 +13,7 @@ captured execution origins, multiple text turns, reasoning/tools, cancellation,
 approvals/questions, composer/transcript, model/thinking controls, static themes,
 exact-UUID resume, held-input recovery, bounded F8 session browsing with preflight,
 F9 backend switching, F10 budget editing, F11 command/skill controls and explicit
-F12 NInfer/Strata engine management. Automated evidence does not replace
+F12 NInfer/Strata engine management, plus reviewed F8 New/current Rename. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
 Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs
@@ -27,7 +27,7 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
-| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight is implemented; expand history and session actions next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
+| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented; expand history/edit/retry next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
 | Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
@@ -94,41 +94,22 @@ package or DataRoot, including fresh child paths beneath a junction.
 This closes the concrete immutable-package reopen failure; broader clean-environment,
 release provenance and full-parity acceptance remain open.
 
-## Session actions identified by source audit
+## Session actions and remaining history work
 
-The next bounded wave is current-session Rename and New from F8, proposed as E/N
-with source native_snapshot/native_validate/native_apply operations. Review binds
-one canonical normalized title or one reserved destination UUID, including pending
-materialization and lifecycle hook effects. It must not dispatch mutable plugin
-/new or /rename handlers. Canonical rename collapses whitespace and caps at sixty
-characters plus an ellipsis; share that normalizer and show its exact result.
+F8 New and current-session Rename now use source-owned native_snapshot,
+native_validate and native_apply contracts. Pending Rename explicitly materializes
+before saving; New joins provider/lifecycle work, preserves old durable history,
+stages its reviewed UUID and rebinds settings/system/task state. Captured hooks obey
+existing policy, with actual terminal settlement retained through cancellation.
+Native independently rereads state/history/held input/current catalogue before
+publication. Quit/EOF joins the action before storage release; unresolved cleanup
+cannot produce a successful exit acknowledgement. The master checkpoint and
+runtime contract describe the evidence and precise shutdown limits.
 
-New must join provider cleanup and leave hooks before releasing old history/store
-ownership, stage the reviewed UUID, materialize through canonical settings/system
-prompt paths, rebind the task store and settle start hooks. Source persistence can
-report errors without raising: verify actual disk history/settings/metadata and
-owned identity. No new provider thread or user turn is created until a fresh
-explicit prompt. Existing policy-driven hooks require their own reviewed effects
-and settlement; failures after cleanup/staging are uncertain mutations, not a
-restored old session. Native independently reads history, state, held input and
-current catalogue before publishing either outcome. Busy/held work and an active
-native engine capability refuse before mutation. Larger history and edit/retry
-remain separate waves.
-
-The next session slice should adapt source-owned transitions rather than expose the
-legacy mutation acknowledgements directly. gui.conversations.create invokes /new,
-which clears the live history and closes native provider state, then materializes a
-new store and adopts conversation settings. It does not supply the connection,
-policy, held-input and durable-history readback barrier required by Rust. A new
-session must preserve the old session's saved data and the user draft, and must not
-reuse a provider thread or silently inherit changed execution authority.
-
-Rename is append-only through ConversationRepository.write_record and can be
-verified by replaying the exact owned transcript. Pending stores deliberately skip
-record writes: the current legacy RPC can therefore acknowledge a rename that was
-never saved. A native adapter must either explicitly materialize through the
-canonical lifecycle or refuse pending rename, bind the selected session/revision,
-and verify both the saved title and unchanged messages before reporting success.
+Direct /new and /rename slash routes remain unsupported and should open the same
+reviewed native controls through canonical command resolution. Do not reintroduce
+legacy mutable handler dispatch. Larger history, rich replay and edit/retry remain
+separate implementation waves.
 
 Legacy edit/retry truncates live history, saves a snapshot and calls _submit_text,
 then returns accepted:true without checking admission. It cannot serve as a native
@@ -180,3 +161,36 @@ prompt, and submits only through explicit normal attended admission. A file dige
 binds the freshly prepared revision; a metadata catalog alone does not bind file bytes.
 Existing transcript/display limits still apply and can refuse a large preparation.
 The native skill path does not invoke legacy gui.skills.use.
+
+## Theme persistence identified by source audit
+
+F4 currently selects one of 36 generated public dark palettes in native memory;
+Demo always starts from Ash. Live source selection is separate: the themes plugin
+registers Textual/LiteTUI/custom definitions and applies settings.theme_name.
+LiteTUI's palette is intentionally independent of LiteSuite's; do not re-sync it.
+A runtime catalogue should derive from the actual registered source themes, include
+valid custom themes, and expose requested versus resolved/effective selection.
+
+The existing export_rust_preview_themes.resolved_colors function is a pure semantic
+mapping into the native fourteen-color Theme shape. Extract/reuse this mapping for
+live resolution instead of copying Textual color derivation or reading private live
+settings in the fixture generator. Preserve optional thinking/tool/footer overrides,
+whole source-defined dark catalog order, and explicit source refusal/skipping of
+invalid definitions. Runtime theme bytes need bounded names/rows/tokens and escaped
+rendering; a catalogue row alone is not a saved-selection acknowledgement.
+
+Settings classify theme_name and custom_themes as device-scoped and immediate.
+Native saves should use SettingsService revisions and actual device destination,
+then independent saved/effective catalog readback. App.watch_theme catches save
+OSError and keeps an in-memory selection: observing that property does not prove
+persistence. Generic apply_saved_result updates custom_themes but does not register
+new definitions or repaint a changed theme with the same name. Share the canonical
+registration/refresh seam before claiming a new or edited palette is effective.
+
+The source editor trims a nonempty name, creates or overwrites that exact key and
+selects it. Ten core #RRGGBB tokens are required; optional thinking/tool values fall
+back when missing/invalid and footer overrides are omitted when invalid. Use the
+single THEME_FORM_TOKENS schema and show resolved values, including fallback, in a
+separate explicit draft/review. Keep this work independent of provider/model
+settings, authority and the ordinary chat draft. Real host/clipboard/color-picker
+acceptance remains separate from controlled token and persistence tests.

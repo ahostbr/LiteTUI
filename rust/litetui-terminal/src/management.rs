@@ -20,6 +20,7 @@ const MIRRORED: &[&str] = &[
     "reasoning_delta",
     "native_text_snapshot",
     "native_activity",
+    "native_turn_started",
     "native_usage",
     "native_event",
     "tool_approval_requested",
@@ -41,6 +42,7 @@ const IDENTIFIED: &[&str] = &[
     "reasoning_delta",
     "native_text_snapshot",
     "native_activity",
+    "native_turn_started",
     "native_usage",
     "native_event",
     "generic_tool_requested",
@@ -159,6 +161,11 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    ConversationAction {
+        update: crate::conversation_actions::Update,
+        policy: Option<Value>,
+    },
+    ConversationChanged(Box<crate::conversation_actions::Changed>),
     Engine {
         update: crate::engine_controls::Update,
         policy: Option<Value>,
@@ -295,7 +302,25 @@ struct EnginePending {
     state: Option<Snapshot>,
     mutation: Option<CommandId>,
 }
+struct ConversationPending {
+    id: CommandId,
+    stage: u8,
+    action: crate::conversation_actions::Action,
+    title: String,
+    snapshot: Option<crate::conversation_actions::Snapshot>,
+    review: Option<crate::conversation_actions::Review>,
+    history_before: Option<Value>,
+    history: Option<crate::resume::History>,
+    policy: Option<Value>,
+    state: Option<Snapshot>,
+    current: Option<crate::conversation_actions::Snapshot>,
+    queue: Option<crate::restored_queue::Snapshot>,
+    mutation: Option<CommandId>,
+}
 pub struct Management {
+    conversation: Option<ConversationPending>,
+    conversation_snapshot: Option<crate::conversation_actions::Snapshot>,
+    conversation_review: Option<(crate::conversation_actions::Review, Value, Value, Snapshot)>,
     closing: bool,
     engine: Option<EnginePending>,
     engine_instance: Option<(String, u64, crate::engine_controls::Admission)>,
@@ -338,6 +363,9 @@ pub struct Management {
 impl Default for Management {
     fn default() -> Self {
         Self {
+            conversation: None,
+            conversation_snapshot: None,
+            conversation_review: None,
             wire: WireClient::new(
                 GENERATION,
                 2,
@@ -466,6 +494,7 @@ impl Management {
             && !self.closing
             && !self.failed
             && self.engine.is_none()
+            && self.conversation.is_none()
             && self.command.is_none()
             && self.settings.is_none()
             && self.settings_edit.is_none()
@@ -494,6 +523,8 @@ impl Management {
         self.queue_menu = None;
         self.backend_catalog = None;
         self.browser_page = None;
+        self.conversation_snapshot = None;
+        self.conversation_review = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
         Ok(())
@@ -633,6 +664,17 @@ impl Management {
                 matched: true,
                 frame,
             } if self
+                .conversation
+                .as_ref()
+                .is_some_and(|p| Some(&p.id) == id.as_ref()) =>
+            {
+                self.conversation_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
                 .engine
                 .as_ref()
                 .is_some_and(|p| p.id.as_ref() == id.as_ref()) =>
@@ -760,6 +802,30 @@ impl Management {
     }
     fn validate_event(&mut self, frame: &Value, event: &Value) -> io::Result<()> {
         let (session, backend, model, _) = self.expected.as_ref().expect("begun");
+        if let Some(pending) = &self.conversation
+            && let Some(mutation) = &pending.mutation
+        {
+            let review = pending.review.as_ref().expect("review");
+            crate::stream::required_uuid4(frame, "event_id")
+                .map_err(|_| fail("Conversation action event lacks identity"))?;
+            if review.action != crate::conversation_actions::Action::New
+                || !matches!(event["type"].as_str(), Some("model_state" | "usage"))
+                || frame["operation_id"] != mutation.to_value()
+                || !matches!(frame.get("execution_id"), None | Some(Value::Null))
+                || (frame["session_id"] != *session && frame["session_id"] != review.target)
+            {
+                return Err(fail("Unexpected event during conversation mutation"));
+            }
+            if event["type"] == "model_state"
+                && (frame["session_id"] != review.target
+                    || event["backend"] != *backend
+                    || event["model"] != *model)
+            {
+                return Err(fail("Conversation action changed provider"));
+            }
+            return Ok(());
+        }
+
         if let Some(pending) = self.engine.as_ref()
             && let Some(mutation) = &pending.mutation
         {
@@ -1359,6 +1425,10 @@ impl Management {
         intent: crate::conversation_browser::Intent,
     ) -> io::Result<Value> {
         use crate::conversation_browser::{Intent, OPEN, PAGE, PREVIEW};
+        if let Intent::Action(intent) = intent {
+            return self.request_conversation_action(intent);
+        }
+
         if !self.ready() {
             return Err(fail("Wait for the runtime operation to finish"));
         }
@@ -1385,6 +1455,7 @@ impl Management {
         }
         let (session, _, _, _) = self.expected.as_ref().expect("active");
         let (operation, request, mut command) = match intent {
+            Intent::Action(_) => unreachable!("handled action"),
             Intent::Refresh => (
                 PAGE,
                 BrowserRequest::Page {
@@ -2657,6 +2728,432 @@ impl Management {
         command["id"] = id.to_value();
         pending.id = Some(id);
         self.engine = Some(pending);
+        Ok(Step::Write(command))
+    }
+}
+
+impl Management {
+    fn conversation_identity(&self) -> io::Result<crate::conversation_actions::Identity> {
+        let (session, backend, model, _) = self
+            .expected
+            .as_ref()
+            .ok_or_else(|| fail("Runtime not connected"))?;
+        let (agent, _) = self
+            .browser_authority
+            .as_ref()
+            .ok_or_else(|| fail("Runtime lacks owned conversation authority"))?;
+        Ok(crate::conversation_actions::Identity {
+            session: session.clone(),
+            agent: agent.clone(),
+            backend: backend.clone(),
+            model: model.clone(),
+        })
+    }
+    fn request_conversation_action(
+        &mut self,
+        intent: crate::conversation_actions::Intent,
+    ) -> io::Result<Value> {
+        use crate::conversation_actions::{Intent, SNAPSHOT};
+        if !self.ready() {
+            return Err(fail(
+                "Wait for the current operation before editing conversations",
+            ));
+        }
+        self.ensure_drained()?;
+        if !crate::conversation_actions::OPERATIONS
+            .iter()
+            .chain(
+                [
+                    "gui.state",
+                    "gui.conversations.read",
+                    crate::restored_queue::READ,
+                    crate::conversation_browser::PAGE,
+                ]
+                .iter(),
+            )
+            .all(|op| self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail(
+                "Source does not support reviewed conversation actions",
+            ));
+        }
+        let identity = self.conversation_identity()?;
+        let (stage, action, title, snapshot, review, history_before, policy, state, mut command) =
+            match intent {
+                Intent::Read { action } => {
+                    self.conversation_snapshot = None;
+                    self.conversation_review = None;
+                    (
+                        0,
+                        action,
+                        String::new(),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        identity.command(SNAPSHOT),
+                    )
+                }
+                Intent::Validate {
+                    snapshot,
+                    action,
+                    title,
+                } => {
+                    let s = self
+                        .conversation_snapshot
+                        .as_ref()
+                        .filter(|s| s.token == snapshot && s.identity == identity)
+                        .ok_or_else(|| fail("Conversation selection changed; refresh explicitly"))?
+                        .clone();
+                    s.request(action, &title)?;
+                    self.conversation_review = None;
+                    (
+                        1,
+                        action,
+                        title,
+                        Some(s),
+                        None,
+                        None,
+                        None,
+                        None,
+                        json!({"type":"gui.state","include_conversations":false}),
+                    )
+                }
+                Intent::Apply { review } => {
+                    let (r, h, p, state) = self
+                        .conversation_review
+                        .take()
+                        .filter(|(r, _, _, _)| r.token == review && r.before.identity == identity)
+                        .ok_or_else(|| fail("Review is stale or already consumed; review again"))?;
+                    let command = r.request();
+                    (
+                        5,
+                        r.action,
+                        String::new(),
+                        None,
+                        Some(r),
+                        Some(h),
+                        Some(p),
+                        Some(state),
+                        command,
+                    )
+                }
+            };
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve conversation action"))?;
+        command["id"] = id.to_value();
+        self.conversation = Some(ConversationPending {
+            id: id.clone(),
+            stage,
+            action,
+            title,
+            snapshot,
+            review,
+            history_before,
+            history: None,
+            policy,
+            state,
+            current: None,
+            queue: None,
+            mutation: (stage == 5).then_some(id),
+        });
+        self.menu = None;
+        self.queue_menu = None;
+        self.browser_page = None;
+        self.command_prepared = None;
+        Ok(command)
+    }
+    fn conversation_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::conversation_actions::{
+            Action, Changed, Receipt, Review, SNAPSHOT, Snapshot as Current, Update,
+        };
+        let mut pending = self
+            .conversation
+            .take()
+            .expect("matched conversation action");
+        let identity = self.conversation_identity()?;
+        let reject = |s: String| Step::ConversationAction {
+            update: Update::Rejected(s),
+            policy: None,
+        };
+        if frame["ok"] != true {
+            let error = text(&frame, "error", 4096)?.to_owned();
+            if pending.stage <= 4 || self.closing {
+                self.conversation_review = None;
+                self.conversation_snapshot = None;
+                return Ok(reject(error));
+            }
+            return Err(fail(&format!(
+                "Conversation apply/readback failed; session uncertain: {error}"
+            )));
+        }
+        let result = &frame["result"];
+        let after = pending.review.as_ref().map(Review::after_identity);
+        let selected = if pending.stage >= 6 {
+            after.as_ref().expect("review")
+        } else {
+            &identity
+        };
+        match pending.stage {
+            0 => {
+                let current = Current::parse(result, &identity)?;
+                if self.closing {
+                    return Ok(reject(
+                        "Conversation inspection drained during shutdown".into(),
+                    ));
+                }
+                self.conversation_snapshot = Some(current.clone());
+                return Ok(Step::ConversationAction {
+                    update: Update::Snapshot(Box::new(current)),
+                    policy: None,
+                });
+            }
+            1 | 7 => {
+                if pending.stage == 1
+                    && (result["busy"] == true
+                        || [
+                            "active_work",
+                            "pending_approvals",
+                            "pending_questions",
+                            "pending_model_loads",
+                        ]
+                        .iter()
+                        .any(|key| result[key].as_array().is_some_and(|v| !v.is_empty()))
+                        || result["restored_input"]["held"]
+                            .as_u64()
+                            .is_some_and(|n| n > 0))
+                {
+                    return Ok(reject(
+                        "Finish owned work or resolve held input before changing conversations"
+                            .into(),
+                    ));
+                }
+                let state = Snapshot::parse(result)?;
+                if state.session != selected.session
+                    || state.backend != selected.backend
+                    || state.model != selected.model
+                    || state.profile != self.expected.as_ref().unwrap().3
+                    || !(state.writable
+                        || pending.stage == 1
+                            && pending.snapshot.as_ref().is_some_and(|s| s.pending))
+                    || state.held_restored_input != Some(0)
+                    || Some(state.schedules_paused) != self.browser_authority.as_ref().map(|v| v.1)
+                    || result["ownership"]["agent_id"] != selected.agent
+                {
+                    return Err(fail(
+                        "Conversation action state changed identity, authority or holds",
+                    ));
+                }
+                if pending.stage == 7
+                    && (pending.policy.as_ref() != Some(&result["tool_policy"])
+                        || pending
+                            .state
+                            .as_ref()
+                            .is_none_or(|before| before.mode != state.mode))
+                {
+                    return Err(fail("Conversation action changed tool policy"));
+                }
+                pending.policy = Some(result["tool_policy"].clone());
+                pending.state = Some(state);
+            }
+            2 | 8 => {
+                if serde_json::to_vec(result)?.len() > 1048576 {
+                    return Err(fail(
+                        "Conversation history exceeded requested response budget",
+                    ));
+                }
+                let history = match crate::backend_controls::history(result, &selected.session) {
+                    Ok(h) => h,
+                    Err(e) if pending.stage == 2 => {
+                        return Ok(reject(format!("Cannot review conversation action: {e}")));
+                    }
+                    Err(e) => return Err(e),
+                };
+                if pending.stage == 2 {
+                    pending.history_before = Some(result["messages"].clone());
+                } else {
+                    let review = pending.review.as_ref().unwrap();
+                    if pending.action == Action::Rename
+                        && (pending.history_before.as_ref() != Some(&result["messages"])
+                            || result["meta"]["name"] != json!(review.title))
+                    {
+                        return Err(fail(
+                            "Rename changed history/provider references or did not persist its exact title",
+                        ));
+                    }
+                    if pending.action == Action::New
+                        && !result["messages"].as_array().is_some_and(|rows| {
+                            rows.iter().all(|m| {
+                                m["role"] == "system"
+                                    && m.as_object().is_some_and(|o| {
+                                        o.keys().all(|k| matches!(k.as_str(), "role" | "content"))
+                                    })
+                            })
+                        })
+                    {
+                        return Err(fail(
+                            "New conversation inherited messages or provider references",
+                        ));
+                    }
+                    pending.history = Some(history);
+                }
+            }
+            3 | 9 => {
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| fail("Conversation revision exhausted"))?;
+                let queue = crate::restored_queue::Snapshot::parse(result, self.revision)?;
+                if queue.session != selected.session
+                    || queue.backend != selected.backend
+                    || queue.model != selected.model
+                    || !queue.entries.is_empty()
+                {
+                    return Err(fail(
+                        "Conversation action has changed or nonempty held input",
+                    ));
+                }
+                pending.queue = Some(queue);
+            }
+            4 => {
+                let review =
+                    Review::parse(result, pending.snapshot.take().unwrap(), pending.action)?;
+                if self.closing {
+                    return Ok(reject("Conversation review drained during shutdown".into()));
+                }
+                self.conversation_review = Some((
+                    review.clone(),
+                    pending.history_before.take().unwrap(),
+                    pending.policy.clone().unwrap(),
+                    pending.state.take().unwrap(),
+                ));
+                return Ok(Step::ConversationAction {
+                    update: Update::Review(Box::new(review)),
+                    policy: pending.policy,
+                });
+            }
+            5 => {
+                if self.closing {
+                    Receipt::drain(result, pending.review.as_ref().unwrap())?;
+                    return Ok(reject(
+                        "Conversation result drained during shutdown; effects unverified".into(),
+                    ));
+                }
+                let receipt = Receipt::parse(result, pending.review.as_ref().unwrap().clone())?;
+                if receipt.refused {
+                    self.conversation_snapshot = None;
+                    return Ok(reject(receipt.error.unwrap()));
+                }
+            }
+            6 => {
+                let current = Current::parse(result, selected)?;
+                let review = pending.review.as_ref().unwrap();
+                if current.pending
+                    || review.action == Action::Rename
+                        && Some(current.title.as_str()) != review.title.as_deref()
+                {
+                    return Err(fail(
+                        "Conversation readback contradicts materialization or title",
+                    ));
+                }
+                pending.current = Some(current);
+            }
+            10 => {
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| fail("Conversation revision exhausted"))?;
+                let page = crate::conversation_browser::Page::parse(
+                    result,
+                    self.revision,
+                    &selected.session,
+                )?;
+                let current = pending.current.take().unwrap();
+                if page.agent != selected.agent
+                    || page
+                        .entries
+                        .iter()
+                        .any(|e| e.current && e.title != current.title)
+                {
+                    return Err(fail(
+                        "Conversation catalog contradicts current ownership/title",
+                    ));
+                }
+                if self.closing {
+                    return Ok(reject(
+                        "Conversation readback drained during shutdown; effects unverified".into(),
+                    ));
+                }
+                let state = pending.state.take().unwrap();
+                let queue = pending.queue.take().unwrap();
+                self.expected = Some((
+                    state.session.clone(),
+                    state.backend.clone(),
+                    state.model.clone(),
+                    state.profile.clone(),
+                ));
+                self.origin = None;
+                self.prompt = None;
+                self.menu = None;
+                self.command_catalog = None;
+                self.command_prepared = None;
+                self.backend_catalog = None;
+                self.settings_snapshot = None;
+                self.settings_review = None;
+                self.conversation_snapshot = None;
+                self.conversation_review = None;
+                self.browser_page = Some(page.clone());
+                self.queue_menu = Some(queue.clone());
+                return Ok(Step::ConversationChanged(Box::new(Changed {
+                    action: pending.action,
+                    snapshot: state,
+                    history: pending.history.take().unwrap(),
+                    queue,
+                    policy: pending.policy.take().unwrap(),
+                    current,
+                    page,
+                })));
+            }
+            _ => return Err(fail("Unknown conversation mutation phase")),
+        }
+        if self.closing {
+            return Ok(reject(
+                "Conversation response consumed during shutdown; no completion published".into(),
+            ));
+        }
+        pending.stage += 1;
+        let mut command = match pending.stage {
+            2 | 8 => {
+                json!({"type":"gui.conversations.read","session_id":selected.session,"max_response_bytes":1048576})
+            }
+            3 | 9 => json!({"type":crate::restored_queue::READ,"session_id":selected.session}),
+            4 => pending
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .request(pending.action, &pending.title)?,
+            6 => pending
+                .review
+                .as_ref()
+                .unwrap()
+                .after_identity()
+                .command(SNAPSHOT),
+            7 => json!({"type":"gui.state","include_conversations":false}),
+            10 => {
+                json!({"type":crate::conversation_browser::PAGE,"session_id":selected.session,"cursor":null})
+            }
+            _ => return Err(fail("Invalid conversation continuation")),
+        };
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve conversation verification"))?;
+        command["id"] = id.to_value();
+        pending.id = id;
+        self.conversation = Some(pending);
         Ok(Step::Write(command))
     }
 }

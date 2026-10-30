@@ -11,18 +11,7 @@ from dataclasses import asdict
 
 from litetui.agent_preparation import await_preparation
 from litetui.llm_backend import TerminalShutdown
-
-
-async def _join(task):
-    """Retain the rendezvous when its caller is cancelled; never orphan a worker."""
-    while True:
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if task.done():
-                if task.cancelled():
-                    return None
-                return task.result()
+from litetui.shutdown_wait import join_task as _join
 
 
 async def _settle(app, current):

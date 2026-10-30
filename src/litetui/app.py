@@ -2406,10 +2406,13 @@ class LiteTUI(App):
         reorders `_shutdown`, that arm goes red rather than this silently
         becoming a no-op.
         """
+        self._gui_quitting = True
+        from litetui import conversation_shutdown, native_engine_shutdown
+        # Failed joins retain ownership for the supervisor's hard containment
+        # bound; they must not fall through the release finally below.
+        await conversation_shutdown.settle_before_shutdown(self)
+        await native_engine_shutdown.settle_before_shutdown(self)
         try:
-            self._gui_quitting = True
-            from litetui import native_engine_shutdown
-            await native_engine_shutdown.settle_before_shutdown(self)
             # Block NEW model loads on every retained backend admission session BEFORE any
             # await below can yield the loop — a load dispatched during async teardown
             # would reserve capacity we are about to stop tracking. begin_close ONLY: no
@@ -3676,7 +3679,7 @@ class LiteTUI(App):
         except Exception:
             pass  # not mounted yet; the runtime log has it
 
-    def _bind_task_store(self) -> None:
+    def _bind_task_store(self) -> bool:
         """Load the bound conversation's task rows (T0132). Called by `_resume`.
 
         A STAGED conversation has no directory, hence no rows and nothing to
@@ -3687,11 +3690,13 @@ class LiteTUI(App):
         """
         d = self.convo_dir
         if d is None or not d.is_dir():
-            return
+            return True
         try:
             tasks_mod.bind(self.bg_tasks, d, paths.data_root(), agent_session=getattr(self, '_agent_session', None))
         except OSError as e:
             self._report_task_store_error(e)
+            return False
+        return True
 
     def _kill_background(self, task_id: str) -> str | None:
         """Kill one background task. Returns None when it was killed, otherwise
@@ -3922,6 +3927,9 @@ class LiteTUI(App):
         paths are assigned here anyway, so the footer can name the conversation
         and /clear can report where it will live.
         """
+        from litetui.conversation_transition import require_execution
+
+        require_execution(self)
         previous = getattr(self, "_backend", None)
         if getattr(previous, "owns_native_turns", False):
             bridge = getattr(previous, "_claude_tools", None)
@@ -3932,10 +3940,17 @@ class LiteTUI(App):
         hook_host.leave_conversation(self)
         session = getattr(self, '_agent_session', None)
         initial = getattr(session, 'initial_conversation_id', None)
-        self.store.stage(initial or str(uuid.uuid4()))
-        self._store_notice_text = None
+        self._stage_new_convo(initial or str(uuid.uuid4()))
         if initial:
             session.initial_conversation_id = None
+
+    def _stage_new_convo(self, conversation_id: str) -> None:
+        """Stage one exact identity after the caller settles outgoing lifecycle."""
+        from litetui.backend_transition import require_open
+
+        require_open(self)
+        self.store.stage(conversation_id)
+        self._store_notice_text = None
         self._resumed_seat_name = None
         self._refresh_ctx_label()   # the footer names the conversation
         self._sync_seat_identity()
@@ -8730,6 +8745,8 @@ class LiteTUI(App):
     def _validate_owned_execution(self) -> None:
         from litetui import native_engine
         native_engine.require_execution(self)
+        from litetui import conversation_transition
+        conversation_transition.require_execution(self)
         from litetui.backend_transition import require_open
 
         require_open(self)
@@ -9272,7 +9289,7 @@ class LiteTUI(App):
                 # A closure, not the bound method: test fakes deepcopy their
                 # kwargs, and deepcopying a bound method copies the whole app.
                 stream = await model_transport.for_app(self).create(
-                    retry_notice=self._retry_notice, **kwargs
+                    retry_notice=self._retry_notice, origin=origin, **kwargs
                 )
             except Exception as e:
                 runtime_log.record(

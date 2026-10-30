@@ -24,6 +24,7 @@ from typing import Protocol
 import httpx
 
 from litetui import runtime_log, sanitize
+from litetui.event_origin import EventOrigin
 from litetui.llm_backend import BackendError
 
 OAUTH_PROVIDERS = ("codex",)  # Claude is enabled only after live acceptance.
@@ -145,7 +146,10 @@ def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
 
 
 class ModelTransport(Protocol):
-    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs): ...
+    async def create(
+        self, *, purpose: str = "turn", retry_notice=None,
+        origin: EventOrigin | None = None, **kwargs,
+    ): ...
 
 
 @dataclass(frozen=True)
@@ -848,8 +852,11 @@ class OAuthTransport:
             )
         return headers
 
-    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
-        """`purpose` and `retry_notice` name local behavior; neither reaches the wire.
+    async def create(
+        self, *, purpose: str = "turn", retry_notice=None,
+        origin: EventOrigin | None = None, **kwargs,
+    ):
+        """`purpose`, `retry_notice` and `origin` are local; none reaches the wire.
 
         🔴 T821. A test counted `create` calls to assert how many COMPLETIONS
         one turn costs. It was right on 2026-09-12 (4e873f7) and red by
@@ -1054,7 +1061,10 @@ class OpenAITransport:
         self.backend = backend
         self.remote_marker = remote_marker
 
-    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
+    async def create(
+        self, *, purpose: str = "turn", retry_notice=None,
+        origin: EventOrigin | None = None, **kwargs,
+    ):
         _refuse_unsupported_local_lm(self.backend, remote_marker=self.remote_marker)
         kwargs = dict(kwargs)
         kwargs["messages"] = [

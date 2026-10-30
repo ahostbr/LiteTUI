@@ -186,6 +186,8 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    ConversationChanged(Box<crate::conversation_actions::Changed>),
+    ConversationUnverified(String),
     Engine(crate::engine_controls::Update),
     EngineAdmission(crate::engine_controls::Admission),
     State(crate::runtime_state::Update),
@@ -245,6 +247,8 @@ pub struct Turn {
     allow_engine_management: bool,
     engine_shutdown: Option<crate::engine_controls::ShutdownIdentity>,
     shutdown_acknowledged: bool,
+    conversation_shutdown: Option<Value>,
+    conversation_completed_shutdown: Option<Value>,
     sent: bool,
     closing: bool,
     command_id: String,
@@ -253,6 +257,8 @@ pub struct Turn {
     tools_seen: bool,
     card_count: usize,
     started: bool,
+    native_turns: std::collections::BTreeSet<(String, String)>,
+    native_turn_bytes: usize,
     acknowledged: bool,
     admission_refused: bool,
     settled: bool,
@@ -303,6 +309,8 @@ impl Turn {
         self.continued_input = None;
         self.sent = true;
         self.started = false;
+        self.native_turns.clear();
+        self.native_turn_bytes = 0;
         self.acknowledged = false;
         self.admission_refused = false;
         self.settled = false;
@@ -471,14 +479,41 @@ impl Turn {
                     &event["result"],
                     self.engine_shutdown.as_ref(),
                 )?;
-                self.shutdown_acknowledged = true;
-                Ok(Observation::Information(
-                    if self.engine_shutdown.is_some() {
-                        "shutdown acknowledged; resource release unverified".into()
+                crate::conversation_actions::verify_shutdown(
+                    &event["result"],
+                    self.conversation_shutdown.as_ref(),
+                )
+                .or_else(|error| {
+                    if event["result"]["conversation_shutdown"]["pending_at_close"] == false
+                        && self.conversation_completed_shutdown.is_some()
+                    {
+                        crate::conversation_actions::verify_shutdown(
+                            &event["result"],
+                            self.conversation_completed_shutdown.as_ref(),
+                        )
                     } else {
-                        "shutdown acknowledged".into()
+                        Err(error)
+                    }
+                })?;
+                self.shutdown_acknowledged = true;
+                Ok(
+                    if self.conversation_shutdown.is_some()
+                        && self.conversation_shutdown != self.conversation_completed_shutdown
+                    {
+                        Observation::ConversationUnverified(format!(
+                            "Shutdown joined the interrupted {} action; saved effects remain unverified. Reopen the conversation to inspect.",
+                            self.conversation_shutdown.as_ref().unwrap()["action"]
+                                .as_str()
+                                .unwrap_or("conversation")
+                        ))
+                    } else {
+                        Observation::Information(if self.engine_shutdown.is_some() {
+                            "shutdown acknowledged; resource release unverified".into()
+                        } else {
+                            "shutdown acknowledged".into()
+                        })
                     },
-                ))
+                )
             }
             "response" => {
                 if let Some(stopped) = self.aborts.response(event)? {
@@ -789,6 +824,35 @@ impl Turn {
                         "Turn ended; waiting for input closures and command responses".into(),
                     ))
                 }
+            }
+            "native_turn_started"
+                if backend == "codex" && self.started && self.terminal.is_none() =>
+            {
+                if event["eventVersion"] != 1
+                    || event["provider"] != "codex"
+                    || ["threadId", "turnId"].iter().any(|key| {
+                        !event[key].as_str().is_some_and(|s| {
+                            !s.is_empty() && s.len() <= 4096 && !s.chars().any(char::is_control)
+                        })
+                    })
+                {
+                    return Err(fail("Malformed native Codex turn-start metadata"));
+                }
+                let pair = (
+                    event["threadId"].as_str().unwrap().to_owned(),
+                    event["turnId"].as_str().unwrap().to_owned(),
+                );
+                let bytes = pair.0.len() + pair.1.len();
+                if self.native_turns.len() >= 1024
+                    || self.native_turn_bytes.saturating_add(bytes) > 65536
+                    || !self.native_turns.insert(pair)
+                {
+                    return Err(fail(
+                        "Duplicate or excessive native Codex turn-start metadata",
+                    ));
+                }
+                self.native_turn_bytes += bytes;
+                Ok(Observation::Information("Codex native turn started".into()))
             }
             // These source-defined observations have no authority in this frontend.
             // Print their kind, rather than silently discarding unsupported state.
@@ -1205,6 +1269,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Input::Browser(intent) => {
+                        let action =
+                            matches!(intent, crate::conversation_browser::Intent::Action(_));
                         let command = if turn.can_manage() {
                             management.request_browser(intent)
                         } else {
@@ -1214,6 +1280,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         };
                         match command {
                             Ok(value) => {
+                                if value["type"] == crate::conversation_actions::APPLY {
+                                    turn.conversation_shutdown = Some(value.clone());
+                                }
                                 owned
                                     .stdin
                                     .as_ref()
@@ -1222,9 +1291,15 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => frontend.observe(Observation::Browser(
-                                crate::conversation_browser::Update::Rejected(error.to_string()),
-                            ))?,
+                            Err(error) => frontend.observe(Observation::Browser(if action {
+                                crate::conversation_browser::Update::Action(
+                                    crate::conversation_actions::Update::Rejected(
+                                        error.to_string(),
+                                    ),
+                                )
+                            } else {
+                                crate::conversation_browser::Update::Rejected(error.to_string())
+                            }))?,
                         }
                     }
                     Input::Control(intent) => {
@@ -1391,9 +1466,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         .finish()
                         .map_err(|e| io::Error::other(format!("{e:?}")))?;
                     return if turn.closing {
-                        if turn.engine_shutdown.is_some() && !turn.shutdown_acknowledged {
+                        if (turn.engine_shutdown.is_some() || turn.conversation_shutdown.is_some())
+                            && !turn.shutdown_acknowledged
+                        {
                             Err(io::Error::other(
-                                "Engine runtime exited without verified shutdown acknowledgement",
+                                "Owned runtime exited without verified shutdown acknowledgement",
                             ))
                         } else {
                             Ok(())
@@ -1535,6 +1612,34 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 .expect("launch policy")
                                 .validate(&opened.policy)?;
                             frontend.observe(Observation::BackendChanged(opened))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
+                    Step::ConversationAction { update, policy } => {
+                        if !turn.closing {
+                            if let Some(policy) = policy {
+                                turn.policy
+                                    .as_ref()
+                                    .expect("launch policy")
+                                    .validate(&policy)?;
+                            }
+                            frontend.observe(Observation::Browser(
+                                crate::conversation_browser::Update::Action(update),
+                            ))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
+                    Step::ConversationChanged(changed) => {
+                        if !turn.closing {
+                            turn.conversation_completed_shutdown =
+                                turn.conversation_shutdown.clone();
+                            turn.policy
+                                .as_ref()
+                                .expect("launch policy")
+                                .validate(&changed.policy)?;
+                            frontend.observe(Observation::ConversationChanged(changed))?;
                             check_deadline(deadline)?;
                             deadline = None;
                         }
@@ -1689,6 +1794,7 @@ impl Frontend for OneShot {
             | Observation::BackendChanged(_)
             | Observation::Browser(_)
             | Observation::Opened(_)
+            | Observation::ConversationChanged(_)
             | Observation::Controls(_)
             | Observation::Queue(_)
             | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
@@ -1753,7 +1859,7 @@ impl Frontend for OneShot {
                 "\n[Answer snapshot replaces current answer]\n{}",
                 terminal_text(&text)
             )?,
-            Observation::Information(kind) => {
+            Observation::Information(kind) | Observation::ConversationUnverified(kind) => {
                 writeln!(self.output, "\n[Runtime: {}]", terminal_text(&kind))?
             }
             Observation::Cancelled(reason) => {

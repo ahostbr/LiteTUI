@@ -18,6 +18,7 @@ from pathlib import Path
 from litetui import paths, sanitize, tool_context
 from litetui.codex_runtime import RuntimeActivity
 from litetui.codex_workspace import workspace
+from litetui.event_origin import EventOrigin
 from litetui.model_transport import ProviderError, _chunk, collect
 
 
@@ -275,8 +276,11 @@ class AppServerTransport:
         self.process = None
         self.initialized = False
 
-    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
-        """`purpose` and `retry_notice` never reach the wire — see
+    async def create(
+        self, *, purpose: str = "turn", retry_notice=None,
+        origin: EventOrigin | None = None, **kwargs,
+    ):
+        """`purpose`, `retry_notice` and `origin` never reach the wire — see
         model_transport.ModelTransport.create (T821, T1019)."""
         if (
             self.app is not None
@@ -290,7 +294,7 @@ class AppServerTransport:
                 return await AppServerTransport(server).create(**kwargs)
             finally:
                 await server.close()
-        stream = AppServerStream(self._stream(kwargs))
+        stream = AppServerStream(self._stream(kwargs, origin=origin))
         return stream if kwargs.get("stream", False) else await collect(stream)
 
     async def refresh_history(self):
@@ -653,7 +657,7 @@ class AppServerTransport:
                 "turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id}
             )
 
-    async def _stream(self, kwargs):
+    async def _stream(self, kwargs, *, origin: EventOrigin | None = None):
         async with self.lock:
             if isinstance(self.server, AppServer):
                 self.server.execution_workspace = workspace(self.app)
@@ -789,11 +793,17 @@ class AppServerTransport:
                 message_state(self.app, message, "accepted")
             self.turn_id = started["turn"]["id"]
             if self.app is not None and hasattr(self.app, "_rpc_emit"):
-                self.app._rpc_emit({
+                event = {
                     "type": "native_turn_started", "eventVersion": 1,
                     "provider": "codex", "threadId": self.thread_id,
                     "turnId": self.turn_id,
-                })
+                }
+                # The scheduled execution owns this event across startup awaits
+                # and correction retries. Never infer it from mutable app state.
+                if origin is not None:
+                    self.app._rpc_emit(event, origin=origin)
+                else:
+                    self.app._rpc_emit(event)
             metadata = {
                 "provider": "codex",
                 "model": model,

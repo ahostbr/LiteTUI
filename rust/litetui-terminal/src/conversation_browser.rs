@@ -57,12 +57,14 @@ pub struct Page {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
+    Action(crate::conversation_actions::Intent),
     Refresh,
     Page { revision: u64, cursor: String },
     Open { revision: u64, session: String },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
+    Action(crate::conversation_actions::Update),
     Page(Page),
     /// Only after correlated open + owned state + held-input verification.
     Opened {
@@ -254,6 +256,7 @@ fn line(value: &str, offset: usize) -> String {
 
 #[derive(Default)]
 pub struct View {
+    pub actions: crate::conversation_actions::View,
     pub open: bool,
     pub waiting: bool,
     pub notice: String,
@@ -283,12 +286,44 @@ impl View {
         self.hide();
     }
     pub fn owns_input(&self) -> bool {
-        self.open || self.waiting
+        self.open || self.waiting || self.actions.owns_input()
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
-        self.intent.take()
+        self.actions
+            .take_intent()
+            .map(Intent::Action)
+            .or_else(|| self.intent.take())
+    }
+    pub fn paste(&mut self, text: &str) {
+        self.actions.paste(text);
+    }
+    pub fn action_completed(
+        &mut self,
+        changed: &crate::conversation_actions::Changed,
+    ) -> io::Result<()> {
+        self.actions
+            .complete(changed.action, &changed.snapshot.session)?;
+        self.page = Some(changed.page.clone());
+        self.selected = self
+            .page
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|e| e.current)
+            .unwrap_or(0);
+        self.pending_open = None;
+        self.waiting = false;
+        self.hide();
+        if changed.action == crate::conversation_actions::Action::New {
+            self.finish();
+        } else {
+            self.notice = format!("Conversation renamed: {}", changed.current.title);
+        }
+        Ok(())
     }
     pub fn close(&mut self) {
+        self.actions.close();
         self.open = false;
         self.hide();
         if self.intent.take().is_some() {
@@ -298,6 +333,7 @@ impl View {
         }
     }
     pub fn finish(&mut self) {
+        self.actions.finish();
         self.close();
         self.waiting = false;
         self.pending_open = None;
@@ -309,11 +345,17 @@ impl View {
         self.pressed = None;
     }
     pub fn hide(&mut self) {
+        self.actions.hide();
         self.visible = false;
         self.disarm();
         self.hits.clear();
     }
     pub fn observe(&mut self, update: Update) -> io::Result<()> {
+        if let Update::Action(update) = update {
+            self.actions.observe(update);
+            self.notice = self.actions.notice.clone();
+            return Ok(());
+        }
         if let Update::Opened { session } = &update
             && (!self.waiting || self.pending_open.as_ref() != Some(session))
         {
@@ -327,6 +369,7 @@ impl View {
         self.hide();
         self.horizontal = 0;
         match update {
+            Update::Action(_) => unreachable!("handled action"),
             Update::Page(page) => {
                 self.selected = page.entries.iter().position(|row| row.current).unwrap_or(0);
                 self.notice = "Choose a saved conversation. Nothing has been opened.".into();
@@ -391,6 +434,10 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.actions.owns_input() {
+            self.actions.key(key);
+            return;
+        }
         if key.kind == KeyEventKind::Release {
             return;
         }
@@ -437,6 +484,14 @@ impl View {
             KeyCode::PageUp if key.kind == KeyEventKind::Press => self.request_page(false),
             KeyCode::PageDown if key.kind == KeyEventKind::Press => self.request_page(true),
             KeyCode::Char('r') if key.kind == KeyEventKind::Press => self.open(),
+            KeyCode::Char('n' | 'e') if key.kind == KeyEventKind::Press => {
+                self.disarm();
+                self.actions.open(if key.code == KeyCode::Char('n') {
+                    crate::conversation_actions::Action::New
+                } else {
+                    crate::conversation_actions::Action::Rename
+                });
+            }
             KeyCode::Char('o') if key.kind == KeyEventKind::Press => {
                 self.disarm();
                 self.armed = self
@@ -469,6 +524,10 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.actions.owns_input() {
+            self.actions.mouse(event);
+            return;
+        }
         self.armed = false;
         self.confirmation_visible = false;
         if !self.open || !self.visible || self.waiting || event.modifiers != KeyModifiers::NONE {
@@ -511,6 +570,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.actions.owns_input() {
+            self.actions.draw(frame, area, theme);
+            return;
+        }
         self.visible = false;
         if !self.owns_input() || area.width < 36 || area.height < 14 {
             self.hide();
@@ -633,7 +696,7 @@ impl View {
                 line(&self.details(), self.horizontal),
                 "↑↓ choose | ←→ inspect".into(),
                 "PgUp/PgDn page | R refresh".into(),
-                "O open | Esc close".into(),
+                "O open | N new | E rename | Esc".into(),
             ]
             .into_iter()
             .enumerate()

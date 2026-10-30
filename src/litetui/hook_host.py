@@ -28,6 +28,9 @@ def initialize(app):
 
 
 def snapshot(app):
+    captured = getattr(app, "_conversation_transition_hook_snapshot", None)
+    if captured is not None:
+        return captured
     config = getattr(app, "hook_config", None)
     return config.snapshot() if config else hooks.Snapshot()
 
@@ -61,10 +64,32 @@ async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=Fal
     if refusal:
         result = hooks.HookResult(False, refusal[0])
     else:
-        result = await hooks.run_hook(hook, document, workspace,
-            cancelled=lambda: not testing and document.get("event") not in ("tool_after", "app_shutdown")
-            and getattr(app, "_stop_requested", False))
+        options = {}
+        scoped = getattr(app, "_conversation_transition_hook_outcomes", None) is not None
+        terminal_seen = False
+        if scoped:
+            def settled(_result, proof):
+                nonlocal terminal_seen
+                terminal_seen = True
+                if proof["process_started"] and (not proof["process_exited"] or not proof["pipes_settled"]
+                        or proof["kill_requested"] and proof["kill_confirmed"] is not True):
+                    app._conversation_transition_cleanup_error = "Lifecycle hook process or pipe cleanup is unverified"
+            options["on_settled"] = settled
+        try:
+            result = await hooks.run_hook(hook, document, workspace,
+                cancelled=lambda: not testing and document.get("event") not in ("tool_after", "app_shutdown")
+                and getattr(app, "_stop_requested", False), **options)
+        finally:
+            if scoped and not terminal_seen:
+                app._conversation_transition_cleanup_error = "Lifecycle hook did not report terminal cleanup proof"
     app.hook_results[(hook.scope, hook.id)] = result
+    recorder = getattr(app, "_conversation_transition_hook_outcomes", None)
+    if recorder is not None and document.get("event") in ("conversation_leave", "conversation_start"):
+        recorder.append({"event": document["event"], "scope": hook.scope, "id": hook.id,
+                         "conversation_id": document.get("conversation_id"), "allowed": result.allowed,
+                         "executed": not bool(refusal), "exit_code": result.exit_code})
+        if not refusal and result.exit_code is None:
+            app._conversation_transition_cleanup_error = "Lifecycle hook process termination is unverified"
     return result
 
 
@@ -99,7 +124,8 @@ def queue_lifecycle(app, event, conversation_id=None):
         return
     ctx = {**context(app), "conversation_id": conversation_id}
     app._hook_lifecycle.append((event, ctx, snapshot(app)))
-    if app.is_running and not getattr(app, "_hook_shutting_down", False):
+    if (app.is_running and not getattr(app, "_hook_shutting_down", False)
+            and getattr(app, "_conversation_transition_hook_outcomes", None) is None):
         app.run_worker(drain_lifecycle(app), group="hooks", exit_on_error=False)
 
 
@@ -108,7 +134,8 @@ async def drain_lifecycle(app):
         while app._hook_lifecycle:
             event, ctx, state = app._hook_lifecycle.pop(0)
             await dispatch(app, event, {}, captured=ctx, selected=state,
-                           allow_prompt=event != "app_shutdown" and not getattr(app, "_hook_shutting_down", False))
+                           allow_prompt=event != "app_shutdown" and not getattr(app, "_hook_shutting_down", False)
+                           and getattr(app, "_conversation_transition_hook_outcomes", None) is None)
 
 
 def leave_conversation(app):
@@ -168,8 +195,8 @@ def refuse_below_floor(app, item, *, on_refused=None) -> bool:
 
 
 def refuse_engine_admission(app, item, *, on_refused=None) -> bool:
-    from litetui import native_engine
-    why = native_engine.submission_refusal(app)
+    from litetui.backend_transition import submission_refusal
+    why = submission_refusal(app)
     if why is None:
         return False
     if not hasattr(app, "rejected_prompts"):
@@ -318,8 +345,8 @@ def start_prompt(app, item):
 
 
 async def queued_prompt(app):
-    from litetui import native_engine
-    if native_engine.submission_refusal(app):
+    from litetui.backend_transition import submission_refusal
+    if submission_refusal(app):
         return False
     if app._pending_input and app._pending_input[0].get("_codex_entry"):
         return False
@@ -335,7 +362,7 @@ async def queued_prompt(app):
     try:
         return await admit_prompt(app, {**item, "_gui_in_turn": True})
     finally:
-        if native_engine.submission_refusal(app) and not any(held is item for held in app._pending_input):
+        if submission_refusal(app) and not any(held is item for held in app._pending_input):
             app._pending_input.insert(0, item)
 
 

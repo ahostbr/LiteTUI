@@ -320,3 +320,33 @@ fn prestart_refusal_establishes_only_its_captured_execution_origin() {
         assert!(client.accept(frame).is_err(), "{fault}");
     }
 }
+
+#[test]
+fn codex_native_start_requires_the_original_captured_execution_and_mirror_pair() {
+    let event = json!({"type":"native_turn_started","eventVersion":1,"provider":"codex","threadId":"thread-one","turnId":"turn-one"});
+    let mut client = started();
+    assert!(matches!(pair(&mut client,&event),Step::Event(e) if e==event));
+    client.ensure_drained().unwrap();
+    for field in [
+        "session_id",
+        "operation_id",
+        "execution_id",
+        "source",
+        "hook_id",
+    ] {
+        let mut client = started();
+        client.accept(event.clone()).unwrap();
+        let mut f = envelope(&event);
+        f[field] = json!("foreign");
+        assert!(client.accept(f).is_err(), "{field}");
+    }
+    let mut client = connected();
+    client.prompt("prompt-A").unwrap();
+    client.accept(event.clone()).unwrap();
+    assert!(client.accept(envelope(&event)).is_err());
+    let mut client = started();
+    client.accept(event.clone()).unwrap();
+    let mut f = envelope(&event);
+    f.as_object_mut().unwrap().remove("execution_id");
+    assert!(client.accept(f).is_err());
+}

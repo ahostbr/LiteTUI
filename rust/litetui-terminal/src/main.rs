@@ -489,6 +489,13 @@ fn handle_key(
             && matches!(event.code, KeyCode::Char('v' | 'V'))
         {
             let chat = app.live.as_mut().expect("live question");
+            if !chat.quitting && !chat.cancelling() && chat.browser.actions.editing() {
+                match clipboard.read_text() {
+                    Ok(Some(text)) => chat.browser.paste(&text),
+                    Ok(None) => {}
+                    Err(error) => chat.browser.actions.notice = error,
+                }
+            }
             if !chat.quitting && !chat.cancelling() && chat.commands.accepts_paste() {
                 match clipboard.read_text() {
                     Ok(Some(text)) => chat.commands.paste(&text),
@@ -585,6 +592,17 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_browser() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live.as_mut().unwrap().browser.paste(text);
+        }
+        return;
+    }
+
     if app.has_live_engine() {
         return;
     }
@@ -1116,6 +1134,13 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
         println!(
             "Resume saved messages with --resume <conversation> and this --data-root, --backend and --model."
         );
+    }
+    if let Some(message) = app
+        .live
+        .as_ref()
+        .and_then(|chat| chat.conversation_exit_notice.as_ref())
+    {
+        println!("{}", litetui_terminal::live::terminal_text(message));
     }
     outcome
 }
@@ -2619,6 +2644,71 @@ mod tests {
         assert!(!app.has_live_browser());
         assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
         assert_eq!(app.composer.text(), "preserved draft");
+    }
+    #[test]
+    fn conversation_title_editor_routes_clipboard_shift_and_cancel_without_changing_composer() {
+        use litetui_terminal::{
+            conversation_actions as a, conversation_browser as b, live::Observation,
+        };
+        use serde_json::json;
+        let session = "00000000-0000-4000-8000-000000000001";
+        let agent = "11111111-1111-4111-8111-111111111111";
+        let mut app = Demo::live("custom".into(), "model".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("preserved draft");
+        let mut router = KeyRouter::default();
+        plain(&mut app, &mut router, KeyCode::F(8));
+        app.live.as_mut().unwrap().browser.take_intent();
+        let p=b::Page::parse(&json!({"session_id":session,"agent_id":agent,"snapshot":"a".repeat(64),"offset":0,"total":0,"entries":[],"previous_cursor":null,"next_cursor":null}),1,session).unwrap();
+        app.observe_live(Observation::Browser(b::Update::Page(p)))
+            .unwrap();
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Char('e'));
+        assert_eq!(
+            app.live.as_mut().unwrap().browser.take_intent(),
+            Some(b::Intent::Action(a::Intent::Read {
+                action: a::Action::Rename
+            }))
+        );
+        let identity = a::Identity {
+            session: session.into(),
+            agent: agent.into(),
+            backend: "custom".into(),
+            model: "model".into(),
+        };
+        let s=a::Snapshot::parse(&json!({"version":1,"kind":"conversation_transition_snapshot","session_id":session,"agent_id":agent,"backend":"custom","model":"model","snapshot":"a".repeat(64),"current":{"title":"Old","pending":true,"materialized":false},"effects":{"materialize":true,"lifecycle_hooks":true,"provider_cleanup":false},"actions":{"rename":{"eligible":true,"reason":null},"new":{"eligible":true,"reason":null}}}),&identity).unwrap();
+        app.observe_live(Observation::Browser(b::Update::Action(
+            a::Update::Snapshot(Box::new(s)),
+        )))
+        .unwrap();
+        render_footer(&mut app);
+        let mut clipboard = TestClipboard {
+            read: Some("  from\r\nclipboard  ".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 1);
+        render_footer(&mut app);
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('Δ'), KeyModifiers::SHIFT),
+            &mut clipboard,
+        );
+        paste(&mut app, "\nend  ");
+        assert_eq!(
+            app.live.as_ref().unwrap().browser.actions.draft(),
+            "Old  from\r\nclipboard  Δ\nend  "
+        );
+        assert_eq!(app.composer.text(), "preserved draft");
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.live.as_ref().unwrap().browser.actions.owns_input());
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
     }
     #[test]
     fn backend_selector_owns_model_editor_clipboard_confirmation_and_main_draft() {
