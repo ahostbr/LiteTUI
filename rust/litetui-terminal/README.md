@@ -70,6 +70,24 @@ The package contains tracked runtime resources and helper tools. From the reloca
 
 Python/dependencies remain external. Hashes verify the supplied files but do not establish that the executable was built from the recorded source. Clean installation, release provenance and terminal-host acceptance remain pending. The [current plan](../../docs/Plans/rust-tui-port/master.md) records verification and the remaining parity work.
 
+## Backend launch options
+
+Live startup accepts the source's nine backends: custom, lmstudio, llamacpp, ninfer, strata, codex, claude, cline and free. Select the exact model explicitly when changing the checkout launcher's default Claude backend. The portable launcher always requires both backend and model.
+
+For example, connect to an existing LM Studio server:
+
+```powershell
+./open-chat.ps1 -Backend lmstudio -Model '<exact-model-id>' -BaseUrl 'http://127.0.0.1:1234' -ServerMode connect
+```
+
+Local backends default to connect-only. Explicit local auto mode is refused because it can discover or start a server. `-StartServer` (or `-ServerMode start`) and `-LoadModel` forward explicit requests to Python's existing lifecycle and model-loading controls. For llama.cpp, ContextLength also requires explicit server start because applying it rebuilds the router preset; connect-only loading can use an existing preset. NInfer hardware checks, Strata configuration, endpoint/file validation, owned service rules and readiness remain source-owned. An unavailable selected model blocks startup while preserving saved identity.
+
+Both PowerShell launchers forward BaseUrl, ServerMode/StartServer, LoadModel, ContextLength, MaxTokens, ServerExecutable, ModelPath, ServerCommand, ApiKeyEnv, ServerTimeout, CodexEngine and ThinkingLevel. ServerCommand is a JSON argument array, passed without shell evaluation. ApiKeyEnv names an environment variable; it is not a credential value. The direct Rust CLI uses the corresponding hyphenated flags; start-server and load-model are boolean flags.
+
+Fresh generic/local launches use the source's default thinking choice. Fresh Claude/Codex launches retain low unless explicitly overridden. An omitted thinking level on resume preserves the saved choice. CodexEngine accepts native or http; omission preserves the source's flag/environment/saved precedence. An explicitly unsupported level fails instead of selecting another one.
+
+These paths have controlled source/child-process coverage. Installed engines, provider accounts, real inference and terminal-host behavior still require acceptance. Runtime backend switching, full engine/settings controls and catalog presentation remain separate UI work.
+
 ## Open interactive live chat
 
 Run in a terminal:

@@ -30,6 +30,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
     ));
     println!("Real Claude multi-turn data: {}", root.display());
     let mut runtime = Interactive::start(Options {
+        launch: Default::default(),
         resume: None,
         python,
         source,

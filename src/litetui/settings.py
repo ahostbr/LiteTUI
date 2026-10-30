@@ -45,7 +45,7 @@ from litetui.tool_policy import AUTONOMOUS
 
 SETTINGS_FILENAME = "settings.json"
 
-ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+ThinkingLevel = Literal["default", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 # One vocabulary for the footer renderer, keyboard navigation, and settings
 # editor. Authority and plan are intentionally included: they remain always

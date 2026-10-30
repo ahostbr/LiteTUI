@@ -35,7 +35,7 @@ def current_operation(app):
 
 
 OPERATIONS = (
-    "hello", "state", "prompt.submit", "settings.get", "settings.validate", "settings.apply",
+    "hello", "state", "backends.list", "prompt.submit", "settings.get", "settings.validate", "settings.apply",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
@@ -486,6 +486,10 @@ def dispatch(app, cmd):
                 "pending_approvals": [getattr(app, "_gui_approval_details", {}).get(key, {"id": key}) for key, future in getattr(app, "_approval_waiters", {}).items() if not future.done()],
                 "pending_questions": [{"type": "user_input_requested", "id": key, "questions": [s.to_dict() for s in value[2]]} for key, value in getattr(app, "_rpc_pending_asks", {}).items() if not value[0].is_set()],
                 "pending_model_loads": [{"request_id": key, **value["details"]} for key, value in getattr(app, "_gui_model_pending", {}).items()]}
+    if operation == "backends.list":
+        from litetui.backend_catalog import catalog
+
+        return catalog(app, cmd)
     if operation == "thinking.set":
         _idle(app)
         from litetui.thinking_capabilities import set_thinking, thinking_capabilities

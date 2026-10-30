@@ -5546,10 +5546,21 @@ class LiteTUI(App):
             ]
             self.model_rows = {r.key: r for r in rows}
             self.available_models = [r.key for r in rows]
-            if resume_path is not None and self.model_id and self.model_id not in self.available_models:
-                selection = "Requested" if getattr(self, '_cli_initial_model', None) == self.model_id else "Saved"
+            # Refuse before a fallback setter can rewrite owned agent identity.
+            # Current authority wins over an old CLI choice after a legitimate
+            # model change; an unchosen agent still reaches its normal picker.
+            requested = getattr(self, '_user_model_choice', None) or getattr(self, '_cli_initial_model', None)
+            session = getattr(self, '_agent_session', None)
+            if session is not None:
+                requested = session.authority.model
+            elif requested is None and resume_path is not None:
+                requested = self.model_id
+            if requested and requested not in self.available_models:
+                selection = "Requested" if requested in (
+                    getattr(self, '_cli_initial_model', None), getattr(self, '_user_model_choice', None)
+                ) else "Saved"
                 raise llm_backend.BackendError(
-                    f"{selection} model {self.model_id!r} is unavailable on {self.backend.name}. "
+                    f"{selection} model {requested!r} is unavailable on {self.backend.name}. "
                     "Sending is blocked; choose a model with /model or retry /reconnect."
                 )
             if self.available_models and self._agent_session.authority.model is None:

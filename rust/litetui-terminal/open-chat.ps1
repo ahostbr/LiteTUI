@@ -5,10 +5,28 @@ param(
     [string]$Workspace,
     [string]$DataRoot,
     [string]$Resume,
-    [ValidateSet('claude', 'codex')][string]$Backend = 'claude',
-    [string]$Model = 'claude-sonnet-5-5'
+    [string]$Backend = 'claude',
+    [string]$Model = 'claude-sonnet-5-5',
+    [string]$BaseUrl,
+    [ValidateSet('auto', 'connect', 'start')][string]$ServerMode,
+    [switch]$StartServer,
+    [switch]$LoadModel,
+    [UInt64]$ContextLength,
+    [UInt64]$MaxTokens,
+    [string]$ServerExecutable,
+    [string]$ModelPath,
+    [string]$ServerCommand,
+    [string]$ApiKeyEnv,
+    [UInt64]$ServerTimeout,
+    [ValidateSet('native', 'http')][string]$CodexEngine,
+    [string]$ThinkingLevel
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'launch-options.ps1')
+$backendArgs = @(Get-LiteTuiLaunchArguments $PSBoundParameters)
+if ($Backend -ne 'claude' -and -not $PSBoundParameters.ContainsKey('Model')) {
+    throw 'Selecting another backend requires an explicit -Model'
+}
 if ($Tools -eq 'on' -and [string]::IsNullOrWhiteSpace($Workspace)) {
     throw 'Tools on requires -Workspace naming the directory to work in'
 }
@@ -35,5 +53,5 @@ $root = if ([string]::IsNullOrWhiteSpace($DataRoot)) {
     [System.IO.Path]::GetFullPath($DataRoot)
 }
 Write-Host "Live conversation data (retained): $root"
-& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 --tools $Tools @profileArgs @workspaceArgs @resumeArgs
+& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 --tools $Tools @profileArgs @workspaceArgs @resumeArgs @backendArgs
 if ($LASTEXITCODE -ne 0) { throw "Live runtime failed: $LASTEXITCODE (data retained at $root)" }

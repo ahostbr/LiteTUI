@@ -97,7 +97,7 @@ def _resolve_reasoning_effort(
     contains "qwen3.8-27b", so a substring rule would allowlist the very model
     that drops every level.
     """
-    if not level:
+    if not level or level == "default":
         return None
     if level == "off":
         return "none"

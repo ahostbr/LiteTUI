@@ -88,6 +88,8 @@ class LaunchOptions:
         if self.context_length:
             if backend in ('llamacpp', 'lmstudio') and not self.load_model:
                 raise ValueError('--context-length requires --load-model for llama.cpp/LM Studio; changing context reloads the model')
+            if backend == 'llamacpp' and (self.server_mode == 'connect' or (self.base_url and self.server_mode != 'start')):
+                raise ValueError('llama.cpp context changes require --start-server to permit a preset rebuild')
             if backend in ('ninfer', 'strata') and self.server_mode != 'start':
                 # Names the backend that was asked for: a Strata refusal never says NInfer (T893).
                 raise ValueError(f'{_ENGINE_LABELS[backend]} context is fixed at startup; use --start-server --context-length')
@@ -202,6 +204,10 @@ async def _prepare(app):
         return await backend.ensure_running()
     if options is None:
         return await backend.ensure_running()
+    # Bind no-start authority to the backend itself so reconnect/recovery and
+    # load-triggered preset rebuilds cannot bypass a launch-only health check.
+    if backend.name == 'llamacpp' and (options.server_mode == 'connect' or (options.base_url and options.server_mode != 'start')):
+        backend.require_existing_server()
     if getattr(app, '_launch_prepared', False):
         return await backend.ensure_running()
     if options.server_mode == 'start':

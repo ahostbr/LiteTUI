@@ -3,14 +3,27 @@
 param(
     [Parameter(Mandatory, ParameterSetName='Verify')][switch]$VerifyOnly,
     [Parameter(Mandatory, ParameterSetName='Run')][string]$Python,
-    [Parameter(Mandatory, ParameterSetName='Run')][ValidateSet('claude', 'codex')][string]$Backend,
+    [Parameter(Mandatory, ParameterSetName='Run')][string]$Backend,
     [Parameter(Mandatory, ParameterSetName='Run')][string]$Model,
     [Parameter(ParameterSetName='Run')][ValidateSet('off', 'on')][string]$Tools = 'off',
     [Parameter(ParameterSetName='Run')][ValidateSet('strict', 'interactive', 'autonomous')][string]$ToolProfile,
     [Parameter(ParameterSetName='Run')][string]$Workspace,
     [Parameter(ParameterSetName='Run')][string]$DataRoot,
     [Parameter(ParameterSetName='Run')][string]$Resume,
-    [Parameter(ParameterSetName='Run')][ValidateRange(1,600)][int]$Timeout = 180
+    [Parameter(ParameterSetName='Run')][ValidateRange(1,600)][int]$Timeout = 180,
+    [Parameter(ParameterSetName='Run')][string]$BaseUrl,
+    [Parameter(ParameterSetName='Run')][ValidateSet('auto', 'connect', 'start')][string]$ServerMode,
+    [Parameter(ParameterSetName='Run')][switch]$StartServer,
+    [Parameter(ParameterSetName='Run')][switch]$LoadModel,
+    [Parameter(ParameterSetName='Run')][UInt64]$ContextLength,
+    [Parameter(ParameterSetName='Run')][UInt64]$MaxTokens,
+    [Parameter(ParameterSetName='Run')][string]$ServerExecutable,
+    [Parameter(ParameterSetName='Run')][string]$ModelPath,
+    [Parameter(ParameterSetName='Run')][string]$ServerCommand,
+    [Parameter(ParameterSetName='Run')][string]$ApiKeyEnv,
+    [Parameter(ParameterSetName='Run')][UInt64]$ServerTimeout,
+    [Parameter(ParameterSetName='Run')][ValidateSet('native', 'http')][string]$CodexEngine,
+    [Parameter(ParameterSetName='Run')][string]$ThinkingLevel
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -104,12 +117,14 @@ while ($directories.Count -gt 0) {
         }
     }
 }
-foreach ($required in @('launch.ps1', 'litetui-rs.exe', 'runtime/src/litetui/cli.py',
+foreach ($required in @('launch.ps1', 'launch-options.ps1', 'litetui-rs.exe', 'runtime/src/litetui/cli.py',
                         'runtime/src/litetui/app.py', 'runtime/pyproject.toml', 'runtime/uv.lock')) {
     if (-not $expected.Contains($required)) { throw "Missing package requirement: $required" }
 }
 Write-Host "Verified $($files.Count) package files; source $($manifest.source.base_revision); working tree changes: $($manifest.source.working_tree_changes)"
 if ($VerifyOnly) { return }
+. (Join-Path $package 'launch-options.ps1')
+$backendArgs = @(Get-LiteTuiLaunchArguments $PSBoundParameters)
 
 if ([string]::IsNullOrWhiteSpace($Model)) { throw 'Model must be selected explicitly' }
 $pythonFile = Get-Item -LiteralPath $Python -Force
@@ -141,7 +156,7 @@ $source = Join-Path $package 'runtime'
 $executable = Join-Path $package 'litetui-rs.exe'
 $launchArgs = @('--interactive', '--python', $pythonFile.FullName, '--source', $source,
     '--data-root', $root, '--backend', $Backend, '--model', $Model, '--timeout', [string]$Timeout,
-    '--tools', $Tools) + $profileArgs + $workspaceArgs + $resumeArgs
+    '--tools', $Tools) + $profileArgs + $workspaceArgs + $resumeArgs + $backendArgs
 Write-Host "Live conversation data (retained): $root"
 $previousBytecode = $env:PYTHONDONTWRITEBYTECODE
 try {

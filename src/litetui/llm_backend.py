@@ -978,6 +978,7 @@ class LlamaCppBackend(_VramGate):
         self._owned: _Owned | None = None
         self._rows: list[ModelRow] = []
         self._shape: str | None = None      # probed per connect, see _probe_shape
+        self._connect_only = False
 
     # -- identity ---------------------------------------------------------
 
@@ -1111,6 +1112,17 @@ class LlamaCppBackend(_VramGate):
 
     # -- lifecycle --------------------------------------------------------
 
+    def require_existing_server(self) -> None:
+        """Keep this invocation on its configured service, including recovery."""
+        self._connect_only = True
+
+    def _refuse_start_if_connect_only(self) -> None:
+        if self._connect_only:
+            raise BackendError(
+                f"Connect-only mode for {self._host}; no fallback or server start was used. "
+                "Use a fresh --server-mode start launch to start or replace the server."
+            )
+
     async def ensure_running(self) -> str:
         return await asyncio.to_thread(self._ensure_running_sync)
 
@@ -1176,6 +1188,7 @@ class LlamaCppBackend(_VramGate):
             if self._probe_shape() == _SHAPE_SINGLE:
                 self._attached_host = self._host
             return "ok"
+        self._refuse_start_if_connect_only()
         for cand in self._settings.llama_attach_hosts:
             cand = cand.rstrip("/")
             if _healthy(cand):
@@ -1185,6 +1198,7 @@ class LlamaCppBackend(_VramGate):
         return self._spawn(preset=preset) if preset is not None else self._spawn()
 
     def _spawn(self, *, preset: Path | None = None) -> str:
+        self._refuse_start_if_connect_only()
         binary = llama_executable(self._settings)
         if not binary.exists():
             raise BackendError(
@@ -1763,6 +1777,7 @@ class LlamaCppBackend(_VramGate):
         self._request_load_sync(key)
 
     def _refuse_preset_if_attached(self) -> None:
+        self._refuse_start_if_connect_only()
         # 🔴 THE INI BELONGS TO WHOEVER SPAWNED THE ROUTER. Regenerating it
         # while attached would rewrite another app's preset and then restart
         # its process — the precise accident `router.json` exists to prevent.

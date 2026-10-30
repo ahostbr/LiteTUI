@@ -131,7 +131,7 @@ fn terminal_controls_are_visible_not_executable() {
     );
 }
 #[test]
-fn options_require_explicit_frontier_route_and_bounded_deadline() {
+fn options_require_a_canonical_backend_and_bounded_deadline() {
     let args: Vec<String> = [
         "--python",
         "python",
@@ -150,11 +150,16 @@ fn options_require_explicit_frontier_route_and_bounded_deadline() {
     .map(String::from)
     .collect();
     assert!(Options::parse(&args).is_ok());
-    for backend in ["lmstudio", "llamacpp", "ninfer"] {
+    for backend in litetui_terminal::runtime_launch::Backend::ALL {
         let mut args = args.clone();
-        args[7] = backend.into();
-        assert!(Options::parse(&args).is_err());
+        args[7] = backend.as_str().into();
+        let options = Options::parse(&args).unwrap();
+        assert_eq!(options.backend, backend.as_str());
+        assert!(!options.launch.load_model);
     }
+    let mut unknown = args.clone();
+    unknown[7] = "invented-backend".into();
+    assert!(Options::parse(&unknown).is_err());
     let mut duplicate = args.clone();
     duplicate.extend(["--prompt".into(), "again".into()]);
     assert!(Options::parse(&duplicate).is_err());
@@ -473,4 +478,71 @@ fn prompt_identities_are_fresh_across_reconstructed_runtime_instances() {
         assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()));
         assert!(ids.insert(id));
     }
+}
+
+#[test]
+fn launch_flags_preserve_prompt_values_and_remain_invocation_only_options() {
+    let args = [
+        "--python",
+        "python",
+        "--source",
+        "source",
+        "--data-root",
+        "data",
+        "--backend",
+        "custom",
+        "--model",
+        "chosen",
+        "--prompt",
+        "--load-model",
+        "--host",
+        "http://localhost:45123/v1",
+        "--reasoning-effort",
+        "default",
+        "--max-tokens",
+        "17",
+        "--api-key-env",
+        "FIXTURE_KEY",
+    ]
+    .map(str::to_owned);
+    let options = Options::parse(&args).unwrap();
+    assert_eq!(options.prompt, "--load-model");
+    assert!(!options.launch.load_model);
+    assert_eq!(options.launch.thinking_level.as_deref(), Some("default"));
+    assert_eq!(options.launch.max_tokens, Some(17));
+    assert_eq!(options.launch.api_key_env.as_deref(), Some("FIXTURE_KEY"));
+    assert_eq!(
+        options.launch.base_url.as_deref(),
+        Some("http://localhost:45123/v1")
+    );
+    let mut invalid = args.to_vec();
+    invalid.extend(["--server-mode".into(), "auto".into()]);
+    assert!(Options::parse(&invalid).is_err());
+}
+
+#[test]
+fn programmatic_launch_intent_is_revalidated_before_paths_or_persistence() {
+    use litetui_terminal::{live::Interactive, runtime_launch::ServerMode};
+    let root = std::env::temp_dir().join(format!("litetui-invalid-launch-{}", std::process::id()));
+    assert!(!root.exists());
+    let args = vec![
+        "--python".into(),
+        "missing-python".into(),
+        "--source".into(),
+        "missing-source".into(),
+        "--data-root".into(),
+        root.to_string_lossy().into_owned(),
+        "--backend".into(),
+        "custom".into(),
+        "--model".into(),
+        "chosen".into(),
+        "--tool-profile".into(),
+        "strict".into(),
+    ];
+    let mut options = Options::parse(&args).unwrap();
+    options.launch.server_mode = Some(ServerMode::Auto);
+    let runtime = Interactive::start(options);
+    let error = runtime.with_cleanup(|_| Ok(())).unwrap_err();
+    assert!(error.to_string().contains("Local auto"), "{error}");
+    assert!(!root.exists());
 }

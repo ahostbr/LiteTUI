@@ -100,11 +100,17 @@ async def test_load_precedes_ready(backend):
 
 @pytest.mark.asyncio
 async def test_explicit_dead_llama_endpoint_never_spawns(monkeypatch):
-    monkeypatch.setattr('litetui.llm_backend._healthy', lambda host: False)
-    engine = SimpleNamespace(name='llamacpp', host=lambda: 'http://127.0.0.1:1', ensure_running=AsyncMock())
+    from unittest.mock import Mock
+
+    calls = []
+    monkeypatch.setattr('litetui.llm_backend._healthy', lambda host: calls.append('health') or False)
+    engine = SimpleNamespace(name='llamacpp', host=lambda: 'http://127.0.0.1:1', ensure_running=AsyncMock(),
+                             require_existing_server=Mock(side_effect=lambda: calls.append('restrict')))
     app = SimpleNamespace(backend=engine, _launch_options=LaunchOptions(base_url=engine.host()))
     with pytest.raises(BackendError, match='no fallback'):
         await prepare(app)
+    engine.require_existing_server.assert_called_once_with()
+    assert calls == ['restrict', 'health']
     engine.ensure_running.assert_not_called()
 
 

@@ -12,6 +12,8 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 ## Current implementation checkpoint - 2026-10-29
 
+Startup now routes all nine source backends through explicit launch options, persistent connect-only restrictions and verified source-owned model/profile/thinking state. A bounded source catalog separates configuration from effective engine facts. Both launchers share exact forwarding. Native runtime backend/settings controls are still pending; the latest master checkpoint records validation and remaining full-parity gates.
+
 F8 now pages the owned source catalog and preflights selected history without mutation before guarded open, connected history, fresh state/policy and held-input readback. The draft survives, and oversized previews leave the original session usable. Independent review passed. Larger-history paging and remaining session actions are still open; see the newest master checkpoint for verification and limits.
 
 Portable staging now verifies a supplied executable and tracked runtime/resources with exact hashes, preserves external Python and retained data, and keeps helper outputs outside the immutable package. Both alias directions and PowerShell screenshot defaults are covered; 33 staging and 47 helper tests passed with independent review signoff. Full installation/provenance/host/resource acceptance remains pending. See the newest master checkpoint and remaining-parity.md.

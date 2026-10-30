@@ -123,11 +123,20 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         # T558-B: `tool_profile` on the prompt was DEAD - the host had been
         # sending it on every turn since the adapter was written and nothing
         # here ever read it, so authority was whatever the spawn flag said and
-        # a mid-session change did nothing until restart. Applied through the
-        # SAME setter shift+tab uses, so there is one path and not two.
+        # a mid-session change did nothing until restart. Changes use the same
+        # setter as shift+tab. An exact valid echo is not a new authority choice:
+        # preserve the launch override and avoid persisting unrelated settings.
         profile = cmd.get("tool_profile")
         if isinstance(profile, str) and profile:
-            if not app.set_tool_profile(profile, announce=False):
+            from litetui import seat_authority
+            from litetui.tool_policy import PROFILES
+
+            # Active can be a previous narrowed/elevated turn. The next attended
+            # turn uses the seat choice, so both must agree before skipping it.
+            echo = (profile in PROFILES
+                    and profile == getattr(app, "_active_tool_profile", None)
+                    and profile == seat_authority.seat_profile(app))
+            if not echo and not app.set_tool_profile(profile, announce=False):
                 # Refused rather than ignored: a caller that named a profile
                 # this build does not have is asking for authority it will not
                 # get, and a silent turn under the OLD authority is the wrong

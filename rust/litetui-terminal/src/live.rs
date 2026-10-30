@@ -65,6 +65,7 @@ pub struct Options {
     pub tool_profile: Option<crate::tool_mode::Profile>,
     pub workspace: Option<PathBuf>,
     pub resume: Option<String>,
+    pub launch: crate::runtime_launch::LaunchOptions,
 }
 impl Options {
     /// Required at the runtime boundary, before filesystem writes or child creation.
@@ -73,6 +74,7 @@ impl Options {
             "Select a tool profile before starting Python; use --tool-profile strict|interactive|autonomous"))
     }
     pub fn parse(args: &[String]) -> io::Result<Self> {
+        let (launch, args) = crate::runtime_launch::LaunchOptions::extract(args)?;
         let mut fields = std::collections::HashMap::new();
         for pair in args.chunks(2) {
             if pair.len() != 2
@@ -137,10 +139,10 @@ impl Options {
         if prompt.len() > 65536 {
             return Err(io::Error::other("Prompt exceeds 64 KiB live limit"));
         }
-        if !(1..=600).contains(&seconds) || !matches!(backend.as_str(), "claude" | "codex") {
-            return Err(io::Error::other(
-                "Live scope requires claude/codex and timeout 1..600 seconds",
-            ));
+        let selected_backend = crate::runtime_launch::Backend::parse(&backend)?;
+        launch.validate(selected_backend, &model)?;
+        if !(1..=600).contains(&seconds) {
+            return Err(io::Error::other("Live timeout must be 1..600 seconds"));
         }
         Ok(Self {
             python,
@@ -154,6 +156,7 @@ impl Options {
             tool_profile,
             workspace,
             resume,
+            launch,
         })
     }
 }
@@ -868,6 +871,13 @@ fn reader(mut input: impl Read + Send + 'static, stdout: bool, tx: mpsc::SyncSen
 }
 
 fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
+    // Validate direct Options construction as well as CLI parsing, before any
+    // data root, settings, executable lookup or child process side effects.
+    let backend = crate::runtime_launch::Backend::parse(&options.backend)?;
+    let launch_args = options.launch.python_args(backend, &options.model)?;
+    let thinking_args = options
+        .launch
+        .thinking_args(backend, options.resume.is_some());
     let profile = options.selected_profile()?;
     let source = options.source.canonicalize()?;
     let python = options.python.canonicalize()?;
@@ -951,9 +961,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         .stderr(Stdio::piped());
     if let Some(id) = &options.resume {
         command.args(["--convo", id]);
-    } else {
-        command.args(["--thinking-level", "low"]);
     }
+    command.args(launch_args).args(thinking_args);
     let (job, mut child) = crate::live_process::Job::spawn(&mut command)?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");

@@ -33,7 +33,7 @@ def project(tmp_path):
     repo = tmp_path / "source tree"
     root = repo / "rust/litetui-terminal"
     root.mkdir(parents=True)
-    for name in ("stage-package.ps1", "package-launch.ps1"):
+    for name in ("stage-package.ps1", "package-launch.ps1", "launch-options.ps1"):
         shutil.copyfile(CRATE / name, root / name)
     files = (
         "src/litetui/__init__.py", "src/litetui/cli.py", "src/litetui/app.py",
@@ -359,3 +359,77 @@ def test_actual_runtime_resources_and_owned_construction_survive_packaging(proje
                 cwd=checks, env=environment))
     checked(powershell(package / "launch.ps1", "-VerifyOnly"))
     assert not list(runtime.rglob("__pycache__"))
+
+
+@pytest.mark.parametrize("launcher_kind", ["package", "checkout"])
+@pytest.mark.parametrize("backend, extra", [
+    ("custom", {"BaseUrl": "http://127.0.0.1:8765/v1", "StartServer": True,
+                "ServerCommand": '["C:/program files/server.exe", "literal $(no-code) 雪", "{model}"]',
+                "ModelPath": "C:/models/model file", "ContextLength": 8192, "MaxTokens": 123,
+                "ApiKeyEnv": "FIXTURE_KEY_NAME", "ServerTimeout": 900, "ThinkingLevel": "default"}),
+    ("llamacpp", {"BaseUrl": "http://127.0.0.1:8765", "ServerMode": "start", "LoadModel": True,
+                  "ServerExecutable": "C:/runtime/llama server.exe", "ModelPath": "C:/models/雪.gguf",
+                  "ContextLength": 4096}),
+    ("codex", {"CodexEngine": "http", "ThinkingLevel": "high"}),
+    ("strata", {"StartServer": False, "LoadModel": False, "ThinkingLevel": "default"}),
+])
+def test_both_launchers_forward_explicit_backend_options_without_evaluation(project, tmp_path, launcher_kind, backend, extra):
+    _repo, root, _exe, _package = project
+    if launcher_kind == "package":
+        launcher = stage(project) / "launch.ps1"
+        wrapper = launch_wrapper(launcher.parent, tmp_path)
+    else:
+        launcher = root / "open-chat.ps1"
+        text = (CRATE / "open-chat.ps1").read_text(encoding="utf-8")
+        assert text.count("& cargo build") == 1
+        boundary = '& "$PSScriptRoot/target/debug/litetui-rs.exe"'
+        assert text.count(boundary) == 1
+        launcher.write_text(text.replace("& cargo build", "& Test-RustCheckoutBuild")
+                            .replace(boundary, "& Test-RustCheckoutLaunch"), encoding="utf-8")
+        wrapper = tmp_path / "checkout-wrapper.ps1"
+        wrapper.write_text(
+            "param([string]$Launcher,[string]$Capture,[string]$Values)\n"
+            "$ErrorActionPreference='Stop'\n"
+            "function Test-RustCheckoutBuild { $global:LASTEXITCODE=0 }\n"
+            "function Test-RustCheckoutLaunch {\n"
+            " [IO.File]::WriteAllText($Capture,(ConvertTo-Json -InputObject @($args) -Compress))\n"
+            " $global:LASTEXITCODE=0\n}\n"
+            "$options=Get-Content -LiteralPath $Values -Raw | ConvertFrom-Json -AsHashtable\n"
+            "& $Launcher @options\n", encoding="utf-8")
+    capture, values = tmp_path / "backend-args.json", tmp_path / "backend-values.json"
+    options = {"Python": sys.executable, "Backend": backend, "Model": "selected model", **extra}
+    values.write_text(json.dumps(options), encoding="utf-8")
+    checked(powershell(wrapper, "-Launcher", launcher, "-Capture", capture, "-Values", values))
+    args = json.loads(capture.read_text(encoding="utf-8"))
+    assert args[args.index("--backend") + 1] == backend
+    fields = {"BaseUrl": "--base-url", "ServerMode": "--server-mode", "ServerCommand": "--server-command",
+              "ModelPath": "--model-path", "ContextLength": "--context-length", "MaxTokens": "--max-tokens",
+              "ApiKeyEnv": "--api-key-env", "ServerTimeout": "--server-timeout", "ThinkingLevel": "--thinking-level",
+              "ServerExecutable": "--server-executable", "CodexEngine": "--codex-engine"}
+    for name, flag in fields.items():
+        assert (flag in args) is (name in extra)
+        if name in extra:
+            assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(extra[name])
+    assert ("--start-server" in args) is bool(extra.get("StartServer"))
+    assert ("--load-model" in args) is bool(extra.get("LoadModel"))
+
+
+def test_checkout_requires_model_when_backend_changes_before_build(project, tmp_path):
+    _repo, root, _exe, _package = project
+    script = root / "open-chat.ps1"
+    text = (CRATE / "open-chat.ps1").read_text(encoding="utf-8")
+    script.write_text(text.replace("& cargo build", "throw 'unexpected build'; & cargo build"), encoding="utf-8")
+    result = powershell(script, "-Backend", "custom")
+    assert result.returncode != 0 and "requires an explicit -Model" in result.stderr
+    assert "unexpected build" not in result.stderr
+
+
+def test_conflicting_server_modes_are_rejected_before_process_boundary(project, tmp_path):
+    package = stage(project)
+    wrapper = launch_wrapper(package, tmp_path)
+    capture, values = tmp_path / "args.json", tmp_path / "values.json"
+    values.write_text(json.dumps({"Python": sys.executable, "Backend": "custom", "Model": "explicit-model",
+                                 "StartServer": True, "ServerMode": "connect"}))
+    result = powershell(wrapper, "-Launcher", package / "launch.ps1", "-Capture", capture, "-Values", values)
+    assert result.returncode != 0 and not capture.exists()
+    assert "Choose -StartServer or -ServerMode" in result.stderr

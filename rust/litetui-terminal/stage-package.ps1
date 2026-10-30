@@ -41,13 +41,13 @@ $revision = (Invoke-GitText @('rev-parse', 'HEAD')).Trim()
 if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'Cannot identify source revision' }
 $paths = @('src/litetui', 'tools/chrome-bridge', 'tools/pccontrol', 'tools/convo_search.py',
            'prompts', 'pyproject.toml', 'uv.lock', 'README.md', 'LICENSE', 'LICENSE.txt',
-           'rust/litetui-terminal/package-launch.ps1')
+           'rust/litetui-terminal/package-launch.ps1', 'rust/litetui-terminal/launch-options.ps1')
 $tracked = (Invoke-GitText (@('ls-files', '-z', '--') + $paths)).Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)
 $required = @('src/litetui/cli.py', 'src/litetui/app.py', 'src/litetui/schemas/__init__.py',
               'src/litetui/prompts/systemprompt.md', 'tools/chrome-bridge/bridge.py',
               'tools/pccontrol/pccontrol.py', 'tools/pccontrol/screenshot.ps1',
               'tools/convo_search.py', 'pyproject.toml', 'uv.lock',
-              'rust/litetui-terminal/package-launch.ps1')
+              'rust/litetui-terminal/package-launch.ps1', 'rust/litetui-terminal/launch-options.ps1')
 foreach ($path in $required) {
     if ($tracked -cnotcontains $path) { throw "Required runtime file is not tracked: $path" }
 }
@@ -59,6 +59,8 @@ foreach ($relative in ($tracked | Sort-Object -CaseSensitive)) {
     $resource = Assert-RegularSource $relative
     $output = if ($relative -ceq 'rust/litetui-terminal/package-launch.ps1') {
         'launch.ps1'
+    } elseif ($relative -ceq 'rust/litetui-terminal/launch-options.ps1') {
+        'launch-options.ps1'
     } else { 'runtime/' + $relative }
     $resources += [pscustomobject]@{ Source=$resource; Path=$output; Hash=(Get-FileHash -LiteralPath $resource -Algorithm SHA256).Hash.ToLowerInvariant() }
 }

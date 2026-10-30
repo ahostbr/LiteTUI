@@ -14,7 +14,7 @@ approvals/questions, composer/transcript, model/thinking controls, static themes
 exact-UUID resume, held-input recovery and bounded F8 session browsing with preflight. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
-Current anchors: live.rs Options::parse accepts Claude/Codex only; live_chat.rs
+Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs
 Chat::submit explicitly refuses slash commands; management.rs handles startup,
 model/thinking and restored input; resume.rs still has bounded saved-history projection; conversation_browser.rs pages
 the catalog and validates history before opening. Source gui_rpc.py OPERATIONS is authoritative.
@@ -25,7 +25,7 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
 | Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight is implemented; expand history and session actions next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
-| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Source-derived startup/event contracts before lifting the two-backend gate. Custom, LM Studio, llama.cpp, NInfer, Strata, Cline and Free remain. Distinguish owned engine processes from shared services. |
+| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Runtime backend switching, native engine/settings controls and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | Native requested/effective/reconnect/restart UI. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
 | Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Slash/palette/skills routing through source handlers. Structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
@@ -39,8 +39,9 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 
 ## Parallel waves
 
-1. Current: bounded source session browsing, native open/readback integration and
-   controlled-process evidence; remaining backend startup options and fixtures.
+1. Current: bounded owned browser and canonical backend startup are implemented
+   with controlled-process evidence. Continue native history/session actions,
+   backend/settings/engine controls and the independent screen/plugin lanes.
    Portable package staging is reviewed; release acceptance is still open.
 2. Disjoint contract/view lanes: sessions; settings/backends/engines;
    jobs/tasks/goals/calendar; plugins/commands; hooks/MCP; memory/agents/diagnostics;
