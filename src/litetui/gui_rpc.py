@@ -53,7 +53,7 @@ OPERATIONS = (
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
     "settings.native_snapshot", "settings.native_validate", "settings.native_save",
-    "commands.list", "commands.resolve",
+    "commands.list", "commands.resolve", "skills.native_prepare",
     "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile", "restored_input.resolve",
 )
 
@@ -782,6 +782,10 @@ async def _async_dispatch(app, cmd):
         from litetui import command_surface
 
         return command_surface.catalog(app, cmd) if operation == "gui.commands.list" else command_surface.resolve(app, cmd)
+    if operation == "gui.skills.native_prepare":
+        from litetui import native_skills
+
+        return native_skills.prepare(app, cmd)
     if operation in {"gui.settings.native_snapshot", "gui.settings.native_validate", "gui.settings.native_save"}:
         from litetui import native_settings
 

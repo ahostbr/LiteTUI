@@ -77,6 +77,7 @@ pub struct Chat {
     pub questions: crate::questions::View,
     pub controls: crate::model_controls::View,
     pub queue: crate::restored_queue::View,
+    pub commands: crate::command_palette::View,
     pub settings: crate::settings_view::View,
     pub backend_controls: crate::backend_controls::View,
     pub browser: crate::conversation_browser::View,
@@ -108,6 +109,7 @@ impl Chat {
             questions: crate::questions::View::default(),
             controls: crate::model_controls::View::default(),
             queue: crate::restored_queue::View::default(),
+            commands: crate::command_palette::View::default(),
             settings: crate::settings_view::View::default(),
             backend_controls: crate::backend_controls::View::default(),
             browser: crate::conversation_browser::View::default(),
@@ -133,6 +135,7 @@ impl Chat {
             || self.quitting
             || self.controls.owns_input()
             || self.queue.owns_input()
+            || self.commands.owns_input()
             || self.settings.owns_input()
             || self.backend_controls.owns_input()
             || self.browser.owns_input()
@@ -147,7 +150,7 @@ impl Chat {
             || (!recovered && prompt.trim_start().starts_with('/'))
         {
             return Err(io::Error::other(
-                "Enter ordinary prompt text; slash commands are not wired yet (64 KiB maximum)",
+                "Enter ordinary prompt text; use the source command palette for slash commands (64 KiB maximum)",
             ));
         }
         let units = self.prompt_budget(prompt)?;
@@ -227,6 +230,7 @@ impl Chat {
     ) -> io::Result<()> {
         let prompt = self.queue.selection_text(intent)?.to_owned();
         self.queue.finish();
+        self.commands.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -279,6 +283,41 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::Commands(update) => {
+                use crate::command_palette::Update;
+                match update {
+                    Update::Prepared { catalog, prepared } => {
+                        match self.prompt_budget(&prepared.prompt) {
+                            Ok(_) => self
+                                .commands
+                                .observe(Update::Prepared { catalog, prepared }),
+                            Err(error) => {
+                                self.commands.observe(Update::Rejected(error.to_string()))
+                            }
+                        }
+                        self.notice = self.commands.notice.clone();
+                    }
+                    Update::Verified(prepared) => {
+                        if !self.commands.accepts_verified(&prepared) {
+                            self.commands.settle_cancelled();
+                            return Ok(());
+                        }
+                        self.commands.close();
+                        self.commands.waiting = false;
+                        if let Err(error) = self.submit(&prepared.prompt) {
+                            self.commands.open = true;
+                            self.commands.observe(Update::Rejected(error.to_string()));
+                            self.notice = self.commands.notice.clone();
+                        } else {
+                            self.commands.prepared = None;
+                        }
+                    }
+                    other => {
+                        self.commands.observe(other);
+                        self.notice = self.commands.notice.clone();
+                    }
+                }
+            }
             Observation::Settings(update) => {
                 self.settings.observe(update);
                 self.notice = self.settings.notice.clone();
@@ -624,6 +663,7 @@ impl Chat {
     pub fn begin_quit(&mut self) {
         self.controls.finish();
         self.queue.finish();
+        self.commands.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -633,6 +673,7 @@ impl Chat {
     pub fn finish(&mut self, failure: Option<String>) {
         self.controls.finish();
         self.queue.finish();
+        self.commands.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();

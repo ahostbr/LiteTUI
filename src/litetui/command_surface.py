@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 from litetui import backend_catalog, plugins
 from litetui.agent_store import valid_id
@@ -23,6 +24,7 @@ _ROUTES = {
     ("convo", "/convos"): "conversations",
     ("convo", "/resume"): "conversations",
     ("settings-ui", "/settings"): "settings",
+    ("skills", "/skills"): "skills",
 }
 
 
@@ -63,10 +65,24 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "help": _text(help_text, 4096, empty=True), "group": _text(group, 128),
         "group_label": _text(plugins.PALETTE_GROUP_LABELS.get(group, group.title()), 256),
         "order": _order(order), "tokens": tokens, "palette": palette,
-        "native_action": action, "accepts_arguments": False,
+        "native_action": action, "accepts_arguments": action == "skill_prepare",
         "unavailable_reason": "" if action else "This contribution has no native action adapter yet.",
     }
     row["id"] = _digest([binding, row])
+    return row
+
+
+def _skill_binding(skill):
+    return [id(skill), _text(str(skill.path), 4096), _text(skill.source, 256),
+            _text(str(Path(skill.path).absolute()), 4096)]
+
+
+def _skill_row(skill):
+    name = _text(skill.name, 128)
+    binding = _skill_binding(skill)
+    row = _row("skill", "skills", name, skill.description or "", "tools", 500,
+               ["/" + name], binding, "skill_prepare", False)
+    row["source"] = _text(skill.source, 256)
     return row
 
 
@@ -88,7 +104,7 @@ def _collect(app):
         tokens = [_token(token) for token in entry.tokens]
         if len(set(tokens)) != len(tokens) or key not in tokens or any(commands.get(token) is not entry for token in tokens):
             raise ValueError("Command aliases disagree with their owner")
-        reserved.update(token[1:].casefold() for token in tokens if token.startswith("/"))
+        reserved.update(token[1:].lower() for token in tokens if token.startswith("/"))
         if id(entry) in seen:
             continue
         seen.add(id(entry))
@@ -107,30 +123,26 @@ def _collect(app):
         row["tag"] = _text(palette_entry.tag, 256, empty=True)
         rows.append(row)
     for skill in app.skills:
-        name = _text(skill.name, 128)
-        if name.casefold() in reserved:
-            continue
-        binding = [id(skill), str(skill.path), skill.source]
-        bindings.append(binding)
-        row = _row("skill", "skills", name, skill.description or "", "tools", 500,
-                   ["/" + name], binding, None, False)
-        row["source"] = _text(skill.source, 256)
-        row["unavailable_reason"] = "Skill invocation requires a prepared-prompt adapter."
-        rows.append(row)
+        bindings.append(_skill_binding(skill))
+        rows.append(_skill_row(skill))
     if len(rows) > MAX_ROWS or len({row["id"] for row in rows}) != len(rows):
         raise ValueError("Command inventory is oversized or has duplicate identities")
     palette_rows = sorted((row for row in rows if row["palette"]),
                           key=lambda row: plugins.palette_title_key(row["title"]))
     completion_rows = sorted((row for row in rows if row["kind"] == "command"),
                              key=lambda row: plugins.palette_sort_key(row["group"], row["order"], row["tokens"][0].lstrip("/")))
-    completion_rows += sorted((row for row in rows if row["kind"] == "skill"), key=lambda row: row["title"].lower())
+    skill_rows = sorted((row for row in rows if row["kind"] == "skill"), key=lambda row: row["title"].lower())
+    completion_rows += [row for row in skill_rows if row["title"].lower() not in reserved]
     for row in rows:
         row["palette_order"] = None
         row["completion_order"] = None
+        row["skill_order"] = None
     for index, row in enumerate(palette_rows):
         row["palette_order"] = index
     for index, row in enumerate(completion_rows):
         row["completion_order"] = index
+    for index, row in enumerate(skill_rows):
+        row["skill_order"] = index
     return registry, rows, bindings
 
 
@@ -157,20 +169,63 @@ def catalog(app, cmd):
     return result
 
 
-def resolve(app, cmd):
-    """Resolve a selected row to a native control; never execute source handlers."""
+def _selection(app, cmd):
     if type(cmd.get("version")) is not int or cmd["version"] != VERSION:
         raise ValueError("Command routing requires version 1")
     current = catalog(app, cmd)
     if cmd.get("agent_id") != current["agent_id"] or cmd.get("snapshot") != current["snapshot"]:
         raise ValueError("Command selection is stale or belongs to another agent; refresh")
-    if cmd.get("arguments", "") != "":
-        raise ValueError("This native control adapter does not accept command arguments")
-    selected = next((row for row in current["entries"] if row["id"] == cmd.get("row_id")), None)
-    if selected is None:
-        raise ValueError("Command selection is missing from the current registry")
+    return current
+
+
+def resolve(app, cmd):
+    """Resolve exact rows or source-parsed text; never execute registered handlers."""
+    current = _selection(app, cmd)
+    raw = "command" in cmd
+    if raw:
+        if "row_id" in cmd or "arguments" in cmd:
+            raise ValueError("Raw command and selected row modes cannot be combined")
+        original = _text(cmd["command"], 65536)
+        parts = original.split(maxsplit=1)
+        if not parts or not parts[0].startswith("/"):
+            raise ValueError("A slash command is required")
+        token = parts[0].lower()
+        arguments = parts[1] if len(parts) > 1 else ""
+        # Registered commands have canonical precedence over skill shorthand.
+        matches = [row for row in current["entries"] if row["kind"] == "command"
+                   and token in row["tokens"]]
+        if not matches:
+            bare = token.lstrip("/")
+            matches = [row for row in current["entries"] if row["kind"] == "skill"
+                       and row["completion_order"] is not None and row["title"].lower() == bare]
+        if len(matches) != 1:
+            raise ValueError("Command is unknown or ambiguous; select an exact catalog row")
+        selected = matches[0]
+        if selected["native_action"] == "skills" and arguments:
+            skill_parts = arguments.split(maxsplit=1)
+            name = skill_parts[0].lower().lstrip("/")
+            matches = [row for row in current["entries"] if row["kind"] == "skill"
+                       and row["title"].lower() == name]
+            if len(matches) != 1:
+                raise ValueError("Skill command arguments name an unknown or ambiguous skill; select an exact row")
+            selected = matches[0]
+            arguments = skill_parts[1] if len(skill_parts) > 1 else ""
+    else:
+        arguments = cmd.get("arguments", "")
+        if not isinstance(arguments, str):
+            raise ValueError("Command arguments must be text")
+        _text(arguments, 65536, empty=True)
+        selected = next((row for row in current["entries"] if row["id"] == cmd.get("row_id")), None)
+        if selected is None:
+            raise ValueError("Command selection is missing from the current registry")
     if selected["native_action"] is None:
         raise ValueError(selected["unavailable_reason"])
-    return {"version": VERSION, "kind": "command_route", "session_id": current["session_id"],
-            "agent_id": current["agent_id"], "snapshot": current["snapshot"],
-            "row_id": selected["id"], "native_action": selected["native_action"]}
+    if arguments != "" and not selected["accepts_arguments"]:
+        raise ValueError("This native control adapter does not accept command arguments")
+    result = {"version": VERSION, "kind": "command_route", "session_id": current["session_id"],
+              "agent_id": current["agent_id"], "snapshot": current["snapshot"],
+              "backend": current["backend"], "model": current["model"], "arguments": arguments,
+              "row_id": selected["id"], "native_action": selected["native_action"]}
+    if raw:
+        result["command"] = cmd["command"]
+    return result

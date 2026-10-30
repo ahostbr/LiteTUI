@@ -184,6 +184,7 @@ pub enum Observation {
     History(crate::resume::History),
     Controls(crate::model_controls::Update),
     Queue(crate::restored_queue::Update),
+    Commands(crate::command_palette::Update),
     Settings(crate::settings_view::Update),
     Backend(crate::backend_controls::Update),
     BackendChanged(Box<crate::backend_controls::Changed>),
@@ -1018,6 +1019,29 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 && let Some(command) = frontend.command()?
             {
                 match command {
+                    Input::Commands(intent) => {
+                        let command = if turn.can_manage() {
+                            management.request_command(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish the current turn before using commands",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::Commands(
+                                crate::command_palette::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
+                    }
                     Input::Settings(intent) => {
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
                         let command = if turn.can_manage() {
@@ -1317,6 +1341,19 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             )?;
                         }
                     }
+                    Step::Commands { update, policy } => {
+                        if !turn.closing {
+                            if let Some(policy) = policy {
+                                turn.policy
+                                    .as_ref()
+                                    .expect("launch policy")
+                                    .validate(&policy)?;
+                            }
+                            frontend.observe(Observation::Commands(update))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
                     Step::Settings { update, policy } => {
                         if !turn.closing {
                             if let Some(policy) = policy {
@@ -1463,6 +1500,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 pub enum Input {
     Control(crate::model_controls::Intent),
     Queue(crate::restored_queue::Intent),
+    Commands(crate::command_palette::Intent),
     Settings(crate::settings_view::Intent),
     Backend(crate::backend_controls::Intent),
     Browser(crate::conversation_browser::Intent),
@@ -1488,6 +1526,7 @@ impl Frontend for OneShot {
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
             Observation::State(_)
+            | Observation::Commands(_)
             | Observation::Settings(_)
             | Observation::Backend(_)
             | Observation::BackendChanged(_)
@@ -1751,6 +1790,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Control(intent))
+            .map_err(io::Error::other)
+    }
+    pub fn commands(&self, intent: crate::command_palette::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Commands(intent))
             .map_err(io::Error::other)
     }
     pub fn settings(&self, intent: crate::settings_view::Intent) -> io::Result<()> {

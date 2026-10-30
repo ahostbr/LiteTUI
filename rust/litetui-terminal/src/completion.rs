@@ -40,7 +40,8 @@ impl CompletionPicker {
             .collect();
         self.matches
             .sort_by_key(|candidate| !candidate.name.to_lowercase().starts_with(&want));
-        self.matches.truncate(200);
+        // Live producer validates its complete 1024-row catalog before publication.
+        self.matches.truncate(1024);
     }
     pub fn is_open(&self) -> bool {
         !self.matches.is_empty()

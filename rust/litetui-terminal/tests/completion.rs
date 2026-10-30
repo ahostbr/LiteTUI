@@ -53,14 +53,14 @@ fn only_bare_slash_input_opens_and_navigation_clamps_then_dismisses() {
     assert!(picker.current().is_none());
 }
 #[test]
-fn results_are_bounded_after_ranking_and_refilter_consumes_updated_catalog() {
+fn complete_catalog_is_retained_after_ranking_and_refilter_consumes_updates() {
     let mut candidates: Vec<_> = (0..220)
         .map(|index| candidate(&format!("x-test-{index}"), CompletionKind::Skill))
         .collect();
     candidates.push(candidate("test-prefix", CompletionKind::Skill));
     let mut picker = CompletionPicker::default();
     picker.refilter(&candidates, "/test");
-    assert_eq!(picker.matches().len(), 200);
+    assert_eq!(picker.matches().len(), 221);
     assert_eq!(picker.current().unwrap().name, "test-prefix");
     picker.refilter(&[], "/test");
     assert!(!picker.is_open());

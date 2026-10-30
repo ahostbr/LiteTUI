@@ -750,6 +750,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         if let Some(chat) = app.live.as_mut() {
             chat.controls.hide();
             chat.queue.hide();
+            chat.commands.hide();
             chat.settings.hide();
             chat.backend_controls.hide();
             chat.browser.hide();
@@ -844,13 +845,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .matches()
             .iter()
             .map(|candidate| {
-                let name = clip_label(&candidate.name, name_width);
+                let name = clip_label(&crate::live::terminal_text(&candidate.name), name_width);
                 let tag = match candidate.kind {
                     CompletionKind::Command => "[command]",
                     CompletionKind::Skill => "[skill]",
                 };
-                let safe_description: String = candidate
-                    .description
+                let safe_description: String = crate::live::terminal_text(&candidate.description)
                     .chars()
                     .map(|ch| if ch.is_control() { ' ' } else { ch })
                     .collect();
@@ -1054,6 +1054,13 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &t);
     } else if let Some(chat) = &mut app.live {
         chat.queue.hide();
+    }
+    if app.has_live_commands() {
+        app.live
+            .as_mut()
+            .expect("commands")
+            .commands
+            .draw(frame, area, &t);
     }
     if app.has_live_settings() {
         app.live

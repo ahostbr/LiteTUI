@@ -11,11 +11,13 @@ passed independent review and the full controlled process gate and portable stag
 Rust has owned Windows Python startup, bounded transport and verified event mirrors,
 captured execution origins, multiple text turns, reasoning/tools, cancellation,
 approvals/questions, composer/transcript, model/thinking controls, static themes,
-exact-UUID resume, held-input recovery and bounded F8 session browsing with preflight. Automated evidence does not replace
+exact-UUID resume, held-input recovery, bounded F8 session browsing with preflight,
+F9 backend switching, F10 budget editing and F11 command/skill controls. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
 Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs
-Chat::submit explicitly refuses slash commands; management.rs handles startup,
+Chat::submit explicitly refuses slash commands; the source-backed command router handles
+slash input separately and prepares skills for explicit attended submission. management.rs handles startup,
 model/thinking and restored input; resume.rs still has bounded saved-history projection; conversation_browser.rs pages
 the catalog and validates history before opening. Source gui_rpc.py OPERATIONS is authoritative.
 Historical inventory.md checkboxes are discovery data, not current feature status.
@@ -28,7 +30,7 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits are implemented; native engine operations, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
-| Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Live source command catalog and pure native-control resolution are implemented. Native palette/slash/skills UI remains. Use structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
+| Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Live source catalog, native palette, verified slash routing and exact prepared-skill submission are implemented. Unsupported plugin screens/actions remain visible with reasons. Use structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
 | Hooks and MCP | gui.hooks/mcp and host-tool operations | Exact source schemas, independent controls, persistence/readback, reload/disconnect failures. Current startup forces external MCP off; enabling it needs authority and lifecycle tests. |
 | Memory, agents, diagnostics | gui.memory/system/diagnostics/glassbox/subagents and fleet contributors | Bounded read views first, then source-owned writes/cancellation with exact own-session identities and missing-process cases. |
 | Images and voice | images.attach/clear, screen.mark, staging/viewer and listen/STT/TTS UI | Clipboard image, indicator, clear-image priority, inline/fallback rendering and replay. Voice requires real selected provider/device tests. Both hosts need capability evidence; current gaming constraint precludes desktop interaction. |
@@ -122,8 +124,10 @@ bypasses normal prompt admission. A skill adapter must bind the exact discovered
 file and digest (case and folder-alias resolution can otherwise change bodies),
 limit the prepared UTF-8 prompt and enter normal owned prompt admission.
 
-Prepared skills also require a lossless draft representation: current composer insertion
-flattens CR/LF/TAB and its scalar cap can truncate a prepared body. Keep full SKILL.md
-content and canonical directory binding, preserve exact arguments, bound the complete
-UTF-8 prompt, and submit only through explicit normal attended admission. A file digest
+Prepared skills use separate lossless draft storage because ordinary composer insertion
+flattens CR/LF/TAB and has a scalar cap. The implementation preserves full SKILL.md
+content, canonical directory binding and exact arguments, bounds the complete UTF-8
+prompt, and submits only through explicit normal attended admission. A file digest
 binds the freshly prepared revision; a metadata catalog alone does not bind file bytes.
+Existing transcript/display limits still apply and can refuse a large preparation.
+The native skill path does not invoke legacy gui.skills.use.

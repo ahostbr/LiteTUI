@@ -66,7 +66,8 @@ async def test_live_catalog_tracks_canonical_palette_and_routes_without_executio
         route = command_surface.resolve(app, request)
         assert route == {"version": 1, "kind": "command_route", "session_id": app.convo_id,
                          "agent_id": result["agent_id"], "snapshot": result["snapshot"],
-                         "row_id": request["row_id"], "native_action": action}
+                         "row_id": request["row_id"], "native_action": action,
+                         "backend": result["backend"], "model": result["model"], "arguments": ""}
     assert tree(app) == before
 
 
@@ -76,7 +77,10 @@ async def test_alias_collapse_shadowing_distinct_orders_and_callback_only_rows(c
     custom_registry(app)
     result = read(app)
     rows = result["entries"]
-    assert len(rows) == 8
+    assert len(rows) == 10
+    assert [row["title"] for row in sorted((row for row in rows if row["kind"] == "skill"),
+                                           key=lambda row: row["skill_order"])] == ["aaa", "prefs", "SETTINGS", "zzz"]
+    assert all(row["skill_order"] is None for row in rows if row["kind"] != "skill")
     assert [row["title"] for row in sorted((r for r in rows if r["palette"]),
                                            key=lambda r: r["palette_order"])] == [
         "Settings", "Theme", "Alpha", "Jobs", "Models"]
@@ -86,7 +90,9 @@ async def test_alias_collapse_shadowing_distinct_orders_and_callback_only_rows(c
         "/z", "/model", "/hidden", "/theme", "/settings", "/aaa", "/zzz"]
     settings = next(row for row in rows if row["native_action"] == "settings")
     assert settings["tokens"] == ["/settings", "/prefs"]
-    assert all(not row["accepts_arguments"] for row in rows)
+    assert {row["title"] for row in rows if row["kind"] == "skill"
+            and row["completion_order"] is None} == {"prefs", "SETTINGS"}
+    assert all(row["accepts_arguments"] == (row["kind"] == "skill") for row in rows)
     for row in rows:
         if row["native_action"] is None:
             with pytest.raises(ValueError, match="adapter"):
@@ -111,8 +117,7 @@ async def test_registry_reload_metadata_and_policy_changes_invalidate_selection(
             registry.commands[token] = new
     elif mutation == "skill":
         app.skills[0].source = "changed"
-        # A shadowed skill is absent from both surfaces and cannot affect a route.
-        app.skills[-1].source = "changed"
+        # Even a completion-shadowed skill remains an exact selectable row.
     else:
         original = gui_rpc._tool_policy(app)
         monkeypatch.setattr(gui_rpc, "_tool_policy", lambda _app: {**original, "revision": "changed"})
@@ -198,3 +203,99 @@ async def test_public_management_operations_preserve_owned_catalog_and_route(com
     route = await gui_rpc.async_dispatch(app, {"type": "gui.commands.resolve", **request})
     assert route == command_surface.resolve(app, request)
     assert gui_rpc.current_operation(app) is None
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("original, action, arguments", [
+    (" /PrEfS\t ", "settings", ""),
+    ("/MODEL", "models", ""),
+    ("/aaa  exact  arguments \r\n", "skill_prepare", "exact  arguments \r\n"),
+    ("/AAA\n\tfirst\nsecond  ", "skill_prepare", "first\nsecond  "),
+])
+async def test_raw_command_uses_source_alias_case_and_exact_tail(command_app, original, action, arguments):
+    app = command_app
+    custom_registry(app)
+    catalog = read(app)
+    before = tree(app)
+    request = {key: value for key, value in selection(app, catalog).items() if key != "row_id"}
+    result = command_surface.resolve(app, {**request, "command": original})
+    assert result["command"] == original and result["native_action"] == action
+    assert result["arguments"] == arguments
+    assert result["backend"] == catalog["backend"] and result["model"] == catalog["model"]
+    assert tree(app) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra, message", [
+    ({"command": "   "}, "slash"), ({"command": "model"}, "slash"),
+    ({"command": "/unknown"}, "unknown"), ({"command": "/prefs value"}, "arguments"),
+    ({"command": "/theme"}, "adapter"), ({"command": "/prefs", "row_id": "extra"}, "combined"),
+    ({"command": "/prefs", "arguments": ""}, "combined"),
+    ({"command": "/" + "a" * 65536}, "oversized"),
+])
+async def test_raw_command_refuses_unknown_unsupported_mixed_or_argument_controls(command_app, extra, message):
+    app = command_app
+    custom_registry(app)
+    request = {key: value for key, value in selection(app, read(app)).items() if key != "row_id"}
+    with pytest.raises(ValueError, match=message):
+        command_surface.resolve(app, {**request, **extra})
+
+
+@pytest.mark.asyncio
+async def test_skills_command_routes_view_and_exact_rows_disambiguate_names(command_app):
+    app = command_app
+    custom_registry(app)
+    app.plugins.add_command("skills", ("/skills", "/skill"), forbidden, palette="Skills")
+    app.skills.append(Skill("AAA", "Other source", Path("elsewhere/SKILL.md"), "other"))
+    catalog = read(app)
+    request = {key: value for key, value in selection(app, catalog).items() if key != "row_id"}
+    assert command_surface.resolve(app, {**request, "command": "/SKILL"})["native_action"] == "skills"
+    with pytest.raises(ValueError, match="arguments"):
+        command_surface.resolve(app, {**request, "command": "/skills refresh"})
+    with pytest.raises(ValueError, match="ambiguous"):
+        command_surface.resolve(app, {**request, "command": "/aaa task"})
+    for row in catalog["entries"]:
+        if row["kind"] == "skill" and row["title"].lower() == "aaa":
+            result = command_surface.resolve(app, {**request, "row_id": row["id"], "arguments": " exact \n"})
+            assert result["native_action"] == "skill_prepare" and result["arguments"] == " exact \n"
+
+@pytest.mark.asyncio
+async def test_shadowed_skill_is_exact_selectable_without_stealing_command_alias(command_app):
+    app = command_app
+    custom_registry(app)
+    app.plugins.add_command("skills", ("/skills", "/skill"), forbidden, palette="Skills")
+    catalog = read(app)
+    request = {key: value for key, value in selection(app, catalog).items() if key != "row_id"}
+    assert command_surface.resolve(app, {**request, "command": "/prefs"})["native_action"] == "settings"
+    for value in ("/skills prefs  exact \r\n", "/skill /PREFS  exact \r\n"):
+        result = command_surface.resolve(app, {**request, "command": value})
+        assert result["command"] == value and result["arguments"] == "exact \r\n"
+        assert result["native_action"] == "skill_prepare"
+        assert next(row for row in catalog["entries"] if row["id"] == result["row_id"])["title"] == "prefs"
+
+@pytest.mark.asyncio
+async def test_unicode_alias_shadowing_matches_canonical_lowercase_dispatch(command_app):
+    app = command_app
+    registry = custom_registry(app)
+    original = registry.commands["/settings"]
+    entry = replace(original, tokens=(*original.tokens, "/ss"))
+    for token in entry.tokens:
+        registry.commands[token] = entry
+    app.skills.extend([
+        Skill("\u00df", "Distinct Unicode name", Path("sharp-s/SKILL.md")),
+        Skill("SS", "Actual uppercase alias collision", Path("ascii/SKILL.md")),
+    ])
+    catalog = read(app)
+    rows = {row["title"]: row for row in catalog["entries"] if row["kind"] == "skill"}
+    assert rows["\u00df"]["completion_order"] is not None
+    assert rows["SS"]["completion_order"] is None
+    assert rows["prefs"]["completion_order"] is None
+    assert rows["SETTINGS"]["completion_order"] is None
+    request = {key: value for key, value in selection(app, catalog).items() if key != "row_id"}
+    before = tree(app)
+    for token in ("/ss", "/SS", "/prefs", "/SETTINGS"):
+        assert command_surface.resolve(app, {**request, "command": token})["native_action"] == "settings"
+    for token in ("/\u00df", "/\u1e9e"):
+        result = command_surface.resolve(app, {**request, "command": token})
+        assert result["native_action"] == "skill_prepare" and result["row_id"] == rows["\u00df"]["id"]
+        assert result["command"] == token
+    assert tree(app) == before

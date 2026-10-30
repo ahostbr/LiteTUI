@@ -8450,8 +8450,9 @@ class LiteTUI(App):
             self._refuse_submit("backend_transition", reason)
             return
         image_path: str | None = None
-        text = value.strip()
-        if not text and not self.pending_image:
+        trimmed = value.strip()
+        text = value if source == "rpc" else trimmed
+        if not trimmed and not self.pending_image:
             self._refuse_submit("empty", "nothing to send")
             return
 
@@ -8460,12 +8461,12 @@ class LiteTUI(App):
         except Exception:
             pass
 
-        if text.startswith("/"):
+        if trimmed.startswith("/"):
             # T1043: who issued this command (a /goal records it as its origin,
             # seat_authority.command_origin). Scoped to this dispatch only.
             self._command_source = source
             try:
-                self._handle_command(text)
+                self._handle_command(trimmed)
             finally:
                 self._command_source = None
             return

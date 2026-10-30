@@ -51,3 +51,6 @@ pub mod backend_controls;
 pub mod runtime_launch;
 pub mod settings_editor;
 pub mod settings_view;
+
+pub mod command_palette;
+pub mod prepared_skill;

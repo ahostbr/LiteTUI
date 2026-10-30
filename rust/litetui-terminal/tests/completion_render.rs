@@ -86,9 +86,11 @@ fn large_catalog_scrolls_selected_row_into_view_and_modal_hides_the_list() {
         .collect();
     app.insert_text("/");
     app.completion.move_by(239);
+    assert_eq!(app.completion.matches().len(), 240);
+    assert_eq!(app.completion.selected(), 239);
     let mut terminal = Terminal::new(TestBackend::new(40, 14)).unwrap();
     terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
-    assert!(screen(&terminal).contains("item-199"));
+    assert!(screen(&terminal).contains("item-239"));
     assert!(
         terminal
             .backend()
@@ -99,7 +101,7 @@ fn large_catalog_scrolls_selected_row_into_view_and_modal_hides_the_list() {
     );
     app.open_approval();
     terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
-    assert!(!screen(&terminal).contains("item-199"));
+    assert!(!screen(&terminal).contains("item-239"));
     assert!(app.completion.is_open());
     assert_eq!(app.composer.text(), "/");
 }

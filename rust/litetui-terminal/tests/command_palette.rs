@@ -1,0 +1,573 @@
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use litetui_terminal::{
+    command_palette::{self as commands, Action, Catalog, Intent, Route, Update, View},
+    demo::Demo,
+    live::Observation,
+    management::{Management, Step},
+    prepared_skill::{Draft, Prepared, digest},
+};
+use ratatui::{Terminal, backend::TestBackend};
+use serde_json::{Value, json};
+const SESSION: &str = "12345678-1234-4123-8123-123456789abc";
+const AGENT: &str = "22345678-1234-4123-8123-123456789abc";
+fn data() -> Value {
+    let entries=[("command","Settings","settings",json!(["/settings","/config"]),json!(0),json!(0)),("command","Unsafe plugin","",json!(["/unsafe"]),json!(1),json!(1)),("skill","ExactSkill","skill_prepare",json!(["/ExactSkill"]),Value::Null,json!(2)),("skill","settings","skill_prepare",json!(["/settings"]),Value::Null,Value::Null)].into_iter().enumerate().map(|(i,(kind,title,action,tokens,palette,completion))|json!({"id":format!("{:064x}",i+1),"kind":kind,"owner":if kind=="skill"{"skills"}else{"plugin"},"title":title,"help":"Source description","group":"app","group_label":"Application","order":100,"tokens":tokens,"palette":!palette.is_null(),"palette_order":palette,"completion_order":completion,"skill_order":if kind=="skill"{json!(i-2)}else{Value::Null},"native_action":if action.is_empty(){Value::Null}else{json!(action)},"accepts_arguments":kind=="skill","unavailable_reason":if action.is_empty(){"No native adapter"}else{""},"source":if kind=="skill"{json!("test")}else{Value::Null}})).collect::<Vec<_>>();
+    json!({"version":1,"kind":"command_catalog","session_id":SESSION,"agent_id":AGENT,"backend":"custom","model":"model","snapshot":"a".repeat(64),"entries":entries})
+}
+fn catalog() -> Catalog {
+    Catalog::parse(&data(), SESSION, AGENT, "custom", "model").unwrap()
+}
+fn prepared_data(c: &Catalog, args: &str) -> Value {
+    let body = "# Skill: ExactSkill\n---\r\nname: ExactSkill\r\n---\r\n  α body\t\r\n\n";
+    let prompt = if args.is_empty() {
+        body.into()
+    } else {
+        format!("{body}\n\n---\n\n{args}")
+    };
+    json!({"version":1,"kind":"skill_prompt","session_id":SESSION,"agent_id":AGENT,"backend":"custom","model":"model","snapshot":c.snapshot,"row_id":c.entries[2].id,"arguments":args,"skill":{"name":"ExactSkill","source":"test","path":"C:/skills/exact/SKILL.md"},"file":{"sha256":"b".repeat(64),"bytes":45,"mtime_ns":1234,"device":0,"inode":55,"resolved_path":"C:/skills/exact/SKILL.md"},"body":body,"prompt_sha256":digest(&prompt),"prompt":prompt})
+}
+fn prepared(args: &str) -> Prepared {
+    let c = catalog();
+    Prepared::parse(&prepared_data(&c, args), &c, &c.entries[2].id, args).unwrap()
+}
+fn route_data(c: &Catalog, raw: Option<&str>) -> Value {
+    let mut v = json!({"version":1,"kind":"command_route","session_id":SESSION,"agent_id":AGENT,"backend":"custom","model":"model","snapshot":c.snapshot,"row_id":c.entries[0].id,"native_action":"settings","arguments":""});
+    if let Some(raw) = raw {
+        v["command"] = json!(raw);
+    }
+    v
+}
+fn key(k: KeyCode) -> KeyEvent {
+    KeyEvent::new(k, KeyModifiers::NONE)
+}
+fn draw(v: &mut View, w: u16, h: u16) -> String {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let theme = litetui_terminal::theme::builtin_themes().remove(0);
+    t.draw(|f| v.draw(f, f.area(), &theme)).unwrap();
+    t.backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
+}
+fn view(skills: bool) -> View {
+    let mut v = View::default();
+    v.open(skills);
+    v.take_intent();
+    v.observe(Update::Catalog {
+        catalog: catalog(),
+        skills,
+    });
+    v
+}
+#[test]
+fn catalog_bounds_foreign_duplicates_aliases_and_source_ranks_are_enforced() {
+    for fault in [
+        "session",
+        "agent",
+        "backend",
+        "model",
+        "token",
+        "duplicate",
+        "alias",
+        "rank",
+        "gap",
+        "order",
+        "action",
+        "args",
+        "reason",
+        "rows",
+        "bytes",
+    ] {
+        let mut v = data();
+        match fault {
+            "session" => v["session_id"] = json!(AGENT),
+            "agent" => v["agent_id"] = json!(SESSION),
+            "backend" => v["backend"] = json!("claude"),
+            "model" => v["model"] = json!("other"),
+            "token" => v["snapshot"] = json!("x".repeat(64)),
+            "duplicate" => v["entries"][1]["id"] = v["entries"][0]["id"].clone(),
+            "alias" => v["entries"][1]["tokens"] = json!(["/config"]),
+            "rank" => v["entries"][1]["palette_order"] = json!(0),
+            "gap" => v["entries"][1]["completion_order"] = json!(4),
+            "order" => v["entries"][0]["order"] = json!(true),
+            "action" => v["entries"][0]["native_action"] = json!("eval"),
+            "args" => v["entries"][0]["accepts_arguments"] = json!(true),
+            "reason" => v["entries"][0]["unavailable_reason"] = json!("locked"),
+            "rows" => v["entries"] = json!(vec![v["entries"][0].clone(); 1025]),
+            "bytes" => v["extra"] = json!("x".repeat(512 * 1024)),
+            _ => {}
+        }
+        assert!(
+            Catalog::parse(&v, SESSION, AGENT, "custom", "model").is_err(),
+            "{fault}"
+        );
+    }
+    let c = catalog();
+    assert_eq!(c.entries.len(), 4);
+    assert_eq!(c.completions().len(), 3);
+    assert_eq!(c.entries[3].completion_order, None);
+}
+#[test]
+fn route_validates_exact_raw_echo_or_selected_row_without_inventing_aliases() {
+    let c = catalog();
+    let raw = "  /CONFIG   ";
+    let v = route_data(&c, Some(raw));
+    assert_eq!(
+        Route::parse(&v, &c, None, Some(raw), "").unwrap().action,
+        Action::Settings
+    );
+    for fault in [
+        "command",
+        "row_id",
+        "native_action",
+        "arguments",
+        "agent_id",
+    ] {
+        let mut v = v.clone();
+        v[fault] = json!("wrong");
+        assert!(Route::parse(&v, &c, None, Some(raw), "").is_err());
+    }
+    assert!(Route::parse(&v, &c, Some(&c.entries[0].id), None, "").is_err());
+}
+#[test]
+fn prepared_bytes_frontmatter_crlf_unicode_and_trailing_arguments_are_lossless() {
+    let args = "  argument α\r\nsecond\n\n  ";
+    let p = prepared(args);
+    assert_eq!(p.arguments, args);
+    assert!(p.body.contains("---\r\nname: ExactSkill\r\n---"));
+    assert!(p.prompt.ends_with(args));
+    assert_eq!(digest(&p.prompt), p.digest);
+    let mut d = Draft::default();
+    d.set(args).unwrap();
+    d.key(KeyCode::Home);
+    d.insert("prefix\n").unwrap();
+    assert_eq!(d.text(), format!("prefix\n{args}"));
+    let before = d.text().to_owned();
+    assert!(d.insert(&"x".repeat(65536)).is_err());
+    assert_eq!(d.text(), before);
+}
+#[test]
+fn forged_prepared_payload_or_provenance_cannot_stage() {
+    let c = catalog();
+    for fault in [
+        "identity",
+        "arguments",
+        "prompt",
+        "digest",
+        "row",
+        "name",
+        "source",
+        "metadata",
+        "bytes",
+    ] {
+        let mut v = prepared_data(&c, "arg ");
+        match fault {
+            "identity" => v["session_id"] = json!(AGENT),
+            "arguments" => v["arguments"] = json!("arg"),
+            "prompt" => v["prompt"] = json!("truncated"),
+            "digest" => v["prompt_sha256"] = json!("c".repeat(64)),
+            "row" => v["row_id"] = c.entries[3].id.clone().into(),
+            "name" => v["skill"]["name"] = json!("settings"),
+            "source" => v["skill"]["source"] = json!("other"),
+            "metadata" => v["file"]["inode"] = json!(-1),
+            "bytes" => v["file"]["bytes"] = json!(65537),
+            _ => {}
+        }
+        assert!(
+            Prepared::parse(&v, &c, &c.entries[2].id, "arg ").is_err(),
+            "{fault}"
+        );
+    }
+}
+#[test]
+fn unavailable_entries_are_visible_and_cannot_resolve() {
+    let mut v = view(false);
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Down));
+    assert!(draw(&mut v, 80, 28).contains("No native adapter"));
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    v.key(key(KeyCode::Home));
+    v.key(key(KeyCode::Enter));
+    assert!(matches!(v.take_intent(), Some(Intent::Resolve { .. })));
+}
+#[test]
+fn skill_selection_arguments_and_full_preview_require_fresh_explicit_send() {
+    let mut v = view(true);
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::End));
+    v.key(key(KeyCode::Home)); // exact source order may place collision first
+    v.paste("ExactSkill");
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Enter));
+    draw(&mut v, 80, 28);
+    v.paste("arg\r\n  ");
+    assert_eq!(v.arguments(), "arg\r\n  ");
+    v.key(key(KeyCode::Enter));
+    assert!(
+        matches!(v.take_intent(),Some(Intent::Prepare{arguments,..}) if arguments=="arg\r\n  ")
+    );
+    v.observe(Update::Prepared {
+        catalog: Box::new(catalog()),
+        prepared: Box::new(prepared("arg\r\n  ")),
+    });
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    draw(&mut v, 42, 18);
+    for _ in 0..50 {
+        v.key(key(KeyCode::PageDown));
+    }
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    for _ in 0..50 {
+        draw(&mut v, 42, 18);
+        v.key(key(KeyCode::PageDown));
+    }
+    draw(&mut v, 42, 18);
+    let mut repeat = key(KeyCode::Enter);
+    repeat.kind = KeyEventKind::Repeat;
+    v.key(repeat);
+    assert!(v.take_intent().is_none());
+    draw(&mut v, 42, 18);
+    v.key(key(KeyCode::Enter));
+    assert!(matches!(v.take_intent(), Some(Intent::Submit { .. })));
+}
+#[test]
+fn dirty_arguments_require_prepare_and_stale_refresh_preserves_exact_draft() {
+    let mut v = view(true);
+    v.observe(Update::Prepared {
+        catalog: Box::new(catalog()),
+        prepared: Box::new(prepared("original\n")),
+    });
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Tab));
+    draw(&mut v, 80, 28);
+    v.paste("new\r\n  ");
+    let expected = v.arguments().to_owned();
+    v.key(key(KeyCode::Enter));
+    assert!(matches!(v.take_intent(), Some(Intent::Prepare { .. })));
+    v.observe(Update::Rejected("stale".into()));
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::F(5)));
+    assert_eq!(v.take_intent(), Some(Intent::Read { skills: true }));
+    v.observe(Update::Catalog {
+        catalog: catalog(),
+        skills: true,
+    });
+    assert_eq!(v.arguments(), expected);
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Enter));
+    assert!(matches!(v.take_intent(),Some(Intent::Prepare{arguments,..}) if arguments==expected));
+}
+#[test]
+fn catalog_pointer_pairs_and_small_geometry_never_activate() {
+    let mut v = view(false);
+    draw(&mut v, 80, 28);
+    let mouse = |kind| MouseEvent {
+        kind,
+        column: 3,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    };
+    v.mouse(mouse(MouseEventKind::Up(MouseButton::Left)));
+    v.mouse(mouse(MouseEventKind::Down(MouseButton::Left)));
+    draw(&mut v, 42, 18);
+    v.mouse(mouse(MouseEventKind::Up(MouseButton::Left)));
+    assert!(v.take_intent().is_none());
+    assert!(draw(&mut v, 36, 14).contains("42×18"));
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    v.key(key(KeyCode::Esc));
+    assert!(!v.owns_input());
+}
+fn state() -> Value {
+    json!({"session_id":SESSION,"busy":false,"mode":"normal","tool_profile":"strict","model":{"backend":"custom","model":"model"},"ownership":{"data_version":1,"writable":true,"agent_id":AGENT},"restored_input":{"policy":"hold","held":0},"schedules_paused":false,"conversations":[],"jobs":[],"tasks":[],"active_work":[],"pending_approvals":[],"pending_questions":[],"pending_model_loads":[],"tool_policy":{"driver":"checks expected policy"}})
+}
+fn reply(m: &mut Management, c: &Value, v: Value) -> std::io::Result<Step> {
+    m.accept(json!({"type":"response","id":c["id"],"ok":true,"result":v}))
+}
+fn write(s: Step) -> Value {
+    let Step::Write(c) = s else { panic!("{s:?}") };
+    c
+}
+fn connected() -> Management {
+    let mut m = Management::default();
+    let h=m.begin(&json!({"management_protocols":[1],"capabilities":["hello","state"],"conversation_id":SESSION,"backend":"custom","model":"model","tool_profile":"strict"})).unwrap();
+    let c=write(reply(&mut m,&h,json!({"protocol_version":1,"data_version":1,"capabilities":["hello","state"],"operations":["gui.hello","gui.state",commands::LIST,commands::RESOLVE,commands::PREPARE]})).unwrap());
+    reply(&mut m, &c, state()).unwrap();
+    m
+}
+fn prepare(m: &mut Management) -> Prepared {
+    let read = m.request_command(Intent::Read { skills: true }).unwrap();
+    reply(m, &read, data()).unwrap();
+    let c = catalog();
+    let command = m
+        .request_command(Intent::Prepare {
+            snapshot: c.snapshot.clone(),
+            row: c.entries[2].id.clone(),
+            arguments: "arg\r\n  ".into(),
+        })
+        .unwrap();
+    let state_read = write(reply(m, &command, prepared_data(&c, "arg\r\n  ")).unwrap());
+    assert_eq!(state_read["type"], "gui.state");
+    assert_eq!(state_read["include_conversations"], false);
+    let Step::Commands {
+        update: Update::Prepared { prepared, .. },
+        policy: Some(_),
+    } = reply(m, &state_read, state()).unwrap()
+    else {
+        panic!()
+    };
+    *prepared
+}
+#[test]
+fn reducer_reprepares_same_payload_and_checks_policy_before_explicit_submission() {
+    let mut m = connected();
+    let p = prepare(&mut m);
+    let command = m
+        .request_command(Intent::Submit {
+            digest: p.digest.clone(),
+        })
+        .unwrap();
+    assert_eq!(command["type"], commands::PREPARE);
+    let state_read =
+        write(reply(&mut m, &command, prepared_data(&catalog(), &p.arguments)).unwrap());
+    assert!(!m.ready());
+    assert!(matches!(
+        reply(&mut m, &state_read, state()).unwrap(),
+        Step::Commands {
+            update: Update::Verified(_),
+            policy: Some(_)
+        }
+    ));
+    assert!(m.ready());
+}
+#[test]
+fn reducer_changed_skill_or_display_budget_refuses_without_replaying() {
+    let mut m = connected();
+    let p = prepare(&mut m);
+    let command = m
+        .request_command(Intent::Submit {
+            digest: p.digest.clone(),
+        })
+        .unwrap();
+    let mut changed = prepared_data(&catalog(), &p.arguments);
+    changed["file"]["mtime_ns"] = json!(9999);
+    assert!(matches!(
+        reply(&mut m, &command, changed).unwrap(),
+        Step::Commands {
+            update: Update::Rejected(_),
+            ..
+        }
+    ));
+    assert!(m.ready());
+    let c = catalog();
+    let command = m
+        .request_command(Intent::Prepare {
+            snapshot: c.snapshot.clone(),
+            row: c.entries[2].id.clone(),
+            arguments: "".into(),
+        })
+        .unwrap();
+    let mut large = prepared_data(&c, "");
+    large["body"] = json!("\u{202e}".repeat(7000));
+    large["prompt"] = large["body"].clone();
+    large["prompt_sha256"] = json!(digest(large["prompt"].as_str().unwrap()));
+    assert!(matches!(
+        reply(&mut m, &command, large).unwrap(),
+        Step::Commands {
+            update: Update::Rejected(_),
+            ..
+        }
+    ));
+    assert!(m.ready());
+}
+#[test]
+fn raw_slash_draft_cannot_fall_back_to_provider_and_verified_skill_keeps_composer() {
+    let mut app = Demo::live("custom".into(), "model".into());
+    app.observe_live(Observation::Ready).unwrap();
+    app.insert_text("/UNKNOWN exact arguments");
+    app.submit();
+    assert!(app.live.as_mut().unwrap().take_submission().is_none());
+    assert_eq!(app.composer.text(), "/UNKNOWN exact arguments");
+    assert_eq!(
+        app.live.as_mut().unwrap().commands.take_intent(),
+        Some(Intent::Raw("/UNKNOWN exact arguments".into()))
+    );
+    app.observe_live(Observation::Commands(Update::Rejected("unknown".into())))
+        .unwrap();
+    assert!(app.live.as_mut().unwrap().take_submission().is_none());
+    let p = prepared("trailing\n  ");
+    app.observe_live(Observation::Commands(Update::Prepared {
+        catalog: Box::new(catalog()),
+        prepared: Box::new(p.clone()),
+    }))
+    .unwrap();
+    for _ in 0..50 {
+        draw(&mut app.live.as_mut().unwrap().commands, 80, 28);
+        app.live
+            .as_mut()
+            .unwrap()
+            .commands
+            .key(key(KeyCode::PageDown));
+    }
+    draw(&mut app.live.as_mut().unwrap().commands, 80, 28);
+    app.live.as_mut().unwrap().commands.key(key(KeyCode::Enter));
+    app.live.as_mut().unwrap().commands.take_intent();
+    app.observe_live(Observation::Commands(Update::Verified(Box::new(p.clone()))))
+        .unwrap();
+    assert_eq!(app.live.as_mut().unwrap().take_submission(), Some(p.prompt));
+    assert_eq!(app.composer.text(), "/UNKNOWN exact arguments");
+}
+
+#[test]
+fn cancelled_route_or_submit_readback_settles_without_action() {
+    let mut v = view(false);
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Enter));
+    v.take_intent();
+    v.key(key(KeyCode::Esc));
+    v.observe(Update::Route {
+        catalog: catalog(),
+        route: Route {
+            row: catalog().entries[0].id.clone(),
+            action: Action::Quit,
+            arguments: String::new(),
+        },
+    });
+    assert!(v.take_route().is_none());
+    assert!(!v.owns_input());
+    let mut app = Demo::live("custom".into(), "model".into());
+    app.observe_live(Observation::Ready).unwrap();
+    app.insert_text("original draft");
+    app.open_commands();
+    app.live.as_mut().unwrap().commands.take_intent();
+    let p = prepared("arg");
+    app.observe_live(Observation::Commands(Update::Prepared {
+        catalog: Box::new(catalog()),
+        prepared: Box::new(p.clone()),
+    }))
+    .unwrap();
+    for _ in 0..50 {
+        draw(&mut app.live.as_mut().unwrap().commands, 80, 28);
+        app.live
+            .as_mut()
+            .unwrap()
+            .commands
+            .key(key(KeyCode::PageDown));
+    }
+    draw(&mut app.live.as_mut().unwrap().commands, 80, 28);
+    app.live.as_mut().unwrap().commands.key(key(KeyCode::Enter));
+    app.live.as_mut().unwrap().commands.take_intent();
+    app.live.as_mut().unwrap().commands.key(key(KeyCode::Esc));
+    app.observe_live(Observation::Commands(Update::Verified(Box::new(p))))
+        .unwrap();
+    assert!(app.live.as_mut().unwrap().take_submission().is_none());
+    assert!(!app.has_live_commands());
+    assert_eq!(app.composer.text(), "original draft");
+}
+
+#[test]
+fn staging_preflights_remaining_history_budget_without_replacing_draft() {
+    let mut app = Demo::live("custom".into(), "model".into());
+    app.observe_live(Observation::Ready).unwrap();
+    app.live
+        .as_mut()
+        .unwrap()
+        .submit(&"x".repeat(32000))
+        .unwrap();
+    app.live.as_mut().unwrap().take_submission();
+    app.observe_live(Observation::Complete).unwrap();
+    app.insert_text("original main draft");
+    app.open_commands();
+    app.live.as_mut().unwrap().commands.take_intent();
+    let p = prepared(&"y".repeat(1000));
+    app.observe_live(Observation::Commands(Update::Prepared {
+        catalog: Box::new(catalog()),
+        prepared: Box::new(p),
+    }))
+    .unwrap();
+    assert!(app.live.as_ref().unwrap().commands.prepared.is_none());
+    assert!(app.live.as_ref().unwrap().commands.notice.contains("limit"));
+    assert_eq!(app.composer.text(), "original main draft");
+    assert!(app.live.as_mut().unwrap().take_submission().is_none());
+}
+#[test]
+fn bounded_completion_retains_all_rows_and_source_skill_rank_including_shadowed() {
+    let c = catalog();
+    assert_eq!(c.entries[3].skill_order, Some(1));
+    let mut picker = litetui_terminal::completion::CompletionPicker::default();
+    let candidates = (0..1024)
+        .map(|i| litetui_terminal::completion::Completion {
+            name: format!("command-{i}"),
+            description: String::new(),
+            kind: litetui_terminal::completion::CompletionKind::Command,
+        })
+        .collect::<Vec<_>>();
+    picker.refilter(&candidates, "/");
+    assert_eq!(picker.matches().len(), 1024);
+    picker.move_by(1023);
+    assert_eq!(picker.current().unwrap().name, "command-1023");
+}
+#[test]
+fn all_themes_and_minimum_geometry_preserve_preview_and_escape_metadata() {
+    for theme in litetui_terminal::theme::builtin_themes() {
+        let mut c = catalog();
+        c.entries[0].title = "Title\u{202e}\nforged".into();
+        let mut v = View::default();
+        v.open(false);
+        v.take_intent();
+        v.observe(Update::Catalog {
+            catalog: c,
+            skills: false,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(42, 18)).unwrap();
+        terminal.draw(|f| v.draw(f, f.area(), &theme)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("\\u{202e}\\nforged"));
+        assert!(!screen.contains('\u{202e}'));
+        assert_eq!(terminal.backend().buffer()[(2, 2)].bg, theme.background);
+    }
+}
+
+#[test]
+fn shifted_printable_search_and_arguments_are_exact_but_chords_do_not_type() {
+    let mut v = view(true);
+    draw(&mut v, 80, 28);
+    v.key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT));
+    assert!(draw(&mut v, 80, 28).contains("Search: E"));
+    v.key(key(KeyCode::Enter));
+    draw(&mut v, 80, 28);
+    for c in ['A', ':', 'Δ'] {
+        v.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT));
+    }
+    v.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    v.key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT));
+    assert_eq!(v.arguments(), "A:Δ");
+}
+
+#[test]
+fn raw_route_echo_budget_allows_a_full_composer_of_astral_text() {
+    let c = catalog();
+    let args = "😀".repeat(16372);
+    let raw = format!("/ExactSkill {args}");
+    let mut v = route_data(&c, Some(&raw));
+    v["row_id"] = json!(c.entries[2].id);
+    v["native_action"] = json!("skill_prepare");
+    v["arguments"] = json!(args);
+    assert!(serde_json::to_vec(&v).unwrap().len() > 128 * 1024);
+    assert_eq!(
+        Route::parse(&v, &c, None, Some(&raw), "").unwrap().action,
+        Action::SkillPrepare
+    );
+}

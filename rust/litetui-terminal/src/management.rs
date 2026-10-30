@@ -168,6 +168,10 @@ pub enum Step {
     },
     Control(Update),
     Queue(crate::restored_queue::Update),
+    Commands {
+        update: crate::command_palette::Update,
+        policy: Option<Value>,
+    },
     Settings {
         update: crate::settings_view::Update,
         policy: Option<Value>,
@@ -265,12 +269,24 @@ struct SettingsEditPending {
     outcome: Option<crate::settings_editor::Outcome>,
     snapshot: Option<crate::settings_editor::Snapshot>,
 }
+struct CommandPending {
+    id: Option<CommandId>,
+    stage: u8,
+    raw: Option<String>,
+    row: Option<String>,
+    arguments: String,
+    skills: bool,
+    reviewed: Option<crate::prepared_skill::Prepared>,
+}
 pub struct Management {
     wire: WireClient,
     control: Option<ControlPending>,
     queue: Option<QueuePending>,
     queue_menu: Option<crate::restored_queue::Snapshot>,
     settings: Option<CommandId>,
+    command: Option<CommandPending>,
+    command_catalog: Option<crate::command_palette::Catalog>,
+    command_prepared: Option<crate::prepared_skill::Prepared>,
     settings_edit: Option<SettingsEditPending>,
     settings_snapshot: Option<crate::settings_editor::Snapshot>,
     settings_review: Option<crate::settings_editor::Review>,
@@ -311,6 +327,9 @@ impl Default for Management {
             queue: None,
             queue_menu: None,
             settings: None,
+            command: None,
+            command_catalog: None,
+            command_prepared: None,
             settings_edit: None,
             settings_snapshot: None,
             settings_review: None,
@@ -394,6 +413,7 @@ impl Management {
     pub fn ready(&self) -> bool {
         self.phase == Phase::Active
             && !self.failed
+            && self.command.is_none()
             && self.settings.is_none()
             && self.settings_edit.is_none()
             && self.backend.is_none()
@@ -591,6 +611,17 @@ impl Management {
                 .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
             {
                 self.backend_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .command
+                .as_ref()
+                .is_some_and(|p| p.id.as_ref() == id.as_ref()) =>
+            {
+                self.command_response(frame)
             }
             Notice::Response {
                 id,
@@ -1995,6 +2026,231 @@ impl Management {
         };
         pending.id = id;
         self.settings_edit = Some(pending);
+        Ok(Step::Write(command))
+    }
+}
+
+impl Management {
+    pub fn request_command(&mut self, intent: crate::command_palette::Intent) -> io::Result<Value> {
+        use crate::command_palette::{Intent, LIST, PREPARE, RESOLVE};
+        if !self.ready() {
+            return Err(fail("Finish current work before opening commands"));
+        }
+        self.ensure_drained()?;
+        if self.browser_authority.is_none() {
+            return Err(fail("Runtime omitted owned command authority"));
+        }
+        let session = &self.expected.as_ref().expect("active").0;
+        let mut pending = CommandPending {
+            id: None,
+            stage: 0,
+            raw: None,
+            row: None,
+            arguments: String::new(),
+            skills: false,
+            reviewed: None,
+        };
+        let mut command = match intent {
+            Intent::Read { skills } => {
+                pending.skills = skills;
+                self.command_prepared = None;
+                json!({"type":LIST,"version":1,"session_id":session})
+            }
+            Intent::Raw(raw) => {
+                if raw.len() > 65536 || !raw.trim_start().starts_with('/') {
+                    return Err(fail("Enter a slash command within 64 KiB"));
+                }
+                pending.raw = Some(raw);
+                self.command_prepared = None;
+                json!({"type":LIST,"version":1,"session_id":session})
+            }
+            Intent::Resolve { snapshot, row } => {
+                let c = self
+                    .command_catalog
+                    .as_ref()
+                    .filter(|c| c.snapshot == snapshot)
+                    .ok_or_else(|| fail("Refresh command catalog before selecting"))?;
+                let entry = c
+                    .entries
+                    .iter()
+                    .find(|e| e.id == row)
+                    .ok_or_else(|| fail("Command row is absent"))?;
+                if entry.action.is_none() {
+                    return Err(fail(&entry.unavailable));
+                }
+                pending.stage = 1;
+                pending.row = Some(row.clone());
+                let mut v = c.request();
+                v["type"] = json!(RESOLVE);
+                v["row_id"] = json!(row);
+                v["arguments"] = json!("");
+                v
+            }
+            Intent::Prepare {
+                snapshot,
+                row,
+                arguments,
+            } => {
+                let c = self
+                    .command_catalog
+                    .as_ref()
+                    .filter(|c| c.snapshot == snapshot)
+                    .ok_or_else(|| fail("Refresh skill catalog before preparing"))?;
+                if !c.entries.iter().any(|e| e.id == row && e.kind == "skill")
+                    || arguments.len() > 65536
+                {
+                    return Err(fail("Invalid skill row or argument budget"));
+                }
+                pending.stage = 2;
+                pending.row = Some(row.clone());
+                pending.arguments = arguments.clone();
+                let mut v = c.request();
+                v["type"] = json!(PREPARE);
+                v["row_id"] = json!(row);
+                v["arguments"] = json!(arguments);
+                v["backend"] = json!(c.backend);
+                v["model"] = json!(c.model);
+                v
+            }
+            Intent::Submit { digest } => {
+                let p = self
+                    .command_prepared
+                    .as_ref()
+                    .filter(|p| p.digest == digest)
+                    .ok_or_else(|| {
+                        fail("Prepare and review this exact skill again before submitting")
+                    })?;
+                pending.stage = 3;
+                pending.row = Some(p.row.clone());
+                pending.arguments = p.arguments.clone();
+                pending.reviewed = Some(p.clone());
+                json!({"type":PREPARE,"version":1,"session_id":p.session,"agent_id":p.agent,"backend":p.backend,"model":p.model,"snapshot":p.snapshot,"row_id":p.row,"arguments":p.arguments})
+            }
+        };
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve command read"))?;
+        command["id"] = id.to_value();
+        pending.id = Some(id);
+        self.command = Some(pending);
+        Ok(command)
+    }
+    fn command_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::command_palette::{Action, Catalog, PREPARE, RESOLVE, Route, Update};
+        let publish = |update| Step::Commands {
+            update,
+            policy: None,
+        };
+        self.ensure_drained()?;
+        let mut pending = self.command.take().expect("command pending");
+        if frame["ok"] != true {
+            return Ok(publish(Update::Rejected(
+                text(&frame, "error", 4096)?.into(),
+            )));
+        }
+        let v = &frame["result"];
+        let (session, backend, model, _) = self.expected.as_ref().expect("active");
+        let (agent, _) = self.browser_authority.as_ref().expect("authority");
+        let mut command = match pending.stage {
+            0 => {
+                let c = Catalog::parse(v, session, agent, backend, model)?;
+                self.command_catalog = Some(c.clone());
+                if let Some(raw) = &pending.raw {
+                    pending.stage = 1;
+                    let mut command = c.request();
+                    command["type"] = json!(RESOLVE);
+                    command["command"] = json!(raw);
+                    command
+                } else {
+                    return Ok(publish(Update::Catalog {
+                        catalog: c,
+                        skills: pending.skills,
+                    }));
+                }
+            }
+            1 => {
+                let c = self.command_catalog.as_ref().expect("catalog");
+                let r = Route::parse(
+                    v,
+                    c,
+                    pending.row.as_deref(),
+                    pending.raw.as_deref(),
+                    &pending.arguments,
+                )?;
+                if r.action == Action::SkillPrepare {
+                    pending.row = Some(r.row.clone());
+                    pending.arguments = r.arguments.clone();
+                    pending.stage = 2;
+                    let mut command = c.request();
+                    command["type"] = json!(PREPARE);
+                    command["row_id"] = json!(r.row);
+                    command["arguments"] = json!(r.arguments);
+                    command["backend"] = json!(c.backend);
+                    command["model"] = json!(c.model);
+                    command
+                } else {
+                    return Ok(publish(Update::Route {
+                        catalog: c.clone(),
+                        route: r,
+                    }));
+                }
+            }
+            2 | 3 => {
+                let c = self.command_catalog.as_ref().expect("catalog");
+                let prepared = crate::prepared_skill::Prepared::parse(
+                    v,
+                    c,
+                    pending.row.as_deref().expect("skillrow"),
+                    &pending.arguments,
+                )?;
+                if let Err(error) = crate::live_chat::display_units(&prepared.prompt) {
+                    return Ok(publish(Update::Rejected(error.to_string())));
+                }
+                if pending.stage == 3 && pending.reviewed.as_ref() != Some(&prepared) {
+                    return Ok(publish(Update::Rejected("Skill file or prepared payload changed; prepare and review again before submitting".into())));
+                }
+                pending.stage = if pending.stage == 3 { 5 } else { 4 };
+                pending.reviewed = Some(prepared);
+                json!({"type":"gui.state","include_conversations":false})
+            }
+            4 | 5 => {
+                let state = Snapshot::parse(v)?;
+                let (_, _, _, profile) = self.expected.as_ref().expect("active");
+                let (_, schedules) = self.browser_authority.as_ref().expect("authority");
+                if (&state.session, &state.backend, &state.model, &state.profile)
+                    != (session, backend, model, profile)
+                    || state.held_restored_input.is_none()
+                    || state.schedules_paused != *schedules
+                    || v["ownership"]["agent_id"] != *agent
+                {
+                    return Err(fail("Prepared skill state readback changed owned runtime"));
+                }
+                let prepared = pending.reviewed.expect("verified preparation");
+                let update = if pending.stage == 5 {
+                    self.command_prepared = None;
+                    Update::Verified(Box::new(prepared))
+                } else {
+                    self.command_prepared = Some(prepared.clone());
+                    Update::Prepared {
+                        catalog: Box::new(self.command_catalog.as_ref().expect("catalog").clone()),
+                        prepared: Box::new(prepared),
+                    }
+                };
+                return Ok(Step::Commands {
+                    update,
+                    policy: Some(v["tool_policy"].clone()),
+                });
+            }
+            _ => return Err(fail("Invalid command operation stage")),
+        };
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve command resolution"))?;
+        command["id"] = id.to_value();
+        pending.id = Some(id);
+        self.command = Some(pending);
         Ok(Step::Write(command))
     }
 }

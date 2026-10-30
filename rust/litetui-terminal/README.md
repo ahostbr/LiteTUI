@@ -326,3 +326,29 @@ A stale review requires refresh and new confirmation; no automatic retry occurs.
 A partial runtime failure shows the saved value and still-effective value separately.
 An uncertain write/application requires reopening the runtime. The chat draft is
 preserved. Broader settings editing and engine controls remain pending.
+
+
+### Source commands and prepared skills
+
+In idle chat, F11 opens the source command palette. Type to search; Up/Down,
+PageUp/PageDown or paired clicks select rows. Tab switches commands and skills;
+F5 refreshes, Left/Right inspect details, and Escape closes. Supported commands
+open the existing native controls. Unsupported plugin actions show a reason.
+Raw slash commands use the same source resolver, including aliases; unknown or
+unsupported commands never become model prompts.
+
+Select a skill to edit its arguments in a separate lossless draft. Paste preserves
+multiline text; Alt+Enter adds a newline. Enter prepares the exact source file,
+then PageDown inspects the complete prepared text and provenance. A fresh Enter
+on the final preview page verifies the source again and submits normally. Tab
+returns to arguments; F5 refreshes; Escape cancels, including while verification
+is pending. Preparation itself never sends a prompt. The original chat draft is
+preserved. Skills sharing command names remain available in the skills view or
+through /skills name; direct slash commands keep their source precedence.
+
+Invalid, changed or oversized files/payloads are refused without truncation or
+automatic retry. Existing native transcript/display limits can also refuse a large
+prepared skill while leaving the session usable. Source whitespace, frontmatter,
+directory binding and argument suffix are preserved through normal RPC admission.
+These paths have controlled source/process and TestBackend coverage; remaining
+plugin screens and real-provider/terminal-host acceptance are still open.

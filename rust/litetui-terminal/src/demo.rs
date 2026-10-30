@@ -32,6 +32,7 @@ pub struct Demo {
     pub max_scroll: usize,
     pub follow_selection: bool,
     pub viewport_too_small: bool,
+    pub command_quit: bool,
     pub approval_open: bool,
     pub approval_allow: bool,
     pub ticks: u64,
@@ -122,6 +123,7 @@ impl Default for Demo {
             max_scroll: 0,
             follow_selection: false,
             viewport_too_small: false,
+            command_quit: false,
             approval_open: false,
             approval_allow: false,
             ticks: 0,
@@ -166,8 +168,24 @@ impl Demo {
         } else {
             Vec::new()
         };
+        if let Some(catalog) = &chat.commands.catalog {
+            self.completion_candidates = catalog.completions();
+        }
+        let route = chat.commands.take_route();
         if following {
             self.scroll = usize::MAX;
+        }
+        if let Some(action) = route {
+            use crate::command_palette::Action;
+            match action {
+                Action::Models => self.open_models(crate::model_controls::Kind::Model),
+                Action::Thinking => self.open_models(crate::model_controls::Kind::Thinking),
+                Action::Backend => self.open_backend(),
+                Action::Conversations => self.open_browser(),
+                Action::Settings => self.open_settings(),
+                Action::Quit => self.command_quit = true,
+                Action::Skills | Action::SkillPrepare => {}
+            }
         }
         Ok(())
     }
@@ -191,6 +209,26 @@ impl Demo {
                 return;
             }
             chat.controls.open(kind);
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
+    pub fn has_live_commands(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.commands.owns_input())
+    }
+    pub fn open_commands(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+                self.notice = "Finish current work before opening commands.".into();
+                return;
+            }
+            chat.commands.open(false);
             self.themes_open = false;
             self.completion.dismiss();
             self.footer.leave();
@@ -286,7 +324,8 @@ impl Demo {
         }
     }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_settings()
+        self.has_live_commands()
+            || self.has_live_settings()
             || self.has_live_backend()
             || self.has_live_browser()
             || self.has_live_controls()
@@ -494,6 +533,25 @@ impl Demo {
             self.composer.text().trim().to_string()
         };
         if text.trim().is_empty() {
+            return;
+        }
+        if text.trim_start().starts_with('/') && self.live.is_some() {
+            if !self.has_live_input()
+                && let Some(chat) = self.live.as_mut()
+            {
+                if chat.ready
+                    && !chat.busy
+                    && !chat.closed
+                    && !chat.quitting
+                    && !chat.queue_pending()
+                {
+                    chat.commands.raw(&text);
+                    self.completion.dismiss();
+                    self.footer.leave();
+                } else {
+                    self.notice = "Finish current work before resolving commands.".into();
+                }
+            }
             return;
         }
         if let Some(chat) = &mut self.live {
