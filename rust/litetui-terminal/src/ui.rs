@@ -750,6 +750,8 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         if let Some(chat) = app.live.as_mut() {
             chat.controls.hide();
             chat.queue.hide();
+            chat.settings.hide();
+            chat.backend_controls.hide();
             chat.browser.hide();
         }
         app.footer.update_visible(&[]);
@@ -1052,6 +1054,20 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &t);
     } else if let Some(chat) = &mut app.live {
         chat.queue.hide();
+    }
+    if app.has_live_settings() {
+        app.live
+            .as_mut()
+            .expect("settings view")
+            .settings
+            .draw(frame, area, &t);
+    }
+    if app.has_live_backend() {
+        app.live
+            .as_mut()
+            .expect("backend selector")
+            .backend_controls
+            .draw(frame, area, &t);
     }
     if app.has_live_browser() {
         app.live

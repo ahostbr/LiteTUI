@@ -54,10 +54,6 @@ OPERATIONS = (
     "engine.start", "engine.stop", "engine.status",
     "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile", "restored_input.resolve",
 )
-# These settings are consumed during construction/connection. A saved choice
-# does not become an effective connection merely because a setter returned.
-RECONNECT = frozenset({"lm_host", "ninfer_host", "strata_host", "llama_host", "llama_executable", "backend", "default_model", "mcp_enabled", "skills_enabled", "mcp_disabled_servers"})
-RESTART = frozenset({"plugins_disabled", "skill_roots"})
 
 
 def active_work(app):
@@ -81,6 +77,9 @@ def active_work(app):
 
 
 def _idle(app):
+    from litetui.backend_transition import require_open
+
+    require_open(app)
     if getattr(app, "_chat_running", lambda: False)():
         raise ValueError("An operation is active; cancel or wait for it before changing this resource")
     try:
@@ -114,6 +113,8 @@ def _settings(app):
     deferred = {}
     metadata = []
     from litetui import gpu_gate
+    from litetui.settings_scope import SETTING_SPECS
+    from litetui.sidecar_settings import SECRET_FIELDS
 
     hide_ninfer = not gpu_gate.is_rtx_5090()   # T893
     for field in fields(settings_mod.Settings):
@@ -122,15 +123,15 @@ def _settings(app):
             requested.pop(name, None)
             effective.pop(name, None)
             continue
-        apply = "restart" if name in RESTART else "reconnect" if name in RECONNECT else "immediate"
-        if apply == "immediate":
+        apply = SETTING_SPECS[name].apply_timing
+        if apply in {"immediate", "next_turn"}:
             effective[name] = requested[name]
         if effective.get(name) != requested[name]:
             deferred[name] = apply
         metadata.append({"name": name, "label": name.replace("_", " ").capitalize(),
                          "type": str(field.type), "apply": apply,
                          "source": settings_mod.source_of(name) or "settings",
-                         "read_only": bool(settings_mod.source_of(name))})
+                         "read_only": bool(settings_mod.source_of(name)), "secret": name in SECRET_FIELDS})
     return {"metadata": metadata, "requested": requested, "effective": effective, "deferred": deferred}
 
 
@@ -235,6 +236,9 @@ def _conversations(app, action, cmd):
                 for path, meta, msgs in ConversationRepository.list_all()]
     session_id = cmd.get("session_id") or getattr(app, "convo_id", "")
     if action == "read":
+        budget = cmd.get("max_response_bytes")
+        if "max_response_bytes" in cmd and (type(budget) is not int or not 1 <= budget <= 1048576):
+            raise ValueError("max_response_bytes must be an integer from 1 through 1048576")
         if session_id == getattr(app, "convo_id", "") and not _session_path(session_id, app).exists():
             result = {"session_id": session_id, "meta": {"id": session_id}, "messages": copy.deepcopy(app.conversation)}
         else:
@@ -242,6 +246,14 @@ def _conversations(app, action, cmd):
         result["read_only"] = getattr(app, '_agent_session', None) is None
         if result["read_only"]:
             result["ownership_reason"] = "Legacy conversation archive is read-only; no owned agent session"
+        if budget is not None:
+            # Match rpc._respond/rpc_emit framing and default ASCII escaping.
+            response = {"type": "response", "ok": True}
+            if cmd.get("id") is not None:
+                response["id"] = cmd["id"]
+            response["result"] = result
+            if len(json.dumps(response, default=str).encode("utf-8")) > budget:
+                raise ValueError("Conversation read exceeds max_response_bytes; current session is unchanged")
         return result
     if getattr(app, '_agent_session', None) is None:
         raise ValueError("Mutable conversation RPC requires an owned agent session")
@@ -773,6 +785,10 @@ async def _async_dispatch(app, cmd):
     if operation == "gui.restored_input.settled":
         return await restored_input.settled(app, cmd)
     if operation == "gui.backend.set":
+        from litetui.backend_transition import GUARDED_FIELDS, transition
+
+        if GUARDED_FIELDS.intersection(cmd):
+            return await transition(app, cmd)
         _idle(app)
         candidate = _validate(app, {"backend": cmd.get("name")})
         settings_runtime.persist_or_raise(app, candidate)

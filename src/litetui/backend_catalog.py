@@ -7,8 +7,11 @@ setting does not establish the effective engine, nor does either prove readiness
 """
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass
+import os
+import stat
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 from litetui import llm_backend
@@ -61,6 +64,8 @@ def _context(app, expected):
     configured = _text(settings.backend, MAX_NAME)
     if authority.backend != selected:
         raise ValueError("Active backend disagrees with owned agent authority")
+    if (getattr(app, "model_id", None) or None) != authority.model:
+        raise ValueError("Active model disagrees with owned agent authority")
     requested = settings.codex_native_engine
     if type(requested) is not bool:
         raise ValueError("Configured Codex engine selection must be a boolean")
@@ -97,6 +102,66 @@ def _rows(selected):
     return rows
 
 
+
+def _encoded(value, limit):
+    data = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                      allow_nan=False).encode("utf-8")
+    if len(data) > limit:
+        raise ValueError("Backend snapshot exceeds its byte budget")
+    return data
+
+
+def _disk_hash(path, limit):
+    from litetui.agent_store import _unlinked
+
+    path = _unlinked(path)
+    if not path.exists():
+        return None
+    before = path.stat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+        raise ValueError("Backend snapshot file is invalid or oversized")
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    after = _unlinked(path).stat()
+    if (len(data) > limit or
+            (before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev) !=
+            (after.st_size, after.st_mtime_ns, after.st_ino, after.st_dev)):
+        raise ValueError("Backend snapshot file changed while reading")
+    return hashlib.sha256(data).hexdigest()
+
+
+def fingerprint(app, context, result):
+    """Bind a selection to current owned disk, runtime, policy and launch facts."""
+    from litetui import store_identity
+    from litetui.gui_rpc import _tool_policy
+
+    launch = getattr(app, "_launch_options", None)
+    facts = {
+        "catalog": result, "settings": asdict(context.settings),
+        "authority": asdict(context.authority), "tool_policy": _tool_policy(app),
+        "store_identity": store_identity.capture(app), "cwd": os.getcwd(),
+        "launch": asdict(launch) if is_dataclass(launch) and not isinstance(launch, type) else None,
+        "launch_backend": getattr(app, "_launch_backend", None),
+        "launch_overrides": getattr(app, "_launch_overrides", {}),
+        "invocation_saved": getattr(app, "_invocation_saved_values", {}),
+        "cli_backend": getattr(app, "_cli_initial_backend", None),
+        "cli_model": getattr(app, "_cli_initial_model", None),
+        "cli_thinking": getattr(app, "_cli_thinking_level", None),
+        "effective_thinking": getattr(app, "_cli_effective_thinking", None),
+        "thinking": getattr(app, "_thinking_level", None),
+        "hold": getattr(app, "_hold_restored_input", False),
+        "pending_count": len(getattr(app, "_pending_input", ())),
+        "history": hashlib.sha256(_encoded(app.conversation, 8 * 1024 * 1024)).hexdigest(),
+        "files": [
+            _disk_hash(context.session.store.data_root / "settings.json", 1024 * 1024),
+            _disk_hash(context.session.memory_root / "settings.json", 1024 * 1024),
+            _disk_hash(context.store.convo_dir / "settings.json", 1024 * 1024),
+            _disk_hash(context.store.convo_path, 8 * 1024 * 1024),
+            _disk_hash(context.store.convo_dir / "claude_ledger.json", 8 * 1024 * 1024),
+        ],
+    }
+    return hashlib.sha256(_encoded(facts, 1024 * 1024)).hexdigest()
+
 def catalog(app, cmd):
     """Read bounded source metadata for this owned idle session without mutation."""
     before = _context(app, cmd.get("session_id"))
@@ -108,14 +173,19 @@ def catalog(app, cmd):
         "session_id": before.session_id, "agent_id": valid_id(before.authority.agent_id),
         "agent_name": _text(before.authority.name, MAX_LABEL),
         "selected_backend": before.selected, "configured_backend": before.configured,
+        "selected_model": _text(app.model_id, 4096) if app.model_id else "",
         "codex_engine": {"requested_native": before.requested_native, "effective": before.effective},
         "entries": rows,
     }
+    snapshot = fingerprint(app, before, result)
     after = _context(app, before.session_id)
     if (any(getattr(after, field) is not getattr(before, field)
             for field in ("session", "store", "backend", "settings"))
             or after != before):
         raise ValueError("Backend catalog context changed while reading; refresh before continuing")
+    if fingerprint(app, after, result) != snapshot:
+        raise ValueError("Backend catalog changed while reading; refresh before continuing")
+    result["snapshot"] = snapshot
     if len(json.dumps(result, allow_nan=False).encode("utf-8")) > MAX_RESPONSE:
         raise ValueError("Backend catalog exceeds the response byte budget")
     return result

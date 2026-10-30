@@ -4247,6 +4247,11 @@ class LiteTUI(App):
         return True
 
     def _resume(self, path: Path, *, startup: bool = False) -> bool:
+        from litetui.backend_transition import submission_refusal
+
+        if reason := submission_refusal(self):
+            self._system(reason)
+            return False
         if getattr(self, '_agent_session', None) is not None:
             try:
                 expected = self._agent_session.conversation_directory(path.parent.name) / 'convo.jsonl'
@@ -5501,6 +5506,9 @@ class LiteTUI(App):
         backend = self.backend
         conversation = self.conversation
         try:
+            from litetui.backend_transition import require_open
+
+            require_open(self)
             # The llama backend may spawn its own server here (never loading
             # a model) or attach to LiteSuite's — either way, say which.
             from litetui.launch_options import prepare
@@ -5645,7 +5653,8 @@ class LiteTUI(App):
                 # model_switch.py), so nothing is lost by staying quiet.
                 if len(self.available_models) > 1:
                     self._system(f"{len(self.available_models)} models available — /models to list, /model <n> to switch")
-                if self.backend.name == "lmstudio" and self._cli_thinking_level is None:
+                if (self.backend.name == "lmstudio" and self._cli_thinking_level is None
+                        and not getattr(self, "_backend_transition_inflight", False)):
                     self._probe_thinking()
                 self._rpc_emit_model_state()
             else:
@@ -7106,6 +7115,11 @@ class LiteTUI(App):
         on the old endpoint keeps talking to the old server. The reconnect is
         part of the change, not a follow-up.
         """
+        from litetui.backend_transition import submission_refusal
+
+        if reason := submission_refusal(self):
+            self._system(reason)
+            return
         if choice == "ninfer":
             from litetui import gpu_gate
 
@@ -8430,6 +8444,11 @@ class LiteTUI(App):
     def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
         # Keep the re-clickable path local to this submission, including queued
         # and interrupted turns; unrelated bubbles never share attachment state.
+        from litetui.backend_transition import submission_refusal
+
+        if reason := submission_refusal(self):
+            self._refuse_submit("backend_transition", reason)
+            return
         image_path: str | None = None
         text = value.strip()
         if not text and not self.pending_image:
@@ -8688,6 +8707,9 @@ class LiteTUI(App):
 
 
     def _validate_owned_execution(self) -> None:
+        from litetui.backend_transition import require_open
+
+        require_open(self)
         if getattr(self, '_agent_session', None) is not None:
             authority = self._agent_session.authority
             if getattr(self.backend, 'name', None) != authority.backend:
@@ -9937,6 +9959,10 @@ class LiteTUI(App):
         exclusive in that group, and a flush that streamed now would CANCEL
         whichever is running.
         """
+        from litetui.backend_transition import submission_refusal
+
+        if submission_refusal(self):
+            return
         if not self._pending_input:
             return
         if self._chat_running() or getattr(self, "_mcp_maintenance", False):
@@ -10962,6 +10988,11 @@ class LiteTUI(App):
         hook_host.start_prompt(self, {"content": content, "source": "typed", "tool_profile": seat_authority.seat_profile(self)})
 
     def _handle_command(self, cmd: str) -> None:
+        from litetui.backend_transition import submission_refusal
+
+        if reason := submission_refusal(self):
+            self._system(reason)
+            return
         parts = cmd.split(maxsplit=1)
         name = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""

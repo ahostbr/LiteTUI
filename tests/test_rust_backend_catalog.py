@@ -46,6 +46,7 @@ async def catalog_app(make_app, monkeypatch, request):
                                     tools_enabled=False, mcp_enabled=False, skills_enabled=False,
                                     codex_native_engine=native))
     app = make_app(initial_backend=backend, initial_model="fixture-model")
+    app._model_id = "fixture-model"  # The source catalog describes a connected selection.
     app._system = lambda *_: None
     app._refresh_ctx_label = lambda: None
     app._sync_fleet_identity = lambda: None
@@ -100,6 +101,7 @@ async def test_catalog_uses_real_source_visibility_labels_order_and_engine_contr
         "session_id": app.convo_id, "agent_id": app._agent_session.authority.agent_id,
         "agent_name": app._agent_session.authority.name,
         "selected_backend": "codex", "configured_backend": "codex",
+        "selected_model": "fixture-model", "snapshot": result["snapshot"],
         "codex_engine": {"requested_native": True, "effective": "native"},
         "entries": [{"name": name, "label": label, "selected": name == "codex",
                      "owned_engine_controls": name in llm_backend.ENGINE_BACKENDS}

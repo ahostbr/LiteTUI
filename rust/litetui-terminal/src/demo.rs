@@ -196,6 +196,55 @@ impl Demo {
             self.footer.leave();
         }
     }
+    pub fn has_live_settings(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.settings.owns_input())
+    }
+    pub fn open_settings(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+                self.notice = "Finish current work before reading settings.".into();
+                return;
+            }
+            chat.settings.open();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
+    pub fn has_live_backend(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.backend_controls.owns_input())
+    }
+    pub fn open_backend(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+                self.notice = "Finish current work before changing backend.".into();
+                return;
+            }
+            if chat
+                .runtime_state
+                .startup()
+                .and_then(|state| state.held_restored_input)
+                .is_some_and(|count| count > 0)
+            {
+                self.notice = "Resolve held input before changing backend.".into();
+                return;
+            }
+            chat.backend_controls.open();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
     pub fn has_live_browser(&self) -> bool {
         self.live
             .as_ref()
@@ -237,7 +286,9 @@ impl Demo {
         }
     }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_browser()
+        self.has_live_settings()
+            || self.has_live_backend()
+            || self.has_live_browser()
             || self.has_live_controls()
             || self.has_live_queue()
             || self.has_live_approval()

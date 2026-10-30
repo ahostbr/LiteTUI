@@ -120,6 +120,8 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             if let Some(chat) = app.live.as_mut() {
                 chat.controls.close();
                 chat.queue.close();
+                chat.settings.close();
+                chat.backend_controls.close();
                 chat.browser.close();
             }
             app.themes_open = false;
@@ -194,6 +196,18 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         if !chat.quitting && !chat.cancelling() {
             chat.questions.key(key);
         }
+        return false;
+    }
+    if app.has_live_settings() {
+        app.live.as_mut().expect("settings view").settings.key(key);
+        return false;
+    }
+    if app.has_live_backend() {
+        app.live
+            .as_mut()
+            .expect("backend selector")
+            .backend_controls
+            .key(key);
         return false;
     }
     if app.has_live_browser() {
@@ -330,6 +344,12 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::F(10) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
+            app.open_settings();
+        }
+        KeyCode::F(9) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
+            app.open_backend();
+        }
         KeyCode::F(8) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_browser();
         }
@@ -453,6 +473,14 @@ fn handle_key(
             && matches!(event.code, KeyCode::Char('v' | 'V'))
         {
             let chat = app.live.as_mut().expect("live question");
+            if !chat.quitting && !chat.cancelling() && chat.backend_controls.editing() {
+                match clipboard.read_text() {
+                    Ok(Some(text)) => chat.backend_controls.paste(&text),
+                    Ok(None) => {}
+                    Err(error) => chat.backend_controls.notice = error,
+                }
+            }
+
             if !chat.quitting
                 && !chat.cancelling()
                 && let Some(pending) = chat.questions.current_mut()
@@ -527,6 +555,21 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_backend() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live
+                .as_mut()
+                .expect("backend selector")
+                .backend_controls
+                .paste(text);
+        }
+        return;
+    }
+
     if !app.stop_open()
         && !app.viewport_too_small
         && !app.has_live_approval()
@@ -552,6 +595,36 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_settings() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live
+                .as_mut()
+                .expect("settings view")
+                .settings
+                .mouse(event);
+        }
+        return;
+    }
+
+    if app.has_live_backend() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live
+                .as_mut()
+                .expect("backend selector")
+                .backend_controls
+                .mouse(event);
+        }
+        return;
+    }
+
     if app.has_live_browser() {
         if !app.viewport_too_small {
             app.live
@@ -798,6 +871,8 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         false
                     }
                     Event::FocusLost | Event::Resize(..) => {
+                        app.live.as_mut().expect("live").settings.hide();
+                        app.live.as_mut().expect("live").backend_controls.hide();
                         app.live.as_mut().expect("live").browser.hide();
                         false
                     }
@@ -834,6 +909,27 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
             if !quitting
                 && let Some(answer) = app.live.as_mut().expect("live").questions.take_decision()
                 && let Err(error) = runtime.answer(answer)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
+            if !quitting
+                && let Some(intent) = app.live.as_mut().expect("live").settings.take_intent()
+                && let Err(error) = runtime.settings(intent)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
+            if !quitting
+                && let Some(intent) = app
+                    .live
+                    .as_mut()
+                    .expect("live")
+                    .backend_controls
+                    .take_intent()
+                && let Err(error) = runtime.backend(intent)
             {
                 view_failure = Some(error.to_string());
                 app.finish_live(view_failure.clone());
@@ -938,7 +1034,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | F7 held input | F8 conversations | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -2420,5 +2516,120 @@ mod tests {
         assert!(!app.has_live_browser());
         assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
         assert_eq!(app.composer.text(), "preserved draft");
+    }
+    #[test]
+    fn backend_selector_owns_model_editor_clipboard_confirmation_and_main_draft() {
+        use litetui_terminal::{
+            backend_controls::{Catalog, Intent, Update},
+            live::Observation,
+        };
+        let mut app = Demo::live("custom".into(), "old".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("unsent main draft");
+        let mut router = KeyRouter::default();
+        app.live.as_mut().unwrap().busy = true;
+        plain(&mut app, &mut router, KeyCode::F(9));
+        assert!(!app.has_live_backend());
+        app.live.as_mut().unwrap().busy = false;
+        plain(&mut app, &mut router, KeyCode::F(9));
+        assert_eq!(
+            app.live.as_mut().unwrap().backend_controls.take_intent(),
+            Some(Intent::Read)
+        );
+        let id = "00000000-0000-4000-8000-000000000001";
+        let data = serde_json::json!({"version":1,"kind":"support_metadata","readiness_checked":false,"session_id":id,"agent_id":id,"agent_name":"Agent","snapshot":"a".repeat(64),"selected_backend":"custom","configured_backend":"custom","selected_model":"old","codex_engine":{"requested_native":false,"effective":null},"entries":[{"name":"custom","label":"Custom","selected":true,"owned_engine_controls":false},{"name":"lmstudio","label":"LM Studio","selected":false,"owned_engine_controls":true}]});
+        app.observe_live(Observation::Backend(Update::Catalog(
+            Catalog::parse(&data, 1, id, id).unwrap(),
+        )))
+        .unwrap();
+        render_footer(&mut app);
+        let mut clipboard = TestClipboard {
+            read: Some("new-model".into()),
+            ..Default::default()
+        };
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        handle_key(&mut app, &mut router, ctrl_v, &mut clipboard);
+        assert_eq!(clipboard.reads, 0);
+        plain(&mut app, &mut router, KeyCode::Down);
+        plain(&mut app, &mut router, KeyCode::Enter);
+        handle_key(&mut app, &mut router, ctrl_v, &mut clipboard);
+        assert_eq!(clipboard.reads, 1);
+        assert_eq!(
+            app.live.as_ref().unwrap().backend_controls.model_text(),
+            "new-model"
+        );
+        paste(&mut app, "\nnot-a-model");
+        assert_eq!(
+            app.live.as_ref().unwrap().backend_controls.model_text(),
+            "new-model"
+        );
+        plain(&mut app, &mut router, KeyCode::Enter);
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .backend_controls
+                .take_intent()
+                .is_none()
+        );
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(matches!(
+            app.live.as_mut().unwrap().backend_controls.take_intent(),
+            Some(Intent::Select { .. })
+        ));
+        assert_eq!(app.composer.text(), "unsent main draft");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        app.observe_live(Observation::Backend(Update::Rejected(
+            "stale selection".into(),
+        )))
+        .unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        plain(&mut app, &mut router, KeyCode::F(9));
+        let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
+        small.draw(|f| ui::draw(f, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.has_live_backend());
+        assert_eq!(app.composer.text(), "unsent main draft");
+    }
+    #[test]
+    fn settings_key_owns_input_without_edit_or_clipboard_and_closes_when_small() {
+        use litetui_terminal::{
+            live::Observation,
+            settings_view::{Intent, Update},
+        };
+        let mut app = Demo::live("custom".into(), "old".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("unsent settings draft");
+        let mut router = KeyRouter::default();
+        plain(&mut app, &mut router, KeyCode::F(10));
+        assert_eq!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            Some(Intent::Read)
+        );
+        let mut clipboard = TestClipboard {
+            read: Some("must not paste".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paste(&mut app, "must not paste");
+        plain(&mut app, &mut router, KeyCode::Char('x'));
+        assert_eq!(clipboard.reads, 0);
+        assert_eq!(app.composer.text(), "unsent settings draft");
+        app.observe_live(Observation::Settings(Update::Rejected(
+            "source unavailable".into(),
+        )))
+        .unwrap();
+        let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
+        small.draw(|f| ui::draw(f, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.has_live_settings());
+        assert_eq!(app.composer.text(), "unsent settings draft");
     }
 }

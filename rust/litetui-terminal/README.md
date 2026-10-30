@@ -299,3 +299,21 @@ Tests cover all public palettes, picker search/navigation/input ownership, synth
 
 
 The full controlled-process suite now also requires a Python environment with LiteTUI dependencies for its real authority/store fixture. Set LITETUI_TEST_PYTHON to Python 3.11 and LITETUI_AUTHORITY_PYTHON to the existing LiteTUI environment, then run only the live_process test target with --ignored. The separate live_claude target remains a paid opt-in smoke and is not included in this command.
+
+### Runtime backend and settings controls
+
+F9 reads the source backend catalog. Select a backend, enter its exact model ID,
+and confirm the complete displayed choice. Switching connects to an available,
+already-loaded model; it does not start a local server or load weights. Finish or
+resolve pending work first. An invocation-owned local server must be stopped
+explicitly before switching. Current thinking must be supported by the target.
+
+The source owns publication and cleanup. Rust verifies the resulting connection,
+policy, history, catalog and held input before updating the view. The draft and
+history remain available. A stale selection requires refresh and fresh confirmation;
+an ambiguous transition closes the runtime and requires an explicit reopen.
+
+F10 shows requested and effective settings, source locks and canonical immediate, next-turn, reload, reconnect or restart
+timing. Use Up/Down to select a field and PageUp/PageDown to inspect long
+values, R to refresh and Escape to close. This inspector is read-only. Canonical
+credential fields are masked; settings editing and engine controls remain pending.

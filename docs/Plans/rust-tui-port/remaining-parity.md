@@ -25,8 +25,8 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
 | Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight is implemented; expand history and session actions next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
-| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Runtime backend switching, native engine/settings controls and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
-| Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | Native requested/effective/reconnect/restart UI. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
+| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Native engine operations, settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
+| Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | Read-only F10 requested/effective/reconnect/restart inspection is implemented; editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
 | Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Slash/palette/skills routing through source handlers. Structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
 | Hooks and MCP | gui.hooks/mcp and host-tool operations | Exact source schemas, independent controls, persistence/readback, reload/disconnect failures. Current startup forces external MCP off; enabling it needs authority and lifecycle tests. |
@@ -90,3 +90,30 @@ the unchanged staged package afterward. Launch rejects linked ancestors of eithe
 package or DataRoot, including fresh child paths beneath a junction.
 This closes the concrete immutable-package reopen failure; broader clean-environment,
 release provenance and full-parity acceptance remain open.
+
+## Next contracts identified by source audit
+
+Settings edits must use the canonical SettingsService scoped revision checks and
+settings_runtime.apply_saved_result. Legacy gui.settings.apply invokes
+_on_settings_saved, which can change live settings before persistence and trigger
+loads/reconnects. The first bounded editor should cover conversation output budgets
+with explicit draft/validate/confirm/save/readback; disable those fields when a
+launch max_tokens override still owns actual requests or when the native provider
+owns output budgets. Canonical scopes/timing and backend controls own eligibility.
+
+Engine controls need a management-only stopped-engine launch state: current ready
+admission rejects a stopped service, and F9 intentionally requires a loaded model.
+Inspect must be read-only: Strata launch_plan currently writes a derived config,
+and NInfer refuse_reason can remove stale registry state. Split pure planning from
+action-time effects. Start/stop must use retained owned handles and resource gates,
+settle cancellation and independently verify connection/model/history/policy.
+NInfer explicit endpoints can override a newly started owned port; local Strata
+startup needs a loopback host. Do not widen persistent connect-only authority.
+
+Command/skill metadata must derive from the live PluginRegistry. Reserve every
+command alias when resolving skill shadowing; existing completion only reserves
+primary names. Native adapters may open already verified controls but cannot invoke
+arbitrary Textual screen handlers. Existing gui.skills.use drops arguments and
+bypasses normal prompt admission. A skill adapter must bind the exact discovered
+file and digest (case and folder-alias resolution can otherwise change bodies),
+limit the prepared UTF-8 prompt and enter normal owned prompt admission.

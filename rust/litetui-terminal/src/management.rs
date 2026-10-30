@@ -168,6 +168,12 @@ pub enum Step {
     },
     Control(Update),
     Queue(crate::restored_queue::Update),
+    Settings {
+        update: crate::settings_view::Update,
+        policy: Option<Value>,
+    },
+    Backend(crate::backend_controls::Update),
+    BackendChanged(Box<crate::backend_controls::Changed>),
     Browser(crate::conversation_browser::Update),
     Opened(Box<crate::conversation_browser::Opened>),
     Event(Value),
@@ -240,11 +246,25 @@ struct BrowserPending {
     id: CommandId,
     request: BrowserRequest,
 }
+struct BackendPending {
+    id: CommandId,
+    stage: u8,
+    selection: Option<(String, String)>,
+    catalog: Option<crate::backend_controls::Catalog>,
+    mutation: Option<CommandId>,
+    history: Option<crate::resume::History>,
+    state: Option<Snapshot>,
+    policy: Option<Value>,
+    observed_model: bool,
+}
 pub struct Management {
     wire: WireClient,
     control: Option<ControlPending>,
     queue: Option<QueuePending>,
     queue_menu: Option<crate::restored_queue::Snapshot>,
+    settings: Option<CommandId>,
+    backend: Option<BackendPending>,
+    backend_catalog: Option<crate::backend_controls::Catalog>,
     browser: Option<BrowserPending>,
     browser_page: Option<crate::conversation_browser::Page>,
     browser_authority: Option<(String, bool)>,
@@ -279,6 +299,9 @@ impl Default for Management {
             control: None,
             queue: None,
             queue_menu: None,
+            settings: None,
+            backend: None,
+            backend_catalog: None,
             browser: None,
             browser_page: None,
             browser_authority: None,
@@ -357,6 +380,8 @@ impl Management {
     pub fn ready(&self) -> bool {
         self.phase == Phase::Active
             && !self.failed
+            && self.settings.is_none()
+            && self.backend.is_none()
             && self.browser.is_none()
             && self.control.is_none()
             && self.queue.is_none()
@@ -372,6 +397,7 @@ impl Management {
         self.ensure_drained()?;
         self.menu = None;
         self.queue_menu = None;
+        self.backend_catalog = None;
         self.browser_page = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
@@ -541,6 +567,22 @@ impl Management {
                 self.browser_response(frame)
             }
             Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .backend
+                .as_ref()
+                .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
+            {
+                self.backend_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if id == self.settings && self.settings.is_some() => self.settings_response(frame),
+            Notice::Response {
                 matched: false,
                 frame,
                 ..
@@ -570,6 +612,10 @@ impl Management {
                     .browser
                     .as_ref()
                     .is_some_and(|pending| matches!(pending.request, BrowserRequest::Open { .. }))
+                    || self
+                        .backend
+                        .as_ref()
+                        .is_some_and(|pending| pending.mutation.is_some())
                 {
                     Ok(Step::Ignore)
                 } else {
@@ -586,6 +632,28 @@ impl Management {
     }
     fn validate_event(&mut self, frame: &Value, event: &Value) -> io::Result<()> {
         let (session, backend, model, _) = self.expected.as_ref().expect("begun");
+        if let Some(pending) = self.backend.as_mut()
+            && let Some(mutation) = &pending.mutation
+        {
+            crate::stream::required_uuid4(frame, "event_id")
+                .map_err(|_| fail("Backend transition lacks emission identity"))?;
+            let (target, target_model) = pending.selection.as_ref().expect("selection");
+            let kind = event["type"].as_str();
+            if frame["session_id"] != *session
+                || frame["operation_id"] != mutation.to_value()
+                || !matches!(frame.get("execution_id"), None | Some(Value::Null))
+                || !matches!(kind, Some("model_state" | "usage"))
+            {
+                return Err(fail("Unexpected event during owned backend transition"));
+            }
+            if kind == Some("model_state") {
+                if event["backend"] != *target || event["model"] != *target_model {
+                    return Err(fail("Backend transition event changed the explicit target"));
+                }
+                pending.observed_model = true;
+            }
+            return Ok(());
+        }
         if let Some(BrowserPending {
             request:
                 BrowserRequest::Open {
@@ -666,6 +734,9 @@ impl Management {
 }
 
 impl Management {
+    pub fn backend(&self) -> Option<&str> {
+        self.expected.as_ref().map(|v| v.1.as_str())
+    }
     pub fn model(&self) -> Option<&str> {
         self.expected.as_ref().map(|v| v.2.as_str())
     }
@@ -1410,5 +1481,317 @@ impl Management {
                 Ok(Step::Write(command))
             }
         }
+    }
+}
+
+impl Management {
+    pub fn request_backend(
+        &mut self,
+        intent: crate::backend_controls::Intent,
+    ) -> io::Result<Value> {
+        use crate::backend_controls::{Intent, LIST, SET};
+        if !self.ready() {
+            return Err(fail("Wait for the current runtime operation"));
+        }
+        self.ensure_drained()?;
+        let (session, _, _, _) = self.expected.as_ref().expect("active");
+        if self.browser_authority.is_none()
+            || ![
+                LIST,
+                SET,
+                "gui.state",
+                "gui.conversations.read",
+                crate::restored_queue::READ,
+            ]
+            .iter()
+            .all(|op| self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail(
+                "Runtime lacks owned backend transition support; update Python source",
+            ));
+        }
+        let (stage, selection, catalog, mut command) = match intent {
+            Intent::Read => (0, None, None, json!({"type":LIST,"session_id":session})),
+            Intent::Select {
+                revision,
+                name,
+                model,
+            } => {
+                let catalog = self
+                    .backend_catalog
+                    .as_ref()
+                    .ok_or_else(|| fail("Refresh the backend catalog before selecting"))?;
+                catalog.selection(revision, &name, &model)?;
+                (
+                    1,
+                    Some((name, model)),
+                    Some(catalog.clone()),
+                    json!({"type":"gui.conversations.read","session_id":session,"max_response_bytes":1048576}),
+                )
+            }
+        };
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve backend operation"))?;
+        command["id"] = id.to_value();
+        self.backend = Some(BackendPending {
+            id,
+            stage,
+            selection,
+            catalog,
+            mutation: None,
+            history: None,
+            state: None,
+            policy: None,
+            observed_model: false,
+        });
+        self.menu = None;
+        self.browser_page = None;
+        self.queue_menu = None;
+        Ok(command)
+    }
+    fn backend_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::backend_controls::{Catalog, Changed, LIST, SET, Update};
+        self.ensure_drained()?;
+        let mut pending = self.backend.take().expect("matched backend");
+        let (session, old_backend, old_model, profile) =
+            self.expected.as_ref().expect("active").clone();
+        let (agent, schedules) = self
+            .browser_authority
+            .as_ref()
+            .expect("owned agent")
+            .clone();
+        if frame["ok"] != true {
+            if pending.stage <= 1 {
+                self.backend_catalog = None;
+                return Ok(Step::Backend(Update::Rejected(
+                    text(&frame, "error", 4096)?.into(),
+                )));
+            }
+            return Err(fail(
+                "Backend mutation/readback failed; runtime identity is uncertain",
+            ));
+        }
+        let result = &frame["result"];
+        if pending.stage == 0 {
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| fail("Backend revision exhausted"))?;
+            let catalog = Catalog::parse(result, self.revision, &session, &agent)?;
+            if catalog.selected != old_backend || catalog.model != old_model {
+                return Err(fail("Backend catalog changed active runtime identity"));
+            }
+            self.backend_catalog = Some(catalog.clone());
+            return Ok(Step::Backend(Update::Catalog(catalog)));
+        }
+        let (name, model) = pending.selection.as_ref().expect("target").clone();
+        match pending.stage {
+            1 => match crate::backend_controls::history(result, &session) {
+                Ok(history) => pending.history = Some(history),
+                Err(error) => {
+                    self.backend_catalog = None;
+                    return Ok(Step::Backend(Update::Rejected(format!(
+                        "Cannot verify preserved conversation: {error}"
+                    ))));
+                }
+            },
+            2 => {
+                let catalog = pending.catalog.as_ref().expect("catalog");
+                if result["version"].as_u64() != Some(1)
+                    || result["kind"] != "backend_transition"
+                    || result["session_id"] != session
+                    || result["agent_id"] != agent
+                    || result["snapshot"] != catalog.snapshot
+                {
+                    return Err(fail("Backend transition receipt changed owned selection"));
+                }
+                match result["status"].as_str() {
+                    Some("refused")
+                        if result["mutated"] == false
+                            && result["close_required"] == false
+                            && result["backend"] == old_backend
+                            && result["model"] == old_model
+                            && !pending.observed_model =>
+                    {
+                        self.backend_catalog = None;
+                        return Ok(Step::Backend(Update::Rejected(
+                            text(result, "error", 4096)?.into(),
+                        )));
+                    }
+                    Some("connected")
+                        if result["mutated"] == true
+                            && result["close_required"] == false
+                            && result["backend"] == name
+                            && result["model"] == model
+                            && result["error"].is_null()
+                            && pending.observed_model => {}
+                    _ => {
+                        return Err(fail(
+                            "Backend transition failed or contradicted its receipt; connection closed",
+                        ));
+                    }
+                }
+            }
+            3 => {
+                let snapshot = Snapshot::parse(result)?;
+                if snapshot.session != session
+                    || snapshot.backend != name
+                    || snapshot.model != model
+                    || snapshot.profile != profile
+                    || (!snapshot.writable
+                        && pending
+                            .history
+                            .as_ref()
+                            .is_none_or(|history| !history.messages.is_empty()))
+                    || snapshot.held_restored_input != Some(0)
+                    || snapshot.schedules_paused != schedules
+                    || result["ownership"]["agent_id"] != agent
+                {
+                    return Err(fail(
+                        "Backend state readback contradicts target, ownership, or held-input policy",
+                    ));
+                }
+                pending.policy = Some(result["tool_policy"].clone());
+                pending.state = Some(snapshot);
+            }
+            4 => {
+                let history = crate::backend_controls::history(result, &session)?;
+                if Some(&history) != pending.history.as_ref() {
+                    return Err(fail("Backend transition changed the saved conversation"));
+                }
+            }
+            5 => {
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| fail("Backend revision exhausted"))?;
+                let catalog = Catalog::parse(result, self.revision, &session, &agent)?;
+                if catalog.selected != name
+                    || catalog.model != model
+                    || catalog.configured != name
+                    || catalog.requested_native
+                        != pending
+                            .catalog
+                            .as_ref()
+                            .expect("original catalog")
+                            .requested_native
+                {
+                    return Err(fail("Backend catalog readback contradicts selected target"));
+                }
+                pending.catalog = Some(catalog);
+            }
+            6 => {
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| fail("Backend revision exhausted"))?;
+                let queue = crate::restored_queue::Snapshot::parse(result, self.revision)?;
+                if queue.session != session
+                    || queue.backend != name
+                    || queue.model != model
+                    || !queue.entries.is_empty()
+                {
+                    return Err(fail(
+                        "Backend held-input readback contradicts verified state",
+                    ));
+                }
+                let snapshot = pending.state.take().expect("state");
+                let catalog = pending.catalog.take().expect("catalog");
+                self.expected = Some((session, name, model, profile));
+                self.prompt = None;
+                self.origin = None;
+                self.menu = None;
+                self.browser_page = None;
+                self.backend_catalog = Some(catalog.clone());
+                self.queue_menu = Some(queue.clone());
+                return Ok(Step::BackendChanged(Box::new(Changed {
+                    snapshot,
+                    catalog,
+                    history: pending.history.take().expect("history"),
+                    queue,
+                    policy: pending.policy.take().expect("policy"),
+                })));
+            }
+            _ => return Err(fail("Invalid backend transition phase")),
+        }
+        pending.stage += 1;
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve backend readback"))?;
+        let mut command = match pending.stage {
+            2 => {
+                pending.mutation = Some(id.clone());
+                json!({"type":SET,"version":1,"session_id":session,"agent_id":agent,"snapshot":pending.catalog.as_ref().expect("catalog").snapshot,"name":name,"model":model})
+            }
+            3 => json!({"type":"gui.state","include_conversations":false}),
+            4 => {
+                json!({"type":"gui.conversations.read","session_id":session,"max_response_bytes":1048576})
+            }
+            5 => json!({"type":LIST,"session_id":session}),
+            6 => json!({"type":crate::restored_queue::READ,"session_id":session}),
+            _ => return Err(fail("Invalid backend readback operation")),
+        };
+        command["id"] = id.to_value();
+        pending.id = id;
+        self.backend = Some(pending);
+        Ok(Step::Write(command))
+    }
+}
+
+impl Management {
+    pub fn request_settings(&mut self, _intent: crate::settings_view::Intent) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail(
+                "Wait for the runtime operation before reading settings",
+            ));
+        }
+        self.ensure_drained()?;
+        if self.browser_authority.is_none() {
+            return Err(fail(
+                "Runtime omitted owned settings authority; update Python source",
+            ));
+        }
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve settings read"))?;
+        let command = json!({"type":"gui.state","id":id.to_value(),"include_conversations":false});
+        self.settings = Some(id);
+        Ok(command)
+    }
+    fn settings_response(&mut self, frame: Value) -> io::Result<Step> {
+        self.settings = None;
+        self.ensure_drained()?;
+        if frame["ok"] != true {
+            return Ok(Step::Settings {
+                update: crate::settings_view::Update::Rejected(text(&frame, "error", 4096)?.into()),
+                policy: None,
+            });
+        }
+        let result = &frame["result"];
+        let state = Snapshot::parse(result)?;
+        let (session, backend, model, profile) = self.expected.as_ref().expect("active");
+        let (agent, schedules) = self.browser_authority.as_ref().expect("authority");
+        if (&state.session, &state.backend, &state.model, &state.profile)
+            != (session, backend, model, profile)
+            || state.held_restored_input.is_none()
+            || state.schedules_paused != *schedules
+            || result["ownership"]["agent_id"] != *agent
+        {
+            return Err(fail(
+                "Settings read changed owned runtime identity or policy",
+            ));
+        }
+        let update = match crate::settings_view::Snapshot::parse(result, session) {
+            Ok(snapshot) => crate::settings_view::Update::Snapshot(snapshot),
+            Err(error) => crate::settings_view::Update::Rejected(error.to_string()),
+        };
+        Ok(Step::Settings {
+            update,
+            policy: Some(result["tool_policy"].clone()),
+        })
     }
 }

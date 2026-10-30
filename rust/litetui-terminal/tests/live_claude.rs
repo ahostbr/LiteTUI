@@ -69,6 +69,9 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
             Ok(
                 Observation::Controls(_)
                 | Observation::Queue(_)
+                | Observation::Settings(_)
+                | Observation::Backend(_)
+                | Observation::BackendChanged(_)
                 | Observation::Browser(_)
                 | Observation::Opened(_),
             ) => {

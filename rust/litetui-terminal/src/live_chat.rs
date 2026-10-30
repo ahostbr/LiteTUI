@@ -77,6 +77,8 @@ pub struct Chat {
     pub questions: crate::questions::View,
     pub controls: crate::model_controls::View,
     pub queue: crate::restored_queue::View,
+    pub settings: crate::settings_view::View,
+    pub backend_controls: crate::backend_controls::View,
     pub browser: crate::conversation_browser::View,
     pending: Option<String>,
     submission_id: Option<String>,
@@ -106,6 +108,8 @@ impl Chat {
             questions: crate::questions::View::default(),
             controls: crate::model_controls::View::default(),
             queue: crate::restored_queue::View::default(),
+            settings: crate::settings_view::View::default(),
+            backend_controls: crate::backend_controls::View::default(),
             browser: crate::conversation_browser::View::default(),
             pending: None,
             submission_id: None,
@@ -129,6 +133,8 @@ impl Chat {
             || self.quitting
             || self.controls.owns_input()
             || self.queue.owns_input()
+            || self.settings.owns_input()
+            || self.backend_controls.owns_input()
             || self.browser.owns_input()
             || self.queue_pending
         {
@@ -221,6 +227,8 @@ impl Chat {
     ) -> io::Result<()> {
         let prompt = self.queue.selection_text(intent)?.to_owned();
         self.queue.finish();
+        self.settings.finish();
+        self.backend_controls.finish();
         self.browser.finish();
         self.reserve_row(&prompt, true)?;
         self.pending = None; // The queue command carries identity, never a duplicate prompt.
@@ -271,6 +279,34 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::Settings(update) => {
+                self.settings.observe(update);
+                self.notice = self.settings.notice.clone();
+            }
+            Observation::Backend(update) => {
+                self.backend_controls.observe(update)?;
+                self.notice = self.backend_controls.notice.clone();
+            }
+            Observation::BackendChanged(changed) => {
+                if !self.ready || self.busy || self.queue_pending || self.pending.is_some() {
+                    return Err(io::Error::other("Backend changed while a turn was pending"));
+                }
+                self.backend_controls
+                    .observe(crate::backend_controls::Update::Changed {
+                        backend: changed.snapshot.backend.clone(),
+                        model: changed.snapshot.model.clone(),
+                    })?;
+                self.backend = changed.snapshot.backend.clone();
+                self.model = changed.snapshot.model.clone();
+                self.runtime_state.opened(changed.snapshot);
+                self.controls = crate::model_controls::View::default();
+                self.browser = crate::conversation_browser::View::default();
+                self.queue = crate::restored_queue::View::default();
+                self.queue
+                    .observe(crate::restored_queue::Update::Snapshot(changed.queue));
+                self.notice =
+                    "Backend and model verified; conversation and draft preserved.".into();
+            }
             Observation::Browser(update) => {
                 self.browser.observe(update)?;
                 self.notice = self.browser.notice.clone();
@@ -588,6 +624,8 @@ impl Chat {
     pub fn begin_quit(&mut self) {
         self.controls.finish();
         self.queue.finish();
+        self.settings.finish();
+        self.backend_controls.finish();
         self.browser.finish();
         self.quitting = true;
         self.notice = "Closing Python runtime and its owned process tree…".into();
@@ -595,6 +633,8 @@ impl Chat {
     pub fn finish(&mut self, failure: Option<String>) {
         self.controls.finish();
         self.queue.finish();
+        self.settings.finish();
+        self.backend_controls.finish();
         self.browser.finish();
         self.queue_pending = false;
         self.closed = true;
