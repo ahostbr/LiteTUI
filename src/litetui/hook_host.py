@@ -167,6 +167,20 @@ def refuse_below_floor(app, item, *, on_refused=None) -> bool:
     return True
 
 
+def refuse_engine_admission(app, item, *, on_refused=None) -> bool:
+    from litetui import native_engine
+    why = native_engine.submission_refusal(app)
+    if why is None:
+        return False
+    if not hasattr(app, "rejected_prompts"):
+        app.rejected_prompts = []
+    app.rejected_prompts.append({**item, "reason": why})
+    app._system(why)
+    if on_refused is not None:
+        on_refused(why)
+    return True
+
+
 def accept_prompt(app, item, *, native_accepted=False) -> bool:
     """Boolean admission contract retained for queued/native callers."""
     return accept_prompt_origin(app, item, native_accepted=native_accepted) is not None
@@ -179,6 +193,8 @@ def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_re
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
     the Codex app-server already holds. It is not trusted item metadata.
     """
+    if refuse_engine_admission(app, item, on_refused=on_refused):
+        return None
     if origin is None:
         origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
     if not native_accepted and refuse_below_floor(app, item, on_refused=on_refused):
@@ -236,6 +252,8 @@ async def admit_prompt(app, item) -> bool:
 
 async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
                               persist_user=None) -> EventOrigin | None:
+    if refuse_engine_admission(app, item, on_refused=on_refused):
+        return None
     # Capture input metadata before the first suspension, not from mutable app
     # fields after hooks or lifecycle work have run.
     origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
@@ -246,12 +264,16 @@ async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
         app._gui_operation_id = item.get("operation_id")
     app._stop_requested = False
     await drain_lifecycle(app)
+    if refuse_engine_admission(app, item, on_refused=on_refused):
+        return None
     if before_accept is not None:
         before_accept()
     ctx = {**context(app), "source": item.get("source", "queued"), "turn_id": str(uuid.uuid4())}
     result = await dispatch(app, "prompt_before", {"prompt": item["content"]},
                             profile=seat_authority.turn_profile(app, _turn_source(item), item.get("tool_profile")),
                             captured=ctx)
+    if refuse_engine_admission(app, item, on_refused=on_refused):
+        return None
     if before_accept is not None:
         before_accept()
     if result.allowed and not app._stop_requested:
@@ -296,6 +318,9 @@ def start_prompt(app, item):
 
 
 async def queued_prompt(app):
+    from litetui import native_engine
+    if native_engine.submission_refusal(app):
+        return False
     if app._pending_input and app._pending_input[0].get("_codex_entry"):
         return False
     state = snapshot(app)
@@ -306,7 +331,12 @@ async def queued_prompt(app):
     from litetui.claude_turn import queue_ready
     if not queue_ready(app, app._pending_input[0]):
         return False
-    return await admit_prompt(app, {**app._pending_input.pop(0), "_gui_in_turn": True})
+    item = app._pending_input.pop(0)
+    try:
+        return await admit_prompt(app, {**item, "_gui_in_turn": True})
+    finally:
+        if native_engine.submission_refusal(app) and not any(held is item for held in app._pending_input):
+            app._pending_input.insert(0, item)
 
 
 async def completion(app, answer):

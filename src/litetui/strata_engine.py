@@ -81,11 +81,18 @@ def server_python(root: Path) -> Path:
     return root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def read_config(path: Path) -> dict | None:
+def read_config(path: Path, *, max_bytes=None) -> dict | None:
     """A `strata-<model>.json`, or None when it is not one (utf-8-sig: setup writes a BOM-less
     file, a hand edit in Notepad may not)."""
     try:
-        cfg = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        if max_bytes is None:
+            raw = Path(path).read_bytes()
+        else:
+            with Path(path).open("rb") as stream:
+                raw = stream.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                return None
+        cfg = json.loads(raw.decode("utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(cfg, dict) or not isinstance(cfg.get("args"), list) or not cfg.get("exe"):
@@ -93,21 +100,21 @@ def read_config(path: Path) -> dict | None:
     return cfg
 
 
-def list_strata_configs(settings) -> list[Path]:
+def list_strata_configs(settings, *, max_bytes=None) -> list[Path]:
     """Every prepared model in the install, sorted. THE MODEL LIST FOR THIS BACKEND."""
     root = strata_root(settings)
     if not root.is_dir():
         return []
-    return [p for p in sorted(root.glob("strata-*.json")) if read_config(p) is not None]
+    return [p for p in sorted(root.glob("strata-*.json")) if read_config(p, max_bytes=max_bytes) is not None]
 
 
-def strata_config(settings) -> Path | None:
+def strata_config(settings, *, max_bytes=None) -> Path | None:
     """The config to serve: the setting, else the ONE the install holds. Two and no choice
     is None, not a guess — the same rule as `ninfer_engine.ninfer_artifact`."""
     chosen = str(getattr(settings, "strata_config", "") or "").strip()
     if chosen:
         return Path(chosen)
-    found = list_strata_configs(settings)
+    found = list_strata_configs(settings, max_bytes=max_bytes)
     return found[0] if len(found) == 1 else None
 
 
@@ -116,16 +123,17 @@ def config_context(cfg: dict | None) -> int | None:
     return int(val) if isinstance(val, str) and val.isdigit() else None
 
 
-def default_host(settings) -> str:
+def default_host(settings, *, config=None) -> str:
     """Where a Strata server is expected: the explicit setting, else the chosen config's
     port on loopback. The port is a SETTING of the install (8080), not allocated per start,
     so there is no registry to read."""
     explicit = str(getattr(settings, "strata_host", "") or "").strip().rstrip("/")
     if explicit:
         return explicit
-    path = strata_config(settings)
-    cfg = read_config(path) if path else None
-    port = cfg.get("port") if cfg else None
+    if config is None:
+        path = strata_config(settings)
+        config = read_config(path) if path else None
+    port = config.get("port") if config else None
     return f"http://127.0.0.1:{port if isinstance(port, int) and port > 0 else STRATA_DEFAULT_PORT}"
 
 
@@ -290,7 +298,7 @@ class LaunchInspection:
     derived_config: Path | None
 
 
-def inspect_launch(settings) -> LaunchInspection:
+def inspect_launch(settings, *, max_config_bytes=None) -> LaunchInspection:
     """Read the next launch recipe without writing configs or probing resources.
 
     A context override names its future derived config but leaves it absent.
@@ -303,8 +311,8 @@ def inspect_launch(settings) -> LaunchInspection:
         raise BackendError(
             f"Strata is not installed at {root} — install it from LiteSuite's Model Hub (Strata), "
             f"or set strata_root to a folder Strata's setup prepared ({STRATA_REPO_URL}).")
-    path = strata_config(settings)
-    cfg = read_config(path) if path else None
+    path = strata_config(settings, max_bytes=max_config_bytes)
+    cfg = read_config(path, max_bytes=max_config_bytes) if path else None
     if cfg is None:
         raise BackendError(
             "no Strata model chosen — /model to pick one (each strata-<model>.json in the install "
@@ -315,7 +323,7 @@ def inspect_launch(settings) -> LaunchInspection:
     if run_cfg is not cfg:
         # Only describe the destination here; review must not materialize it.
         derived = run_path = log_path().with_name(f"{path.stem}.litetui.json")
-    host = default_host(settings)
+    host = default_host(settings, config=cfg)
     port = host.rsplit(":", 1)[-1]
     if not port.isdigit():
         raise BackendError(f"strata_host {host} names no port — use http://127.0.0.1:<port>.")
@@ -323,13 +331,13 @@ def inspect_launch(settings) -> LaunchInspection:
     return LaunchInspection(tuple(argv), root, run_cfg, host, derived)
 
 
-def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
+def launch_plan(settings, *, inspection=None) -> tuple[list[str], Path, dict, str]:
     """Materialize any derived config for an actual launch; spawns nothing.
 
     Inspection callers must use inspect_launch instead. The existing startup
     interface keeps its tuple and exact configuration/argument behavior.
     """
-    plan = inspect_launch(settings)
+    plan = inspection if inspection is not None else inspect_launch(settings)
     if plan.derived_config is not None:
         plan.derived_config.parent.mkdir(parents=True, exist_ok=True)
         plan.derived_config.write_text(json.dumps(plan.config, indent=1), encoding="utf-8")
@@ -343,15 +351,21 @@ def _last_words(fresh: str, limit: int = 400) -> str:
     return " ".join(fresh.strip().splitlines()[-3:])[-limit:] or "(it printed nothing)"
 
 
-def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngine:
+def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, reviewed_plan=None, cancelled=None) -> OwnedEngine:
     """Spawn Strata's server for the chosen config and wait for it to load.
 
     `healthy(host) -> bool` and `spawn` are injected so the arms never load a model.
     `notice()` is called once, immediately before the spawn and never on a refusal (T865).
     """
+    if cancelled is not None and cancelled():
+        raise BackendError("Engine start cancelled before spawn")
+    if reviewed_plan is not None:
+        reviewed_plan.verify()
+        settings = reviewed_plan.settings()
     _log_event("engine start requested")
     try:
-        argv, root, cfg, host = launch_plan(settings)
+        inspection = reviewed_plan.strata_inspection() if reviewed_plan is not None else None
+        argv, root, cfg, host = launch_plan(settings, inspection=inspection)
     except BackendError as exc:
         _refuse(str(exc))
     reason = refuse_reason(settings, cfg, host, healthy=healthy)
@@ -364,6 +378,15 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')} ---\n{' '.join(argv)}\n")
     log_file.flush()
     start_off = lp.stat().st_size      # the log is appended across spawns: only this spawn's bytes count
+    if reviewed_plan is not None:
+        try:
+            reviewed_plan.verify()
+        except BaseException:
+            log_file.close()
+            raise
+    if cancelled is not None and cancelled():
+        log_file.close()
+        raise BackendError("Engine start cancelled before spawn")
     if notice is not None:
         notice()
     proc = spawn(
@@ -383,6 +406,8 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     deadline = time.monotonic() + STRATA_START_TIMEOUT_S
     fresh = ""
     while time.monotonic() < deadline:
+        if cancelled is not None and cancelled():
+            ninfer_engine._fail_start(owned, "Engine start cancelled after spawn")
         try:
             with open(lp, "rb") as f:
                 f.seek(start_off)

@@ -52,7 +52,7 @@ Claude saved entries also appear here after resume, including native session, se
 
 In idle live chat, **F3** opens models; **Tab** switches between model and thinking choices. The thinking footer opens thinking choices directly. Up/Down or a paired left-click selects a row; a fresh Enter applies it. Left/Right inspect long values and source explanations. R refreshes; Escape closes. The saved draft, paste and clipboard remain isolated. Choices cannot be confirmed while hidden, waiting, resized away, or held from an earlier key press.
 
-The connected runtime supplies the catalogue, allowed thinking levels and current selection. Each apply is followed by a separate readback before another prompt can be admitted. Failed requests show the actual state read back; an uncertain readback stops the connection. There is no automatic retry or rollback. Closing after a request was sent does not cancel it or release the composer early. A verified model change clears the previous model's context/rate/thinking facts until new facts arrive. Backend/engine switching is not implemented.
+The connected runtime supplies the catalogue, allowed thinking levels and current selection. Each apply is followed by a separate readback before another prompt can be admitted. Failed requests show the actual state read back; an uncertain readback stops the connection. There is no automatic retry or rollback. Closing after a request was sent does not cancel it or release the composer early. A verified model change clears the previous model's context/rate/thinking facts until new facts arrive. F9 backend switching and F12 engine controls are described below.
 
 The controls cap retained metadata at 64 KiB, model rows at 512 and thinking rows at 32. Source values are escaped only for rendering. The default thinking choice means the Python runtime's default selection; reported capability levels do not prove provider support or an inference effect.
 
@@ -86,7 +86,7 @@ Both PowerShell launchers forward BaseUrl, ServerMode/StartServer, LoadModel, Co
 
 Fresh generic/local launches use the source's default thinking choice. Fresh Claude/Codex launches retain low unless explicitly overridden. An omitted thinking level on resume preserves the saved choice. CodexEngine accepts native or http; omission preserves the source's flag/environment/saved precedence. An explicitly unsupported level fails instead of selecting another one.
 
-These paths have controlled source/child-process coverage. Installed engines, provider accounts, real inference and terminal-host behavior still require acceptance. Runtime backend switching, full engine/settings controls and catalog presentation remain separate UI work.
+These paths have controlled source/child-process coverage. Installed engines, provider accounts, real inference and terminal-host behavior still require acceptance. F9 backend switching, F10 budget editing and explicit F12 engine controls are described below. Broader settings and engine configuration remain open.
 
 ## Open interactive live chat
 
@@ -116,7 +116,7 @@ Or double-click **`open-chat.cmd`** for a new dark Windows Terminal window. Both
 - Identified RPC approvals now have a separate live modal: **Deny** is initially selected; Tab/Left/Right selects **Allow once**, Enter sends one decision, Escape denies, and Ctrl+Q quits. Up/Down/PgUp/PgDn scroll the full escaped request. Typing, paste, clipboard chords and key repeats cannot grant permission. The prompt remains pending until a source closure event, not merely a command ACK. Concurrent requests retain their own IDs; stale intents never target the next prompt. Always-allow and approval mouse controls remain open.
 - A source approval stop now leaves the interactive session ready for a new explicit prompt once all approval closures and decision ACKs settle. The stopped row retains its reason and partial reply across follow-ups and shutdown; it is never labelled completed. Late ACKs preserve that stop outcome. Refusal may arrive before a local request or without answer text. Reasons are capped at 16 KiB and share transcript/display budgets. One-shot mode still reports refusal as failure and cleans up.
 - Structured source questions now open a separate form: Tab/Up/Down changes focus, Left/Right on the question tabs changes questions, Enter/Space selects, and notes support typing/paste. Single/multiple choices, free-text, masked secret notes, Clear, Submit, Chat about this and Cancel are supported. Submit requires all questions answered; Chat permits partial answers; Escape cancels without sending notes. Mouse press/release must target the same unchanged control. ACKs close answered forms; source cancellations and late replies remain correlated. Input never falls through to the saved chat draft. Ctrl+Q still quits cleanly. Requests are bounded to 8 questions/10 options each/16 KiB text, notes to 1,024 characters each and 16 KiB combined, and the session to 100 requests with 16 pending. No automatic answers or persistent question history are added.
-- Tools can now be enabled explicitly with --tools on --workspace <absolute-directory> and --tool-profile strict|interactive|autonomous (explicit selection required); the footer reports actual source policy. External MCP remains off. Slash commands, remaining footer actions/preferences, saved theme selection, in-app conversation switching, remaining management screens and later snapshot refresh are **not yet wired**. Unsupported runtime events fail visibly; no implicit approval or mock tool action occurs.
+- Tools can now be enabled explicitly with --tools on --workspace <absolute-directory> and --tool-profile strict|interactive|autonomous (explicit selection required); the footer reports actual source policy. External MCP remains off. F8 opens owned saved conversations and F11 routes supported commands and prepared skills. Remaining footer actions/preferences, saved theme selection, other management screens and later snapshot refresh remain open. Unsupported runtime events fail visibly; no implicit approval or mock tool action occurs.
 - This scoped view allows at most 100 rows / 8 MiB retained text, with a stricter independent **32,768 display-unit budget** (line breaks, escaped controls, wide/scalar text and card overhead are charged). Overflow fails visibly before expensive layout, never silently truncates. The composer accepts up to 16,384 characters; transport prompts have a 64 KiB ceiling. These temporary safety limits are not a full-parity claim.
 
 **Evidence:** real Claude returned `ORANGE` on two sequential prompts, including recall from the first turn, then whole-job cleanup returned `Ok(())`: `C:/Projects/LiteTUI/output/tasks/t-af329ae5909646e59918061f69e447f8.log`. Automated TestBackend tests exercise live composer/rows/card geometry without fixture text; controlled child tests exercise serialized commands and error/quit cleanup. **Ryan's actual desktop hands-on acceptance is pending.** Desktop checks were stopped without clicks/keys when Ryan was gaming. Ryan subsequently clarified that visible test windows are allowed; do not send desktop clicks/keys or steal focus while he plays. The single idle visual-test runtime was stopped by exact owned PID, which is forced cleanup, not graceful-quit evidence.
@@ -325,7 +325,7 @@ Saved and effective values are checked independently and refreshed in the inspec
 A stale review requires refresh and new confirmation; no automatic retry occurs.
 A partial runtime failure shows the saved value and still-effective value separately.
 An uncertain write/application requires reopening the runtime. The chat draft is
-preserved. Broader settings editing and engine controls remain pending.
+preserved. Broader settings editing remains pending; explicit local engine controls are described below.
 
 
 ### Source commands and prepared skills
@@ -352,3 +352,40 @@ prepared skill while leaving the session usable. Source whitespace, frontmatter,
 directory binding and argument suffix are preserved through normal RPC admission.
 These paths have controlled source/process and TestBackend coverage; remaining
 plugin screens and real-provider/terminal-host acceptance are still open.
+
+
+### Explicit NInfer and Strata engine management
+
+Use -EngineManagement with -Backend ninfer or strata, an exact -Model, and connect
+mode. Configure the executable/artifact or Strata config through the existing launch
+options/settings. The direct Rust flag is --engine-management and requires
+--interactive. This option cannot be combined with initial prompt, StartServer or
+LoadModel. An unavailable selected engine opens a management view with prompts
+disabled; unrelated startup failures remain errors.
+
+The management-only inspector opens at launch; F12 reopens it. Connected chat also
+offers /engine. Up/Down or Tab selects Start/Stop; Enter requests review,
+PageUp/PageDown inspects every page, and a fresh Enter on the final visible page
+confirms once. R or F5 refreshes. Escape cancels a review; pointer selection alone
+never executes an action.
+The source rechecks the exact choice and applies its existing resource/ownership
+gates. A changed review needs refresh; there is no automatic retry. A second-instance
+confirmation requirement currently refuses with a reason instead of approving it.
+
+After start, prompt entry opens only after independent engine, model, session,
+history and policy checks. Stop targets only the process owned by this invocation.
+An attached service cannot be stopped here. Unconfirmed cleanup retains its handle
+and permits a newly reviewed stop retry. While this engine capability is active,
+changing session/backend or legacy engine configuration requires an explicit reopen.
+
+Ctrl+Q and runtime EOF cancel and join any pending engine start before owned cleanup.
+A hard timeout still uses the existing contained-process shutdown fallback and
+reports unproven cleanup. File/header metadata is not a full model hash; neither
+successful shutdown nor these controlled tests proves VRAM release or installed
+engine acceptance. Broader engine configuration and resource-confirmation UI remain.
+
+In management-only mode F7 still permits source-offered cancellation or resolution
+of held input, with durable readback before a new engine review. Continue remains
+disabled until prompt-ready. Unsupported cross-provider uncertain entries stay held; this slice offers no
+adapter for them. Recovery must use an authorized original-provider path. Nothing is
+automatically cancelled or replayed.

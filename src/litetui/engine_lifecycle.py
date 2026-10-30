@@ -19,6 +19,14 @@ import threading
 from .llm_backend import BackendError, _VramGate
 
 
+class EngineUnavailable(BackendError):
+    """Typed stopped/unloaded state; never an authorization or generic failure."""
+
+    def __init__(self, message, *, reason="engine_unavailable"):
+        super().__init__(message)
+        self.reason = reason
+
+
 class OwnedEngineLifecycle(_VramGate):
     _engine = None
     label = "engine"
@@ -102,7 +110,7 @@ class OwnedEngineLifecycle(_VramGate):
                     self._host = None
         return result
 
-    async def start_engine(self, *, notice=None) -> str:
+    async def start_engine(self, *, notice=None, reviewed_plan=None, reviewed_check=None, cancelled=None) -> str:
         """Spawn the engine under LiteTUI's VRAM gate; refuse if any engine is up.
 
         `notice()` is forwarded to the launcher, which calls it immediately before
@@ -132,8 +140,11 @@ class OwnedEngineLifecycle(_VramGate):
         try:
             def _spawn_and_publish():
                 try:
+                    extra = {} if reviewed_plan is None else {"reviewed_plan": reviewed_plan}
+                    if cancelled is not None:
+                        extra["cancelled"] = cancelled
                     owned = self._engine.start(
-                        self._settings, healthy=self._health, notice=notice)
+                        self._settings, healthy=self._health, notice=notice, **extra)
                 except self._engine.EngineStartFailed as exc:
                     # A failed start may leave a resident engine whose cleanup was not
                     # confirmed. PUBLISH the retained OwnedEngine (under the lock) so /engine
@@ -152,7 +163,9 @@ class OwnedEngineLifecycle(_VramGate):
                     self._host = owned.host
                 return owned
 
-            async with self.vram_guard(self._process_name):
+            async with self.vram_guard(reviewed_plan.model if reviewed_plan is not None else self._process_name):
+                if reviewed_check is not None:
+                    reviewed_check()
                 if self._stopping:   # a stop claimed the backend after our entry check
                     raise BackendError(stopping)
                 # await_preparation runs the blocking spawn off-loop and JOINS the thread

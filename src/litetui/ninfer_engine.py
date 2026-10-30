@@ -150,7 +150,7 @@ def ninfer_artifact(settings) -> Path | None:
     return found[0] if len(found) == 1 else None
 
 
-def read_artifact_directory(path: Path) -> dict | None:
+def read_artifact_directory(path: Path, *, max_bytes=NINFER_MAX_DIRECTORY_BYTES) -> dict | None:
     """The v3 container's JSON directory, or None when the header does not answer."""
     try:
         with open(path, "rb") as f:
@@ -158,7 +158,7 @@ def read_artifact_directory(path: Path) -> dict | None:
             if len(head) < NINFER_V3_HEADER_BYTES or head[:8] != NINFER_V3_MAGIC:
                 return None
             (json_bytes,) = struct.unpack_from("<Q", head, 8)
-            if json_bytes <= 0 or json_bytes > NINFER_MAX_DIRECTORY_BYTES:
+            if json_bytes <= 0 or json_bytes > min(NINFER_MAX_DIRECTORY_BYTES, max_bytes):
                 return None
             body = f.read(json_bytes)
         directory = json.loads(body.decode("utf-8"))
@@ -511,7 +511,7 @@ def refuse_reason(settings, *, healthy) -> str | None:
     return None
 
 
-def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngine:
+def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, reviewed_plan=None, cancelled=None) -> OwnedEngine:
     """Spawn ninfer-serve with LiteSuite's argv, wait for its ready line, register it.
 
     `healthy(host) -> bool` and `spawn` are injected so the arms never touch the
@@ -525,6 +525,11 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     """
     # T877 — every outcome below writes to the log, including the ones that never
     # spawn. `_log_event`'s docstring carries the incident that earned this.
+    if cancelled is not None and cancelled():
+        raise BackendError("Engine start cancelled before spawn")
+    if reviewed_plan is not None:
+        reviewed_plan.verify()
+        settings = reviewed_plan.settings()
     _log_event("engine start requested")
     reason = refuse_reason(settings, healthy=healthy)
     if reason:
@@ -540,7 +545,8 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
         msg = "no NInfer artifact chosen — set ninfer_artifact to a .ninfer file (LiteSuite's Model Hub pulls one)."
         _log_event(f"REFUSED: {msg} (ninfer_artifact={getattr(settings, 'ninfer_artifact', None)!r})")
         raise BackendError(msg)
-    directory = read_artifact_directory(artifact)
+    directory = (reviewed_plan.ninfer_inputs()[2] if reviewed_plan is not None
+                 else read_artifact_directory(artifact))
     # 14:2x 2026-09-17: the 35B-A3B header carries no model_id; the pinned fallback made the
     # running MoE advertise itself as qwen3.8-27b in every picker. The file's own name is
     # the honest label when the header says nothing.
@@ -566,6 +572,15 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     # 14:1x 2026-09-17: the log is APPENDED across spawns, so a marker from an earlier run
     # must not count — only bytes written after this spawn's header are this engine's.
     start_off = lp.stat().st_size
+    if reviewed_plan is not None:
+        try:
+            reviewed_plan.verify()
+        except BaseException:
+            log_file.close()
+            raise
+    if cancelled is not None and cancelled():
+        log_file.close()
+        raise BackendError("Engine start cancelled before spawn")
     if notice is not None:
         notice()
     proc = spawn(
@@ -597,6 +612,10 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
             job = None
     deadline = time.monotonic() + NINFER_START_TIMEOUT_S
     while time.monotonic() < deadline:
+        if cancelled is not None and cancelled():
+            failed = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
+                                 model_id=model_id, job=job, args=tuple(args))
+            _fail_start(failed, "Engine start cancelled after spawn")
         try:
             with open(lp, "rb") as f:
                 f.seek(start_off)

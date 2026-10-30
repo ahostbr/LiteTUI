@@ -178,6 +178,7 @@ impl Demo {
         if let Some(action) = route {
             use crate::command_palette::Action;
             match action {
+                Action::Engine => self.open_engine(),
                 Action::Models => self.open_models(crate::model_controls::Kind::Model),
                 Action::Thinking => self.open_models(crate::model_controls::Kind::Thinking),
                 Action::Backend => self.open_backend(),
@@ -204,11 +205,45 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || (chat.queue_pending() || chat.engine.pending())
+            {
                 self.notice = "Finish the current turn before opening model controls.".into();
                 return;
             }
             chat.controls.open(kind);
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
+    pub fn has_live_engine(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.engine.owns_input())
+    }
+    pub fn open_engine(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if chat.busy
+                || chat.closed
+                || chat.quitting
+                || chat.queue_pending()
+                || (!chat.ready && chat.engine_admission.is_none())
+            {
+                self.notice = "Wait for the owned runtime before engine management.".into();
+                return;
+            }
+            if !matches!(chat.backend.as_str(), "ninfer" | "strata") {
+                self.notice = "Engine controls require NInfer or Strata.".into();
+                return;
+            }
+            chat.engine.open();
             self.themes_open = false;
             self.completion.dismiss();
             self.footer.leave();
@@ -224,7 +259,12 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || (chat.queue_pending() || chat.engine.pending())
+            {
                 self.notice = "Finish current work before opening commands.".into();
                 return;
             }
@@ -244,7 +284,12 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || (chat.queue_pending() || chat.engine.pending())
+            {
                 self.notice = "Finish current work before reading settings.".into();
                 return;
             }
@@ -264,7 +309,12 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || (chat.queue_pending() || chat.engine.pending())
+            {
                 self.notice = "Finish current work before changing backend.".into();
                 return;
             }
@@ -293,7 +343,12 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || (chat.queue_pending() || chat.engine.pending())
+            {
                 self.notice = "Finish the current turn before browsing conversations.".into();
                 return;
             }
@@ -313,7 +368,12 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
-            if !chat.ready || chat.busy || chat.closed || chat.quitting || chat.queue_pending() {
+            if (!chat.ready && chat.engine_admission.is_none())
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || (chat.queue_pending() || chat.engine.pending())
+            {
                 self.notice = "Finish the current turn before opening held input.".into();
                 return;
             }
@@ -324,7 +384,8 @@ impl Demo {
         }
     }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_commands()
+        self.has_live_engine()
+            || self.has_live_commands()
             || self.has_live_settings()
             || self.has_live_backend()
             || self.has_live_browser()
@@ -544,6 +605,7 @@ impl Demo {
                     && !chat.closed
                     && !chat.quitting
                     && !chat.queue_pending()
+                    && !chat.engine.pending()
                 {
                     chat.commands.raw(&text);
                     self.completion.dismiss();

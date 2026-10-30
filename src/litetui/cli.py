@@ -108,6 +108,11 @@ def main() -> None:
         parser.error("--agent-id is valid only with --create-agent")
     try:
         launch_options = from_args(args)
+        if launch_options.engine_management:
+            if not args.rpc or not args.hold_restored_input:
+                raise ValueError('--engine-management requires --rpc and --hold-restored-input')
+            if args.export_conversation or args.export_output:
+                raise ValueError('--engine-management cannot be combined with conversation export')
         from litetui.mcp_seat import server_selection
         mcp_servers = server_selection(args.mcp_servers)
     except ValueError as exc:

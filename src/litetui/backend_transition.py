@@ -20,18 +20,24 @@ CLOSE_REQUIRED = "Backend transition is uncertain; close this runtime and reopen
 
 
 def require_open(app):
+    from litetui import native_engine
+
+    native_engine.require_open(app)
     reason = getattr(app, "_backend_transition_error", None)
     if reason:
         raise ValueError(reason)
 
 
-def submission_refusal(app):
+def submission_refusal(app, *, initializing=False):
     reason = getattr(app, "_backend_transition_error", None)
     if reason:
         return reason
     if getattr(app, "_backend_transition_inflight", False):
         return "A backend transition is active; wait before sending or changing the conversation."
-    return None
+    from litetui import native_engine
+    if initializing and native_engine.state(app) is None:
+        return None
+    return native_engine.submission_refusal(app)
 
 
 def _quiet(app, *, require_unowned_server=True):

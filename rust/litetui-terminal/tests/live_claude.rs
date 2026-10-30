@@ -78,6 +78,9 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
             ) => {
                 panic!("Unrequested model control response")
             }
+            Ok(Observation::Engine(_) | Observation::EngineAdmission(_)) => {
+                panic!("Unexpected engine operation in Claude smoke")
+            }
             Ok(Observation::Submission { .. }) => {}
             Ok(Observation::Ready) => {
                 assert!(saw_ready_facts, "validated facts precede Ready");

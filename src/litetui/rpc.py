@@ -55,8 +55,14 @@ def _reader_loop(app: LiteTUI) -> None:
             rpc_emit({"type": "error", "error": "missing 'type' field"})
             continue
         app.call_from_thread(_dispatch, app, cmd)
-    # stdin closed → shutdown
-    app.call_from_thread(app.exit)
+    # stdin closed: use the same joined engine shutdown as an explicit request.
+    app.call_from_thread(_exit_after_engine, app)
+
+
+def _exit_after_engine(app):
+    from litetui.native_engine_shutdown import request_shutdown
+    if not request_shutdown(app):
+        app.exit()
 
 
 def _target_id(cmd: dict[str, Any], key: str) -> tuple[str, str]:
@@ -109,9 +115,19 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         app.run_worker(manage(), group="gui-management", exit_on_error=False)
         return
 
+    from litetui import native_engine
+    if cmd_type in {"prompt", "set", "set_model", "reconnect", "set_thinking", "set_settings", "run_command", "use_skill"}:
+        try:
+            native_engine.operation_allowed(app, cmd_type)
+        except ValueError as exc:
+            _respond(cmd_id, ok=False, error=str(exc))
+            return
+
     if cmd_type == "shutdown":
-        _respond(cmd_id, ok=True, result={"ok": True})
-        app.exit()
+        from litetui.native_engine_shutdown import request_shutdown
+        if not request_shutdown(app, lambda **fields: _respond(cmd_id, **fields)):
+            _respond(cmd_id, ok=True, result={"ok": True})
+            app.exit()
     elif cmd_type == "prompt":
         if getattr(app, "_gui_management_busy", False):
             _respond(cmd_id, ok=False, error="A management operation is active; wait or cancel it")

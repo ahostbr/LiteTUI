@@ -159,6 +159,11 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    Engine {
+        update: crate::engine_controls::Update,
+        policy: Option<Value>,
+        state: Option<Snapshot>,
+    },
     Bootstrap(Value),
     Write(Value),
     Initialized(Snapshot),
@@ -278,7 +283,25 @@ struct CommandPending {
     skills: bool,
     reviewed: Option<crate::prepared_skill::Prepared>,
 }
+struct EnginePending {
+    id: Option<CommandId>,
+    stage: u8,
+    action: Option<crate::engine_controls::Action>,
+    snapshot: Option<crate::engine_controls::Snapshot>,
+    review: Option<crate::engine_controls::Review>,
+    receipt: Option<crate::engine_controls::Receipt>,
+    history: Option<crate::resume::History>,
+    policy: Option<Value>,
+    state: Option<Snapshot>,
+    mutation: Option<CommandId>,
+}
 pub struct Management {
+    closing: bool,
+    engine: Option<EnginePending>,
+    engine_instance: Option<(String, u64, crate::engine_controls::Admission)>,
+    engine_snapshot: Option<crate::engine_controls::Snapshot>,
+    engine_review: Option<(crate::engine_controls::Review, crate::resume::History)>,
+
     wire: WireClient,
     control: Option<ControlPending>,
     queue: Option<QueuePending>,
@@ -323,6 +346,11 @@ impl Default for Management {
                     .map(|name| ((*name).to_owned(), Delivery::Mirrored)),
             )
             .expect("static delivery policy"),
+            closing: false,
+            engine: None,
+            engine_instance: None,
+            engine_snapshot: None,
+            engine_review: None,
             control: None,
             queue: None,
             queue_menu: None,
@@ -392,6 +420,24 @@ impl Management {
         {
             return Err(fail("Runtime lacks hello/state management capabilities"));
         }
+        if ready.get("management_instance").is_some() {
+            let instance = text(ready, "management_instance", 64)?.to_owned();
+            if instance.len() != 64
+                || !instance
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || ready["desired_model"] != ready["model"]
+            {
+                return Err(fail("Invalid engine startup identity"));
+            }
+            self.engine_instance = Some((
+                instance,
+                ready["engine_generation"]
+                    .as_u64()
+                    .ok_or_else(|| fail("Invalid engine generation"))?,
+                crate::engine_controls::Admission::parse(&ready["admission"])?,
+            ));
+        }
         self.expected = Some((
             text(ready, "conversation_id", 128)?.to_owned(),
             text(ready, "backend", 64)?.to_owned(),
@@ -410,9 +456,16 @@ impl Management {
             .begin_hello()
             .map_err(|_| fail("Cannot begin management negotiation"))
     }
+    pub fn begin_close(&mut self) {
+        self.closing = true;
+        self.engine_review = None;
+        self.engine_snapshot = None;
+    }
     pub fn ready(&self) -> bool {
         self.phase == Phase::Active
+            && !self.closing
             && !self.failed
+            && self.engine.is_none()
             && self.command.is_none()
             && self.settings.is_none()
             && self.settings_edit.is_none()
@@ -426,7 +479,14 @@ impl Management {
         &self.operations
     }
     pub fn prompt(&mut self, id: &str) -> io::Result<()> {
-        if !self.ready() || id.is_empty() || id.len() > 128 {
+        if !self.ready()
+            || self
+                .engine_instance
+                .as_ref()
+                .is_some_and(|v| v.2 != crate::engine_controls::Admission::PromptReady)
+            || id.is_empty()
+            || id.len() > 128
+        {
             return Err(fail("Management is not ready for a prompt"));
         }
         self.ensure_drained()?;
@@ -573,6 +633,17 @@ impl Management {
                 matched: true,
                 frame,
             } if self
+                .engine
+                .as_ref()
+                .is_some_and(|p| p.id.as_ref() == id.as_ref()) =>
+            {
+                self.engine_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
                 .control
                 .as_ref()
                 .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
@@ -689,6 +760,25 @@ impl Management {
     }
     fn validate_event(&mut self, frame: &Value, event: &Value) -> io::Result<()> {
         let (session, backend, model, _) = self.expected.as_ref().expect("begun");
+        if let Some(pending) = self.engine.as_ref()
+            && let Some(mutation) = &pending.mutation
+        {
+            crate::stream::required_uuid4(frame, "event_id")
+                .map_err(|_| fail("Engine lifecycle event lacks emission identity"))?;
+            if frame["session_id"] != *session
+                || frame["operation_id"] != mutation.to_value()
+                || !matches!(frame.get("execution_id"), None | Some(Value::Null))
+                || !matches!(event["type"].as_str(), Some("model_state" | "usage"))
+            {
+                return Err(fail("Unexpected event during owned engine lifecycle"));
+            }
+            if event["type"] == "model_state"
+                && (event["backend"] != *backend || event["model"] != *model)
+            {
+                return Err(fail("Engine event changed desired authority"));
+            }
+            return Ok(());
+        }
         if let Some(pending) = self.backend.as_mut()
             && let Some(mutation) = &pending.mutation
         {
@@ -1503,6 +1593,9 @@ impl Management {
                                 "Opened conversation held-input readback contradicts state",
                             ));
                         }
+                        self.engine_instance = None;
+                        self.engine_snapshot = None;
+                        self.engine_review = None;
                         self.expected = Some((
                             snapshot.session.clone(),
                             snapshot.backend.clone(),
@@ -1756,6 +1849,9 @@ impl Management {
                 }
                 let snapshot = pending.state.take().expect("state");
                 let catalog = pending.catalog.take().expect("catalog");
+                self.engine_instance = None;
+                self.engine_snapshot = None;
+                self.engine_review = None;
                 self.expected = Some((session, name, model, profile));
                 self.prompt = None;
                 self.origin = None;
@@ -2251,6 +2347,316 @@ impl Management {
         command["id"] = id.to_value();
         pending.id = Some(id);
         self.command = Some(pending);
+        Ok(Step::Write(command))
+    }
+}
+
+impl Management {
+    fn engine_identity(&self) -> io::Result<crate::engine_controls::Identity> {
+        let (session, backend, model, _) = self
+            .expected
+            .as_ref()
+            .ok_or_else(|| fail("Runtime has not negotiated"))?;
+        let (agent, _) = self
+            .browser_authority
+            .as_ref()
+            .ok_or_else(|| fail("Engine controls require owned agent identity"))?;
+        let (instance, _, _) = self.engine_instance.as_ref().ok_or_else(|| {
+            fail("Engine controls require startup ownership; update source or relaunch after changing backend/conversation")
+        })?;
+        Ok(crate::engine_controls::Identity {
+            session: session.clone(),
+            agent: agent.clone(),
+            backend: backend.clone(),
+            model: model.clone(),
+            instance: instance.clone(),
+        })
+    }
+    pub fn engine_timeout(&self) -> Option<std::time::Duration> {
+        self.engine
+            .as_ref()
+            .and_then(|p| p.review.as_ref())
+            .map(|r| std::time::Duration::from_millis(r.timeout_ms))
+    }
+    pub fn request_engine(&mut self, intent: crate::engine_controls::Intent) -> io::Result<Value> {
+        use crate::engine_controls::{INSPECT, Intent, OPERATIONS};
+        if !self.ready() {
+            return Err(fail("Wait for the current runtime operation"));
+        }
+        self.ensure_drained()?;
+        let identity = self.engine_identity()?;
+        if !OPERATIONS
+            .iter()
+            .chain(
+                [
+                    "gui.state",
+                    "gui.conversations.read",
+                    crate::restored_queue::READ,
+                ]
+                .iter(),
+            )
+            .all(|op| self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail("Runtime lacks complete owned engine controls"));
+        }
+        let mut pending = EnginePending {
+            id: None,
+            stage: 0,
+            action: None,
+            snapshot: None,
+            review: None,
+            receipt: None,
+            history: None,
+            policy: None,
+            state: None,
+            mutation: None,
+        };
+        let mut command = match intent {
+            Intent::Read => {
+                self.engine_review = None;
+                identity.command(INSPECT)
+            }
+            Intent::Validate { snapshot, action } => {
+                let inspected = self
+                    .engine_snapshot
+                    .as_ref()
+                    .filter(|s| s.token == snapshot)
+                    .ok_or_else(|| fail("Refresh engine inspection before selecting"))?
+                    .clone();
+                inspected.request(action)?;
+                pending.stage = 1;
+                pending.action = Some(action);
+                pending.snapshot = Some(inspected);
+                json!({"type":"gui.state","include_conversations":false})
+            }
+            Intent::Execute { review } => {
+                let (reviewed, history) = self
+                    .engine_review
+                    .as_ref()
+                    .filter(|(r, _)| r.token == review)
+                    .ok_or_else(|| fail("Review the source engine action again"))?
+                    .clone();
+                let command = reviewed.request()?;
+                pending.stage = 5;
+                pending.action = Some(reviewed.action);
+                pending.snapshot = Some(reviewed.snapshot.clone());
+                pending.review = Some(reviewed);
+                pending.history = Some(history);
+                self.engine_review = None;
+                command
+            }
+        };
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve engine operation"))?;
+        command["id"] = id.to_value();
+        pending.id = Some(id.clone());
+        if pending.stage == 5 {
+            pending.mutation = Some(id);
+        }
+        self.engine = Some(pending);
+        self.menu = None;
+        self.queue_menu = None;
+        self.browser_page = None;
+        self.backend_catalog = None;
+        self.command_prepared = None;
+        Ok(command)
+    }
+    fn engine_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::engine_controls::{Receipt, Review, Snapshot as EngineSnapshot, Update};
+        self.ensure_drained()?;
+        let mut pending = self.engine.take().expect("matched engine");
+        if frame["ok"] != true {
+            if pending.stage <= 4 {
+                self.engine_snapshot = None;
+                self.engine_review = None;
+                return Ok(Step::Engine {
+                    update: Update::Rejected(text(&frame, "error", 4096)?.into()),
+                    policy: None,
+                    state: None,
+                });
+            }
+            return Err(fail("Engine action readback failed; outcome is unproven"));
+        }
+        let result = &frame["result"];
+        let identity = self.engine_identity()?;
+        let (session, backend, model, profile) = self.expected.as_ref().expect("active").clone();
+        let (agent, schedules) = self.browser_authority.as_ref().expect("owned").clone();
+        match pending.stage {
+            0 => {
+                let snapshot = EngineSnapshot::parse(result, &identity)?;
+                let (_, generation, admission) = self.engine_instance.as_ref().expect("engine");
+                if snapshot.generation != *generation || snapshot.admission != *admission {
+                    return Err(fail(
+                        "Engine inspection changed admission without an owned action",
+                    ));
+                }
+                self.engine_snapshot = Some(snapshot.clone());
+                return Ok(Step::Engine {
+                    policy: Some(snapshot.policy.clone()),
+                    update: Update::Snapshot(Box::new(snapshot)),
+                    state: None,
+                });
+            }
+            1 | 7 => {
+                if pending.stage == 1
+                    && (result["busy"] == true
+                        || [
+                            "active_work",
+                            "pending_approvals",
+                            "pending_questions",
+                            "pending_model_loads",
+                        ]
+                        .iter()
+                        .any(|key| result[key].as_array().is_some_and(|v| !v.is_empty())))
+                {
+                    return Ok(Step::Engine {
+                        update: Update::Rejected(
+                            "Finish source work before managing its engine".into(),
+                        ),
+                        policy: None,
+                        state: None,
+                    });
+                }
+                let state = Snapshot::parse(result)?;
+                if pending.stage == 1 && state.held_restored_input.is_some_and(|n| n > 0) {
+                    return Ok(Step::Engine {
+                        update: Update::Rejected(
+                            "Resolve held input before managing its engine".into(),
+                        ),
+                        policy: None,
+                        state: None,
+                    });
+                }
+
+                if state.session != session
+                    || state.backend != backend
+                    || state.model != model
+                    || state.profile != profile
+                    || state.schedules_paused != schedules
+                    || state.held_restored_input != Some(0)
+                    || result["ownership"]["agent_id"] != agent
+                {
+                    return Err(fail(
+                        "Engine state changed owned authority or pending input",
+                    ));
+                }
+                if result["tool_policy"] != pending.snapshot.as_ref().expect("inspected").policy {
+                    return Err(fail("Engine state changed tool policy"));
+                }
+                pending.policy = Some(result["tool_policy"].clone());
+                pending.state = Some(state);
+            }
+            2 => match crate::backend_controls::history(result, &session) {
+                Ok(history) => pending.history = Some(history),
+                Err(error) => {
+                    return Ok(Step::Engine {
+                        update: Update::Rejected(format!(
+                            "Cannot review engine action with this history: {error}"
+                        )),
+                        policy: None,
+                        state: None,
+                    });
+                }
+            },
+            3 | 9 => {
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| fail("Engine revision exhausted"))?;
+                let queue = crate::restored_queue::Snapshot::parse(result, self.revision)?;
+                if queue.session != session
+                    || queue.backend != backend
+                    || queue.model != model
+                    || !queue.entries.is_empty()
+                {
+                    return Err(fail(
+                        "Engine action requires unchanged empty held-input queue",
+                    ));
+                }
+                if pending.stage == 9 {
+                    let receipt = pending.receipt.take().expect("receipt");
+                    let (_, generation, admission) = self.engine_instance.as_mut().expect("engine");
+                    *generation = receipt.generation;
+                    *admission = receipt.admission;
+                    self.engine_snapshot = None;
+                    self.engine_review = None;
+                    self.queue_menu = Some(queue);
+                    return Ok(Step::Engine {
+                        update: Update::Settled {
+                            admission: receipt.admission,
+                            message: receipt.message(),
+                        },
+                        policy: pending.policy,
+                        state: pending.state,
+                    });
+                }
+            }
+            4 => {
+                let review = Review::parse(
+                    result,
+                    pending.snapshot.take().expect("snapshot"),
+                    pending.action.expect("action"),
+                )?;
+                self.engine_review =
+                    Some((review.clone(), pending.history.take().expect("history")));
+                return Ok(Step::Engine {
+                    update: Update::Review(Box::new(review)),
+                    policy: pending.policy,
+                    state: None,
+                });
+            }
+            5 => {
+                pending.receipt = Some(Receipt::parse(
+                    result,
+                    pending.review.as_ref().expect("review").clone(),
+                )?);
+            }
+            6 => {
+                pending
+                    .receipt
+                    .as_ref()
+                    .expect("receipt")
+                    .verify_readback(result)?;
+            }
+            8 => {
+                let history = crate::backend_controls::history(result, &session)?;
+                if Some(&history) != pending.history.as_ref() {
+                    return Err(fail("Engine lifecycle changed saved conversation"));
+                }
+            }
+            _ => return Err(fail("Unknown engine operation stage")),
+        }
+        if self.closing {
+            return Ok(Step::Engine{update:Update::Rejected("Engine response consumed during shutdown; no action success or prompt was published".into()),policy:None,state:None});
+        }
+        pending.stage += 1;
+        let mut command = match pending.stage {
+            2 | 8 => {
+                json!({"type":"gui.conversations.read","session_id":session,"max_response_bytes":1048576})
+            }
+            3 | 9 => json!({"type":crate::restored_queue::READ,"session_id":session}),
+            4 => pending
+                .snapshot
+                .as_ref()
+                .expect("snapshot")
+                .request(pending.action.expect("action"))?,
+            6 => pending
+                .receipt
+                .as_ref()
+                .expect("receipt")
+                .readback_request(),
+            7 => json!({"type":"gui.state","include_conversations":false}),
+            _ => return Err(fail("Invalid engine continuation")),
+        };
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve engine readback"))?;
+        command["id"] = id.to_value();
+        pending.id = Some(id);
+        self.engine = Some(pending);
         Ok(Step::Write(command))
     }
 }

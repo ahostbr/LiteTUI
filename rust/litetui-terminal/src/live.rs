@@ -110,7 +110,13 @@ impl Options {
         let data_root = required("--data-root")?.into();
         let backend = required("--backend")?;
         let model = required("--model")?;
+        let prompt_provided = fields.contains_key("--prompt");
         let prompt = fields.remove("--prompt").unwrap_or_default();
+        if launch.engine_management && prompt_provided {
+            return Err(io::Error::other(
+                "Engine management cannot queue a launch prompt",
+            ));
+        }
         let resume = fields.remove("--resume");
         if let Some(id) = &resume {
             crate::resume::conversation_id(id)?;
@@ -180,6 +186,8 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    Engine(crate::engine_controls::Update),
+    EngineAdmission(crate::engine_controls::Admission),
     State(crate::runtime_state::Update),
     History(crate::resume::History),
     Controls(crate::model_controls::Update),
@@ -233,6 +241,10 @@ pub enum TerminalOutcome {
 #[derive(Default)]
 pub struct Turn {
     ready: bool,
+    engine_admission: Option<crate::engine_controls::Admission>,
+    allow_engine_management: bool,
+    engine_shutdown: Option<crate::engine_controls::ShutdownIdentity>,
+    shutdown_acknowledged: bool,
     sent: bool,
     closing: bool,
     command_id: String,
@@ -254,6 +266,12 @@ pub struct Turn {
 }
 impl Turn {
     fn can_manage(&self) -> bool {
+        self.can_engine()
+            && self
+                .engine_admission
+                .is_none_or(|a| a == crate::engine_controls::Admission::PromptReady)
+    }
+    fn can_engine(&self) -> bool {
         self.ready && !self.closing && (!self.sent || self.settled)
     }
     pub fn with_policy(policy: crate::tool_mode::Expected) -> Self {
@@ -265,6 +283,9 @@ impl Turn {
     /// Reserve a new command ID exactly once. Neither a write nor admission.
     pub fn submit(&mut self, prompt: &str) -> io::Result<Value> {
         if !self.ready
+            || self
+                .engine_admission
+                .is_some_and(|a| a != crate::engine_controls::Admission::PromptReady)
             || self.closing
             || !self.approvals.settled()
             || !self.questions.settled()
@@ -381,7 +402,16 @@ impl Turn {
             "ready" => {
                 if self.ready
                     || event["protocol_version"] != 1
-                    || event["launch_status"] != "ready"
+                    || !(event["launch_status"] == "ready"
+                        || (self.allow_engine_management
+                            && matches!(backend, "ninfer" | "strata")
+                            && event["launch_status"] == "management"
+                            && event["admission"] == "management_only"
+                            && event["effective_model"].is_null()
+                            && matches!(
+                                event["management_reason"].as_str(),
+                                Some("engine_unavailable" | "engine_unloaded")
+                            )))
                     || event["backend"] != backend
                     || event["model"] != model
                 {
@@ -390,8 +420,46 @@ impl Turn {
                 if let Some(policy) = &self.policy {
                     policy.validate(event)?;
                 }
+                if event.get("management_instance").is_some() {
+                    if !matches!(backend, "ninfer" | "strata") {
+                        return Err(fail("Engine startup metadata belongs to another backend"));
+                    }
+                    let admission = crate::engine_controls::Admission::parse(&event["admission"])?;
+                    if event["desired_model"] != model
+                        || (admission == crate::engine_controls::Admission::PromptReady
+                            && event["effective_model"] != model)
+                        || (event["launch_status"] == "ready"
+                            && admission != crate::engine_controls::Admission::PromptReady)
+                    {
+                        return Err(fail("Contradictory engine startup admission"));
+                    }
+                    self.engine_shutdown = Some(crate::engine_controls::ShutdownIdentity {
+                        instance: event["management_instance"]
+                            .as_str()
+                            .ok_or_else(|| fail("Missing engine instance"))?
+                            .into(),
+                        session: event["conversation_id"]
+                            .as_str()
+                            .ok_or_else(|| fail("Missing engine session"))?
+                            .into(),
+                        backend: backend.into(),
+                    });
+                    self.engine_admission = Some(admission);
+                } else if event["launch_status"] == "management" {
+                    return Err(fail("Missing explicit engine management identity"));
+                }
                 self.ready = true;
-                Ok(Observation::Ready)
+                Ok(
+                    if self.engine_admission
+                        == Some(crate::engine_controls::Admission::ManagementOnly)
+                    {
+                        Observation::EngineAdmission(
+                            crate::engine_controls::Admission::ManagementOnly,
+                        )
+                    } else {
+                        Observation::Ready
+                    },
+                )
             }
             "response"
                 if self.closing
@@ -399,7 +467,18 @@ impl Turn {
                     && event["ok"] == true
                     && event["result"]["ok"] == true =>
             {
-                Ok(Observation::Information("shutdown acknowledged".into()))
+                crate::engine_controls::verify_shutdown(
+                    &event["result"],
+                    self.engine_shutdown.as_ref(),
+                )?;
+                self.shutdown_acknowledged = true;
+                Ok(Observation::Information(
+                    if self.engine_shutdown.is_some() {
+                        "shutdown acknowledged; resource release unverified".into()
+                    } else {
+                        "shutdown acknowledged".into()
+                    },
+                ))
             }
             "response" => {
                 if let Some(stopped) = self.aborts.response(event)? {
@@ -875,6 +954,11 @@ fn reader(mut input: impl Read + Send + 'static, stdout: bool, tx: mpsc::SyncSen
 }
 
 fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
+    if options.launch.engine_management && !options.prompt.is_empty() {
+        return Err(io::Error::other(
+            "Engine management cannot queue a first prompt",
+        ));
+    }
     // Validate direct Options construction as well as CLI parsing, before any
     // data root, settings, executable lookup or child process side effects.
     let backend = crate::runtime_launch::Backend::parse(&options.backend)?;
@@ -1006,6 +1090,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         profile,
         workspace,
     });
+    turn.allow_engine_management = options.launch.engine_management;
     let mut management = crate::management::Management::new(options.resume.clone());
     let mut startup_facts = None;
     let mut mirror_deadline = None;
@@ -1019,6 +1104,32 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 && let Some(command) = frontend.command()?
             {
                 match command {
+                    Input::Engine(intent) => {
+                        let command = if turn.can_engine() {
+                            management.request_engine(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish current work before engine management",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(
+                                    Instant::now()
+                                        + management.engine_timeout().unwrap_or(options.timeout),
+                                );
+                            }
+                            Err(error) => frontend.observe(Observation::Engine(
+                                crate::engine_controls::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
+                    }
                     Input::Commands(intent) => {
                         let command = if turn.can_manage() {
                             management.request_command(intent)
@@ -1172,7 +1283,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Input::Queue(intent) => {
-                        let command = if turn.can_manage() {
+                        // Read/cancel/resolve held input is recovery, not prompt admission.
+                        // Continue is handled separately and still requires prompt readiness.
+                        let command = if turn.can_engine() {
                             management.request_queue(intent)
                         } else {
                             Err(io::Error::other(
@@ -1245,6 +1358,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Input::Quit => {
+                        management.begin_close();
                         turn.closing = true;
                         deadline = Some(Instant::now() + Duration::from_secs(20));
                         owned.request_shutdown()?;
@@ -1277,7 +1391,13 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         .finish()
                         .map_err(|e| io::Error::other(format!("{e:?}")))?;
                     return if turn.closing {
-                        Ok(())
+                        if turn.engine_shutdown.is_some() && !turn.shutdown_acknowledged {
+                            Err(io::Error::other(
+                                "Engine runtime exited without verified shutdown acknowledgement",
+                            ))
+                        } else {
+                            Ok(())
+                        }
                     } else {
                         Err(io::Error::other("Runtime stdout closed unexpectedly"))
                     };
@@ -1295,7 +1415,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 match management.accept(event)? {
                     Step::Bootstrap(ready) => {
                         turn.accept(&ready, &options.backend, &options.model)?;
-                        startup_facts = crate::runtime_state::Update::from_event(&ready)?;
+                        startup_facts = if turn.can_manage() {
+                            crate::runtime_state::Update::from_event(&ready)?
+                        } else {
+                            None
+                        };
                         if !turn.closing {
                             let hello = management.begin(&ready)?;
                             owned
@@ -1327,6 +1451,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 snapshot,
                                 None,
                                 &mut deadline,
+                                turn.engine_admission,
                             )?;
                         }
                     }
@@ -1338,7 +1463,36 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 snapshot,
                                 Some(history),
                                 &mut deadline,
+                                turn.engine_admission,
                             )?;
+                        }
+                    }
+                    Step::Engine {
+                        update,
+                        policy,
+                        state,
+                    } => {
+                        if !turn.closing {
+                            if let Some(policy) = policy {
+                                turn.policy
+                                    .as_ref()
+                                    .expect("launch policy")
+                                    .validate(&policy)?;
+                            }
+                            if let crate::engine_controls::Update::Settled { admission, .. } =
+                                &update
+                            {
+                                turn.engine_admission = Some(*admission);
+                                frontend.observe(Observation::EngineAdmission(*admission))?;
+                            }
+                            if let Some(state) = state {
+                                frontend.observe(Observation::State(
+                                    crate::runtime_state::Update::from_management(state),
+                                ))?;
+                            }
+                            frontend.observe(Observation::Engine(update))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
                         }
                     }
                     Step::Commands { update, policy } => {
@@ -1498,6 +1652,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    Engine(crate::engine_controls::Intent),
     Control(crate::model_controls::Intent),
     Queue(crate::restored_queue::Intent),
     Commands(crate::command_palette::Intent),
@@ -1525,7 +1680,9 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::State(_)
+            Observation::Engine(_)
+            | Observation::EngineAdmission(_)
+            | Observation::State(_)
             | Observation::Commands(_)
             | Observation::Settings(_)
             | Observation::Backend(_)
@@ -1637,6 +1794,9 @@ pub fn run(options: Options) -> io::Result<()> {
     let profile = options.selected_profile()?;
     if options.prompt.trim().is_empty() {
         return Err(io::Error::other("--live requires --prompt"));
+    }
+    if options.launch.engine_management {
+        return Err(io::Error::other("Engine management requires --interactive"));
     }
     let mut frontend = OneShot {
         output: Output::new(),
@@ -1792,6 +1952,14 @@ impl Interactive {
             .try_send(Input::Control(intent))
             .map_err(io::Error::other)
     }
+    pub fn engine(&self, intent: crate::engine_controls::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Engine(intent))
+            .map_err(io::Error::other)
+    }
     pub fn commands(&self, intent: crate::command_palette::Intent) -> io::Result<()> {
         if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
             return Err(io::Error::other("Runtime is quitting"));
@@ -1875,6 +2043,7 @@ fn publish_startup(
     snapshot: crate::management::Snapshot,
     history: Option<crate::resume::History>,
     deadline: &mut Option<Instant>,
+    engine_admission: Option<crate::engine_controls::Admission>,
 ) -> io::Result<()> {
     check_deadline(*deadline)?;
     if let Some(update) = facts.take() {
@@ -1896,7 +2065,13 @@ fn publish_startup(
     }
     check_deadline(*deadline)?;
     *deadline = None;
-    frontend.observe(Observation::Ready)
+    if let Some(admission) = engine_admission
+        && admission != crate::engine_controls::Admission::PromptReady
+    {
+        frontend.observe(Observation::EngineAdmission(admission))
+    } else {
+        frontend.observe(Observation::Ready)
+    }
 }
 fn publish_event(
     turn: &mut Turn,
@@ -2027,5 +2202,45 @@ mod approval_shutdown_tests {
                 })
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod engine_admission_tests {
+    use super::*;
+    fn ready() -> Value {
+        json!({"type":"ready","protocol_version":1,"launch_status":"management","management_reason":"engine_unavailable","conversation_id":"00000000-0000-4000-8000-000000000001","backend":"strata","model":"chosen","desired_model":"chosen","effective_model":null,"admission":"management_only","management_instance":"a".repeat(64)})
+    }
+    #[test]
+    fn stopped_engine_requires_explicit_management_startup_and_never_ready() {
+        let mut normal = Turn::default();
+        assert!(normal.accept(&ready(), "strata", "chosen").is_err());
+        let mut managed = Turn {
+            allow_engine_management: true,
+            ..Turn::default()
+        };
+        assert_eq!(
+            managed.accept(&ready(), "strata", "chosen").unwrap(),
+            Observation::EngineAdmission(crate::engine_controls::Admission::ManagementOnly)
+        );
+        assert!(managed.submit("never queued").is_err());
+        assert!(managed.can_engine());
+        assert!(!managed.can_manage());
+    }
+    #[test]
+    fn management_opt_in_never_accepts_generic_blocked_or_unknown_reason() {
+        for (key, value) in [
+            ("launch_status", json!("blocked")),
+            ("management_reason", json!("bad_policy")),
+            ("desired_model", json!("other")),
+        ] {
+            let mut event = ready();
+            event[key] = value;
+            let mut turn = Turn {
+                allow_engine_management: true,
+                ..Turn::default()
+            };
+            assert!(turn.accept(&event, "strata", "chosen").is_err());
+        }
     }
 }

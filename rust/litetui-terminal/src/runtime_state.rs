@@ -131,6 +131,11 @@ pub struct State {
     rate: Option<f64>,
 }
 impl State {
+    pub fn engine_changed(&mut self) {
+        self.ready = None;
+        self.usage = None;
+        self.rate = None;
+    }
     /// Called only after the source open, effective policy, state and held-input barriers.
     pub fn opened(&mut self, snapshot: crate::management::Snapshot) {
         if let Some(ready) = self.ready.as_mut() {

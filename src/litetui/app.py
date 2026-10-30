@@ -2408,6 +2408,8 @@ class LiteTUI(App):
         """
         try:
             self._gui_quitting = True
+            from litetui import native_engine_shutdown
+            await native_engine_shutdown.settle_before_shutdown(self)
             # Block NEW model loads on every retained backend admission session BEFORE any
             # await below can yield the loop — a load dispatched during async teardown
             # would reserve capacity we are about to stop tracking. begin_close ONLY: no
@@ -4247,9 +4249,13 @@ class LiteTUI(App):
         return True
 
     def _resume(self, path: Path, *, startup: bool = False) -> bool:
+        from litetui import native_engine
         from litetui.backend_transition import submission_refusal
 
-        if reason := submission_refusal(self):
+        if native_engine.state(self) is not None:
+            self._system("Reopen explicitly to change this engine session")
+            return False
+        if reason := submission_refusal(self, initializing=startup and not getattr(self, "_rpc_ready_sent", False)):
             self._system(reason)
             return False
         if getattr(self, '_agent_session', None) is not None:
@@ -5052,6 +5058,8 @@ class LiteTUI(App):
         # `ready` payload arms construct one that way), where the property
         # setters that used to be the only callers never ran.
         # Publish owned execution even before the first conversation snapshot.
+        from litetui import native_engine
+        native_engine.require_open(self)
         session = getattr(self, '_agent_session', None)
         if session is not None and field in ('backend', 'model', 'thinking_level', 'reasoning_effort'):
             authority = session.authority
@@ -5413,6 +5421,10 @@ class LiteTUI(App):
         ):
             return True
 
+        if getattr(self, '_native_engine_resource_action', False):
+            self._native_engine_resource_refusal = 'resource_confirmation_required'
+            return False
+
         if self._rpc and getattr(self, "_gui_rpc_enabled", False):
             request_id = uuid.uuid4().hex
             pending = getattr(self, "_gui_model_pending", None)
@@ -5499,6 +5511,7 @@ class LiteTUI(App):
     @work(exclusive=True, group="init")
     async def connect(self) -> None:
         self._gui_connection_success = False
+        self._native_engine_management_reason = None
         self._connect_settled = False
         if hasattr(self, '_connect_done'):
             self._connect_done.clear()
@@ -5694,6 +5707,8 @@ class LiteTUI(App):
             if self.backend is not backend or self.conversation is not conversation:
                 return
             self._gui_connection_success = False
+            from litetui import native_engine
+            native_engine.note_connection_error(self, e)
             if resume_path is not None:
                 self._resume_connection_error = (
                     f"Resume connection failed: {e}. Retry /reconnect or choose a provider/model."
@@ -5868,7 +5883,8 @@ class LiteTUI(App):
         # T594: resolve BEFORE announcing, so `ready` names the model that
         # will actually answer rather than the one that was configured.
         note = ""
-        if getattr(self, "_rpc", False):   # doubles predate this seam
+        from litetui import native_engine
+        if getattr(self, "_rpc", False) and not native_engine.startup_management(self):
             action, model, why = self._headless_model_decision()
             if action == "substitute" and model and getattr(self, '_agent_session', None) is None:
                 self._model_id = model
@@ -5916,6 +5932,7 @@ class LiteTUI(App):
             "tools_enabled": bool(self.tools_enabled),
             "mcp_enabled": bool(self.settings.mcp_enabled),
             "approval_route": seat_authority.confirm_route(self),
+            **native_engine.ready_fields(self),
         })
         self._rpc_ready_sent = True
 
@@ -6010,7 +6027,9 @@ class LiteTUI(App):
             self._cli_launch_error = getattr(self, '_owned_launch_error', None)
             if self._cli_launch_error:
                 return
-            if getattr(self, '_launch_options', None) is not None and not self._gui_connection_success:
+            from litetui import native_engine
+            management = native_engine.startup_management(self)
+            if getattr(self, '_launch_options', None) is not None and not self._gui_connection_success and not management:
                 self._cli_launch_error = 'Backend connection/startup failed; launch prompt blocked'
                 return
             # --convo BEFORE model/thinking/system-prompt/first-prompt, and
@@ -6021,10 +6040,11 @@ class LiteTUI(App):
                 return
             if getattr(self, '_resume_connect_worker', None) is not None:
                 await self._resume_connect_worker.wait()
-                if not self._gui_connection_success:
+                management = native_engine.startup_management(self)
+                if not self._gui_connection_success and not management:
                     self._cli_launch_error = 'Resumed backend connection failed; launch prompt blocked'
                     return
-            if self._cli_initial_model:
+            if self._cli_initial_model and not management:
                 want = self._cli_initial_model
                 loaded = {r.key for r in self.model_rows.values() if r.loaded}
                 if want in loaded:
@@ -8708,6 +8728,8 @@ class LiteTUI(App):
 
 
     def _validate_owned_execution(self) -> None:
+        from litetui import native_engine
+        native_engine.require_execution(self)
         from litetui.backend_transition import require_open
 
         require_open(self)
@@ -9931,6 +9953,9 @@ class LiteTUI(App):
         returns out of the worker before this point, so it still ends the turn
         and sends next -- queue and interrupt stay two different verbs.
         """
+        from litetui.backend_transition import submission_refusal
+        if submission_refusal(self):
+            return False
         if not self._pending_input or self._stop_requested:
             return False
         if self._pending_input[0].get("_codex_entry"):
@@ -10992,6 +11017,10 @@ class LiteTUI(App):
         from litetui.backend_transition import submission_refusal
 
         if reason := submission_refusal(self):
+            self._system(reason)
+            return
+        from litetui import native_engine
+        if reason := native_engine.command_refusal(self, cmd):
             self._system(reason)
             return
         parts = cmd.split(maxsplit=1)

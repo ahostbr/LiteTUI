@@ -77,6 +77,8 @@ pub struct Chat {
     pub questions: crate::questions::View,
     pub controls: crate::model_controls::View,
     pub queue: crate::restored_queue::View,
+    pub engine: crate::engine_controls::View,
+    pub engine_admission: Option<crate::engine_controls::Admission>,
     pub commands: crate::command_palette::View,
     pub settings: crate::settings_view::View,
     pub backend_controls: crate::backend_controls::View,
@@ -109,6 +111,8 @@ impl Chat {
             questions: crate::questions::View::default(),
             controls: crate::model_controls::View::default(),
             queue: crate::restored_queue::View::default(),
+            engine: crate::engine_controls::View::default(),
+            engine_admission: None,
             commands: crate::command_palette::View::default(),
             settings: crate::settings_view::View::default(),
             backend_controls: crate::backend_controls::View::default(),
@@ -135,6 +139,8 @@ impl Chat {
             || self.quitting
             || self.controls.owns_input()
             || self.queue.owns_input()
+            || self.engine.owns_input()
+            || self.engine.pending()
             || self.commands.owns_input()
             || self.settings.owns_input()
             || self.backend_controls.owns_input()
@@ -230,6 +236,7 @@ impl Chat {
     ) -> io::Result<()> {
         let prompt = self.queue.selection_text(intent)?.to_owned();
         self.queue.finish();
+        self.engine.finish();
         self.commands.finish();
         self.settings.finish();
         self.backend_controls.finish();
@@ -283,6 +290,24 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::EngineAdmission(admission) => {
+                let first = self.engine_admission.is_none() && !self.ready;
+                self.engine_admission = Some(admission);
+                self.ready = admission == crate::engine_controls::Admission::PromptReady;
+                self.runtime_state.engine_changed();
+                self.notice = admission.label().into();
+                if first {
+                    self.engine.open();
+                }
+            }
+            Observation::Engine(update) => {
+                if let crate::engine_controls::Update::Settled { message, .. }
+                | crate::engine_controls::Update::Rejected(message) = &update
+                {
+                    self.notice = message.clone();
+                }
+                self.engine.observe(update);
+            }
             Observation::Commands(update) => {
                 use crate::command_palette::Update;
                 match update {
@@ -663,6 +688,7 @@ impl Chat {
     pub fn begin_quit(&mut self) {
         self.controls.finish();
         self.queue.finish();
+        self.engine.finish();
         self.commands.finish();
         self.settings.finish();
         self.backend_controls.finish();
@@ -673,6 +699,7 @@ impl Chat {
     pub fn finish(&mut self, failure: Option<String>) {
         self.controls.finish();
         self.queue.finish();
+        self.engine.finish();
         self.commands.finish();
         self.settings.finish();
         self.backend_controls.finish();

@@ -44,7 +44,7 @@ import urllib.request
 from pathlib import Path
 
 from . import ninfer_engine
-from .engine_lifecycle import OwnedEngineLifecycle
+from .engine_lifecycle import EngineUnavailable, OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
 
 #: Where LiteSuite keeps the config that names the live engine. The env var is
@@ -362,14 +362,14 @@ class NInferBackend(OwnedEngineLifecycle):
         explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
         host = explicit or discover_ninfer_host()
         if host is None:
-            raise BackendError(
+            raise EngineUnavailable(
                 "no NInfer engine is registered — start it from LiteSuite's "
                 "Model Hub (Settings → NInfer), or set ninfer_host "
                 "(LITETUI_NINFER_HOST) to a ninfer-serve you started by hand, "
                 "or /engine start to have LiteTUI start one."
             )
         if not self._health(host):
-            raise BackendError(
+            raise EngineUnavailable(
                 f"an NInfer engine is registered at {host} but is not answering "
                 "/health — it may still be loading weights (about 8 seconds) or "
                 "may have stopped."

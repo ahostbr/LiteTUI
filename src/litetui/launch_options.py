@@ -28,8 +28,25 @@ class LaunchOptions:
     api_key_env: str | None = None
     timeout: int = 600
     codex_engine: str | None = None
+    engine_management: bool = False
+
+    def validate_engine_management(self, backend, model):
+        # Validate before endpoint discovery, settings overlays or hardware checks.
+        # This flag grants management access, never automatic load/start consent.
+        if type(self.engine_management) is not bool:
+            raise ValueError('engine_management must be a boolean')
+        if not self.engine_management:
+            return
+        if backend not in ('ninfer', 'strata'):
+            raise ValueError('--engine-management requires an explicit --backend ninfer or strata')
+        if (not isinstance(model, str) or not model.strip() or '\x00' in model
+                or len(model.encode('utf-8')) > 1024):
+            raise ValueError('--engine-management requires an explicit --model of 1..1024 UTF-8 bytes')
+        if self.server_mode != 'connect' or self.load_model is not False:
+            raise ValueError('--engine-management requires --server-mode connect without automatic start/load')
 
     def overrides(self, settings, backend, model):
+        self.validate_engine_management(backend, model)
         from litetui.custom_backend import api_base
         values = {}
         if self.codex_engine is not None:
@@ -134,6 +151,8 @@ class LaunchOptions:
 
 
 def add_arguments(parser):
+    parser.add_argument('--engine-management', action='store_true',
+                        help='Owned RPC engine controls only; requires --hold-restored-input, --backend ninfer|strata, --model and --server-mode connect; never submits a launch prompt')
     parser.add_argument('--codex-engine', choices=('native', 'http'),
                         help='Invocation-only Codex loop: native app-server or LiteTUI HTTP; overrides LITETUI_CODEX_ENGINE, then saved setting (default: http)')
     parser.add_argument('--base-url', '--host', dest='base_url', help='Explicit server URL; never fall back to another endpoint')
@@ -168,9 +187,14 @@ def from_args(args):
         codex_engine = os.environ.get('LITETUI_CODEX_ENGINE') or None
         if codex_engine is not None and codex_engine not in ('native', 'http'):
             raise ValueError('LITETUI_CODEX_ENGINE must be native or http')
-    return LaunchOptions(args.base_url, args.server_mode, args.load_model, args.context_length,
-                         args.max_tokens, args.server_executable, args.model_path, command,
-                         args.api_key_env, args.server_timeout, codex_engine)
+    options = LaunchOptions(args.base_url, args.server_mode, args.load_model, args.context_length,
+                            args.max_tokens, args.server_executable, args.model_path, command,
+                            args.api_key_env, args.server_timeout, codex_engine,
+                            getattr(args, 'engine_management', False))
+    options.validate_engine_management(args.backend, getattr(args, 'model', None))
+    if options.engine_management and getattr(args, 'prompt', None) is not None:
+        raise ValueError('--engine-management cannot carry --prompt; submit explicitly after a verified connection')
+    return options
 
 
 def to_argv(options):
@@ -182,12 +206,18 @@ def to_argv(options):
             args += ['--' + name.replace('_', '-'), str(value)]
     if options.load_model:
         args.append('--load-model')
+    if options.engine_management:
+        args.append('--engine-management')
     if options.server_command is not None:
         args += ['--server-command', json.dumps(options.server_command)]
     return args
 
 
 async def prepare(app):
+    options = getattr(app, '_launch_options', None)
+    if options is not None and getattr(options, 'engine_management', False):
+        options.validate_engine_management(
+            app.backend.name, getattr(app, '_cli_initial_model', None) or getattr(app, 'model_id', None))
     app._explicit_launch_load = bool(getattr(app, '_launch_options', None) and (
         app._launch_options.load_model or app._launch_options.server_mode == 'start'))
     try:

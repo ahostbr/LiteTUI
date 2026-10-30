@@ -80,6 +80,7 @@ impl ServerMode {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchOptions {
+    pub engine_management: bool,
     pub base_url: Option<String>,
     pub server_mode: Option<ServerMode>,
     pub load_model: bool,
@@ -96,6 +97,7 @@ pub struct LaunchOptions {
 impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
+            engine_management: false,
             base_url: None,
             server_mode: None,
             load_model: false,
@@ -148,6 +150,7 @@ impl LaunchOptions {
             if !matches!(
                 key,
                 "--base-url"
+                    | "--engine-management"
                     | "--server-mode"
                     | "--load-model"
                     | "--context-length"
@@ -170,6 +173,11 @@ impl LaunchOptions {
             }
             if !seen.insert(key) {
                 return Err(io::Error::other(format!("Duplicate {key}")));
+            }
+            if key == "--engine-management" {
+                result.engine_management = true;
+                index += 1;
+                continue;
             }
             if key == "--load-model" {
                 result.load_model = true;
@@ -249,6 +257,15 @@ impl LaunchOptions {
             ));
         }
         let mode = self.effective_mode(backend);
+        if self.engine_management
+            && (!matches!(backend, Backend::Ninfer | Backend::Strata)
+                || mode != ServerMode::Connect
+                || self.load_model)
+        {
+            return Err(io::Error::other(
+                "--engine-management requires NInfer/Strata connect mode without automatic start/load",
+            ));
+        }
         if backend.local() && mode == ServerMode::Auto {
             return Err(io::Error::other(
                 "Local auto may discover or start a server; choose connect or explicitly start",
@@ -392,6 +409,9 @@ impl LaunchOptions {
             if let Some(value) = value {
                 args.extend([field.into(), value]);
             }
+        }
+        if self.engine_management {
+            args.push("--engine-management".into());
         }
         if self.load_model {
             args.push("--load-model".into());

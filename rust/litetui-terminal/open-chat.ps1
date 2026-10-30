@@ -11,6 +11,7 @@ param(
     [ValidateSet('auto', 'connect', 'start')][string]$ServerMode,
     [switch]$StartServer,
     [switch]$LoadModel,
+    [switch]$EngineManagement,
     [UInt64]$ContextLength,
     [UInt64]$MaxTokens,
     [string]$ServerExecutable,

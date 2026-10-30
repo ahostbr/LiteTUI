@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 
 from . import strata_engine
-from .engine_lifecycle import OwnedEngineLifecycle
+from .engine_lifecycle import EngineUnavailable, OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
 
 #: `reasoning_effort` as Strata's server accepts it (serve/server.py: "none, low, medium or high").
@@ -97,11 +97,11 @@ class StrataBackend(OwnedEngineLifecycle):
                 return f"ok (engine started by LiteTUI, pid {getattr(self._owned.proc, 'pid', '?')})"
             return "ok"
         if state == "unloaded":
-            raise BackendError(
+            raise EngineUnavailable(
                 f"the Strata server at {host} is up but has unloaded its model, and a request would "
                 "load it again (tens of GB of RAM). Load it from that server's own page, or stop it "
-                "and /engine start.")
-        raise BackendError(
+                "and /engine start.", reason="engine_unloaded")
+        raise EngineUnavailable(
             f"no Strata server is answering at {host} — /engine start to load the chosen model, or "
             f"start it yourself and set strata_host. Install: LiteSuite's Model Hub (Strata), "
             f"or {strata_engine.STRATA_REPO_URL}.")

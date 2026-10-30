@@ -52,6 +52,7 @@ OPERATIONS = (
     "work.get", "work.cancel",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
+    "engine.native_inspect", "engine.native_validate", "engine.native_action", "engine.native_readback",
     "settings.native_snapshot", "settings.native_validate", "settings.native_save",
     "commands.list", "commands.resolve", "skills.native_prepare",
     "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile", "restored_input.resolve",
@@ -467,6 +468,8 @@ def _memory(app, action, cmd):
 
 def dispatch(app, cmd):
     """Execute nonblocking operations on the existing app loop."""
+    from litetui import native_engine
+    native_engine.operation_allowed(app, str(cmd.get("type", "")))
     operation = str(cmd.get("type", ""))[4:]
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
@@ -760,7 +763,9 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    blocking = operation in {"gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.settings.native_save"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    from litetui import native_engine
+    native_engine.operation_allowed(app, operation)
+    blocking = operation in {"gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -768,6 +773,13 @@ async def async_dispatch(app, cmd):
         app._gui_management_owner = asyncio.current_task()
     token = OPERATION_CONTEXT.set(None if operation == "gui.prompt.submit" else cmd.get("id"))
     try:
+        if operation in native_engine.RECOVERY:
+            with native_engine.recovery(app):
+                return await _async_dispatch(app, cmd)
+        if operation in native_engine.READ_ONLY and not operation.startswith("gui.engine.native_"):
+            # These operations return synchronously; no await shares the exemption.
+            with native_engine.inspection(app):
+                return dispatch(app, cmd)
         return await _async_dispatch(app, cmd)
     finally:
         OPERATION_CONTEXT.reset(token)
@@ -778,6 +790,16 @@ async def async_dispatch(app, cmd):
 
 async def _async_dispatch(app, cmd):
     operation = cmd["type"]
+    from litetui import native_engine
+    native_engine.operation_allowed(app, operation)
+    if operation.startswith("gui.engine.native_"):
+        from litetui import native_engine
+        name = operation.rsplit("_", 1)[1]
+        if name in {"inspect", "validate"}:
+            return getattr(native_engine, name)(app, cmd)
+        if name in {"action", "readback"}:
+            return await getattr(native_engine, name)(app, cmd)
+        raise ValueError("Unknown native engine operation")
     if operation in {"gui.commands.list", "gui.commands.resolve"}:
         from litetui import command_surface
 

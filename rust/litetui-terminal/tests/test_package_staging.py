@@ -371,7 +371,9 @@ def test_actual_runtime_resources_and_owned_construction_survive_packaging(proje
                   "ServerExecutable": "C:/runtime/llama server.exe", "ModelPath": "C:/models/雪.gguf",
                   "ContextLength": 4096}),
     ("codex", {"CodexEngine": "http", "ThinkingLevel": "high"}),
-    ("strata", {"StartServer": False, "LoadModel": False, "ThinkingLevel": "default"}),
+    ("strata", {"StartServer": False, "LoadModel": False, "EngineManagement": False, "ThinkingLevel": "default"}),
+    ("ninfer", {"EngineManagement": True, "ServerMode": "connect"}),
+    ("strata", {"EngineManagement": True}),
 ])
 def test_both_launchers_forward_explicit_backend_options_without_evaluation(project, tmp_path, launcher_kind, backend, extra):
     _repo, root, _exe, _package = project
@@ -412,6 +414,7 @@ def test_both_launchers_forward_explicit_backend_options_without_evaluation(proj
             assert args.count(flag) == 1 and args[args.index(flag) + 1] == str(extra[name])
     assert ("--start-server" in args) is bool(extra.get("StartServer"))
     assert ("--load-model" in args) is bool(extra.get("LoadModel"))
+    assert args.count("--engine-management") == int(bool(extra.get("EngineManagement")))
 
 
 def test_checkout_requires_model_when_backend_changes_before_build(project, tmp_path):

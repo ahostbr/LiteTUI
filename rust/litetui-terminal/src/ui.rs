@@ -750,6 +750,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         if let Some(chat) = app.live.as_mut() {
             chat.controls.hide();
             chat.queue.hide();
+            chat.engine.invalidate();
             chat.commands.hide();
             chat.settings.hide();
             chat.backend_controls.hide();
@@ -1054,6 +1055,13 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &t);
     } else if let Some(chat) = &mut app.live {
         chat.queue.hide();
+    }
+    if app.has_live_engine() {
+        app.live
+            .as_mut()
+            .expect("engine")
+            .engine
+            .draw(frame, area, &t);
     }
     if app.has_live_commands() {
         app.live

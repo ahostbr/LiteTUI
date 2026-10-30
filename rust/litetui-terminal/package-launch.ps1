@@ -15,6 +15,7 @@ param(
     [Parameter(ParameterSetName='Run')][ValidateSet('auto', 'connect', 'start')][string]$ServerMode,
     [Parameter(ParameterSetName='Run')][switch]$StartServer,
     [Parameter(ParameterSetName='Run')][switch]$LoadModel,
+    [Parameter(ParameterSetName='Run')][switch]$EngineManagement,
     [Parameter(ParameterSetName='Run')][UInt64]$ContextLength,
     [Parameter(ParameterSetName='Run')][UInt64]$MaxTokens,
     [Parameter(ParameterSetName='Run')][string]$ServerExecutable,

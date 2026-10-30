@@ -120,6 +120,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             if let Some(chat) = app.live.as_mut() {
                 chat.controls.close();
                 chat.queue.close();
+                chat.engine.close();
                 chat.commands.close();
                 chat.settings.close();
                 chat.backend_controls.close();
@@ -197,6 +198,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         if !chat.quitting && !chat.cancelling() {
             chat.questions.key(key);
         }
+        return false;
+    }
+    if app.has_live_engine() {
+        app.live.as_mut().expect("engine").engine.key(key);
         return false;
     }
     if app.has_live_commands() {
@@ -349,6 +354,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::F(12) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
+            app.open_engine();
+        }
         KeyCode::F(11) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_commands();
         }
@@ -577,6 +585,9 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_engine() {
+        return;
+    }
     if app.has_live_commands() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -642,6 +653,12 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_engine() {
+        if !app.viewport_too_small {
+            app.live.as_mut().unwrap().engine.mouse(event);
+        }
+        return;
+    }
     if app.has_live_commands() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -808,6 +825,9 @@ fn choose_profile(
 /// One-shot terminal launches share the native picker; redirected launches must
 /// name the profile. Cancellation returns before the runtime is constructed.
 fn one_shot_profile(options: &mut litetui_terminal::live::Options) -> io::Result<bool> {
+    if options.launch.engine_management {
+        return Err(io::Error::other("Engine management requires --interactive"));
+    }
     if options.prompt.trim().is_empty() {
         return Err(io::Error::other("--live requires --prompt"));
     }
@@ -928,6 +948,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         false
                     }
                     Event::FocusLost | Event::Resize(..) => {
+                        app.live.as_mut().expect("live").engine.invalidate();
                         app.live.as_mut().expect("live").commands.hide();
                         app.live.as_mut().expect("live").settings.hide();
                         app.live.as_mut().expect("live").backend_controls.hide();
@@ -979,6 +1000,14 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 if let Err(error) = runtime.quit() {
                     app.notice = error.to_string();
                 }
+            }
+            if !quitting
+                && let Some(intent) = app.live.as_mut().expect("live").engine.take_intent()
+                && let Err(error) = runtime.engine(intent)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
             }
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").commands.take_intent()
@@ -1108,7 +1137,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings | F11 commands/skills | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -2920,5 +2949,42 @@ mod tests {
         handle_key(&mut app, &mut router, repeat, &mut clipboard);
         assert!(app.live.as_mut().unwrap().take_submission().is_none());
         assert_eq!(app.composer.text(), "main composer draft");
+    }
+}
+
+#[cfg(test)]
+mod engine_router_tests {
+    use super::*;
+    use litetui_terminal::{
+        engine_controls::{Admission, Intent},
+        live::Observation,
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+    #[test]
+    fn management_panel_owns_input_preserves_draft_and_reopens_when_stopped() {
+        let mut app = Demo::live("strata".into(), "chosen".into());
+        app.insert_text("unsent engine draft");
+        app.observe_live(Observation::EngineAdmission(Admission::ManagementOnly))
+            .unwrap();
+        assert!(app.has_live_engine());
+        assert_eq!(
+            app.live.as_mut().unwrap().engine.take_intent(),
+            Some(Intent::Read)
+        );
+        paste(&mut app, "must not replace draft");
+        assert_eq!(app.composer.text(), "unsent engine draft");
+        app.live.as_mut().unwrap().engine.observe(
+            litetui_terminal::engine_controls::Update::Rejected("no configured plan".into()),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(41, 17)).unwrap();
+        terminal
+            .draw(|frame| litetui_terminal::ui::draw(frame, &mut app))
+            .unwrap();
+        key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.has_live_engine());
+        key(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(app.has_live_engine());
+        assert_eq!(app.composer.text(), "unsent engine draft");
+        assert!(app.live.as_mut().unwrap().submit("forbidden").is_err());
     }
 }

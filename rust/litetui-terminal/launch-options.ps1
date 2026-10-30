@@ -20,5 +20,6 @@ function Get-LiteTuiLaunchArguments {
     }
     if ($Parameters['StartServer']) { $result.Add('--start-server') }
     if ($Parameters['LoadModel']) { $result.Add('--load-model') }
+    if ($Parameters['EngineManagement']) { $result.Add('--engine-management') }
     return $result.ToArray()
 }

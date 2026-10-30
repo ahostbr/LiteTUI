@@ -1,6 +1,6 @@
 # Remaining LiteTUI Rust parity work
 
-Source audit: 2026-10-29, work/rust-tui-OpenBolt, continuation base d821a158.
+Source audit: 2026-10-30, work/rust-tui-OpenBolt, prior checkpoint 43bb9611.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
 continuation and pre-start refusal handling are committed; bounded session browsing has
@@ -12,7 +12,8 @@ Rust has owned Windows Python startup, bounded transport and verified event mirr
 captured execution origins, multiple text turns, reasoning/tools, cancellation,
 approvals/questions, composer/transcript, model/thinking controls, static themes,
 exact-UUID resume, held-input recovery, bounded F8 session browsing with preflight,
-F9 backend switching, F10 budget editing and F11 command/skill controls. Automated evidence does not replace
+F9 backend switching, F10 budget editing, F11 command/skill controls and explicit
+F12 NInfer/Strata engine management. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
 Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs
@@ -27,7 +28,7 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
 | Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight is implemented; expand history and session actions next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
-| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits are implemented; native engine operations, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
+| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
 | Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Live source catalog, native palette, verified slash routing and exact prepared-skill submission are implemented. Unsupported plugin screens/actions remain visible with reasons. Use structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
@@ -93,6 +94,56 @@ package or DataRoot, including fresh child paths beneath a junction.
 This closes the concrete immutable-package reopen failure; broader clean-environment,
 release provenance and full-parity acceptance remain open.
 
+## Session actions identified by source audit
+
+The next bounded wave is current-session Rename and New from F8, proposed as E/N
+with source native_snapshot/native_validate/native_apply operations. Review binds
+one canonical normalized title or one reserved destination UUID, including pending
+materialization and lifecycle hook effects. It must not dispatch mutable plugin
+/new or /rename handlers. Canonical rename collapses whitespace and caps at sixty
+characters plus an ellipsis; share that normalizer and show its exact result.
+
+New must join provider cleanup and leave hooks before releasing old history/store
+ownership, stage the reviewed UUID, materialize through canonical settings/system
+prompt paths, rebind the task store and settle start hooks. Source persistence can
+report errors without raising: verify actual disk history/settings/metadata and
+owned identity. No new provider thread or user turn is created until a fresh
+explicit prompt. Existing policy-driven hooks require their own reviewed effects
+and settlement; failures after cleanup/staging are uncertain mutations, not a
+restored old session. Native independently reads history, state, held input and
+current catalogue before publishing either outcome. Busy/held work and an active
+native engine capability refuse before mutation. Larger history and edit/retry
+remain separate waves.
+
+The next session slice should adapt source-owned transitions rather than expose the
+legacy mutation acknowledgements directly. gui.conversations.create invokes /new,
+which clears the live history and closes native provider state, then materializes a
+new store and adopts conversation settings. It does not supply the connection,
+policy, held-input and durable-history readback barrier required by Rust. A new
+session must preserve the old session's saved data and the user draft, and must not
+reuse a provider thread or silently inherit changed execution authority.
+
+Rename is append-only through ConversationRepository.write_record and can be
+verified by replaying the exact owned transcript. Pending stores deliberately skip
+record writes: the current legacy RPC can therefore acknowledge a rename that was
+never saved. A native adapter must either explicitly materialize through the
+canonical lifecycle or refuse pending rename, bind the selected session/revision,
+and verify both the saved title and unchanged messages before reporting success.
+
+Legacy edit/retry truncates live history, saves a snapshot and calls _submit_text,
+then returns accepted:true without checking admission. It cannot serve as a native
+success receipt. Provider-native history/thread continuity, durable edited history,
+normal attended admission, execution identity, refusal and uncertain publication
+must be handled together; retry must never silently duplicate provider work.
+
+History paging needs a distinct bounded source projection, not a larger unbounded
+transport frame. Current catalog/open guards allow at most 100 visible messages,
+1,000 total messages, an 8 MiB source transcript and a 1 MiB preview, while native
+retained/display budgets are enforced independently. Preserve those bounds per
+page, bind pages to a stable owned transcript revision, and keep full source model
+context independent of the visible window. Rich replay must interpret source
+message/activity/image shapes instead of presenting their JSON as faithful UI.
+
 ## Next contracts identified by source audit
 
 Settings edits must use the canonical SettingsService scoped revision checks and
@@ -103,18 +154,16 @@ with explicit draft/validate/confirm/save/readback; disable those fields when a
 launch max_tokens override still owns actual requests or when the native provider
 owns output budgets. Canonical scopes/timing and backend controls own eligibility.
 
-Engine controls need a management-only stopped-engine launch state: current ready
-admission rejects a stopped service, and F9 intentionally requires a loaded model.
-Inspect must be read-only: Strata now exposes inspect_launch, which describes the
-canonical recipe and any future derived config without writing it or probing
-resources. Its legacy launch_plan materializes that config only for actual startup.
-This shared path passes eight new and eighteen existing controlled regressions;
-review descriptions still need owned snapshot/revision binding before native engine
-actions. NInfer refuse_reason can remove stale registry state, so keep that
-action-time admission path out of inspection. Start/stop must use retained owned handles and resource gates,
-settle cancellation and independently verify connection/model/history/policy.
-NInfer explicit endpoints can override a newly started owned port; local Strata
-startup needs a loopback host. Do not widen persistent connect-only authority.
+Engine controls now negotiate explicit management-only readiness for stopped
+NInfer/Strata services, with F12 inspected/reviewed start and retained-owned stop.
+Frozen plans bind source snapshots, actual execution paths and bounded header/config
+file evidence. Canonical lifecycle/resource gates remain authoritative; this is not
+full artifact hashing or completed production resource calibration. Second-instance
+confirmation currently returns an explicit refusal. Runtime backend/session and
+legacy lifecycle reconfiguration require an explicit reopen while this capability
+exists. Broader configuration and resource-confirmation controls remain to port.
+Quit joins in-flight actions, stops retained ownership and returns structured
+shutdown evidence; hard-timeout containment does not establish resource release.
 
 Command/skill metadata must derive from the live PluginRegistry. Reserve every
 command alias when resolving skill shadowing; existing completion only reserves
