@@ -52,6 +52,8 @@ OPERATIONS = (
     "work.get", "work.cancel",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
+    "settings.native_snapshot", "settings.native_validate", "settings.native_save",
+    "commands.list", "commands.resolve",
     "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile", "restored_input.resolve",
 )
 
@@ -758,7 +760,7 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    blocking = operation in {"gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.settings.native_save"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -776,6 +778,15 @@ async def async_dispatch(app, cmd):
 
 async def _async_dispatch(app, cmd):
     operation = cmd["type"]
+    if operation in {"gui.commands.list", "gui.commands.resolve"}:
+        from litetui import command_surface
+
+        return command_surface.catalog(app, cmd) if operation == "gui.commands.list" else command_surface.resolve(app, cmd)
+    if operation in {"gui.settings.native_snapshot", "gui.settings.native_validate", "gui.settings.native_save"}:
+        from litetui import native_settings
+
+        action = operation.rsplit("_", 1)[1]
+        return getattr(native_settings, action)(app, cmd)
     if operation == "gui.restored_input.reconcile":
         _idle(app)
         return await restored_input.reconcile(app, cmd)

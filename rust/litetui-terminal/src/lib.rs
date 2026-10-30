@@ -49,4 +49,5 @@ pub mod conversation_browser;
 
 pub mod backend_controls;
 pub mod runtime_launch;
+pub mod settings_editor;
 pub mod settings_view;

@@ -175,6 +175,12 @@ def palette_sort_key(group: str, order: int, title: str) -> tuple:
     return (rank, order, title.lower())
 
 
+def palette_title_key(title: str) -> tuple:
+    """Canonical visible palette order, shared by Textual and native metadata."""
+    pinned = {"Settings": 0, "Theme": 1}
+    return (0 if title in pinned else 1, pinned.get(title, 0), title.casefold(), title)
+
+
 @dataclass(frozen=True)
 class CommandEntry:
     owner: str

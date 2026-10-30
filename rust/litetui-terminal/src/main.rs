@@ -473,6 +473,13 @@ fn handle_key(
             && matches!(event.code, KeyCode::Char('v' | 'V'))
         {
             let chat = app.live.as_mut().expect("live question");
+            if !chat.quitting && !chat.cancelling() && chat.settings.editor.editing() {
+                match clipboard.read_text() {
+                    Ok(Some(text)) => chat.settings.editor.paste(&text),
+                    Ok(None) => {}
+                    Err(error) => chat.settings.editor.notice = error,
+                }
+            }
             if !chat.quitting && !chat.cancelling() && chat.backend_controls.editing() {
                 match clipboard.read_text() {
                     Ok(Some(text)) => chat.backend_controls.paste(&text),
@@ -555,6 +562,21 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_settings() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live
+                .as_mut()
+                .expect("settings")
+                .settings
+                .editor
+                .paste(text);
+        }
+        return;
+    }
     if app.has_live_backend() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -2631,5 +2653,111 @@ mod tests {
         plain(&mut app, &mut router, KeyCode::Esc);
         assert!(!app.has_live_settings());
         assert_eq!(app.composer.text(), "unsent settings draft");
+    }
+    #[test]
+    fn settings_editor_owns_numeric_clipboard_and_preserves_main_draft() {
+        use litetui_terminal::{live::Observation, settings_editor, settings_view};
+        let mut app = Demo::live("custom".into(), "old".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("MAIN DRAFT");
+        let mut router = KeyRouter::default();
+        plain(&mut app, &mut router, KeyCode::F(10));
+        app.live.as_mut().unwrap().settings.take_intent();
+        app.observe_live(Observation::Settings(settings_view::Update::Snapshot(
+            settings_view::Snapshot {
+                session: "owned".into(),
+                rows: vec![settings_view::Row {
+                    name: "max_tokens_chat".into(),
+                    label: "Chat output".into(),
+                    value_type: "int".into(),
+                    source: "settings".into(),
+                    read_only: false,
+                    secret: false,
+                    apply: "next_turn".into(),
+                    requested: "101".into(),
+                    effective: "101".into(),
+                    deferred: false,
+                }],
+            },
+        )))
+        .unwrap();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 28)).unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Char('e'));
+        assert_eq!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            Some(settings_view::Intent::Editor(settings_editor::Intent::Read))
+        );
+        let snapshot = settings_editor::Snapshot {
+            session: "owned".into(),
+            agent: "agent".into(),
+            backend: "custom".into(),
+            model: "old".into(),
+            token: "a".repeat(64),
+            revisions: serde_json::json!({"global":"absent","conversation":"absent","agent":"absent"}),
+            budgets: [
+                settings_editor::Budget {
+                    saved: 101,
+                    effective: 101,
+                    editable: true,
+                    reason: None,
+                },
+                settings_editor::Budget {
+                    saved: 202,
+                    effective: 202,
+                    editable: true,
+                    reason: None,
+                },
+            ],
+        };
+        app.observe_live(Observation::Settings(settings_view::Update::Editor(
+            settings_editor::Update::Snapshot(snapshot),
+        )))
+        .unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Home);
+        for _ in 0..3 {
+            plain(&mut app, &mut router, KeyCode::Delete);
+        }
+        let mut clipboard = TestClipboard {
+            read: Some("257".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 1);
+        assert_eq!(app.live.as_ref().unwrap().settings.editor.draft(), "257");
+        paste(&mut app, "\n10");
+        assert_eq!(app.live.as_ref().unwrap().settings.editor.draft(), "257");
+        assert_eq!(app.composer.text(), "MAIN DRAFT");
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(matches!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            Some(settings_view::Intent::Editor(
+                settings_editor::Intent::Validate { value: 257, .. }
+            ))
+        ));
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(
+            clipboard.reads, 1,
+            "Waiting editor must not read host clipboard"
+        );
+        app.observe_live(Observation::Settings(settings_view::Update::Editor(
+            settings_editor::Update::Rejected("stale".into()),
+        )))
+        .unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.live.as_ref().unwrap().settings.editor.owns_input());
+        assert!(app.has_live_settings());
+        assert_eq!(app.composer.text(), "MAIN DRAFT");
     }
 }

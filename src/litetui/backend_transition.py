@@ -34,7 +34,7 @@ def submission_refusal(app):
     return None
 
 
-def _quiet(app):
+def _quiet(app, *, require_unowned_server=True):
     from textual.worker import NoActiveWorker, get_current_worker
 
     from litetui.gui_rpc import _idle, active_work
@@ -73,7 +73,7 @@ def _quiet(app):
         if activity.uncertain or activity.commands or activity.requests or (
                 getattr(server, "process", None) is not None and not activity.connected):
             raise ValueError("Native backend work is pending or unknown")
-    if (getattr(app, "_custom_server_process", None) is not None
+    if require_unowned_server and (getattr(app, "_custom_server_process", None) is not None
             or getattr(app.backend, "_owned", None) is not None):
         raise ValueError("Stop the outgoing owned local server explicitly before switching backend")
     session = getattr(app.backend, "session", None)
@@ -185,7 +185,7 @@ async def transition(app, cmd):
         if getattr(app, "_startup_history_path", None) is not None:
             raise ValueError("Current history is still connecting")
         service = settings_runtime.service_for(app)
-        saved = service.snapshot(context.session_id)
+        saved = service.snapshot(context.session_id, read_only=True)
         settings = copy.deepcopy(app.settings)
         settings.backend, settings.default_model = name, model
         old_launch = getattr(app, "_launch_options", None)

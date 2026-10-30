@@ -127,11 +127,14 @@ class SettingsService:
         default = getattr(st.Settings(), key)
         return key in raw, st._coerce(key, raw.get(key, default), default)
 
-    def snapshot(self, conversation_id, overrides=None):
+    def snapshot(self, conversation_id, overrides=None, *, read_only=False):
         paths = self._paths(conversation_id)
-        from litetui.subagent_routing import migrate_global_file
-        migrate_global_file(paths['global'])
+        if not read_only:
+            from litetui.subagent_routing import migrate_global_file
+            migrate_global_file(paths['global'])
         global_raw, global_rev = _read(paths['global'])
+        if read_only and 'codex_subagent_model' in global_raw:
+            raise ValueError('Legacy defaults require migration before a read-only settings review')
         convo, convo_rev = _read(paths['conversation'])
         saved = st.Settings()
         for key, value in global_raw.items():
@@ -232,7 +235,7 @@ class SettingsService:
                         # Materialize all inherited defaults on first scoped write.
                         if not raw:
                             with coordinated_write(paths['global']):
-                                inherited = self.snapshot(conversation_id)
+                                inherited = self.snapshot(conversation_id, read_only=True)
                                 if inherited.revisions['global'] != expected_revisions.get('global'):
                                     raise ValueError('Stale global revision during conversation creation')
                                 raw = asdict(cs.born_from(inherited.saved))
@@ -243,7 +246,7 @@ class SettingsService:
                                           if spec.scope == SettingScope.CONVERSATION}
                         if execution_keys - execution.keys():
                             with coordinated_write(paths['global']):
-                                inherited = self.snapshot(conversation_id)
+                                inherited = self.snapshot(conversation_id, read_only=True)
                                 if inherited.revisions['global'] != expected_revisions.get('global'):
                                     raise ValueError('Stale global revision during legacy materialization')
                                 for key in execution_keys - execution.keys():

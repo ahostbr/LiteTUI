@@ -1019,6 +1019,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             {
                 match command {
                     Input::Settings(intent) => {
+                        let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
                         let command = if turn.can_manage() {
                             management.request_settings(intent)
                         } else {
@@ -1036,9 +1037,13 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => frontend.observe(Observation::Settings(
-                                crate::settings_view::Update::Rejected(error.to_string()),
-                            ))?,
+                            Err(error) => frontend.observe(Observation::Settings(if editing {
+                                crate::settings_view::Update::Editor(
+                                    crate::settings_editor::Update::Rejected(error.to_string()),
+                                )
+                            } else {
+                                crate::settings_view::Update::Rejected(error.to_string())
+                            }))?,
                         }
                     }
                     Input::Backend(intent) => {

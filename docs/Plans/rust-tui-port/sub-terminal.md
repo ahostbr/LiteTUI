@@ -226,8 +226,9 @@ Independent review received 2026-10-15. Authority selection is now explicitly be
 The planned full frontend/reducer suite remains open. Its implemented in-process subset is `tests/test_rust_wire_contract.py` (18 tests), plus `tests/test_rust_wire_capture.py` (5 packaging tests). `scripts/capture_rust_wire_contract.py` captures production serialization through explicit test doubles, not a CLI child. See [runtime-contract.md](runtime-contract.md) for the merged ten-lane audit, actual evidence boundaries, current malformed-type repair and unresolved identity/isolation gates. No raw/live fixture is copied from user sessions.
 
 
-F9 guarded backend/model switching and F10 read-only settings inspection now pass
+F9 guarded backend/model switching, F10 settings inspection and conversation output-budget editing now pass
 controlled source/process and TestBackend gates. Switching preserves the draft and
 history, with independent state/catalog/queue/policy readback; known oversized
 history refuses before mutation. See the newest master checkpoint for counts,
-package evidence and the remaining engine/settings-edit boundaries.
+package evidence and the remaining engine/broader-settings boundaries. Source command
+metadata and pure routes are implemented; native palette/skill integration remains.

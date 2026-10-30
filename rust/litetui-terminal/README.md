@@ -315,5 +315,14 @@ an ambiguous transition closes the runtime and requires an explicit reopen.
 
 F10 shows requested and effective settings, source locks and canonical immediate, next-turn, reload, reconnect or restart
 timing. Use Up/Down to select a field and PageUp/PageDown to inspect long
-values, R to refresh and Escape to close. This inspector is read-only. Canonical
-credential fields are masked; settings editing and engine controls remain pending.
+values, R to refresh and Escape to close. Canonical credential fields are masked.
+For max_tokens_chat or max_tokens_tools, E opens an output-budget draft. Enter
+validates it; inspect the complete old/new confirmation and press a fresh Enter to
+save. The source reports conversation scope and next-turn application. Launch,
+per-model, environment or provider-owned controls disable incompatible edits.
+
+Saved and effective values are checked independently and refreshed in the inspector.
+A stale review requires refresh and new confirmation; no automatic retry occurs.
+A partial runtime failure shows the saved value and still-effective value separately.
+An uncertain write/application requires reopening the runtime. The chat draft is
+preserved. Broader settings editing and engine controls remain pending.

@@ -1487,13 +1487,7 @@ class LiteTUICommands(Provider):
             ))
         # Keep group labels for discovery, but order by the actual command
         # title. The two frequent entries lead regardless of their group.
-        pinned = {"Settings": 0, "Theme": 1}
-        rows.sort(key=lambda row: (
-            0 if row[2] in pinned else 1,
-            pinned.get(row[2], 0),
-            row[2].casefold(),
-            row[2],
-        ))
+        rows.sort(key=lambda row: plugins_mod.palette_title_key(row[2]))
 
         # Lead with the title so the visible rows read alphabetically. The
         # trailing group remains part of the searchable text.

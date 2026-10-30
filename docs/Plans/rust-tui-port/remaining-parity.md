@@ -25,10 +25,10 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
 | Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight is implemented; expand history and session actions next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
-| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Native engine operations, settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
-| Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | Read-only F10 requested/effective/reconnect/restart inspection is implemented; editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
+| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits are implemented; native engine operations, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
+| Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
-| Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Slash/palette/skills routing through source handlers. Structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
+| Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Live source command catalog and pure native-control resolution are implemented. Native palette/slash/skills UI remains. Use structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
 | Hooks and MCP | gui.hooks/mcp and host-tool operations | Exact source schemas, independent controls, persistence/readback, reload/disconnect failures. Current startup forces external MCP off; enabling it needs authority and lifecycle tests. |
 | Memory, agents, diagnostics | gui.memory/system/diagnostics/glassbox/subagents and fleet contributors | Bounded read views first, then source-owned writes/cancellation with exact own-session identities and missing-process cases. |
 | Images and voice | images.attach/clear, screen.mark, staging/viewer and listen/STT/TTS UI | Clipboard image, indicator, clear-image priority, inline/fallback rendering and replay. Voice requires real selected provider/device tests. Both hosts need capability evidence; current gaming constraint precludes desktop interaction. |
@@ -96,7 +96,7 @@ release provenance and full-parity acceptance remain open.
 Settings edits must use the canonical SettingsService scoped revision checks and
 settings_runtime.apply_saved_result. Legacy gui.settings.apply invokes
 _on_settings_saved, which can change live settings before persistence and trigger
-loads/reconnects. The first bounded editor should cover conversation output budgets
+loads/reconnects. The implemented bounded editor covers conversation output budgets
 with explicit draft/validate/confirm/save/readback; disable those fields when a
 launch max_tokens override still owns actual requests or when the native provider
 owns output budgets. Canonical scopes/timing and backend controls own eligibility.
@@ -117,3 +117,9 @@ arbitrary Textual screen handlers. Existing gui.skills.use drops arguments and
 bypasses normal prompt admission. A skill adapter must bind the exact discovered
 file and digest (case and folder-alias resolution can otherwise change bodies),
 limit the prepared UTF-8 prompt and enter normal owned prompt admission.
+
+Prepared skills also require a lossless draft representation: current composer insertion
+flattens CR/LF/TAB and its scalar cap can truncate a prepared body. Keep full SKILL.md
+content and canonical directory binding, preserve exact arguments, bound the complete
+UTF-8 prompt, and submit only through explicit normal attended admission. A file digest
+binds the freshly prepared revision; a metadata catalog alone does not bind file bytes.

@@ -31,14 +31,20 @@ pub struct Snapshot {
     pub session: String,
     pub rows: Vec<Row>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     Read,
+    Editor(crate::settings_editor::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
     Snapshot(Snapshot),
     Rejected(String),
+    Editor(crate::settings_editor::Update),
+    Edited {
+        update: crate::settings_editor::Update,
+        inspection: Snapshot,
+    },
 }
 
 fn fail(message: &str) -> io::Error {
@@ -179,6 +185,7 @@ fn display(value: &str) -> String {
 
 #[derive(Default)]
 pub struct View {
+    pub editor: crate::settings_editor::View,
     pub open: bool,
     pub waiting: bool,
     pub snapshot: Option<Snapshot>,
@@ -205,18 +212,23 @@ impl View {
         self.hide();
     }
     pub fn owns_input(&self) -> bool {
-        self.open || self.waiting
+        self.open || self.waiting || self.editor.owns_input()
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
-        self.intent.take()
+        self.editor
+            .take_intent()
+            .map(Intent::Editor)
+            .or_else(|| self.intent.take())
     }
     pub fn hide(&mut self) {
+        self.editor.hide();
         self.visible = false;
         self.hits.clear();
         self.details = None;
         self.pressed = None;
     }
     pub fn close(&mut self) {
+        self.editor.close();
         self.open = false;
         if self.intent.take().is_some() {
             self.waiting = false;
@@ -224,16 +236,29 @@ impl View {
         self.hide();
     }
     pub fn finish(&mut self) {
+        self.editor.finish();
         self.close();
         self.waiting = false;
         self.snapshot = None;
     }
     pub fn observe(&mut self, update: Update) {
+        if let Update::Edited { update, inspection } = update {
+            self.observe(Update::Snapshot(inspection));
+            self.editor.observe(update);
+            self.notice = self.editor.notice.clone();
+            return;
+        }
+        if let Update::Editor(update) = update {
+            self.editor.observe(update);
+            self.notice = self.editor.notice.clone();
+            return;
+        }
         self.waiting = false;
         self.intent = None;
         self.hide();
         self.scroll = 0;
         match update {
+            Update::Editor(_) | Update::Edited { .. } => unreachable!("handled above"),
             Update::Snapshot(snapshot) => {
                 let previous = self
                     .snapshot
@@ -264,6 +289,10 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.editor.owns_input() {
+            self.editor.key(key);
+            return;
+        }
         if key.kind == KeyEventKind::Release || !key.modifiers.is_empty() {
             return;
         }
@@ -283,10 +312,27 @@ impl View {
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(4),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(4).min(self.max_scroll),
             KeyCode::Char('r') if key.kind == KeyEventKind::Press => self.open(),
+            KeyCode::Char('e') if key.kind == KeyEventKind::Press => {
+                if let Some(row) = self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.rows.get(self.selected))
+                {
+                    if crate::settings_editor::FIELDS.contains(&row.name.as_str()) {
+                        self.editor.open(&row.name);
+                    } else {
+                        self.notice = "This setting is available for inspection only.".into();
+                    }
+                }
+            }
             _ => {}
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.editor.owns_input() {
+            self.editor.mouse(event);
+            return;
+        }
         if !self.open || !self.visible || self.waiting || !event.modifiers.is_empty() {
             self.pressed = None;
             return;
@@ -327,6 +373,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.editor.owns_input() {
+            self.editor.draw(frame, area, theme);
+            return;
+        }
         self.visible = false;
         if !self.owns_input() {
             self.hide();
