@@ -7,12 +7,15 @@ Usage:
 Prints the saved path + pixel size on the last line (easy to parse).
 """
 import argparse, sys
+import os
 from pathlib import Path
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--region", help="x,y,w,h in pixels")
-    ap.add_argument("--out", default=str(Path(__file__).parent / "last_shot.png"))
+    data_root = os.environ.get("LITETUI_DATA_ROOT")
+    output_dir = Path(data_root).expanduser().resolve() / "pccontrol" if data_root else Path(__file__).parent
+    ap.add_argument("--out", default=str(output_dir / "last_shot.png"))
     args = ap.parse_args()
 
     try:

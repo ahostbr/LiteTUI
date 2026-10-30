@@ -1,5 +1,15 @@
 # LiteTUI Rust terminal port
 
+## Portable package staging and retained helper state - 2026-10-29
+
+PowerShell 7 scripts now stage a supplied Rust executable with tracked Python runtime resources and helper tools into a new directory. A completion manifest records exact hashes, sizes, base revision and whether tracked runtime files changed. The relocated launcher verifies the complete payload before use, rejects missing/modified/extra files and linked paths, keeps Python dependencies explicit, and forwards the selected model, authority, workspace and retained session. It never builds or installs dependencies. Binary/source correspondence is not asserted by a supplied executable's hash.
+
+Package imports disable bytecode writes. Browser screenshots, relay PID/logs and Python/PowerShell desktop screenshot defaults follow LITETUI_DATA_ROOT; explicit output paths and unset standalone defaults remain intact. Data directories must be outside the package, with both package and data-root ancestry checked for junction aliases before the child starts. Windows relay cleanup now closes its own PID-file read handle before unlinking it.
+
+Verification: 33 staging tests and 47 helper regressions passed. These include relocated CLI/help, real packaged imports/resources, two owned constructor/store checks, synthetic helper writers, both junction-alias directions and an unchanged-package verification after helper use. The PowerShell screenshot tests extract only path functions through the AST; no screen capture or desktop input ran. New tests pass Ruff/mypy, all three PowerShell scripts parse, and modified helper Python lint/type diagnostics match their committed baseline. Independent review signed off after the screenshot-default and junction cases were fixed.
+
+This is a portable staging checkpoint with external Python, not full release acceptance. Clean dependency installation, executable/source provenance, upgrade/uninstall, both terminal hosts and resource measurements remain open. Session browsing is under controlled-process validation, with remaining backend startup work beginning in a separate lane. See [remaining-parity.md](remaining-parity.md) for the full implementation map.
+
 ## Claude continuation, refusal and failure settlement - 2026-10-29
 
 F7 C then a fresh visible Enter now continues the source-offered oldest prepared Claude input. Original delivery, source, requested profile, segment and workspace remain authoritative. The source verifies the entire owned journal and any already-materialized user record, runs normal admission hooks/authority, records durable admission, and reuses the original message instead of appending a duplicate. An original held item stays at the queue head through worker retirement so idle flush cannot start later input. Submission is still recorded before the provider query.

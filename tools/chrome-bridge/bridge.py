@@ -27,6 +27,7 @@ import os
 import struct
 import threading
 import time
+from pathlib import Path
 
 from websockets.asyncio.client import connect as ws_connect
 from websockets.asyncio.server import serve
@@ -40,8 +41,12 @@ DEFAULT_PORT = 7461  # the extension always dials this one
 DEFAULT_CLIENT_PORT = 7462  # scripts dial this when a relay owns 7461
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 HERE = os.path.dirname(os.path.abspath(__file__))
-SHOT_DIR = os.path.join(HERE, "shots")
-PID_FILE = os.path.join(HERE, "relay.pid")
+# Set before importing the helper, just as for the retained LiteTUI runtime.
+# Keep the existing standalone layout when no data-root override was requested.
+_data_root = os.environ.get("LITETUI_DATA_ROOT")
+STATE_DIR = str(Path(_data_root).expanduser().resolve() / "chrome-bridge") if _data_root else HERE
+SHOT_DIR = os.path.join(STATE_DIR, "shots")
+PID_FILE = os.path.join(STATE_DIR, "relay.pid")
 
 _IN_USE = {errno.EADDRINUSE, 10048}
 
@@ -408,8 +413,10 @@ class Relay:
             try:
                 if os.path.exists(PID_FILE):
                     with open(PID_FILE, encoding="utf-8") as f:
-                        if f.read().strip() == str(os.getpid()):
-                            os.remove(PID_FILE)
+                        owned = f.read().strip() == str(os.getpid())
+                    # Windows cannot unlink while our own read handle is open.
+                    if owned:
+                        os.remove(PID_FILE)
             except OSError:
                 pass
 
@@ -425,6 +432,7 @@ class Relay:
             # corpse. It would then report "stale pidfile cleared" and leave the
             # real relay running: a kill that claims success and kills nothing.
             try:
+                os.makedirs(STATE_DIR, exist_ok=True)
                 with open(PID_FILE, "w", encoding="utf-8") as f:
                     f.write(str(os.getpid()))
             except OSError:

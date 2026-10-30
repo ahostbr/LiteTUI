@@ -20,10 +20,10 @@ import time
 
 from websockets.asyncio.client import connect as ws_connect
 
-from bridge import DEFAULT_CLIENT_PORT, DEFAULT_HOST, DEFAULT_PORT, HERE, PID_FILE
+from bridge import DEFAULT_CLIENT_PORT, DEFAULT_HOST, DEFAULT_PORT, HERE, PID_FILE, STATE_DIR
 
-OUT_LOG = os.path.join(HERE, "relay.out.log")
-ERR_LOG = os.path.join(HERE, "relay.err.log")
+OUT_LOG = os.path.join(STATE_DIR, "relay.out.log")
+ERR_LOG = os.path.join(STATE_DIR, "relay.err.log")
 BRIDGE = os.path.join(HERE, "bridge.py")
 
 REFRESH_SECONDS = 2.0
@@ -105,6 +105,7 @@ def start() -> str:
         # both streams to files and reads DEVNULL; it needs no console at all.
         flags = 0x08000000 | 0x00000200
 
+    os.makedirs(STATE_DIR, exist_ok=True)
     out = open(OUT_LOG, "a", encoding="utf-8")
     err = open(ERR_LOG, "a", encoding="utf-8")
     subprocess.Popen(
@@ -218,6 +219,7 @@ def restart() -> str:
 def clear_logs() -> str:
     for path in (OUT_LOG, ERR_LOG):
         try:
+            os.makedirs(STATE_DIR, exist_ok=True)
             open(path, "w", encoding="utf-8").close()
         except OSError:
             pass

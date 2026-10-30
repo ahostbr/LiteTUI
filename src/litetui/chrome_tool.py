@@ -36,11 +36,10 @@ ROOT = Path(__file__).resolve().parent.parent.parent  # repo root; src/ is below
 # with nothing said. Moving this directory REQUIRES editing this line.
 SCRIPT = ROOT / "tools" / "chrome-bridge" / "bridge.py"
 RELAY_DIR = SCRIPT.parent
-# 🔴 THIS LINE WAS LEFT BEHIND BY THE SAME MOVE, four lines under the comment
-# warning about it. SCRIPT was repointed and SHOT_DIR was not, so `shot` wrote
-# to a directory that does not exist — the action has been broken since. The
-# warning above was written and then not applied to the constant beneath it.
-SHOT_DIR = RELAY_DIR
+# Code stays in the package; launch-local artifacts follow the same override
+# as bridge.py/relayctl.py. An ordinary standalone checkout keeps its old paths.
+_data_root = os.environ.get("LITETUI_DATA_ROOT")
+SHOT_DIR = Path(_data_root).expanduser().resolve() / "chrome-bridge" if _data_root else RELAY_DIR
 
 ACTIONS = (
     "ping", "tabs", "nav", "text", "click", "write_text", "scroll", "shot",
@@ -136,8 +135,8 @@ def _relay(call: str, timeout: int = 60) -> str:
     why this calls the function rather than the CLI.
     """
     code = (
-        "import sys;sys.path.insert(0, r'{}');"
-        "import relayctl;print(relayctl.{})".format(RELAY_DIR, call)
+        "import sys;sys.path.insert(0, {!r});"
+        "import relayctl;print(relayctl.{})".format(str(RELAY_DIR), call)
     )
     try:
         r = ttyguard.run([sys.executable, "-c", code], timeout=timeout)

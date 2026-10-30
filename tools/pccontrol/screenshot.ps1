@@ -4,6 +4,22 @@ param(
     [switch]$List
 )
 
+function Resolve-ScreenshotOutputPath {
+    param([int]$Monitor, [string]$Output, [string]$ScriptDirectory, [string]$DataRoot)
+    if ($Output -ne '') { return $Output }
+    $directory = if ($DataRoot -ne '') {
+        Join-Path ([IO.Path]::GetFullPath($DataRoot)) 'pccontrol'
+    } else { $ScriptDirectory }
+    $label = if ($Monitor -ge 0) { 'mon' + $Monitor } else { 'all' }
+    return Join-Path $directory ($label + '.jpg')
+}
+
+function Initialize-ScreenshotOutputDirectory {
+    param([string]$Path)
+    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
+    [void][IO.Directory]::CreateDirectory($parent)
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -38,16 +54,13 @@ if ($Monitor -ge 0) {
     $bounds = [System.Drawing.Rectangle]::FromLTRB($minX, $minY, $maxX, $maxY)
 }
 
+$Output = Resolve-ScreenshotOutputPath -Monitor $Monitor -Output $Output -ScriptDirectory $PSScriptRoot -DataRoot $env:LITETUI_DATA_ROOT
+Initialize-ScreenshotOutputDirectory -Path $Output
+
 $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
 $graphics.Dispose()
-
-if ($Output -eq '') {
-    $skillDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-    if ($Monitor -ge 0) { $monLabel = 'mon' + $Monitor } else { $monLabel = 'all' }
-    $Output = Join-Path $skillDir ($monLabel + '.jpg')
-}
 
 $bitmap.Save($Output, [System.Drawing.Imaging.ImageFormat]::Jpeg)
 $bitmap.Dispose()
