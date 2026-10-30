@@ -752,6 +752,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             chat.queue.hide();
             chat.engine.invalidate();
             chat.commands.hide();
+            chat.themes.hide();
             chat.settings.hide();
             chat.backend_controls.hide();
             chat.browser.hide();
@@ -789,10 +790,11 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         areas[0],
     );
     frame.render_widget(
-        Paragraph::new(if app.live.is_some() {
-            " LIVE · real Python runtime · Ctrl+Esc stops turn · Ctrl+Q quits"
+        Paragraph::new(if let Some(chat) = &app.live {
+            format!(" LIVE · {} · F4 themes · Ctrl+Q quits", chat.theme_status)
         } else {
             " LOCAL PREVIEW · No model connected · all calls, timings and counts are fixtures"
+                .into()
         })
         .style(style(t.tool_text, t.background)),
         areas[1],
@@ -1069,6 +1071,20 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .expect("commands")
             .commands
             .draw(frame, area, &t);
+    }
+    if app.has_live_themes()
+        && !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.live.as_ref().is_some_and(|chat| chat.cancelling())
+    {
+        app.live
+            .as_mut()
+            .expect("theme view")
+            .themes
+            .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.themes.hide();
     }
     if app.has_live_settings() {
         app.live

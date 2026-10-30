@@ -10103,13 +10103,11 @@ class LiteTUI(App):
         A corrupt entry is skipped with a note rather than killing the boot:
         settings.json is hand-editable and a typo there must cost one theme,
         not the app."""
-        for name, tokens in (self.settings.custom_themes or {}).items():
-            try:
-                self.register_theme(themes_mod.theme_from_tokens(name, tokens))
-            except Exception as e:
-                self.notify(present(f"custom theme {name!r} skipped: {e}",
-                                    getattr(self.settings, "error_message_style", "plain"), surface="theme"),
-                            severity="warning")
+        from litetui import theme_runtime
+        for failure in theme_runtime.register_custom_themes(self):
+            self.notify(present(f"custom theme {failure['name']!r} skipped: {failure['reason']}",
+                                getattr(self.settings, "error_message_style", "plain"), surface="theme"),
+                        severity="warning")
 
     def watch_theme(self, theme_name: str) -> None:
         """Persist a theme change, wherever it came from (palette, settings).
@@ -10847,16 +10845,13 @@ class LiteTUI(App):
             pass
         # New/edited custom themes must exist in the registry BEFORE the
         # theme_name below tries to apply one of them.
+        from litetui import theme_palette, theme_runtime
+        previous_theme = theme_palette.definition_digest(self.current_theme)
         self._register_custom_themes()
-        if new.theme_name != self.theme:
-            try:
-                self.theme = new.theme_name
-            except Exception:
-                self._system(f"Theme {new.theme_name!r} not found — keeping {self.theme}")
-        elif old.custom_themes.get(new.theme_name) != new.custom_themes.get(new.theme_name):
-            # Editing the active custom theme changes its variables, not its
-            # name. Re-run Textual's CSS watcher or its background stays stale.
-            self.mutate_reactive(App.theme)
+        try:
+            theme_runtime.apply_selection(self, previous_definition=previous_theme)
+        except Exception:
+            self._system(f"Theme {new.theme_name!r} not found — keeping {self.theme}")
         try:
             save_result = settings_runtime.persist_settings(self, new, baseline=old)
             failures = [item.error for item in save_result.persistence if not item.saved]

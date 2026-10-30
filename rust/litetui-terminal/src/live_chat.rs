@@ -81,6 +81,9 @@ pub struct Chat {
     pub engine: crate::engine_controls::View,
     pub engine_admission: Option<crate::engine_controls::Admission>,
     pub commands: crate::command_palette::View,
+    pub themes: crate::theme_controls::View,
+    pub effective_theme: Option<crate::theme::Theme>,
+    pub theme_status: String,
     pub settings: crate::settings_view::View,
     pub backend_controls: crate::backend_controls::View,
     pub browser: crate::conversation_browser::View,
@@ -116,6 +119,9 @@ impl Chat {
             engine: crate::engine_controls::View::default(),
             engine_admission: None,
             commands: crate::command_palette::View::default(),
+            themes: crate::theme_controls::View::default(),
+            effective_theme: None,
+            theme_status: "Theme: local fallback; source pending".into(),
             settings: crate::settings_view::View::default(),
             backend_controls: crate::backend_controls::View::default(),
             browser: crate::conversation_browser::View::default(),
@@ -144,6 +150,7 @@ impl Chat {
             || self.engine.owns_input()
             || self.engine.pending()
             || self.commands.owns_input()
+            || self.themes.owns_input()
             || self.settings.owns_input()
             || self.backend_controls.owns_input()
             || self.browser.owns_input()
@@ -240,6 +247,7 @@ impl Chat {
         self.queue.finish();
         self.engine.finish();
         self.commands.finish();
+        self.themes.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -368,6 +376,38 @@ impl Chat {
                         self.notice = self.commands.notice.clone();
                     }
                 }
+            }
+            Observation::Theme(update) => {
+                match &update {
+                    crate::theme_controls::Update::Snapshot(s)
+                    | crate::theme_controls::Update::Applied { snapshot: s, .. } => {
+                        if let Some(row) = s.effective() {
+                            self.effective_theme = Some(row.palette.theme(&row.name));
+                            self.theme_status = format!(
+                                "Theme: {} · source verified",
+                                crate::live::terminal_text(&s.selection.effective)
+                                    .replace('\n', "\\n")
+                                    .replace('\t', "\\t")
+                            );
+                        } else {
+                            self.effective_theme = None;
+                            self.theme_status = format!(
+                                "Theme: local fallback; {} has unsupported colors",
+                                crate::live::terminal_text(&s.selection.effective)
+                                    .replace('\n', "\\n")
+                                    .replace('\t', "\\t")
+                            );
+                        }
+                    }
+                    crate::theme_controls::Update::Rejected(_)
+                        if self.effective_theme.is_none() =>
+                    {
+                        self.theme_status = "Theme: local fallback; source unavailable".into();
+                    }
+                    _ => {}
+                }
+                self.themes.observe(update);
+                self.notice = self.themes.notice.clone();
             }
             Observation::Settings(update) => {
                 self.settings.observe(update);
@@ -721,6 +761,7 @@ impl Chat {
         self.queue.finish();
         self.engine.finish();
         self.commands.finish();
+        self.themes.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -732,6 +773,7 @@ impl Chat {
         self.queue.finish();
         self.engine.finish();
         self.commands.finish();
+        self.themes.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();

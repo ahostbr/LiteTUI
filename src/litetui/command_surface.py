@@ -23,9 +23,13 @@ _ROUTES = {
     ("misc", "/quit"): "quit",
     ("convo", "/convos"): "conversations",
     ("convo", "/resume"): "conversations",
+    ("convo", "/new"): "conversation_new",
+    ("convo", "/rename"): "conversation_rename",
     ("settings-ui", "/settings"): "settings",
     ("skills", "/skills"): "skills",
 }
+# Only this canonical palette contribution opens the reviewed theme control.
+_PALETTE_ROUTES = {("settings-ui", "Theme"): "themes"}
 
 
 def _text(value, limit=1024, *, empty=False):
@@ -65,7 +69,7 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "help": _text(help_text, 4096, empty=True), "group": _text(group, 128),
         "group_label": _text(plugins.PALETTE_GROUP_LABELS.get(group, group.title()), 256),
         "order": _order(order), "tokens": tokens, "palette": palette,
-        "native_action": action, "accepts_arguments": action == "skill_prepare",
+        "native_action": action, "accepts_arguments": action in {"skill_prepare", "conversation_rename"},
         "unavailable_reason": "" if action else "This contribution has no native action adapter yet.",
     }
     row["id"] = _digest([binding, row])
@@ -119,7 +123,8 @@ def _collect(app):
         binding = [id(palette_entry), id(palette_entry.run)]
         bindings.append(binding)
         row = _row("palette", palette_entry.owner, palette_entry.title, palette_entry.help,
-                   palette_entry.group, palette_entry.order, [], binding, None, True)
+                   palette_entry.group, palette_entry.order, [], binding,
+                   _PALETTE_ROUTES.get((palette_entry.owner, palette_entry.title)), True)
         row["tag"] = _text(palette_entry.tag, 256, empty=True)
         rows.append(row)
     for skill in app.skills:
@@ -220,6 +225,11 @@ def resolve(app, cmd):
             raise ValueError("Command selection is missing from the current registry")
     if selected["native_action"] is None:
         raise ValueError(selected["unavailable_reason"])
+    if selected["native_action"] == "conversation_rename":
+        from litetui.conversation_transition import validate_title_input
+
+        # Prefill only; canonical normalization and mutation require a new review.
+        arguments = validate_title_input(arguments)
     if arguments != "" and not selected["accepts_arguments"]:
         raise ValueError("This native control adapter does not accept command arguments")
     result = {"version": VERSION, "kind": "command_route", "session_id": current["session_id"],

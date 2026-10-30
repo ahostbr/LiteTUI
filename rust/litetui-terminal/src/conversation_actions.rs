@@ -420,6 +420,21 @@ impl View {
         self.draft = Draft::default();
         self.refresh();
     }
+    /// Source-resolved rename arguments prefill a draft; they never validate/apply it.
+    pub fn open_prefilled(&mut self, action: Action, title: &str) -> io::Result<()> {
+        if title.len() > TITLE_BYTES || title.contains('\0') {
+            return Err(fail("Rename prefill exceeds source title bounds"));
+        }
+        if self.waiting {
+            return Err(fail("Conversation action is still pending"));
+        }
+        self.open(action);
+        if action == Action::Rename && !title.is_empty() {
+            self.draft.set(title)?;
+            self.initialized = true;
+        }
+        Ok(())
+    }
     fn refresh(&mut self) {
         self.waiting = true;
         self.executing = false;

@@ -1,5 +1,5 @@
 //! Semantic presentation colors. The preview catalog is a public-source fixture;
-//! a future runtime adapter supplies resolved colors, including custom overrides.
+//! live source snapshots supply resolved colors, including custom overrides.
 use ratatui::style::Color;
 
 #[derive(Clone, Debug)]

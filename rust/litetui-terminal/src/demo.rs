@@ -172,6 +172,7 @@ impl Demo {
             self.completion_candidates = catalog.completions();
         }
         let route = chat.commands.take_route();
+        let route_arguments = chat.commands.take_route_arguments();
         if following {
             self.scroll = usize::MAX;
         }
@@ -184,6 +185,14 @@ impl Demo {
                 Action::Backend => self.open_backend(),
                 Action::Conversations => self.open_browser(),
                 Action::Settings => self.open_settings(),
+                Action::Themes => self.open_themes(),
+                Action::ConversationNew => {
+                    self.open_conversation_action(crate::conversation_actions::Action::New, "")?
+                }
+                Action::ConversationRename => self.open_conversation_action(
+                    crate::conversation_actions::Action::Rename,
+                    &route_arguments,
+                )?,
                 Action::Quit => self.command_quit = true,
                 Action::Skills | Action::SkillPrepare => {}
             }
@@ -274,6 +283,11 @@ impl Demo {
             self.footer.leave();
         }
     }
+    pub fn has_live_themes(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.themes.owns_input())
+    }
     pub fn has_live_settings(&self) -> bool {
         self.live
             .as_ref()
@@ -358,6 +372,32 @@ impl Demo {
             self.footer.leave();
         }
     }
+    pub fn open_conversation_action(
+        &mut self,
+        action: crate::conversation_actions::Action,
+        title: &str,
+    ) -> std::io::Result<()> {
+        if self.has_live_input() {
+            return Ok(());
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || chat.queue_pending()
+                || chat.engine.pending()
+            {
+                self.notice = "Finish current work before changing conversations.".into();
+                return Ok(());
+            }
+            chat.browser.actions.open_prefilled(action, title)?;
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+        Ok(())
+    }
     pub fn has_live_queue(&self) -> bool {
         self.live
             .as_ref()
@@ -386,6 +426,7 @@ impl Demo {
     pub fn has_live_input(&self) -> bool {
         self.has_live_engine()
             || self.has_live_commands()
+            || self.has_live_themes()
             || self.has_live_settings()
             || self.has_live_backend()
             || self.has_live_browser()
@@ -422,7 +463,10 @@ impl Demo {
         self.footer_fields.clear();
     }
     pub fn palette(&self) -> &crate::theme::Theme {
-        &self.themes[self.theme_index]
+        self.live
+            .as_ref()
+            .and_then(|c| c.effective_theme.as_ref())
+            .unwrap_or(&self.themes[self.theme_index])
     }
 
     pub fn filtered_themes(&self) -> Vec<usize> {
@@ -436,6 +480,26 @@ impl Demo {
     }
 
     pub fn open_themes(&mut self) {
+        if self.live.is_some() {
+            if self.has_live_input() {
+                return;
+            }
+            let chat = self.live.as_mut().unwrap();
+            if chat.closed
+                || chat.quitting
+                || chat.busy
+                || chat.queue_pending()
+                || chat.engine.pending()
+                || (!chat.ready && chat.engine_admission.is_none())
+            {
+                self.notice = "Finish current work before opening themes.".into();
+                return;
+            }
+            chat.themes.open();
+            self.completion.dismiss();
+            self.footer.leave();
+            return;
+        }
         self.footer.leave();
         if self.approval_open {
             return;

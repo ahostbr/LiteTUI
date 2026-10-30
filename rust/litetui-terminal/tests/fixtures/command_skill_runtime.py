@@ -229,7 +229,15 @@ async def serve(app):
                     catalog = await dispatch({"type": "gui.commands.list", "id": "command-list", "session_id": app.convo_id})
                     base = {"version": 1, "session_id": app.convo_id, "agent_id": before["agent_id"], "snapshot": catalog["snapshot"]}
                     report = {"before": before, "catalog": catalog, "catalog_unchanged": disk(app) == initial_disk and state(app) == before}
-                    if case in {"routes", "unknown", "unsupported", "control-args", "mixed", "raw-ambiguous", "stale-generation", "stale-policy", "foreign-agent", "foreign-session"}:
+                    if case == "reviewed-controls":
+                        report["routes"] = []
+                        for index, text in enumerate(("/new", "/clear", "/reset", "/rename  Exact  title\nwith whitespace  ")):
+                            report["routes"].append(await dispatch({**base, "type": "gui.commands.resolve",
+                                "id": "control-" + str(index), "command": text}))
+                        row = next(row for row in catalog["entries"] if row["native_action"] == "themes")
+                        report["routes"].append(await dispatch({**base, "type": "gui.commands.resolve",
+                            "id": "control-theme", "row_id": row["id"]}))
+                    elif case in {"routes", "unknown", "unsupported", "control-args", "mixed", "raw-ambiguous", "stale-generation", "stale-policy", "foreign-agent", "foreign-session"}:
                         commands = ["/settings", "/config", "/set", "/exit", "/thinking", "/conversations", "/skill"] if case == "routes" else [{"unknown": "/not-a-command", "unsupported": "/hooks", "control-args": "/settings extra", "raw-ambiguous": "/caseskill"}.get(case, "/settings")]
                         report["routes"] = []
                         for index, text in enumerate(commands):

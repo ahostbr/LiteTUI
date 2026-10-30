@@ -18,7 +18,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(219, 68, 68),
             footer_foreground: Color::Rgb(220, 216, 208),
-            footer_background: Color::Rgb(8, 10, 14),
+            footer_background: Color::Rgb(20, 24, 34),
         },
         Theme {
             name: "amber-ledger".into(),
@@ -35,7 +35,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(196, 69, 59),
             footer_foreground: Color::Rgb(239, 230, 214),
-            footer_background: Color::Rgb(13, 11, 8),
+            footer_background: Color::Rgb(23, 18, 8),
         },
         Theme {
             name: "ash".into(),
@@ -52,7 +52,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(208, 206, 200),
-            footer_background: Color::Rgb(13, 13, 12),
+            footer_background: Color::Rgb(29, 29, 27),
         },
         Theme {
             name: "atom-one-dark".into(),
@@ -69,7 +69,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(239, 98, 98),
             footer_foreground: Color::Rgb(171, 178, 191),
-            footer_background: Color::Rgb(40, 44, 52),
+            footer_background: Color::Rgb(79, 86, 102),
         },
         Theme {
             name: "catppuccin-frappe".into(),
@@ -137,7 +137,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(207, 210, 214),
-            footer_background: Color::Rgb(16, 17, 18),
+            footer_background: Color::Rgb(31, 32, 35),
         },
         Theme {
             name: "cockpit".into(),
@@ -154,7 +154,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(215, 115, 115),
             footer_foreground: Color::Rgb(242, 239, 234),
-            footer_background: Color::Rgb(8, 8, 11),
+            footer_background: Color::Rgb(22, 22, 30),
         },
         Theme {
             name: "dracula".into(),
@@ -171,7 +171,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(254, 85, 85),
             footer_foreground: Color::Rgb(248, 248, 242),
-            footer_background: Color::Rgb(40, 42, 54),
+            footer_background: Color::Rgb(49, 52, 66),
         },
         Theme {
             name: "dusk".into(),
@@ -188,7 +188,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(207, 69, 64),
             footer_foreground: Color::Rgb(240, 224, 216),
-            footer_background: Color::Rgb(15, 10, 10),
+            footer_background: Color::Rgb(36, 26, 29),
         },
         Theme {
             name: "flexoki".into(),
@@ -205,7 +205,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(174, 48, 41),
             footer_foreground: Color::Rgb(255, 252, 240),
-            footer_background: Color::Rgb(16, 15, 15),
+            footer_background: Color::Rgb(40, 39, 38),
         },
         Theme {
             name: "forest".into(),
@@ -222,7 +222,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(238, 68, 68),
             footer_foreground: Color::Rgb(230, 240, 230),
-            footer_background: Color::Rgb(6, 10, 6),
+            footer_background: Color::Rgb(22, 32, 24),
         },
         Theme {
             name: "graphite".into(),
@@ -239,7 +239,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(214, 214, 218),
-            footer_background: Color::Rgb(12, 12, 13),
+            footer_background: Color::Rgb(26, 26, 29),
         },
         Theme {
             name: "gruvbox".into(),
@@ -256,7 +256,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(250, 73, 52),
             footer_foreground: Color::Rgb(251, 241, 199),
-            footer_background: Color::Rgb(40, 40, 40),
+            footer_background: Color::Rgb(80, 73, 69),
         },
         Theme {
             name: "gunmetal".into(),
@@ -273,7 +273,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(194, 201, 210),
-            footer_background: Color::Rgb(11, 13, 16),
+            footer_background: Color::Rgb(23, 27, 33),
         },
         Theme {
             name: "iron".into(),
@@ -290,7 +290,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(196, 198, 201),
-            footer_background: Color::Rgb(10, 11, 12),
+            footer_background: Color::Rgb(22, 24, 27),
         },
         Theme {
             name: "lime".into(),
@@ -307,7 +307,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(243, 63, 94),
             footer_foreground: Color::Rgb(224, 234, 216),
-            footer_background: Color::Rgb(8, 10, 8),
+            footer_background: Color::Rgb(24, 30, 24),
         },
         Theme {
             name: "lite-suite".into(),
@@ -324,7 +324,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(191, 69, 58),
             footer_foreground: Color::Rgb(232, 228, 220),
-            footer_background: Color::Rgb(10, 10, 11),
+            footer_background: Color::Rgb(27, 27, 29),
         },
         Theme {
             name: "matrix".into(),
@@ -341,7 +341,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(254, 0, 0),
             footer_foreground: Color::Rgb(0, 255, 65),
-            footer_background: Color::Rgb(13, 2, 8),
+            footer_background: Color::Rgb(0, 59, 0),
         },
         Theme {
             name: "monokai".into(),
@@ -358,7 +358,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(248, 38, 114),
             footer_foreground: Color::Rgb(214, 214, 214),
-            footer_background: Color::Rgb(39, 40, 34),
+            footer_background: Color::Rgb(62, 61, 50),
         },
         Theme {
             name: "neo".into(),
@@ -375,7 +375,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(250, 113, 133),
             footer_foreground: Color::Rgb(240, 240, 240),
-            footer_background: Color::Rgb(13, 13, 13),
+            footer_background: Color::Rgb(31, 31, 31),
         },
         Theme {
             name: "nord".into(),
@@ -392,7 +392,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(190, 97, 106),
             footer_foreground: Color::Rgb(216, 222, 233),
-            footer_background: Color::Rgb(46, 52, 64),
+            footer_background: Color::Rgb(67, 76, 94),
         },
         Theme {
             name: "obsidian".into(),
@@ -409,7 +409,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(200, 200, 206),
-            footer_background: Color::Rgb(5, 5, 6),
+            footer_background: Color::Rgb(17, 17, 20),
         },
         Theme {
             name: "ocean".into(),
@@ -426,7 +426,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(247, 113, 113),
             footer_foreground: Color::Rgb(226, 232, 240),
-            footer_background: Color::Rgb(12, 18, 34),
+            footer_background: Color::Rgb(30, 41, 59),
         },
         Theme {
             name: "onyx".into(),
@@ -443,7 +443,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(220, 218, 212),
-            footer_background: Color::Rgb(10, 10, 9),
+            footer_background: Color::Rgb(25, 25, 23),
         },
         Theme {
             name: "oscura-midnight".into(),
@@ -460,7 +460,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(191, 69, 58),
             footer_foreground: Color::Rgb(232, 228, 220),
-            footer_background: Color::Rgb(10, 10, 11),
+            footer_background: Color::Rgb(27, 27, 29),
         },
         Theme {
             name: "pewter".into(),
@@ -477,7 +477,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(216, 219, 221),
-            footer_background: Color::Rgb(15, 16, 17),
+            footer_background: Color::Rgb(30, 32, 34),
         },
         Theme {
             name: "retro".into(),
@@ -494,7 +494,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(219, 38, 38),
             footer_foreground: Color::Rgb(254, 243, 199),
-            footer_background: Color::Rgb(24, 18, 11),
+            footer_background: Color::Rgb(45, 34, 21),
         },
         Theme {
             name: "rose-pine".into(),
@@ -545,7 +545,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(200, 204, 214),
-            footer_background: Color::Rgb(14, 16, 19),
+            footer_background: Color::Rgb(28, 32, 40),
         },
         Theme {
             name: "smoke".into(),
@@ -562,7 +562,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(212, 208, 204),
-            footer_background: Color::Rgb(17, 16, 16),
+            footer_background: Color::Rgb(32, 30, 29),
         },
         Theme {
             name: "solarized-dark".into(),
@@ -596,7 +596,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(185, 60, 91),
             footer_foreground: Color::Rgb(224, 224, 224),
-            footer_background: Color::Rgb(18, 18, 18),
+            footer_background: Color::Rgb(36, 47, 56),
         },
         Theme {
             name: "tokyo-night".into(),
@@ -613,7 +613,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             tool_text: Color::Rgb(232, 163, 61),
             error: Color::Rgb(246, 118, 142),
             footer_foreground: Color::Rgb(169, 177, 214),
-            footer_background: Color::Rgb(26, 27, 38),
+            footer_background: Color::Rgb(65, 72, 104),
         },
     ]
 }

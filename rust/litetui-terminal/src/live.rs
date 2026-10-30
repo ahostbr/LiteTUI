@@ -186,6 +186,7 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    Theme(crate::theme_controls::Update),
     ConversationChanged(Box<crate::conversation_actions::Changed>),
     ConversationUnverified(String),
     Engine(crate::engine_controls::Update),
@@ -1217,6 +1218,28 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             ))?,
                         }
                     }
+                    Input::Theme(intent) => {
+                        let reading = matches!(intent, crate::theme_controls::Intent::Read);
+                        let command = if turn.can_manage() || reading && turn.can_engine() {
+                            management.request_theme(intent)
+                        } else {
+                            Err(io::Error::other("Finish current work before using themes"))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::Theme(
+                                crate::theme_controls::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
+                    }
                     Input::Settings(intent) => {
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
                         let command = if turn.can_manage() {
@@ -1522,6 +1545,12 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Step::Initialized(snapshot) => {
                         if !turn.closing {
+                            frontend.observe(Observation::Theme(
+                                crate::theme_controls::Update::Rejected(
+                                    "Source theme catalog unavailable; using local fallback."
+                                        .into(),
+                                ),
+                            ))?;
                             publish_startup(
                                 frontend,
                                 &mut startup_facts,
@@ -1534,6 +1563,12 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Step::Restored { snapshot, history } => {
                         if !turn.closing {
+                            frontend.observe(Observation::Theme(
+                                crate::theme_controls::Update::Rejected(
+                                    "Source theme catalog unavailable; using local fallback."
+                                        .into(),
+                                ),
+                            ))?;
                             publish_startup(
                                 frontend,
                                 &mut startup_facts,
@@ -1583,6 +1618,34 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             frontend.observe(Observation::Commands(update))?;
                             check_deadline(deadline)?;
                             deadline = None;
+                        }
+                    }
+                    Step::Theme {
+                        update,
+                        policy,
+                        startup,
+                    } => {
+                        if !turn.closing {
+                            if let Some(policy) = policy {
+                                turn.policy
+                                    .as_ref()
+                                    .expect("launch policy")
+                                    .validate(&policy)?;
+                            }
+                            frontend.observe(Observation::Theme(update))?;
+                            if let Some((snapshot, history)) = startup {
+                                publish_startup(
+                                    frontend,
+                                    &mut startup_facts,
+                                    snapshot,
+                                    history,
+                                    &mut deadline,
+                                    turn.engine_admission,
+                                )?;
+                            } else {
+                                check_deadline(deadline)?;
+                                deadline = None;
+                            }
                         }
                     }
                     Step::Settings { update, policy } => {
@@ -1757,6 +1820,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    Theme(crate::theme_controls::Intent),
     Engine(crate::engine_controls::Intent),
     Control(crate::model_controls::Intent),
     Queue(crate::restored_queue::Intent),
@@ -1789,6 +1853,7 @@ impl Frontend for OneShot {
             | Observation::EngineAdmission(_)
             | Observation::State(_)
             | Observation::Commands(_)
+            | Observation::Theme(_)
             | Observation::Settings(_)
             | Observation::Backend(_)
             | Observation::BackendChanged(_)
@@ -2073,6 +2138,11 @@ impl Interactive {
         self.commands
             .try_send(Input::Commands(intent))
             .map_err(io::Error::other)
+    }
+    pub fn theme(&self, intent: crate::theme_controls::Intent) -> io::Result<()> {
+        self.commands
+            .try_send(Input::Theme(intent))
+            .map_err(|e| io::Error::other(e.to_string()))
     }
     pub fn settings(&self, intent: crate::settings_view::Intent) -> io::Result<()> {
         if self.quitting.load(std::sync::atomic::Ordering::Acquire) {

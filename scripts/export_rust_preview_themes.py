@@ -14,35 +14,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from textual.color import Color
 from textual.theme import BUILTIN_THEMES, Theme
 
 from litetui import themes
+from litetui.theme_palette import resolved_colors
 
 OUTPUT = ROOT / "rust/litetui-terminal/src/theme_catalog.rs"
-
-
-def resolved_colors(theme: Theme) -> dict[str, tuple[int, int, int]]:
-    variables = theme.to_color_system().generate()
-    extras = themes.extra_defaults(primary=variables["primary"], bone=variables["foreground"])
-    extras.update(theme.variables)
-    values = {
-        "background": variables["background"],
-        "surface": variables["surface"],
-        "primary": variables["primary"],
-        "panel": variables["panel"],
-        "tool_background": variables["surface-darken-2"],
-        "foreground": variables["foreground"],
-        "title": variables["success"],
-        "assistant_border": variables["success-darken-2"],
-        "thinking_text": extras["thinking-text"],
-        "thinking_border": extras["thinking-box"],
-        "tool_text": extras["tool-text"],
-        "error": variables["error"],
-        "footer_foreground": extras.get("footer-foreground", variables["foreground"]),
-        "footer_background": extras.get("footer-background", variables["background"]),
-    }
-    return {name: Color.parse(value).rgb for name, value in values.items()}
 
 
 def public_catalog() -> dict[str, Theme]:

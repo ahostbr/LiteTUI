@@ -165,6 +165,8 @@ def apply_saved_result(app, requested, result):
         if not outcome.saved:
             continue
         for key in outcome.fields:
+            if key in ('custom_themes', 'theme_name'):
+                continue  # grouped below: register before selecting/repainting
             spec = SETTING_SPECS[key]
             want, before = deepcopy(getattr(requested, key)), deepcopy(getattr(effective, key))
             env = st.source_of(key)
@@ -208,6 +210,23 @@ def apply_saved_result(app, requested, result):
                 setattr(effective, key, before)
                 statuses.append(RuntimeSettingStatus(key, spec.scope.value, 'failed', 'retry',
                                 want, before, str(exc)))
+    theme_fields = {key for outcome in result.persistence if outcome.saved
+                    for key in outcome.fields if key in ('custom_themes', 'theme_name')}
+    if theme_fields:
+        from dataclasses import replace
+
+        from litetui import theme_runtime
+        theme_result = SettingsSaveResult(tuple(
+            replace(outcome, fields=tuple(key for key in outcome.fields if key in theme_fields))
+            for outcome in result.persistence if outcome.saved and theme_fields.intersection(outcome.fields)))
+        app._theme_runtime_result = theme_runtime.apply_saved_result(app, requested, theme_result)
+        for key in ('custom_themes', 'theme_name'):
+            if key in theme_fields:
+                proof = app._theme_runtime_result
+                statuses.append(RuntimeSettingStatus(key, SETTING_SPECS[key].scope.value,
+                    'applied' if proof['status'] == 'applied' else 'failed',
+                    'none' if proof['status'] == 'applied' else 'retry',
+                    deepcopy(getattr(requested, key)), deepcopy(getattr(effective, key)), proof['error']))
     object.__setattr__(effective, '_baseline', asdict(effective))
     if getattr(app, 'convo_dir', None):
         app._convo_settings = cs.load(app.convo_dir)

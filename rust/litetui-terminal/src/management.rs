@@ -161,6 +161,11 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    Theme {
+        update: crate::theme_controls::Update,
+        policy: Option<Value>,
+        startup: Option<(Snapshot, Option<crate::resume::History>)>,
+    },
     ConversationAction {
         update: crate::conversation_actions::Update,
         policy: Option<Value>,
@@ -318,6 +323,11 @@ struct ConversationPending {
     mutation: Option<CommandId>,
 }
 pub struct Management {
+    theme: Option<ThemePending>,
+    theme_snapshot: Option<crate::theme_controls::Snapshot>,
+    theme_review: Option<crate::theme_controls::Review>,
+    theme_state: Option<(Snapshot, Value)>,
+    theme_startup: Option<(Snapshot, Option<crate::resume::History>)>,
     conversation: Option<ConversationPending>,
     conversation_snapshot: Option<crate::conversation_actions::Snapshot>,
     conversation_review: Option<(crate::conversation_actions::Review, Value, Value, Snapshot)>,
@@ -363,6 +373,11 @@ pub struct Management {
 impl Default for Management {
     fn default() -> Self {
         Self {
+            theme: None,
+            theme_snapshot: None,
+            theme_review: None,
+            theme_state: None,
+            theme_startup: None,
             conversation: None,
             conversation_snapshot: None,
             conversation_review: None,
@@ -496,6 +511,7 @@ impl Management {
             && self.engine.is_none()
             && self.conversation.is_none()
             && self.command.is_none()
+            && self.theme.is_none()
             && self.settings.is_none()
             && self.settings_edit.is_none()
             && self.backend.is_none()
@@ -637,7 +653,7 @@ impl Management {
                     return Ok(Step::Write(command));
                 }
                 self.phase = Phase::Active;
-                Ok(Step::Initialized(snapshot))
+                self.startup_theme(snapshot, None)
             }
             Notice::Response {
                 id,
@@ -654,10 +670,8 @@ impl Management {
                 )?;
                 self.history_id = None;
                 self.phase = Phase::Active;
-                Ok(Step::Restored {
-                    snapshot: self.startup.take().expect("startup"),
-                    history,
-                })
+                let snapshot = self.startup.take().expect("startup");
+                self.startup_theme(snapshot, Some(history))
             }
             Notice::Response {
                 id,
@@ -746,6 +760,17 @@ impl Management {
                 .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
             {
                 self.settings_edit_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .theme
+                .as_ref()
+                .is_some_and(|p| Some(&p.id) == id.as_ref()) =>
+            {
+                self.theme_response(frame)
             }
             Notice::Response {
                 id,
@@ -3154,6 +3179,249 @@ impl Management {
         command["id"] = id.to_value();
         pending.id = id;
         self.conversation = Some(pending);
+        Ok(Step::Write(command))
+    }
+}
+
+struct ThemePending {
+    id: CommandId,
+    stage: u8,
+    change: Option<crate::theme_controls::Change>,
+    snapshot: Option<crate::theme_controls::Snapshot>,
+    review: Option<crate::theme_controls::Review>,
+    outcome: Option<crate::theme_controls::Outcome>,
+}
+impl Management {
+    fn theme_identity(&self) -> io::Result<crate::theme_controls::Identity> {
+        let (session, backend, model, _) = self
+            .expected
+            .as_ref()
+            .ok_or_else(|| fail("Runtime is not initialized"))?;
+        let (agent, _) = self
+            .browser_authority
+            .as_ref()
+            .ok_or_else(|| fail("Runtime omitted owned theme authority"))?;
+        Ok(crate::theme_controls::Identity {
+            session: session.clone(),
+            agent: agent.clone(),
+            backend: backend.clone(),
+            model: model.clone(),
+        })
+    }
+    fn startup_theme(
+        &mut self,
+        snapshot: Snapshot,
+        history: Option<crate::resume::History>,
+    ) -> io::Result<Step> {
+        if self
+            .operations
+            .iter()
+            .any(|op| op == crate::theme_controls::SNAPSHOT)
+            && self.browser_authority.is_some()
+        {
+            let command = self.request_theme(crate::theme_controls::Intent::Read)?;
+            self.theme_startup = Some((snapshot, history));
+            Ok(Step::Write(command))
+        } else if let Some(history) = history {
+            Ok(Step::Restored { snapshot, history })
+        } else {
+            Ok(Step::Initialized(snapshot))
+        }
+    }
+    pub fn request_theme(&mut self, intent: crate::theme_controls::Intent) -> io::Result<Value> {
+        use crate::theme_controls::{Intent, SAVE, SNAPSHOT, VALIDATE};
+        if !self.ready() {
+            return Err(fail("Finish current work before using themes"));
+        }
+        self.ensure_drained()?;
+        let identity = self.theme_identity()?;
+        let (stage, mut command, change, review) = match intent {
+            Intent::Read => {
+                self.theme_snapshot = None;
+                self.theme_review = None;
+                self.theme_state = None;
+                (0, identity.command(SNAPSHOT), None, None)
+            }
+            Intent::Validate { snapshot, change } => {
+                self.theme_review = None;
+                let current = self
+                    .theme_snapshot
+                    .as_ref()
+                    .filter(|s| s.token == snapshot && s.identity == identity)
+                    .ok_or_else(|| fail("Refresh theme authority before validation"))?;
+                (2, current.request(&change)?, Some(change), None)
+            }
+            Intent::Save { review, action_id } => {
+                let current = self
+                    .theme_review
+                    .take()
+                    .filter(|r| {
+                        r.token == review
+                            && r.action_id == action_id
+                            && r.snapshot.identity == identity
+                    })
+                    .ok_or_else(|| fail("Validate the theme again before saving"))?;
+                (3, current.request(), None, Some(current))
+            }
+        };
+        let operation = match stage {
+            0 => SNAPSHOT,
+            2 => VALIDATE,
+            _ => SAVE,
+        };
+        if !self.operations.iter().any(|op| op == operation) {
+            return Err(fail(
+                "Source theme operation is unavailable; update Python source",
+            ));
+        }
+        let id = if stage == 3 {
+            self.wire.register_request()
+        } else {
+            self.wire.register_read()
+        }
+        .map_err(|_| fail("Cannot reserve theme operation"))?;
+        command["id"] = id.to_value();
+        self.theme = Some(ThemePending {
+            id,
+            stage,
+            change,
+            snapshot: None,
+            review,
+            outcome: None,
+        });
+        Ok(command)
+    }
+    fn theme_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::theme_controls::{Outcome, Review, SNAPSHOT, Snapshot as ThemeSnapshot, Update};
+        let mut p = self.theme.take().expect("theme request");
+        self.ensure_drained()?;
+        if self.closing {
+            // Drain the dispatched request; no late readback, UI adoption or save.
+            self.theme_startup = None;
+            return Ok(Step::Ignore);
+        }
+        let publish = |update, policy, startup| Step::Theme {
+            update,
+            policy,
+            startup,
+        };
+        if frame["ok"] != true {
+            if p.stage >= 3 {
+                return Err(fail(
+                    "Theme save or readback failed without a proven outcome",
+                ));
+            }
+            return Ok(publish(
+                Update::Rejected(text(&frame, "error", 4096)?.into()),
+                None,
+                self.theme_startup.take(),
+            ));
+        }
+        let result = &frame["result"];
+        let identity = self.theme_identity()?;
+        match p.stage {
+            0 => {
+                identity.verify(result)?;
+                let snapshot = match ThemeSnapshot::parse(result, &identity) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Ok(publish(
+                            Update::Rejected(e.to_string()),
+                            None,
+                            self.theme_startup.take(),
+                        ));
+                    }
+                };
+                p.snapshot = Some(snapshot);
+                p.stage = 1;
+            }
+            1 | 5 => {
+                let state = Snapshot::parse(result)?;
+                let (session, backend, model, profile) = self.expected.as_ref().expect("active");
+                let (agent, schedules) = self.browser_authority.as_ref().expect("authority");
+                if (&state.session, &state.backend, &state.model, &state.profile)
+                    != (session, backend, model, profile)
+                    || state.held_restored_input.is_none()
+                    || state.schedules_paused != *schedules
+                    || result["ownership"]["agent_id"] != *agent
+                {
+                    return Err(fail(
+                        "Theme read changed owned runtime identity or authority",
+                    ));
+                }
+                let policy = result["tool_policy"].clone();
+                if p.stage == 1 {
+                    let snapshot = p.snapshot.take().expect("read snapshot");
+                    self.theme_state = Some((state, policy.clone()));
+                    self.theme_snapshot = Some(snapshot.clone());
+                    return Ok(publish(
+                        Update::Snapshot(Box::new(snapshot)),
+                        Some(policy),
+                        self.theme_startup.take(),
+                    ));
+                }
+                let (before, before_policy) = self
+                    .theme_state
+                    .as_ref()
+                    .ok_or_else(|| fail("Theme preflight state missing"))?;
+                if &state != before || &policy != before_policy {
+                    return Err(fail("Theme save changed runtime state or tool policy"));
+                }
+                let snapshot = p.snapshot.take().expect("readback");
+                let outcome = p.outcome.take().expect("receipt");
+                outcome.verify(&snapshot, p.review.as_ref().expect("review"))?;
+                self.theme_snapshot = Some(snapshot.clone());
+                return Ok(publish(
+                    Update::Applied {
+                        snapshot: Box::new(snapshot),
+                        outcome: Box::new(outcome),
+                    },
+                    Some(policy),
+                    None,
+                ));
+            }
+            2 => {
+                let snapshot = self
+                    .theme_snapshot
+                    .as_ref()
+                    .ok_or_else(|| fail("Missing theme authority"))?;
+                let review = Review::parse(
+                    result,
+                    snapshot,
+                    p.change.as_ref().expect("requested change"),
+                )?;
+                self.theme_review = Some(review.clone());
+                return Ok(publish(Update::Review(Box::new(review)), None, None));
+            }
+            3 => {
+                match Outcome::parse(result, p.review.as_ref().expect("confirmed review"))? {
+                    Ok(outcome) => p.outcome = Some(outcome),
+                    Err(reason) => {
+                        self.theme_snapshot = None;
+                        self.theme_state = None;
+                        return Ok(publish(Update::Rejected(reason), None, None));
+                    }
+                }
+                p.stage = 4;
+            }
+            4 => {
+                p.snapshot = Some(ThemeSnapshot::parse(result, &identity)?);
+                p.stage = 5;
+            }
+            _ => return Err(fail("Unknown theme response phase")),
+        }
+        let mut command = if p.stage == 4 {
+            identity.command(SNAPSHOT)
+        } else {
+            json!({"type":"gui.state","include_conversations":false})
+        };
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve theme readback"))?;
+        command["id"] = id.to_value();
+        p.id = id;
+        self.theme = Some(p);
         Ok(Step::Write(command))
     }
 }

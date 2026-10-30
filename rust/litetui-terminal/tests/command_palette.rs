@@ -571,3 +571,77 @@ fn raw_route_echo_budget_allows_a_full_composer_of_astral_text() {
         Action::SkillPrepare
     );
 }
+
+#[test]
+fn source_session_and_theme_routes_open_review_views_without_mutation_or_draft_loss() {
+    for (name, action, arguments) in [
+        ("themes", Action::Themes, ""),
+        ("conversation_new", Action::ConversationNew, ""),
+        (
+            "conversation_rename",
+            Action::ConversationRename,
+            "  Exact 雪 title  ",
+        ),
+    ] {
+        let mut d = data();
+        d["entries"][0]["native_action"] = json!(name);
+        d["entries"][0]["accepts_arguments"] = json!(action == Action::ConversationRename);
+        let c = Catalog::parse(&d, SESSION, AGENT, "custom", "model").unwrap();
+        let mut rv = route_data(&c, Some("/source resolved exact command"));
+        rv["native_action"] = json!(name);
+        rv["arguments"] = json!(arguments);
+        let route =
+            Route::parse(&rv, &c, None, Some("/source resolved exact command"), "").unwrap();
+        let mut app = Demo::live("custom".into(), "model".into());
+        app.live.as_mut().unwrap().ready = true;
+        app.insert_text("PRESERVE COMPOSER");
+        app.live
+            .as_mut()
+            .unwrap()
+            .commands
+            .raw("/source resolved exact command");
+        app.live.as_mut().unwrap().commands.take_intent();
+        app.observe_live(Observation::Commands(Update::Route { catalog: c, route }))
+            .unwrap();
+        assert_eq!(app.composer.text(), "PRESERVE COMPOSER");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        if action == Action::Themes {
+            assert_eq!(
+                app.live.as_mut().unwrap().themes.take_intent(),
+                Some(litetui_terminal::theme_controls::Intent::Read)
+            );
+        } else {
+            use litetui_terminal::{conversation_actions as a, conversation_browser as b};
+            let expected = if action == Action::ConversationNew {
+                a::Action::New
+            } else {
+                a::Action::Rename
+            };
+            assert_eq!(
+                app.live.as_mut().unwrap().browser.take_intent(),
+                Some(b::Intent::Action(a::Intent::Read { action: expected }))
+            );
+            if expected == a::Action::Rename {
+                assert_eq!(
+                    app.live.as_ref().unwrap().browser.actions.draft(),
+                    arguments
+                );
+            }
+        }
+    }
+}
+#[test]
+fn rename_route_bound_and_command_specific_argument_policy_remain_strict() {
+    let mut d = data();
+    d["entries"][0]["native_action"] = json!("conversation_rename");
+    d["entries"][0]["accepts_arguments"] = json!(true);
+    let c = Catalog::parse(&d, SESSION, AGENT, "custom", "model").unwrap();
+    for argument in ["a".repeat(4097), "bad\0name".into()] {
+        let mut v = route_data(&c, Some("/rename exact"));
+        v["native_action"] = json!("conversation_rename");
+        v["arguments"] = json!(argument);
+        assert!(Route::parse(&v, &c, None, Some("/rename exact"), "").is_err());
+    }
+    d["entries"][0]["native_action"] = json!("themes");
+    assert!(Catalog::parse(&d, SESSION, AGENT, "custom", "model").is_err());
+}

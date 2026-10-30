@@ -50,6 +50,9 @@ pub enum Action {
     Quit,
     Skills,
     SkillPrepare,
+    ConversationNew,
+    ConversationRename,
+    Themes,
 }
 impl Action {
     fn parse(v: &Value) -> io::Result<Option<Self>> {
@@ -64,6 +67,9 @@ impl Action {
             Some("quit") => Some(Self::Quit),
             Some("skills") => Some(Self::Skills),
             Some("skill_prepare") => Some(Self::SkillPrepare),
+            Some("conversation_new") => Some(Self::ConversationNew),
+            Some("conversation_rename") => Some(Self::ConversationRename),
+            Some("themes") => Some(Self::Themes),
             _ => return Err(fail("Unknown native command action")),
         })
     }
@@ -197,7 +203,11 @@ impl Catalog {
                 .ok_or_else(|| fail("Missing command argument policy"))?;
             let unavailable = text(row, "unavailable_reason", 4096)?;
             if action.is_some() != unavailable.is_empty()
-                || arguments != (action == Some(Action::SkillPrepare))
+                || arguments
+                    != matches!(
+                        action,
+                        Some(Action::SkillPrepare | Action::ConversationRename)
+                    )
                 || (action == Some(Action::SkillPrepare)) != (kind == "skill")
             {
                 return Err(fail("Command availability contradicts adapter policy"));
@@ -319,6 +329,11 @@ impl Route {
         if Some(action) != entry.action || (!arguments.is_empty() && !entry.arguments) {
             return Err(fail("Resolved command contradicts selected adapter"));
         }
+        if action == Action::ConversationRename
+            && (arguments.len() > 4096 || arguments.contains('\0'))
+        {
+            return Err(fail("Rename prefill exceeds source title bounds"));
+        }
         Ok(Self {
             row: id,
             action,
@@ -386,6 +401,7 @@ pub struct View {
     arguments: Draft,
     intent: Option<Intent>,
     route: Option<Action>,
+    route_arguments: String,
     visible: bool,
     reviewed: bool,
     geometry: Option<Rect>,
@@ -424,6 +440,9 @@ impl View {
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.intent.take()
     }
+    pub fn take_route_arguments(&mut self) -> String {
+        std::mem::take(&mut self.route_arguments)
+    }
     pub fn take_route(&mut self) -> Option<Action> {
         self.route.take()
     }
@@ -459,6 +478,7 @@ impl View {
         self.prepared = None;
         self.catalog = None;
         self.route = None;
+        self.route_arguments.clear();
     }
     pub fn accepts_paste(&self) -> bool {
         self.open && self.visible && !self.waiting && self.mode != Mode::Preview
@@ -512,6 +532,7 @@ impl View {
                 } else {
                     self.close();
                     self.route = Some(route.action);
+                    self.route_arguments = route.arguments;
                 }
             }
             Update::Prepared {

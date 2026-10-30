@@ -195,6 +195,13 @@ def _matching(hooks, event, source):
     return () if hooks.disabled else hooks.matching(event, source)
 
 
+def validate_title_input(raw: object) -> str:
+    """Share native draft bounds without normalizing or authorizing a title."""
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 4096 or "\0" in raw:
+        raise ValueError("Title must be text within 4096 UTF-8 bytes without NUL")
+    return raw
+
+
 def validate(app, cmd):
     current, context, hooks, registry = _snapshot(app, cmd)
     if cmd.get("snapshot") != current["snapshot"]:
@@ -206,9 +213,7 @@ def validate(app, cmd):
         raise ValueError(current["actions"][action]["reason"])
     title = None
     if action == "rename":
-        raw = cmd.get("title")
-        if not isinstance(raw, str) or len(raw.encode("utf-8")) > 4096 or "\0" in raw:
-            raise ValueError("Title must be text within 4096 UTF-8 bytes without NUL")
+        raw = validate_title_input(cmd.get("title"))
         title = normalize_title(raw)
         if not title:
             raise ValueError("Title must contain non-whitespace text")

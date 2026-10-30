@@ -155,3 +155,17 @@ def test_raw_skill_routes_and_shadowed_command_name_load_exact_selected_file(tmp
         row = next(row for row in report["catalog"]["entries"] if row["kind"] == "skill" and row["title"] == "settings")
         assert row["completion_order"] is None
         assert "EXACT SHADOWED BODY" in report["prepared"]["body"]
+
+
+def test_reviewed_session_and_theme_routes_only_open_controls_without_effects(tmp_path):
+    report = launch(tmp_path, case="reviewed-controls")
+    assert [route["native_action"] for route in report["routes"]] == [
+        "conversation_new", "conversation_new", "conversation_new", "conversation_rename", "themes"]
+    assert len({route["row_id"] for route in report["routes"][:3]}) == 1
+    assert report["routes"][3]["arguments"] == "Exact  title\nwith whitespace  "
+    assert report["routes"][3]["command"] == "/rename  Exact  title\nwith whitespace  "
+    assert report["routes"][4]["arguments"] == ""
+    assert report["before"] == report["after"]
+    assert report["initial_disk"] == report["final_disk"]
+    assert not report["requests"] and report["prepare_attempts"] == 0
+    assert not any(command["type"] == "prompt" for command in report["command_log"])
