@@ -603,9 +603,25 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 lines.push(Line::raw(""));
             }
         }
-        for row in &chat.rows {
+        for (row_index, row) in chat.rows.iter().enumerate() {
+            if row_index == 0 && chat.prior_context_rows > 0 {
+                lines.push(Line::styled(
+                    "  Retained scrollback from before compaction · F6 shows current context",
+                    style(t.tool_text, t.background),
+                ));
+            }
+            if row_index == chat.prior_context_rows && chat.prior_context_rows > 0 {
+                lines.push(Line::styled(
+                    "  Source work since compaction",
+                    style(t.tool_text, t.background),
+                ));
+            }
             for text in wrap(
-                &format!("You: {}", display_safe(&row.prompt)),
+                &format!(
+                    "{}: {}",
+                    if row.source_owned { "Source" } else { "You" },
+                    display_safe(&row.prompt)
+                ),
                 width.saturating_sub(4),
             ) {
                 lines.push(Line::styled(
@@ -773,6 +789,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             chat.themes.hide();
             chat.saved_history.hide();
             chat.rewrite.hide();
+            chat.compact.hide();
             chat.settings.hide();
             chat.backend_controls.hide();
             chat.browser.hide();
@@ -1094,6 +1111,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     if app.has_live_history()
         && !app.has_live_rewrite()
+        && !app.has_live_compact()
         && !app.has_live_approval()
         && !app.has_live_question()
         && !app.stop_open()
@@ -1121,6 +1139,20 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &t);
     } else if let Some(chat) = app.live.as_mut() {
         chat.rewrite.hide();
+    }
+    if app.has_live_compact()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.stop_open()
+        && !app.viewport_too_small
+    {
+        app.live
+            .as_mut()
+            .expect("compact control")
+            .compact
+            .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.compact.hide();
     }
     if app.has_live_themes()
         && !app.stop_open()
@@ -1150,7 +1182,11 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .backend_controls
             .draw(frame, area, &t);
     }
-    if app.has_live_browser() && !app.has_live_history() && !app.has_live_rewrite() {
+    if app.has_live_browser()
+        && !app.has_live_history()
+        && !app.has_live_rewrite()
+        && !app.has_live_compact()
+    {
         app.live
             .as_mut()
             .expect("conversation browser")

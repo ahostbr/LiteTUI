@@ -57,6 +57,7 @@ pub enum Item {
     Tool(usize),
 }
 pub struct Row {
+    pub source_owned: bool,
     pub prompt: String,
     pub cards: Vec<Card>,
     pub tools: Vec<Tool>,
@@ -71,6 +72,9 @@ pub struct Chat {
     pub history: Option<crate::resume::History>,
     pub saved_history: crate::history_view::View,
     pub rewrite: crate::conversation_rewrite::View,
+    pub compact: crate::conversation_compact::View,
+    compact_active: bool,
+    pub prior_context_rows: usize,
     rewrite_pending: bool,
     rewrite_old_cost: Option<(usize, usize)>,
     rewrite_start_row: Option<usize>,
@@ -118,6 +122,9 @@ impl Chat {
             history: None,
             saved_history: crate::history_view::View::default(),
             rewrite: crate::conversation_rewrite::View::default(),
+            compact: crate::conversation_compact::View::default(),
+            compact_active: false,
+            prior_context_rows: 0,
             rewrite_pending: false,
             rewrite_old_cost: None,
             rewrite_start_row: None,
@@ -186,6 +193,7 @@ impl Chat {
             || self.queue_pending
             || self.rewrite_pending
             || self.rewrite.blocks_composer() && !rewriting
+            || self.compact.blocks_composer()
         {
             return Err(io::Error::other(
                 "Wait for the runtime to be ready and the current turn to finish",
@@ -212,6 +220,7 @@ impl Chat {
         self.stop_requests = 0;
         self.stops_sent = 0;
         self.rows.push(Row {
+            source_owned: false,
             prompt: prompt.into(),
             cards: vec![Card::default()],
             tools: Vec::new(),
@@ -263,6 +272,7 @@ impl Chat {
         self.retained_bytes += entry.content.len();
         self.recovered_inputs.insert(entry.id.clone());
         self.rows.push(Row {
+            source_owned: false,
             prompt: entry.content.clone(),
             cards: Vec::new(),
             tools: Vec::new(),
@@ -321,6 +331,34 @@ impl Chat {
                 .into();
         Ok(())
     }
+    pub fn prepare_compact(
+        &mut self,
+        intent: &crate::conversation_compact::Intent,
+    ) -> io::Result<()> {
+        self.compact.prepare_apply(intent)?;
+        if self.rewrite_pending || self.busy || !self.ready || self.closed || self.quitting {
+            return Err(io::Error::other("Finish current work before compaction"));
+        }
+        self.prompt_budget("Conversation compaction")?;
+        self.saved_history.finish();
+        self.browser.finish();
+        self.completion_closed_for_rewrite();
+        self.pending = None;
+        self.submission_id = None;
+        self.stop_requests = 0;
+        self.stops_sent = 0;
+        self.compact_active = true;
+        self.rewrite_pending = true;
+        self.busy = true;
+        self.rewrite_old_cost = Some((self.retained_bytes, self.retained_units));
+        self.rewrite_start_row = Some(self.rows.len());
+        self.rewrite_stream_row = None;
+        self.rewrite_segment = None;
+        self.rewrite_rows.clear();
+        self.rewrite_maintenance.clear();
+        self.notice = "Submitting reviewed compaction; saved effects are not yet verified.".into();
+        Ok(())
+    }
     fn completion_closed_for_rewrite(&mut self) {
         self.controls.close();
         self.queue.finish();
@@ -331,7 +369,7 @@ impl Chat {
         self.backend_controls.finish();
     }
     pub fn rewrite_pending(&self) -> bool {
-        self.rewrite_pending || self.rewrite.blocks_composer()
+        self.rewrite_pending || self.rewrite.blocks_composer() || self.compact.blocks_composer()
     }
     pub fn take_submission(&mut self) -> Option<String> {
         self.pending.take()
@@ -388,6 +426,7 @@ impl Chat {
         self.queue
             .observe(crate::restored_queue::Update::Snapshot(queue));
         self.rows.clear();
+        self.prior_context_rows = 0;
         self.recovered_inputs.clear();
         self.submission_id = None;
         self.stop_requests = 0;
@@ -411,6 +450,113 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::Compact(update) => {
+                if self.compact.pending_key() != Some(update.key()) {
+                    return Ok(());
+                }
+                if matches!(update, crate::conversation_compact::Update::Rejected { .. })
+                    && self.compact_active
+                {
+                    if self.submission_id.is_some() {
+                        return Err(io::Error::other(
+                            "Dispatched compaction cannot be locally refused",
+                        ));
+                    }
+                    self.compact_active = false;
+                    self.rewrite_pending = false;
+                    self.rewrite_old_cost = None;
+                    self.busy = false;
+                }
+                if matches!(
+                    update,
+                    crate::conversation_compact::Update::Submitted { .. }
+                ) && (!self.compact_active || !self.rewrite_pending || !self.busy)
+                {
+                    return Err(io::Error::other(
+                        "Compaction dispatch without a reserved action",
+                    ));
+                }
+                self.compact.observe(update)?;
+                self.notice = self.compact.notice.clone();
+            }
+            Observation::CompactSettled(changed) => {
+                if !self.compact_active
+                    || !self.rewrite_pending
+                    || self.compact.pending_key() != Some(&changed.key)
+                    || self.submission_id.as_deref()
+                        != Some(changed.admission.operation_id.as_str())
+                    || !self.rewrite_maintenance.is_empty()
+                    || self.pending_row().is_ok()
+                    || !self.approvals.is_empty()
+                    || !self.questions.is_empty()
+                {
+                    return Err(io::Error::other(
+                        "Compaction readback does not match retired source work",
+                    ));
+                }
+                let start = self
+                    .rewrite_start_row
+                    .ok_or_else(|| io::Error::other("Missing compaction row boundary"))?;
+                if start > self.rows.len() {
+                    return Err(io::Error::other("Invalid compaction row boundary"));
+                }
+                if changed.settlement.outcome == crate::conversation_compact::Outcome::Compacted
+                    && changed.review.clear_display()
+                {
+                    self.rows.drain(..start);
+                    self.prior_context_rows = 0;
+                    self.recovered_inputs.clear();
+                    let (bytes, units) = self
+                        .rewrite_old_cost
+                        .take()
+                        .ok_or_else(|| io::Error::other("Missing prior transcript cost"))?;
+                    self.retained_bytes = self
+                        .retained_bytes
+                        .checked_sub(bytes)
+                        .ok_or_else(|| io::Error::other("Invalid retained byte count"))?;
+                    self.retained_units = self
+                        .retained_units
+                        .checked_sub(units)
+                        .ok_or_else(|| io::Error::other("Invalid retained display count"))?;
+                } else if changed.settlement.outcome
+                    == crate::conversation_compact::Outcome::Compacted
+                {
+                    self.prior_context_rows = start;
+                }
+                self.rewrite_old_cost = None;
+                self.runtime_state.opened(changed.snapshot);
+                self.queue
+                    .observe(crate::restored_queue::Update::Snapshot(changed.queue));
+                let descriptor = changed
+                    .history
+                    .descriptor
+                    .as_deref()
+                    .ok_or_else(|| io::Error::other("Missing verified compact history"))?;
+                let page = changed
+                    .history
+                    .page
+                    .as_deref()
+                    .ok_or_else(|| io::Error::other("Missing verified compact page"))?;
+                self.saved_history
+                    .install(descriptor.clone(), page.clone(), false)?;
+                self.history = Some(changed.history);
+                self.compact_active = false;
+                self.rewrite_pending = false;
+                self.busy = false;
+                self.submission_id = None;
+                self.rewrite_start_row = None;
+                self.rewrite_stream_row = None;
+                self.rewrite_segment = None;
+                self.rewrite_rows.clear();
+                self.rewrite_maintenance.clear();
+                self.compact
+                    .observe(crate::conversation_compact::Update::Settled {
+                        key: changed.key,
+                        outcome: changed.settlement.outcome,
+                        reason: changed.settlement.explanation(),
+                    })?;
+                self.notice = self.compact.notice.clone();
+            }
             Observation::Rewrite(update) => {
                 if self.rewrite.pending_key() != Some(update.key()) {
                     return Ok(());
@@ -463,6 +609,7 @@ impl Chat {
                         return Err(io::Error::other("Missing retained rewrite rows"));
                     }
                     self.rows.drain(..start);
+                    self.prior_context_rows = 0;
                     self.recovered_inputs.clear();
                     let (bytes, units) = self
                         .rewrite_old_cost
@@ -524,7 +671,7 @@ impl Chat {
                 if let Some(outcome) = previous_outcome {
                     self.settle(outcome)?;
                 }
-                if index == 0 {
+                if index == 0 && !self.compact_active {
                     if self.rewrite_segment.is_some() || self.pending_row().is_err() {
                         return Err(io::Error::other("Missing initial rewrite row"));
                     }
@@ -779,7 +926,9 @@ impl Chat {
                 self.history = Some(history);
             }
             Observation::Submission { id } => {
-                self.pending_row()?;
+                if !self.compact_active {
+                    self.pending_row()?;
+                }
                 if self.submission_id.replace(id).is_some() {
                     return Err(io::Error::other("Duplicate local prompt reservation"));
                 }
@@ -905,6 +1054,7 @@ impl Chat {
         self.retained_bytes += prompt.len();
         let index = self.rows.len();
         self.rows.push(Row {
+            source_owned: true,
             prompt: prompt.into(),
             cards: vec![Card::default()],
             tools: Vec::new(),
@@ -933,13 +1083,17 @@ impl Chat {
     }
     fn refresh_rewrite_busy(&mut self) {
         if self.rewrite_pending {
-            self.busy = self.pending_row().is_ok()
+            self.busy = self.compact_active
+                || self.pending_row().is_ok()
                 || !self.rewrite_maintenance.is_empty()
                 || !self.approvals.is_empty()
                 || !self.questions.is_empty();
         }
     }
     fn current_row_index(&self) -> io::Result<usize> {
+        if self.compact_active && self.rewrite_stream_row.is_none() {
+            return Err(io::Error::other("Compaction has no user stream row"));
+        }
         self.rewrite_stream_row
             .or_else(|| self.rows.len().checked_sub(1))
             .filter(|i| *i < self.rows.len())
@@ -1156,6 +1310,8 @@ impl Chat {
         self.rewrite_pending = false;
         self.rewrite_old_cost = None;
         self.rewrite.finish();
+        self.compact.finish();
+        self.compact_active = false;
         self.rewrite_start_row = None;
         self.rewrite_stream_row = None;
         self.rewrite_segment = None;

@@ -427,31 +427,35 @@ class ConversationRepository:
         self.write_record(self.snapshot_record(messages, reason, store_identity=store_identity,
                                                store_injected=store_injected))
 
-    def record_edit(self, index: int, message: dict, reason: str = "", *, store_identity=None, store_injected=None) -> None:
-        """Record an in-place change to ONE message.
-
-        /system and the tools toggle only ever rewrite message 0, which is the
-        biggest message in the file (system prompt + store block + tools). A
-        snapshot for that wrote the entire conversation to disk to record a
-        one-message change.
-        """
-        self.write_record({
+    @staticmethod
+    def edit_record(index: int, message: dict, reason: str = "", *, store_identity=None, store_injected=None) -> dict:
+        return {
             "type": "edit", "ts": time.time(), "reason": reason,
             "index": index, "message": message,
             **({"store_identity": store_identity} if store_identity is not None else {}),
             **({"store_injected": store_injected} if isinstance(store_injected, bool) else {}),
-        })
+        }
+
+    def record_edit(self, index: int, message: dict, reason: str = "", *, store_identity=None, store_injected=None) -> None:
+        """Record an in-place change to one message using the canonical schema."""
+        self.write_record(self.edit_record(index, message, reason, store_identity=store_identity,
+                                          store_injected=store_injected))
+
+    @staticmethod
+    def truncate_record(keep_from: int, prepend: list[dict], keep_system: bool, reason: str = "", *,
+                        measurements: dict | None = None) -> dict:
+        return {
+            "type": "truncate", "ts": time.time(), "reason": reason,
+            "keep_from": keep_from, "keep_system": keep_system,
+            "prepend": prepend,
+            **({"measurements": measurements} if measurements is not None else {}),
+        }
 
     def record_truncate(self, keep_from: int, prepend: list[dict],
                         keep_system: bool, reason: str = "", *,
                         measurements: dict | None = None) -> None:
         """Record 'drop the head, splice these in front of what remains'."""
-        self.write_record({
-            "type": "truncate", "ts": time.time(), "reason": reason,
-            "keep_from": keep_from, "keep_system": keep_system,
-            "prepend": prepend,
-            **({"measurements": measurements} if measurements is not None else {}),
-        })
+        self.write_record(self.truncate_record(keep_from, prepend, keep_system, reason, measurements=measurements))
 
     def record_meta(self, model: str, seat_name=None, seat_id=None) -> None:
         """The owning seat is written at CREATION, so /resume can say whose

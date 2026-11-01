@@ -1,12 +1,15 @@
 """Reviewed edit/retry through actual owned RPC, storage and SDK boundaries."""
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -391,3 +394,40 @@ def test_soft_stop_cancels_the_exact_question_and_settles_without_followup_or_wa
         assert report["live"][-2]["tool_calls"][0]["id"] == "rewrite-question-call"
         assert report["live"][-1] == {"role": "tool", "tool_call_id": "rewrite-question-call",
             "name": "ask_user_question", "content": report["question_threads"][0]["result"]}
+
+
+def test_stage_marker_stays_absent_or_complete_during_interrupted_publication(tmp_path, monkeypatch):
+    # Load the actual pure helper without importing the runtime fixture's app/environment bootstrap.
+    tree = ast.parse(FIXTURE.read_text(encoding="utf-8"))
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_publish_stage")
+    namespace: dict[str, Any] = {"json": json, "uuid4": uuid4}
+    # The parsed local helper is trusted test code; no runtime bootstrap or user text executes.
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(FIXTURE), "exec"), namespace)  # noqa: S102
+    publish = namespace["_publish_stage"]
+    for previous in (None, {"stage": "previous", "execution_id": "unchanged"}):
+        folder = tmp_path / ("first" if previous is None else "replacement")
+        folder.mkdir()
+        marker = folder / "rewrite-stage.json"
+        if previous is not None:
+            marker.write_text(json.dumps(previous), encoding="utf-8")
+        observed: list[object] = []
+        value = {"stage": "question-stream", "ask_id": "explicit-question", "execution_id": "captured-worker"}
+
+        def interrupted_write(path, contents, *, encoding, marker=marker, observed=observed):
+            # Force both the zero-byte and partially written windows seen by a concurrent reader.
+            with path.open("w", encoding=encoding) as stream:
+                stream.flush()
+                observed.append(json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None)
+                halfway = len(contents) // 2
+                stream.write(contents[:halfway])
+                stream.flush()
+                observed.append(json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None)
+                stream.write(contents[halfway:])
+            return len(contents)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "write_text", interrupted_write)
+            publish(marker, value)
+        assert observed == [previous, previous]
+        assert json.loads(marker.read_text(encoding="utf-8")) == value
+        assert list(folder.iterdir()) == [marker]

@@ -113,6 +113,13 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     }
     if app.viewport_too_small {
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
+            if app.has_live_compact() {
+                let chat = app.live.as_mut().expect("compact");
+                chat.compact.close();
+                chat.saved_history.hide();
+                chat.browser.hide();
+                return false;
+            }
             if app.has_live_rewrite() {
                 let chat = app.live.as_mut().expect("rewrite");
                 chat.rewrite.close();
@@ -221,6 +228,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     }
     if app.has_live_commands() {
         app.live.as_mut().expect("commands").commands.key(key);
+        return false;
+    }
+    if app.has_live_compact() {
+        app.live.as_mut().expect("compact").compact.key(key);
         return false;
     }
     if app.has_live_rewrite() {
@@ -518,6 +529,26 @@ fn handle_key(
     if input.suppress_live_repeat(event) {
         return false;
     }
+    if app.has_live_compact() {
+        if !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+            && !app.viewport_too_small
+            && event.kind == KeyEventKind::Press
+            && event.modifiers == KeyModifiers::CONTROL
+            && matches!(event.code, KeyCode::Char('v' | 'V'))
+        {
+            let chat = app.live.as_mut().expect("compact");
+            if !chat.quitting && !chat.cancelling() && chat.compact.accepts_paste() {
+                match clipboard.read_text() {
+                    Ok(Some(text)) => chat.compact.paste(&text),
+                    Ok(None) => {}
+                    Err(error) => chat.compact.notice = error,
+                }
+            }
+        }
+        return input.handle(app, event);
+    }
     if app.has_live_rewrite() {
         if !app.stop_open()
             && !app.has_live_approval()
@@ -657,6 +688,16 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_compact() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live.as_mut().expect("compact").compact.paste(text);
+        }
+        return;
+    }
     if app.has_live_rewrite() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -759,6 +800,16 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_compact() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live.as_mut().expect("compact").compact.mouse(event);
+        }
+        return;
+    }
     if app.has_live_rewrite() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -1089,6 +1140,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         app.live.as_mut().expect("live").themes.hide();
                         app.live.as_mut().expect("live").saved_history.hide();
                         app.live.as_mut().expect("live").rewrite.hide();
+                        app.live.as_mut().expect("live").compact.hide();
                         app.live.as_mut().expect("live").settings.hide();
                         app.live.as_mut().expect("live").backend_controls.hide();
                         app.live.as_mut().expect("live").browser.hide();
@@ -1171,6 +1223,28 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                     if let Err(error) = preparation.and_then(|()| runtime.rewrite(intent)) {
                         app.observe_live(litetui_terminal::live::Observation::Rewrite(
                             litetui_terminal::conversation_rewrite::Update::Rejected {
+                                key,
+                                reason: error.to_string(),
+                            },
+                        ))?;
+                    }
+                }
+            }
+            if !quitting {
+                app.take_history_compact()?;
+                if let Some(intent) = app.live.as_mut().expect("live").compact.take_intent() {
+                    let key = intent.key().clone();
+                    let preparation = if matches!(
+                        intent,
+                        litetui_terminal::conversation_compact::Intent::Apply { .. }
+                    ) {
+                        app.live.as_mut().expect("live").prepare_compact(&intent)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(error) = preparation.and_then(|()| runtime.compact(intent)) {
+                        app.observe_live(litetui_terminal::live::Observation::Compact(
+                            litetui_terminal::conversation_compact::Update::Rejected {
                                 key,
                                 reason: error.to_string(),
                             },
@@ -3728,6 +3802,115 @@ mod rewrite_router_tests {
         );
         assert_eq!(clipboard.reads, 0);
         assert_eq!(app.live.as_ref().unwrap().rewrite.draft(), "original");
+        assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
+    }
+    fn open_compact() -> (Demo, litetui_terminal::conversation_compact::RequestKey) {
+        let (mut app, _) = open(r::Action::Edit);
+        app.live.as_mut().unwrap().rewrite.finish();
+        let selected = selection();
+        let selected = litetui_terminal::conversation_compact::Selection {
+            history_key: selected.history_key,
+            identity: selected.identity,
+            history_snapshot: selected.history_snapshot,
+            context_sha256: selected.context_sha256,
+            messages: selected.messages,
+        };
+        app.live.as_mut().unwrap().compact.open(selected).unwrap();
+        let intent = app.live.as_mut().unwrap().compact.take_intent().unwrap();
+        (app, intent.key().clone())
+    }
+    fn load_compact(app: &mut Demo, key: litetui_terminal::conversation_compact::RequestKey) {
+        use litetui_terminal::conversation_compact as c;
+        use sha2::{Digest, Sha256};
+        let config = json!({"keep_recent":2,"max_tokens":1024,"max_tool_iters":4,"thinking_level":"default","tools_enabled":false,"wake_after_compact":false,"clear_screen_after_compact":true});
+        let mut value = key.selection.command(c::SNAPSHOT);
+        for(k,v)in json!({"kind":"conversation_compact_snapshot","snapshot":"d".repeat(64),"eligible":true,"reason":null,"config":config,
+            "plan":{"messages":3,"system_messages":1,"head_messages":1,"tail_messages":1,"head_context_sha256":"e".repeat(64),"tail_context_sha256":"f".repeat(64),"prompt_sha256":"1".repeat(64),"config_sha256":format!("{:x}",Sha256::digest(serde_json::to_vec(&config).unwrap()))}}).as_object().unwrap(){value[k]=v.clone();}
+        let snapshot = c::Snapshot::parse(&value, &key.selection).unwrap();
+        app.observe_live(Observation::Compact(c::Update::Snapshot {
+            key,
+            snapshot: Box::new(snapshot),
+        }))
+        .unwrap();
+    }
+    #[test]
+    fn compact_hint_owns_unicode_clipboard_and_paste_without_touching_main_draft() {
+        let (mut app, key) = open_compact();
+        let mut router = KeyRouter::default();
+        let mut clipboard = Clipboard::default();
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 0);
+        load_compact(&mut app, key);
+        paint(&mut app, 100, 40);
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paint(&mut app, 100, 40);
+        paste(&mut app, ":Δ");
+        assert_eq!(app.live.as_ref().unwrap().compact.draft(), " 雪\nraw:Δ");
+        assert_eq!(clipboard.reads, 1);
+        assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+    }
+    #[test]
+    fn compact_tiny_cancel_waits_for_pending_read_and_does_not_leak_repeat_keys() {
+        let (mut app, key) = open_compact();
+        let mut router = KeyRouter::default();
+        let mut clipboard = Clipboard::default();
+        paint(&mut app, 35, 13);
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        assert!(app.has_live_compact());
+        app.observe_live(Observation::Compact(
+            litetui_terminal::conversation_compact::Update::Rejected {
+                key,
+                reason: "late read".into(),
+            },
+        ))
+        .unwrap();
+        assert!(!app.has_live_compact());
+        paint(&mut app, 100, 40);
+        let mut repeat = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        handle_key(&mut app, &mut router, repeat, &mut clipboard);
+        assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
+        assert_eq!(clipboard.reads, 0);
+    }
+    #[test]
+    fn hidden_compact_hint_rejects_paste_and_clipboard() {
+        let (mut app, key) = open_compact();
+        load_compact(&mut app, key);
+        paint(&mut app, 100, 40);
+        paint(&mut app, 35, 13);
+        paste(&mut app, "hidden");
+        let mut router = KeyRouter::default();
+        let mut clipboard = Clipboard::default();
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 0);
+        assert!(app.live.as_ref().unwrap().compact.draft().is_empty());
         assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
     }
 }

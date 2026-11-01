@@ -313,6 +313,36 @@ impl Demo {
         self.footer.leave();
         Ok(())
     }
+    pub fn has_live_compact(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.compact.owns_input())
+    }
+    pub fn take_history_compact(&mut self) -> std::io::Result<()> {
+        let Some(chat) = self.live.as_mut() else {
+            return Ok(());
+        };
+        let Some(selection) = chat.saved_history.take_compact() else {
+            return Ok(());
+        };
+        if chat.busy
+            || chat.closed
+            || chat.quitting
+            || chat.queue_pending()
+            || chat.rewrite_pending()
+        {
+            return Err(std::io::Error::other(
+                "Finish current work before compaction",
+            ));
+        }
+        chat.compact.open(selection)?;
+        chat.saved_history.suspend_for_rewrite();
+        chat.browser.hide();
+        self.themes_open = false;
+        self.completion.dismiss();
+        self.footer.leave();
+        Ok(())
+    }
     pub fn has_live_history(&self) -> bool {
         self.live
             .as_ref()
@@ -521,6 +551,7 @@ impl Demo {
             || self.has_live_themes()
             || self.has_live_history()
             || self.has_live_rewrite()
+            || self.has_live_compact()
             || self.has_live_settings()
             || self.has_live_backend()
             || self.has_live_browser()

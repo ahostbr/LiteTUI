@@ -28,7 +28,7 @@ from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
 from functools import partial
 from litetui.event_origin import EventOrigin
-from litetui import conversation_rewrite
+from litetui import conversation_compact, conversation_rewrite
 
 from litetui import settings as settings_mod
 from litetui.settings import Settings
@@ -4099,17 +4099,20 @@ class LiteTUI(App):
     def _edit(self, index: int, reason: str = "") -> None:
         if not (0 <= index < len(self.conversation)):
             return self._snapshot(reason)  # shouldn't happen; degrade safely
-        self.store.record_edit(index, self.conversation[index], reason,
+        record = self.store.edit_record(index, self.conversation[index], reason,
                                store_identity=getattr(self, "_prompt_store_identity", None) if index == 0 else None,
                                store_injected=getattr(self, "_store_injected", None) if index == 0 else None)
+        if not conversation_compact.write_publication_record(self, record):
+            self.store.write_record(record)
 
     def _truncate(self, keep_from: int, prepend: list[dict], reason: str = "",
                   *, measurements: dict | None = None) -> None:
         keeps_system = bool(
             self.conversation and self.conversation[0].get("role") == "system"
         )
-        self.store.record_truncate(keep_from, prepend, keeps_system, reason,
-                                   measurements=measurements)
+        record = self.store.truncate_record(keep_from, prepend, keeps_system, reason, measurements=measurements)
+        if not conversation_compact.write_publication_record(self, record):
+            self.store.write_record(record)
 
 
     @property
@@ -6967,7 +6970,11 @@ class LiteTUI(App):
             f"{self.ctx_max:,} (threshold {self.settings.autocompact_at_percent}%)."
         )
         self._compact_is_auto = True
-        self._handle_command("/compact")
+        from litetui import native_history
+        if native_history.enabled(self):
+            self._compact()
+        else:
+            self._handle_command("/compact")
 
     # ── glass box: the turn, as signal ───────────────────────────────────
     #
@@ -8523,6 +8530,9 @@ class LiteTUI(App):
 
         if reason := submission_refusal(self):
             self._refuse_submit("backend_transition", reason)
+            return
+        if reason := conversation_compact.command_refusal(self, value):
+            self._refuse_submit("reviewed_compaction", reason)
             return
         image_path: str | None = None
         trimmed = value.strip()
@@ -10349,13 +10359,13 @@ class LiteTUI(App):
             self._owner_reminded = False
 
     @conversation_rewrite.captured_work("compaction", exclusive=True, group="chat")
-    async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
+    async def _compact(self, extra: str = "", *, handoff: str | None = None) -> conversation_compact.CompactOutcome | None:
         if getattr(self, '_agent_session', None) is not None:
             try:
                 LiteTUI._validate_owned_execution(self)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
-                return
+                return None
         # Owner mode: the time STEP 1 begins. The gate (owner_gate) accepts NOW.md only if it
         # was rewritten at or after this, and runs before anything is truncated.
         self._owner_compact_t0 = time.time_ns() if getattr(self, '_owner_memory_dir', None) is not None else None
@@ -10366,7 +10376,7 @@ class LiteTUI(App):
             auto = getattr(self, "_compact_is_auto", False)
             self._compact_is_auto = False
             await compact(self, extra, auto=auto, handoff=handoff)
-            return
+            return None
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
             self._stop_reason = None
@@ -10377,7 +10387,7 @@ class LiteTUI(App):
                 # normal turn first (NOW.md and DOMAIN.md), gates it, THEN compacts.
                 proceed, owner_failure = await self._owner_codex_step_one()
                 if not proceed:
-                    return
+                    return None
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()
@@ -10387,7 +10397,7 @@ class LiteTUI(App):
                 self._system("Codex context compacted. The displayed transcript is preserved.")
             if owner_failure:
                 self._system(owner_mode.not_committed_note(owner_failure))
-            return
+            return None
         # A new operation gets a fresh cancellation latch, not the prior turn's.
         # Keep _turn_abandoned: maintenance must not revive stopped user work.
         self._stop_requested = False
@@ -10409,7 +10419,7 @@ class LiteTUI(App):
         if len(body) < 3:
             self._system("Nothing to compact yet — have a conversation first.")
             self._emit_compaction("too_short", kept_recent=len(body))
-            return
+            return conversation_compact.CompactOutcome("no_change", "too_short")
 
         tail = self._safe_tail(body, self.settings.compact_keep_recent)
         head = body[: len(body) - len(tail)] if tail else body
@@ -10423,7 +10433,7 @@ class LiteTUI(App):
                                   tokens_before=self.ctx_used,
                                   tokens_before_exact=self.ctx_used is not None,
                                   kept_recent=len(tail))
-            return
+            return conversation_compact.CompactOutcome("no_change", "already_recent")
 
         compact_started = time.perf_counter()
         trigger_tokens = self.ctx_used
@@ -10492,13 +10502,13 @@ class LiteTUI(App):
             card.set_status(f"checking {self.model_id} is ready")
             await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
             if stopped():
-                return
+                return conversation_compact.CompactOutcome("cancelled", "cancelled")
             # A counter, not range(): the owner retry gets its OWN budget of rounds (below),
             # so STEP 1 spending all of compact_max_tool_iters cannot starve the retry.
             round_no, round_budget = 0, self.settings.compact_max_tool_iters
             while round_no < round_budget:
                 if stopped():
-                    return
+                    return conversation_compact.CompactOutcome("cancelled", "cancelled")
                 round_no += 1
                 round_started = time.perf_counter()
                 first_chunk_s = None
@@ -10537,7 +10547,7 @@ class LiteTUI(App):
                 # because it reuses the same chunk shapes and widgets.
                 async for chunk in stream:
                     if stopped():
-                        return
+                        return conversation_compact.CompactOutcome("cancelled", "cancelled")
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     if first_chunk_s is None:
                         first_chunk_s = time.perf_counter() - round_started
@@ -10592,6 +10602,14 @@ class LiteTUI(App):
                         if argued_now and idx in tool_msgs:
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
 
+                # Each provider round owns its stream. Retire it before a tool
+                # wait or another round replaces the handle; finally covers
+                # interrupted or failed iteration and close failures.
+                if hasattr(stream, "close"):
+                    await stream.close()
+                stream = None
+                if stopped():
+                    return conversation_compact.CompactOutcome("cancelled", "cancelled")
                 # The model phase is over: stop showing prefill while tools run
                 # (nothing is being prefilled then) and start the next round's
                 # readout fresh.
@@ -10675,7 +10693,7 @@ class LiteTUI(App):
                 card.record_round(timing)
                 self._scroll_down()
                 if stopped():
-                    return
+                    return conversation_compact.CompactOutcome("cancelled", "cancelled")
             if owner_t0 is not None and owner_retried and not owner_retry_gated:
                 # The retry spent its whole budget on tool calls and never summarised, so no
                 # gate has judged what it wrote. Judge it now, before anything is truncated.
@@ -10703,7 +10721,7 @@ class LiteTUI(App):
                                   tokens_before=self.ctx_used,
                                   tokens_before_exact=self.ctx_used is not None,
                                   kept_recent=len(tail))
-            return
+            return conversation_compact.CompactOutcome("failed", "provider_failed", type(e).__name__)
         finally:
             self._eta.clear_prefill()
             if hasattr(stream, "close"):
@@ -10712,7 +10730,7 @@ class LiteTUI(App):
         # Readiness, streaming, owner verification and stream.close all await.
         # A stop at any one of them must precede the destructive truncate below.
         if stopped():
-            return
+            return conversation_compact.CompactOutcome("cancelled", "cancelled")
 
         if not summary and owner_first_summary:
             # The retry turn produced nothing; the first summary still stands.
@@ -10730,7 +10748,7 @@ class LiteTUI(App):
                 + (f"\nStore writes that DID land: {', '.join(writes)}" if writes else "")
             )
             self._autocompact_failed_at = self.ctx_used
-            return
+            return conversation_compact.CompactOutcome("failed", "no_summary")
 
         pair = [
             {
@@ -10758,7 +10776,8 @@ class LiteTUI(App):
         # Record BEFORE swapping self.conversation: keep_from indexes the list
         # as it stands on disk, which is the pre-compaction one.
         if stopped():
-            return
+            return conversation_compact.CompactOutcome("cancelled", "cancelled")
+        publication = conversation_compact.begin_publication(self, rebuilt)
         self._truncate(len(self.conversation) - len(tail), pair, "compact", measurements={
             "model": self.model_id, "auto": auto,
             "trigger": "agent" if handoff is not None else ("automatic" if auto else "manual"),
@@ -10780,6 +10799,7 @@ class LiteTUI(App):
             self._store_injected = False
             self._edit(0, "store snapshot dropped at compaction")
             conversation_rewrite.advance_receipts(self)
+        conversation_compact.verify_publication(self, publication)
         # AFTER the swap, so the counts describe what the conversation now IS.
         self._emit_compaction("compacted",
                               tokens_before=trigger_tokens,
@@ -10881,6 +10901,8 @@ class LiteTUI(App):
             # Success path only - a failed compact produced no summary, and
             # waking on "nothing changed" is a ping with no answer.
             conversation_rewrite.after_refresh(self, self._wake_after_compact)
+        return conversation_compact.CompactOutcome("compacted", "compacted",
+            publication_attempted=publication is not None, publication_verified=publication is not None)
 
     # ── Commands ─────────────────────────────────────────────────
 
@@ -11102,6 +11124,9 @@ class LiteTUI(App):
     def _handle_command(self, cmd: str) -> None:
         from litetui.backend_transition import submission_refusal
 
+        if reason := conversation_compact.command_refusal(self, cmd):
+            self._system(reason)
+            return
         if reason := submission_refusal(self):
             self._system(reason)
             return

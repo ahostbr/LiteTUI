@@ -115,6 +115,7 @@ pub struct View {
     loaded_key: Option<ReadKey>,
     selected_user: Option<(u64, String)>,
     rewrite: Option<(RewriteAction, RewriteSelection)>,
+    compact: Option<crate::conversation_compact::Selection>,
     stale: bool,
     visible: bool,
     intent: Option<Intent>,
@@ -174,6 +175,7 @@ impl View {
             self.selected_user = None;
         }
         self.rewrite = None;
+        self.compact = None;
         self.target = target;
     }
     fn begin_read(&mut self) -> Option<ReadKey> {
@@ -188,6 +190,7 @@ impl View {
             generation,
         };
         self.rewrite = None;
+        self.compact = None;
         self.pending = Some(key.clone());
         self.waiting = true;
         self.hide();
@@ -205,6 +208,7 @@ impl View {
         self.loaded_key = None;
         self.selected_user = None;
         self.rewrite = None;
+        self.compact = None;
         self.snapshot = Some(snapshot);
         self.page = Some(page);
         self.open = show;
@@ -240,6 +244,26 @@ impl View {
     }
     pub fn take_rewrite(&mut self) -> Option<(RewriteAction, RewriteSelection)> {
         self.rewrite.take()
+    }
+    pub fn take_compact(&mut self) -> Option<crate::conversation_compact::Selection> {
+        self.compact.take()
+    }
+    fn request_compact(&mut self) {
+        if let Some(reason) = self.rewrite_reason() {
+            self.notice = reason
+                .replace("edit or retry", "compact")
+                .replace("edited or retried", "compacted");
+            return;
+        }
+        let snapshot = self.snapshot.as_ref().expect("fresh current history");
+        self.compact = Some(crate::conversation_compact::Selection {
+            history_key: self.loaded_key.clone().expect("fresh read"),
+            identity: snapshot.identity.clone(),
+            history_snapshot: snapshot.token.clone(),
+            context_sha256: snapshot.context_sha256.clone(),
+            messages: snapshot.counts.messages,
+        });
+        self.hide();
     }
     pub fn suspend_for_rewrite(&mut self) {
         self.hide();
@@ -309,7 +333,7 @@ impl View {
             }
         }
         self.notice = format!(
-            "User message {} selected · E edit · R retry",
+            "User message {} selected · E edit · R retry · C compact",
             users[next].0 + 1
         );
     }
@@ -346,6 +370,7 @@ impl View {
     pub fn close(&mut self) {
         self.open = false;
         self.rewrite = None;
+        self.compact = None;
         if self.intent.take().is_some() {
             self.waiting = false;
             self.pending = None;
@@ -363,6 +388,7 @@ impl View {
     pub fn invalidate(&mut self) {
         self.stale = true;
         self.rewrite = None;
+        self.compact = None;
         self.notice =
             "History changed. F5 reads a fresh saved snapshot; the previous page is retained."
                 .into();
@@ -521,6 +547,7 @@ impl View {
         match event.code {
             KeyCode::Tab if event.kind == KeyEventKind::Press => self.choose_user(false),
             KeyCode::BackTab if event.kind == KeyEventKind::Press => self.choose_user(true),
+            KeyCode::Char('c') if event.kind == KeyEventKind::Press => self.request_compact(),
             KeyCode::Char('e') if event.kind == KeyEventKind::Press => {
                 self.request_rewrite(RewriteAction::Edit)
             }
@@ -649,7 +676,7 @@ impl View {
         } else if self.stale {
             "Snapshot changed · F5 refresh before paging"
         } else if self.rewrite_reason().is_none() {
-            "Tab selects a user message · E edit · R retry"
+            "Tab selects a user message · E edit · R retry · C compact"
         } else {
             "Saved display only · no actions or timers"
         };

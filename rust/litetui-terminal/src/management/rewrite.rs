@@ -68,15 +68,7 @@ pub(super) struct Pending {
     key: r::RequestKey,
     stage: Stage,
 }
-pub(super) struct Chain {
-    action: String,
-    operation: String,
-    segments: u64,
-    last_execution: Option<String>,
-    ended: bool,
-    maintenance: std::collections::HashMap<String, (String, Origin)>,
-    inputs: std::collections::HashMap<(String, String), (ExecutionId, Origin)>,
-}
+pub(super) use super::action::Chain;
 
 impl Management {
     fn rewrite_selection(&self, key: &r::RequestKey) -> io::Result<()> {
@@ -223,15 +215,11 @@ impl Management {
         self.rewrite_generation = prepared.key.generation;
         self.rewrite_cache = None;
         self.rewrite_review = None;
-        self.rewrite_chain = Some(Chain {
-            action: prepared.review.action_id.clone(),
-            operation: operation.into(),
-            segments: 0,
-            last_execution: None,
-            ended: true,
-            maintenance: Default::default(),
-            inputs: Default::default(),
-        });
+        self.rewrite_chain = Some(Chain::new(
+            super::action::Kind::Rewrite,
+            prepared.review.action_id.clone(),
+            operation.into(),
+        ));
         self.rewrite_attempt = Some(Attempt {
             prepared,
             operation: operation.into(),
@@ -242,9 +230,7 @@ impl Management {
     /// A source cancellation may already have consumed the same pending closure.
     pub(crate) fn acknowledge_rewrite_question(&mut self, id: &str) {
         if let Some(chain) = &mut self.rewrite_chain {
-            chain
-                .inputs
-                .remove(&("user_input_resolved".to_owned(), id.to_owned()));
+            chain.acknowledge_question(id);
         }
     }
     pub fn needs_rewrite_readback(&self) -> bool {
@@ -551,127 +537,11 @@ impl Management {
         frame: &Value,
         event: &Value,
     ) -> io::Result<()> {
-        let chain = self.rewrite_chain.as_mut().expect("active rewrite");
-        let (execution, origin, _) = crate::stream::origin(frame, 4096)
-            .map_err(|_| fail("Rewrite event lacks captured execution origin"))?;
-        if origin.operation.as_ref().and_then(Value::as_str) != Some(chain.operation.as_str())
-            || origin.source.as_deref() != Some("rpc")
-        {
-            return Err(fail("Rewrite event changed its admitted operation origin"));
-        }
-        let kind = event["type"].as_str().expect("wire event");
-        if kind == "rewrite_aftercare" {
-            let id = crate::stream::required_uuid4(event, "aftercare_id")
-                .map_err(|_| fail("Invalid aftercare identity"))?;
-            let parent = crate::stream::required_uuid4(event, "after_execution_id")
-                .map_err(|_| fail("Invalid aftercare parent"))?;
-            if id != execution.as_str()
-                || event["action_id"] != chain.action
-                || event["kind"] != "compaction"
-            {
-                return Err(fail("Aftercare changed its captured rewrite authority"));
-            }
-            match event["phase"].as_str() {
-                Some("start")
-                    if chain.ended
-                        && chain.last_execution.as_deref() == Some(parent)
-                        && chain.maintenance.len() < 64
-                        && self.executions.len() < 1000
-                        && self.executions.insert(id.to_owned()) =>
-                {
-                    chain
-                        .maintenance
-                        .insert(id.to_owned(), (parent.to_owned(), origin.clone()));
-                }
-                Some("end")
-                    if chain.ended
-                        && chain.maintenance.get(id).is_some_and(
-                            |(captured_parent, captured_origin)| {
-                                captured_parent == parent && captured_origin == &origin
-                            },
-                        ) =>
-                {
-                    chain.maintenance.remove(id);
-                }
-                _ => return Err(fail("Unexpected/replayed rewrite aftercare boundary")),
-            }
-            return Ok(());
-        }
-        if kind == "turn_start" {
-            let segment = &event["rewrite_segment"];
-            let previous = chain
-                .last_execution
-                .as_ref()
-                .map_or(Value::Null, |s| json!(s));
-            if !chain.ended
-                || segment["action_id"] != chain.action
-                || segment["index"].as_u64() != Some(chain.segments)
-                || segment.get("previous_execution_id") != Some(&previous)
-                || self.executions.len() >= 1000
-                || !self.executions.insert(execution.as_str().to_owned())
-            {
-                return Err(fail("Rewrite segment is out of order, replayed or foreign"));
-            }
-            chain.segments += 1;
-            chain.last_execution = Some(execution.as_str().to_owned());
-            chain.ended = false;
-            self.origin = Some((execution, origin));
-            return Ok(());
-        }
-        if kind == "turn_refused" || event.get("rewrite_segment").is_some() {
-            return Err(fail("Unexpected rewrite execution start/refusal"));
-        }
-        // A waiting input callback may retire after its worker boundary on Quit.
-        // Only the exact previously observed request can close under that origin.
-        if matches!(kind, "user_input_resolved" | "tool_approval_closed") {
-            let id = text(event, "id", 256)?.to_owned();
-            let key = (kind.to_owned(), id);
-            if chain.inputs.get(&key) != Some(&(execution, origin)) {
-                return Err(fail(
-                    "Rewrite input closure changed its captured request origin",
-                ));
-            }
-            chain.inputs.remove(&key);
-            return Ok(());
-        }
-        if let Some((_, captured_origin)) = chain.maintenance.get(execution.as_str()) {
-            if captured_origin != &origin {
-                return Err(fail("Rewrite maintenance changed its captured hook origin"));
-            }
-            if matches!(
-                kind,
-                "turn_end" | "text_delta" | "reasoning_delta" | "native_text_snapshot"
-            ) {
-                return Err(fail("Maintenance cannot impersonate a stream segment"));
-            }
-        } else {
-            if self.origin.as_ref() != Some(&(execution.clone(), origin.clone())) {
-                return Err(fail(
-                    "Rewrite event changed its captured stream or maintenance worker",
-                ));
-            }
-            if kind == "turn_end" {
-                if chain.ended {
-                    return Err(fail("Duplicate rewrite segment end"));
-                }
-                chain.ended = true;
-            } else if chain.ended && kind != "compaction" {
-                return Err(fail("Rewrite stream content after its terminal boundary"));
-            }
-        }
-        let closure = match kind {
-            "user_input_requested" => Some("user_input_resolved"),
-            "tool_approval_requested" => Some("tool_approval_closed"),
-            _ => None,
-        };
-        if let Some(closure) = closure {
-            let id = text(event, "id", 256)?.to_owned();
-            let key = (closure.to_owned(), id);
-            if chain.inputs.len() >= 200 || chain.inputs.contains_key(&key) {
-                return Err(fail("Duplicate or excessive pending rewrite inputs"));
-            }
-            chain.inputs.insert(key, (execution, origin));
-        }
-        Ok(())
+        self.rewrite_chain.as_mut().expect("active rewrite").verify(
+            frame,
+            event,
+            &mut self.executions,
+            &mut self.origin,
+        )
     }
 }

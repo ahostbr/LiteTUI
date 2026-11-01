@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from typing import Any
 from unittest.mock import patch
+from uuid import uuid4
 
 spec = importlib.util.spec_from_file_location("_rewrite_history_support", Path(__file__).with_name("history_runtime.py"))
 assert spec and spec.loader
@@ -56,6 +57,17 @@ hook_documents: list[dict] = []
 hook_entered = threading.Event()
 stream_entered: asyncio.Event | None = None
 stream_release: asyncio.Event | None = None
+
+
+
+def _publish_stage(path, value):
+    """Publish only complete JSON; existence is the cross-process ready signal."""
+    pending = path.with_name(path.name + "." + uuid4().hex + ".tmp")
+    try:
+        pending.write_text(json.dumps(value), encoding="utf-8")
+        pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def stable(app):
@@ -155,7 +167,7 @@ class HookProcess:
         self.pid, self._litetui_job = 987654, None
         self.returncode = None if "admission" in case or case == "hooks-drift" else 0
         hook_entered.set()
-        (history.root / "rewrite-stage.json").write_text(json.dumps({"stage": "admission"}), encoding="utf-8")
+        _publish_stage(history.root / "rewrite-stage.json", {"stage": "admission"})
 
     def poll(self):
         return self.returncode
@@ -303,7 +315,7 @@ class ControlledStream:
                 assert stream_entered is not None and stream_release is not None
                 stream_entered.set()
                 stage = "compaction" if self.kind == "compaction" else "worker"
-                (history.root / "rewrite-stage.json").write_text(json.dumps({"stage": stage}), encoding="utf-8")
+                _publish_stage(history.root / "rewrite-stage.json", {"stage": stage})
                 await stream_release.wait()
             if self.kind in {"question-stream", "compaction-question"}:
                 call = NS(index=0, id=QUESTION_CALL["id"], type="function", function=NS(**QUESTION_CALL["function"]))
@@ -447,8 +459,8 @@ async def serve(app):
         if QUESTION and row.get("type") == "gui.event" and row["event"]["type"] == "user_input_requested":
             history.report["question_request"] = copy.deepcopy(row)
             stage = "question-compaction" if QUESTION_COMPACTION else "question-stream"
-            (history.root / "rewrite-stage.json").write_text(json.dumps({"stage": stage,
-                "ask_id": row["event"]["id"], "execution_id": row["execution_id"]}), encoding="utf-8")
+            _publish_stage(history.root / "rewrite-stage.json", {"stage": stage,
+                "ask_id": row["event"]["id"], "execution_id": row["execution_id"]})
         return result
 
     async def call(operation, *, check=True, **fields):

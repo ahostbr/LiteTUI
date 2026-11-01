@@ -1,6 +1,6 @@
 # Remaining LiteTUI Rust parity work
 
-Source audit: 2026-11-01, work/rust-tui-OpenBolt, prior checkpoint 28e608ba9.
+Source audit: 2026-11-01, work/rust-tui-OpenBolt, prior checkpoint 72566a0a.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
 continuation and pre-start refusal handling are committed; bounded session browsing has
@@ -14,7 +14,7 @@ approvals/questions, composer/transcript, model/thinking controls,
 exact-UUID resume, held-input recovery, F6 bounded saved-history inspection,
 bounded F8 session browsing with independent saved-row inspection and captured Open,
 F9 backend switching, F10 budget editing, F11 command/skill controls and explicit
-F12 NInfer/Strata engine management, reviewed F8 New/current Rename, F6 host-history edit/retry and source-owned F4 themes. Automated evidence does not replace
+F12 NInfer/Strata engine management, reviewed F8 New/current Rename, F6 host-history edit/retry and manual compaction, and source-owned F4 themes. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
 Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs
@@ -28,7 +28,7 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
-| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Alternate-conversation/read-only inspection preserves active context and uses exact-UUID refresh. Reviewed current host-history plain-text edit/retry preserves canonical compaction/wake and joins owned workers. Manual compaction, native-provider rewind, transaction-aware prewrite hook approvals and background-result continuation remain. Preserve draft, UUID/owner, settings and provider continuity. |
+| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Alternate-conversation/read-only inspection preserves active context and uses exact-UUID refresh. Reviewed current host-history plain-text edit/retry preserves canonical compaction/wake and joins owned workers. Reviewed host-history manual compaction is implemented and verified in controlled source/native and relocated-package checks. Native-provider compaction/rewind, owner-mode handoff, transaction-aware prewrite hook approvals and background-result continuation remain. Preserve draft, UUID/owner, settings and provider continuity. |
 | Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
@@ -45,7 +45,7 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 
 F6 host-history edit/retry now uses source-issued selection/review tokens, exact message and prefix hashes, canonical admission before durable publication, captured worker ownership and independent history readback. It does not call the legacy GUI edit/retry handlers or infer authority from displayed text. Source-owned automatic/self-compaction, card summaries and maintenance wake streams are tracked through final settlement.
 
-Codex resumes a native thread and Claude uses a durable native segment; neither can be rewound by slicing the display transcript. Their edit/retry actions stay explicitly ineligible until exact provider-native rewind/branch contracts exist. Manual compaction needs its own reviewed host/Codex/Claude algorithms with typed outcomes, progress, provider continuity and cleanup/readback.
+Codex resumes a native thread and Claude uses a durable native segment; neither can be rewound by slicing the display transcript. Their edit/retry actions stay explicitly ineligible until exact provider-native rewind/branch contracts exist. Reviewed manual host-history compaction is implemented with typed outcomes, progress, worker ownership and independent persistence readback. Codex/Claude provider-native compaction and owner-mode handoff still need their own algorithms and provider-continuity contracts.
 
 Prewrite hooks that need a new approval refuse before mutation because the current approval audit writes the old user row. Transaction-aware prewrite approval audit remains separate work. In-turn and compaction approvals/questions are supported. Background-result delivery can create held input or wake another turn, so explicit background tools and tools configured for auto-promotion currently refuse before hooks or tool effects. Foreground backgroundable tools with auto-promotion disabled remain supported. A later protocol must preserve background delivery, held-queue ownership and wake continuations before lifting that limit.
 
@@ -118,8 +118,8 @@ runtime contract describe the evidence and precise shutdown limits.
 Canonical /new, /clear and /reset routes now open the reviewed New control;
 /rename can prefill the same bounded editor. They invoke no mutable handler and
 never apply from resolution alone. Current-conversation paging and inert rich replay
-and reviewed host-history edit/retry are implemented. Manual compaction and
-provider-native rewind remain separate implementation waves.
+and reviewed host-history edit/retry/manual compaction are implemented. Provider-native
+compaction and rewind remain separate implementation waves.
 
 Legacy edit/retry truncates live history, saves a snapshot and calls _submit_text,
 then returns accepted:true without checking admission. It cannot serve as a native
@@ -137,7 +137,8 @@ resident page. Historical native activity, reasoning, plans and summaries are
 inert; image and question notices cannot execute or fetch anything. The old
 100-visible/1,000-total limits remain only in legacy protocol compatibility.
 F8 previews retain reviewed Open effects and readonly drift refuses mutation;
-alternate-conversation/read-only history navigation remains future work.
+alternate-conversation/read-only history inspection is implemented and cannot
+authorize an active-context mutation.
 
 ## Next contracts identified by source audit
 
@@ -175,6 +176,25 @@ prompt, and submits only through explicit normal attended admission. A file dige
 binds the freshly prepared revision; a metadata catalog alone does not bind file bytes.
 Existing transcript/display limits still apply and can refuse a large preparation.
 The native skill path does not invoke legacy gui.skills.use.
+
+## Next bounded implementation packages
+
+Extend F10 with reviewed compaction preferences: keep-recent, summary token budget,
+maximum tool rounds, thinking preference, wake and clear-screen. The first five use
+canonical conversation/next-turn persistence; clear-screen is device/immediate.
+Reuse the existing settings publication/readback algorithm and the compaction bounds.
+Tools enabled stays read-only because it also owns ordinary turn authority. Saved
+thinking differs from adapter-resolved side-call effort, and the shared compaction
+token budget also caps other summary/goal/subagent requests. Editing preferences
+must not itself compact, clear, wake or contact a provider.
+
+A separate Work inspector can expose bounded current tasks, goal, scheduled jobs,
+loops and calendar, with a reviewed runtime-local pause of future scheduled prompts.
+Task Stop, goal create/resume, job Run/enable and scheduler Resume need the shared
+background completion/admission contract first. Canonical background completion calls
+_deliver_inbox and may start a real turn; marking a task killed is not cleanup or
+continuation proof. Preserve queued input, recorded authority and genuine source wake
+streams instead of suppressing that behavior or invoking the legacy action directly.
 
 ## Theme parity and remaining presentation work
 

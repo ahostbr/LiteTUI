@@ -146,6 +146,10 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             _respond(cmd_id, ok=False, error="A management operation is active; wait or cancel it")
             return
         message = cmd.get("message", "")
+        from litetui import conversation_compact
+        if reason := conversation_compact.command_refusal(app, str(message)):
+            _respond(cmd_id, ok=False, error=reason)
+            return
         if not message:
             _respond(cmd_id, ok=False, error="empty message")
             return
@@ -379,6 +383,10 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         _respond(cmd_id, ok=True, result=cmds)
     elif cmd_type == "run_command":
         line = cmd.get("line", "").strip()
+        from litetui import conversation_compact
+        if reason := conversation_compact.command_refusal(app, line):
+            _respond(cmd_id, ok=False, error=reason)
+            return
         if not line:
             _respond(cmd_id, ok=False, error="empty command")
             return

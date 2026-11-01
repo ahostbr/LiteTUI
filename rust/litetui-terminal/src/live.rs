@@ -186,6 +186,8 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    Compact(crate::conversation_compact::Update),
+    CompactSettled(Box<crate::management::CompactChanged>),
     Rewrite(crate::conversation_rewrite::Update),
     RewriteSettled(Box<crate::management::RewriteChanged>),
     RewriteSegment {
@@ -277,6 +279,12 @@ pub struct Turn {
     closing: bool,
     command_id: String,
     continued_input: Option<(String, String)>,
+    compact_input: Option<crate::conversation_compact::Review>,
+    compact_admission: Option<crate::conversation_compact::Admission>,
+    compact_shutdown: Option<Value>,
+    compact_current_session: Option<String>,
+    compact_root_started: bool,
+    compact_root_ended: bool,
     rewrite_input: Option<crate::conversation_rewrite::Review>,
     rewrite_admission: Option<crate::conversation_rewrite::Admission>,
     rewrite_shutdown: Option<Value>,
@@ -284,7 +292,7 @@ pub struct Turn {
     rewrite_active: bool,
     rewrite_first_terminal: bool,
     rewrite_segments: Vec<String>,
-    rewrite_aftercare: std::collections::BTreeMap<String, String>,
+    rewrite_aftercare: std::collections::BTreeMap<String, Option<String>>,
     rewrite_executions: std::collections::HashSet<String>,
     rewrite_tools: std::collections::BTreeMap<String, (String, bool)>,
     rewrite_tool_count: usize,
@@ -328,6 +336,15 @@ impl Turn {
     }
     /// Reserve a new command ID exactly once. Neither a write nor admission.
     pub fn submit(&mut self, prompt: &str) -> io::Result<Value> {
+        if prompt.trim().is_empty() || prompt.len() > 65536 {
+            return Err(io::Error::other("Prompt is empty or exceeds 64 KiB"));
+        }
+        let id = self.reserve_operation()?;
+        Ok(
+            json!({"type":"prompt","id":id,"message":prompt,"tool_profile":self.policy.as_ref().map_or("strict",|p|p.profile.as_str())}),
+        )
+    }
+    fn reserve_operation(&mut self) -> io::Result<String> {
         if !self.ready
             || self
                 .engine_admission
@@ -337,8 +354,6 @@ impl Turn {
             || !self.approvals.settled()
             || !self.questions.settled()
             || (self.sent && !self.settled)
-            || prompt.trim().is_empty()
-            || prompt.len() > 65536
         {
             return Err(io::Error::other(
                 "Runtime is not idle, or prompt is empty/too large",
@@ -349,6 +364,10 @@ impl Turn {
         self.command_id = fresh_prompt_id()?;
         self.continued_input = None;
         self.rewrite_input = None;
+        self.compact_input = None;
+        self.compact_admission = None;
+        self.compact_root_started = false;
+        self.compact_root_ended = false;
         self.rewrite_admission = None;
         self.rewrite_first_terminal = false;
         self.rewrite_segments.clear();
@@ -370,9 +389,7 @@ impl Turn {
         self.tools_seen = false;
         self.card_count = 1;
         self.content_bytes = 0;
-        Ok(
-            json!({"type":"prompt","id":self.command_id,"message":prompt,"tool_profile":self.policy.as_ref().map_or("strict",|p|p.profile.as_str())}),
-        )
+        Ok(self.command_id.clone())
     }
     pub fn submit_continuation(
         &mut self,
@@ -396,24 +413,45 @@ impl Turn {
             .expect("reserved execution ID")
             .to_owned())
     }
+    pub fn submit_compact(
+        &mut self,
+        review: &crate::conversation_compact::Review,
+    ) -> io::Result<String> {
+        let operation = self.reserve_operation()?;
+        self.compact_input = Some(review.clone());
+        self.rewrite_active = true;
+        Ok(operation)
+    }
+    fn action_identity(&self) -> io::Result<(&str, &str)> {
+        if !self.rewrite_active {
+            return Err(io::Error::other("No active reviewed conversation action"));
+        }
+        if let Some(review) = &self.compact_input {
+            Ok((&review.action_id, &review.before.selection.identity.session))
+        } else if let Some(review) = &self.rewrite_input {
+            Ok((&review.action_id, &review.before.selection.identity.session))
+        } else {
+            Err(io::Error::other("Missing reviewed action identity"))
+        }
+    }
     fn rewrite_origin(&self, event: &Value) -> io::Result<String> {
-        let review = self
-            .rewrite_input
-            .as_ref()
-            .filter(|_| self.rewrite_active)
-            .ok_or_else(|| io::Error::other("Rewrite event without an active reviewed action"))?;
-        let origin = &event["rewrite_origin"];
-        if origin["session_id"] != review.before.selection.identity.session
+        let (_, session) = self.action_identity()?;
+        let origin = &event[if self.compact_input.is_some() {
+            "compact_origin"
+        } else {
+            "rewrite_origin"
+        }];
+        if origin["session_id"] != session
             || origin["operation_id"] != self.command_id
             || origin["source"] != "rpc"
         {
             return Err(io::Error::other(
-                "Rewrite event changed its captured operation origin",
+                "Conversation action changed its captured operation origin",
             ));
         }
         crate::stream::required_uuid4(origin, "execution_id")
             .map(str::to_owned)
-            .map_err(|_| io::Error::other("Invalid rewrite execution identity"))
+            .map_err(|_| io::Error::other("Invalid conversation action execution identity"))
     }
     fn transfer_rewrite_terminal(&mut self) -> Option<TerminalOutcome> {
         if !self.settled
@@ -438,27 +476,40 @@ impl Turn {
             && self.questions.settled()
     }
     fn finish_rewrite(&mut self) -> io::Result<()> {
-        if !self.rewrite_readback_ready() || !self.settled || !self.rewrite_aftercare.is_empty() {
+        if !self.rewrite_readback_ready()
+            || (!self.settled && (self.compact_input.is_none() || self.started))
+            || !self.rewrite_aftercare.is_empty()
+        {
             return Err(io::Error::other(
                 "Rewrite readback preceded stream, maintenance or input settlement",
             ));
         }
         self.rewrite_active = false;
+        self.settled = true;
         Ok(())
     }
     fn rewrite_segment(&mut self, event: &Value, model: &str) -> io::Result<Observation> {
         let execution = self.rewrite_origin(event)?;
-        let marker = &event["rewrite_segment"];
-        let review = self.rewrite_input.as_ref().expect("verified action");
+        let marker = &event[if self.compact_input.is_some() {
+            "compact_segment"
+        } else {
+            "rewrite_segment"
+        }];
+        let (action_id, _) = self.action_identity()?;
         let index = self.rewrite_segments.len();
         let prior = self.rewrite_segments.last();
         if event["model"] != model
-            || marker["action_id"] != review.action_id
+            || marker["action_id"] != action_id
             || marker["index"].as_u64() != Some(index as u64)
             || marker.get("previous_execution_id") != Some(&prior.map_or(Value::Null, |s| json!(s)))
             || index >= 100
             || self.rewrite_executions.contains(&execution)
-            || (index > 0 && self.stop_acknowledged)
+            || ((index > 0 || self.compact_input.is_some()) && self.stop_acknowledged)
+            || (self.compact_input.is_some() && !self.compact_root_ended)
+            || self
+                .compact_input
+                .as_ref()
+                .is_some_and(|review| !review.before.config.wake_after_compact)
             || self.closing
             || !self.approvals.settled()
             || !self.questions.settled()
@@ -487,10 +538,16 @@ impl Turn {
     }
     fn rewrite_aftercare_event(&mut self, event: &Value) -> io::Result<Observation> {
         let execution = self.rewrite_origin(event)?;
-        let review = self.rewrite_input.as_ref().expect("verified action");
+        if self.compact_input.is_some() && event["root"] == true {
+            return self.compact_root_event(event, execution);
+        }
+        if self.compact_input.is_some() && event["root"] != false {
+            return Err(io::Error::other("Missing compact maintenance role"));
+        }
+        let (action_id, _) = self.action_identity()?;
         let after = crate::stream::required_uuid4(event, "after_execution_id")
             .map_err(|_| io::Error::other("Invalid maintenance predecessor"))?;
-        if event["action_id"] != review.action_id
+        if event["action_id"] != action_id
             || event["aftercare_id"] != execution
             || event["kind"] != "compaction"
         {
@@ -512,7 +569,11 @@ impl Turn {
                 true
             }
             Some("end")
-                if self.rewrite_aftercare.get(&execution).map(String::as_str) == Some(after) =>
+                if self
+                    .rewrite_aftercare
+                    .get(&execution)
+                    .and_then(|v| v.as_deref())
+                    == Some(after) =>
             {
                 false
             }
@@ -525,7 +586,7 @@ impl Turn {
         if running {
             self.rewrite_executions.insert(execution.clone());
             self.rewrite_aftercare
-                .insert(execution.clone(), after.to_owned());
+                .insert(execution.clone(), Some(after.to_owned()));
         } else {
             self.rewrite_aftercare.remove(&execution);
         }
@@ -535,6 +596,61 @@ impl Turn {
             aftercare_id: execution,
             running,
             previous_outcome,
+        })
+    }
+    fn compact_root_event(&mut self, event: &Value, execution: String) -> io::Result<Observation> {
+        let review = self
+            .compact_input
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Root maintenance without compact review"))?;
+        if event["action_id"] != review.action_id
+            || execution != review.root_execution_id
+            || event["aftercare_id"] != execution
+            || event["kind"] != "compaction"
+            || event.get("after_execution_id") != Some(&Value::Null)
+        {
+            return Err(io::Error::other(
+                "Compact root changed its reviewed authority",
+            ));
+        }
+        let running = match event["phase"].as_str() {
+            Some("start")
+                if !self.closing
+                    && !self.compact_root_started
+                    && !self.started
+                    && self.rewrite_aftercare.is_empty()
+                    && self.approvals.settled()
+                    && self.questions.settled()
+                    && self.rewrite_executions.insert(execution.clone()) =>
+            {
+                true
+            }
+            Some("end")
+                if self.compact_root_started
+                    && !self.compact_root_ended
+                    && self.rewrite_aftercare.get(&execution) == Some(&None) =>
+            {
+                false
+            }
+            _ => {
+                return Err(io::Error::other(
+                    "Unexpected/replayed compact root boundary",
+                ));
+            }
+        };
+        if running {
+            self.compact_root_started = true;
+            self.rewrite_aftercare.insert(execution.clone(), None);
+        } else {
+            self.compact_root_ended = true;
+            self.rewrite_first_terminal = true;
+            self.rewrite_aftercare.remove(&execution);
+        }
+        Ok(Observation::RewriteAftercare {
+            operation_id: self.command_id.clone(),
+            aftercare_id: execution,
+            running,
+            previous_outcome: None,
         })
     }
     fn rewrite_interactive(&self, event: &Value) -> bool {
@@ -733,8 +849,9 @@ impl Turn {
     pub fn abort(&mut self, prompt_id: &str) -> io::Result<Option<Value>> {
         if self.closing
             || !self.sent
-            || (self.settled && self.rewrite_aftercare.is_empty())
-            || (self.terminal.is_some() && self.rewrite_aftercare.is_empty())
+            || ((self.compact_input.is_none() || !self.rewrite_active)
+                && (self.settled || self.terminal.is_some())
+                && self.rewrite_aftercare.is_empty())
             || prompt_id != self.command_id
             || self.stop_requests >= 2
         {
@@ -875,8 +992,19 @@ impl Turn {
                 } else {
                     false
                 };
+                let compact_interrupted = if let Some(session) = &self.compact_current_session {
+                    crate::conversation_compact::verify_shutdown(
+                        &event["result"],
+                        self.compact_shutdown.as_ref(),
+                        session,
+                    )?
+                } else {
+                    false
+                };
                 self.shutdown_acknowledged = true;
-                Ok(if rewrite_interrupted {
+                Ok(if compact_interrupted {
+                    Observation::ConversationUnverified("Shutdown joined the interrupted compaction; saved and provider effects remain unverified. Reopen to inspect.".into())
+                } else if rewrite_interrupted {
                     Observation::ConversationUnverified("Shutdown joined the interrupted edit/retry; saved and provider effects remain unverified. Reopen to inspect.".into())
                 } else if self.conversation_shutdown.is_some()
                     && self.conversation_shutdown != self.conversation_completed_shutdown
@@ -921,6 +1049,37 @@ impl Turn {
                         return Ok(self.settle());
                     }
                     return Ok(Observation::Approval(event));
+                }
+                if let Some(review) = &self.compact_input
+                    && event["id"] == self.command_id
+                    && self.sent
+                    && !self.acknowledged
+                    && event["ok"] == true
+                {
+                    use crate::conversation_compact::{Admission, AdmissionStatus};
+                    let admission = Admission::parse(&event["result"], review, &self.command_id)?;
+                    if admission.status == AdmissionStatus::Failed || admission.close_required {
+                        if self.closing {
+                            self.acknowledged = true;
+                            self.compact_admission = Some(admission);
+                            return Ok(Observation::Information("Compaction interrupted during shutdown; waiting for owned cleanup. Effects remain unverified.".into()));
+                        }
+                        return Err(fail("Compaction admission is uncertain; reopen to inspect"));
+                    }
+                    if admission.status == AdmissionStatus::Refused {
+                        if self.compact_root_started || self.started || self.terminal.is_some() {
+                            return Err(fail("Compaction refusal after execution started"));
+                        }
+                        self.admission_refused = true;
+                        self.rewrite_first_terminal = true;
+                    }
+                    self.acknowledged = true;
+                    self.compact_admission = Some(admission);
+                    return Ok(if self.can_settle() {
+                        self.settle()
+                    } else {
+                        Observation::Information("Compaction admission received; waiting for source work and saved-history verification.".into())
+                    });
                 }
                 if let Some(review) = &self.rewrite_input
                     && event["id"] == self.command_id
@@ -1048,7 +1207,12 @@ impl Turn {
                 })
             }
             "turn_start" if self.rewrite_active => self.rewrite_segment(event, model),
-            "rewrite_aftercare" if self.rewrite_active => self.rewrite_aftercare_event(event),
+            "rewrite_aftercare" if self.rewrite_active && self.compact_input.is_none() => {
+                self.rewrite_aftercare_event(event)
+            }
+            "compact_maintenance" if self.rewrite_active && self.compact_input.is_some() => {
+                self.rewrite_aftercare_event(event)
+            }
             "compaction" if self.rewrite_active => self.rewrite_compaction(event),
             "tool_call" | "generic_tool_requested" | "generic_tool_returned"
                 if self.rewrite_active =>
@@ -1193,7 +1357,9 @@ impl Turn {
                         "turn interrupted while quitting; not completed".into(),
                     ));
                 }
-                if (!self.acknowledged && self.rewrite_input.is_none())
+                if (!self.acknowledged
+                    && self.rewrite_input.is_none()
+                    && self.compact_input.is_none())
                     || (event["stopReason"] != "cancelled"
                         && (!self.approvals.all_closed() || !self.questions.accounted_for()))
                 {
@@ -1727,6 +1893,72 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             }
                         }
                     }
+                    Input::Compact(intent) => {
+                        let intent = *intent;
+                        let key = intent.key().clone();
+                        if matches!(intent, crate::conversation_compact::Intent::Apply { .. }) {
+                            let prepared = if turn.can_manage() {
+                                management.prepare_compact(&intent)
+                            } else {
+                                Err(io::Error::other(
+                                    "Finish the current turn before compaction",
+                                ))
+                            };
+                            match prepared {
+                                Ok(prepared) => {
+                                    let operation = turn.submit_compact(&prepared.review)?;
+                                    let command = management.begin_compact(prepared, &operation)?;
+                                    turn.compact_shutdown = Some(command.clone());
+                                    turn.compact_current_session =
+                                        Some(key.selection.identity.session.clone());
+                                    owned
+                                        .stdin
+                                        .as_ref()
+                                        .expect("owned stdin")
+                                        .try_send(command)
+                                        .map_err(io::Error::other)?;
+                                    frontend.observe(Observation::Compact(
+                                        crate::conversation_compact::Update::Submitted { key },
+                                    ))?;
+                                    frontend.observe(Observation::Submission { id: operation })?;
+                                    deadline = Some(Instant::now() + options.timeout);
+                                }
+                                Err(error) => frontend.observe(Observation::Compact(
+                                    crate::conversation_compact::Update::Rejected {
+                                        key,
+                                        reason: error.to_string(),
+                                    },
+                                ))?,
+                            }
+                        } else {
+                            let command = if turn.can_manage() {
+                                management.request_compact(intent)
+                            } else {
+                                Err(io::Error::other(
+                                    "Finish current work before reviewing compaction",
+                                ))
+                            };
+                            match command {
+                                Ok(command) => {
+                                    turn.compact_current_session =
+                                        Some(key.selection.identity.session.clone());
+                                    owned
+                                        .stdin
+                                        .as_ref()
+                                        .expect("owned stdin")
+                                        .try_send(command)
+                                        .map_err(io::Error::other)?;
+                                    deadline = Some(Instant::now() + options.timeout);
+                                }
+                                Err(error) => frontend.observe(Observation::Compact(
+                                    crate::conversation_compact::Update::Rejected {
+                                        key,
+                                        reason: error.to_string(),
+                                    },
+                                ))?,
+                            }
+                        }
+                    }
                     Input::History(intent) => {
                         let key = intent.key().clone();
                         let command = if turn.can_engine() {
@@ -2030,7 +2262,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     return if turn.closing {
                         if (turn.engine_shutdown.is_some()
                             || turn.conversation_shutdown.is_some()
-                            || turn.rewrite_current_session.is_some())
+                            || turn.rewrite_current_session.is_some()
+                            || turn.compact_current_session.is_some())
                             && !turn.shutdown_acknowledged
                         {
                             Err(io::Error::other(
@@ -2220,6 +2453,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         if turn.rewrite_current_session.is_some() {
                             turn.rewrite_current_session = Some(opened.snapshot.session.clone());
                         }
+                        if turn.compact_current_session.is_some() {
+                            turn.compact_current_session = Some(opened.snapshot.session.clone());
+                        }
                         if !turn.closing {
                             turn.policy
                                 .as_ref()
@@ -2249,6 +2485,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         if turn.rewrite_current_session.is_some() {
                             turn.rewrite_current_session = Some(changed.snapshot.session.clone());
                         }
+                        if turn.compact_current_session.is_some() {
+                            turn.compact_current_session = Some(changed.snapshot.session.clone());
+                        }
                         if !turn.closing {
                             turn.conversation_completed_shutdown =
                                 turn.conversation_shutdown.clone();
@@ -2271,6 +2510,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     Step::Opened(opened) => {
                         if turn.rewrite_current_session.is_some() {
                             turn.rewrite_current_session = Some(opened.snapshot.session.clone());
+                        }
+                        if turn.compact_current_session.is_some() {
+                            turn.compact_current_session = Some(opened.snapshot.session.clone());
                         }
                         if !turn.closing {
                             turn.conversation_completed_shutdown =
@@ -2327,6 +2569,25 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             deadline = None;
                         }
                     }
+                    Step::Compact(update) => {
+                        if !turn.closing {
+                            frontend.observe(Observation::Compact(update))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
+                    Step::CompactSettled(changed) => {
+                        if !turn.closing {
+                            turn.policy
+                                .as_ref()
+                                .expect("launch policy")
+                                .validate(&changed.policy)?;
+                            turn.finish_rewrite()?;
+                            frontend.observe(Observation::CompactSettled(changed))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
                     Step::Event(event) => {
                         if let Some(id) = publish_event(
                             &mut turn,
@@ -2337,6 +2598,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             frontend,
                         )? {
                             management.acknowledge_rewrite_question(&id);
+                            management.acknowledge_compact_question(&id);
                         }
                     }
                     Step::Ignore => {}
@@ -2367,6 +2629,24 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         .clone()
                         .ok_or_else(|| io::Error::other("Missing edit/retry admission receipt"))?;
                     let command = management.read_rewrite(admission)?;
+                    owned
+                        .stdin
+                        .as_ref()
+                        .expect("owned stdin")
+                        .try_send(command)
+                        .map_err(io::Error::other)?;
+                    deadline = Some(Instant::now() + options.timeout);
+                }
+                if !turn.closing
+                    && turn.rewrite_readback_ready()
+                    && !management.has_unpaired()
+                    && management.needs_compact_readback()
+                {
+                    let admission = turn
+                        .compact_admission
+                        .clone()
+                        .ok_or_else(|| io::Error::other("Missing compaction admission receipt"))?;
+                    let command = management.read_compact(admission)?;
                     owned
                         .stdin
                         .as_ref()
@@ -2420,6 +2700,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    Compact(Box<crate::conversation_compact::Intent>),
     Rewrite(Box<crate::conversation_rewrite::Intent>),
     History(crate::history_view::Intent),
     Theme(crate::theme_controls::Intent),
@@ -2451,7 +2732,9 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::Rewrite(_)
+            Observation::Compact(_)
+            | Observation::CompactSettled(_)
+            | Observation::Rewrite(_)
             | Observation::RewriteSettled(_)
             | Observation::RewriteSegment { .. }
             | Observation::RewriteAftercare { .. }
@@ -2761,6 +3044,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Rewrite(Box::new(intent)))
+            .map_err(io::Error::other)
+    }
+    pub fn compact(&self, intent: crate::conversation_compact::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Compact(Box::new(intent)))
             .map_err(io::Error::other)
     }
     pub fn history(&self, intent: crate::history_view::Intent) -> io::Result<()> {

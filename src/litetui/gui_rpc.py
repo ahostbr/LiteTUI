@@ -41,6 +41,8 @@ OPERATIONS = (
     "conversations.native_snapshot", "conversations.native_validate", "conversations.native_apply",
     "conversations.native_rewrite_snapshot", "conversations.native_rewrite_validate",
     "conversations.native_rewrite_apply", "conversations.native_rewrite_settled",
+    "conversations.native_compact_snapshot", "conversations.native_compact_validate",
+    "conversations.native_compact_apply", "conversations.native_compact_settled",
     "history.native_snapshot", "history.native_page", "conversations.native_open",
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
     "hooks.get", "hooks.validate", "hooks.apply", "hooks.repair", "hooks.test",
@@ -88,6 +90,9 @@ def _idle(app):
     from litetui.backend_transition import require_open
 
     require_open(app)
+    from litetui import conversation_action
+    if conversation_action.readback_allowed(app):
+        return
     if getattr(app, "_chat_running", lambda: False)():
         raise ValueError("An operation is active; cancel or wait for it before changing this resource")
     try:
@@ -784,7 +789,7 @@ async def async_dispatch(app, cmd):
     conversation_transition.require_execution(app)
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
-    blocking = operation in {"gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -813,6 +818,14 @@ async def _async_dispatch(app, cmd):
     native_engine.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
+    if operation.startswith("gui.conversations.native_compact_"):
+        from litetui import conversation_compact
+        action = operation.removeprefix("gui.conversations.native_compact_")
+        if action in {"snapshot", "validate"}:
+            return getattr(conversation_compact, action)(app, cmd)
+        if action in {"apply", "settled"}:
+            return await getattr(conversation_compact, action)(app, cmd)
+        raise ValueError("Unknown reviewed compaction operation")
     if operation.startswith("gui.conversations.native_rewrite_"):
         from litetui import conversation_rewrite
         action = operation.removeprefix("gui.conversations.native_rewrite_")

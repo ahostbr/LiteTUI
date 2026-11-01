@@ -784,4 +784,47 @@ mod rewrite_selection {
         view.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert_eq!(view.selected_message().unwrap().0, 900);
     }
+    #[test]
+    fn compact_selects_fresh_whole_history_without_a_selected_user() {
+        let mut view = loaded(false);
+        assert!(view.selected_message().is_none());
+        draw(&mut view);
+        key(&mut view, KeyCode::Char('c'));
+        let selection = view.take_compact().expect("whole current history");
+        assert_eq!(selection.history_key.target, Target::Current);
+        assert_eq!(selection.messages, 1001);
+        assert_eq!(selection.history_snapshot, "a".repeat(64));
+        assert!(view.take_rewrite().is_none());
+        key(&mut view, KeyCode::Char('c'));
+        assert!(view.take_compact().is_none(), "hidden action cannot repeat");
+    }
+    #[test]
+    fn compaction_refuses_readonly_stale_or_hidden_history() {
+        for kind in ["readonly", "stale", "hidden"] {
+            let mut view = loaded(kind == "readonly");
+            draw(&mut view);
+            if kind == "stale" {
+                view.invalidate();
+                draw(&mut view);
+            }
+            if kind == "hidden" {
+                view.hide();
+            }
+            key(&mut view, KeyCode::Char('c'));
+            assert!(view.take_compact().is_none(), "{kind}");
+        }
+    }
+    #[test]
+    fn repeated_compact_key_does_not_reserve_an_action() {
+        let mut view = loaded(false);
+        draw(&mut view);
+        view.key(KeyEvent::new_with_kind(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        ));
+        assert!(view.take_compact().is_none());
+        key(&mut view, KeyCode::Char('c'));
+        assert!(view.take_compact().is_some());
+    }
 }
