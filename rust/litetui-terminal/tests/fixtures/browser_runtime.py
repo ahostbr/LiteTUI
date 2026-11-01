@@ -27,6 +27,7 @@ async def serve(app):
     import uuid
 
     from litetui import (
+        background_input,
         conversation_shutdown,
         gui_rpc,
         native_history,
@@ -116,6 +117,7 @@ async def serve(app):
     app.connect = lambda: app.run_worker(connection_wait(), name="connect", group="connect", exit_on_error=False)
     app.available_models = [app.model_id]
     app._active_tool_profile = app._cli_tool_profile
+    assert app._launch_options.work_lifecycle_version == 1
     app._rpc_ready_sent = True
     rpc.rpc_emit({"type": "ready", "protocol_version": 1, "launch_status": "ready",
         "backend": app.backend.name, "model": app.model_id, "conversation_id": app.convo_id,
@@ -123,7 +125,8 @@ async def serve(app):
         "mcp_enabled": app.settings.mcp_enabled, "tool_profile": app._active_tool_profile,
         "tool_profile_requested": app._cli_tool_profile, "approval_route": seat_authority.confirm_route(app),
         "cwd": os.getcwd(), "management_protocols": [1], "capabilities": list(gui_rpc.OPERATIONS),
-        "history_projection_version": app._launch_options.history_projection_version})
+        "history_projection_version": app._launch_options.history_projection_version,
+        "work_lifecycle_version": app._launch_options.work_lifecycle_version})
     try:
         while line := await asyncio.to_thread(sys.stdin.readline):
             command = json.loads(line)
@@ -134,6 +137,9 @@ async def serve(app):
                 result = {"ok": True}
                 if proof is not None:
                     result["conversation_shutdown"] = proof
+                work_proof = await background_input.settle_before_shutdown(app)
+                if work_proof is not None:
+                    result["work_shutdown"] = work_proof
                 rpc._respond(command["id"], ok=True, result=result)
                 break
             if command["type"].startswith("gui."):

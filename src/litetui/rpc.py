@@ -117,11 +117,17 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     if cmd_type.startswith("gui."):
         from litetui.gui_rpc import async_dispatch
         async def manage():
+            from litetui import background_input
             try:
                 result = await async_dispatch(app, cmd)
-                _respond(cmd_id, ok=True, result=result)
+                ticket = background_input.prepare_reconciliation_readback(app, cmd, result)
             except Exception as exc:  # noqa: BLE001 - isolate malformed management requests at the wire boundary
                 _respond(cmd_id, ok=False, error=str(exc))
+                return
+            # Keep the admission barrier until the exact readback response is on
+            # the wire. No await may separate publication from the one-use release.
+            _respond(cmd_id, ok=True, result=result)
+            background_input.finish_reconciliation_readback(app, ticket)
         app.run_worker(manage(), group="gui-management", exit_on_error=False)
         return
 
@@ -142,6 +148,10 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             _respond(cmd_id, ok=True, result={"ok": True})
             app.exit()
     elif cmd_type == "prompt":
+        from litetui import background_input
+        if reason := background_input.prompt_refusal(app):
+            _respond(cmd_id, ok=False, error=reason)
+            return
         if getattr(app, "_gui_management_busy", False):
             _respond(cmd_id, ok=False, error="A management operation is active; wait or cancel it")
             return

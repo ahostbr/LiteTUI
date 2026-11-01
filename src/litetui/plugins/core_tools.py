@@ -71,10 +71,15 @@ def _is_binary(data: bytes) -> bool:
 def _bash_timeout_result(proc: subprocess.Popen, timeout: int) -> str:
     """Format the result when the command outran its timeout budget."""
     killed = ttyguard.kill_tree(proc.pid, proc)
+    pipes_settled = False
     try:
         out, err = proc.communicate(timeout=10)
+        pipes_settled = True
     except Exception:
         out, err = "", ""
+    finally:
+        tasks_mod.record_process_retirement(proc, pipes_settled=pipes_settled,
+                                            kill_requested=True, kill_confirmed=killed)
     partial = _truncate_tail((out or "") + (err or ""))
     head = f"[timed out after {timeout}s]"
     if not killed:
@@ -251,13 +256,19 @@ def _run_shell(argv, *, shell: bool, timeout: int, agent_id: str | None = None) 
         # Stop won while popen was in flight. The app saw no handle, so
         # this side owns its sole kill; never leave the late child orphaned.
         killed = ttyguard.kill_tree(proc.pid, proc)
+        pipes_settled = False
         try:
             out, err = proc.communicate(timeout=10)
+            pipes_settled = True
         except (subprocess.TimeoutExpired, OSError):
             return "[cancelled] Process stop could not be confirmed; it may still be running."
+        finally:
+            tasks_mod.record_process_retirement(proc, pipes_settled=pipes_settled,
+                                                kill_requested=True, kill_confirmed=killed)
         return _bash_cancelled_result(out, err, t0, kill_confirmed=killed)
     try:
         out, err = proc.communicate(timeout=timeout)
+        tasks_mod.record_process_retirement(proc, pipes_settled=True)
     except subprocess.TimeoutExpired:
         # The call is OVER; _bash_timeout_result only formats what happened.
         # Clear the slot BEFORE that formatting — it runs its own kill_tree

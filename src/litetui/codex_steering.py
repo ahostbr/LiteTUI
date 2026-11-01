@@ -4,7 +4,7 @@ import asyncio
 import copy
 import uuid
 
-from litetui import restored_input
+from litetui import background_input, restored_input
 from litetui.model_transport import ProviderError
 
 
@@ -137,6 +137,7 @@ class HostSteering:
         self.thread_id, self.turn_id = thread_id, turn_id
         self.metadata = metadata
         self.ledger = SteeringLedger(metadata.setdefault("steering", []), save)
+        self.work_lane = background_input.capture_provider_lane(app, self)
 
     async def admit(self, item):
         from litetui import hook_host, seat_authority
@@ -169,6 +170,7 @@ class HostSteering:
         return result.allowed and not self.app._stop_requested, context
 
     async def run(self):
+        background_input.bind_provider_lane(self.app, self, self.work_lane)
         while not getattr(self.app, "_stop_requested", False):
             queue = getattr(self.app, "_pending_input", [])
             if not queue:
@@ -190,11 +192,18 @@ class HostSteering:
             ledger = item.get("_codex_ledger", self.ledger)
             if entry["threadId"] != self.thread_id:
                 return
-            state = await ledger.deliver(
-                entry, admit=self.admit, request=self.server.request
-            )
+            background_input.bind_provider_input(self.app, self.work_lane, item, entry, ledger)
+            try:
+                state = await ledger.deliver(
+                    entry, admit=self.admit, request=self.server.request
+                )
+            except BaseException:
+                background_input.provider_input_state(self.app, self.work_lane, item, entry["state"])
+                raise
+            background_input.provider_input_state(self.app, self.work_lane, item, state)
             if state == "accepted":
-                accept_steered(self.app, item)
+                if not background_input.accept_provider_input(self.app, self.work_lane, item):
+                    accept_steered(self.app, item)
             elif state == "denied":
                 self.app.rejected_prompts.append(
                     {
@@ -208,7 +217,10 @@ class HostSteering:
                     reason if reason.startswith("TURN REFUSED")
                     else "Queued prompt rejected by its admission hook; retained in /hooks."
                 )
-                remove_item(queue, item)
+                if background_input.entry_for(self.app, item) is None:
+                    remove_item(queue, item)
+                else:
+                    return
             else:
                 # Known rejection uses the ordinary next-turn path. Uncertain
                 # sends remain held until native history confirms acceptance.
@@ -289,6 +301,9 @@ async def recover_queue_head(app, server):
     item = app._pending_input[0]
     if restored_input.held(item):
         return False
+    captured = background_input.entry_for(app, item)
+    if captured is not None and captured.state in {"held", "uncertain"}:
+        return False  # The explicit restored-input reconciliation boundary owns resolution.
     conversation = app.conversation
     conversation_id = getattr(app, "convo_id", None)
     backend = getattr(app, "backend", None)

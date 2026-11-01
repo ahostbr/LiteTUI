@@ -56,6 +56,10 @@ OPERATIONS = (
     "models.load", "models.unload", "models.config", "models.configure",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
+    "work.native_capture", "work.native_activate", "work.native_settled",
+    "work.native_snapshot", "work.native_page", "work.native_tail", "work.native_calendar",
+    "work.native_pause_validate", "work.native_pause_apply", "work.native_pause_readback",
+    "work.native_stop_validate", "work.native_stop_apply", "work.native_stop_settled",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
     "engine.native_inspect", "engine.native_validate", "engine.native_action", "engine.native_readback",
@@ -279,6 +283,12 @@ def _conversations(app, action, cmd):
         app._materialise_convo()
         return _read_session(app.convo_id, app)
     if action == "open":
+        from litetui import background_input
+        value = background_input.bridge(app)
+        if value is not None and value.active and (
+                getattr(app, "_work_open_owner", None) != (value, asyncio.current_task())
+                or not value.closing or getattr(value, "transition_proof", None) is None):
+            raise ValueError("Captured conversation opening requires an awaited identity transition")
         if "from_session_id" in cmd or "snapshot" in cmd:
             from litetui import conversation_page
 
@@ -322,6 +332,37 @@ def _conversations(app, action, cmd):
     return _read_session(session_id, app)
 
 
+def _job_run_candidate(app, cmd):
+    from litetui import scheduler
+    job = next((j for j in app.jobs if j.id == cmd.get("job_id")), None)
+    if job is None:
+        raise ValueError("Unknown job_id")
+    why = seat_authority.withheld(app, scheduler.level_of(job.tool_profile))
+    if why:
+        raise ValueError(f"Job {job.id} not run: {why}")
+    return job
+
+
+async def _run_captured_job(app, cmd):
+    from textual.worker import Worker
+
+    from litetui import scheduler
+    from litetui.shutdown_wait import join_task
+
+    scheduler.refresh(app.jobs, paths.data_root())
+    _idle(app)
+    job = _job_run_candidate(app, cmd)
+    worker = app._fire_job(job, manual=True)
+    if not isinstance(worker, Worker):
+        raise TypeError("Captured scheduler Run requires its exact source worker")
+    # The accepted source invocation retains ownership through caller cancellation.
+    # WorkerFailed/WorkerCancelled propagate; truthiness is never delivery evidence.
+    result = await join_task(asyncio.create_task(worker.wait()))
+    if not isinstance(result, dict) or type(result.get("delivered")) is not bool or result.get("job_id") != job.id:
+        raise ValueError("Captured scheduler Run did not return its structured receipt")
+    return copy.deepcopy(result)
+
+
 def _jobs(app, action, cmd):
     from litetui import scheduler
     if action in ("pause", "resume"):
@@ -334,12 +375,10 @@ def _jobs(app, action, cmd):
         return [asdict(job) for job in app.jobs]
     _idle(app)
     if action == "run":
-        job = next((j for j in app.jobs if j.id == cmd.get("job_id")), None)
-        if job is None:
-            raise ValueError("Unknown job_id")
-        why = seat_authority.withheld(app, scheduler.level_of(job.tool_profile))
-        if why:
-            raise ValueError(f"Job {job.id} not run: {why}")  # T1082: at its level or not at all
+        from litetui import background_input
+        if background_input.enabled(app):
+            raise ValueError("Captured scheduler Run requires asynchronous dispatch")
+        job = _job_run_candidate(app, cmd)
         delivered = app._fire_job(job, manual=True)
         if not delivered:
             raise ValueError("Job was not delivered: scheduler is paused, owned elsewhere, or its durable stamp failed")
@@ -491,6 +530,19 @@ def dispatch(app, cmd):
     if operation in {"history.native_snapshot", "history.native_page"}:
         from litetui import native_history
         return native_history.snapshot(app, cmd) if operation.endswith("snapshot") else native_history.page(app, cmd)
+    if operation in {"work.native_capture", "work.native_activate"}:
+        from litetui import background_input
+        return background_input.capture(app, cmd) if operation.endswith("capture") else background_input.activate(app, cmd)
+    if operation == "work.native_settled":
+        raise ValueError("Work settlement requires asynchronous dispatch")
+    if operation.startswith("work.native_"):
+        from litetui import native_work
+        action = operation.removeprefix("work.native_")
+        if action == "stop_apply":
+            raise ValueError("Task Stop requires asynchronous dispatch")
+        if action not in native_work.OPERATIONS:
+            raise ValueError("Unknown native Work inspection operation")
+        return getattr(native_work, action)(app, cmd)
     if operation == "themes.native_snapshot":
         from litetui import native_themes
         return native_themes.snapshot(app, cmd)
@@ -569,6 +621,11 @@ def dispatch(app, cmd):
             raise ValueError("message must be nonempty text")
         if behavior not in ("normal", "queue", "interrupt"):
             raise ValueError("behavior must be normal, queue or interrupt")
+        from litetui import background_input
+        if background_input.enabled(app) and behavior != "normal":
+            raise ValueError("Explicit queue or interrupt requires captured user-input lifecycle support")
+        if reason := background_input.prompt_refusal(app):
+            raise ValueError(reason)
         if getattr(app, "_gui_management_busy", False) or getattr(app, "_gui_quitting", False):
             raise ValueError("A management or shutdown operation is active")
         # Commands can change sessions and cannot be queued as ordinary text.
@@ -788,9 +845,21 @@ async def async_dispatch(app, cmd):
     native_engine.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
+    if operation == "gui.work.native_settled":
+        # This exact recorded-admission join grants no execution. The source
+        # validates its owned bridge and worker without blocking action retirement.
+        from litetui import background_input
+        token = OPERATION_CONTEXT.set(cmd.get("id"))
+        try:
+            return await background_input.settled(app, cmd)
+        finally:
+            OPERATION_CONTEXT.reset(token)
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
     blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    if operation == "gui.models.select":
+        from litetui import background_input
+        blocking = background_input.enabled(app)
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -819,6 +888,13 @@ async def _async_dispatch(app, cmd):
     native_engine.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
+    if operation == "gui.work.native_stop_apply":
+        from litetui import native_work
+        return await native_work.stop_apply(app, cmd)
+    if operation == "gui.jobs.run":
+        from litetui import background_input
+        if background_input.enabled(app):
+            return await _run_captured_job(app, cmd)
     if operation.startswith("gui.conversations.native_compact_"):
         from litetui import conversation_compact
         action = operation.removeprefix("gui.conversations.native_compact_")
@@ -835,6 +911,10 @@ async def _async_dispatch(app, cmd):
         if action in {"apply", "settled"}:
             return await getattr(conversation_rewrite, action)(app, cmd)
         raise ValueError("Unknown Edit/Retry operation")
+    if operation == "gui.models.select":
+        from litetui.plugins.model_switch import switch_model_captured
+        _idle(app)
+        return await switch_model_captured(app, str(cmd.get("slug", "")))
     if operation == "gui.conversations.native_open":
         from litetui import native_history
         return await native_history.open_conversation(app, cmd)
@@ -934,40 +1014,61 @@ async def _async_dispatch(app, cmd):
                 backend.end_stop()
         raise ValueError("Unsupported engine operation")
     if operation == "gui.conversations.open":
-        dispatch(app, cmd)
-        conversation = app.conversation
-        backend = app.backend
-        session_id = app.convo_id
-        model = app.model_id
-        connection = getattr(app, "_resume_connect_worker", None)
-        if connection is None:
-            reason = getattr(app, "_resume_backend_error", None)
-            raise ValueError(reason or "Conversation connection did not start")
+        from litetui import backend_transition, background_input, conversation_page
+        proof = None
+        value = background_input.bridge(app)
+        if background_input.enabled(app):
+            backend_transition._quiet(app, require_unowned_server=False)
+            if "from_session_id" in cmd or "snapshot" in cmd:
+                conversation_page.validate_open(app, cmd)
+            target = cmd.get("session_id") or app.convo_id
+            if not _session_path(target, app).is_file():
+                raise ValueError("Conversation does not exist")
+            _read_session(target, app)
+            proof = await background_input.before_identity_transition(app)
+            app._work_open_owner = (value, asyncio.current_task())
+        try:
+            dispatch(app, cmd)
+            conversation = app.conversation
+            backend = app.backend
+            session_id = app.convo_id
+            model = app.model_id
+            connection = getattr(app, "_resume_connect_worker", None)
+            if connection is None:
+                reason = getattr(app, "_resume_backend_error", None)
+                raise ValueError(reason or "Conversation connection did not start")
 
-        def unchanged():
-            if (app.conversation is not conversation or app.backend is not backend
-                    or app.convo_id != session_id or app.model_id != model
-                    or getattr(app, "_resume_connect_worker", None) is not connection):
-                raise ValueError("Conversation changed while it was opening")
+            def unchanged():
+                if (app.conversation is not conversation or app.backend is not backend
+                        or app.convo_id != session_id or app.model_id != model
+                        or getattr(app, "_resume_connect_worker", None) is not connection):
+                    raise ValueError("Conversation changed while it was opening")
 
-        # _resume starts connect; connect creates the native-history worker.
-        # Looking for history first acknowledges success before either can fail.
-        await connection.wait()
-        unchanged()
-        reason = (getattr(app, "_resume_backend_error", None)
-                  or getattr(app, "_resume_connection_error", None))
-        if (reason or not getattr(app, "_connect_settled", False)
-                or not getattr(app, "_gui_connection_success", False)):
-            raise ValueError(reason or "Conversation connection did not complete")
-        worker = getattr(app, "_native_history_worker", None)
-        if worker is not None:
-            await worker.wait()
+            # _resume starts connect; connect creates the native-history worker.
+            # Looking for history first acknowledges success before either can fail.
+            await connection.wait()
             unchanged()
-            if getattr(app, "_native_history_worker", None) is not worker:
-                raise ValueError("Conversation changed while native history was loading")
-        result = dispatch(app, {"type": "gui.conversations.read", "session_id": session_id})
-        result["connected"] = True
-        return result
+            reason = (getattr(app, "_resume_backend_error", None)
+                      or getattr(app, "_resume_connection_error", None))
+            if (reason or not getattr(app, "_connect_settled", False)
+                    or not getattr(app, "_gui_connection_success", False)):
+                raise ValueError(reason or "Conversation connection did not complete")
+            worker = getattr(app, "_native_history_worker", None)
+            if worker is not None:
+                await worker.wait()
+                unchanged()
+                if getattr(app, "_native_history_worker", None) is not worker:
+                    raise ValueError("Conversation changed while native history was loading")
+            result = dispatch(app, {"type": "gui.conversations.read", "session_id": session_id})
+            result["connected"] = True
+            result.update(background_input.after_identity_transition(app, proof))
+            return result
+        except BaseException:
+            if proof is not None:
+                app._backend_transition_error = backend_transition.CLOSE_REQUIRED
+            raise
+        finally:
+            app._work_open_owner = None
     if operation == "gui.models.reconnect":
         _idle(app)
         from litetui import llm_backend

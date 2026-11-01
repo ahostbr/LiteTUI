@@ -332,13 +332,17 @@ def segment(app, origin):
 
 def after_refresh(app, callback, *args):
     """Retain canonical aftercare until its preceding chat worker has retired."""
+    # A normal chat can finish after Quit closed admission. Its post-stream
+    # callbacks are cancelled by the same barrier as captured aftercare; raising
+    # here would turn orderly retirement into a fatal Textual worker error.
+    if getattr(app, "_conversation_rewrite_closing", False):
+        return False
     attempt = _attempt(app)
     if attempt is None or not _authorized(app):
         require_open(app)
         return app.call_after_refresh(callback, *args)
-    if (getattr(app, "_conversation_rewrite_closing", False)
-            or attempt.stopped and _continuation(callback)):
-        return False  # Explicit shutdown/Stop cancels continuation, never ordinary settlement.
+    if attempt.stopped and _continuation(callback):
+        return False  # Explicit Stop cancels continuation, never ordinary settlement.
     if attempt.scheduled_callbacks >= MAX_CALLBACKS:
         raise ValueError("Rewrite exceeded its captured callback budget; close the runtime")
     attempt.scheduled_callbacks += 1
@@ -528,7 +532,9 @@ def tool_refusal(app, name, args):
     attempt = _attempt(app)
     if attempt is None or not attempt.pending:
         return None
-    from litetui import tasks
+    from litetui import background_input, tasks
+    if background_input.enabled(app):
+        return None  # Exact producer/input ownership is enforced by the negotiated bridge.
     if tasks.backgroundable(name) and (
             isinstance(args, dict) and bool(args.get("background"))
             or int(getattr(app.settings, "tool_auto_background_s", 0) or 0) > 0):
@@ -767,9 +773,11 @@ def _stable(app, review, *, original=False, admitted=False):
             or conversation_transition._registry(app) != review.registry
             or _receipts(app) != ((_required_attempt(app).receipts or review.receipts) if admitted else review.receipts)):
         raise ValueError("Rewrite settings, authority, policy, hooks or store receipts changed")
-    if getattr(app, "_active_tool_profile", None) != (review.profile if admitted else review.prior_profile):
+    from litetui import background_input
+    if not background_input.action_profile_owned(app, _attempt(app), review.profile if admitted else review.prior_profile):
         raise ValueError("Rewrite effective tool profile changed")
-    if getattr(app, "_pending_input", ()) or getattr(app, "_restored_input_error", False):
+    if (getattr(app, "_pending_input", ()) and not background_input.action_queue_owned(app, _attempt(app))
+            or getattr(app, "_restored_input_error", False)):
         raise ValueError("Rewrite acquired queued or uncertain input")
     if getattr(app, "_gui_quitting", False) or getattr(app, "_conversation_rewrite_closing", False):
         raise ValueError("Rewrite shutdown requested")
@@ -941,7 +949,14 @@ async def _finish_exit(app):
     result = None
     error = None
     try:
-        actions = await settle_all_before_shutdown(app)
+        from litetui import background_input
+        work_task = asyncio.create_task(background_input.settle_before_shutdown(app))
+        results = await asyncio.gather(settle_all_before_shutdown(app), work_task, return_exceptions=True)
+        actions, work = results
+        if isinstance(actions, BaseException):
+            raise actions
+        if isinstance(work, BaseException):
+            raise work
         from litetui import conversation_shutdown, native_engine_shutdown
         conversation = await conversation_shutdown.settle_before_shutdown(app)
         engine = await native_engine_shutdown.settle_before_shutdown(app)
@@ -951,6 +966,8 @@ async def _finish_exit(app):
                     or proof["owned"] is not False and proof["main_exited"] is not True):
                 raise RuntimeError("Engine cleanup remains unproven")
         result = {"ok": True, **actions}
+        if work is not None:
+            result["work_shutdown"] = work
         if conversation is not None:
             result["conversation_shutdown"] = conversation
         if engine is not None:
@@ -969,9 +986,11 @@ async def _finish_exit(app):
 
 
 def request_shutdown(app, respond=None):
-    if not any(getattr(app, "_conversation_" + kind + "_protocol", False) is True
+    from litetui import background_input
+    if not background_input.enabled(app) and getattr(app, "_native_work_deferred", None) is None and not any(getattr(app, "_conversation_" + kind + "_protocol", False) is True
                for kind in ("rewrite", "compact")):
         return False
+    background_input.begin_close(app)
     app._gui_quitting = True
     app._conversation_rewrite_closing = True
     if not hasattr(app, "_conversation_rewrite_shutdown_callbacks"):

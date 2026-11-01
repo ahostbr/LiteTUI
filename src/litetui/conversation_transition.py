@@ -364,8 +364,11 @@ async def apply(app, cmd):
     mutated = False
     cleanup = False
     hooks_done = False
+    work_proof = None
     try:
         if action == "new":
+            from litetui import background_input
+            work_proof = await background_input.before_identity_transition(app)
             from litetui.claude_backend import close_native
 
             mutated = True  # cleanup and lifecycle hooks may have external effects
@@ -411,8 +414,11 @@ async def apply(app, cmd):
             if backend_catalog._disk_hash(old_path, 8 * 1024 * 1024) != review.transcript:
                 raise ValueError("New conversation changed outgoing durable history")
         app._refresh_ctx_label()
-        return _receipt(app, cmd, "renamed" if action == "rename" else "created", mutated=True,
-                        transcript=True, settings=True, settled=True, hooks=True, cleanup=True)
+        receipt = _receipt(app, cmd, "renamed" if action == "rename" else "created", mutated=True,
+                           transcript=True, settings=True, settled=True, hooks=True, cleanup=True)
+        if action == "new":
+            receipt.update(background_input.after_identity_transition(app, work_proof))
+        return _bounded(receipt)
     except BaseException as exc:  # noqa: BLE001 - cancellation after effects is not rollback
         app._conversation_transition_error = CLOSE_REQUIRED
         return _receipt(app, cmd, "failed", mutated=mutated, close_required=True,

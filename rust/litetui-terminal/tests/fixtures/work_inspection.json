@@ -1,0 +1,1178 @@
+{
+  "snapshot": {
+    "kind": "work_snapshot",
+    "version": 1,
+    "session_id": "61b6932f-3141-47a6-9d5e-5d85539dbb44",
+    "agent_id": "b5510a2b-4225-4ce1-8a70-e636d2fd996e",
+    "backend": "custom",
+    "model": "old-model",
+    "instance": "24661b878f946e2dd0f2f95f094616fcbb53913aedbc037c9254da9105d23d14",
+    "captured_at": 1793553540.0056074,
+    "busy": true,
+    "calendar_month": "2026-11",
+    "schedules_paused": false,
+    "quitting": false,
+    "counts": {
+      "tasks": 1,
+      "provider_tasks": 0,
+      "jobs": 1,
+      "loops": 1
+    },
+    "sources": {
+      "tasks": {
+        "available": true,
+        "reason": null,
+        "revision": "c9e8c2271306b244564f3f538d024897ee616dfc9ca6622700bf505244d9d64c"
+      },
+      "provider_tasks": {
+        "available": false,
+        "reason": "This provider has no canonical native task inventory exposed here.",
+        "revision": null
+      },
+      "jobs": {
+        "available": true,
+        "reason": null,
+        "revision": "113f35613850692923de3f184eb61405a5d30fc0cc6fe09022a7f35d78770a64"
+      },
+      "loops": {
+        "available": true,
+        "reason": null,
+        "revision": "113f35613850692923de3f184eb61405a5d30fc0cc6fe09022a7f35d78770a64"
+      }
+    },
+    "goal": {
+      "status": "present",
+      "revision": "ebe8af2fbfef531ecd4feb1eb51fceadb552117d9ef050a0e768f2d6e0694009",
+      "value": {
+        "objective": "Preserve goal",
+        "id": "goal-one",
+        "status": "active",
+        "created": "2026-11-01T12:18:59",
+        "updated": "2026-11-01T12:18:59",
+        "evaluated_turns": 0,
+        "max_turns": 0,
+        "last_verdict": "",
+        "last_reason": "",
+        "missing_evidence": [],
+        "no_progress_count": 0,
+        "tool_profile": "interactive",
+        "started_by": ""
+      },
+      "reason": null
+    },
+    "pause": {
+      "allowed": true,
+      "reason": null
+    },
+    "snapshot": "ed4c70f9c4b5b5703449715ebfa1d60af5e82560150367590fba71d18de03c93"
+  },
+  "tasks": {
+    "kind": "work_page",
+    "version": 1,
+    "session_id": "61b6932f-3141-47a6-9d5e-5d85539dbb44",
+    "agent_id": "b5510a2b-4225-4ce1-8a70-e636d2fd996e",
+    "backend": "custom",
+    "model": "old-model",
+    "instance": "24661b878f946e2dd0f2f95f094616fcbb53913aedbc037c9254da9105d23d14",
+    "snapshot": "ed4c70f9c4b5b5703449715ebfa1d60af5e82560150367590fba71d18de03c93",
+    "section": "tasks",
+    "offset": 0,
+    "total": 1,
+    "next_offset": null,
+    "rows": [
+      {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tool": "powershell",
+          "label": "Controlled task",
+          "convo_id": "61b6932f-3141-47a6-9d5e-5d85539dbb44",
+          "started": 1.0,
+          "state": "done",
+          "ended": 2.0,
+          "ok": true,
+          "log": "",
+          "tokens": null,
+          "prompt": "Preserve task prompt",
+          "owner_pid": 15548,
+          "owner_instance": "15cbdc0edea4426fb6dcce09aa77007e",
+          "owner_created": null
+        },
+        "revision": "a9bd14c16522139326de5d2b864d743420f9f49ab6db099503591b76fe64c52c"
+      }
+    ]
+  },
+  "jobs": {
+    "kind": "work_page",
+    "version": 1,
+    "session_id": "61b6932f-3141-47a6-9d5e-5d85539dbb44",
+    "agent_id": "b5510a2b-4225-4ce1-8a70-e636d2fd996e",
+    "backend": "custom",
+    "model": "old-model",
+    "instance": "24661b878f946e2dd0f2f95f094616fcbb53913aedbc037c9254da9105d23d14",
+    "snapshot": "ed4c70f9c4b5b5703449715ebfa1d60af5e82560150367590fba71d18de03c93",
+    "section": "jobs",
+    "offset": 0,
+    "total": 1,
+    "next_offset": null,
+    "rows": [
+      {
+        "kind": "cron",
+        "effective_tool_profile": "interactive",
+        "row": {
+          "prompt": "scheduled",
+          "schedule": "*/5 * * * *",
+          "id": "job-one",
+          "enabled": true,
+          "new_conversation": false,
+          "last_fired_slot": null,
+          "run_count": 0,
+          "created": "2026-11-01T12:18:59",
+          "label": "",
+          "tool_profile": "interactive",
+          "kind": "cron",
+          "owner_convo_id": "",
+          "interval_minutes": 0,
+          "next_run_at": null
+        },
+        "revision": "2f52f8f25248400b244892e66e477de65300df0802a0916340eeb00138213994"
+      }
+    ]
+  },
+  "loops": {
+    "kind": "work_page",
+    "version": 1,
+    "session_id": "61b6932f-3141-47a6-9d5e-5d85539dbb44",
+    "agent_id": "b5510a2b-4225-4ce1-8a70-e636d2fd996e",
+    "backend": "custom",
+    "model": "old-model",
+    "instance": "24661b878f946e2dd0f2f95f094616fcbb53913aedbc037c9254da9105d23d14",
+    "snapshot": "ed4c70f9c4b5b5703449715ebfa1d60af5e82560150367590fba71d18de03c93",
+    "section": "loops",
+    "offset": 0,
+    "total": 1,
+    "next_offset": null,
+    "rows": [
+      {
+        "kind": "loop",
+        "effective_tool_profile": "interactive",
+        "row": {
+          "prompt": "loop",
+          "schedule": "@every 15m",
+          "id": "20f2ee5f",
+          "enabled": true,
+          "new_conversation": false,
+          "last_fired_slot": null,
+          "run_count": 0,
+          "created": "2026-11-01T12:18:59",
+          "label": "",
+          "tool_profile": "interactive",
+          "kind": "loop",
+          "owner_convo_id": "61b6932f-3141-47a6-9d5e-5d85539dbb44",
+          "interval_minutes": 15,
+          "next_run_at": "2026-11-01T12:33:59"
+        },
+        "revision": "fa5a4fbbed92280c258b2e5e8310b6bb6b64eb666abb3be92587d7df8da0a006"
+      }
+    ]
+  },
+  "calendar": {
+    "kind": "work_calendar",
+    "version": 1,
+    "session_id": "61b6932f-3141-47a6-9d5e-5d85539dbb44",
+    "agent_id": "b5510a2b-4225-4ce1-8a70-e636d2fd996e",
+    "backend": "custom",
+    "model": "old-model",
+    "instance": "24661b878f946e2dd0f2f95f094616fcbb53913aedbc037c9254da9105d23d14",
+    "snapshot": "ed4c70f9c4b5b5703449715ebfa1d60af5e82560150367590fba71d18de03c93",
+    "month": "2026-11",
+    "date": null,
+    "days": [
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": "2026-11-01",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-02",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-03",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-04",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-05",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-06",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-07",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-08",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-09",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-10",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-11",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-12",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-13",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-14",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-15",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-16",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-17",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-18",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-19",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-20",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-21",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-22",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-23",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-24",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-25",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-26",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-27",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-28",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-29",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": "2026-11-30",
+        "total": 1,
+        "entries": [
+          {
+            "job_id": "job-one",
+            "label": "scheduled",
+            "times": [
+              "00:00",
+              "00:05"
+            ],
+            "total": 288,
+            "enabled": true,
+            "broken": false
+          }
+        ]
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      },
+      {
+        "date": null,
+        "total": 0,
+        "entries": []
+      }
+    ],
+    "offset": 0,
+    "total": 42,
+    "next_offset": null,
+    "rows": []
+  },
+  "tail_flow": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "062b3061-40e6-4235-a829-32db836de796",
+      "agent_id": "143e92a8-d8b3-453a-83bf-29ec424f38f1",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "377586740093040ed9a00a61a51b84dbe0b5ecb2f46a431ba2348fc60debf8fd",
+      "captured_at": 1793553562.4564672,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "2bf8f434d0432672f245f2610fae48a3ee9ab0f7a7f2be5a3040499b90110cdb"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "f6ce69e6c04fe95382b860dfa6f6514d33ea28fd5f60bbe799879c94698cd671"
+    },
+    "task": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": true,
+      "tail_reason": null,
+      "row": {
+        "id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tool": "powershell",
+        "label": "Controlled task",
+        "convo_id": "062b3061-40e6-4235-a829-32db836de796",
+        "started": 1.0,
+        "state": "done",
+        "ended": 2.0,
+        "ok": true,
+        "log": "../../must-not-read",
+        "tokens": null,
+        "prompt": "Preserve task prompt",
+        "owner_pid": 15548,
+        "owner_instance": "15cbdc0edea4426fb6dcce09aa77007e",
+        "owner_created": null
+      },
+      "revision": "3176e50d6acc5a10d87cd848d8055ae342529153bb92ba638a3e130aad817d91"
+    },
+    "tail": {
+      "kind": "work_tail",
+      "version": 1,
+      "session_id": "062b3061-40e6-4235-a829-32db836de796",
+      "agent_id": "143e92a8-d8b3-453a-83bf-29ec424f38f1",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "377586740093040ed9a00a61a51b84dbe0b5ecb2f46a431ba2348fc60debf8fd",
+      "snapshot": "f6ce69e6c04fe95382b860dfa6f6514d33ea28fd5f60bbe799879c94698cd671",
+      "task_id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "task_revision": "3176e50d6acc5a10d87cd848d8055ae342529153bb92ba638a3e130aad817d91",
+      "status": "available",
+      "reason": null,
+      "path": "C:\\Users\\Ryan\\AppData\\Local\\Temp\\litetui-work-inspection-final-20261101\\test_tail_uses_bounded_canonic1\\output\\tasks\\t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "text": "hello\nworld\n",
+      "total_bytes": 12,
+      "offset": 0,
+      "bytes_read": 12,
+      "truncated": false,
+      "lossy": false,
+      "revision": "975fb804f06d4d004b424fb1aa25d503c6445c797c051687a551be412d784e2c"
+    }
+  },
+  "running_tail_flow": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "cc0a9c29-8112-46b8-847e-1c7fc491e47f",
+      "agent_id": "59583e70-b6c9-489c-8f34-5183f1edfa1b",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "cfe4c80f94f42e7b29547180002c86f6808e20a924a6cff99cc9dd9901f0fdd7",
+      "captured_at": 1793553565.4098144,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "963a657fea30bfbda48356c9a8e4feb640dfeb6b4ea232e1f928a615fb551ebe"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "503092c7c110544a42fe33ea38fde88c714765a5d79a2be38f44d2871116b804"
+    },
+    "task": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tool": "powershell",
+        "label": "Controlled task",
+        "convo_id": "cc0a9c29-8112-46b8-847e-1c7fc491e47f",
+        "started": 1.0,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "Preserve task prompt",
+        "owner_pid": 15548,
+        "owner_instance": "15cbdc0edea4426fb6dcce09aa77007e",
+        "owner_created": null
+      },
+      "revision": "dd1fd595ce6526fbf2a69fc9f5e69e4125031f1fba633a9511af9f21f8c3fe38"
+    },
+    "tail": {
+      "kind": "work_tail",
+      "version": 1,
+      "session_id": "cc0a9c29-8112-46b8-847e-1c7fc491e47f",
+      "agent_id": "59583e70-b6c9-489c-8f34-5183f1edfa1b",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "cfe4c80f94f42e7b29547180002c86f6808e20a924a6cff99cc9dd9901f0fdd7",
+      "snapshot": "503092c7c110544a42fe33ea38fde88c714765a5d79a2be38f44d2871116b804",
+      "task_id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "task_revision": "dd1fd595ce6526fbf2a69fc9f5e69e4125031f1fba633a9511af9f21f8c3fe38",
+      "status": "running",
+      "reason": "Output is available when the task finishes.",
+      "path": "C:\\Users\\Ryan\\AppData\\Local\\Temp\\litetui-work-inspection-final-20261101\\test_tail_distinguishes_runnin0\\output\\tasks\\t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "text": "",
+      "total_bytes": 0,
+      "offset": 0,
+      "bytes_read": 0,
+      "truncated": false,
+      "lossy": false,
+      "revision": "absent"
+    }
+  },
+  "absent_tail_flow": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "29e46c7c-f9d2-479a-bc63-dc33f9dfef11",
+      "agent_id": "103ee483-0377-46ef-b75d-b67d9f9f2a5b",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "80bd3ff2380f050860ab928434e080a13983eda718dd10647d4707a8009966f5",
+      "captured_at": 1793553566.0978093,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "bc001cbf8dbf6da4ddbd9c20449b9658279ebf47c7696ad695db54b26725a2cf"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "34fef051767dc85abafcd55d15261caa3dc29327131af94ec508757d68f7c9d7"
+    },
+    "task": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": true,
+      "tail_reason": null,
+      "row": {
+        "id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tool": "powershell",
+        "label": "Controlled task",
+        "convo_id": "29e46c7c-f9d2-479a-bc63-dc33f9dfef11",
+        "started": 1.0,
+        "state": "done",
+        "ended": 2.0,
+        "ok": true,
+        "log": "",
+        "tokens": null,
+        "prompt": "Preserve task prompt",
+        "owner_pid": 15548,
+        "owner_instance": "15cbdc0edea4426fb6dcce09aa77007e",
+        "owner_created": null
+      },
+      "revision": "5871d6b4760d6912deffd3a670a8985541f54fba25f78468a70a9d0cfa13023a"
+    },
+    "tail": {
+      "kind": "work_tail",
+      "version": 1,
+      "session_id": "29e46c7c-f9d2-479a-bc63-dc33f9dfef11",
+      "agent_id": "103ee483-0377-46ef-b75d-b67d9f9f2a5b",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "80bd3ff2380f050860ab928434e080a13983eda718dd10647d4707a8009966f5",
+      "snapshot": "34fef051767dc85abafcd55d15261caa3dc29327131af94ec508757d68f7c9d7",
+      "task_id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "task_revision": "5871d6b4760d6912deffd3a670a8985541f54fba25f78468a70a9d0cfa13023a",
+      "status": "absent",
+      "reason": "No canonical task log is present.",
+      "path": "C:\\Users\\Ryan\\AppData\\Local\\Temp\\litetui-work-inspection-final-20261101\\test_tail_distinguishes_runnin1\\output\\tasks\\t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "text": "",
+      "total_bytes": 0,
+      "offset": 0,
+      "bytes_read": 0,
+      "truncated": false,
+      "lossy": false,
+      "revision": "absent"
+    }
+  },
+  "pause_flow": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "fca50781-b07c-4ee8-ba33-24f92bead723",
+      "agent_id": "cc32fcb7-2da4-4234-8ac1-f82022bf31e3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d220d5639cadf0b12eab087c9c4447e1de481053fa5d7639219456f165b86b46",
+      "captured_at": 1793553566.762929,
+      "busy": true,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "cc63e578565cb7bcb08c48b67a32477977dac6472b9d98a0aa3409d98398f346"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "72a1e6a55f348e8b313f80b4c8ee12eef5659d66489b1e746e396755f5d23df7"
+    },
+    "review": {
+      "kind": "work_pause_review",
+      "version": 1,
+      "session_id": "fca50781-b07c-4ee8-ba33-24f92bead723",
+      "agent_id": "cc32fcb7-2da4-4234-8ac1-f82022bf31e3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d220d5639cadf0b12eab087c9c4447e1de481053fa5d7639219456f165b86b46",
+      "snapshot": "72a1e6a55f348e8b313f80b4c8ee12eef5659d66489b1e746e396755f5d23df7",
+      "action": "pause_schedules",
+      "review": "ad703da5daf4db45d8de68c222263f826ed9ceb8cbf514dab9615f1893b8cf71",
+      "action_id": "a40026c0-5af3-483d-9a6a-ea71d925b509",
+      "paused_before": false,
+      "quitting_before": false,
+      "scope": "runtime",
+      "consequence": "Pause future scheduled prompts only; active tasks, goals, queued input and saved jobs remain unchanged."
+    },
+    "result": {
+      "kind": "work_pause_result",
+      "version": 1,
+      "session_id": "fca50781-b07c-4ee8-ba33-24f92bead723",
+      "agent_id": "cc32fcb7-2da4-4234-8ac1-f82022bf31e3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d220d5639cadf0b12eab087c9c4447e1de481053fa5d7639219456f165b86b46",
+      "snapshot": "72a1e6a55f348e8b313f80b4c8ee12eef5659d66489b1e746e396755f5d23df7",
+      "action": "pause_schedules",
+      "review": "ad703da5daf4db45d8de68c222263f826ed9ceb8cbf514dab9615f1893b8cf71",
+      "action_id": "a40026c0-5af3-483d-9a6a-ea71d925b509",
+      "status": "paused",
+      "mutated": true,
+      "close_required": false,
+      "schedules_paused": true,
+      "quitting": false,
+      "receipt": "22eb7fc3928e25381ee5ef0a099dec8e52e250f9bf1c3fca34b27901674c1770"
+    },
+    "readback": {
+      "kind": "work_pause_readback",
+      "version": 1,
+      "session_id": "fca50781-b07c-4ee8-ba33-24f92bead723",
+      "agent_id": "cc32fcb7-2da4-4234-8ac1-f82022bf31e3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d220d5639cadf0b12eab087c9c4447e1de481053fa5d7639219456f165b86b46",
+      "snapshot": "72a1e6a55f348e8b313f80b4c8ee12eef5659d66489b1e746e396755f5d23df7",
+      "review": "ad703da5daf4db45d8de68c222263f826ed9ceb8cbf514dab9615f1893b8cf71",
+      "action_id": "a40026c0-5af3-483d-9a6a-ea71d925b509",
+      "receipt": "22eb7fc3928e25381ee5ef0a099dec8e52e250f9bf1c3fca34b27901674c1770",
+      "schedules_paused": true,
+      "quitting": false,
+      "busy": true,
+      "verified": true
+    }
+  }
+}

@@ -651,3 +651,36 @@ def _owner_alive(task: Task) -> bool:
         if current is not None:
             return current == task.owner_created
     return router_record.pid_is_live(task.owner_pid)
+
+
+
+def record_process_retirement(proc, *, pipes_settled, kill_requested=False, kill_confirmed=None):
+    """Record evidence on the exact handle that the canonical runner drained."""
+    with _PROCESS_LOCK:
+        prior = getattr(proc, "_litetui_retirement", {})
+        requested = kill_requested or prior.get("kill_requested", False)
+        confirmed = kill_confirmed if kill_requested else prior.get("kill_confirmed")
+        if prior.get("kill_requested") and prior.get("kill_confirmed") is not True:
+            confirmed = prior.get("kill_confirmed")
+        proc._litetui_retirement = {
+            "process_exited": callable(getattr(proc, "poll", None)) and proc.poll() is not None,
+            "pipes_settled": pipes_settled,
+            "kill_requested": requested,
+            "kill_confirmed": confirmed,
+        }
+
+
+def record_process_kill(proc, confirmed):
+    with _PROCESS_LOCK:
+        prior = getattr(proc, "_litetui_retirement", {})
+        proc._litetui_retirement = {**prior, "kill_requested": True, "kill_confirmed": confirmed}
+
+
+def process_retired(proc):
+    if proc is None:
+        return True
+    with _PROCESS_LOCK:
+        proof = getattr(proc, "_litetui_retirement", {})
+        return (callable(getattr(proc, "poll", None)) and proc.poll() is not None and proof.get("process_exited") is True
+                and proof.get("pipes_settled") is True
+                and (not proof.get("kill_requested") or proof.get("kill_confirmed") is True))

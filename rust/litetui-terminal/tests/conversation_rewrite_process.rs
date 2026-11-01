@@ -430,6 +430,9 @@ fn report(root: &Path, case: &str) -> Value {
                     | "gui.history.native_snapshot"
                     | "gui.history.native_page"
                     | "gui.themes.native_snapshot"
+                    | "gui.work.native_capture"
+                    | "gui.work.native_activate"
+                    | "gui.work.native_settled"
                     | "gui.restored_input.list"
                     | "gui.conversations.native_rewrite_snapshot"
                     | "gui.conversations.native_rewrite_validate"
@@ -442,6 +445,12 @@ fn report(root: &Path, case: &str) -> Value {
         )),
         "{commands:?}"
     );
+    for operation in ["gui.work.native_capture", "gui.work.native_activate"] {
+        assert_eq!(
+            commands.iter().filter(|c| c["type"] == operation).count(),
+            1
+        );
+    }
     assert!(commands.iter().filter(|c| c["type"] == r::APPLY).count() <= 1);
     if !case.contains("question-") {
         assert!(!commands.iter().any(|command| command["type"] == "answer"));
@@ -490,7 +499,70 @@ fn report(root: &Path, case: &str) -> Value {
     report
 }
 fn assert_unchanged(report: &Value) {
-    assert_eq!(report["before"], report["after"]);
+    use sha2::{Digest, Sha256};
+    // The reviewed action changes nothing. Orderly shutdown independently
+    // publishes the captured empty Work ledger, which is checked in full.
+    assert_eq!(report["before"], report["before_shutdown"]);
+    let proof = &report["work_shutdown_journal"];
+    let path = proof["path"].as_str().expect("owned shutdown ledger path");
+    let raw = proof["raw"]
+        .as_str()
+        .expect("independently read shutdown ledger");
+    let journal: Value = serde_json::from_str(raw).unwrap();
+    let receipts: Vec<_> = report["responses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["result"].get("work_shutdown"))
+        .collect();
+    assert_eq!(receipts.len(), 1);
+    let receipt = receipts[0];
+    assert_eq!(receipt["version"], 1);
+    assert_eq!(receipt["effects_verified"], false);
+    for kind in ["work_capture", "work_active"] {
+        let matching: Vec<_> = report["responses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["result"]["kind"] == kind)
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0]["result"]["instance"], receipt["instance"]);
+    }
+    let identity = &report["before"]["identity"];
+    assert_eq!(
+        journal,
+        json!({
+            "version": 1, "revision": 1, "provider": "host",
+            "instance": receipt["instance"], "inputs": [], "producers": [],
+            "identity": {"session_id": identity["session_id"], "agent_id": identity["agent_id"],
+                "backend": identity["backend"], "model": identity["model"]}
+        })
+    );
+    assert_eq!(receipt["closing_sequence"], 1);
+    assert_eq!(receipt["final_sequence"], 1);
+    for key in ["producer_ids", "inputs", "admission_ids"] {
+        assert_eq!(receipt[key], json!([]));
+    }
+    for key in [
+        "admission_closed",
+        "worker_settled",
+        "callback_settled",
+        "process_settled",
+    ] {
+        assert_eq!(receipt[key], true);
+    }
+    assert!(path.replace('\\', "/").ends_with(&format!(
+        "/{}/native-work-inputs.json",
+        identity["session_id"].as_str().unwrap()
+    )));
+    assert!(report["before"]["disk"].get(path).is_none());
+    let mut after = report["after"].clone();
+    let persisted_hash = after["disk"].as_object_mut().unwrap().remove(path).unwrap();
+    let file_hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    assert_eq!(persisted_hash, file_hash);
+    assert_eq!(receipt["ledger_sha256"], file_hash);
+    assert_eq!(report["before"], after);
     assert_eq!(report["live"], report["original"]);
     assert_eq!(report["requests"], json!([]));
     assert_eq!(report["snapshots_before"], report["snapshots_after"]);
@@ -592,7 +664,13 @@ fn f6_reviewed_edit_retry_and_compaction_keep_exact_context_and_draft() {
                     rows.iter()
                         .any(|r| r.state == ReplyState::MaintenanceSettled)
                 );
-                assert_eq!(rows.last().unwrap().state, ReplyState::Complete);
+                let wake = rows.last().unwrap();
+                if wake.state != ReplyState::Complete {
+                    return Err(io::Error::other(format!(
+                        "{case}: wake {:?}: {:?}",
+                        wake.state, wake.stop_reason
+                    )));
+                }
             } else {
                 assert_eq!(rows[0].state, ReplyState::Complete);
             }

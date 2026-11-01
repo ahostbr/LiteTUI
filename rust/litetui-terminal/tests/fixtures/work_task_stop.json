@@ -1,0 +1,1264 @@
+{
+  "success": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "90501105-5337-449c-b387-b14c11827078",
+      "agent_id": "0a543bdd-6e6c-4aa7-8baa-bd503a718b5a",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "f99e2fd86b2a4c2595d4f6c85d8c2914d6ff1f29a690c7b499ece0047d806d11",
+      "captured_at": 1793560059.9733977,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "f19558cdae12cf468182771125514376397c160992db848538d147554082c60e"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "5c53a3a2be1f74e2d8087e19d787e1a8643123cb51c7c7f98e0ff9ad4f2cef33"
+    },
+    "row": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-70e165b5b41e4fe38d5f1ee262bf70b7",
+        "tool": "powershell",
+        "label": "controlled pending spawn",
+        "convo_id": "90501105-5337-449c-b387-b14c11827078",
+        "started": 1793560059.9079766,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "controlled pending spawn",
+        "owner_pid": 59244,
+        "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+        "owner_created": "134380336575760822"
+      },
+      "revision": "572536f2a18252dd7b731017ed5be082bc242073848243d198087a02ee57af07"
+    },
+    "review": {
+      "kind": "work_stop_review",
+      "version": 1,
+      "session_id": "90501105-5337-449c-b387-b14c11827078",
+      "agent_id": "0a543bdd-6e6c-4aa7-8baa-bd503a718b5a",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "f99e2fd86b2a4c2595d4f6c85d8c2914d6ff1f29a690c7b499ece0047d806d11",
+      "snapshot": "5c53a3a2be1f74e2d8087e19d787e1a8643123cb51c7c7f98e0ff9ad4f2cef33",
+      "task_id": "t-70e165b5b41e4fe38d5f1ee262bf70b7",
+      "task_revision": "572536f2a18252dd7b731017ed5be082bc242073848243d198087a02ee57af07",
+      "action": "stop_task",
+      "review": "a73899339c84b490cb7a2adec2fd3357c7ce5f4b98b0d95d47aeacb99195d9b1",
+      "action_id": "ea803555-6020-438d-9f69-d746eccf2f3e",
+      "producer_id": "9fff6249-2bb9-4c64-b5d3-11aff8dbc035",
+      "worker_id": "802cff36-a093-44fe-8bab-0481da88ca54",
+      "lifecycle_instance": "5c94bc75bcfe03613fd54930e817da7a1717dd6520c30e9f0cc50211e74eb69b",
+      "owner_pid": 59244,
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_created": "134380336575760822",
+      "stop_mode": "pending_spawn",
+      "process_id": null,
+      "scope": "task",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation."
+    },
+    "result": {
+      "action": "stop_task",
+      "action_id": "ea803555-6020-438d-9f69-d746eccf2f3e",
+      "agent_id": "0a543bdd-6e6c-4aa7-8baa-bd503a718b5a",
+      "backend": "custom",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation.",
+      "instance": "f99e2fd86b2a4c2595d4f6c85d8c2914d6ff1f29a690c7b499ece0047d806d11",
+      "kind": "work_stop_result",
+      "lifecycle_instance": "5c94bc75bcfe03613fd54930e817da7a1717dd6520c30e9f0cc50211e74eb69b",
+      "model": "old-model",
+      "owner_created": "134380336575760822",
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_pid": 59244,
+      "process_id": null,
+      "producer_id": "9fff6249-2bb9-4c64-b5d3-11aff8dbc035",
+      "review": "a73899339c84b490cb7a2adec2fd3357c7ce5f4b98b0d95d47aeacb99195d9b1",
+      "scope": "task",
+      "session_id": "90501105-5337-449c-b387-b14c11827078",
+      "snapshot": "5c53a3a2be1f74e2d8087e19d787e1a8643123cb51c7c7f98e0ff9ad4f2cef33",
+      "stop_mode": "pending_spawn",
+      "task_id": "t-70e165b5b41e4fe38d5f1ee262bf70b7",
+      "task_revision": "572536f2a18252dd7b731017ed5be082bc242073848243d198087a02ee57af07",
+      "version": 1,
+      "worker_id": "802cff36-a093-44fe-8bab-0481da88ca54",
+      "status": "stopped",
+      "mutated": true,
+      "close_required": false,
+      "error": null,
+      "row": {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-70e165b5b41e4fe38d5f1ee262bf70b7",
+          "tool": "powershell",
+          "label": "controlled pending spawn",
+          "convo_id": "90501105-5337-449c-b387-b14c11827078",
+          "started": 1793560059.9079766,
+          "state": "killed",
+          "ended": 1793560060.0753284,
+          "ok": true,
+          "log": "C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/target/work-stop-fixture-final/test_pending_spawn_stop_is_pur0/output/tasks/t-70e165b5b41e4fe38d5f1ee262bf70b7.log",
+          "tokens": null,
+          "prompt": "controlled pending spawn",
+          "owner_pid": 59244,
+          "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+          "owner_created": "134380336575760822"
+        },
+        "revision": "f1ae055f39a9c6646e7cccd8fd4f394ee0b00560504070111a2e0c1ed31c3748"
+      },
+      "store_revision": "a730a8e1a9e621467d603d578e489b4dc6a8275dffef5bbfd4b128558169e2a3",
+      "proof": {
+        "producer_id": "9fff6249-2bb9-4c64-b5d3-11aff8dbc035",
+        "worker_id": "802cff36-a093-44fe-8bab-0481da88ca54",
+        "lifecycle_instance": "5c94bc75bcfe03613fd54930e817da7a1717dd6520c30e9f0cc50211e74eb69b",
+        "worker_retired": true,
+        "callbacks_retired": true,
+        "process_retired": true,
+        "pending_spawn_settled": true,
+        "task_persisted": true,
+        "process_state": "not_spawned",
+        "process_id": null
+      },
+      "receipt": "8866bf0c8f76824c1a1a7a4b890e16d291aeb014b3e4794967bba4c781d64595"
+    },
+    "settled": {
+      "kind": "work_stop_settled",
+      "version": 1,
+      "session_id": "90501105-5337-449c-b387-b14c11827078",
+      "agent_id": "0a543bdd-6e6c-4aa7-8baa-bd503a718b5a",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "f99e2fd86b2a4c2595d4f6c85d8c2914d6ff1f29a690c7b499ece0047d806d11",
+      "snapshot": "5c53a3a2be1f74e2d8087e19d787e1a8643123cb51c7c7f98e0ff9ad4f2cef33",
+      "review": "a73899339c84b490cb7a2adec2fd3357c7ce5f4b98b0d95d47aeacb99195d9b1",
+      "action_id": "ea803555-6020-438d-9f69-d746eccf2f3e",
+      "receipt": "8866bf0c8f76824c1a1a7a4b890e16d291aeb014b3e4794967bba4c781d64595",
+      "task_id": "t-70e165b5b41e4fe38d5f1ee262bf70b7",
+      "task_revision": "572536f2a18252dd7b731017ed5be082bc242073848243d198087a02ee57af07",
+      "verified": true,
+      "row": {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-70e165b5b41e4fe38d5f1ee262bf70b7",
+          "tool": "powershell",
+          "label": "controlled pending spawn",
+          "convo_id": "90501105-5337-449c-b387-b14c11827078",
+          "started": 1793560059.9079766,
+          "state": "killed",
+          "ended": 1793560060.0753284,
+          "ok": true,
+          "log": "C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/target/work-stop-fixture-final/test_pending_spawn_stop_is_pur0/output/tasks/t-70e165b5b41e4fe38d5f1ee262bf70b7.log",
+          "tokens": null,
+          "prompt": "controlled pending spawn",
+          "owner_pid": 59244,
+          "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+          "owner_created": "134380336575760822"
+        },
+        "revision": "f1ae055f39a9c6646e7cccd8fd4f394ee0b00560504070111a2e0c1ed31c3748"
+      },
+      "proof": {
+        "producer_id": "9fff6249-2bb9-4c64-b5d3-11aff8dbc035",
+        "worker_id": "802cff36-a093-44fe-8bab-0481da88ca54",
+        "lifecycle_instance": "5c94bc75bcfe03613fd54930e817da7a1717dd6520c30e9f0cc50211e74eb69b",
+        "worker_retired": true,
+        "callbacks_retired": true,
+        "process_retired": true,
+        "pending_spawn_settled": true,
+        "task_persisted": true,
+        "process_state": "not_spawned",
+        "process_id": null
+      },
+      "store_revision": "a730a8e1a9e621467d603d578e489b4dc6a8275dffef5bbfd4b128558169e2a3"
+    }
+  },
+  "refused": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "cd1264d2-1c67-4f81-9482-d7b3ffecfdb0",
+      "agent_id": "7da11d6f-9441-4148-b418-94deb5439398",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "977439e5fea912f08570834fa5eb7cf163b9db433dd1bec4db5faf93ce01b583",
+      "captured_at": 1793560060.6516147,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "fda78a6a5b9aff79e78a295191f939fd46064a760291f6d3367f0a93a5c8c578"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "4e7023f8e6e7887bbedc0c63dfa75f837d540f0069767f39588058a173d5d8a3"
+    },
+    "row": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-9aea63e825024b8f9a06cbf94fa5f593",
+        "tool": "powershell",
+        "label": "controlled pending spawn",
+        "convo_id": "cd1264d2-1c67-4f81-9482-d7b3ffecfdb0",
+        "started": 1793560060.5761976,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "controlled pending spawn",
+        "owner_pid": 59244,
+        "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+        "owner_created": "134380336575760822"
+      },
+      "revision": "6ca84e7340844e624e2cc1da94f1752f66f7c57b0ff33a6af8eedd8cd226d44f"
+    },
+    "review": {
+      "kind": "work_stop_review",
+      "version": 1,
+      "session_id": "cd1264d2-1c67-4f81-9482-d7b3ffecfdb0",
+      "agent_id": "7da11d6f-9441-4148-b418-94deb5439398",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "977439e5fea912f08570834fa5eb7cf163b9db433dd1bec4db5faf93ce01b583",
+      "snapshot": "4e7023f8e6e7887bbedc0c63dfa75f837d540f0069767f39588058a173d5d8a3",
+      "task_id": "t-9aea63e825024b8f9a06cbf94fa5f593",
+      "task_revision": "6ca84e7340844e624e2cc1da94f1752f66f7c57b0ff33a6af8eedd8cd226d44f",
+      "action": "stop_task",
+      "review": "5a092e5befcd6fd5c5fa064b5d4686dffdc04e44c998470da7c3966ec81b4853",
+      "action_id": "a294005c-f0b9-4069-8d3e-b7455d7739f0",
+      "producer_id": "0de4e660-f118-49c2-a9be-e8037c652b04",
+      "worker_id": "6af46bd3-94df-4564-9fb7-06bdee6ac4b0",
+      "lifecycle_instance": "ad8d07010eecb508e8c4f1d2ce038f976d43fe1f34dc8d27f8339b104e403fcf",
+      "owner_pid": 59244,
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_created": "134380336575760822",
+      "stop_mode": "pending_spawn",
+      "process_id": null,
+      "scope": "task",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation."
+    },
+    "result": {
+      "action": "stop_task",
+      "action_id": "a294005c-f0b9-4069-8d3e-b7455d7739f0",
+      "agent_id": "7da11d6f-9441-4148-b418-94deb5439398",
+      "backend": "custom",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation.",
+      "instance": "977439e5fea912f08570834fa5eb7cf163b9db433dd1bec4db5faf93ce01b583",
+      "kind": "work_stop_result",
+      "lifecycle_instance": "ad8d07010eecb508e8c4f1d2ce038f976d43fe1f34dc8d27f8339b104e403fcf",
+      "model": "old-model",
+      "owner_created": "134380336575760822",
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_pid": 59244,
+      "process_id": null,
+      "producer_id": "0de4e660-f118-49c2-a9be-e8037c652b04",
+      "review": "5a092e5befcd6fd5c5fa064b5d4686dffdc04e44c998470da7c3966ec81b4853",
+      "scope": "task",
+      "session_id": "cd1264d2-1c67-4f81-9482-d7b3ffecfdb0",
+      "snapshot": "4e7023f8e6e7887bbedc0c63dfa75f837d540f0069767f39588058a173d5d8a3",
+      "stop_mode": "pending_spawn",
+      "task_id": "t-9aea63e825024b8f9a06cbf94fa5f593",
+      "task_revision": "6ca84e7340844e624e2cc1da94f1752f66f7c57b0ff33a6af8eedd8cd226d44f",
+      "version": 1,
+      "worker_id": "6af46bd3-94df-4564-9fb7-06bdee6ac4b0",
+      "status": "refused",
+      "mutated": false,
+      "close_required": false,
+      "error": "Task changed or lacks exact current owner; refresh Work before Stop",
+      "row": null,
+      "store_revision": null,
+      "proof": null,
+      "receipt": "01fdfe067ba9e4d0ec1003ade445957c4121417fd981b6270c2653fb67cb826b"
+    }
+  },
+  "uncertain": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "a389b589-3069-465d-9668-626cd3c7a518",
+      "agent_id": "de6aa3d7-bf0b-43c3-b7e7-b920dd711150",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "27e9bf33ef882df08acefafdf21563ef1e621b910cb7d9186e3e5bb95f263f94",
+      "captured_at": 1793560062.1577945,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "84a3d129a30866d50ab366b494ae0647f00076aa1d195dc4068c07bcf86c2e60"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "346c9fcaec5165db36aa9c3b4f72ad82f6f0514378aa6ac36d6679b94bc15427"
+    },
+    "row": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-f32710a0e30d4b07a0ed3aa0b65edc49",
+        "tool": "powershell",
+        "label": "controlled pending spawn",
+        "convo_id": "a389b589-3069-465d-9668-626cd3c7a518",
+        "started": 1793560062.0861714,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "controlled pending spawn",
+        "owner_pid": 59244,
+        "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+        "owner_created": "134380336575760822"
+      },
+      "revision": "d5c01085a7813a2edd7315d136e650002a9e1582ef21d21a207896ed8b87ef42"
+    },
+    "review": {
+      "kind": "work_stop_review",
+      "version": 1,
+      "session_id": "a389b589-3069-465d-9668-626cd3c7a518",
+      "agent_id": "de6aa3d7-bf0b-43c3-b7e7-b920dd711150",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "27e9bf33ef882df08acefafdf21563ef1e621b910cb7d9186e3e5bb95f263f94",
+      "snapshot": "346c9fcaec5165db36aa9c3b4f72ad82f6f0514378aa6ac36d6679b94bc15427",
+      "task_id": "t-f32710a0e30d4b07a0ed3aa0b65edc49",
+      "task_revision": "d5c01085a7813a2edd7315d136e650002a9e1582ef21d21a207896ed8b87ef42",
+      "action": "stop_task",
+      "review": "ea35fdafae4b3bec9dc66cf9cecf7e00b34a93642e608e7aaba2d268d5a93f1a",
+      "action_id": "427cc715-9d20-46f0-b7c4-be77b670693a",
+      "producer_id": "5059f5aa-06b2-4138-bc7e-1cf297a3d331",
+      "worker_id": "08aaa985-b890-4b14-8cda-7b3a517805d9",
+      "lifecycle_instance": "94655de6d95c10078ea90a017c07e3f0798d1919eadabb8a63c3538ea5557fc5",
+      "owner_pid": 59244,
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_created": "134380336575760822",
+      "stop_mode": "pending_spawn",
+      "process_id": null,
+      "scope": "task",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation."
+    },
+    "result": {
+      "action": "stop_task",
+      "action_id": "427cc715-9d20-46f0-b7c4-be77b670693a",
+      "agent_id": "de6aa3d7-bf0b-43c3-b7e7-b920dd711150",
+      "backend": "custom",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation.",
+      "instance": "27e9bf33ef882df08acefafdf21563ef1e621b910cb7d9186e3e5bb95f263f94",
+      "kind": "work_stop_result",
+      "lifecycle_instance": "94655de6d95c10078ea90a017c07e3f0798d1919eadabb8a63c3538ea5557fc5",
+      "model": "old-model",
+      "owner_created": "134380336575760822",
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_pid": 59244,
+      "process_id": null,
+      "producer_id": "5059f5aa-06b2-4138-bc7e-1cf297a3d331",
+      "review": "ea35fdafae4b3bec9dc66cf9cecf7e00b34a93642e608e7aaba2d268d5a93f1a",
+      "scope": "task",
+      "session_id": "a389b589-3069-465d-9668-626cd3c7a518",
+      "snapshot": "346c9fcaec5165db36aa9c3b4f72ad82f6f0514378aa6ac36d6679b94bc15427",
+      "stop_mode": "pending_spawn",
+      "task_id": "t-f32710a0e30d4b07a0ed3aa0b65edc49",
+      "task_revision": "d5c01085a7813a2edd7315d136e650002a9e1582ef21d21a207896ed8b87ef42",
+      "version": 1,
+      "worker_id": "08aaa985-b890-4b14-8cda-7b3a517805d9",
+      "status": "uncertain",
+      "mutated": true,
+      "close_required": true,
+      "error": "Stopped task row did not persist exactly in its owned store",
+      "row": null,
+      "store_revision": null,
+      "proof": null,
+      "receipt": "8ac1279b2781ac7b7ea139dd728c9f9ec9bdab850a85cc5e5446b6cd10256540"
+    }
+  },
+  "process": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "a490b064-722a-4c70-bc4c-fe1c32aae048",
+      "agent_id": "e0f9d116-d2e7-4bb5-ab02-bceae8295bb0",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "1ca036b51f0b7367d3a841193521be73ad6fbd24caab0067569e3aa4327874fe",
+      "captured_at": 1793560063.8424468,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "82022173d3c72c9a515d03770326f8a290bb4be7065401ec397fc78cc5d91d56"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "435f535678800c71ff693ac368fc09d588645fe0ea6f08f7bc9287c121c5babf"
+    },
+    "row": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-cb22a8277362481f860f46c92fbf8012",
+        "tool": "powershell",
+        "label": "controlled Python child",
+        "convo_id": "a490b064-722a-4c70-bc4c-fe1c32aae048",
+        "started": 1793560063.754961,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "controlled Python child",
+        "owner_pid": 59244,
+        "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+        "owner_created": "134380336575760822"
+      },
+      "revision": "5fb8da3f4b034909de9c80e3f45a360a3b61635430ba0ea09b87fe25af6243d4"
+    },
+    "review": {
+      "kind": "work_stop_review",
+      "version": 1,
+      "session_id": "a490b064-722a-4c70-bc4c-fe1c32aae048",
+      "agent_id": "e0f9d116-d2e7-4bb5-ab02-bceae8295bb0",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "1ca036b51f0b7367d3a841193521be73ad6fbd24caab0067569e3aa4327874fe",
+      "snapshot": "435f535678800c71ff693ac368fc09d588645fe0ea6f08f7bc9287c121c5babf",
+      "task_id": "t-cb22a8277362481f860f46c92fbf8012",
+      "task_revision": "5fb8da3f4b034909de9c80e3f45a360a3b61635430ba0ea09b87fe25af6243d4",
+      "action": "stop_task",
+      "review": "658d7e6e0f7cf9aaea5bcd03cbefb136cc35533da6eb1862cd8236d2c1ade8ec",
+      "action_id": "673c3025-8039-4296-b797-7ae31e986c1a",
+      "producer_id": "3c0bc9a4-81d8-4f8c-bebf-43ac9946f220",
+      "worker_id": "04f0f72a-7717-483a-bfd8-1d85e41f27a4",
+      "lifecycle_instance": "ef1161d10bace40cb3934aa0fb481383afdf71708b374f287710d3d433211b67",
+      "owner_pid": 59244,
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_created": "134380336575760822",
+      "stop_mode": "process",
+      "process_id": 17180,
+      "scope": "task",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation."
+    },
+    "result": {
+      "action": "stop_task",
+      "action_id": "673c3025-8039-4296-b797-7ae31e986c1a",
+      "agent_id": "e0f9d116-d2e7-4bb5-ab02-bceae8295bb0",
+      "backend": "custom",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation.",
+      "instance": "1ca036b51f0b7367d3a841193521be73ad6fbd24caab0067569e3aa4327874fe",
+      "kind": "work_stop_result",
+      "lifecycle_instance": "ef1161d10bace40cb3934aa0fb481383afdf71708b374f287710d3d433211b67",
+      "model": "old-model",
+      "owner_created": "134380336575760822",
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_pid": 59244,
+      "process_id": 17180,
+      "producer_id": "3c0bc9a4-81d8-4f8c-bebf-43ac9946f220",
+      "review": "658d7e6e0f7cf9aaea5bcd03cbefb136cc35533da6eb1862cd8236d2c1ade8ec",
+      "scope": "task",
+      "session_id": "a490b064-722a-4c70-bc4c-fe1c32aae048",
+      "snapshot": "435f535678800c71ff693ac368fc09d588645fe0ea6f08f7bc9287c121c5babf",
+      "stop_mode": "process",
+      "task_id": "t-cb22a8277362481f860f46c92fbf8012",
+      "task_revision": "5fb8da3f4b034909de9c80e3f45a360a3b61635430ba0ea09b87fe25af6243d4",
+      "version": 1,
+      "worker_id": "04f0f72a-7717-483a-bfd8-1d85e41f27a4",
+      "status": "stopped",
+      "mutated": true,
+      "close_required": false,
+      "error": null,
+      "row": {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-cb22a8277362481f860f46c92fbf8012",
+          "tool": "powershell",
+          "label": "controlled Python child",
+          "convo_id": "a490b064-722a-4c70-bc4c-fe1c32aae048",
+          "started": 1793560063.754961,
+          "state": "killed",
+          "ended": 1793560063.9944005,
+          "ok": true,
+          "log": "C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/target/work-stop-fixture-final/test_controlled_process_and_pe0/output/tasks/t-cb22a8277362481f860f46c92fbf8012.log",
+          "tokens": null,
+          "prompt": "controlled Python child",
+          "owner_pid": 59244,
+          "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+          "owner_created": "134380336575760822"
+        },
+        "revision": "fd454a4dbd897070412d26c5930a89b57c08b0a85c49c141ceea66b4fba5e335"
+      },
+      "store_revision": "61d2e17f2f5bd81e7ea3b219ab413badce4bf967c16b5a8bfc1445f33f93075e",
+      "proof": {
+        "producer_id": "3c0bc9a4-81d8-4f8c-bebf-43ac9946f220",
+        "worker_id": "04f0f72a-7717-483a-bfd8-1d85e41f27a4",
+        "lifecycle_instance": "ef1161d10bace40cb3934aa0fb481383afdf71708b374f287710d3d433211b67",
+        "worker_retired": true,
+        "callbacks_retired": true,
+        "process_retired": true,
+        "pending_spawn_settled": true,
+        "task_persisted": true,
+        "process_state": "retired",
+        "process_id": 17180
+      },
+      "receipt": "6e7a8a83c831c66faa80873ce459b93a6be9a39d0172683b8e111cbcf31695c0"
+    },
+    "settled": {
+      "kind": "work_stop_settled",
+      "version": 1,
+      "session_id": "a490b064-722a-4c70-bc4c-fe1c32aae048",
+      "agent_id": "e0f9d116-d2e7-4bb5-ab02-bceae8295bb0",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "1ca036b51f0b7367d3a841193521be73ad6fbd24caab0067569e3aa4327874fe",
+      "snapshot": "435f535678800c71ff693ac368fc09d588645fe0ea6f08f7bc9287c121c5babf",
+      "review": "658d7e6e0f7cf9aaea5bcd03cbefb136cc35533da6eb1862cd8236d2c1ade8ec",
+      "action_id": "673c3025-8039-4296-b797-7ae31e986c1a",
+      "receipt": "6e7a8a83c831c66faa80873ce459b93a6be9a39d0172683b8e111cbcf31695c0",
+      "task_id": "t-cb22a8277362481f860f46c92fbf8012",
+      "task_revision": "5fb8da3f4b034909de9c80e3f45a360a3b61635430ba0ea09b87fe25af6243d4",
+      "verified": true,
+      "row": {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-cb22a8277362481f860f46c92fbf8012",
+          "tool": "powershell",
+          "label": "controlled Python child",
+          "convo_id": "a490b064-722a-4c70-bc4c-fe1c32aae048",
+          "started": 1793560063.754961,
+          "state": "killed",
+          "ended": 1793560063.9944005,
+          "ok": true,
+          "log": "C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/target/work-stop-fixture-final/test_controlled_process_and_pe0/output/tasks/t-cb22a8277362481f860f46c92fbf8012.log",
+          "tokens": null,
+          "prompt": "controlled Python child",
+          "owner_pid": 59244,
+          "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+          "owner_created": "134380336575760822"
+        },
+        "revision": "fd454a4dbd897070412d26c5930a89b57c08b0a85c49c141ceea66b4fba5e335"
+      },
+      "proof": {
+        "producer_id": "3c0bc9a4-81d8-4f8c-bebf-43ac9946f220",
+        "worker_id": "04f0f72a-7717-483a-bfd8-1d85e41f27a4",
+        "lifecycle_instance": "ef1161d10bace40cb3934aa0fb481383afdf71708b374f287710d3d433211b67",
+        "worker_retired": true,
+        "callbacks_retired": true,
+        "process_retired": true,
+        "pending_spawn_settled": true,
+        "task_persisted": true,
+        "process_state": "retired",
+        "process_id": 17180
+      },
+      "store_revision": "61d2e17f2f5bd81e7ea3b219ab413badce4bf967c16b5a8bfc1445f33f93075e"
+    }
+  },
+  "late_spawn": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "733ba25a-eb28-417b-9234-5c011e29fbff",
+      "agent_id": "ced4e85f-60f3-4c49-add2-e947db936b9f",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "379c14e3c4fca55d900c25cd050cdbb315147eca47a78a007f9fd2a5a1d9a392",
+      "captured_at": 1793560064.7131276,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "53eeebe8037c918a9d41b1f376177d8d4426fce27d521bbe2727107b963988cc"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "3d45e608ff6f52db67cf76ecaace3d9f084f78e16f0530ef5ff5fbb28d1b6e84"
+    },
+    "row": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-fd1d488554f7429c99ca792c5a3948f8",
+        "tool": "powershell",
+        "label": "controlled Python child",
+        "convo_id": "733ba25a-eb28-417b-9234-5c011e29fbff",
+        "started": 1793560064.6408603,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "controlled Python child",
+        "owner_pid": 59244,
+        "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+        "owner_created": "134380336575760822"
+      },
+      "revision": "9656c1fcddfba4ee978dacc9452ef08680a48ae58fec695e2daaef40f048a88f"
+    },
+    "review": {
+      "kind": "work_stop_review",
+      "version": 1,
+      "session_id": "733ba25a-eb28-417b-9234-5c011e29fbff",
+      "agent_id": "ced4e85f-60f3-4c49-add2-e947db936b9f",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "379c14e3c4fca55d900c25cd050cdbb315147eca47a78a007f9fd2a5a1d9a392",
+      "snapshot": "3d45e608ff6f52db67cf76ecaace3d9f084f78e16f0530ef5ff5fbb28d1b6e84",
+      "task_id": "t-fd1d488554f7429c99ca792c5a3948f8",
+      "task_revision": "9656c1fcddfba4ee978dacc9452ef08680a48ae58fec695e2daaef40f048a88f",
+      "action": "stop_task",
+      "review": "766ca9c38653f688bba644815697e05839eae5ad008f83ccbf383a4539da2d91",
+      "action_id": "28598cf6-7ce7-4ae1-aacc-7d57d8c06666",
+      "producer_id": "1e7e898a-dec8-45f6-aeea-de6123dd0e56",
+      "worker_id": "67a058de-dbc1-431f-bbe8-1e19b5310ee3",
+      "lifecycle_instance": "a85f8adf2c7e8613d691078dc764eb0834afebd66d19a1f55ce9520a60b837ca",
+      "owner_pid": 59244,
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_created": "134380336575760822",
+      "stop_mode": "pending_spawn",
+      "process_id": null,
+      "scope": "task",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation."
+    },
+    "result": {
+      "action": "stop_task",
+      "action_id": "28598cf6-7ce7-4ae1-aacc-7d57d8c06666",
+      "agent_id": "ced4e85f-60f3-4c49-add2-e947db936b9f",
+      "backend": "custom",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation.",
+      "instance": "379c14e3c4fca55d900c25cd050cdbb315147eca47a78a007f9fd2a5a1d9a392",
+      "kind": "work_stop_result",
+      "lifecycle_instance": "a85f8adf2c7e8613d691078dc764eb0834afebd66d19a1f55ce9520a60b837ca",
+      "model": "old-model",
+      "owner_created": "134380336575760822",
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_pid": 59244,
+      "process_id": null,
+      "producer_id": "1e7e898a-dec8-45f6-aeea-de6123dd0e56",
+      "review": "766ca9c38653f688bba644815697e05839eae5ad008f83ccbf383a4539da2d91",
+      "scope": "task",
+      "session_id": "733ba25a-eb28-417b-9234-5c011e29fbff",
+      "snapshot": "3d45e608ff6f52db67cf76ecaace3d9f084f78e16f0530ef5ff5fbb28d1b6e84",
+      "stop_mode": "pending_spawn",
+      "task_id": "t-fd1d488554f7429c99ca792c5a3948f8",
+      "task_revision": "9656c1fcddfba4ee978dacc9452ef08680a48ae58fec695e2daaef40f048a88f",
+      "version": 1,
+      "worker_id": "67a058de-dbc1-431f-bbe8-1e19b5310ee3",
+      "status": "stopped",
+      "mutated": true,
+      "close_required": false,
+      "error": null,
+      "row": {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-fd1d488554f7429c99ca792c5a3948f8",
+          "tool": "powershell",
+          "label": "controlled Python child",
+          "convo_id": "733ba25a-eb28-417b-9234-5c011e29fbff",
+          "started": 1793560064.6408603,
+          "state": "killed",
+          "ended": 1793560065.0506403,
+          "ok": true,
+          "log": "C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/target/work-stop-fixture-final/test_controlled_process_and_pe1/output/tasks/t-fd1d488554f7429c99ca792c5a3948f8.log",
+          "tokens": null,
+          "prompt": "controlled Python child",
+          "owner_pid": 59244,
+          "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+          "owner_created": "134380336575760822"
+        },
+        "revision": "1e47832848a5678c0e579a3314865dec5fdd1adcee857eb5e7e09afa1aad97b2"
+      },
+      "store_revision": "065084b88abfbce83b7e984a529bdedc907557dfff2a084d1e1e45ba3c8da7ed",
+      "proof": {
+        "producer_id": "1e7e898a-dec8-45f6-aeea-de6123dd0e56",
+        "worker_id": "67a058de-dbc1-431f-bbe8-1e19b5310ee3",
+        "lifecycle_instance": "a85f8adf2c7e8613d691078dc764eb0834afebd66d19a1f55ce9520a60b837ca",
+        "worker_retired": true,
+        "callbacks_retired": true,
+        "process_retired": true,
+        "pending_spawn_settled": true,
+        "task_persisted": true,
+        "process_state": "retired",
+        "process_id": 39632
+      },
+      "receipt": "ec4ebc7106aa7924cfce73775d287e2e903127f8c6a76645e5f73aa2e5baa4d1"
+    },
+    "settled": {
+      "kind": "work_stop_settled",
+      "version": 1,
+      "session_id": "733ba25a-eb28-417b-9234-5c011e29fbff",
+      "agent_id": "ced4e85f-60f3-4c49-add2-e947db936b9f",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "379c14e3c4fca55d900c25cd050cdbb315147eca47a78a007f9fd2a5a1d9a392",
+      "snapshot": "3d45e608ff6f52db67cf76ecaace3d9f084f78e16f0530ef5ff5fbb28d1b6e84",
+      "review": "766ca9c38653f688bba644815697e05839eae5ad008f83ccbf383a4539da2d91",
+      "action_id": "28598cf6-7ce7-4ae1-aacc-7d57d8c06666",
+      "receipt": "ec4ebc7106aa7924cfce73775d287e2e903127f8c6a76645e5f73aa2e5baa4d1",
+      "task_id": "t-fd1d488554f7429c99ca792c5a3948f8",
+      "task_revision": "9656c1fcddfba4ee978dacc9452ef08680a48ae58fec695e2daaef40f048a88f",
+      "verified": true,
+      "row": {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-fd1d488554f7429c99ca792c5a3948f8",
+          "tool": "powershell",
+          "label": "controlled Python child",
+          "convo_id": "733ba25a-eb28-417b-9234-5c011e29fbff",
+          "started": 1793560064.6408603,
+          "state": "killed",
+          "ended": 1793560065.0506403,
+          "ok": true,
+          "log": "C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/target/work-stop-fixture-final/test_controlled_process_and_pe1/output/tasks/t-fd1d488554f7429c99ca792c5a3948f8.log",
+          "tokens": null,
+          "prompt": "controlled Python child",
+          "owner_pid": 59244,
+          "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+          "owner_created": "134380336575760822"
+        },
+        "revision": "1e47832848a5678c0e579a3314865dec5fdd1adcee857eb5e7e09afa1aad97b2"
+      },
+      "proof": {
+        "producer_id": "1e7e898a-dec8-45f6-aeea-de6123dd0e56",
+        "worker_id": "67a058de-dbc1-431f-bbe8-1e19b5310ee3",
+        "lifecycle_instance": "a85f8adf2c7e8613d691078dc764eb0834afebd66d19a1f55ce9520a60b837ca",
+        "worker_retired": true,
+        "callbacks_retired": true,
+        "process_retired": true,
+        "pending_spawn_settled": true,
+        "task_persisted": true,
+        "process_state": "retired",
+        "process_id": 39632
+      },
+      "store_revision": "065084b88abfbce83b7e984a529bdedc907557dfff2a084d1e1e45ba3c8da7ed"
+    }
+  },
+  "unconfirmed_kill": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "e9f69062-04a4-481f-950a-d4f798c7dda1",
+      "agent_id": "3724b798-b6dc-46e8-a1db-b1d2b5547b80",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "f8132d4881e9d6beb221286ff8c5139b759fc4a978b3b9cc33711f62ced0432e",
+      "captured_at": 1793560065.7810328,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "434b019c697b350c88cdc659c3b79fee10a792d65b1f380375c32138f21ea5d7"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "c0b83b8b23ffa898333700a77eb0d3cbbc5066e447c6c709db3aa095ecfe6de2"
+    },
+    "row": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-d89e930b3c1a483db805856f3915fcaf",
+        "tool": "powershell",
+        "label": "controlled Python child",
+        "convo_id": "e9f69062-04a4-481f-950a-d4f798c7dda1",
+        "started": 1793560065.703844,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "controlled Python child",
+        "owner_pid": 59244,
+        "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+        "owner_created": "134380336575760822"
+      },
+      "revision": "6ec0989d8cedcc707b3cae42cc432a6db55b831be28d8606bf9f0e412aed437e"
+    },
+    "review": {
+      "kind": "work_stop_review",
+      "version": 1,
+      "session_id": "e9f69062-04a4-481f-950a-d4f798c7dda1",
+      "agent_id": "3724b798-b6dc-46e8-a1db-b1d2b5547b80",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "f8132d4881e9d6beb221286ff8c5139b759fc4a978b3b9cc33711f62ced0432e",
+      "snapshot": "c0b83b8b23ffa898333700a77eb0d3cbbc5066e447c6c709db3aa095ecfe6de2",
+      "task_id": "t-d89e930b3c1a483db805856f3915fcaf",
+      "task_revision": "6ec0989d8cedcc707b3cae42cc432a6db55b831be28d8606bf9f0e412aed437e",
+      "action": "stop_task",
+      "review": "eae43d27650a20ba3216635698dd640437b745643e504e457278443987268468",
+      "action_id": "60c35e82-6370-49ac-bda8-1350324fd768",
+      "producer_id": "65792a36-e2fc-4bef-978f-92817167af7a",
+      "worker_id": "7b497a75-dba9-482b-a67f-42518b70368f",
+      "lifecycle_instance": "255b95a79375d6ebec76a45779d7b0941e8352509868a4b461d0e7c7f7d828f7",
+      "owner_pid": 59244,
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_created": "134380336575760822",
+      "stop_mode": "process",
+      "process_id": 17212,
+      "scope": "task",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation."
+    },
+    "result": {
+      "action": "stop_task",
+      "action_id": "60c35e82-6370-49ac-bda8-1350324fd768",
+      "agent_id": "3724b798-b6dc-46e8-a1db-b1d2b5547b80",
+      "backend": "custom",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation.",
+      "instance": "f8132d4881e9d6beb221286ff8c5139b759fc4a978b3b9cc33711f62ced0432e",
+      "kind": "work_stop_result",
+      "lifecycle_instance": "255b95a79375d6ebec76a45779d7b0941e8352509868a4b461d0e7c7f7d828f7",
+      "model": "old-model",
+      "owner_created": "134380336575760822",
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_pid": 59244,
+      "process_id": 17212,
+      "producer_id": "65792a36-e2fc-4bef-978f-92817167af7a",
+      "review": "eae43d27650a20ba3216635698dd640437b745643e504e457278443987268468",
+      "scope": "task",
+      "session_id": "e9f69062-04a4-481f-950a-d4f798c7dda1",
+      "snapshot": "c0b83b8b23ffa898333700a77eb0d3cbbc5066e447c6c709db3aa095ecfe6de2",
+      "stop_mode": "process",
+      "task_id": "t-d89e930b3c1a483db805856f3915fcaf",
+      "task_revision": "6ec0989d8cedcc707b3cae42cc432a6db55b831be28d8606bf9f0e412aed437e",
+      "version": 1,
+      "worker_id": "7b497a75-dba9-482b-a67f-42518b70368f",
+      "status": "uncertain",
+      "mutated": true,
+      "close_required": true,
+      "error": "Work producer process or pipe retirement is unproven",
+      "row": null,
+      "store_revision": null,
+      "proof": null,
+      "receipt": "bc32545c6f9df597c2951373d262181daa670b96ec7a1af9dcc98e152689918f"
+    }
+  },
+  "quit": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "a6f1c791-7184-4b42-8396-6ef67e740903",
+      "agent_id": "3d335af7-65a6-4e0e-ba55-2a006a4e33f8",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "cf9b74d776cabff7c9aa6055b7b86506a5572bc636a700fa76411844b23b36fa",
+      "captured_at": 1793560066.5658119,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "counts": {
+        "tasks": 1,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "8cb3a409670ffee540de959924a4e238dc12cc766267318e964d4ccd84773d27"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "d9bbb13d79f20889b2f4fa4445d27dfa9dc4dcc8fb47f887a962c36717fb7816"
+    },
+    "row": {
+      "kind": "host_task",
+      "owner": "current",
+      "tail_available": false,
+      "tail_reason": "Output is available when the task finishes.",
+      "row": {
+        "id": "t-eab1cbeec41f4069acabb6f6187849cd",
+        "tool": "powershell",
+        "label": "controlled pending spawn",
+        "convo_id": "a6f1c791-7184-4b42-8396-6ef67e740903",
+        "started": 1793560066.4921467,
+        "state": "running",
+        "ended": null,
+        "ok": null,
+        "log": "",
+        "tokens": null,
+        "prompt": "controlled pending spawn",
+        "owner_pid": 59244,
+        "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+        "owner_created": "134380336575760822"
+      },
+      "revision": "ab7948735498434fb817853a03f35f09173e2f0d971a55280e884ce12103c412"
+    },
+    "review": {
+      "kind": "work_stop_review",
+      "version": 1,
+      "session_id": "a6f1c791-7184-4b42-8396-6ef67e740903",
+      "agent_id": "3d335af7-65a6-4e0e-ba55-2a006a4e33f8",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "cf9b74d776cabff7c9aa6055b7b86506a5572bc636a700fa76411844b23b36fa",
+      "snapshot": "d9bbb13d79f20889b2f4fa4445d27dfa9dc4dcc8fb47f887a962c36717fb7816",
+      "task_id": "t-eab1cbeec41f4069acabb6f6187849cd",
+      "task_revision": "ab7948735498434fb817853a03f35f09173e2f0d971a55280e884ce12103c412",
+      "action": "stop_task",
+      "review": "230143ba6b811a76438966021db0d233d9611ab234e3b1827ca337071ba2ea16",
+      "action_id": "b306d53c-537d-4bc1-85ca-360ea930b141",
+      "producer_id": "baa101ad-fe8c-4149-a15f-62329030b9bf",
+      "worker_id": "1f5d25d7-ca75-438a-abbc-dbb192e902c6",
+      "lifecycle_instance": "6c8ce84e2edc9026f8abf8dadb03b74f29c197435e9ee269c51292c0f32a0841",
+      "owner_pid": 59244,
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_created": "134380336575760822",
+      "stop_mode": "pending_spawn",
+      "process_id": null,
+      "scope": "task",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation."
+    },
+    "result": {
+      "action": "stop_task",
+      "action_id": "b306d53c-537d-4bc1-85ca-360ea930b141",
+      "agent_id": "3d335af7-65a6-4e0e-ba55-2a006a4e33f8",
+      "backend": "custom",
+      "consequence": "Stop only this owned background task. Its final output may still enter this conversation.",
+      "instance": "cf9b74d776cabff7c9aa6055b7b86506a5572bc636a700fa76411844b23b36fa",
+      "kind": "work_stop_result",
+      "lifecycle_instance": "6c8ce84e2edc9026f8abf8dadb03b74f29c197435e9ee269c51292c0f32a0841",
+      "model": "old-model",
+      "owner_created": "134380336575760822",
+      "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+      "owner_pid": 59244,
+      "process_id": null,
+      "producer_id": "baa101ad-fe8c-4149-a15f-62329030b9bf",
+      "review": "230143ba6b811a76438966021db0d233d9611ab234e3b1827ca337071ba2ea16",
+      "scope": "task",
+      "session_id": "a6f1c791-7184-4b42-8396-6ef67e740903",
+      "snapshot": "d9bbb13d79f20889b2f4fa4445d27dfa9dc4dcc8fb47f887a962c36717fb7816",
+      "stop_mode": "pending_spawn",
+      "task_id": "t-eab1cbeec41f4069acabb6f6187849cd",
+      "task_revision": "ab7948735498434fb817853a03f35f09173e2f0d971a55280e884ce12103c412",
+      "version": 1,
+      "worker_id": "1f5d25d7-ca75-438a-abbc-dbb192e902c6",
+      "status": "stopped",
+      "mutated": true,
+      "close_required": false,
+      "error": null,
+      "row": {
+        "kind": "host_task",
+        "owner": "current",
+        "tail_available": true,
+        "tail_reason": null,
+        "row": {
+          "id": "t-eab1cbeec41f4069acabb6f6187849cd",
+          "tool": "powershell",
+          "label": "controlled pending spawn",
+          "convo_id": "a6f1c791-7184-4b42-8396-6ef67e740903",
+          "started": 1793560066.4921467,
+          "state": "killed",
+          "ended": 1793560066.7452333,
+          "ok": true,
+          "log": "C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/target/work-stop-fixture-final/test_quit_during_stop_joins_pe0/output/tasks/t-eab1cbeec41f4069acabb6f6187849cd.log",
+          "tokens": null,
+          "prompt": "controlled pending spawn",
+          "owner_pid": 59244,
+          "owner_instance": "2392766ba16b4f00bb9316a0621083c4",
+          "owner_created": "134380336575760822"
+        },
+        "revision": "8b54f34e8fc60398668859aaea99bc6298f64134a0435dc3ebdd0ae4d489ce4e"
+      },
+      "store_revision": "ef8462f82d51376004f777ad517f08b62d15adb66fd659e5f1772c865a949937",
+      "proof": {
+        "producer_id": "baa101ad-fe8c-4149-a15f-62329030b9bf",
+        "worker_id": "1f5d25d7-ca75-438a-abbc-dbb192e902c6",
+        "lifecycle_instance": "6c8ce84e2edc9026f8abf8dadb03b74f29c197435e9ee269c51292c0f32a0841",
+        "worker_retired": true,
+        "callbacks_retired": true,
+        "process_retired": true,
+        "pending_spawn_settled": true,
+        "task_persisted": true,
+        "process_state": "not_spawned",
+        "process_id": null
+      },
+      "receipt": "fd9c71a30cf946b385e1092157dcf331e705bb980284c3024beffa4282627164"
+    },
+    "shutdown": {
+      "version": 1,
+      "instance": "6c8ce84e2edc9026f8abf8dadb03b74f29c197435e9ee269c51292c0f32a0841",
+      "closing_sequence": 4,
+      "final_sequence": 6,
+      "admission_closed": true,
+      "worker_settled": true,
+      "callback_settled": true,
+      "process_settled": true,
+      "producer_ids": [
+        "baa101ad-fe8c-4149-a15f-62329030b9bf"
+      ],
+      "inputs": [
+        {
+          "input_id": "11b87133-729f-4b8e-8a8d-7140cae1b526",
+          "disposition": "held"
+        }
+      ],
+      "admission_ids": [],
+      "ledger_sha256": "1dc12312fdf9a64c9f07922e30b73e0f0361f46f29809d2cbbda9737e086305a",
+      "effects_verified": false
+    }
+  }
+}

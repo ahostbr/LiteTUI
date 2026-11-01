@@ -479,7 +479,7 @@ async def resume_capture(app: Any, capture: Captured) -> None:
 
 async def open_conversation(app: Any, cmd: dict[str, Any]) -> dict[str, Any]:
     """Consume reviewed local history, retaining the lifecycle owner until joined."""
-    from litetui import backend_transition, hook_host, native_engine
+    from litetui import backend_transition, background_input, hook_host, native_engine
     from litetui import conversation_transition as transition
 
     result: dict[str, Any] = {"version": VERSION, "kind": "conversation_open",
@@ -535,7 +535,9 @@ async def open_conversation(app: Any, cmd: dict[str, Any]) -> dict[str, Any]:
     app._conversation_transition_pending = True
     app._conversation_transition_hook_outcomes = []
     app._conversation_transition_hook_snapshot = review.hooks
+    work_proof = None
     try:
+        work_proof = await background_input.before_identity_transition(app)
         await resume_capture(app, capture)
         result.update(worker_settled=True, connection_settled=True)
         result["history"] = snapshot(app, _current_command(app))
@@ -555,6 +557,13 @@ async def open_conversation(app: Any, cmd: dict[str, Any]) -> dict[str, Any]:
         app._native_history_open_roles = None
         app._native_history_open_history_error = None
         app._native_history_target_settings = None
+    if result["status"] == "connected":
+        try:
+            result.update(background_input.after_identity_transition(app, work_proof))
+        # Cancellation after a successful open must also close the admission gate.
+        except BaseException as exc:  # noqa: BLE001
+            app._conversation_transition_error = transition.CLOSE_REQUIRED
+            result.update(status="failed", close_required=True, error=_error(exc))
     result.update(session_id=app.convo_id, backend=app.backend.name, model=app.model_id)
     return _wire(cmd, result)
 

@@ -9,6 +9,8 @@ use std::{collections::HashSet, io};
 mod action;
 mod compact;
 mod settings;
+mod work;
+mod work_lifecycle;
 pub use compact::{Changed as CompactChanged, Prepared as CompactPrepared};
 mod rewrite;
 pub use rewrite::{Changed as RewriteChanged, Prepared as RewritePrepared};
@@ -43,6 +45,12 @@ const MIRRORED: &[&str] = &[
     "rewrite_aftercare",
     "compact_maintenance",
     "compaction",
+    "work_producer",
+    "work_input",
+    "work_admission",
+    "work_settled",
+    "work_reconciled",
+    "work_closing",
 ];
 const IDENTIFIED: &[&str] = &[
     "turn_start",
@@ -171,6 +179,11 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    WorkLifecycle(Box<crate::work_lifecycle::Effect>),
+    WorkLifecycleVerified {
+        admission_id: String,
+    },
+    Work(crate::work_view::Update),
     Compact(crate::conversation_compact::Update),
     CompactSettled(Box<CompactChanged>),
     Rewrite(crate::conversation_rewrite::Update),
@@ -351,6 +364,8 @@ struct SavedHistoryPending {
     prior: Option<crate::history::Page>,
 }
 pub struct Management {
+    work_lifecycle: work_lifecycle::Control,
+    work: work::Control,
     history_projection: bool,
     saved_history: Option<SavedHistoryPending>,
     history_snapshot: Option<crate::history::Snapshot>,
@@ -423,6 +438,8 @@ pub struct Management {
 impl Default for Management {
     fn default() -> Self {
         Self {
+            work_lifecycle: work_lifecycle::Control::default(),
+            work: work::Control::default(),
             history_projection: false,
             saved_history: None,
             history_snapshot: None,
@@ -514,6 +531,7 @@ impl Management {
         result
     }
     fn begin_inner(&mut self, ready: &Value) -> io::Result<Value> {
+        self.work_lifecycle_advertisement(ready)?;
         self.history_projection = match ready.get("history_projection_version") {
             None | Some(Value::Null) => false,
             Some(value) if value.as_u64() == Some(1) => true,
@@ -573,6 +591,7 @@ impl Management {
     }
     pub fn begin_close(&mut self) {
         self.closing = true;
+        self.close_work_lifecycle();
         self.engine_review = None;
         self.engine_snapshot = None;
     }
@@ -580,6 +599,8 @@ impl Management {
         self.phase == Phase::Active
             && !self.closing
             && !self.failed
+            && !self.work_lifecycle_starting()
+            && self.work.pending.is_none()
             && self.engine.is_none()
             && self.conversation.is_none()
             && self.command.is_none()
@@ -624,6 +645,7 @@ impl Management {
         self.rewrite_cache = None;
         self.rewrite_review = None;
         self.browser_preview = None;
+        self.record_work_operation(id)?;
         self.prompt = Some(id.to_owned());
         self.origin = None;
         Ok(())
@@ -648,40 +670,80 @@ impl Management {
         self.accept_wire(frame, bytes)
     }
     pub fn accept_wire(&mut self, frame: Value, original_json_bytes: usize) -> io::Result<Step> {
+        self.accept_wire_context(frame, original_json_bytes, None)
+    }
+    /// None is explicit idle authority, supplied by the actual Turn supervisor.
+    /// The legacy entrypoint above supplies no authority at all.
+    pub fn accept_wire_with_work(
+        &mut self,
+        frame: Value,
+        original_json_bytes: usize,
+        current: Option<&crate::work_lifecycle::CurrentExecution>,
+    ) -> io::Result<Step> {
+        self.accept_wire_context(frame, original_json_bytes, Some(current))
+    }
+    fn accept_wire_context(
+        &mut self,
+        frame: Value,
+        original_json_bytes: usize,
+        authority: Option<Option<&crate::work_lifecycle::CurrentExecution>>,
+    ) -> io::Result<Step> {
         if self.failed {
             return Err(fail("Management connection is uncertain"));
         }
-        let result = if self.compaction_settings_response_pending(&frame)
-            && original_json_bytes > crate::compaction_settings::MAX_BYTES
-        {
-            Err(fail(
-                "Compaction preferences response exceeds the full 64 KiB wire budget",
-            ))
-        } else if self.compact_response_pending(&frame)
-            && original_json_bytes > crate::conversation_compact::RESPONSE_BYTES
-        {
-            Err(fail(
-                "Compaction response exceeds the full 1 MiB wire budget",
-            ))
-        } else if self.rewrite_response_pending(&frame)
-            && original_json_bytes > crate::conversation_rewrite::RESPONSE_BYTES
-        {
-            Err(fail(
-                "Edit/retry response exceeds the full 1 MiB wire budget",
-            ))
-        } else if self.history_locate_response_pending(&frame)
-            && original_json_bytes > crate::conversation_browser::PAGE_BYTES
-        {
-            Err(fail(
-                "Located conversation response exceeds the full 256 KiB wire budget",
-            ))
-        } else if self.history_response_pending(&frame)
-            && original_json_bytes > crate::history::MAX_RESPONSE_BYTES
-        {
-            Err(fail("History response exceeds the full 1 MiB wire budget"))
+        let lifecycle_event = if frame["type"] == "gui.event" {
+            frame["event"]["type"].as_str()
         } else {
-            self.accept_inner(frame)
-        };
+            frame["type"].as_str()
+        }
+        .is_some_and(|kind| crate::work_lifecycle::EVENTS.contains(&kind));
+        let result =
+            if lifecycle_event && original_json_bytes > crate::work_lifecycle::ENVELOPE_BYTES {
+                Err(fail(
+                    "Work lifecycle event exceeds the full 128 KiB wire budget",
+                ))
+            } else if self.work_lifecycle_response_pending(&frame)
+                && original_json_bytes > crate::work_lifecycle::REPLY_BYTES
+            {
+                Err(fail(
+                    "Work lifecycle reply exceeds the full 1 MiB wire budget",
+                ))
+            } else if self.work_response_pending(&frame)
+                && original_json_bytes > crate::work_protocol::MAX_BYTES
+            {
+                Err(fail("Work response exceeds the full 1 MiB wire budget"))
+            } else if self.compaction_settings_response_pending(&frame)
+                && original_json_bytes > crate::compaction_settings::MAX_BYTES
+            {
+                Err(fail(
+                    "Compaction preferences response exceeds the full 64 KiB wire budget",
+                ))
+            } else if self.compact_response_pending(&frame)
+                && original_json_bytes > crate::conversation_compact::RESPONSE_BYTES
+            {
+                Err(fail(
+                    "Compaction response exceeds the full 1 MiB wire budget",
+                ))
+            } else if self.rewrite_response_pending(&frame)
+                && original_json_bytes > crate::conversation_rewrite::RESPONSE_BYTES
+            {
+                Err(fail(
+                    "Edit/retry response exceeds the full 1 MiB wire budget",
+                ))
+            } else if self.history_locate_response_pending(&frame)
+                && original_json_bytes > crate::conversation_browser::PAGE_BYTES
+            {
+                Err(fail(
+                    "Located conversation response exceeds the full 256 KiB wire budget",
+                ))
+            } else if self.history_response_pending(&frame)
+                && original_json_bytes > crate::history::MAX_RESPONSE_BYTES
+            {
+                Err(fail("History response exceeds the full 1 MiB wire budget"))
+            } else {
+                self.accept_inner(frame, authority)
+            };
+        let result = result.and_then(|step| self.work_startup_gate(step));
         if result.is_err() {
             self.failed = true;
         }
@@ -729,7 +791,11 @@ impl Management {
                     }
             })
     }
-    fn accept_inner(&mut self, frame: Value) -> io::Result<Step> {
+    fn accept_inner(
+        &mut self,
+        frame: Value,
+        authority: Option<Option<&crate::work_lifecycle::CurrentExecution>>,
+    ) -> io::Result<Step> {
         match self.wire.ingest(GENERATION, frame) {
             Notice::LegacyEvent(value)
                 if self.phase == Phase::AwaitReady && value["type"] == "ready" =>
@@ -758,6 +824,7 @@ impl Management {
                         "Negotiated history projection lacks required operations",
                     ));
                 }
+                self.configure_work_lifecycle(&operations)?;
                 self.operations = operations;
                 let id = self
                     .wire
@@ -883,6 +950,30 @@ impl Management {
                 self.phase = Phase::Active;
                 let snapshot = self.startup.take().expect("startup");
                 self.startup_theme(snapshot, Some(history))
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .work_lifecycle
+                .pending
+                .as_ref()
+                .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
+            {
+                self.work_lifecycle_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .work
+                .pending
+                .as_ref()
+                .is_some_and(|p| Some(&p.id) == id.as_ref()) =>
+            {
+                self.work_response(frame)
             }
             Notice::Response {
                 id,
@@ -1047,6 +1138,12 @@ impl Management {
                     .ok_or_else(|| fail("GUI event has no matching legacy occurrence"))?;
                 let (_, bytes) = self.mirrors.remove(index);
                 self.mirror_bytes -= bytes;
+                if event["type"]
+                    .as_str()
+                    .is_some_and(|kind| crate::work_lifecycle::EVENTS.contains(&kind))
+                {
+                    return self.work_lifecycle_event(&frame, authority);
+                }
                 self.validate_event(&frame, &event)?;
                 if self
                     .browser
@@ -1245,6 +1342,7 @@ impl Management {
             ));
         }
         if IDENTIFIED.contains(&kind) {
+            self.validate_work_stream_origin(frame)?;
             let (execution, origin, _) = crate::stream::origin(frame, 4096)
                 .map_err(|_| fail("Runtime turn lacks a valid captured execution origin"))?;
             if origin.operation.as_ref().and_then(Value::as_str) != self.prompt.as_deref()
@@ -1340,6 +1438,10 @@ impl Management {
             Some(text(&frame, "error", 4096)?.to_owned())
         };
         if pending.applying {
+            let changing_model = success
+                && pending.kind == Kind::Model
+                && pending.selection.as_deref() != self.model();
+            self.work_transition_receipt(&frame["result"], changing_model)?;
             pending.applying = false;
             pending.failure = error;
             pending.succeeded = success;
@@ -1393,6 +1495,7 @@ impl Management {
             menu.message = Some(format!("Current setting: {}", menu.current));
         }
         if menu.model != *model {
+            self.require_work_identity_rebind()?;
             self.expected.as_mut().expect("active").2 = menu.model.clone();
             self.origin = None;
             self.prompt = None;
@@ -1534,6 +1637,15 @@ impl Management {
                         .ok_or_else(|| fail("Missing history reconciliation outcome"))?,
                 );
             }
+            self.work_reconciliation_echo(
+                &frame["result"],
+                pending.reconciled.as_ref().and_then(|check| check.accepted),
+            )?;
+            if self.closing {
+                self.discard_work_reconciliation();
+                self.queue_menu = None;
+                return Ok(Step::Ignore);
+            }
             pending.applying = false;
             pending.failure = error;
             pending.succeeded = success;
@@ -1541,7 +1653,8 @@ impl Management {
                 .wire
                 .register_request()
                 .map_err(|_| fail("Cannot reserve queue readback"))?;
-            let command = json!({"type":READ,"id":id.to_value(),"session_id":self.expected.as_ref().expect("active").0});
+            let mut command = json!({"type":READ,"id":id.to_value(),"session_id":self.expected.as_ref().expect("active").0});
+            self.mark_work_reconciliation_readback(&mut command);
             pending.id = id;
             self.queue = Some(pending);
             return Ok(Step::Write(command));
@@ -1629,6 +1742,15 @@ impl Management {
                 }
             }
         }
+        self.verify_work_reconciliation_readback(&frame["result"])?;
+        if self.closing {
+            self.discard_work_reconciliation();
+            self.queue_menu = None;
+            return Ok(Step::Ignore);
+        }
+        self.finish_work_reconciliation(
+            pending.reconciled.as_ref().and_then(|check| check.accepted),
+        )?;
         snapshot.message = pending
             .failure
             .map(|e| format!("Request failed: {e}. Saved queue read back."))
@@ -2093,6 +2215,7 @@ impl Management {
                             if let Some(preview) = preview {
                                 match crate::history::OpenResult::parse(result, preview)? {
                                     crate::history::OpenResult::Refused(reason) => {
+                                        self.work_transition_receipt(result, false)?;
                                         self.browser_preview = None;
                                         return Ok(Step::Browser(Update::Rejected(reason)));
                                     }
@@ -2106,6 +2229,7 @@ impl Management {
                                     result, target,
                                 )?);
                             }
+                            self.work_transition_receipt(result, true)?;
                         }
                         1 => {
                             let snapshot = Snapshot::parse(result)?;
@@ -2350,6 +2474,7 @@ impl Management {
                             && result["model"] == old_model
                             && !pending.observed_model =>
                     {
+                        self.work_transition_receipt(result, false)?;
                         self.backend_catalog = None;
                         return Ok(Step::Backend(Update::Rejected(
                             text(result, "error", 4096)?.into(),
@@ -2361,7 +2486,10 @@ impl Management {
                             && result["backend"] == name
                             && result["model"] == model
                             && result["error"].is_null()
-                            && pending.observed_model => {}
+                            && pending.observed_model =>
+                    {
+                        self.work_transition_receipt(result, true)?;
+                    }
                     _ => {
                         return Err(fail(
                             "Backend transition failed or contradicted its receipt; connection closed",
@@ -3407,6 +3535,10 @@ impl Management {
                     ));
                 }
                 let receipt = Receipt::parse(result, pending.review.as_ref().unwrap().clone())?;
+                self.work_transition_receipt(
+                    result,
+                    !receipt.refused && pending.action == Action::New,
+                )?;
                 if receipt.refused {
                     self.conversation_snapshot = None;
                     return Ok(reject(receipt.error.unwrap()));

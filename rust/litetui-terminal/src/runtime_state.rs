@@ -186,6 +186,11 @@ impl State {
         }
     }
     /// Initial read-only facts, never a substitute for current turn settlement.
+    pub fn schedules_paused(&mut self) {
+        if let Some(snapshot) = self.startup.as_mut() {
+            snapshot.schedules_paused = true;
+        }
+    }
     pub fn startup(&self) -> Option<&crate::management::Snapshot> {
         self.startup.as_ref()
     }

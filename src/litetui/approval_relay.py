@@ -236,8 +236,8 @@ async def ask_spawner(app, name: str, args, decision, source) -> str:
     return status
 
 
-def take_answer(app, msg: dict) -> bool:
-    """Consume only a pending request's eligible frozen exact-ID answer.
+def pending_answer(app, msg: dict):
+    """Match a pending request's eligible frozen exact-ID answer without settling it.
 
     Everything else stays ordinary mail; body prose grants no authority.
     """
@@ -245,13 +245,22 @@ def take_answer(app, msg: dict) -> bool:
 
     match = _ANSWER.match(message_text(msg))
     if match is None:
-        return False
+        return None
     entry = _pending(app).get(match.group(2))
     from litetui import approval_authority
     from litetui.approval_delivery import answer_open
     if (entry is None or entry[0].done() or not approval_authority.can_answer(app, match.group(2), msg)
             or not answer_open(app, match.group(2))):
+        return None
+    return match
+
+
+def take_answer(app, msg: dict) -> bool:
+    match = pending_answer(app, msg)
+    if match is None:
         return False
+    from litetui import approval_authority
+    entry = _pending(app)[match.group(2)]
     allow = match.group(1) == "APPROVE"
     if not approval_authority.settle(app, match.group(2), outcome="approved" if allow else "denied",
                                      answerer_id=msg.get("from")):

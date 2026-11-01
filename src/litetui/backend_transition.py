@@ -72,8 +72,10 @@ def _quiet(app, *, require_unowned_server=True):
         current = get_current_worker()
     except NoActiveWorker:
         current = None
+    from litetui import background_input
+    ignored = (() if current is None else (current,)) + background_input.transition_waiters(app)
     report = produce_activity(
-        app, ignore_workers=() if current is None else (current,),
+        app, ignore_workers=ignored,
         children_pending=lambda: children_pending(Path.home() / ".litetui-agents", app.convo_id),
     )
     reasons = blocking_reasons(report.snapshot)
@@ -241,6 +243,8 @@ async def transition(app, cmd):
         if (app.conversation is not conversation or app.conversation != history
                 or backend_catalog.catalog(app, {"session_id": context.session_id})["snapshot"] != token):
             raise ValueError("Backend selection changed before publication")
+        from litetui import background_input
+        work_proof = await background_input.before_identity_transition(app)
         changes = [SettingChange("backend", name, "conversation"),
                    SettingChange("default_model", model, "conversation")]
         # A publication attempt may have committed before its readback fails.
@@ -302,7 +306,9 @@ async def transition(app, cmd):
             app._gui_effective_settings = asdict(app.settings)
         for key in ("backend", "default_model"):
             app._gui_effective_settings[key] = getattr(app.settings, key)
-        return _receipt(app, cmd, "connected", mutated=True)
+        receipt = _receipt(app, cmd, "connected", mutated=True)
+        receipt.update(background_input.after_identity_transition(app, work_proof))
+        return receipt
     except BaseException as exc:
         # Publication can fail after the atomic replace but before its readback.
         try:

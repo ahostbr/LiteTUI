@@ -337,8 +337,8 @@ def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False)
     return True
 
 
-def take_spawner_answer(app, msg: dict) -> bool:
-    """Consume addressed unexpired mail from an eligible frozen exact ID.
+def pending_spawner_answer(app, msg: dict):
+    """Match eligible addressed unexpired mail without settling the permission.
 
     Registration edits cannot change a pending permission or its60/120s clock.
     The ordinary human RPC host answer path remains separate.
@@ -347,15 +347,25 @@ def take_spawner_answer(app, msg: dict) -> bool:
 
     seat_id = getattr(getattr(app, "seat", None), "agent_id", None)
     if not seat_id or msg.get("to") != seat_id or harness._expired(msg):
-        return False
+        return None
     match = approval_relay._ANSWER.fullmatch(harness.message_text(msg))
     if match is None:
-        return False
+        return None
     from litetui import approval_authority
     ident = match.group(2)
     future = _approval_registry(app).get(ident)
     if future is None or future.done() or not approval_authority.can_answer(app, ident, msg):
+        return None
+    return match
+
+
+def take_spawner_answer(app, msg: dict) -> bool:
+    match = pending_spawner_answer(app, msg)
+    if match is None:
         return False
+    from litetui import approval_authority
+    ident = match.group(2)
+    future = _approval_registry(app)[ident]
     allow = match.group(1) == "APPROVE"
     if not approval_authority.settle(app, ident, outcome="approved" if allow else "denied",
                                      answerer_id=msg.get("from")):

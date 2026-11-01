@@ -70,6 +70,35 @@ def _retire_cli_model(app, target: str) -> None:
         app._user_model_choice = target
 
 
+async def switch_model_captured(app, target: str) -> dict:
+    """Retire captured authority before the ordinary explicit model effects."""
+    from litetui import backend_transition, background_input
+    if target not in app.available_models:
+        raise ValueError("Model is not available")
+    if not background_input.enabled(app) or target == app.model_id:
+        switch_model(app, target)
+        return app._rpc_model_state()
+    backend_transition._quiet(app, require_unowned_server=False)
+    value = background_input.bridge(app)
+    before = background_input.identity(app)
+    proof = await background_input.before_identity_transition(app)
+    try:
+        if background_input.identity(app) != before or background_input.bridge(app) is not value:
+            raise ValueError("Model identity changed during retirement")
+        app._work_model_owner = (value, background_input._task())
+        if not switch_model(app, target):
+            raise ValueError("Model is no longer available")
+        app._validate_owned_identity()
+        result = app._rpc_model_state()
+        result.update(background_input.after_identity_transition(app, proof))
+        return result
+    except BaseException:
+        app._backend_transition_error = backend_transition.CLOSE_REQUIRED
+        raise
+    finally:
+        app._work_model_owner = None
+
+
 def switch_model(app, target: str) -> bool:
     """Switch through the same effects as ``/model`` and the RPC host.
 
@@ -83,6 +112,12 @@ def switch_model(app, target: str) -> bool:
     # deliberately unchanged, including when reselecting the current model.
     # This control is a newer explicit choice than the process's --model.
     unchanged = target == app.model_id
+    from litetui import background_input
+    value = background_input.bridge(app)
+    if (value is not None and value.active and not unchanged
+            and (getattr(app, "_work_model_owner", None) != (value, background_input._task())
+                 or not value.closing or getattr(value, "transition_proof", None) is None)):
+        raise ValueError("Captured model selection requires an awaited identity transition")
     # Publish even a same-runtime reselection: staged state may predate authority.
     # A failed owned publication must not retire the previous launch choice.
     app.model_id = target

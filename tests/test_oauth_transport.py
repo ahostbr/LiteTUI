@@ -501,6 +501,8 @@ async def test_local_client_never_receives_opaque_metadata():
                 "content": "hi",
                 "provider_metadata": {"items": ["opaque"]},
                 "codex_delivery": {"id": "private-client-id", "state": "accepted"},
+                "work_input_id": "private-work-id",
+                "work_payload_sha256": "a" * 64,
             }
         ]
     )

@@ -16,6 +16,11 @@ root = Path(os.environ['LITETUI_DATA_ROOT'])
 (root.parent/'python-started').write_text('runtime activated')
 mode = os.environ.get('RUST_LIVE_FIXTURE', 'success')
 gui_enabled = False
+work_active = False
+work_captured = False
+work_instance = 'd' * 64
+work_token = 'e' * 64
+work_sequence = 0
 operation = None
 execution = None
 identified = {'turn_start','turn_refused','turn_end','text_delta','reasoning_delta','native_text_snapshot',
@@ -40,21 +45,33 @@ def emit(value):
                         session_id='12345678-1234-4123-8123-123456789abc',operation_id=operation,event=value)
         if value['type'] in identified:
             envelope.update(execution_id=execution,hook_id=None,source='rpc')
+        if value['type'].startswith('work_'):
+            envelope.update(operation_id=None,execution_id=None,hook_id=None,source='work')
         if mode == 'management_wrong_origin' and value['type'] == 'text_delta':
             envelope['operation_id'] = 'unrelated-prompt'
         print(json.dumps(envelope), flush=True)
 ready = dict(type='ready', protocol_version=1, launch_status='ready', backend='claude', model='claude-sonnet-5-5')
 ready.update(conversation_id='12345678-1234-4123-8123-123456789abc', thinking_level='low', context_length=200000,
-             management_protocols=[1], capabilities=['hello','state'], history_projection_version=1)
+             management_protocols=[1], capabilities=['hello','state'], history_projection_version=1, work_lifecycle_version=1)
 settings = json.loads((root/'settings.json').read_text())
 for marker in ['LITETUI_OWNER', 'LITETUI_SPAWN_IDENTITY', 'LITEHARNESS_SPAWNED_BY']:
     assert marker not in os.environ, marker
+assert sys.argv[sys.argv.index('--work-lifecycle-version')+1] == '1'
 profile = sys.argv[sys.argv.index('--tool-profile')+1]
+work_identity = dict(session_id=ready['conversation_id'],agent_id='22345678-1234-4123-8123-123456789abc',
+                     backend=ready['backend'],model=ready['model'])
+work_limits = dict(producers=256,inputs=256,payload_bytes=65536,ledger_bytes=33554432,envelope_bytes=131072,reply_bytes=1048576)
 ready.update(tools_enabled=settings['tools_enabled'], mcp_enabled=settings['mcp_enabled'],
              tool_profile=profile, tool_profile_requested=profile,
              approval_route='host' if os.environ.get('LITETUI_APPROVAL_HOST') == '1' else 'refuse',
              cwd=os.getcwd())
 
+if mode.startswith('work_ack_'):
+    fault = mode.removeprefix('work_ack_')
+    if fault == 'missing':
+        ready.pop('work_lifecycle_version')
+    else:
+        ready['work_lifecycle_version'] = {'null':None,'bool':True,'string':'1','float':1.0,'other':2}[fault]
 if mode == 'history_missing':
     ready.pop('history_projection_version')
 if mode == 'history_wrong':
@@ -96,7 +113,24 @@ for line in sys.stdin:
         gui_enabled = True
         emit(dict(type='response',id=command['id'],ok=True,
                   result=dict(protocol_version=2 if mode == 'management_bad_version' else 1,
-                              data_version=1,capabilities=['hello','state'],operations=['gui.hello','gui.state','gui.history.native_snapshot','gui.history.native_page','gui.conversations.native_open'])))
+                              data_version=1,capabilities=['hello','state'],operations=['gui.hello','gui.state','gui.history.native_snapshot','gui.history.native_page','gui.conversations.native_open','gui.work.native_capture','gui.work.native_activate','gui.work.native_settled'])))
+        continue
+    if command['type'] in {'gui.work.native_capture','gui.work.native_activate'}:
+        assert command['version'] == 1 and all(command[k] == v for k,v in work_identity.items())
+        assert not work_active
+        if command['type'] == 'gui.work.native_capture':
+            assert not work_captured
+            work_captured = True
+            result = dict(kind='work_capture',version=1,instance=work_instance,activation_token=work_token,
+                          sequence=0,identity=work_identity,provider='claude',limits=work_limits,recovered=[],deferred_jobs=[])
+        else:
+            assert work_captured and command['instance'] == work_instance and command['activation_token'] == work_token
+            work_active = True
+            result = dict(kind='work_active',version=1,instance=work_instance,sequence=0,identity=work_identity)
+        emit(dict(type='response',id=command['id'],ok=True,result=result))
+        continue
+    if command['type'] == 'gui.work.native_settled':
+        emit(dict(type='response',id=command['id'],ok=False,error='Synthetic empty lifecycle has no admissions'))
         continue
     if command['type'] == 'gui.state':
         state = dict(session_id='12345678-1234-4123-8123-123456789abc',busy=False,mode='normal',
@@ -127,6 +161,7 @@ for line in sys.stdin:
         emit(dict(type='response',id=command['id'],ok=True,result=result))
         continue
     if command['type'] == 'prompt':
+        assert work_active, 'Prompt preceded explicit lifecycle activation'
         operation = command['id']
     if command['type'] == 'shutdown':
         if pending:
@@ -134,7 +169,15 @@ for line in sys.stdin:
                 emit(dict(type='user_input_resolved',id=pending,cancelled=True))
             else:
                 emit(dict(type='tool_approval_closed',id=pending,outcome='cancelled',reason='cancelled'))
-        emit(dict(type='response',id=command['id'],ok=True,result=dict(ok=True)))
+        result = dict(ok=True)
+        if work_active:
+            work_sequence += 1
+            emit(dict(type='work_closing',version=1,instance=work_instance,sequence=work_sequence,
+                      identity=work_identity,cutoff_sequence=work_sequence,producer_ids=[],input_ids=[],admission_ids=[]))
+            result['work_shutdown'] = dict(version=1,instance=work_instance,closing_sequence=work_sequence,
+                final_sequence=work_sequence,admission_closed=True,worker_settled=True,callback_settled=True,
+                process_settled=True,producer_ids=[],inputs=[],admission_ids=[],ledger_sha256='f'*64,effects_verified=False)
+        emit(dict(type='response',id=command['id'],ok=True,result=result))
         break
     if command['type'] == 'abort' and mode.startswith('cancel'):
         abort_count += 1
@@ -1451,6 +1494,8 @@ fn management_reads_precede_prompt_and_selected_envelopes_do_not_double_text() {
             "gui.state",
             "gui.history.native_snapshot",
             "gui.history.native_page",
+            "gui.work.native_capture",
+            "gui.work.native_activate",
             "prompt",
             "shutdown"
         ]
@@ -3209,5 +3254,26 @@ fn native_history_response_limit_counts_original_envelope_and_json_escapes() {
         if !accepted {
             assert!(String::from_utf8_lossy(&result.stderr).contains("full 1 MiB wire budget"));
         }
+    }
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn requested_work_lifecycle_never_silently_falls_back_or_submits() {
+    for fault in ["missing", "null", "bool", "string", "float", "other"] {
+        let mode = format!("work_ack_{fault}");
+        let (mut command, root) = setup(&mode);
+        let result = command.output().unwrap();
+        assert!(!result.status.success(), "{mode}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("requested Work lifecycle version 1"),
+            "{mode}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let commands = fs::read_to_string(root.join("all-commands.jsonl")).unwrap();
+        assert!(!commands.contains("gui.hello"), "{mode}");
+        assert!(!commands.contains("rust-live-prompt"), "{mode}");
+        assert!(!commands.contains("gui.work.native_capture"), "{mode}");
+        assert!(commands.contains("shutdown"), "{mode}");
     }
 }

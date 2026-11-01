@@ -51,7 +51,7 @@ def report_failure(app, event, message):
 
 
 async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=False):
-    from litetui import conversation_rewrite
+    from litetui import background_input, conversation_rewrite
     # A prior observe hook can consume cancellation after its approval closes.
     # Recheck each authorization so later hooks cannot revive input authority.
     if document.get("event") == "tool_after":
@@ -71,7 +71,7 @@ async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=Fal
     else:
         options = {}
         scoped = (getattr(app, "_conversation_transition_hook_outcomes", None) is not None
-                  or conversation_rewrite.hook_cleanup_scope(app))
+                  or conversation_rewrite.hook_cleanup_scope(app) or background_input.enabled(app))
         terminal_seen = False
         if scoped:
             def settled(_result, proof):
@@ -328,6 +328,9 @@ async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
 
 
 def start_prompt(app, item):
+    from litetui import background_input
+    if background_input.entry_for(app, item) is not None:
+        return background_input.start_prompt(app, item)
     entry = item.get("_codex_entry")
     if entry and entry.get("state") in ("admitted", "next_turn"):
         accepted = accept_prompt_origin(app, item)
@@ -364,9 +367,16 @@ async def queued_prompt(app):
     from litetui.claude_turn import queue_ready
     if not queue_ready(app, app._pending_input[0]):
         return False
-    item = app._pending_input.pop(0)
+    item = app._pending_input[0]
+    from litetui import background_input
+    captured = await background_input.admit_async(app, item, in_turn=True)
+    if captured is not None:
+        return captured
     try:
-        return await admit_prompt(app, {**item, "_gui_in_turn": True})
+        accepted = await admit_prompt(app, {**item, "_gui_in_turn": True})
+        if accepted and app._pending_input and app._pending_input[0] is item:
+            app._pending_input.pop(0)
+        return accepted
     finally:
         if submission_refusal(app) and not any(held is item for held in app._pending_input):
             app._pending_input.insert(0, item)

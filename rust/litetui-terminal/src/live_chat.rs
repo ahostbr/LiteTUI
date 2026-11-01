@@ -43,6 +43,7 @@ pub enum ReplyState {
     Reconciled,
     Maintenance,
     MaintenanceSettled,
+    AwaitingRetirement,
 }
 #[derive(Default)]
 pub struct Card {
@@ -55,9 +56,32 @@ pub struct Card {
 pub enum Item {
     Card(usize),
     Tool(usize),
+    WorkInput(usize),
+}
+pub struct WorkSource {
+    pub source: String,
+    pub requested: crate::tool_mode::Profile,
+    pub effective: crate::tool_mode::Profile,
+}
+pub struct WorkInput {
+    pub text: String,
+    pub source: WorkSource,
+    pub delivery: crate::work_lifecycle::Delivery,
+}
+pub struct CommittedWork {
+    pub status: String,
+    pub history: crate::work_lifecycle::CommittedHistory,
+}
+struct PendingWorkSegment {
+    operation: String,
+    admission: String,
+    input: WorkInput,
 }
 pub struct Row {
     pub source_owned: bool,
+    pub source: Option<WorkSource>,
+    pub inputs: Vec<WorkInput>,
+    pub committed: Option<CommittedWork>,
     pub prompt: String,
     pub cards: Vec<Card>,
     pub tools: Vec<Tool>,
@@ -82,6 +106,14 @@ pub struct Chat {
     rewrite_segment: Option<u64>,
     rewrite_rows: std::collections::BTreeMap<String, usize>,
     rewrite_maintenance: std::collections::HashSet<String>,
+    operation_rows: std::collections::BTreeMap<String, usize>,
+    work_admissions: std::collections::BTreeMap<String, String>,
+    work_seen: std::collections::HashSet<String>,
+    work_ended: std::collections::BTreeMap<String, crate::live::TerminalOutcome>,
+    work_segments: std::collections::BTreeMap<String, PendingWorkSegment>,
+    suspended_rows: std::collections::BTreeMap<String, usize>,
+    forwarded_row: Option<usize>,
+    work_uncertain: std::collections::BTreeMap<String, String>,
     pub ready: bool,
     pub busy: bool,
     pub closed: bool,
@@ -99,6 +131,7 @@ pub struct Chat {
     pub themes: crate::theme_controls::View,
     pub effective_theme: Option<crate::theme::Theme>,
     pub theme_status: String,
+    pub work: crate::work_view::View,
     pub settings: crate::settings_view::View,
     pub backend_controls: crate::backend_controls::View,
     pub browser: crate::conversation_browser::View,
@@ -132,6 +165,14 @@ impl Chat {
             rewrite_segment: None,
             rewrite_rows: std::collections::BTreeMap::new(),
             rewrite_maintenance: std::collections::HashSet::new(),
+            operation_rows: std::collections::BTreeMap::new(),
+            work_admissions: std::collections::BTreeMap::new(),
+            work_seen: std::collections::HashSet::new(),
+            work_ended: std::collections::BTreeMap::new(),
+            work_segments: std::collections::BTreeMap::new(),
+            suspended_rows: std::collections::BTreeMap::new(),
+            forwarded_row: None,
+            work_uncertain: std::collections::BTreeMap::new(),
             ready: false,
             busy: false,
             closed: false,
@@ -149,6 +190,7 @@ impl Chat {
             themes: crate::theme_controls::View::default(),
             effective_theme: None,
             theme_status: "Theme: local fallback; source pending".into(),
+            work: crate::work_view::View::default(),
             settings: crate::settings_view::View::default(),
             backend_controls: crate::backend_controls::View::default(),
             browser: crate::conversation_browser::View::default(),
@@ -178,6 +220,7 @@ impl Chat {
     ) -> io::Result<()> {
         if !self.ready
             || self.busy
+            || !self.work_uncertain.is_empty()
             || self.closed
             || self.quitting
             || self.controls.owns_input()
@@ -187,6 +230,7 @@ impl Chat {
             || self.commands.owns_input()
             || self.themes.owns_input()
             || self.saved_history.owns_input()
+            || self.work.owns_input()
             || self.settings.owns_input()
             || self.backend_controls.owns_input()
             || self.browser.owns_input()
@@ -221,6 +265,9 @@ impl Chat {
         self.stops_sent = 0;
         self.rows.push(Row {
             source_owned: false,
+            source: None,
+            inputs: Vec::new(),
+            committed: None,
             prompt: prompt.into(),
             cards: vec![Card::default()],
             tools: Vec::new(),
@@ -249,7 +296,12 @@ impl Chat {
         Ok(units)
     }
     pub fn prepare_reconciliation(&self, intent: &crate::restored_queue::Intent) -> io::Result<()> {
-        if !self.ready || self.busy || self.closed || self.quitting || self.queue_pending {
+        if !self.ready
+            || self.busy && !self.uncertainty_only_busy()
+            || self.closed
+            || self.quitting
+            || self.queue_pending
+        {
             return Err(io::Error::other(
                 "Finish the current operation before checking provider history",
             ));
@@ -259,7 +311,7 @@ impl Chat {
     }
     fn record_reconciled(&mut self, entry: &crate::restored_queue::Entry) -> io::Result<()> {
         if !self.ready
-            || self.busy
+            || self.busy && !self.uncertainty_only_busy()
             || self.closed
             || self.quitting
             || self.queue_pending
@@ -273,6 +325,9 @@ impl Chat {
         self.recovered_inputs.insert(entry.id.clone());
         self.rows.push(Row {
             source_owned: false,
+            source: None,
+            inputs: Vec::new(),
+            committed: None,
             prompt: entry.content.clone(),
             cards: Vec::new(),
             tools: Vec::new(),
@@ -295,6 +350,7 @@ impl Chat {
         self.commands.finish();
         self.themes.finish();
         self.saved_history.finish();
+        self.work.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -365,6 +421,7 @@ impl Chat {
         self.engine.finish();
         self.commands.finish();
         self.themes.finish();
+        self.work.finish();
         self.settings.finish();
         self.backend_controls.finish();
     }
@@ -426,6 +483,14 @@ impl Chat {
         self.queue
             .observe(crate::restored_queue::Update::Snapshot(queue));
         self.rows.clear();
+        self.operation_rows.clear();
+        self.work_admissions.clear();
+        self.work_seen.clear();
+        self.work_ended.clear();
+        self.work_segments.clear();
+        self.suspended_rows.clear();
+        self.forwarded_row = None;
+        self.work_uncertain.clear();
         self.prior_context_rows = 0;
         self.recovered_inputs.clear();
         self.submission_id = None;
@@ -450,6 +515,7 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::WorkExecution(update) => self.observe_work(*update)?,
             Observation::Compact(update) => {
                 if self.compact.pending_key() != Some(update.key()) {
                     return Ok(());
@@ -504,6 +570,7 @@ impl Chat {
                     && changed.review.clear_display()
                 {
                     self.rows.drain(..start);
+                    self.rebase_operation_rows(start);
                     self.prior_context_rows = 0;
                     self.recovered_inputs.clear();
                     let (bytes, units) = self
@@ -592,7 +659,7 @@ impl Chat {
             Observation::RewriteSettled(changed) => {
                 use crate::conversation_rewrite::{AdmissionOutcome, Update};
                 if !self.rewrite_pending
-                    || self.busy
+                    || self.busy && !self.uncertainty_only_busy()
                     || self.rewrite.pending_key() != Some(&changed.key)
                     || self.submission_id.as_deref()
                         != Some(changed.admission.operation_id.as_str())
@@ -609,6 +676,7 @@ impl Chat {
                         return Err(io::Error::other("Missing retained rewrite rows"));
                     }
                     self.rows.drain(..start);
+                    self.rebase_operation_rows(start);
                     self.prior_context_rows = 0;
                     self.recovered_inputs.clear();
                     let (bytes, units) = self
@@ -679,10 +747,20 @@ impl Chat {
                     if self.pending_row().is_ok() {
                         return Err(io::Error::other("Continuation before prior segment ended"));
                     }
-                    let row =
-                        self.append_rewrite_row("Conversation continuation", ReplyState::Sending)?;
+                    let row = if let Some(segment) = self.work_segments.remove(&execution_id) {
+                        if segment.operation != operation_id {
+                            return Err(io::Error::other(
+                                "Work segment belongs to another operation",
+                            ));
+                        }
+                        self.append_work_row(segment.input)
+                    } else {
+                        self.append_rewrite_row("Conversation continuation", ReplyState::Sending)?
+                    };
                     self.rewrite_stream_row = Some(row);
                 }
+                self.operation_rows
+                    .insert(operation_id.clone(), self.current_row_index()?);
                 self.rewrite_segment = Some(index);
                 self.rewrite_rows
                     .insert(execution_id, self.current_row_index()?);
@@ -840,6 +918,15 @@ impl Chat {
                 self.themes.observe(update);
                 self.notice = self.themes.notice.clone();
             }
+            Observation::Work(update) => {
+                if self.work.pending_generation() == Some(update.generation)
+                    && matches!(update.data, crate::work_view::Data::Paused)
+                {
+                    self.runtime_state.schedules_paused();
+                }
+                self.work.observe(update);
+                self.notice = self.work.notice.clone();
+            }
             Observation::Settings(update) => {
                 self.settings.observe(update);
                 self.notice = self.settings.notice.clone();
@@ -929,9 +1016,14 @@ impl Chat {
                 if !self.compact_active {
                     self.pending_row()?;
                 }
-                if self.submission_id.replace(id).is_some() {
+                if self.submission_id.is_some() || self.operation_rows.contains_key(&id) {
                     return Err(io::Error::other("Duplicate local prompt reservation"));
                 }
+                if !self.compact_active {
+                    self.operation_rows
+                        .insert(id.clone(), self.current_row_index()?);
+                }
+                self.submission_id = Some(id);
             }
             Observation::ApprovalSettled { event, outcome } => {
                 self.approvals.observe(event)?;
@@ -1036,6 +1128,467 @@ impl Chat {
             }
             Observation::Complete => self.settle(crate::live::TerminalOutcome::Complete)?,
         }
+        if let Some(reason) = self.work_uncertain.values().next() {
+            self.busy = true;
+            if !self.quitting {
+                self.notice = reason.clone();
+            }
+        }
+        Ok(())
+    }
+    fn rebase_operation_rows(&mut self, start: usize) {
+        self.operation_rows.retain(|_, row| {
+            if *row < start {
+                false
+            } else {
+                *row -= start;
+                true
+            }
+        });
+    }
+    fn retain_work_busy(&mut self) {
+        self.busy |= !self.work_uncertain.is_empty()
+            || !self.work_admissions.is_empty()
+            || !self.work_ended.is_empty()
+            || !self.suspended_rows.is_empty()
+            || self.forwarded_row.is_some();
+    }
+    pub(crate) fn uncertainty_only_busy(&self) -> bool {
+        !self.work_uncertain.is_empty()
+            && self.pending_row().is_err()
+            && !self.compact_active
+            && self.rewrite_maintenance.is_empty()
+            && self.work_admissions.is_empty()
+            && self.work_segments.is_empty()
+            && self.work_ended.is_empty()
+            && self.suspended_rows.is_empty()
+            && self.forwarded_row.is_none()
+            && self.approvals.is_empty()
+            && self.questions.is_empty()
+    }
+    fn work_row(&self, operation: &str) -> io::Result<usize> {
+        self.operation_rows
+            .get(operation)
+            .copied()
+            .filter(|i| *i < self.rows.len())
+            .ok_or_else(|| io::Error::other("Work receipt has no exact operation row"))
+    }
+    fn append_work_row(&mut self, input: WorkInput) -> usize {
+        let index = self.rows.len();
+        let (prompt, committed) = match input.delivery {
+            crate::work_lifecycle::Delivery::Append => (input.text, None),
+            crate::work_lifecycle::Delivery::CommittedHistory(history) => (
+                String::new(),
+                Some(CommittedWork {
+                    status: input.text,
+                    history,
+                }),
+            ),
+        };
+        self.rows.push(Row {
+            source_owned: true,
+            source: Some(input.source),
+            inputs: Vec::new(),
+            committed,
+            prompt,
+            cards: vec![Card::default()],
+            tools: Vec::new(),
+            items: vec![Item::Card(0)],
+            state: ReplyState::Sending,
+            stop_reason: None,
+        });
+        index
+    }
+    fn finish_work_row(
+        &mut self,
+        index: usize,
+        outcome: crate::live::TerminalOutcome,
+        paid: bool,
+    ) -> io::Result<()> {
+        use crate::live::TerminalOutcome;
+        if !matches!(
+            self.rows[index].state,
+            ReplyState::Sending
+                | ReplyState::Streaming
+                | ReplyState::Cancelling
+                | ReplyState::AwaitingRetirement
+        ) {
+            return Err(io::Error::other(
+                "Work receipt repeated an already settled row",
+            ));
+        }
+        let (state, reason) = match outcome {
+            TerminalOutcome::Complete => (ReplyState::Complete, None),
+            TerminalOutcome::Refused(s) => (ReplyState::Refused, Some(s)),
+            TerminalOutcome::Failed(s) => (ReplyState::Failed, Some(s)),
+            TerminalOutcome::Cancelled(s) => (ReplyState::Cancelled, Some(s)),
+            TerminalOutcome::ApprovalStopped(s) => (ReplyState::ApprovalStopped, Some(s)),
+        };
+        if !paid {
+            let reason = reason.as_deref().unwrap_or("");
+            self.replace_cost((0, 0), (reason.len(), display_units(reason)?))?;
+        }
+        let row = &mut self.rows[index];
+        row.state = state;
+        row.stop_reason = reason;
+        for tool in &mut row.tools {
+            tool.finish();
+        }
+        Ok(())
+    }
+    fn observe_work(&mut self, update: crate::live::WorkExecution) -> io::Result<()> {
+        use crate::{
+            live::{TerminalOutcome, WorkExecution},
+            work_lifecycle::Mode,
+        };
+        match update {
+            WorkExecution::Admitted {
+                input,
+                admission,
+                payload,
+                suspended_submission,
+            } => {
+                if !self.ready
+                    || !self.work_uncertain.is_empty()
+                    || self.quitting
+                    || input.id != admission.input
+                    || input.source != payload.source
+                    || input.requested != payload.profile
+                    || admission.requested != payload.profile
+                    || admission.operation != admission.origin.operation
+                    || self.work_seen.contains(&admission.id)
+                    || self.work_seen.len() >= 4096
+                    || self.work_admissions.len() >= 256
+                    || [
+                        &input.id,
+                        &admission.id,
+                        &admission.operation,
+                        &admission.origin.execution,
+                        &payload.source,
+                    ]
+                    .iter()
+                    .any(|s| s.is_empty() || s.len() > 128)
+                {
+                    return Err(io::Error::other(
+                        "Unexpected or repeated Work display admission",
+                    ));
+                }
+                let (reference_bytes, reference_units) = match &payload.delivery {
+                    crate::work_lifecycle::Delivery::Append => (0, 0),
+                    crate::work_lifecycle::Delivery::CommittedHistory(history) => {
+                        if admission.mode != Mode::NewTurn
+                            || payload.source != "child-result"
+                            || !payload.content.is_empty()
+                            || history.receipt_ids.is_empty()
+                            || history.receipt_ids.len() > 256
+                        {
+                            return Err(io::Error::other(
+                                "Committed Work history cannot authorize a user append",
+                            ));
+                        }
+                        let mut bytes = history.session.len()
+                            + history.transcript_sha256.len()
+                            + history.context_sha256.len();
+                        let mut units = 96usize;
+                        for id in &history.receipt_ids {
+                            bytes = bytes.saturating_add(id.len());
+                            units = units.saturating_add(display_units(id)?).saturating_add(64);
+                        }
+                        (bytes, units)
+                    }
+                };
+                let text = payload.display_text();
+                let units = display_units(text)?
+                    .saturating_add(display_units(&payload.source)?)
+                    .saturating_add(reference_units)
+                    .saturating_add(320);
+                // Only the exact display text is retained. Hidden content is not duplicated.
+                // Fixed metadata allowance covers all bounded identity keys held by this admission.
+                let bytes = text
+                    .len()
+                    .saturating_add(payload.source.len())
+                    .saturating_add(reference_bytes)
+                    .saturating_add(1536);
+                let current = self.current_row_index().ok();
+                match admission.mode {
+                    Mode::NewTurn => {
+                        if self.rewrite_pending
+                            || self.rows.len() >= 100
+                            || self.operation_rows.contains_key(&admission.operation)
+                            || !self.approvals.is_empty()
+                            || !self.questions.is_empty()
+                        {
+                            return Err(io::Error::other(
+                                "Work NewTurn conflicts with current display ownership",
+                            ));
+                        }
+                        if let Some(id) = suspended_submission.as_deref() {
+                            let row = self.work_row(id)?;
+                            if self.submission_id.as_deref() != Some(id)
+                                || self.rows[row].source_owned
+                                || self.rows[row].state != ReplyState::Sending
+                                || !self.suspended_rows.is_empty()
+                            {
+                                return Err(io::Error::other(
+                                    "Work displaced a different local prompt",
+                                ));
+                            }
+                        } else if let Some(row) = current
+                            && (matches!(
+                                self.rows[row].state,
+                                ReplyState::Streaming | ReplyState::Cancelling
+                            ) || self.rows[row].state == ReplyState::Sending
+                                && (self.rows[row].source_owned
+                                    || self.submission_id.is_some()
+                                    || self.forwarded_row.is_some()))
+                        {
+                            return Err(io::Error::other(
+                                "Work NewTurn arrived before the current stream ended",
+                            ));
+                        }
+                    }
+                    Mode::InTurn => {
+                        let row = self.work_row(&admission.operation)?;
+                        if self.submission_id.as_deref() != Some(&admission.operation)
+                            || current != Some(row)
+                            || self.pending_row().is_err()
+                            || self.rows[row].inputs.len() >= 100
+                            || suspended_submission.is_some()
+                        {
+                            return Err(io::Error::other("Work input has no active operation row"));
+                        }
+                    }
+                    Mode::ActionSegment => {
+                        self.check_rewrite_operation(&admission.operation)?;
+                        if self.work_segments.contains_key(&admission.origin.execution)
+                            || self.rewrite_rows.contains_key(&admission.origin.execution)
+                            || self.rows.len() + self.work_segments.len() >= 100
+                            || suspended_submission.is_some()
+                        {
+                            return Err(io::Error::other(
+                                "Work action segment has no new execution",
+                            ));
+                        }
+                    }
+                }
+                self.replace_cost((0, 0), (bytes, units))?;
+                let display = WorkInput {
+                    text: text.into(),
+                    source: WorkSource {
+                        source: payload.source,
+                        requested: payload.profile,
+                        effective: admission.effective,
+                    },
+                    delivery: payload.delivery,
+                };
+                match admission.mode {
+                    Mode::NewTurn => {
+                        if let Some(id) = suspended_submission {
+                            self.suspended_rows.insert(id.clone(), self.work_row(&id)?);
+                        } else if let Some(row) = current
+                            && self.rows[row].state == ReplyState::Sending
+                        {
+                            if self.pending.is_some() {
+                                self.finish_work_row(row, TerminalOutcome::Refused("Not sent: source work arrived before local submission. Submit again explicitly if still wanted.".into()), false)?;
+                            } else {
+                                self.forwarded_row = Some(row);
+                            }
+                        }
+                        self.pending = None;
+                        let row = self.append_work_row(display);
+                        self.operation_rows.insert(admission.operation.clone(), row);
+                        self.submission_id = Some(admission.operation.clone());
+                        self.rewrite_stream_row = None;
+                        self.stop_requests = 0;
+                        self.stops_sent = 0;
+                        self.stop_confirm = false;
+                        self.busy = true;
+                        self.notice = "Source work admitted; receiving its exact input.".into();
+                    }
+                    Mode::InTurn => {
+                        let row = &mut self.rows[current.unwrap()];
+                        row.items.push(Item::WorkInput(row.inputs.len()));
+                        row.inputs.push(display);
+                        self.notice = "Source input admitted into the current turn.".into();
+                    }
+                    Mode::ActionSegment => {
+                        self.work_segments.insert(
+                            admission.origin.execution,
+                            PendingWorkSegment {
+                                operation: admission.operation.clone(),
+                                admission: admission.id.clone(),
+                                input: display,
+                            },
+                        );
+                    }
+                }
+                self.work_seen.insert(admission.id.clone());
+                self.work_admissions
+                    .insert(admission.id, admission.operation);
+            }
+            WorkExecution::Ended { operation, outcome } => {
+                let row = self.work_row(&operation)?;
+                if self.work_ended.contains_key(&operation)
+                    || !matches!(
+                        self.rows[row].state,
+                        ReplyState::Sending | ReplyState::Streaming | ReplyState::Cancelling
+                    )
+                {
+                    return Err(io::Error::other("Unexpected Work stream ending"));
+                }
+                let reason = match &outcome {
+                    TerminalOutcome::Complete => "",
+                    TerminalOutcome::Refused(s)
+                    | TerminalOutcome::Failed(s)
+                    | TerminalOutcome::Cancelled(s)
+                    | TerminalOutcome::ApprovalStopped(s) => s,
+                };
+                self.replace_cost((0, 0), (reason.len(), display_units(reason)?))?;
+                self.rows[row].state = ReplyState::AwaitingRetirement;
+                self.work_ended.insert(operation, outcome);
+                self.notice = "Stream ended; awaiting independent source worker retirement.".into();
+            }
+            WorkExecution::Retired { admission_id } => {
+                if self.work_admissions.remove(&admission_id).is_none() {
+                    return Err(io::Error::other("Unknown or repeated Work retirement"));
+                }
+            }
+            WorkExecution::Settled { operation, outcome } => {
+                let row = self.work_row(&operation)?;
+                if self.work_admissions.values().any(|op| op == &operation)
+                    || self.work_ended.get(&operation) != Some(&outcome)
+                    || self.submission_id.as_deref() == Some(&operation)
+                        && (!self.approvals.is_empty() || !self.questions.is_empty())
+                {
+                    return Err(io::Error::other(
+                        "Work settlement differs from exact retired operation",
+                    ));
+                }
+                self.finish_work_row(row, outcome, true)?;
+                self.work_ended.remove(&operation);
+                if self.submission_id.as_deref() == Some(&operation) {
+                    self.submission_id = None;
+                    self.stop_confirm = false;
+                    self.busy = false;
+                    self.notice = "Source turn and worker retirement verified.".into();
+                }
+            }
+            WorkExecution::NotStarted {
+                operation,
+                execution,
+                outcome,
+            } => {
+                self.check_rewrite_operation(&operation)?;
+                let segment = self.work_segments.get(&execution).ok_or_else(|| {
+                    io::Error::other("Not-started Work has no exact held execution")
+                })?;
+                if segment.operation != operation
+                    || self.work_admissions.contains_key(&segment.admission)
+                    || self.work_uncertain.is_empty()
+                    || !matches!(
+                        outcome,
+                        TerminalOutcome::Cancelled(_) | TerminalOutcome::Failed(_)
+                    )
+                {
+                    return Err(io::Error::other(
+                        "Not-started Work lacks verified unsuccessful retirement",
+                    ));
+                }
+                let segment = self
+                    .work_segments
+                    .remove(&execution)
+                    .expect("verified held input");
+                let row = self.append_work_row(segment.input);
+                self.rows[row].cards.clear();
+                self.rows[row].items.clear();
+                self.finish_work_row(row, outcome, false)?;
+            }
+            WorkExecution::LocalRefused { operation, reason } => {
+                let row = self
+                    .suspended_rows
+                    .get(&operation)
+                    .copied()
+                    .ok_or_else(|| {
+                        io::Error::other("Local refusal has no exact displaced prompt")
+                    })?;
+                self.finish_work_row(row, TerminalOutcome::Refused(reason), false)?;
+                self.suspended_rows.remove(&operation);
+            }
+            WorkExecution::LocalNotSent { reason } => {
+                let row = self
+                    .forwarded_row
+                    .ok_or_else(|| io::Error::other("Local refusal has no parked unsent prompt"))?;
+                self.finish_work_row(row, TerminalOutcome::Refused(reason), false)?;
+                self.forwarded_row = None;
+            }
+            WorkExecution::Reconciled {
+                input_id,
+                recovered,
+            } => {
+                if (!recovered && !self.work_uncertain.contains_key(&input_id))
+                    || (self.busy && !self.uncertainty_only_busy())
+                {
+                    return Err(io::Error::other(
+                        "History reconciliation cannot release active work",
+                    ));
+                }
+                if let Some(reason) = self.work_uncertain.remove(&input_id) {
+                    self.replace_cost(
+                        (
+                            reason.len().saturating_mul(2) + input_id.len(),
+                            display_units(&reason)?,
+                        ),
+                        (0, 0),
+                    )?;
+                }
+                self.notice =
+                    format!("Provider history confirmed input {input_id}; nothing resent.");
+            }
+            WorkExecution::Uncertain { input_id, reason } => {
+                if input_id.is_empty() || input_id.len() > 128 {
+                    return Err(io::Error::other("Invalid uncertain input identity"));
+                }
+                // An uncertain input can win the same local-dispatch race as an
+                // accepted NewTurn, without creating any new operation or row.
+                if self.submission_id.is_none()
+                    && let Some(row) = self.rows.len().checked_sub(1)
+                    && !self.rows[row].source_owned
+                    && self.rows[row].state == ReplyState::Sending
+                {
+                    if self.pending.is_some() {
+                        self.finish_work_row(row, TerminalOutcome::Refused("Not sent: source input delivery became uncertain before local submission. Inspect Work before continuing.".into()), false)?;
+                        self.pending = None;
+                    } else if self.forwarded_row.is_none() {
+                        self.forwarded_row = Some(row);
+                    }
+                }
+                let notice = format!(
+                    "Source input {input_id}: {reason} · delivery uncertain; F1 Work, F7 held input, and Ctrl+Q remain available."
+                );
+                if input_id.len() > 128
+                    || self.work_uncertain.len() >= 256
+                    || self.work_uncertain.contains_key(&input_id)
+                {
+                    return Err(io::Error::other(
+                        "Duplicate or excessive Work input uncertainty",
+                    ));
+                }
+                self.replace_cost(
+                    (0, 0),
+                    (
+                        notice.len().saturating_mul(2) + input_id.len(),
+                        display_units(&notice)?,
+                    ),
+                )?;
+                self.work_uncertain.insert(input_id, notice.clone());
+                self.notice = notice;
+            }
+        }
+        // A receipt for an older operation must never release the current stream.
+        self.busy = self.pending_row().is_ok()
+            || self.compact_active
+            || !self.rewrite_maintenance.is_empty();
+        self.retain_work_busy();
         Ok(())
     }
     fn check_rewrite_operation(&self, operation: &str) -> io::Result<()> {
@@ -1055,6 +1608,9 @@ impl Chat {
         let index = self.rows.len();
         self.rows.push(Row {
             source_owned: true,
+            source: None,
+            inputs: Vec::new(),
+            committed: None,
             prompt: prompt.into(),
             cards: vec![Card::default()],
             tools: Vec::new(),
@@ -1095,11 +1651,27 @@ impl Chat {
             return Err(io::Error::other("Compaction has no user stream row"));
         }
         self.rewrite_stream_row
+            .or_else(|| {
+                self.submission_id
+                    .as_ref()
+                    .and_then(|id| self.operation_rows.get(id))
+                    .copied()
+            })
             .or_else(|| self.rows.len().checked_sub(1))
             .filter(|i| *i < self.rows.len())
             .ok_or_else(|| io::Error::other("Missing live row"))
     }
     fn settle(&mut self, outcome: crate::live::TerminalOutcome) -> io::Result<()> {
+        // Retirement may be verified before the current question/approval/abort
+        // receipt. Its later ordinary terminal still binds the stored operation.
+        if let Some(operation) = self.submission_id.as_ref()
+            && self.work_ended.contains_key(operation)
+        {
+            return self.observe_work(crate::live::WorkExecution::Settled {
+                operation: operation.clone(),
+                outcome,
+            });
+        }
         let (state, stop_reason) = match outcome {
             crate::live::TerminalOutcome::Complete => (ReplyState::Complete, None),
             crate::live::TerminalOutcome::Refused(reason) => (ReplyState::Refused, Some(reason)),
@@ -1115,6 +1687,16 @@ impl Chat {
             return Err(io::Error::other("Turn settlement with pending input"));
         }
         self.pending_row()?;
+        if !self.rewrite_pending
+            && self
+                .submission_id
+                .as_ref()
+                .is_some_and(|id| self.work_admissions.values().any(|op| op == id))
+        {
+            return Err(io::Error::other(
+                "Work turn settlement preceded worker retirement",
+            ));
+        }
         let reason = stop_reason.as_deref().unwrap_or("");
         let units = display_units(reason)?;
         if self.retained_units.saturating_add(units) > DISPLAY_UNITS
@@ -1154,6 +1736,7 @@ impl Chat {
         }
         .into();
         self.refresh_rewrite_busy();
+        self.retain_work_busy();
         Ok(())
     }
     fn pending_row(&self) -> io::Result<&Row> {
@@ -1290,6 +1873,7 @@ impl Chat {
         self.commands.finish();
         self.themes.finish();
         self.saved_history.finish();
+        self.work.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -1303,6 +1887,7 @@ impl Chat {
         self.commands.finish();
         self.themes.finish();
         self.saved_history.finish();
+        self.work.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -1333,6 +1918,9 @@ impl Chat {
                 ReplyState::Complete
                     | ReplyState::ApprovalStopped
                     | ReplyState::Cancelled
+                    | ReplyState::Refused
+                    | ReplyState::Failed
+                    | ReplyState::Reconciled
                     | ReplyState::MaintenanceSettled
             ) {
                 row.state = ReplyState::Incomplete;

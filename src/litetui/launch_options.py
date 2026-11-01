@@ -7,6 +7,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from litetui.llm_backend import BackendError
@@ -30,6 +31,12 @@ class LaunchOptions:
     codex_engine: str | None = None
     engine_management: bool = False
     history_projection_version: int | None = None
+    work_lifecycle_version: int | None = None
+
+    def validate_work_lifecycle(self) -> None:
+        version = self.work_lifecycle_version
+        if version is not None and (type(version) is not int or version != 1):
+            raise ValueError('--work-lifecycle-version must be integer 1 when selected')
 
     def validate_history_projection(self) -> None:
         version = self.history_projection_version
@@ -53,9 +60,10 @@ class LaunchOptions:
 
     def overrides(self, settings, backend, model):
         self.validate_history_projection()
+        self.validate_work_lifecycle()
         self.validate_engine_management(backend, model)
         from litetui.custom_backend import api_base
-        values = {}
+        values: dict[str, Any] = {}
         if self.codex_engine is not None:
             if self.codex_engine not in ('native', 'http'):
                 raise ValueError('codex_engine must be native or http')
@@ -158,6 +166,8 @@ class LaunchOptions:
 
 
 def add_arguments(parser):
+    parser.add_argument('--work-lifecycle-version', type=int, choices=(1,),
+                        help='Captured background-input RPC lifecycle; requires --rpc and --hold-restored-input')
     parser.add_argument('--history-projection-version', type=int, choices=(1,),
                         help='Bounded saved-history RPC projection; requires --rpc and --hold-restored-input')
     parser.add_argument('--engine-management', action='store_true',
@@ -200,8 +210,15 @@ def from_args(args):
                             args.max_tokens, args.server_executable, args.model_path, command,
                             args.api_key_env, args.server_timeout, codex_engine,
                             getattr(args, 'engine_management', False),
-                            getattr(args, 'history_projection_version', None))
+                            getattr(args, 'history_projection_version', None),
+                            getattr(args, 'work_lifecycle_version', None))
     options.validate_history_projection()
+    options.validate_work_lifecycle()
+    if options.work_lifecycle_version is not None:
+        if not getattr(args, 'rpc', False) or not getattr(args, 'hold_restored_input', False):
+            raise ValueError('--work-lifecycle-version requires --rpc and --hold-restored-input')
+        if getattr(args, 'prompt', None) is not None:
+            raise ValueError('--work-lifecycle-version cannot carry --prompt; submit after capture and activation')
     options.validate_engine_management(args.backend, getattr(args, 'model', None))
     if options.engine_management and getattr(args, 'prompt', None) is not None:
         raise ValueError('--engine-management cannot carry --prompt; submit explicitly after a verified connection')
@@ -211,8 +228,9 @@ def from_args(args):
 def to_argv(options):
     """Use the same public arguments for supervised and external agents."""
     options.validate_history_projection()
+    options.validate_work_lifecycle()
     args = ['--server-mode', options.server_mode, '--server-timeout', str(options.timeout)]
-    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine', 'history_projection_version'):
+    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine', 'history_projection_version', 'work_lifecycle_version'):
         value = getattr(options, name)
         if value is not None:
             args += ['--' + name.replace('_', '-'), str(value)]
@@ -227,8 +245,9 @@ def to_argv(options):
 
 async def prepare(app):
     options = getattr(app, '_launch_options', None)
-    if options is not None and getattr(options, 'history_projection_version', None) is not None:
+    if options is not None:
         options.validate_history_projection()
+        options.validate_work_lifecycle()
     if options is not None and getattr(options, 'engine_management', False):
         options.validate_engine_management(
             app.backend.name, getattr(app, '_cli_initial_model', None) or getattr(app, 'model_id', None))

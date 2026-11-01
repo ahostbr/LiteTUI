@@ -1068,7 +1068,8 @@ class OpenAITransport:
         _refuse_unsupported_local_lm(self.backend, remote_marker=self.remote_marker)
         kwargs = dict(kwargs)
         kwargs["messages"] = [
-            {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
+            {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery",
+                                                      "work_input_id", "work_payload_sha256")}
             for m in kwargs["messages"]
         ]
         try:

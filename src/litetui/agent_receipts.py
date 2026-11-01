@@ -3,7 +3,7 @@
 ACK transfers responsibility here. Applying a receipt to conversation history
 is a separate idempotent commit keyed by completion_id, never a bubble display.
 """
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 from pathlib import Path
 import sqlite3
@@ -99,6 +99,30 @@ class ParentReceipts:
                               'AND applied=0 ORDER BY created,id',
                               (_identity(parent), _identity(conversation))).fetchall()
         return [{'completion_id': ident, 'result': json.loads(payload)} for ident, payload in rows]
+
+    def pending_wakes(self, parent, conversation, *, max_count=256, max_bytes=8 * 1024 * 1024):
+        """Read bounded applied, unclaimed wake evidence without changing a claim.
+
+        The caller reviews this snapshot before reserving capacity and claiming.
+        A read transaction keeps size validation and payload reads on one view.
+        """
+        if (type(max_count) is not int or not 1 <= max_count <= 256
+                or type(max_bytes) is not int or not 1 <= max_bytes <= 8 * 1024 * 1024):
+            raise ValueError('Invalid wake inspection budget')
+        scope = (_identity(parent), _identity(conversation))
+        with closing(sqlite3.connect(self.path, timeout=10, isolation_level=None)) as db:
+            db.execute('BEGIN')
+            rows = db.execute("SELECT id,length(CAST(payload AS BLOB)) FROM receipts "
+                "WHERE parent=? AND conversation=? AND applied=1 AND wake_state='pending' "
+                "ORDER BY created,id LIMIT ?", (*scope, max_count + 1)).fetchall()
+            if len(rows) > max_count or sum(size for _ident, size in rows) > max_bytes:
+                raise ValueError('Pending child wakes exceed the inspection budget; no claim made')
+            result = []
+            for ident, _size in rows:
+                payload = db.execute('SELECT payload FROM receipts WHERE parent=? AND conversation=? AND id=?',
+                                     (*scope, ident)).fetchone()[0]
+                result.append({'completion_id': ident, 'result': json.loads(payload)})
+            return result
 
     def claim_wake(self, parent, conversation):
         """Claim once before inference; interrupted claims require reconciliation.

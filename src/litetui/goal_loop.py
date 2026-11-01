@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from litetui import paths, scheduler, seat_authority
+from litetui import background_input, paths, scheduler, seat_authority
 from litetui.tool_policy import INTERACTIVE
 
 GOAL_FILENAME = "goal.json"
@@ -221,7 +221,8 @@ class GoalRuntime:
         self._evaluating = False
 
     async def on_plain_answer(self) -> None:
-        if self._evaluating or getattr(self.app, "_gui_quitting", False):
+        if (self._evaluating or getattr(self.app, "_gui_quitting", False)
+                or background_input.activation_pending(self.app)):
             return
         state = load_goal(getattr(self.app, "convo_dir", None))
         if state is None or state.status != "active":
@@ -233,6 +234,14 @@ class GoalRuntime:
             # older plain answer is not goal-owned and must not be judged.
             self._evaluating = False
             return
+        try:
+            await background_input.evaluate_goal(
+                self.app, state, lambda: self._evaluate(state, transcript)
+            )
+        finally:
+            self._evaluating = False
+
+    async def _evaluate(self, state: GoalState, transcript: str) -> None:
         try:
             await self.app._ensure_chat_ready()
             from litetui import model_transport
@@ -309,7 +318,7 @@ class GoalRuntime:
             f"Next: {verdict.next_instruction}\n"
             "Continue the work and produce transcript evidence for completion."
         )
-        self.app._pending_input.append({
+        item = {
             "content": continuation,
             "text": continuation,
             "tool_profile": state.tool_profile,
@@ -317,11 +326,21 @@ class GoalRuntime:
             # T1043: the SOURCE carries the loop's origin, because the codex
             # steering ledger keeps "source" and drops "goal_continuation".
             "source": seat_authority.goal_source(state),
-        })
+        }
+        if background_input.enabled(self.app):
+            background_input.goal_input(self.app, item, wake=False)
+        else:
+            self.app._pending_input.append(item)
 
 
 def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
     text = f"[goal {state.id}]\nObjective: {state.objective}\n{instruction}"
+    item = {"content": text, "text": text, "tool_profile": state.tool_profile,
+            "goal_continuation": True, "source": seat_authority.goal_source(state)}
+    background_input.require_recapture_complete(app)
+    if background_input.enabled(app):
+        background_input.start_goal(app, state, item)
+        return
     if app._chat_running():
         app._user_bubble(text, False, queued=True)
         app._pending_input.append({

@@ -30,6 +30,7 @@ def forbidden(*_args, **_kwargs):
 
 async def serve(app):
     from litetui import (
+        background_input,
         codex_steering,
         gui_rpc,
         restored_input,
@@ -217,6 +218,7 @@ async def serve(app):
     await check_held()
     app.available_models = [app.model_id]
     app._active_tool_profile = app._cli_tool_profile
+    assert app._launch_options.work_lifecycle_version == 1
     app._rpc_ready_sent = True
     rpc.rpc_emit({"type": "ready", "protocol_version": 1, "launch_status": "ready",
         "backend": app.backend.name, "model": app.model_id, "conversation_id": app.convo_id,
@@ -224,7 +226,8 @@ async def serve(app):
         "mcp_enabled": app.settings.mcp_enabled, "tool_profile": app._active_tool_profile,
         "tool_profile_requested": app._cli_tool_profile, "approval_route": seat_authority.confirm_route(app),
         "cwd": os.getcwd(), "management_protocols": [1], "capabilities": list(gui_rpc.OPERATIONS),
-        "history_projection_version": app._launch_options.history_projection_version})
+        "history_projection_version": app._launch_options.history_projection_version,
+        "work_lifecycle_version": app._launch_options.work_lifecycle_version})
     with (root / "launches.jsonl").open("a", encoding="utf-8") as log:
         log.write(json.dumps({"session": app.convo_id, "agent": app._agent_session.authority.agent_id,
                              "thinking": app.thinking_level, "argv": sys.argv,
@@ -240,7 +243,11 @@ async def serve(app):
             with (root / "resume-commands.jsonl").open("a", encoding="utf-8") as log:
                 log.write(json.dumps(command) + "\n")
             if command["type"] == "shutdown":
-                rpc._respond(command["id"], ok=True, result={"ok": True})
+                work_proof = await background_input.settle_before_shutdown(app)
+                result = {"ok": True}
+                if work_proof is not None:
+                    result["work_shutdown"] = work_proof
+                rpc._respond(command["id"], ok=True, result=result)
                 break
             if command["type"] in {"gui.conversations.read", "gui.history.native_snapshot"} and (root / "hold-history").exists():
                 continue

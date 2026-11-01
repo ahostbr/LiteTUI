@@ -5,6 +5,7 @@ import json
 import uuid
 from threading import Event
 
+from litetui import background_input
 from litetui.codex_steering import SteeringLedger, save_at
 from litetui.model_transport import ProviderError
 from litetui.question_result import (
@@ -111,9 +112,11 @@ class AsyncQuestions:
             return
         app = self.transport.app
         cancelled = Event()
+        record = background_input.register_provider_producer(app, "provider_question",
+            str(uuid.uuid5(uuid.NAMESPACE_URL, "litetui-codex-question:" + entry["id"])))
         worker = (
             app.run_worker(
-                self._run(entry, metadata, index, cancelled),
+                background_input.producer_runner(app, record, self._run(entry, metadata, index, cancelled)),
                 group="codex-async-questions",
                 exclusive=False,
                 exit_on_error=False,
@@ -121,6 +124,7 @@ class AsyncQuestions:
             if hasattr(app, "run_worker")
             else asyncio.create_task(self._run(entry, metadata, index, cancelled))
         )
+        background_input.bind_producer_worker(app, record, worker)
         self.active[entry["id"]] = (cancelled, worker)
 
     async def _run(self, entry, metadata, index, cancelled):
@@ -211,6 +215,8 @@ class AsyncQuestions:
 
     def queue_answer(self, entry, metadata, index, text):
         app = self.transport.app
+        if background_input.enabled(app) and not background_input.capturing_completion(app):
+            raise ProviderError("Captured question answer lacks its exact registered question worker.")
         latest = latest_question(app, entry["id"], entry.get("threadId"))
         if latest is not None and latest[1] is not entry:
             raise ProviderError("A newer saved question state superseded this answer.")
@@ -255,10 +261,13 @@ class AsyncQuestions:
             value.get("_codex_entry", {}).get("id") == ident
             for value in app._pending_input
         ):
-            app._pending_input.append(
-                {**delivery["item"], "_codex_entry": delivery, "_codex_ledger": ledger}
-            )
-            if hasattr(app, "_user_bubble"):
-                app._user_bubble(text, False, queued=True)
+            item = {**delivery["item"], "_codex_entry": delivery, "_codex_ledger": ledger}
+            captured = background_input.capture_inbox(app, item)
+            if captured is not None:
+                background_input.bind_native_journal(app, captured, delivery, ledger)
+            if captured is None or captured.state == "queued":
+                app._pending_input.append(item)
+                if hasattr(app, "_user_bubble"):
+                    app._user_bubble(text, False, queued=True)
         if hasattr(app, "call_after_refresh"):
             app.call_after_refresh(app._flush_pending_input)

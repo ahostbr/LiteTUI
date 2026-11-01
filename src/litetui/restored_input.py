@@ -200,10 +200,24 @@ def _persist(app, entry, entries, index, state, **values):
     current = _records(app.conversation).get(entry["id"])
     if current is None or current[0] is not entry or current[1] is not entries or current[2] != index:
         raise ValueError("Recovered input metadata moved before persistence")
-    SteeringLedger(entries, lambda: save_at(app, index)).transition(entry, state, **values)
+    # Real Codex streaming shares this exact journal list between its user and
+    # assistant records. Persist every live alias; equal historical copies are
+    # independent evidence and must not be rewritten by native delivery ID.
+    aliases = [(n, row) for n, row in enumerate(app.conversation)
+               if (row.get("provider_metadata") or {}).get("steering") is entries]
+
+    def save_aliases():
+        for n, row in aliases:
+            if (n >= len(app.conversation) or app.conversation[n] is not row
+                    or (row.get("provider_metadata") or {}).get("steering") is not entries):
+                raise ValueError("Recovered input alias moved before persistence")
+            save_at(app, n)
+
+    SteeringLedger(entries, save_aliases).transition(entry, state, **values)
     meta, messages = ConversationRepository.read(app.store.convo_path)
     saved = _records(messages).get(entry["id"])
-    if meta.get("id") != app.convo_id or saved is None or saved[0] != entry:
+    if (meta.get("id") != app.convo_id or saved is None or saved[0] != entry
+            or any(n >= len(messages) or messages[n] != row for n, row in aliases)):
         raise OSError("Recovered input transition could not be verified in the saved journal")
 
 
@@ -215,8 +229,9 @@ async def continue_input(app, cmd):
     """
     from dataclasses import replace
 
-    from litetui import hook_host, seat_authority, tool_policy
+    from litetui import background_input, hook_host, seat_authority, tool_policy
 
+    background_input.require_new_execution(app)
     operation = _text(cmd.get("id"), 128)
     result, records = _inspect(app, cmd.get("session_id"))
     if cmd.get("snapshot") != result["snapshot"]:
@@ -384,8 +399,9 @@ class _HistoryReader:
 
 async def reconcile(app, cmd):
     """Observe positive provider acceptance; never send, retry or start a turn."""
-    from litetui import codex_history, codex_steering
+    from litetui import background_input, codex_history, codex_steering
 
+    background_input.require_recapture_complete(app)
     operation = _text(cmd.get("id"), 128)
     before, records = _inspect(app, cmd.get("session_id"))
     if cmd.get("snapshot") != before["snapshot"]:
@@ -423,6 +439,8 @@ async def reconcile(app, cmd):
         return result
     # This records an already accepted input, not a new admission. Do not run
     # prompt hooks, change active authority, emit turn events or schedule work.
+    work_ticket = await background_input.prepare_reconciliation(app, item, entry, operation, history)
+    current()
     try:
         _persist(app, entry, entries, index, "accepted", reconciliation_operation_id=operation)
         message = {
@@ -439,9 +457,12 @@ async def reconcile(app, cmd):
         if (meta.get("id") != before["session_id"] or len(delivered) != 1
                 or any(delivered[0].get(key) != value for key, value in message.items())):
             raise OSError("Reconciled input was not durably materialized")
+        work_receipt = background_input.finish_reconciliation(app, work_ticket)
     except (Exception, asyncio.CancelledError):
         app._restored_input_error = True
         raise
     codex_steering.remove_item(app._pending_input, item)
     result["reconciled"] = True
+    if work_receipt is not None:
+        result["work_reconciliation"] = work_receipt
     return result

@@ -473,6 +473,26 @@ fn observed_tool(
     lines.push(Line::raw(""));
 }
 
+fn work_source(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    source: &crate::live_chat::WorkSource,
+    width: usize,
+) {
+    tool_body(
+        t,
+        lines,
+        &format!(
+            "Source: {} · requested {} · effective {}",
+            display_safe(&source.source),
+            source.requested.as_str(),
+            source.effective.as_str()
+        ),
+        t.tool_text,
+        width,
+    );
+}
+
 fn native_tool(
     t: &crate::theme::Theme,
     lines: &mut Vec<Line<'static>>,
@@ -616,23 +636,55 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                     style(t.tool_text, t.background),
                 ));
             }
-            for text in wrap(
-                &format!(
-                    "{}: {}",
-                    if row.source_owned { "Source" } else { "You" },
-                    display_safe(&row.prompt)
-                ),
-                width.saturating_sub(4),
-            ) {
-                lines.push(Line::styled(
-                    format!("  {text}"),
-                    style(t.foreground, t.background),
-                ));
+            if let Some(committed) = &row.committed {
+                tool_body(
+                    t,
+                    &mut lines,
+                    &format!("Source continuation: {}", display_safe(&committed.status)),
+                    t.foreground,
+                    width,
+                );
+                tool_body(
+                    t,
+                    &mut lines,
+                    "Already committed history references:",
+                    t.tool_text,
+                    width,
+                );
+                for receipt in &committed.history.receipt_ids {
+                    tool_body(
+                        t,
+                        &mut lines,
+                        &format!("Receipt: {}", display_safe(receipt)),
+                        t.tool_text,
+                        width,
+                    );
+                }
+            } else {
+                for text in wrap(
+                    &format!(
+                        "{}: {}",
+                        if row.source_owned { "Source" } else { "You" },
+                        display_safe(&row.prompt)
+                    ),
+                    width.saturating_sub(4),
+                ) {
+                    lines.push(Line::styled(
+                        format!("  {text}"),
+                        style(t.foreground, t.background),
+                    ));
+                }
+            }
+            if let Some(source) = &row.source {
+                work_source(t, &mut lines, source, width);
             }
             lines.push(Line::raw(""));
             let state = match row.state {
                 crate::live_chat::ReplyState::Sending => "Sending · not yet completed",
                 crate::live_chat::ReplyState::Streaming => "Streaming",
+                crate::live_chat::ReplyState::AwaitingRetirement => {
+                    "Stream ended · awaiting worker retirement"
+                }
                 crate::live_chat::ReplyState::Maintenance => "Compacting · source work",
                 crate::live_chat::ReplyState::MaintenanceSettled => {
                     "Compaction worker settled · see source status"
@@ -648,12 +700,24 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                     "Previously accepted · verified in provider history · not resent"
                 }
             };
-            if row.state == crate::live_chat::ReplyState::Reconciled {
+            if row.cards.is_empty() {
                 tool_body(t, &mut lines, state, t.tool_text, width);
                 lines.push(Line::raw(""));
             }
             for item in &row.items {
                 match *item {
+                    crate::live_chat::Item::WorkInput(index) => {
+                        let input = &row.inputs[index];
+                        work_source(t, &mut lines, &input.source, width);
+                        tool_body(
+                            t,
+                            &mut lines,
+                            &display_safe(&input.text),
+                            t.foreground,
+                            width,
+                        );
+                        lines.push(Line::raw(""));
+                    }
                     crate::live_chat::Item::Tool(index) => {
                         native_tool(t, &mut lines, &row.tools[index], width)
                     }
@@ -790,6 +854,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             chat.saved_history.hide();
             chat.rewrite.hide();
             chat.compact.hide();
+            chat.work.hide();
             chat.settings.hide();
             chat.backend_controls.hide();
             chat.browser.hide();
@@ -1023,7 +1088,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             Block::default()
                 .borders(Borders::ALL)
                 .title_bottom(if app.live.is_some() {
-                    " F3 models · F7 held · F8 conversations · F4 themes · Esc stops · Ctrl+Q "
+                    " F1 Work · F3 models · F7 held · F8 conversations · F4 themes · Esc stops · Ctrl+Q "
                 } else {
                     " F4 themes · F6 approval · Ctrl+Q "
                 })
@@ -1167,6 +1232,17 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &t);
     } else if let Some(chat) = app.live.as_mut() {
         chat.themes.hide();
+    }
+    if app.has_live_work()
+        && !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.viewport_too_small
+        && !app.live.as_ref().is_some_and(|chat| chat.cancelling())
+    {
+        app.live.as_mut().expect("Work").work.draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.work.hide();
     }
     if app.has_live_settings() {
         app.live

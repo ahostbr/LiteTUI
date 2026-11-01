@@ -395,6 +395,14 @@ async def serve(app):
         if seeded:
             question_state()
             history.report["after"] = stable(app)
+            from litetui.background_input import FILENAME
+            journal = app.convo_dir / FILENAME
+            if journal.is_file():
+                raw = journal.read_bytes()
+                history.report["work_shutdown_journal"] = {
+                    "path": str(journal.relative_to(history.root)),
+                    "raw": raw.decode("utf-8"),
+                }
             history.report["durable"] = ConversationRepository.read(app.convo_path, max_bytes=8 * 1024 * 1024)[1]
             history.report["live"] = copy.deepcopy(app.conversation)
             history.report["persist_error"] = app.store.persist_error
@@ -423,6 +431,8 @@ async def serve(app):
 
     def dispatch(self, command):
         history.commands.append(copy.deepcopy(command))
+        if command["type"] == "shutdown":
+            history.report["before_shutdown"] = stable(app)
         if command["type"] == APPLY:
             history.explicit = True
             history.expected_saved_context = copy.deepcopy(history.report["prefix"])

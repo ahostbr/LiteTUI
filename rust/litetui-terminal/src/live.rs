@@ -1,6 +1,7 @@
 //! Owned Python RPC runtime for one-shot and interactive frontends.
 //! Versioned management startup, selected envelopes and serial prompt ownership.
 //! No automatic retries, backend fallback, automatic approvals or local model launches.
+mod work;
 use crate::{
     protocol::JsonlDecoder,
     transport::{Inbound, IngressLimits},
@@ -15,6 +16,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+pub use work::Update as WorkExecution;
 
 const FRAME_BYTES: usize = 2 * 1024 * 1024;
 const PROMPT_ID: &str = "rust-live-prompt";
@@ -186,6 +188,7 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    WorkExecution(Box<WorkExecution>),
     Compact(crate::conversation_compact::Update),
     CompactSettled(Box<crate::management::CompactChanged>),
     Rewrite(crate::conversation_rewrite::Update),
@@ -221,6 +224,7 @@ pub enum Observation {
     Controls(crate::model_controls::Update),
     Queue(crate::restored_queue::Update),
     Commands(crate::command_palette::Update),
+    Work(crate::work_view::Update),
     Settings(crate::settings_view::Update),
     Backend(crate::backend_controls::Update),
     BackendChanged(Box<crate::backend_controls::Changed>),
@@ -268,6 +272,7 @@ pub enum TerminalOutcome {
 }
 #[derive(Default)]
 pub struct Turn {
+    work: work::State,
     ready: bool,
     engine_admission: Option<crate::engine_controls::Admission>,
     allow_engine_management: bool,
@@ -314,6 +319,14 @@ pub struct Turn {
     stop_requests: usize,
     stop_acknowledged: bool,
 }
+fn require_work_lifecycle(ready: &Value) -> io::Result<()> {
+    if ready["work_lifecycle_version"].as_u64() != Some(1) {
+        return Err(io::Error::other(
+            "Runtime did not acknowledge requested Work lifecycle version 1",
+        ));
+    }
+    Ok(())
+}
 impl Turn {
     /// Stop admitting user work while the source drains its owned shutdown.
     pub fn begin_close(&mut self) {
@@ -326,7 +339,23 @@ impl Turn {
                 .is_none_or(|a| a == crate::engine_controls::Admission::PromptReady)
     }
     fn can_engine(&self) -> bool {
-        self.ready && !self.closing && !self.rewrite_active && (!self.sent || self.settled)
+        self.ready
+            && !self.closing
+            && !self.rewrite_active
+            && !self.work.uncertain
+            && !self.work.owns_work()
+            && (!self.sent || self.settled)
+    }
+    fn can_reconcile_work(&self) -> bool {
+        self.ready
+            && !self.closing
+            && !self.rewrite_active
+            && !self.work.owns_work()
+            && self.work.ended.is_empty()
+            && (!self.sent || self.settled)
+            && self.approvals.settled()
+            && self.questions.settled()
+            && self.aborts.settled()
     }
     pub fn with_policy(policy: crate::tool_mode::Expected) -> Self {
         Self {
@@ -350,6 +379,8 @@ impl Turn {
                 .engine_admission
                 .is_some_and(|a| a != crate::engine_controls::Admission::PromptReady)
             || self.closing
+            || self.work.uncertain
+            || self.work.owns_work()
             || self.rewrite_active
             || !self.approvals.settled()
             || !self.questions.settled()
@@ -361,7 +392,12 @@ impl Turn {
         }
         // Provider journals outlive this process. An ordinal, timestamp or PID
         // can alias a saved operation after restart; reserve fresh OS randomness.
-        self.command_id = fresh_prompt_id()?;
+        self.reset_operation(fresh_prompt_id()?)?;
+        Ok(self.command_id.clone())
+    }
+    fn reset_operation(&mut self, operation: String) -> io::Result<()> {
+        self.work.reserve_operation(&operation)?;
+        self.command_id = operation;
         self.continued_input = None;
         self.rewrite_input = None;
         self.compact_input = None;
@@ -389,7 +425,7 @@ impl Turn {
         self.tools_seen = false;
         self.card_count = 1;
         self.content_bytes = 0;
-        Ok(self.command_id.clone())
+        Ok(())
     }
     pub fn submit_continuation(
         &mut self,
@@ -469,6 +505,7 @@ impl Turn {
     }
     fn rewrite_readback_ready(&self) -> bool {
         self.rewrite_active
+            && !self.work.owns_work()
             && self.rewrite_first_terminal
             && self.acknowledged
             && self.aborts.settled()
@@ -823,6 +860,7 @@ impl Turn {
     }
     fn settle(&mut self) -> Observation {
         self.settled = true;
+        self.work.ended.remove(&self.command_id);
         match self
             .terminal
             .as_ref()
@@ -839,6 +877,7 @@ impl Turn {
     }
     fn can_settle(&self) -> bool {
         self.terminal.is_some()
+            && (self.rewrite_active || !self.work.pending_operation(&self.command_id))
             && self.acknowledged
             && !self.settled
             && self.aborts.settled()
@@ -870,6 +909,7 @@ impl Turn {
     fn question_observation(&mut self, event: crate::questions::Event) -> Observation {
         let settled = if self.can_settle() {
             self.settled = true;
+            self.work.ended.remove(&self.command_id);
             self.terminal.clone()
         } else {
             None
@@ -1024,6 +1064,9 @@ impl Turn {
                 })
             }
             "response" => {
+                if let Some(update) = self.work_local_response(event)? {
+                    return Ok(update);
+                }
                 if let Some(stopped) = self.aborts.response(event)? {
                     // A local Stop can cross already emitted source starts. Its first
                     // receipt orders the barrier; a second pending Stop cannot reopen it.
@@ -1200,6 +1243,8 @@ impl Turn {
                 self.terminal = Some(TerminalOutcome::Refused(reason));
                 Ok(if self.can_settle() {
                     self.settle()
+                } else if let Some(update) = self.work_terminal() {
+                    update
                 } else {
                     Observation::Information(
                         "Input not started; waiting for admission and input/stop receipts.".into(),
@@ -1343,6 +1388,7 @@ impl Turn {
                 let event = self.approvals.close(event)?;
                 Ok(if self.can_settle() {
                     self.settled = true;
+                    self.work.ended.remove(&self.command_id);
                     Observation::ApprovalSettled {
                         event,
                         outcome: self.terminal.clone().expect("terminal"),
@@ -1422,11 +1468,14 @@ impl Turn {
                     }
                 };
                 self.terminal = Some(outcome);
+                self.work_stream_ended();
                 if self.rewrite_active {
                     self.rewrite_first_terminal = true;
                 }
                 if self.can_settle() {
                     Ok(self.settle())
+                } else if let Some(update) = self.work_terminal() {
+                    Ok(update)
                 } else {
                     Ok(Observation::Information(
                         "Turn ended; waiting for input closures and command responses".into(),
@@ -1707,6 +1756,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             "litetui.cli",
             "--rpc",
             "--hold-restored-input",
+            "--work-lifecycle-version",
+            "1",
             "--history-projection-version",
             "1",
             "--backend",
@@ -1768,12 +1819,43 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let mut management = crate::management::Management::new(options.resume.clone());
     let mut startup_facts = None;
     let mut mirror_deadline = None;
+    let mut work_deadline = None;
+    let mut management_deadline = None;
+    let mut work_retirement_deadlines = std::collections::HashMap::<String, Instant>::new();
     let mut tail = Vec::new();
     let mut deadline = Some(Instant::now() + options.timeout);
     let result = (|| -> io::Result<()> {
         loop {
             check_deadline(deadline)?;
+            if management.work_pending() {
+                check_deadline(work_deadline)?;
+            } else {
+                work_deadline = None;
+            }
             check_mirror_deadline(mirror_deadline)?;
+            // An autonomous source turn can overlap an already-dispatched read.
+            // Neither completion may erase the other's timeout. Reviewed action
+            // workers retain their separately renewed foreground deadline.
+            if turn.closing || turn.rewrite_active || management.ready() {
+                management_deadline = None;
+            } else {
+                let until = management_deadline.get_or_insert_with(|| {
+                    Instant::now() + management.engine_timeout().unwrap_or(options.timeout)
+                });
+                check_deadline(Some(*until))?;
+            }
+            if !turn.closing {
+                let waiting = turn.work_waits();
+                work_retirement_deadlines.retain(|id, _| waiting.contains(id));
+                for id in waiting {
+                    work_retirement_deadlines
+                        .entry(id)
+                        .or_insert_with(|| Instant::now() + options.timeout);
+                }
+                for deadline in work_retirement_deadlines.values() {
+                    check_deadline(Some(*deadline))?;
+                }
+            }
             if !turn.closing
                 && let Some(command) = frontend.command()?
             {
@@ -2008,6 +2090,26 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             ))?,
                         }
                     }
+                    Input::Work(intent) => {
+                        let generation = intent.generation;
+                        match management.request_work(intent) {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                work_deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => {
+                                frontend.observe(Observation::Work(crate::work_view::Update {
+                                    generation,
+                                    data: crate::work_view::Data::Rejected(error.to_string()),
+                                }))?
+                            }
+                        }
+                    }
                     Input::Settings(intent) => {
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
                         let compact_generation = match &intent {
@@ -2171,7 +2273,13 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     Input::Queue(intent) => {
                         // Read/cancel/resolve held input is recovery, not prompt admission.
                         // Continue is handled separately and still requires prompt readiness.
-                        let command = if turn.can_engine() {
+                        let recovery = matches!(
+                            intent,
+                            crate::restored_queue::Intent::Open
+                                | crate::restored_queue::Intent::Reconcile { .. }
+                        );
+                        let command = if turn.can_engine() || recovery && turn.can_reconcile_work()
+                        {
                             management.request_queue(intent)
                         } else {
                             Err(io::Error::other(
@@ -2197,17 +2305,30 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         if !management.ready() {
                             return Err(io::Error::other("Management startup is not complete"));
                         }
-                        let value = turn.submit(&prompt)?;
-                        let id = value["id"].as_str().expect("reserved ID").to_owned();
-                        management.prompt(&id)?;
-                        owned
-                            .stdin
-                            .as_ref()
-                            .expect("owned stdin")
-                            .try_send(value)
-                            .map_err(io::Error::other)?;
-                        frontend.observe(Observation::Submission { id })?;
-                        deadline = Some(Instant::now() + options.timeout);
+                        if management.work_lifecycle_active()
+                            && (turn.work.owns_work() || turn.work.uncertain)
+                        {
+                            // Source admission may win after the UI queues a draft but
+                            // before the supervisor reserves its command identity.
+                            // Keep that draft visible and never silently replay it.
+                            frontend.observe(Observation::WorkExecution(Box::new(
+                                WorkExecution::LocalNotSent {
+                                    reason: "Background work acquired the runtime before this prompt was sent. Submit it again after that work settles.".into(),
+                                },
+                            )))?;
+                        } else {
+                            let value = turn.submit(&prompt)?;
+                            let id = value["id"].as_str().expect("reserved ID").to_owned();
+                            management.prompt(&id)?;
+                            owned
+                                .stdin
+                                .as_ref()
+                                .expect("owned stdin")
+                                .try_send(value)
+                                .map_err(io::Error::other)?;
+                            frontend.observe(Observation::Submission { id })?;
+                            deadline = Some(Instant::now() + options.timeout);
+                        }
                     }
                     Input::Abort { prompt_id } => {
                         if let Some(value) = turn.abort(&prompt_id)? {
@@ -2280,7 +2401,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         if (turn.engine_shutdown.is_some()
                             || turn.conversation_shutdown.is_some()
                             || turn.rewrite_current_session.is_some()
-                            || turn.compact_current_session.is_some())
+                            || turn.compact_current_session.is_some()
+                            || management.work_lifecycle_active())
                             && !turn.shutdown_acknowledged
                         {
                             Err(io::Error::other(
@@ -2303,7 +2425,12 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 let event = value.expect("complete nonblank frame");
                 check_mirror_deadline(mirror_deadline)?;
                 use crate::management::Step;
-                match management.accept_wire(event, crate::history::wire_response_bytes(&frame))? {
+                let authority = turn.work_current(management.known_work_origin());
+                match management.accept_wire_with_work(
+                    event,
+                    crate::history::wire_response_bytes(&frame),
+                    authority.as_ref(),
+                )? {
                     Step::SavedHistory(update) => {
                         if !turn.closing {
                             frontend.observe(Observation::SavedHistory(update))?;
@@ -2311,6 +2438,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Step::Bootstrap(ready) => {
+                        require_work_lifecycle(&ready)?;
                         turn.accept(&ready, &options.backend, &options.model)?;
                         crate::history::require_projection(&ready)?;
                         startup_facts = if turn.can_manage() {
@@ -2319,6 +2447,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             None
                         };
                         if !turn.closing {
+                            management.enable_work_lifecycle(profile)?;
                             let hello = management.begin(&ready)?;
                             owned
                                 .stdin
@@ -2446,6 +2575,36 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             }
                         }
                     }
+                    Step::WorkLifecycle(effect) => {
+                        let starts = matches!(effect.as_ref(),crate::work_lifecycle::Effect::Admission{admission,..}
+                            if admission.mode==crate::work_lifecycle::Mode::NewTurn);
+                        check_deadline(deadline)?;
+                        let updates = turn.accept_work(*effect)?;
+                        turn.work_observed_deadline(&updates, &mut deadline);
+                        for update in updates {
+                            frontend.observe(update)?;
+                        }
+                        if starts && !turn.closing {
+                            deadline = Some(Instant::now() + options.timeout);
+                        }
+                    }
+                    Step::WorkLifecycleVerified { admission_id } => {
+                        check_deadline(deadline)?;
+                        let updates = turn.verify_work(&admission_id)?;
+                        turn.work_observed_deadline(&updates, &mut deadline);
+                        for update in updates {
+                            if !turn.closing {
+                                frontend.observe(update)?;
+                            }
+                        }
+                    }
+                    Step::Work(update) => {
+                        check_deadline(work_deadline)?;
+                        work_deadline = None;
+                        if !turn.closing {
+                            frontend.observe(Observation::Work(update))?;
+                        }
+                    }
                     Step::Settings { update, policy } => {
                         if !turn.closing {
                             if let Some(policy) = policy {
@@ -2563,6 +2722,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 ))?;
                             }
                             frontend.observe(Observation::Queue(update))?;
+                            if let Some(effect) = management.take_verified_work_reconciliation() {
+                                for observation in turn.accept_work(effect)? {
+                                    frontend.observe(observation)?;
+                                }
+                            }
                             check_deadline(deadline)?;
                             deadline = None;
                         }
@@ -2606,6 +2770,14 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Step::Event(event) => {
+                        if turn.closing
+                            && event["type"] == "response"
+                            && event["id"] == SHUTDOWN_ID
+                            && event["ok"] == true
+                        {
+                            management.verify_work_shutdown(&event["result"]["work_shutdown"])?;
+                        }
+                        let action_segment = turn.rewrite_active && event["type"] == "turn_start";
                         if let Some(id) = publish_event(
                             &mut turn,
                             &event,
@@ -2616,6 +2788,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         )? {
                             management.acknowledge_rewrite_question(&id);
                             management.acknowledge_compact_question(&id);
+                        }
+                        if action_segment && !turn.closing {
+                            deadline = Some(Instant::now() + options.timeout);
                         }
                     }
                     Step::Ignore => {}
@@ -2672,6 +2847,19 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         .map_err(io::Error::other)?;
                     deadline = Some(Instant::now() + options.timeout);
                 }
+                if !turn.closing
+                    && !management.has_unpaired()
+                    && !management.work_lifecycle_pending()
+                    && let Some(admission) = turn.take_work_receipt()
+                {
+                    let command = management.request_work_settled(&admission)?;
+                    owned
+                        .stdin
+                        .as_ref()
+                        .expect("owned stdin")
+                        .try_send(command)
+                        .map_err(io::Error::other)?;
+                }
                 if management.has_unpaired() {
                     mirror_deadline.get_or_insert_with(|| {
                         Instant::now() + options.timeout.min(Duration::from_secs(20))
@@ -2725,6 +2913,7 @@ pub enum Input {
     Control(crate::model_controls::Intent),
     Queue(crate::restored_queue::Intent),
     Commands(crate::command_palette::Intent),
+    Work(crate::work_view::Intent),
     Settings(crate::settings_view::Intent),
     Backend(crate::backend_controls::Intent),
     Browser(crate::conversation_browser::Intent),
@@ -2763,6 +2952,8 @@ impl Frontend for OneShot {
             | Observation::Commands(_)
             | Observation::Theme(_)
             | Observation::SavedHistory(_)
+            | Observation::WorkExecution(_)
+            | Observation::Work(_)
             | Observation::Settings(_)
             | Observation::Backend(_)
             | Observation::BackendChanged(_)
@@ -3084,6 +3275,14 @@ impl Interactive {
             .try_send(Input::Theme(intent))
             .map_err(|e| io::Error::other(e.to_string()))
     }
+    pub fn work(&self, intent: crate::work_view::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Work(intent))
+            .map_err(io::Error::other)
+    }
     pub fn settings(&self, intent: crate::settings_view::Intent) -> io::Result<()> {
         if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
             return Err(io::Error::other("Runtime is quitting"));
@@ -3204,6 +3403,12 @@ fn publish_event(
     }
     check_deadline(*deadline)?;
     if !turn.closing
+        && matches!(&observation, Observation::WorkExecution(update) if matches!(update.as_ref(),WorkExecution::Ended{..}))
+    {
+        *deadline = None;
+    }
+    if !turn.closing
+        && !turn.rewrite_active
         && matches!(
             observation,
             Observation::Ready
@@ -3368,5 +3573,21 @@ mod engine_admission_tests {
             };
             assert!(turn.accept(&event, "strata", "chosen").is_err());
         }
+    }
+    #[test]
+    fn explicit_work_launch_requires_exact_acknowledgement() {
+        for value in [
+            Value::Null,
+            json!(true),
+            json!(false),
+            json!(0),
+            json!(2),
+            json!("1"),
+            json!(1.0),
+        ] {
+            assert!(require_work_lifecycle(&json!({"work_lifecycle_version":value})).is_err());
+        }
+        assert!(require_work_lifecycle(&json!({})).is_err());
+        assert!(require_work_lifecycle(&json!({"work_lifecycle_version":1})).is_ok());
     }
 }

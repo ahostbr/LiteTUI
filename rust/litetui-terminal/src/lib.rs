@@ -66,3 +66,9 @@ pub mod theme_controls;
 
 pub mod history;
 pub mod history_view;
+
+pub mod work_lifecycle;
+
+pub mod work_protocol;
+
+pub mod work_view;

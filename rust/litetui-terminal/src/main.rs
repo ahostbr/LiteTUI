@@ -150,6 +150,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 chat.commands.close();
                 chat.themes.close();
                 chat.saved_history.close();
+                chat.work.close();
                 chat.settings.close();
                 chat.backend_controls.close();
                 chat.browser.close();
@@ -226,6 +227,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         if !chat.quitting && !chat.cancelling() {
             chat.questions.key(key);
         }
+        return false;
+    }
+    if app.has_live_work() {
+        app.live.as_mut().expect("Work").work.key(key);
         return false;
     }
     if app.has_live_engine() {
@@ -402,6 +407,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::F(1) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
+            app.open_work();
+        }
         KeyCode::F(12) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_engine();
         }
@@ -801,6 +809,17 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_work() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+            && !app.live.as_ref().is_some_and(|c| c.cancelling())
+        {
+            app.live.as_mut().expect("Work").work.mouse(event);
+        }
+        return;
+    }
     if app.has_live_compact() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -1142,6 +1161,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         app.live.as_mut().expect("live").saved_history.hide();
                         app.live.as_mut().expect("live").rewrite.hide();
                         app.live.as_mut().expect("live").compact.hide();
+                        app.live.as_mut().expect("live").work.hide();
                         app.live.as_mut().expect("live").settings.hide();
                         app.live.as_mut().expect("live").backend_controls.hide();
                         app.live.as_mut().expect("live").browser.hide();
@@ -1269,6 +1289,14 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").themes.take_intent()
                 && let Err(error) = runtime.theme(intent)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
+            if !quitting
+                && let Some(intent) = app.live.as_mut().expect("live").work.take_intent()
+                && let Err(error) = runtime.work(intent)
             {
                 view_failure = Some(error.to_string());
                 app.finish_live(view_failure.clone());
@@ -1403,7 +1431,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F1 Work | F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -4141,5 +4169,186 @@ mod rewrite_router_tests {
         assert_eq!(clipboard.reads, 0);
         assert!(app.live.as_ref().unwrap().compact.draft().is_empty());
         assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
+    }
+}
+
+#[cfg(test)]
+mod work_router_tests {
+    use super::*;
+    use litetui_terminal::{live::Observation, work_protocol as p, work_view as v};
+    use ratatui::backend::TestBackend;
+    use serde_json::{Value, json};
+    #[derive(Default)]
+    struct Clipboard {
+        reads: usize,
+        copies: usize,
+    }
+    impl litetui_terminal::clipboard::Clipboard for Clipboard {
+        fn read_text(&mut self) -> Result<Option<String>, String> {
+            self.reads += 1;
+            Ok(Some("PRIVATE".into()))
+        }
+        fn copy_text(&mut self, _: &str) -> Result<(), String> {
+            self.copies += 1;
+            Ok(())
+        }
+    }
+    fn paint(app: &mut Demo, w: u16, h: u16) {
+        Terminal::new(TestBackend::new(w, h))
+            .unwrap()
+            .draw(|f| ui::draw(f, app))
+            .unwrap();
+    }
+    fn fixture() -> Value {
+        serde_json::from_str(include_str!("../tests/fixtures/work_inspection.json")).unwrap()
+    }
+    fn setup() -> (Demo, KeyRouter) {
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("active prompt");
+        app.submit();
+        app.live.as_mut().unwrap().take_submission();
+        app.insert_text("KEEP α 雪 MAIN DRAFT");
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let mut router = KeyRouter::default();
+        router.handle(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.has_live_work());
+        assert!(app.live.as_ref().unwrap().busy);
+        (app, router)
+    }
+    fn read(app: &mut Demo) {
+        let f = fixture();
+        let raw = &f["snapshot"];
+        let id = p::Identity {
+            session: raw["session_id"].as_str().unwrap().into(),
+            agent: raw["agent_id"].as_str().unwrap().into(),
+            backend: "custom".into(),
+            model: raw["model"].as_str().unwrap().into(),
+        };
+        let snapshot = p::Snapshot::parse(raw, &id).unwrap();
+        let i = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        app.observe_live(Observation::Work(v::Update {
+            generation: i.generation,
+            data: v::Data::Snapshot(Box::new(snapshot.clone())),
+        }))
+        .unwrap();
+        let i = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        let page = p::Page::parse(&f["tasks"], &snapshot, p::Section::Tasks, 0, 32).unwrap();
+        app.observe_live(Observation::Work(v::Update {
+            generation: i.generation,
+            data: v::Data::Page(page),
+        }))
+        .unwrap();
+    }
+    fn draft(app: &Demo) -> (String, String, String) {
+        (
+            app.composer.text().into(),
+            app.composer.before_cursor().into(),
+            app.composer.selected_text().into(),
+        )
+    }
+    #[test]
+    fn f1_work_opens_during_chat_and_traps_draft_and_clipboard_input() {
+        let (mut app, mut router) = setup();
+        let before = draft(&app);
+        read(&mut app);
+        paint(&mut app, 100, 34);
+        let mut clipboard = Clipboard::default();
+        for c in ['v', 'c', 'w'] {
+            handle_key(
+                &mut app,
+                &mut router,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+                &mut clipboard,
+            );
+        }
+        paste(&mut app, "bracketed private paste");
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(draft(&app), before);
+        assert_eq!((clipboard.reads, clipboard.copies), (0, 0));
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.has_live_work());
+        let mut repeat = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        router.handle(&mut app, repeat);
+        assert_eq!(draft(&app), before);
+        assert!(app.live.as_ref().unwrap().busy);
+        assert_eq!(app.live.as_ref().unwrap().rows.len(), 1);
+    }
+    #[test]
+    fn approval_and_question_preempt_work_without_losing_capture() {
+        let (mut app, mut router) = setup();
+        read(&mut app);
+        paint(&mut app, 100, 34);
+        let before = draft(&app);
+        let event=litetui_terminal::approvals::Ledger::default().request(&json!({"type":"tool_approval_requested","id":"work-approval","tool":"write","input":{"path":"fixture"},"profile":"strict","why":"writes","timeout_s":300.0})).unwrap();
+        app.observe_live(Observation::Approval(event)).unwrap();
+        paint(&mut app, 100, 34);
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        );
+        assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+        app.observe_live(Observation::Approval(
+            litetui_terminal::approvals::Event::Closed {
+                id: "work-approval".into(),
+                outcome: Some("denied".into()),
+                reason: "fixture".into(),
+            },
+        ))
+        .unwrap();
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        );
+        assert!(
+            app.live.as_mut().unwrap().work.take_intent().is_none(),
+            "hidden Work must repaint first"
+        );
+        let raw =
+            serde_json::from_str(include_str!("../tests/fixtures/question_request.json")).unwrap();
+        let event = litetui_terminal::questions::Ledger::default()
+            .request(&raw)
+            .unwrap();
+        app.observe_live(Observation::Question {
+            event,
+            settled: None,
+        })
+        .unwrap();
+        paint(&mut app, 100, 34);
+        assert!(app.has_live_question() && app.has_live_work());
+        router.handle(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+        assert_eq!(draft(&app), before);
+    }
+    #[test]
+    fn tiny_terminal_can_close_work_and_quit_clears_stale_updates() {
+        let (mut app, mut router) = setup();
+        let pending = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        let before = draft(&app);
+        paint(&mut app, 20, 5);
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            app.has_live_work(),
+            "dispatched read must drain before composer admission"
+        );
+        app.observe_live(Observation::Work(v::Update {
+            generation: pending.generation,
+            data: v::Data::Rejected("late".into()),
+        }))
+        .unwrap();
+        assert!(!app.has_live_work());
+        assert_eq!(draft(&app), before);
+        app.live.as_mut().unwrap().begin_quit();
+        app.observe_live(Observation::Work(v::Update {
+            generation: pending.generation,
+            data: v::Data::Paused,
+        }))
+        .unwrap();
+        assert!(!app.has_live_work());
+        assert!(app.live.as_ref().unwrap().quitting);
     }
 }

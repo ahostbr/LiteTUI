@@ -379,7 +379,7 @@ async def completions(resource, **request):
     if not request.get("stream"):
         return NS(choices=[NS(message=NS(content="Controlled explicit-turn summary"))])
     messages = request["messages"]
-    expected = [{key: value for key, value in row.items() if key not in {"provider_metadata", "codex_delivery"}}
+    expected = [{key: value for key, value in row.items() if key not in {"provider_metadata", "codex_delivery", "work_input_id", "work_payload_sha256"}}
                 for row in prepared_context]
     assert messages == expected, "The actual adapter must send the complete canonical prepared request in exact order"
     assert len(prepared_context) == len(expected_saved_context) + 1
@@ -391,7 +391,7 @@ async def completions(resource, **request):
                 key: value for key, value in saved.items() if key != "content"}
         else:
             assert saved == prepared, "Saved assistant/tool/user/provider rows changed before the explicit request"
-    assert all("provider_metadata" not in row and "codex_delivery" not in row for row in messages)
+    assert all(not {"provider_metadata", "codex_delivery", "work_input_id", "work_payload_sha256"}.intersection(row) for row in messages)
     requests.append({"agent_id": app._agent_session.authority.agent_id, "session_id": app.convo_id,
                      "backend": app.backend.name, "model": request["model"],
                      "profile": app._active_tool_profile, "tools_enabled": app.tools_enabled,

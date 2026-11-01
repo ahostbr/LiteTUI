@@ -13,6 +13,7 @@ pub(super) struct Chain {
     pub(super) root_finished: bool,
     expected_root: Option<String>,
     root_bound: bool,
+    root_origin: Option<Origin>,
     wake_allowed: bool,
     pub(super) action: String,
     pub(super) operation: String,
@@ -33,6 +34,7 @@ impl Chain {
             root_finished: false,
             expected_root: None,
             root_bound: false,
+            root_origin: None,
             wake_allowed: false,
             segments: 0,
             last_execution: None,
@@ -40,6 +42,22 @@ impl Chain {
             maintenance: Default::default(),
             inputs: Default::default(),
         }
+    }
+    pub(super) fn work_predecessor(&self) -> Option<(&str, &Origin)> {
+        if self.kind != Kind::Compact
+            || !self.root_bound
+            || !self.root_finished
+            || !self.wake_allowed
+            || self.segments != 0
+            || !self.maintenance.is_empty()
+        {
+            return None;
+        }
+        let execution = self.root_execution.as_deref()?;
+        if self.expected_root.as_deref() != Some(execution) {
+            return None;
+        }
+        Some((execution, self.root_origin.as_ref()?))
     }
     pub(super) fn permit_wake(&mut self, allowed: bool) {
         self.wake_allowed = allowed;
@@ -150,6 +168,7 @@ impl Chain {
                 {
                     if root {
                         chain.root_execution = Some(id.to_owned());
+                        chain.root_origin = Some(origin.clone());
                     }
                     chain
                         .maintenance
@@ -399,5 +418,45 @@ mod tests {
         assert!(accept(&mut c, legacy.clone()).is_err());
         assert!(accept(&mut rewrite, legacy).is_err());
         assert!(c.bind_root(Some(ROOT)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod work_root_tests {
+    use super::*;
+    const ROOT: &str = "42345678-1234-4123-8123-123456789abc";
+    const ACTION: &str = "32345678-1234-4123-8123-123456789abc";
+    fn boundary(
+        chain: &mut Chain,
+        executions: &mut HashSet<String>,
+        stream: &mut Option<(ExecutionId, Origin)>,
+        phase: &str,
+    ) {
+        let event = json!({"type":"compact_maintenance","action_id":ACTION,"aftercare_id":ROOT,"phase":phase,"kind":"compaction","root":true,"after_execution_id":null});
+        let frame = json!({"type":"gui.event","event_id":"62345678-1234-4123-8123-123456789abc","session_id":"12345678-1234-4123-8123-123456789abc","operation_id":"reviewed-operation","execution_id":ROOT,"hook_id":null,"source":"rpc","event":event});
+        chain.verify(&frame, &event, executions, stream).unwrap();
+    }
+    #[test]
+    fn only_finished_reviewed_wake_root_can_precede_first_work_segment() {
+        for allowed in [false, true] {
+            let mut chain = Chain::new(Kind::Compact, ACTION.into(), "reviewed-operation".into());
+            chain.bind_root(Some(ROOT)).unwrap();
+            chain.permit_wake(allowed);
+            let mut executions = HashSet::new();
+            let mut stream = None;
+            assert!(chain.work_predecessor().is_none());
+            boundary(&mut chain, &mut executions, &mut stream, "start");
+            assert!(chain.work_predecessor().is_none());
+            boundary(&mut chain, &mut executions, &mut stream, "end");
+            assert_eq!(chain.work_predecessor().is_some(), allowed);
+            assert!(stream.is_none(), "maintenance never invents a stream");
+            if allowed {
+                let (id, origin) = chain.work_predecessor().unwrap();
+                assert_eq!(id, ROOT);
+                assert_eq!(origin.operation, Some(json!("reviewed-operation")));
+                chain.segments = 1;
+                assert!(chain.work_predecessor().is_none());
+            }
+        }
     }
 }

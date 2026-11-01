@@ -32,6 +32,8 @@ READ_ONLY = frozenset({
     "gui.conversations.page", "gui.conversations.preview", "gui.restored_input.list",
     "gui.work.get", "gui.work.cancel", "gui.diagnostics.get", "gui.themes.native_snapshot",
     "gui.history.native_snapshot", "gui.history.native_page",
+    "gui.work.native_snapshot", "gui.work.native_page", "gui.work.native_tail", "gui.work.native_calendar",
+    "gui.work.native_pause_validate", "gui.work.native_pause_apply", "gui.work.native_pause_readback",
     "gui.engine.native_inspect", "gui.engine.native_validate",
     "gui.engine.native_action", "gui.engine.native_readback",
 })

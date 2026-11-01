@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -657,7 +658,7 @@ class Seat:
             return True
         return to == self.agent_id
 
-    def poll(self) -> list[dict]:
+    def poll(self, *, prepare=None, max_bytes: int | None = None) -> list[dict]:
         """Claim and return this seat's messages. Others' mail is untouched.
 
         Order: read -> verify addressee -> move -> return. Moving BEFORE
@@ -670,6 +671,8 @@ class Seat:
         six agents coordinate, and the move is irreversible from the sender's
         side. A disabled harness must not consume mail it will never deliver.
         """
+        if max_bytes is not None and (type(max_bytes) is not int or not 1 <= max_bytes <= 1048576):
+            raise ValueError("Invalid captured mailbox read bound")
         if harness_disabled():
             return []
         if not NEW.is_dir():
@@ -680,8 +683,13 @@ class Seat:
         except OSError:
             return []
         for f in entries:
+            token = None
             try:
-                msg = json.loads(f.read_text(encoding="utf-8"))
+                if max_bytes is None:
+                    msg = json.loads(f.read_text(encoding="utf-8"))
+                else:
+                    token = _read_claim_mail(f, max_bytes)
+                    msg = json.loads(token[0].decode("utf-8"))
             except Exception:
                 # Not ours to judge, and possibly mid-write by the sender.
                 continue
@@ -692,7 +700,35 @@ class Seat:
             if _expired(msg):
                 _move(f, DONE)
                 continue
-            if _move(f, DONE) is not None:
+            # A captured native runtime persists its immutable Work input before
+            # this external mailbox claim. False leaves the original mail intact;
+            # a callback receives the actual move result and owns delivery.
+            prepared = prepare(f, msg) if prepare is not None else None
+            if prepared is False:
+                continue
+            if token is not None:
+                assert max_bytes is not None
+                try:
+                    if _read_claim_mail(f, max_bytes) != token:
+                        raise ValueError("Mailbox file changed before claim")
+                except (OSError, ValueError):
+                    if callable(prepared):
+                        prepared(False)
+                    continue
+            claimed = _move(f, DONE)
+            verified = claimed is not None
+            if verified and token is not None:
+                assert claimed is not None and max_bytes is not None
+                try:
+                    # A pathname replacement between the preceding read and
+                    # rename cannot authorize a different message. Retain both
+                    # the immutable input and moved file for explicit recovery;
+                    # never roll back over another writer or wake this payload.
+                    verified = _read_claim_mail(claimed, max_bytes) == token
+                except (OSError, ValueError):
+                    verified = False
+            handled = prepared(verified) if callable(prepared) else False
+            if verified and not handled:
                 out.append(msg)
         return out
 
@@ -761,6 +797,24 @@ def _expired(msg: dict) -> bool:
         return age_min > float(ttl)
     except Exception:
         return False
+
+
+def _read_claim_mail(path: Path, limit: int) -> tuple[bytes, tuple[int, int, int, int]]:
+    """Bounded regular-file read, paired to the exact inode across rename."""
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode) or getattr(current, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+        raise ValueError("Captured mail must be a regular file")
+    with path.open("rb") as stream:
+        before = os.fstat(stream.fileno())
+        if (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino):
+            raise ValueError("Mailbox file changed during open")
+        content = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+    def identity(value):
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+    if len(content) > limit or identity(before) != identity(after) or len(content) != after.st_size:
+        raise ValueError("Mailbox file exceeds its bound or changed during read")
+    return content, identity(after)
 
 
 def _move(src: Path, dest_dir: Path) -> Path | None:

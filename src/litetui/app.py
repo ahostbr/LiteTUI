@@ -28,6 +28,7 @@ from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
 from functools import partial
 from litetui.event_origin import EventOrigin
+from litetui import background_input
 from litetui import conversation_compact, conversation_rewrite
 
 from litetui import settings as settings_mod
@@ -1573,6 +1574,9 @@ class LiteTUI(App):
     ):
         if launch_options is not None:
             launch_options.validate_history_projection()
+            launch_options.validate_work_lifecycle()
+            if launch_options.work_lifecycle_version is not None and (rpc is not True or hold_restored_input is not True):
+                raise ValueError('Work lifecycle requires RPC and restored-input holds')
             if launch_options.history_projection_version is not None and (rpc is not True or hold_restored_input is not True):
                 raise ValueError('History projection requires RPC and restored-input holds')
         if agent_session is None:
@@ -2804,7 +2808,12 @@ class LiteTUI(App):
                 # chat turn, visible as turn_active on its own.
                 with idle_infra_phase(self):
                     await asyncio.sleep(harness_mod.POLL_SECONDS)
-                    msgs = await asyncio.to_thread(self.seat.poll)
+                    if (background_input.enabled(self) or background_input.activation_pending(self)
+                            or getattr(self, "_native_work_recapture_required", None) is not None):
+                        from litetui import background_mail
+                        msgs = await background_mail.poll(self)
+                    else:
+                        msgs = await asyncio.to_thread(self.seat.poll)
                 for m in msgs:
                     self._receive_mail(m)
 
@@ -2842,43 +2851,21 @@ class LiteTUI(App):
         Queued rather than dropped when a turn is already running: mail that
         arrives mid-turn is exactly the mail worth not losing.
         """
-        if getattr(self, "_gui_quitting", False):
+        if getattr(self, "_gui_quitting", False) and not background_input.capturing_completion(self):
             return  # controlled Quit retains persisted task outcomes without waking another turn
-        text = harness_mod.format_message(msg)
-        # 🔴 READS THE SETTING. It used to be a hardcoded SCHEDULED, so the
-        # option labelled "every capability, UNATTENDED, never asks" did not
-        # govern the unattended path that woke this turn -- the user hit it as a
-        # workspace_write denial while Settings showed autonomous. A control
-        # that names a case it does not govern is worse than no control.
-        #
-        # The turn keeps the CHOSEN profile, whole. Mail no longer degrades to
-        # a read-only floor. A CONFIRM follows the seat's existing route: a
-        # spawner or host can answer, while an unrelayed unattended turn refuses.
-        # Tell the model that actual route before it plans around the action.
-        # T1027: the SEAT's profile (a launch flag outranks the file); accept_prompt
-        # narrows it again at the moment the turn starts.
-        profile = seat_authority.seat_profile(self)
-        content = text
-        if tool_policy.PROFILES.get(profile) and tool_policy.PROFILES[profile].confirm:
-            route = seat_authority.confirm_route(self)
-            rule = tool_policy.inbox_turn_rule(route, getattr(self, "_spawner_id", None))
-            content = f"{text}\n\n{rule}"
-        from litetui import approval_delivery
-        ident = approval_delivery.request_id(msg)
-        item = {"content": content, "text": text, "tool_profile": profile, "source": "harness"}
-        if ident:
-            item["approval_request_id"] = ident
-            approval_delivery.stage(ident, "received")
-        if self._chat_running():
-            # Held until a safe input boundary, never cancellation or inert
-            # context injection. Approval requests precede routine backlog.
-            item["bubble"] = self._user_bubble(text, False, queued=True)
-            approval_delivery.enqueue(self._pending_input, item, ident)
+        from litetui import background_mail
+        if background_mail.route(self, msg):
             return
-        self._user_bubble(text, False)
-        hook_host.start_prompt(self, item)
+        background_mail.deliver(self, background_mail.item(self, msg))
 
-    def _fire_job(self, job, *, manual: bool = False) -> None:
+    def _fire_job(self, job, *, manual: bool = False, _work_prepare: bool = False):
+        if background_input.activation_pending(self):
+            if manual:
+                raise ValueError("Work activation is required before scheduled execution")
+            return None
+        if not _work_prepare and (background_input.enabled(self) or getattr(self, "_native_work_deferred", None) is not None
+                                  or getattr(self, "_native_work_recapture_required", None) is not None):
+            return background_input.start_job(self, job, manual=manual)
         from litetui.shared_state import Lease, OwnershipError
         if getattr(self, "_gui_schedules_paused", False):
             return
@@ -2916,6 +2903,8 @@ class LiteTUI(App):
                                 setattr(job, field, disk[field])
                         if not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
                             return
+                if _work_prepare:
+                    return LiteTUI._fire_job_owned(self, job, manual=manual, _work_prepare=True)
                 return LiteTUI._fire_job_owned(self, job, manual=manual)
         except OwnershipError:
             return  # another scheduler owns this tick
@@ -2930,7 +2919,7 @@ class LiteTUI(App):
             self._withheld_said.add(job.id)
             self._system(f"{getattr(job, 'kind', 'cron')} {job.label or job.id} not run here: {why}")
 
-    def _fire_job_owned(self, job, *, manual: bool = False) -> bool | None:
+    def _fire_job_owned(self, job, *, manual: bool = False, _work_prepare: bool = False):
         """Deliver a job as a real user turn, holding if one is running.
 
         The slot is stamped and PERSISTED BEFORE delivery, not after. If the
@@ -2959,6 +2948,7 @@ class LiteTUI(App):
                 pass
             self._system(blocked)
             return
+        prepared_work = background_input.prepare_job(self, job) if _work_prepare else None
         prior_slot, prior_count = getattr(job, "last_fired_slot", None), job.run_count
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
@@ -2968,6 +2958,9 @@ class LiteTUI(App):
             job.last_fired_slot, job.run_count = prior_slot, prior_count
             self._system("Scheduled work was not delivered because its execution stamp could not be saved.")
             return False
+
+        if _work_prepare:
+            background_input.verify_job_stamp(self, job)
 
         label = job.label or job.id
         text = job.prompt
@@ -2993,6 +2986,8 @@ class LiteTUI(App):
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         header = f"{source} {label} \u00b7 {job.schedule}"
 
+        if _work_prepare:
+            return prepared_work
         if job.new_conversation and not self._chat_running():
             self._handle_command("/new")
 
@@ -3512,26 +3507,36 @@ class LiteTUI(App):
         background = may_bg and isinstance(args, dict) and bool(args.pop("background", False))
         if isinstance(args, dict):
             args.pop("background", None)
-        fn, rewrite_tool = conversation_rewrite.capture_tool(self, fn)
-        aw = asyncio.to_thread(fn, args)
-        if run_hooks:
-            aw = self._observe_tool_outcome(name, dict(args), aw, hook_profile, hook_context)
-        aw = conversation_rewrite.track_tool(self, rewrite_tool, aw)
-        if background:
-            return self._start_background(name, args, aw), True
-        process_slot = tasks_mod.ProcessSlot() if may_bg else None
-        if process_slot is not None:
-            aw = tasks_mod.run_in_process_slot(aw, process_slot)
-        # AUTO-PROMOTION (T517, the user: "the calls are still blocked is it off by
-        # default or something ?"): the model almost never asks for background,
-        # so a call still running after the settings threshold becomes a
-        # background task on its own — the same future, handed over, never a
-        # second start. 0 turns it off.
-        limit = int(getattr(self.settings, "tool_auto_background_s", 0) or 0) if may_bg else 0
-        done, fut = await tasks_mod.wait_or_promote(aw, limit)
-        if not done:
-            return self._start_background(name, args, fut, promoted_after=limit,
-                                          process_slot=process_slot), True
+        if may_bg:
+            background_input.preflight_task(self, name, args)
+        work_reservation = background_input.reserve(self) if may_bg else None
+        work_call = None
+        try:
+            fn, work_call = background_input.capture_tool(self, fn)
+            fn, rewrite_tool = conversation_rewrite.capture_tool(self, fn)
+            aw = asyncio.to_thread(fn, args)
+            if run_hooks:
+                aw = self._observe_tool_outcome(name, dict(args), aw, hook_profile, hook_context)
+            aw = conversation_rewrite.track_tool(self, rewrite_tool, aw)
+            aw = background_input.track_tool(work_call, aw)
+            if background:
+                return self._start_background(name, args, aw, work_reservation=work_reservation, work_call=work_call), True
+            process_slot = tasks_mod.ProcessSlot() if may_bg else None
+            if process_slot is not None:
+                aw = tasks_mod.run_in_process_slot(aw, process_slot)
+            # AUTO-PROMOTION (T517, the user: "the calls are still blocked is it off by
+            # default or something ?"): the model almost never asks for background,
+            # so a call still running after the settings threshold becomes a
+            # background task on its own — the same future, handed over, never a
+            # second start. 0 turns it off.
+            limit = int(getattr(self.settings, "tool_auto_background_s", 0) or 0) if may_bg else 0
+            done, fut = await tasks_mod.wait_or_promote(aw, limit)
+            if not done:
+                return self._start_background(name, args, fut, promoted_after=limit,
+                                              process_slot=process_slot, work_reservation=work_reservation, work_call=work_call), True
+        finally:
+            background_input.release(self, work_reservation)
+            await background_input.finish_tool(work_call)
         try:
             result = str(fut.result())
         except Exception as e:
@@ -3575,7 +3580,7 @@ class LiteTUI(App):
     # cannot be a late role:"tool" message is in tasks.py's docstring.
 
     def _start_background(self, name: str, args: dict, aw, promoted_after: float | None = None,
-                          process_slot=None) -> str:
+                          process_slot=None, work_reservation=None, work_call=None) -> str:
         # 🔴 THE ROW'S HOME MUST EXIST BEFORE THE ROW DOES (T0132). Every turn
         # starter materialises the conversation first, but two routes reach a
         # tool with it still STAGED: `gui.tools.execute` (no turn at all) and
@@ -3586,8 +3591,12 @@ class LiteTUI(App):
         # is the idempotent defence at the ONE creator for any route that does
         # not pass through it. Visible consequence: a conversation directory
         # appears when the first background-capable tool runs on a fresh seat.
+        background_input.require_recapture_complete(self)
         self._materialise_convo()
         task = tasks_mod.new_task(name, args, getattr(self, "convo_id", ""))
+        work_producer = background_input.register_producer(self, "host_task", task.id,
+            owner_instance=task.owner_instance, owner_created=task.owner_created,
+            task=task, reservation=work_reservation, call=work_call)
         task._pending_process_handoff = not promoted_after or process_slot is not None
         if promoted_after:
             # The call began in the FOREGROUND, so its child (a shell) sits in the
@@ -3610,9 +3619,10 @@ class LiteTUI(App):
         # Its own group, NOT "chat": `_stream` is exclusive in "chat", and a
         # worker started there would cancel the turn that started it.
         worker = self.run_worker(
-            self._run_background(task, aw),
+            background_input.producer_runner(self, work_producer, self._run_background(task, aw)),
             name=task.id, group="tasks", exclusive=False, exit_on_error=False,
         )
+        background_input.bind_producer_worker(self, work_producer, worker)
         conversation_rewrite.track_descendant(self, worker)
         return tasks_mod.start_text(task, paths.data_root(), promoted_after=promoted_after)
 
@@ -3623,17 +3633,23 @@ class LiteTUI(App):
         tasks_mod.CURRENT.set(task)
         try:
             result, ok = str(await aw), True
+        except asyncio.CancelledError:
+            if not background_input.capturing_completion(self):
+                raise
+            task.state = tasks_mod.KILLED
+            result, ok = "[cancelled] Captured background task stopped.", False
         except Exception as e:
             result, ok = f"[error] {type(e).__name__}: {e}", False
         text = tasks_mod.finish(task, result, ok, paths.data_root())
-        self._save_background()
+        task_saved = self._save_background()
+        background_input.complete_producer(self, task, task_saved=task_saved, output_text=result)
         runtime_log.record(
             "task." + task.state, task_id=task.id, tool=task.tool,
             seconds=round(task.seconds, 1),
         )
         self._deliver_inbox({"from": "task", "priority": "normal", "body": text})
 
-    def _save_background(self) -> None:
+    def _save_background(self) -> bool:
         """The task set MOVED: persist it, and repaint the footer.
 
         🔴 THE REPAINT IS HERE BECAUSE THIS IS THE ONE PLACE EVERY TRANSITION
@@ -3658,6 +3674,7 @@ class LiteTUI(App):
         footer constantly and never sees it; a seat that fires a long task and
         waits sees a stale chip for as long as it waits.
         """
+        saved = True
         try:
             tasks_mod.save_by_convo(self.bg_tasks.values(), agent_session=getattr(self, '_agent_session', None))
         except (tasks_mod.StoreNotBorn, OSError) as e:
@@ -3665,11 +3682,13 @@ class LiteTUI(App):
             # never silent: an accepted row that cannot be kept is the failure
             # T0132 exists to make loud. `_start_background` materialises first,
             # so StoreNotBorn here means a creator stopped doing that.
+            saved = False
             self._report_task_store_error(e)
         # AFTER the save, and deliberately not inside the try: a store that
         # cannot be written is a reason to keep going, not a reason to leave the
         # footer lying about what is running.
         self._refresh_ctx_label()
+        return saved
 
     def _report_task_store_error(self, e: Exception) -> None:
         """Say once per distinct failure that task rows are not being kept.
@@ -3740,7 +3759,8 @@ class LiteTUI(App):
         self._save_background()
         self.notify(f"Killing {task_id}…", timeout=2)
         if proc is not None:
-            self._kill_background_tree(task)
+            cleanup = self._kill_background_tree(task)
+            background_input.track_kill(self, task, cleanup)
         # Otherwise the local runner observes KILLED before spawn, or claims
         # the kill when a spawn already in flight attaches its handle.
         return None
@@ -3750,6 +3770,7 @@ class LiteTUI(App):
         """Off the UI thread, like `_cancel_tool_tree`: kill_tree can block for seconds."""
         proc = task.proc
         killed = ttyguard.kill_tree(proc.pid, proc)
+        tasks_mod.record_process_kill(proc, killed)
         msg = (
             f"{task.id} killed" if killed
             else f"{task.id}: kill could not be confirmed — the process may still be running"
@@ -5968,6 +5989,7 @@ class LiteTUI(App):
             "protocol_version": 1,
             "management_protocols": [1],
             "history_projection_version": getattr(self._launch_options, "history_projection_version", None),
+            "work_lifecycle_version": getattr(self._launch_options, "work_lifecycle_version", None),
             "capabilities": list(OPERATIONS),
             "version": __version__,
             **self._rpc_model_state(),
@@ -8800,6 +8822,10 @@ class LiteTUI(App):
         from litetui.backend_transition import require_open
 
         require_open(self)
+        LiteTUI._validate_owned_identity(self)
+
+    def _validate_owned_identity(self) -> None:
+        """Validate source identity without granting turn admission or execution."""
         if getattr(self, '_agent_session', None) is not None:
             authority = self._agent_session.authority
             if getattr(self.backend, 'name', None) != authority.backend:
@@ -9146,17 +9172,25 @@ class LiteTUI(App):
     def _stream(self, *, origin: EventOrigin | None = None):
         """Capture one invocation BEFORE Textual can start its asynchronous body."""
         captured = conversation_rewrite.stream_origin(self, origin).scheduled()
+        background_input.before_stream(self, captured)
         runner = conversation_rewrite.stream_runner(self, captured, partial(self._stream_worker, captured))
+        runner = background_input.stream_runner(self, captured, runner)
         worker = self.run_worker(
             runner, name="_stream", group="chat", exclusive=True,
             exit_on_error=True, thread=False, description="_stream()")
-        conversation_rewrite.track_stream(self, worker, captured)
+        try:
+            conversation_rewrite.track_stream(self, worker, captured)
+            background_input.bind_stream(self, worker, captured)
+        except BaseException:
+            background_input.retain_failed_stream(self, worker, captured)
+            raise
         return worker
 
     def _stream_inline(self, *, origin: EventOrigin | None = None):
         """Capture now, return an unscheduled coroutine for driven compaction."""
         captured = conversation_rewrite.stream_origin(self, origin).scheduled()
-        return conversation_rewrite.inline_runner(self, captured, partial(self._stream_worker, captured))
+        return background_input.inline_runner(self, captured,
+            conversation_rewrite.inline_runner(self, captured, partial(self._stream_worker, captured)))
 
     async def _stream_worker(self, origin: EventOrigin) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
@@ -10032,6 +10066,8 @@ class LiteTUI(App):
         returns out of the worker before this point, so it still ends the turn
         and sends next -- queue and interrupt stay two different verbs.
         """
+        if background_input.activation_pending(self):
+            return False
         from litetui.backend_transition import submission_refusal
         if submission_refusal(self):
             return False
@@ -10049,9 +10085,15 @@ class LiteTUI(App):
         # the lot here would have rebuilt that hazard at a new site, against the
         # model this app is usually pointed at. The rest ride the next round,
         # and rounds are plentiful.
-        item = self._pending_input.pop(0)
-        # T1043: False when the fleet floor refused it (retained, not delivered).
-        return hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
+        item = self._pending_input[0]
+        captured = background_input.admit_sync(self, item, in_turn=True)
+        if captured is not None:
+            return captured
+        # Refusal retains the exact oldest item, including its delivery metadata.
+        accepted = hook_host.accept_prompt(self, {**item, "_gui_in_turn": True})
+        if accepted and self._pending_input and self._pending_input[0] is item:
+            self._pending_input.pop(0)
+        return accepted
 
     def _flush_pending_input(self) -> None:
         """Send the oldest held message once the chat group is idle.
@@ -10064,6 +10106,8 @@ class LiteTUI(App):
         exclusive in that group, and a flush that streamed now would CANCEL
         whichever is running.
         """
+        if background_input.activation_pending(self):
+            return
         from litetui.backend_transition import submission_refusal
 
         if submission_refusal(self):
@@ -10112,7 +10156,9 @@ class LiteTUI(App):
             # that group here would endlessly retry an unconfirmed delivery.
             self.run_worker(recover(), group="codex-recovery", exclusive=False, exit_on_error=False)
             return
-        item = self._pending_input.pop(0)
+        item = self._pending_input[0]
+        if background_input.entry_for(self, item) is None:
+            self._pending_input.pop(0)
         hook_host.start_prompt(self, item)
 
 
@@ -10233,6 +10279,10 @@ class LiteTUI(App):
         have claimed the chat group first: that turn wins, and the ping is
         dropped rather than queued behind it.
         """
+        if background_input.activation_pending(self) or background_input.prompt_refusal(self):
+            return
+        if background_input.enabled(self) and (self._stop_requested or getattr(self, "_gui_quitting", False)):
+            return
         if self._chat_running():
             return
         if self._pending_input:
@@ -10252,6 +10302,9 @@ class LiteTUI(App):
         why = seat_authority.floor_refusal(self, "compact-wake")
         if why is not None:
             self._system(why)
+            return
+        if background_input.enabled(self):
+            background_input.start_compact_wake(self, WAKE_AFTER_COMPACT)
             return
         self._materialise_convo()
         self._user_bubble(WAKE_AFTER_COMPACT, False)

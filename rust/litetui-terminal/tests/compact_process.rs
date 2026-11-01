@@ -454,13 +454,21 @@ fn f6_compact_preserves_hint_draft_and_real_zero_or_wake_streams() {
             assert_eq!(editor(&app), draft);
             let chat = app.live.as_ref().unwrap();
             assert!(chat.rows.iter().all(|row| row.source_owned));
-            assert_eq!(
-                chat.rows
-                    .iter()
-                    .filter(|row| row.state == litetui_terminal::live_chat::ReplyState::Complete)
-                    .count(),
-                usize::from(case == "wake")
-            );
+            let completed = chat
+                .rows
+                .iter()
+                .filter(|row| row.state == litetui_terminal::live_chat::ReplyState::Complete)
+                .count();
+            if completed != usize::from(case == "wake") {
+                return Err(io::Error::other(format!(
+                    "{case}: expected {} completed wake rows, got {completed}; rows {:?}",
+                    usize::from(case == "wake"),
+                    chat.rows
+                        .iter()
+                        .map(|row| (&row.state, &row.stop_reason))
+                        .collect::<Vec<_>>()
+                )));
+            }
             assert!(draw(&mut app).contains("Source: Conversation compaction"));
             runtime.quit()
         });

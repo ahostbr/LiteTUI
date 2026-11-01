@@ -98,3 +98,37 @@ def test_failed_applied_marker_replays_same_receipt_for_history_deduplication(tm
     with pytest.raises(OSError): receipts.deliver('parent', commit=commit)
     assert ParentReceipts(path).deliver('parent', commit=commit) == ['completion']
     assert committed == {'completion'}
+
+def test_pending_wakes_reads_only_exact_applied_pending_scope_without_claiming(tmp_path):
+    from litetui.agent_receipts import ParentReceipts
+    receipts = ParentReceipts(tmp_path / 'receipts.sqlite')
+    for parent, conversation, ident in [('parent','chat','first'), ('parent','chat','second'),
+                                       ('other','chat','foreign'), ('parent','other','elsewhere'),
+                                       ('parent','chat','unapplied')]:
+        receipts.accept_for_conversation(parent, conversation, {'completion_id':ident, 'result':result()})
+        if ident != 'unapplied':
+            receipts.mark_applied(parent, ident)
+    before = receipts.path.read_bytes()
+    expected = [{'completion_id':ident, 'result':result()} for ident in ['first','second']]
+    assert receipts.pending_wakes('parent','chat') == expected
+    assert receipts.path.read_bytes() == before
+    assert receipts.uncertain_wakes('parent','chat') == []
+    claimed = receipts.claim_wake('parent','chat')
+    assert claimed == ['first','second'] and receipts.pending_wakes('parent','chat') == []
+    receipts.finish_wake('parent','chat',claimed)
+    assert receipts.pending_wakes('parent','chat') == []
+    assert receipts.pending_wakes('other','chat')[0]['completion_id'] == 'foreign'
+
+
+@pytest.mark.parametrize('limit', [{'max_count':1}, {'max_bytes':1}])
+def test_pending_wake_budget_refusal_does_not_consume_receipts(tmp_path, limit):
+    from litetui.agent_receipts import ParentReceipts
+    receipts = ParentReceipts(tmp_path / 'receipts.sqlite')
+    for ident in ['first','second']:
+        receipts.accept_for_conversation('parent','chat',{'completion_id':ident,'result':result()})
+        receipts.mark_applied('parent',ident)
+    before = receipts.path.read_bytes()
+    with pytest.raises(ValueError, match='budget'):
+        receipts.pending_wakes('parent','chat',**limit)
+    assert receipts.path.read_bytes() == before
+    assert receipts.claim_wake('parent','chat') == ['first','second']

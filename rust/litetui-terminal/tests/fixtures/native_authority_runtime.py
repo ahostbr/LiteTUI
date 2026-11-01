@@ -30,7 +30,7 @@ async def main():
     import httpx
     from _owned_seat import owned_app, release_all
 
-    from litetui import gui_rpc, rpc, seat_authority
+    from litetui import background_input, gui_rpc, rpc, seat_authority
     from litetui.claude_tools import ClaudeTools
     from litetui.event_origin import EventOrigin
     from litetui.launch_options import LaunchOptions
@@ -49,10 +49,12 @@ async def main():
             # This fixture bypasses CLI construction but preserves the actual
             # native launch negotiation before the owned app captures history.
             projection = int(sys.argv[sys.argv.index("--history-projection-version") + 1])
+            work_version = int(sys.argv[sys.argv.index("--work-lifecycle-version") + 1])
+            assert work_version == 1
             app = owned_app(rpc=True, tool_profile="strict", initial_backend="claude",
                             initial_model="claude-sonnet-5-5",
                             hold_restored_input="--hold-restored-input" in sys.argv,
-                            launch_options=LaunchOptions(history_projection_version=projection))
+                            launch_options=LaunchOptions(history_projection_version=projection, work_lifecycle_version=work_version))
             # This fixture bypasses on_mount/provider readiness. Select only its
             # controlled catalog entry before observing the real state read.
             app.model_id = "claude-sonnet-5-5"
@@ -99,7 +101,8 @@ async def main():
                       "tool_profile": app._active_tool_profile,"tool_profile_requested": app._cli_tool_profile,
                       "approval_route": seat_authority.confirm_route(app),"cwd": os.getcwd(),
                       "management_protocols": [1],"capabilities": list(gui_rpc.OPERATIONS),
-                      "history_projection_version": app._launch_options.history_projection_version})
+                      "history_projection_version": app._launch_options.history_projection_version,
+        "work_lifecycle_version": app._launch_options.work_lifecycle_version})
             target = Path.cwd() / "controlled-write.txt"
             turn = 0
 
@@ -146,7 +149,11 @@ async def main():
                     bridge.stop()
                     if worker is not None:
                         await worker
-                    emit({"type": "response","id": command["id"],"ok": True,"result": {"ok":True}})
+                    work_proof = await background_input.settle_before_shutdown(app)
+                    result = {"ok": True}
+                    if work_proof is not None:
+                        result["work_shutdown"] = work_proof
+                    emit({"type": "response","id": command["id"],"ok": True,"result": result})
                     break
                 if command["type"] in {"approve", "abort"}:
                     rpc._dispatch(app, command)

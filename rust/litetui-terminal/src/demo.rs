@@ -410,6 +410,32 @@ impl Demo {
             .as_ref()
             .is_some_and(|chat| chat.themes.owns_input())
     }
+    pub fn has_live_work(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.work.owns_input())
+    }
+    pub fn open_work(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.closed
+                || chat.quitting
+                || chat.queue_pending()
+                || chat.rewrite_pending()
+                || chat.engine.pending()
+            {
+                self.notice = "Wait for the owned runtime before opening Work.".into();
+                return;
+            }
+            chat.work.open();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
     pub fn has_live_settings(&self) -> bool {
         self.live
             .as_ref()
@@ -531,7 +557,7 @@ impl Demo {
         }
         if let Some(chat) = self.live.as_mut() {
             if (!chat.ready && chat.engine_admission.is_none())
-                || chat.busy
+                || chat.busy && !chat.uncertainty_only_busy()
                 || chat.closed
                 || chat.quitting
                 || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
@@ -552,6 +578,7 @@ impl Demo {
             || self.has_live_history()
             || self.has_live_rewrite()
             || self.has_live_compact()
+            || self.has_live_work()
             || self.has_live_settings()
             || self.has_live_backend()
             || self.has_live_browser()
