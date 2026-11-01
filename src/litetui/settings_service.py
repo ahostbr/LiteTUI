@@ -48,9 +48,19 @@ def _literal_values() -> dict[str, tuple]:
     return _LITERALS
 
 
-def _read(path):
+def _read(path, *, max_bytes=None):
     try:
-        data = path.read_bytes()
+        if max_bytes is None:
+            data = path.read_bytes()
+        else:
+            with path.open('rb') as stream:
+                before = os.fstat(stream.fileno())
+                data = stream.read(max_bytes + 1)
+                after = os.fstat(stream.fileno())
+                current = path.stat()
+            identity = lambda stat: (stat.st_dev, stat.st_ino, stat.st_mode, stat.st_size, stat.st_mtime_ns)
+            if len(data) > max_bytes or identity(before) != identity(after) or identity(after) != identity(current):
+                raise ValueError('Settings changed or exceeded the bounded read')
     except FileNotFoundError:
         return {}, 'absent'
     raw = json.loads(data)
@@ -59,7 +69,11 @@ def _read(path):
     return raw, hashlib.sha256(data).hexdigest()
 
 
-def _write(path, raw):
+def _write(path, raw, *, max_bytes=None):
+    if max_bytes is not None:
+        encoded = (json.dumps(raw, indent=2, ensure_ascii=False) + '\n').replace('\n', os.linesep).encode('utf-8')
+        if len(encoded) > max_bytes:
+            raise ValueError('Settings publication exceeds the bounded document size')
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix='.settings-', suffix='.json')
     try:
@@ -70,7 +84,32 @@ def _write(path, raw):
     finally:
         if os.path.exists(name):
             os.unlink(name)
-    return _read(path)[1]
+    return (_read(path) if max_bytes is None else _read(path, max_bytes=max_bytes))[1]
+
+
+def conversation_document(raw, inherited, changes):
+    """Pure canonical conversation settings document, including legacy materialization."""
+    raw = deepcopy(raw)
+    if not raw:
+        if inherited is None:
+            raise ValueError('Conversation materialization requires inherited settings')
+        raw = asdict(cs.born_from(inherited))
+    execution = raw.setdefault('execution', {})
+    if not isinstance(execution, dict):
+        raise ValueError('Invalid conversation execution snapshot')  # noqa: TRY004 - preserve canonical validation error
+    execution_keys = {k for k, spec in SETTING_SPECS.items()
+                      if spec.scope == SettingScope.CONVERSATION}
+    for key in execution_keys - execution.keys():
+        if inherited is None:
+            raise ValueError('Legacy materialization requires inherited settings')
+        execution[key] = deepcopy(getattr(inherited, key))
+    aliases = {v: k for k, v in cs.BORN_FROM.items()}
+    for change in changes:
+        execution[change.key] = deepcopy(change.value)
+        if change.key in aliases:
+            raw[aliases[change.key]] = deepcopy(change.value)
+    raw['schema_version'] = 2
+    return raw
 
 
 class SettingsService:
@@ -127,15 +166,16 @@ class SettingsService:
         default = getattr(st.Settings(), key)
         return key in raw, st._coerce(key, raw.get(key, default), default)
 
-    def snapshot(self, conversation_id, overrides=None, *, read_only=False):
+    def snapshot(self, conversation_id, overrides=None, *, read_only=False, max_bytes=None):
+        read = _read if max_bytes is None else lambda path: _read(path, max_bytes=max_bytes)
         paths = self._paths(conversation_id)
         if not read_only:
             from litetui.subagent_routing import migrate_global_file
             migrate_global_file(paths['global'])
-        global_raw, global_rev = _read(paths['global'])
+        global_raw, global_rev = read(paths['global'])
         if read_only and 'codex_subagent_model' in global_raw:
             raise ValueError('Legacy defaults require migration before a read-only settings review')
-        convo, convo_rev = _read(paths['conversation'])
+        convo, convo_rev = read(paths['conversation'])
         saved = st.Settings()
         for key, value in global_raw.items():
             if key in SETTING_SPECS:
@@ -161,7 +201,7 @@ class SettingsService:
         revisions = {'global': global_rev, 'conversation': convo_rev}
         if self.agent_session is not None:
             authority = self.agent_session.authority
-            _, revisions['agent'] = _read(self.agent_session.memory_root / 'settings.json')
+            _, revisions['agent'] = read(self.agent_session.memory_root / 'settings.json')
             for key, value in (('backend', authority.backend), ('default_model', authority.model),
                                ('thinking_level', authority.thinking_level)):
                 setattr(saved, key, value)
@@ -169,7 +209,8 @@ class SettingsService:
             object.__setattr__(effective, '_baseline', asdict(effective))
         return SettingsSnapshot(saved, effective, revisions)
 
-    def save_patch(self, conversation_id, changes, expected_revisions):
+    def save_patch(self, conversation_id, changes, expected_revisions, *, max_bytes=None):
+        read = _read if max_bytes is None else lambda path: _read(path, max_bytes=max_bytes)
         paths = self._paths(conversation_id)
         groups = {}
         for change in changes:
@@ -228,40 +269,28 @@ class SettingsService:
                 if destination == 'conversation':
                     self._writable(conversation_id)
                 with coordinated_write(path):
-                    raw, revision = _read(path)
+                    raw, revision = read(path)
                     if expected_revisions.get(destination) != revision:
                         raise ValueError(f'Stale {destination} revision; reload before retry')
                     if destination == 'conversation':
-                        # Materialize all inherited defaults on first scoped write.
-                        if not raw:
-                            with coordinated_write(paths['global']):
-                                inherited = self.snapshot(conversation_id, read_only=True)
-                                if inherited.revisions['global'] != expected_revisions.get('global'):
-                                    raise ValueError('Stale global revision during conversation creation')
-                                raw = asdict(cs.born_from(inherited.saved))
-                        execution = raw.setdefault('execution', {})
+                        execution = raw.get('execution', {})
                         if not isinstance(execution, dict):
                             raise ValueError('Invalid conversation execution snapshot')
                         execution_keys = {k for k, spec in SETTING_SPECS.items()
                                           if spec.scope == SettingScope.CONVERSATION}
-                        if execution_keys - execution.keys():
+                        inherited = None
+                        if not raw or execution_keys - execution.keys():
                             with coordinated_write(paths['global']):
-                                inherited = self.snapshot(conversation_id, read_only=True)
+                                inherited = self.snapshot(conversation_id, read_only=True, **({"max_bytes": max_bytes} if max_bytes is not None else {}))
                                 if inherited.revisions['global'] != expected_revisions.get('global'):
-                                    raise ValueError('Stale global revision during legacy materialization')
-                                for key in execution_keys - execution.keys():
-                                    execution[key] = deepcopy(getattr(inherited.saved, key))
-                        aliases = {v: k for k, v in cs.BORN_FROM.items()}
-                        for change in patch:
-                            execution[change.key] = deepcopy(change.value)
-                            if change.key in aliases:
-                                raw[aliases[change.key]] = deepcopy(change.value)
-                        raw['schema_version'] = 2
+                                    label = 'conversation creation' if not raw else 'legacy materialization'
+                                    raise ValueError(f'Stale global revision during {label}')
+                        raw = conversation_document(raw, inherited.saved if inherited else None, patch)
                         authoritative = {c.key: c.value for c in patch
                                          if c.key in ('backend', 'default_model', 'thinking_level')}
                         if authoritative:
                             authority = self.agent_session.authority
-                            _, revision_home = _read(self.agent_session.memory_root / 'settings.json')
+                            _, revision_home = read(self.agent_session.memory_root / 'settings.json')
                             if revision_home != expected_revisions.get('agent'):
                                 raise ValueError('Stale agent revision; reload before retry')
                             self.agent_session.update_execution(
@@ -269,7 +298,7 @@ class SettingsService:
                                 model=authoritative.get('default_model', authority.model),
                                 thinking_level=authoritative.get('thinking_level', authority.thinking_level))
                             home = self.agent_session.memory_root / 'settings.json'
-                            _, home_revision = _read(home)
+                            _, home_revision = read(home)
                             results.append(PersistenceDestinationResult(str(home), scope, True,
                                            revision=home_revision, fields=tuple(authoritative)))
                             # Home is independently persisted even if the historical
@@ -277,7 +306,7 @@ class SettingsService:
                             keys = tuple(key for key in keys if key not in authoritative)
                     else:
                         raw.update({c.key: deepcopy(c.value) for c in patch})
-                    revision = _write(path, raw)
+                    revision = _write(path, raw, **({"max_bytes": max_bytes} if max_bytes is not None else {}))
                 results.append(PersistenceDestinationResult(str(path), scope, True,
                                revision=revision, fields=keys))
             except (OSError, ValueError, TypeError) as exc:

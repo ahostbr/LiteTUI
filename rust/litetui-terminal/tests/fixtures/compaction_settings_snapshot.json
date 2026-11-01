@@ -1,0 +1,129 @@
+{
+  "kind": "compaction_settings_snapshot",
+  "version": 1,
+  "session_id": "12345678-1234-4123-8123-123456789abc",
+  "agent_id": "22345678-1234-4123-8123-123456789abc",
+  "backend": "custom",
+  "model": "test",
+  "snapshot": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "revisions": {
+    "global": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "agent": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "conversation": "absent"
+  },
+  "destinations": {
+    "global": "C:/owned/settings.json",
+    "conversation": "C:/owned/agents/22345678-1234-4123-8123-123456789abc/conversations/12345678-1234-4123-8123-123456789abc/settings.json"
+  },
+  "fields": {
+    "compact_keep_recent": {
+      "type": "integer",
+      "scope": "conversation",
+      "apply_timing": "next_turn",
+      "destination": "conversation",
+      "minimum": 0,
+      "maximum": 1000000,
+      "choices": [],
+      "saved": 4,
+      "effective": 4,
+      "editable": true,
+      "reason": null
+    },
+    "compact_max_tokens": {
+      "type": "integer",
+      "scope": "conversation",
+      "apply_timing": "next_turn",
+      "destination": "conversation",
+      "minimum": 256,
+      "maximum": 2147483647,
+      "choices": [],
+      "saved": 12288,
+      "effective": 12288,
+      "editable": true,
+      "reason": null
+    },
+    "compact_max_tool_iters": {
+      "type": "integer",
+      "scope": "conversation",
+      "apply_timing": "next_turn",
+      "destination": "conversation",
+      "minimum": 1,
+      "maximum": 512,
+      "choices": [],
+      "saved": 8,
+      "effective": 8,
+      "editable": true,
+      "reason": null
+    },
+    "compact_thinking_level": {
+      "type": "choice",
+      "scope": "conversation",
+      "apply_timing": "next_turn",
+      "destination": "conversation",
+      "minimum": null,
+      "maximum": null,
+      "choices": [
+        "default",
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "saved": "low",
+      "effective": "low",
+      "editable": true,
+      "reason": null
+    },
+    "wake_after_compact": {
+      "type": "boolean",
+      "scope": "conversation",
+      "apply_timing": "next_turn",
+      "destination": "conversation",
+      "minimum": null,
+      "maximum": null,
+      "choices": [],
+      "saved": false,
+      "effective": false,
+      "editable": true,
+      "reason": null
+    },
+    "clear_screen_after_compact": {
+      "type": "boolean",
+      "scope": "device",
+      "apply_timing": "immediate",
+      "destination": "global",
+      "minimum": null,
+      "maximum": null,
+      "choices": [],
+      "saved": true,
+      "effective": true,
+      "editable": true,
+      "reason": null
+    }
+  },
+  "tools": {
+    "effective": false,
+    "editable": false,
+    "reason": "Tools are shared turn authority; this editor does not change them."
+  },
+  "reasoning": {
+    "available": true,
+    "reason": null,
+    "source": "canonical compaction request adapter",
+    "supported_levels": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "saved": "low",
+    "effective": "low"
+  }
+}

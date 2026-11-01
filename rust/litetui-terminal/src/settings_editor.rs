@@ -18,13 +18,13 @@ const MAX: u64 = 2_147_483_647;
 fn fail(s: &str) -> io::Error {
     io::Error::other(s.to_owned())
 }
-fn text<'a>(v: &'a Value, key: &str, max: usize) -> io::Result<&'a str> {
+pub(crate) fn text<'a>(v: &'a Value, key: &str, max: usize) -> io::Result<&'a str> {
     v[key]
         .as_str()
         .filter(|s| !s.is_empty() && s.len() <= max)
         .ok_or_else(|| fail("Invalid settings edit text"))
 }
-fn token(v: &Value, key: &str) -> io::Result<String> {
+pub(crate) fn token(v: &Value, key: &str) -> io::Result<String> {
     let s = text(v, key, 64)?;
     if s.len() != 64
         || !s
@@ -40,7 +40,7 @@ fn number(v: &Value) -> io::Result<u64> {
         .filter(|n| (1..=MAX).contains(n))
         .ok_or_else(|| fail("Output budget must be an integer from 1 to 2147483647"))
 }
-fn revisions(v: &Value) -> io::Result<Value> {
+pub(crate) fn revisions(v: &Value) -> io::Result<Value> {
     let r = v
         .as_object()
         .filter(|r| r.len() == 3)
@@ -52,7 +52,7 @@ fn revisions(v: &Value) -> io::Result<Value> {
     }
     Ok(v.clone())
 }
-fn bounded(
+pub(crate) fn bounded(
     v: &Value,
     kind: &str,
     session: &str,

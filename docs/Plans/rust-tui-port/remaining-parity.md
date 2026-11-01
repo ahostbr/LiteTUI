@@ -1,6 +1,6 @@
 # Remaining LiteTUI Rust parity work
 
-Source audit: 2026-11-01, work/rust-tui-OpenBolt, prior checkpoint 72566a0a.
+Source audit: 2026-11-01, work/rust-tui-OpenBolt, prior checkpoint 9901cf30.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
 continuation and pre-start refusal handling are committed; bounded session browsing has
@@ -13,7 +13,7 @@ captured execution origins, multiple text turns, reasoning/tools, cancellation,
 approvals/questions, composer/transcript, model/thinking controls,
 exact-UUID resume, held-input recovery, F6 bounded saved-history inspection,
 bounded F8 session browsing with independent saved-row inspection and captured Open,
-F9 backend switching, F10 budget editing, F11 command/skill controls and explicit
+F9 backend switching, F10 budget and compaction-preference editing, F11 command/skill controls and explicit
 F12 NInfer/Strata engine management, reviewed F8 New/current Rename, F6 host-history edit/retry and manual compaction, and source-owned F4 themes. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
@@ -29,8 +29,8 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
 | Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Alternate-conversation/read-only inspection preserves active context and uses exact-UUID refresh. Reviewed current host-history plain-text edit/retry preserves canonical compaction/wake and joins owned workers. Reviewed host-history manual compaction is implemented and verified in controlled source/native and relocated-package checks. Native-provider compaction/rewind, owner-mode handoff, transaction-aware prewrite hook approvals and background-result continuation remain. Preserve draft, UUID/owner, settings and provider continuity. |
-| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
-| Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
+| Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget and compaction-preference edits, device clear-screen preferences and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
+| Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection, guarded conversation output-budget edits and six scoped compaction preferences are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
 | Plugins and commands | PluginRegistry and command/palette contributors; extensions/skills/tools operations | Live source catalog, native palette, verified slash routing and exact prepared-skill submission are implemented. Unsupported plugin screens/actions remain visible with reasons. Use structured adapters for Textual-dependent UI; no arbitrary eval/getattr bridge. Preserve registration/unload/reload ownership and inventory private plugin specimens. |
 | Hooks and MCP | gui.hooks/mcp and host-tool operations | Exact source schemas, independent controls, persistence/readback, reload/disconnect failures. Current startup forces external MCP off; enabling it needs authority and lifecycle tests. |
@@ -145,8 +145,8 @@ authorize an active-context mutation.
 Settings edits must use the canonical SettingsService scoped revision checks and
 settings_runtime.apply_saved_result. Legacy gui.settings.apply invokes
 _on_settings_saved, which can change live settings before persistence and trigger
-loads/reconnects. The implemented bounded editor covers conversation output budgets
-with explicit draft/validate/confirm/save/readback; disable those fields when a
+loads/reconnects. The implemented bounded editor covers conversation output budgets; reviewed six-field compaction preferences are undergoing final validation. Budget edits use
+explicit draft/validate/confirm/save/readback; disable those fields when a
 launch max_tokens override still owns actual requests or when the native provider
 owns output budgets. Canonical scopes/timing and backend controls own eligibility.
 
@@ -179,14 +179,16 @@ The native skill path does not invoke legacy gui.skills.use.
 
 ## Next bounded implementation packages
 
-Extend F10 with reviewed compaction preferences: keep-recent, summary token budget,
+F10 now provides reviewed compaction preferences: keep-recent, summary token budget,
 maximum tool rounds, thinking preference, wake and clear-screen. The first five use
 canonical conversation/next-turn persistence; clear-screen is device/immediate.
-Reuse the existing settings publication/readback algorithm and the compaction bounds.
+These controls reuse the existing settings publication/readback algorithm and compaction bounds.
 Tools enabled stays read-only because it also owns ordinary turn authority. Saved
 thinking differs from adapter-resolved side-call effort, and the shared compaction
 token budget also caps other summary/goal/subagent requests. Editing preferences
-must not itself compact, clear, wake or contact a provider.
+does not itself compact, clear, wake or contact a provider.
+
+The next shared prerequisite is captured background completion and admission: exact producer/owner identity, durable held input, canonical prompt admission, owned continuation workers and settlement. A killed task row currently precedes process-tree cleanup, and a finished background task can admit another turn. Implement and verify that full lifetime before enabling task Stop, goal or scheduler execution controls.
 
 A separate Work inspector can expose bounded current tasks, goal, scheduled jobs,
 loops and calendar, with a reviewed runtime-local pause of future scheduled prompts.

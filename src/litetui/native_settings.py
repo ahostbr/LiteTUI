@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from dataclasses import asdict, is_dataclass
 
 from litetui import (
@@ -12,7 +13,7 @@ from litetui import (
     settings_runtime,
 )
 from litetui.settings_scope import SETTING_SPECS
-from litetui.settings_service import SettingChange
+from litetui.settings_service import SettingChange, conversation_document
 
 VERSION = 1
 FIELDS = ("max_tokens_chat", "max_tokens_tools")
@@ -162,53 +163,125 @@ def _receipt(app, cmd, status, *, mutated=False, close_required=False, error=Non
                      "effective": effective, "revisions": revisions})
 
 
-def save(app, cmd):
-    """One explicit publication attempt; no automatic retry or rollback."""
+def _documents(service, context):
+    """Read bounded canonical settings documents without migrations or writes."""
+    from litetui.agent_store import _unlinked
+
+    paths = service._paths(context.session_id)
+    paths['agent'] = context.session.memory_root / 'settings.json'
+    documents: dict[str, dict] = {}
+    revisions: dict[str, str] = {}
+    for name, target in paths.items():
+        path = _unlinked(target)
+        try:
+            with path.open('rb') as stream:
+                before = path.stat()
+                raw = stream.read(1024 * 1024 + 1)
+                after = path.stat()
+        except FileNotFoundError:
+            documents[name], revisions[name] = {}, 'absent'
+            continue
+        identity = lambda stat: (stat.st_dev, stat.st_ino, stat.st_mode, stat.st_size, stat.st_mtime_ns)
+        if len(raw) > 1024 * 1024 or identity(before) != identity(after):
+            raise ValueError('Settings document changed or exceeded the read budget')
+        document = json.loads(raw)
+        if not isinstance(document, dict):
+            raise TypeError('Settings document must be an object')
+        backend_catalog._encoded(document, 1024 * 1024)
+        documents[name], revisions[name] = document, hashlib.sha256(raw).hexdigest()
+    return paths, documents, revisions
+
+
+def publish_reviewed(app, cmd, reader, receipt, checked, *, strict=False, guard=None):
+    """Shared one-field publication; adapters own protocol review and value vocabulary."""
     try:
-        review, context, service, before = _review(app, cmd)
-        if cmd.get("review") != review["review"]:
-            raise ValueError("Save requires the exact validated review")
-        key, value = review["field"], review["value"]
+        review, context, service, before = reader(app, cmd)
+        key, value = review['field'], review['value']
+        scope = review['scope']
+        destination = 'conversation' if scope == 'conversation' else 'global'
+        change = SettingChange(key, value, scope)
         protected = _protected(app, key)
+        extra = guard(app) if guard is not None else None
         requested = copy.deepcopy(app.settings)
         setattr(requested, key, value)
         backend, settings, conversation = app.backend, app.settings, app.conversation
-        # Last source read immediately before the synchronous publication boundary.
-        if _review(app, cmd)[0] != review:
-            raise ValueError("Settings changed before publication")
+        documents, expected_documents, paths = {}, {}, {}
+        if strict:
+            paths, documents, revisions = _documents(service, context)
+            if revisions != before.revisions or str(paths[destination]) != review['destination']:
+                raise ValueError('Settings destination or revisions changed before publication')
+            expected_documents = copy.deepcopy(documents)
+            if destination == 'conversation':
+                expected_documents[destination] = conversation_document(documents[destination], before.saved, [change])
+            else:
+                expected_documents[destination][key] = copy.deepcopy(value)
+            backend_catalog._encoded(expected_documents[destination], 1024 * 1024)
+        # Last source check immediately precedes the synchronous publication.
+        if reader(app, cmd)[0] != review:
+            raise ValueError('Settings changed before publication')
     except Exception as exc:  # noqa: BLE001 - malformed/stale requests are recoverable
-        return _receipt(app, cmd, "refused", error=str(exc)[:2048])
+        return receipt(app, cmd, 'refused', error=str(exc)[:2048])
 
     result = None
     combined = None
+    limits = {"max_bytes": 1024 * 1024} if strict else {}
     try:
-        result = service.save_patch(context.session_id, [SettingChange(key, value, "conversation")], before.revisions)
-        after = service.snapshot(context.session_id, read_only=True)
+        result = service.save_patch(context.session_id, [change], before.revisions, **limits)
+        after = service.snapshot(context.session_id, read_only=True, **limits)
         if (app.backend is not backend or app.settings is not settings or app.conversation is not conversation
-                or _protected(app, key) != protected):
-            raise ValueError("Settings authority changed during publication")
+                or _protected(app, key) != protected
+                or guard is not None and guard(app) != extra):
+            raise ValueError('Settings authority changed during publication')
+        observed = observed_revisions = None
+        if strict:
+            observed_paths, observed, observed_revisions = _documents(service, context)
+            if observed_paths != paths or observed_revisions != after.revisions:
+                raise ValueError('Settings raw destination disagrees with canonical readback')
         if not result.fully_saved:
-            if after.revisions != before.revisions or getattr(app.settings, key) != review["effective_before"]:
-                raise ValueError("Settings publication failed after an observable change")
-            return _receipt(app, cmd, "refused", persistence=result.persistence,
-                            saved=getattr(after.saved, key), effective=getattr(app.settings, key),
-                            revisions=after.revisions, error="; ".join(item.error or "Save refused" for item in result.persistence if not item.saved)[:2048])
+            if (after.revisions != before.revisions or getattr(app.settings, key) != review['effective_before']
+                    or strict and not _same(observed, documents)):
+                raise ValueError('Settings publication failed after an observable change')
+            if strict:
+                _persistence(result, change, paths[destination], after.revisions[destination], saved=False)
+            return receipt(app, cmd, 'refused', persistence=result.persistence,
+                           saved=getattr(after.saved, key), effective=getattr(app.settings, key),
+                           revisions=after.revisions, error='; '.join(item.error or 'Save refused' for item in result.persistence if not item.saved)[:2048])
         expected = asdict(before.saved)
         expected[key] = value
-        if (asdict(after.saved) != expected or after.revisions['global'] != before.revisions['global']
-                or after.revisions['agent'] != before.revisions['agent']):
-            raise ValueError("Saved output budget failed independent durable readback")
+        if (asdict(after.saved) != expected or strict and not _same(asdict(after.saved), expected) or any(after.revisions[name] != before.revisions[name]
+                for name in before.revisions if name != destination)
+                or strict and not _same(observed, expected_documents)):
+            raise ValueError('Saved output budget failed independent durable readback')
+        if strict:
+            _persistence(result, change, paths[destination], after.revisions[destination], saved=True)
         combined = settings_runtime.apply_saved_result(app, requested, result)
         if (app.backend is not backend or app.settings is not settings or app.conversation is not conversation
-                or _protected(app, key) != protected):
-            raise ValueError("Settings application changed protected execution state")
-        effective = _integer(getattr(app.settings, key))
+                or _protected(app, key) != protected
+                or guard is not None and guard(app) != extra):
+            raise ValueError('Settings application changed protected execution state')
+        effective = checked(key, getattr(app.settings, key))
         if len(combined.runtime) != 1 or combined.runtime[0].field != key or combined.runtime[0].effective != effective:
-            raise ValueError("Runtime output budget outcome disagrees with readback")
-        status = "saved" if combined.runtime[0].status == "applied" and effective == value else "partial"
-        return _receipt(app, cmd, status, mutated=True, persistence=combined.persistence,
-                        runtime=combined.runtime, saved=getattr(after.saved, key), effective=effective,
-                        revisions=after.revisions)
+            raise ValueError('Runtime output budget outcome disagrees with readback')
+        if strict:
+            _persistence(combined, change, paths[destination], after.revisions[destination], saved=True)
+            if not _same([asdict(row) for row in combined.persistence], [asdict(row) for row in result.persistence]):
+                raise ValueError('Runtime changed the verified persistence receipt')
+            runtime = combined.runtime[0]
+            if (runtime.scope != scope or type(runtime.requested) is not type(value) or runtime.requested != value
+                    or type(runtime.effective) is not type(effective)
+                    or runtime.status not in ('applied', 'pending', 'failed')
+                    or runtime.status == 'applied' and (runtime.action != 'none' or runtime.reason is not None)
+                    or runtime.status == 'failed' and (runtime.action != 'retry' or not isinstance(runtime.reason, str) or not runtime.reason)
+                    or runtime.status == 'pending' and (runtime.action not in ('restart', 'reconnect', 'reload') or not isinstance(runtime.reason, str) or not runtime.reason)
+                    or effective not in (review['effective_before'], value)
+                    or runtime.status == 'applied' and effective != value
+                    or not _same(_documents(service, context)[1:], (expected_documents, after.revisions))
+                    or service.snapshot(context.session_id, read_only=True, **limits).revisions != after.revisions):
+                raise ValueError('Settings runtime outcome or durable state changed during application')
+        status = 'saved' if combined.runtime[0].status == 'applied' and effective == value else 'partial'
+        return receipt(app, cmd, status, mutated=True, persistence=combined.persistence,
+                       runtime=combined.runtime, saved=getattr(after.saved, key), effective=effective,
+                       revisions=after.revisions)
     except BaseException as exc:
         # A raised write/apply can have completed before failing; never guess rollback.
         app._backend_transition_error = CLOSE_REQUIRED
@@ -216,7 +289,33 @@ def save(app, cmd):
         app._cli_launch_error = CLOSE_REQUIRED
         if not isinstance(exc, Exception):
             raise
-        return _receipt(app, cmd, "failed", mutated=True, close_required=True,
-                        error=(str(exc) or type(exc).__name__)[:2048],
-                        persistence=result.persistence if result else (),
-                        runtime=combined.runtime if combined else ())
+        return receipt(app, cmd, 'failed', mutated=True, close_required=True,
+                       error=(str(exc) or type(exc).__name__)[:2048],
+                       persistence=result.persistence if result else (),
+                       runtime=combined.runtime if combined else ())
+
+
+def _same(left, right):
+    return backend_catalog._encoded(left, 8 * 1024 * 1024) == backend_catalog._encoded(right, 8 * 1024 * 1024)
+
+
+def _persistence(result, change, path, revision, *, saved):
+    if len(result.persistence) != 1:
+        raise ValueError('Settings publication must report exactly one destination')
+    row = result.persistence[0]
+    if (row.destination != str(path) or row.scope != change.scope or row.fields != (change.key,)
+            or type(row.saved) is not bool or row.saved is not saved
+            or saved and (row.revision != revision or row.error is not None)
+            or not saved and (not isinstance(row.error, str) or not row.error)):
+        raise ValueError('Settings persistence receipt disagrees with its destination')
+
+
+def save(app, cmd):
+    """One explicit publication attempt; preserve the output-budget v1 wire."""
+    def reviewed(app, cmd):
+        result = _review(app, cmd)
+        if cmd.get('review') != result[0]['review']:
+            raise ValueError('Save requires the exact validated review')
+        return result
+
+    return publish_reviewed(app, cmd, reviewed, _receipt, lambda _key, value: _integer(value))

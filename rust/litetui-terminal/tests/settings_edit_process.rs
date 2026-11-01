@@ -16,11 +16,17 @@ use std::{
     time::{Duration, Instant},
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
-fn launch(case: &str, tools: bool) -> (Interactive, PathBuf) {
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+fn source() -> PathBuf {
+    std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .canonicalize()
-        .unwrap();
+        .unwrap()
+}
+fn launch(case: &str, tools: bool) -> (Interactive, PathBuf) {
+    let actual = source();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/settings_edit_runtime.py");
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target/settings-edit-process-tests")
         .join(format!(
@@ -53,7 +59,7 @@ s = json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True, skills_enabled=False, footer_task_manager=False, tts_enabled=False, sidecar_enabled=False, autocompact_enabled=False, tool_auto_background_s=0, custom_context_length=8192, max_tokens_chat=101, max_tokens_tools=202)
 p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
-"#,quote(&actual.to_string_lossy()),quote(case),quote(if tools{"max_tokens_tools"}else{"max_tokens_chat"}),quote(&actual.join("rust/litetui-terminal/tests/fixtures/settings_edit_runtime.py").to_string_lossy()))).unwrap();
+"#,quote(&actual.to_string_lossy()),quote(case),quote(if tools{"max_tokens_tools"}else{"max_tokens_chat"}),quote(&fixture.to_string_lossy()))).unwrap();
     let root = base.join("data");
     let mut args = vec![
         "--python".into(),
@@ -395,6 +401,13 @@ fn scenario(case: &str, tools: bool) {
         &fs::read_to_string(root.join("settings-edit-fresh-report.json")).unwrap(),
     )
     .unwrap();
+    assert_eq!(
+        PathBuf::from(report["source_app"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        source().join("src/litetui/app.py").canonicalize().unwrap(),
+        "The output-budget runtime must import the selected packaged/worktree source"
+    );
     assert_eq!(report["denied"], serde_json::json!([]));
     let requests = report["requests"].as_array().unwrap();
     assert_eq!(requests.len(), usize::from(!fatal));

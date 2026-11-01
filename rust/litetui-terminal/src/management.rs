@@ -8,6 +8,7 @@ use std::{collections::HashSet, io};
 
 mod action;
 mod compact;
+mod settings;
 pub use compact::{Changed as CompactChanged, Prepared as CompactPrepared};
 mod rewrite;
 pub use rewrite::{Changed as RewriteChanged, Prepared as RewritePrepared};
@@ -297,14 +298,6 @@ struct BackendPending {
     policy: Option<Value>,
     observed_model: bool,
 }
-struct SettingsEditPending {
-    id: CommandId,
-    stage: u8,
-    selection: Option<(String, u64)>,
-    review: Option<crate::settings_editor::Review>,
-    outcome: Option<crate::settings_editor::Outcome>,
-    snapshot: Option<crate::settings_editor::Snapshot>,
-}
 struct CommandPending {
     id: Option<CommandId>,
     stage: u8,
@@ -400,9 +393,10 @@ pub struct Management {
     command: Option<CommandPending>,
     command_catalog: Option<crate::command_palette::Catalog>,
     command_prepared: Option<crate::prepared_skill::Prepared>,
-    settings_edit: Option<SettingsEditPending>,
-    settings_snapshot: Option<crate::settings_editor::Snapshot>,
-    settings_review: Option<crate::settings_editor::Review>,
+    settings_edit: Option<settings::Pending>,
+    settings_snapshot: Option<settings::Snapshot>,
+    settings_review: Option<settings::Review>,
+    settings_generation: u64,
     backend: Option<BackendPending>,
     backend_catalog: Option<crate::backend_controls::Catalog>,
     browser: Option<BrowserPending>,
@@ -475,6 +469,7 @@ impl Default for Management {
             settings_edit: None,
             settings_snapshot: None,
             settings_review: None,
+            settings_generation: 0,
             backend: None,
             backend_catalog: None,
             browser: None,
@@ -656,7 +651,13 @@ impl Management {
         if self.failed {
             return Err(fail("Management connection is uncertain"));
         }
-        let result = if self.compact_response_pending(&frame)
+        let result = if self.compaction_settings_response_pending(&frame)
+            && original_json_bytes > crate::compaction_settings::MAX_BYTES
+        {
+            Err(fail(
+                "Compaction preferences response exceeds the full 64 KiB wire budget",
+            ))
+        } else if self.compact_response_pending(&frame)
             && original_json_bytes > crate::conversation_compact::RESPONSE_BYTES
         {
             Err(fail(
@@ -2484,8 +2485,8 @@ impl Management {
 
 impl Management {
     pub fn request_settings(&mut self, intent: crate::settings_view::Intent) -> io::Result<Value> {
-        if let crate::settings_view::Intent::Editor(intent) = intent {
-            return self.request_settings_edit(intent);
+        if !matches!(intent, crate::settings_view::Intent::Read) {
+            return self.request_settings_editor(intent);
         }
         if !self.ready() {
             return Err(fail(
@@ -2537,180 +2538,6 @@ impl Management {
             update,
             policy: Some(result["tool_policy"].clone()),
         })
-    }
-}
-
-impl Management {
-    fn request_settings_edit(
-        &mut self,
-        intent: crate::settings_editor::Intent,
-    ) -> io::Result<Value> {
-        use crate::settings_editor::{Intent, READ, SAVE, VALIDATE};
-        if !self.ready() {
-            return Err(fail("Finish current work before editing settings"));
-        }
-        self.ensure_drained()?;
-        if self.browser_authority.is_none() {
-            return Err(fail("Runtime omitted owned settings authority"));
-        }
-        let session = &self.expected.as_ref().expect("active").0;
-        let (stage, mut command, selection, review) = match intent {
-            Intent::Read => {
-                self.settings_snapshot = None;
-                self.settings_review = None;
-                (
-                    0,
-                    json!({"type":READ,"version":1,"session_id":session}),
-                    None,
-                    None,
-                )
-            }
-            Intent::Validate {
-                snapshot,
-                field,
-                value,
-            } => {
-                self.settings_review = None;
-                let current = self
-                    .settings_snapshot
-                    .as_ref()
-                    .filter(|s| s.token == snapshot)
-                    .ok_or_else(|| fail("Refresh settings authority before validating"))?;
-                let mut command = current.request(&field, value)?;
-                command["type"] = json!(VALIDATE);
-                (1, command, Some((field, value)), None)
-            }
-            Intent::Save { review } => {
-                let current = self
-                    .settings_review
-                    .take()
-                    .filter(|r| r.token == review)
-                    .ok_or_else(|| fail("Validate the edit again before saving"))?;
-                let mut command = current.request()?;
-                command["type"] = json!(SAVE);
-                (2, command, None, Some(current))
-            }
-        };
-        let id = if stage == 2 {
-            self.wire.register_request()
-        } else {
-            self.wire.register_read()
-        }
-        .map_err(|_| fail("Cannot reserve settings operation"))?;
-        command["id"] = id.to_value();
-        self.settings_edit = Some(SettingsEditPending {
-            id,
-            stage,
-            selection,
-            review,
-            outcome: None,
-            snapshot: None,
-        });
-        Ok(command)
-    }
-    fn settings_edit_response(&mut self, frame: Value) -> io::Result<Step> {
-        use crate::settings_editor::{Outcome, READ, Review, Snapshot as EditSnapshot, Update};
-        self.ensure_drained()?;
-        let mut pending = self.settings_edit.take().expect("pending settings edit");
-        let publish = |update, policy| Step::Settings {
-            update: crate::settings_view::Update::Editor(update),
-            policy,
-        };
-        if frame["ok"] != true {
-            self.settings_review = None;
-            self.settings_snapshot = None;
-            let reason = text(&frame, "error", 4096)?;
-            if pending.stage >= 2 {
-                return Err(fail(&format!("Settings save/readback failed: {reason}")));
-            }
-            return Ok(publish(Update::Rejected(reason.into()), None));
-        }
-        let value = &frame["result"];
-        let (session, backend, model, profile) = self.expected.as_ref().expect("active");
-        let (agent, schedules) = self.browser_authority.as_ref().expect("owned");
-        match pending.stage {
-            0 => {
-                let snapshot = EditSnapshot::parse(value, session, agent, backend, model)?;
-                self.settings_snapshot = Some(snapshot.clone());
-                return Ok(publish(Update::Snapshot(snapshot), None));
-            }
-            1 => {
-                let (field, value_number) = pending.selection.as_ref().expect("selection");
-                let snapshot = self
-                    .settings_snapshot
-                    .as_ref()
-                    .expect("validated selection");
-                let review = Review::parse(value, snapshot, field, *value_number)?;
-                self.settings_review = Some(review.clone());
-                return Ok(publish(Update::Review(review), None));
-            }
-            2 => {
-                let review = pending.review.as_ref().expect("confirmed edit");
-                match Outcome::parse(value, review)? {
-                    Err(reason) => {
-                        self.settings_snapshot = None;
-                        return Ok(publish(Update::Rejected(reason), None));
-                    }
-                    Ok(outcome) => pending.outcome = Some(outcome),
-                }
-                pending.stage = 3;
-            }
-            3 => {
-                let snapshot = EditSnapshot::parse(value, session, agent, backend, model)?;
-                pending
-                    .outcome
-                    .as_ref()
-                    .expect("receipt")
-                    .verify(&snapshot, pending.review.as_ref().expect("review"))?;
-                pending.snapshot = Some(snapshot);
-                pending.stage = 4;
-            }
-            4 => {
-                let state = Snapshot::parse(value)?;
-                if (&state.session, &state.backend, &state.model, &state.profile)
-                    != (session, backend, model, profile)
-                    || state.held_restored_input != Some(0)
-                    || state.schedules_paused != *schedules
-                    || value["ownership"]["agent_id"] != *agent
-                {
-                    return Err(fail(
-                        "Settings save readback changed runtime identity or policy",
-                    ));
-                }
-                let snapshot = pending.snapshot.expect("independent settings snapshot");
-                for (i, field) in crate::settings_editor::FIELDS.iter().enumerate() {
-                    if value["settings"]["effective"][*field] != snapshot.budgets[i].effective {
-                        return Err(fail(
-                            "Settings effective values disagree with runtime state",
-                        ));
-                    }
-                }
-                self.settings_snapshot = Some(snapshot.clone());
-                return Ok(Step::Settings {
-                    update: crate::settings_view::Update::Edited {
-                        update: Update::Saved {
-                            snapshot,
-                            outcome: Box::new(pending.outcome.expect("saved receipt")),
-                        },
-                        inspection: crate::settings_view::Snapshot::parse(value, session)?,
-                    },
-                    policy: Some(value["tool_policy"].clone()),
-                });
-            }
-            _ => return Err(fail("Invalid settings edit stage")),
-        }
-        let id = self
-            .wire
-            .register_read()
-            .map_err(|_| fail("Cannot reserve settings readback"))?;
-        let command = if pending.stage == 3 {
-            json!({"type":READ,"id":id.to_value(),"version":1,"session_id":session})
-        } else {
-            json!({"type":"gui.state","id":id.to_value(),"include_conversations":false})
-        };
-        pending.id = id;
-        self.settings_edit = Some(pending);
-        Ok(Step::Write(command))
     }
 }
 

@@ -54,6 +54,14 @@ The action first runs maintenance, with no invented user prompt. If enabled, a r
 
 This slice supports current owned writable host-managed history. Provider-native context and owner-mode handoff remain unavailable. Its latest validation status is in `../../docs/Plans/rust-tui-port/master.md`; real-provider and terminal-host acceptance remain separate.
 
+## Review compaction preferences
+
+F10 → C opens the compaction preference editor; E on a compaction row opens that field. Tab/Up/Down select a preference. Edit numeric values directly; Left/Right change thinking or boolean choices. Enter requests a source review. Read every page, then confirm on the final visible page. F5 refreshes without discarding drafts. PageUp/PageDown scroll the draft details, including complete read-only reasons on small terminals; return to the first page to edit. Escape returns from review to the draft, then to the F10 inspector.
+
+Keep-recent, summary tokens, tool rounds, thinking and wake save with the conversation. Clear-screen saves for the device and affects later successful compaction. Saving does not compact, clear history, wake or contact a provider. Tool enablement is shown read-only. Keep-recent preserves complete tool boundaries; resolved thinking may be lower than the saved preference. The summary token budget also caps other summary, goal-evaluation and subagent calls.
+
+A saved or partial result is shown only after independent source and runtime readback. The ordinary composer remains unchanged. Current verification status is in the port master; this work does not establish live-provider or terminal-host acceptance.
+
 ## Held input
 
 In idle live chat, **F7** opens recovered input. Up/Down selects an entry; PageUp/PageDown or the wheel scrolls its complete text and delivery details. **Delete**, followed by a fresh **Enter** on the confirmation, cancels an eligible entry. **C**, then a fresh **Enter**, continues the oldest eligible input offered by Python. Its saved source/profile is preserved and the composer draft is untouched. Escape keeps it; R refreshes. Only queued or explicitly rejected next-turn Codex entries and prepared Claude entries can be cancelled. **H**, then a fresh **Enter**, checks eligible uncertain entries against provider history. A missing match leaves them held; only exact positive acceptance can record them locally.

@@ -48,6 +48,7 @@ pub mod restored_queue;
 pub mod conversation_browser;
 
 pub mod backend_controls;
+pub mod compaction_settings;
 pub mod runtime_launch;
 pub mod settings_editor;
 pub mod settings_view;

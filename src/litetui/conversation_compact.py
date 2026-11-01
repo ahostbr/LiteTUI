@@ -8,7 +8,12 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-from litetui import backend_catalog, conversation_transition, native_history
+from litetui import (
+    backend_catalog,
+    compaction_preferences,
+    conversation_transition,
+    native_history,
+)
 from litetui import conversation_action as action
 from litetui import history_projection as projection
 from litetui.conversation import ConversationRepository
@@ -52,12 +57,11 @@ def _config(app):
              "max_tool_iters": settings.compact_max_tool_iters, "thinking_level": settings.compact_thinking_level,
              "tools_enabled": app.tools_enabled, "wake_after_compact": settings.wake_after_compact,
              "clear_screen_after_compact": settings.clear_screen_after_compact}
-    for key, low, high in (("keep_recent", 0, 1000000), ("max_tokens", 256, 2147483647), ("max_tool_iters", 1, 512)):
-        if type(value[key]) is not int or not low <= value[key] <= high:
-            raise ValueError("Unsupported compaction configuration: " + key)
-    if value["thinking_level"] not in {"default", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
-        raise ValueError("Unsupported compaction thinking level")
-    if any(type(value[key]) is not bool for key in ("tools_enabled", "wake_after_compact", "clear_screen_after_compact")):
+    for source, key in (("compact_keep_recent", "keep_recent"), ("compact_max_tokens", "max_tokens"),
+                        ("compact_max_tool_iters", "max_tool_iters"), ("compact_thinking_level", "thinking_level"),
+                        ("wake_after_compact", "wake_after_compact"), ("clear_screen_after_compact", "clear_screen_after_compact")):
+        compaction_preferences.checked(source, value[key])
+    if type(value["tools_enabled"]) is not bool:
         raise ValueError("Compaction effects must be booleans")
     return value
 

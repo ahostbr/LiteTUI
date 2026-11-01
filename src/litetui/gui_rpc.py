@@ -60,6 +60,7 @@ OPERATIONS = (
     "engine.start", "engine.stop", "engine.status",
     "engine.native_inspect", "engine.native_validate", "engine.native_action", "engine.native_readback",
     "settings.native_snapshot", "settings.native_validate", "settings.native_save",
+    "settings.native_compact_snapshot", "settings.native_compact_validate", "settings.native_compact_save",
     "themes.native_snapshot", "themes.native_validate", "themes.native_save",
     "commands.list", "commands.resolve", "skills.native_prepare",
     "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile", "restored_input.resolve",
@@ -789,7 +790,7 @@ async def async_dispatch(app, cmd):
     conversation_transition.require_execution(app)
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
-    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if blocking:
         if getattr(app, "_gui_management_busy", False):
             raise ValueError("Another management operation is active; wait or cancel it")
@@ -866,6 +867,11 @@ async def _async_dispatch(app, cmd):
         from litetui import native_themes
         action = operation.rsplit("_", 1)[1]
         return getattr(native_themes, action)(app, cmd)
+    if operation in {"gui.settings.native_compact_snapshot", "gui.settings.native_compact_validate", "gui.settings.native_compact_save"}:
+        from litetui import native_compaction_settings
+
+        action = operation.rsplit("_", 1)[-1]
+        return getattr(native_compaction_settings, action)(app, cmd)
     if operation in {"gui.settings.native_snapshot", "gui.settings.native_validate", "gui.settings.native_save"}:
         from litetui import native_settings
 

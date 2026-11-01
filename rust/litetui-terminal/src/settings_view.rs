@@ -35,12 +35,18 @@ pub struct Snapshot {
 pub enum Intent {
     Read,
     Editor(crate::settings_editor::Intent),
+    Compaction(crate::compaction_settings::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
     Snapshot(Snapshot),
     Rejected(String),
     Editor(crate::settings_editor::Update),
+    Compaction(crate::compaction_settings::Update),
+    CompactionEdited {
+        update: crate::compaction_settings::Update,
+        inspection: Snapshot,
+    },
     Edited {
         update: crate::settings_editor::Update,
         inspection: Snapshot,
@@ -186,6 +192,7 @@ fn display(value: &str) -> String {
 #[derive(Default)]
 pub struct View {
     pub editor: crate::settings_editor::View,
+    pub compaction: crate::compaction_settings::View,
     pub open: bool,
     pub waiting: bool,
     pub snapshot: Option<Snapshot>,
@@ -212,16 +219,18 @@ impl View {
         self.hide();
     }
     pub fn owns_input(&self) -> bool {
-        self.open || self.waiting || self.editor.owns_input()
+        self.open || self.waiting || self.editor.owns_input() || self.compaction.owns_input()
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.editor
             .take_intent()
             .map(Intent::Editor)
+            .or_else(|| self.compaction.take_intent().map(Intent::Compaction))
             .or_else(|| self.intent.take())
     }
     pub fn hide(&mut self) {
         self.editor.hide();
+        self.compaction.hide();
         self.visible = false;
         self.hits.clear();
         self.details = None;
@@ -229,6 +238,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.editor.close();
+        self.compaction.close();
         self.open = false;
         if self.intent.take().is_some() {
             self.waiting = false;
@@ -237,11 +247,40 @@ impl View {
     }
     pub fn finish(&mut self) {
         self.editor.finish();
+        self.compaction.finish();
         self.close();
         self.waiting = false;
         self.snapshot = None;
     }
+    pub fn accepts_paste(&self) -> bool {
+        self.editor.editing() || self.compaction.accepts_paste()
+    }
+    pub fn paste(&mut self, text: &str) {
+        if self.compaction.owns_input() {
+            self.compaction.paste(text);
+        } else {
+            self.editor.paste(text);
+        }
+    }
+    pub fn clipboard_error(&mut self, error: String) {
+        if self.compaction.owns_input() {
+            self.compaction.notice = error;
+        } else {
+            self.editor.notice = error;
+        }
+    }
     pub fn observe(&mut self, update: Update) {
+        if let Update::CompactionEdited { update, inspection } = update {
+            self.observe(Update::Snapshot(inspection));
+            self.compaction.observe(update);
+            self.notice = self.compaction.notice.clone();
+            return;
+        }
+        if let Update::Compaction(update) = update {
+            self.compaction.observe(update);
+            self.notice = self.compaction.notice.clone();
+            return;
+        }
         if let Update::Edited { update, inspection } = update {
             self.observe(Update::Snapshot(inspection));
             self.editor.observe(update);
@@ -258,7 +297,10 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
-            Update::Editor(_) | Update::Edited { .. } => unreachable!("handled above"),
+            Update::Editor(_)
+            | Update::Edited { .. }
+            | Update::Compaction(_)
+            | Update::CompactionEdited { .. } => unreachable!("handled above"),
             Update::Snapshot(snapshot) => {
                 let previous = self
                     .snapshot
@@ -289,6 +331,10 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.compaction.owns_input() {
+            self.compaction.key(key);
+            return;
+        }
         if self.editor.owns_input() {
             self.editor.key(key);
             return;
@@ -312,6 +358,7 @@ impl View {
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(4),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(4).min(self.max_scroll),
             KeyCode::Char('r') if key.kind == KeyEventKind::Press => self.open(),
+            KeyCode::Char('c') if key.kind == KeyEventKind::Press => self.compaction.open(),
             KeyCode::Char('e') if key.kind == KeyEventKind::Press => {
                 if let Some(row) = self
                     .snapshot
@@ -320,6 +367,8 @@ impl View {
                 {
                     if crate::settings_editor::FIELDS.contains(&row.name.as_str()) {
                         self.editor.open(&row.name);
+                    } else if crate::compaction_settings::FIELDS.contains(&row.name.as_str()) {
+                        self.compaction.open_field(&row.name);
                     } else {
                         self.notice = "This setting is available for inspection only.".into();
                     }
@@ -329,6 +378,10 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.compaction.owns_input() {
+            self.compaction.mouse(event);
+            return;
+        }
         if self.editor.owns_input() {
             self.editor.mouse(event);
             return;
@@ -373,6 +426,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.compaction.owns_input() {
+            self.compaction.draw(frame, area, theme);
+            return;
+        }
         if self.editor.owns_input() {
             self.editor.draw(frame, area, theme);
             return;
@@ -525,7 +582,7 @@ impl View {
             Rect::new(inner.x, inner.bottom() - 2, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("R refresh · Esc close"),
+            Paragraph::new("E edit · C compaction · R refresh · Esc close"),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
         self.visible = self.open && !self.waiting;

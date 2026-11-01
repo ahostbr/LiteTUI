@@ -133,6 +133,12 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 chat.browser.hide();
                 return false;
             }
+            if let Some(chat) = app.live.as_mut()
+                && chat.settings.compaction.owns_input()
+            {
+                chat.settings.key(key);
+                return false;
+            }
             if let Some(chat) = app.live.as_mut() {
                 chat.stop_confirm = false;
             }
@@ -599,11 +605,11 @@ fn handle_key(
                     Err(error) => chat.themes.notice = error,
                 }
             }
-            if !chat.quitting && !chat.cancelling() && chat.settings.editor.editing() {
+            if !chat.quitting && !chat.cancelling() && chat.settings.accepts_paste() {
                 match clipboard.read_text() {
-                    Ok(Some(text)) => chat.settings.editor.paste(&text),
+                    Ok(Some(text)) => chat.settings.paste(&text),
                     Ok(None) => {}
-                    Err(error) => chat.settings.editor.notice = error,
+                    Err(error) => chat.settings.clipboard_error(error),
                 }
             }
             if !chat.quitting && !chat.cancelling() && chat.backend_controls.editing() {
@@ -751,12 +757,7 @@ fn paste(app: &mut Demo, text: &str) {
             && !app.has_live_approval()
             && !app.has_live_question()
         {
-            app.live
-                .as_mut()
-                .expect("settings")
-                .settings
-                .editor
-                .paste(text);
+            app.live.as_mut().expect("settings").settings.paste(text);
         }
         return;
     }
@@ -3352,6 +3353,234 @@ mod tests {
         assert!(!app.live.as_ref().unwrap().settings.editor.owns_input());
         assert!(app.has_live_settings());
         assert_eq!(app.composer.text(), "MAIN DRAFT");
+    }
+    fn compaction_preferences_surface(
+        field: &str,
+        selected_edit: bool,
+    ) -> (
+        Demo,
+        KeyRouter,
+        litetui_terminal::compaction_settings::Snapshot,
+        u64,
+    ) {
+        use litetui_terminal::{compaction_settings as edit, live::Observation, settings_view};
+        let data: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/compaction_settings_snapshot.json"
+        ))
+        .unwrap();
+        let snapshot = edit::Snapshot::parse(
+            &data,
+            data["session_id"].as_str().unwrap(),
+            data["agent_id"].as_str().unwrap(),
+            "custom",
+            "test",
+        )
+        .unwrap();
+        let mut app = Demo::live("custom".into(), "test".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("KEEP α 雪 THE COMPOSER DRAFT");
+        app.composer
+            .move_cursor(litetui_terminal::composer::Motion::WordLeft, true);
+        let mut router = KeyRouter::default();
+        plain(&mut app, &mut router, KeyCode::F(10));
+        assert_eq!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            Some(settings_view::Intent::Read)
+        );
+        let setting = snapshot.field(field).unwrap();
+        app.observe_live(Observation::Settings(settings_view::Update::Snapshot(
+            settings_view::Snapshot {
+                session: snapshot.session.clone(),
+                rows: vec![settings_view::Row {
+                    name: field.into(),
+                    label: "Compaction preference".into(),
+                    value_type: "source".into(),
+                    source: "settings".into(),
+                    read_only: false,
+                    secret: false,
+                    apply: setting.apply_timing.clone(),
+                    requested: setting.saved.to_string(),
+                    effective: setting.effective.to_string(),
+                    deferred: false,
+                }],
+            },
+        )))
+        .unwrap();
+        plain(
+            &mut app,
+            &mut router,
+            KeyCode::Char(if selected_edit { 'e' } else { 'c' }),
+        );
+        assert!(
+            app.live.as_mut().unwrap().settings.take_intent().is_none(),
+            "Hidden inspector cannot open an editor"
+        );
+        render_footer(&mut app);
+        plain(
+            &mut app,
+            &mut router,
+            KeyCode::Char(if selected_edit { 'e' } else { 'c' }),
+        );
+        let Some(settings_view::Intent::Compaction(edit::Intent::Read { generation })) =
+            app.live.as_mut().unwrap().settings.take_intent()
+        else {
+            panic!("F10 compaction preferences did not open")
+        };
+        (app, router, snapshot, generation)
+    }
+    #[test]
+    fn compaction_preferences_route_owns_numeric_clipboard_and_preserves_main_selection() {
+        use litetui_terminal::{compaction_settings as edit, live::Observation, settings_view};
+        let (mut app, mut router, snapshot, generation) =
+            compaction_preferences_surface("compact_keep_recent", false);
+        let before = (
+            app.composer.text().to_owned(),
+            app.composer.before_cursor().to_owned(),
+            app.composer.selected_text().to_owned(),
+        );
+        let mut clipboard = TestClipboard {
+            read: Some("0".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 0);
+        app.observe_live(Observation::Settings(settings_view::Update::Compaction(
+            edit::Update::Snapshot {
+                generation,
+                snapshot: Box::new(snapshot.clone()),
+            },
+        )))
+        .unwrap();
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Home);
+        plain(&mut app, &mut router, KeyCode::Delete);
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 1);
+        assert_eq!(app.live.as_ref().unwrap().settings.compaction.draft(), "0");
+        paste(&mut app, "\n9");
+        assert_eq!(app.live.as_ref().unwrap().settings.compaction.draft(), "0");
+        plain(&mut app, &mut router, KeyCode::Enter);
+        let Some(settings_view::Intent::Compaction(edit::Intent::Validate {
+            generation: next,
+            field,
+            value,
+            ..
+        })) = app.live.as_mut().unwrap().settings.take_intent()
+        else {
+            panic!("Missing explicit validation")
+        };
+        assert_eq!(field, "compact_keep_recent");
+        assert_eq!(value, serde_json::json!(0));
+        app.observe_live(Observation::Settings(settings_view::Update::Compaction(
+            edit::Update::Snapshot {
+                generation,
+                snapshot: Box::new(snapshot),
+            },
+        )))
+        .unwrap();
+        assert!(app.live.as_ref().unwrap().settings.compaction.waiting);
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 1);
+        app.observe_live(Observation::Settings(settings_view::Update::Compaction(
+            edit::Update::Rejected {
+                generation: next,
+                reason: "stale source".into(),
+            },
+        )))
+        .unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.live.as_ref().unwrap().settings.compaction.owns_input());
+        assert!(app.has_live_settings());
+        assert_eq!(
+            (
+                app.composer.text().to_owned(),
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned()
+            ),
+            before
+        );
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+    }
+    #[test]
+    fn compaction_boolean_editor_blocks_clipboard_and_tiny_escape_preserves_inspector() {
+        use litetui_terminal::{compaction_settings as edit, live::Observation, settings_view};
+        let (mut app, mut router, snapshot, generation) =
+            compaction_preferences_surface("clear_screen_after_compact", true);
+        app.observe_live(Observation::Settings(settings_view::Update::Compaction(
+            edit::Update::Snapshot {
+                generation,
+                snapshot: Box::new(snapshot),
+            },
+        )))
+        .unwrap();
+        render_footer(&mut app);
+        assert_eq!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .settings
+                .compaction
+                .selected_field(),
+            "clear_screen_after_compact"
+        );
+        let mut clipboard = TestClipboard {
+            read: Some("false".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paste(&mut app, "false");
+        assert_eq!(clipboard.reads, 0);
+        plain(&mut app, &mut router, KeyCode::Left);
+        plain(&mut app, &mut router, KeyCode::Enter);
+        let Some(settings_view::Intent::Compaction(edit::Intent::Validate {
+            generation,
+            field,
+            value,
+            ..
+        })) = app.live.as_mut().unwrap().settings.take_intent()
+        else {
+            panic!("Missing boolean validation")
+        };
+        assert_eq!(field, "clear_screen_after_compact");
+        assert_eq!(value, serde_json::json!(false));
+        app.observe_live(Observation::Settings(settings_view::Update::Compaction(
+            edit::Update::Rejected {
+                generation,
+                reason: "controlled refusal".into(),
+            },
+        )))
+        .unwrap();
+        let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
+        small.draw(|f| ui::draw(f, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.live.as_ref().unwrap().settings.compaction.owns_input());
+        assert!(
+            app.has_live_settings(),
+            "Tiny Escape must preserve underlying F10"
+        );
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(!app.has_live_settings());
+        assert_eq!(app.composer.text(), "KEEP α 雪 THE COMPOSER DRAFT");
     }
     #[test]
     fn command_palette_owns_f11_exact_argument_paste_and_cancel_repeats() {
