@@ -626,3 +626,162 @@ fn raw_response_size_excludes_framing_but_not_padding_or_escape_expansion() {
     }
     assert_eq!(history::wire_response_bytes(br#"{"text":"\u96ea"}"#), 17);
 }
+
+#[cfg(test)]
+mod rewrite_selection {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use litetui_terminal::{
+        conversation_rewrite::Action,
+        history_view::{Target, Update, View},
+        theme::builtin_themes,
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+    fn draw(view: &mut View) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|frame| view.draw(frame, frame.area(), &builtin_themes().remove(0)))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+    fn key(view: &mut View, code: KeyCode) {
+        view.key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    fn user(index: u64) -> Value {
+        let mut row = fragment(index, "same text", 0, 9);
+        row["kind"] = json!("user");
+        row["role"] = json!("user");
+        row["state"] = Value::Null;
+        row
+    }
+    fn loaded(read_only: bool) -> View {
+        let mut view = View::default();
+        view.open();
+        let read = view.take_intent().unwrap();
+        let mut desc = descriptor();
+        desc["read_only"] = json!(read_only);
+        let snapshot = Snapshot::parse(&desc, &id()).unwrap();
+        let page = Page::parse(&page(vec![user(0), user(1)], true, true), &snapshot).unwrap();
+        view.observe(Update::Loaded {
+            key: read.key().clone(),
+            snapshot: Box::new(snapshot),
+            page: Box::new(page),
+        })
+        .unwrap();
+        view
+    }
+    #[test]
+    fn current_selection_uses_message_coordinates_not_repeated_text_and_preserves_it_on_suspend() {
+        let mut view = loaded(false);
+        draw(&mut view);
+        key(&mut view, KeyCode::Tab);
+        assert_eq!(view.selected_message().unwrap().0, 900);
+        draw(&mut view);
+        key(&mut view, KeyCode::Tab);
+        assert_eq!(view.selected_message().unwrap().0, 901);
+        draw(&mut view);
+        key(&mut view, KeyCode::Char('e'));
+        let (action, selection) = view.take_rewrite().unwrap();
+        assert_eq!(action, Action::Edit);
+        assert_eq!(selection.history_key.target, Target::Current);
+        assert_eq!(selection.message_index, 901);
+        assert_eq!(selection.message_sha256, "e".repeat(64));
+        assert_eq!(selection.messages, 1001);
+        assert_eq!(selection.history_snapshot, "a".repeat(64));
+        let retained = view.page.clone();
+        view.suspend_for_rewrite();
+        assert_eq!(view.page, retained);
+        assert_eq!(view.selected_message().unwrap().0, 901);
+        key(&mut view, KeyCode::Char('r'));
+        assert!(view.take_rewrite().is_none());
+    }
+    #[test]
+    fn cache_readonly_stale_and_hidden_pages_never_offer_rewrite() {
+        let mut view = View::default();
+        let snapshot = snapshot();
+        let page = Page::parse(&page(vec![user(0), user(1)], true, true), &snapshot).unwrap();
+        view.install(snapshot, page, true).unwrap();
+        draw(&mut view);
+        key(&mut view, KeyCode::Char('e'));
+        assert!(view.notice.contains("F5"));
+        assert!(view.take_rewrite().is_none());
+        let mut view = loaded(true);
+        draw(&mut view);
+        key(&mut view, KeyCode::Tab);
+        key(&mut view, KeyCode::Char('r'));
+        assert!(view.notice.contains("Read-only"));
+        assert!(view.take_rewrite().is_none());
+        let mut view = loaded(false);
+        draw(&mut view);
+        key(&mut view, KeyCode::Tab);
+        view.invalidate();
+        draw(&mut view);
+        key(&mut view, KeyCode::Char('e'));
+        assert!(view.take_rewrite().is_none());
+        let mut view = loaded(false);
+        draw(&mut view);
+        key(&mut view, KeyCode::Tab);
+        view.hide();
+        key(&mut view, KeyCode::Char('e'));
+        assert!(view.take_rewrite().is_none());
+    }
+    #[test]
+    fn paging_renews_selection_generation_and_repeated_action_key_never_repeats() {
+        let mut view = loaded(false);
+        draw(&mut view);
+        key(&mut view, KeyCode::Tab);
+        draw(&mut view);
+        key(&mut view, KeyCode::Char('e'));
+        let (_, first) = view.take_rewrite().unwrap();
+        draw(&mut view);
+        key(&mut view, KeyCode::F(5));
+        let request = view.take_intent().unwrap();
+        let snapshot = snapshot();
+        let page = Page::parse(&page(vec![user(0), user(1)], true, true), &snapshot).unwrap();
+        view.observe(Update::Loaded {
+            key: request.key().clone(),
+            snapshot: Box::new(snapshot),
+            page: Box::new(page),
+        })
+        .unwrap();
+        draw(&mut view);
+        view.key(KeyEvent::new_with_kind(
+            KeyCode::Char('r'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        ));
+        assert!(view.take_rewrite().is_none());
+        key(&mut view, KeyCode::Char('r'));
+        let (_, second) = view.take_rewrite().unwrap();
+        assert!(second.history_key.generation > first.history_key.generation);
+        assert_eq!(second.message_index, first.message_index);
+    }
+    #[test]
+    fn several_display_blocks_of_one_user_message_are_one_selection() {
+        let mut view = View::default();
+        view.open();
+        let request = view.take_intent().unwrap();
+        let snapshot = snapshot();
+        let mut second = user(1);
+        second["message_index"] = json!(900);
+        let page = Page::parse(&page(vec![user(0), second], true, true), &snapshot).unwrap();
+        view.observe(Update::Loaded {
+            key: request.key().clone(),
+            snapshot: Box::new(snapshot),
+            page: Box::new(page),
+        })
+        .unwrap();
+        draw(&mut view);
+        key(&mut view, KeyCode::Tab);
+        key(&mut view, KeyCode::Tab);
+        assert_eq!(view.selected_message().unwrap().0, 900);
+        view.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(view.selected_message().unwrap().0, 900);
+    }
+}

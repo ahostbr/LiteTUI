@@ -186,6 +186,28 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    Rewrite(crate::conversation_rewrite::Update),
+    RewriteSettled(Box<crate::management::RewriteChanged>),
+    RewriteSegment {
+        operation_id: String,
+        execution_id: String,
+        index: u64,
+        previous_outcome: Option<TerminalOutcome>,
+    },
+    RewriteAftercare {
+        operation_id: String,
+        aftercare_id: String,
+        running: bool,
+        previous_outcome: Option<TerminalOutcome>,
+    },
+    RewriteActivity {
+        execution_id: String,
+        activity: crate::native_activity::Activity,
+    },
+    RewriteStatus {
+        execution_id: String,
+        text: String,
+    },
     SavedHistory(crate::history_view::Update),
     Theme(crate::theme_controls::Update),
     ConversationChanged(Box<crate::conversation_actions::Changed>),
@@ -255,6 +277,17 @@ pub struct Turn {
     closing: bool,
     command_id: String,
     continued_input: Option<(String, String)>,
+    rewrite_input: Option<crate::conversation_rewrite::Review>,
+    rewrite_admission: Option<crate::conversation_rewrite::Admission>,
+    rewrite_shutdown: Option<Value>,
+    rewrite_current_session: Option<String>,
+    rewrite_active: bool,
+    rewrite_first_terminal: bool,
+    rewrite_segments: Vec<String>,
+    rewrite_aftercare: std::collections::BTreeMap<String, String>,
+    rewrite_executions: std::collections::HashSet<String>,
+    rewrite_tools: std::collections::BTreeMap<String, (String, bool)>,
+    rewrite_tool_count: usize,
     visible_answers: std::collections::BTreeSet<usize>,
     tools_seen: bool,
     card_count: usize,
@@ -271,8 +304,13 @@ pub struct Turn {
     policy: Option<crate::tool_mode::Expected>,
     aborts: crate::cancellation::Ledger,
     stop_requests: usize,
+    stop_acknowledged: bool,
 }
 impl Turn {
+    /// Stop admitting user work while the source drains its owned shutdown.
+    pub fn begin_close(&mut self) {
+        self.closing = true;
+    }
     fn can_manage(&self) -> bool {
         self.can_engine()
             && self
@@ -280,7 +318,7 @@ impl Turn {
                 .is_none_or(|a| a == crate::engine_controls::Admission::PromptReady)
     }
     fn can_engine(&self) -> bool {
-        self.ready && !self.closing && (!self.sent || self.settled)
+        self.ready && !self.closing && !self.rewrite_active && (!self.sent || self.settled)
     }
     pub fn with_policy(policy: crate::tool_mode::Expected) -> Self {
         Self {
@@ -295,6 +333,7 @@ impl Turn {
                 .engine_admission
                 .is_some_and(|a| a != crate::engine_controls::Admission::PromptReady)
             || self.closing
+            || self.rewrite_active
             || !self.approvals.settled()
             || !self.questions.settled()
             || (self.sent && !self.settled)
@@ -309,6 +348,14 @@ impl Turn {
         // can alias a saved operation after restart; reserve fresh OS randomness.
         self.command_id = fresh_prompt_id()?;
         self.continued_input = None;
+        self.rewrite_input = None;
+        self.rewrite_admission = None;
+        self.rewrite_first_terminal = false;
+        self.rewrite_segments.clear();
+        self.rewrite_aftercare.clear();
+        self.rewrite_executions.clear();
+        self.rewrite_tools.clear();
+        self.rewrite_tool_count = 0;
         self.sent = true;
         self.started = false;
         self.native_turns.clear();
@@ -318,6 +365,7 @@ impl Turn {
         self.settled = false;
         self.terminal = None;
         self.stop_requests = 0;
+        self.stop_acknowledged = false;
         self.visible_answers.clear();
         self.tools_seen = false;
         self.card_count = 1;
@@ -335,6 +383,327 @@ impl Turn {
         let command = self.submit(prompt)?;
         self.continued_input = Some((session.to_owned(), entry.to_owned()));
         Ok(command["id"].as_str().expect("reserved").to_owned())
+    }
+    pub fn submit_rewrite(
+        &mut self,
+        review: &crate::conversation_rewrite::Review,
+    ) -> io::Result<String> {
+        let command = self.submit(&review.text)?;
+        self.rewrite_input = Some(review.clone());
+        self.rewrite_active = true;
+        Ok(command["id"]
+            .as_str()
+            .expect("reserved execution ID")
+            .to_owned())
+    }
+    fn rewrite_origin(&self, event: &Value) -> io::Result<String> {
+        let review = self
+            .rewrite_input
+            .as_ref()
+            .filter(|_| self.rewrite_active)
+            .ok_or_else(|| io::Error::other("Rewrite event without an active reviewed action"))?;
+        let origin = &event["rewrite_origin"];
+        if origin["session_id"] != review.before.selection.identity.session
+            || origin["operation_id"] != self.command_id
+            || origin["source"] != "rpc"
+        {
+            return Err(io::Error::other(
+                "Rewrite event changed its captured operation origin",
+            ));
+        }
+        crate::stream::required_uuid4(origin, "execution_id")
+            .map(str::to_owned)
+            .map_err(|_| io::Error::other("Invalid rewrite execution identity"))
+    }
+    fn transfer_rewrite_terminal(&mut self) -> Option<TerminalOutcome> {
+        if !self.settled
+            && self.terminal.is_some()
+            && self.approvals.settled()
+            && self.questions.settled()
+        {
+            // Transfer a finished display row independently of action-wide Stop
+            // receipts. Rewrite readback still waits for every receipt to settle.
+            self.settled = true;
+            self.terminal.clone()
+        } else {
+            None
+        }
+    }
+    fn rewrite_readback_ready(&self) -> bool {
+        self.rewrite_active
+            && self.rewrite_first_terminal
+            && self.acknowledged
+            && self.aborts.settled()
+            && self.approvals.settled()
+            && self.questions.settled()
+    }
+    fn finish_rewrite(&mut self) -> io::Result<()> {
+        if !self.rewrite_readback_ready() || !self.settled || !self.rewrite_aftercare.is_empty() {
+            return Err(io::Error::other(
+                "Rewrite readback preceded stream, maintenance or input settlement",
+            ));
+        }
+        self.rewrite_active = false;
+        Ok(())
+    }
+    fn rewrite_segment(&mut self, event: &Value, model: &str) -> io::Result<Observation> {
+        let execution = self.rewrite_origin(event)?;
+        let marker = &event["rewrite_segment"];
+        let review = self.rewrite_input.as_ref().expect("verified action");
+        let index = self.rewrite_segments.len();
+        let prior = self.rewrite_segments.last();
+        if event["model"] != model
+            || marker["action_id"] != review.action_id
+            || marker["index"].as_u64() != Some(index as u64)
+            || marker.get("previous_execution_id") != Some(&prior.map_or(Value::Null, |s| json!(s)))
+            || index >= 100
+            || self.rewrite_executions.contains(&execution)
+            || (index > 0 && self.stop_acknowledged)
+            || self.closing
+            || !self.approvals.settled()
+            || !self.questions.settled()
+            || (index == 0 && (self.started || self.terminal.is_some() || self.settled))
+            || (index > 0 && self.terminal.is_none())
+        {
+            return Err(io::Error::other(
+                "Invalid or out-of-order rewrite stream segment",
+            ));
+        }
+        let previous_outcome = self.transfer_rewrite_terminal();
+        self.rewrite_executions.insert(execution.clone());
+        self.rewrite_segments.push(execution.clone());
+        self.started = true;
+        self.terminal = None;
+        self.settled = false;
+        self.visible_answers.clear();
+        self.tools_seen = false;
+        self.card_count = 1;
+        Ok(Observation::RewriteSegment {
+            operation_id: self.command_id.clone(),
+            execution_id: execution,
+            index: index as u64,
+            previous_outcome,
+        })
+    }
+    fn rewrite_aftercare_event(&mut self, event: &Value) -> io::Result<Observation> {
+        let execution = self.rewrite_origin(event)?;
+        let review = self.rewrite_input.as_ref().expect("verified action");
+        let after = crate::stream::required_uuid4(event, "after_execution_id")
+            .map_err(|_| io::Error::other("Invalid maintenance predecessor"))?;
+        if event["action_id"] != review.action_id
+            || event["aftercare_id"] != execution
+            || event["kind"] != "compaction"
+        {
+            return Err(io::Error::other(
+                "Rewrite maintenance changed its action or worker identity",
+            ));
+        }
+        let running = match event["phase"].as_str() {
+            Some("start")
+                if !self.closing
+                    && !self.stop_acknowledged
+                    && self.terminal.is_some()
+                    && self.approvals.settled()
+                    && self.questions.settled()
+                    && self.rewrite_segments.last().map(String::as_str) == Some(after)
+                    && self.rewrite_executions.len() < 256
+                    && !self.rewrite_executions.contains(&execution) =>
+            {
+                true
+            }
+            Some("end")
+                if self.rewrite_aftercare.get(&execution).map(String::as_str) == Some(after) =>
+            {
+                false
+            }
+            _ => {
+                return Err(io::Error::other(
+                    "Invalid or out-of-order rewrite maintenance boundary",
+                ));
+            }
+        };
+        if running {
+            self.rewrite_executions.insert(execution.clone());
+            self.rewrite_aftercare
+                .insert(execution.clone(), after.to_owned());
+        } else {
+            self.rewrite_aftercare.remove(&execution);
+        }
+        let previous_outcome = self.transfer_rewrite_terminal();
+        Ok(Observation::RewriteAftercare {
+            operation_id: self.command_id.clone(),
+            aftercare_id: execution,
+            running,
+            previous_outcome,
+        })
+    }
+    fn rewrite_interactive(&self, event: &Value) -> bool {
+        self.rewrite_origin(event)
+            .is_ok_and(|execution| self.rewrite_aftercare.contains_key(&execution))
+    }
+    fn rewrite_tool(&mut self, event: &Value, kind: &str) -> io::Result<Observation> {
+        use crate::native_activity::{Activity, Detail};
+        let execution = self.rewrite_origin(event)?;
+        let maintenance = self.rewrite_aftercare.contains_key(&execution);
+        if !(maintenance
+            || self.terminal.is_none() && self.rewrite_segments.last() == Some(&execution))
+        {
+            return Err(io::Error::other(
+                "Tool observation has no active rewrite worker",
+            ));
+        }
+        let (id, name, detail) = if kind == "generic_tool_returned" {
+            let id = crate::stream::required_uuid4(event, "observation_id")
+                .map_err(|_| io::Error::other("Invalid tool observation identity"))?
+                .to_owned();
+            let pair = self
+                .rewrite_tools
+                .get(&id)
+                .filter(|(owner, returned)| owner == &execution && !returned)
+                .ok_or_else(|| io::Error::other("Missing or already returned tool observation"))?;
+            let _ = pair;
+            let result = event["result"]
+                .as_str()
+                .filter(|s| s.len() <= FRAME_BYTES)
+                .ok_or_else(|| io::Error::other("Invalid tool result"))?
+                .to_owned();
+            let ok = event["ok"]
+                .as_bool()
+                .ok_or_else(|| io::Error::other("Invalid tool return flag"))?;
+            (
+                id,
+                None,
+                Detail::Result {
+                    text: result,
+                    is_error: Some(!ok),
+                },
+            )
+        } else {
+            if self.rewrite_tool_count >= 100 {
+                return Err(io::Error::other("Rewrite tool observation limit exceeded"));
+            }
+            let name = event["name"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 512)
+                .ok_or_else(|| io::Error::other("Invalid tool observation name"))?
+                .to_owned();
+            if kind == "generic_tool_requested" {
+                let id = crate::stream::required_uuid4(event, "observation_id")
+                    .map_err(|_| io::Error::other("Invalid tool observation identity"))?
+                    .to_owned();
+                if self.rewrite_tools.contains_key(&id)
+                    || event["round"].as_u64().is_none()
+                    || event["slot"].as_u64().is_none()
+                    || !event["provider_call_id"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty() && s.len() <= 512)
+                {
+                    return Err(io::Error::other(
+                        "Invalid or duplicate generic tool observation",
+                    ));
+                }
+                let text = format!(
+                    "Host invocation observed; round {}, slot {}, provider call {}",
+                    event["round"], event["slot"], event["provider_call_id"]
+                );
+                (
+                    id,
+                    Some(name),
+                    Detail::Input {
+                        text: Some(text),
+                        complete: true,
+                    },
+                )
+            } else {
+                if !event["args"].is_object() {
+                    return Err(io::Error::other("Tool arguments must be an object"));
+                }
+                (
+                    format!("display-tool-{}", self.rewrite_tool_count),
+                    Some(name),
+                    Detail::Input {
+                        text: Some(event["args"].to_string()),
+                        complete: true,
+                    },
+                )
+            }
+        };
+        let activity = Activity {
+            card: 0,
+            id: id.clone(),
+            name,
+            detail,
+        };
+        self.content_bytes = self
+            .content_bytes
+            .checked_add(activity.emitted_bytes())
+            .filter(|n| *n <= 4 * FRAME_BYTES)
+            .ok_or_else(|| io::Error::other("Live content budget exceeded"))?;
+        if kind == "generic_tool_returned" {
+            self.rewrite_tools.get_mut(&id).expect("validated").1 = true;
+        } else {
+            self.rewrite_tool_count += 1;
+            self.rewrite_tools.insert(id, (execution.clone(), false));
+        }
+        Ok(Observation::RewriteActivity {
+            execution_id: execution,
+            activity,
+        })
+    }
+    fn rewrite_compaction(&mut self, event: &Value) -> io::Result<Observation> {
+        let execution = self.rewrite_origin(event)?;
+        let deferred =
+            event["reason"] == "deferred_busy" && self.rewrite_segments.last() == Some(&execution);
+        if (!self.rewrite_aftercare.contains_key(&execution) && !deferred)
+            || !matches!(
+                event["reason"].as_str(),
+                Some(
+                    "compacted"
+                        | "failed"
+                        | "cancelled"
+                        | "too_short"
+                        | "already_recent"
+                        | "deferred_busy"
+                )
+            )
+            || ["tokens_before_exact", "tokens_after_exact"]
+                .iter()
+                .any(|k| !event[k].is_boolean())
+            || ["messages_dropped", "messages_summarised", "kept_recent"]
+                .iter()
+                .any(|k| event[k].as_u64().is_none_or(|n| n > 1_000_000_000))
+            || ["tokens_before", "tokens_after"].iter().any(|k| {
+                !matches!(event.get(*k), Some(Value::Null))
+                    && !event[k]
+                        .as_f64()
+                        .is_some_and(|n| n.is_finite() && (0.0..=1e12).contains(&n))
+            })
+        {
+            return Err(io::Error::other("Malformed or unowned compaction status"));
+        }
+        let text = format!(
+            "Compaction: {}. Messages summarised: {}; dropped: {}; kept recent: {}. Tokens before: {} (exact: {}); after: {} (exact: {}).",
+            event["reason"].as_str().unwrap(),
+            event["messages_summarised"],
+            event["messages_dropped"],
+            event["kept_recent"],
+            event["tokens_before"],
+            event["tokens_before_exact"],
+            event["tokens_after"],
+            event["tokens_after_exact"]
+        );
+        self.content_bytes = self
+            .content_bytes
+            .checked_add(text.len())
+            .filter(|n| *n <= 4 * FRAME_BYTES)
+            .ok_or_else(|| io::Error::other("Live content budget exceeded"))?;
+        if deferred {
+            return Ok(Observation::Information(text));
+        }
+        Ok(Observation::RewriteStatus {
+            execution_id: execution,
+            text,
+        })
     }
     fn settle(&mut self) -> Observation {
         self.settled = true;
@@ -364,8 +733,8 @@ impl Turn {
     pub fn abort(&mut self, prompt_id: &str) -> io::Result<Option<Value>> {
         if self.closing
             || !self.sent
-            || self.settled
-            || self.terminal.is_some()
+            || (self.settled && self.rewrite_aftercare.is_empty())
+            || (self.terminal.is_some() && self.rewrite_aftercare.is_empty())
             || prompt_id != self.command_id
             || self.stop_requests >= 2
         {
@@ -497,28 +866,40 @@ impl Turn {
                         Err(error)
                     }
                 })?;
+                let rewrite_interrupted = if let Some(session) = &self.rewrite_current_session {
+                    crate::conversation_rewrite::verify_shutdown(
+                        &event["result"],
+                        self.rewrite_shutdown.as_ref(),
+                        session,
+                    )?
+                } else {
+                    false
+                };
                 self.shutdown_acknowledged = true;
-                Ok(
-                    if self.conversation_shutdown.is_some()
-                        && self.conversation_shutdown != self.conversation_completed_shutdown
-                    {
-                        Observation::ConversationUnverified(format!(
-                            "Shutdown joined the interrupted {} action; saved effects remain unverified. Reopen the conversation to inspect.",
-                            self.conversation_shutdown.as_ref().unwrap()["action"]
-                                .as_str()
-                                .unwrap_or("conversation")
-                        ))
+                Ok(if rewrite_interrupted {
+                    Observation::ConversationUnverified("Shutdown joined the interrupted edit/retry; saved and provider effects remain unverified. Reopen to inspect.".into())
+                } else if self.conversation_shutdown.is_some()
+                    && self.conversation_shutdown != self.conversation_completed_shutdown
+                {
+                    Observation::ConversationUnverified(format!(
+                        "Shutdown joined the interrupted {} action; saved effects remain unverified. Reopen the conversation to inspect.",
+                        self.conversation_shutdown.as_ref().unwrap()["action"]
+                            .as_str()
+                            .unwrap_or("conversation")
+                    ))
+                } else {
+                    Observation::Information(if self.engine_shutdown.is_some() {
+                        "shutdown acknowledged; resource release unverified".into()
                     } else {
-                        Observation::Information(if self.engine_shutdown.is_some() {
-                            "shutdown acknowledged; resource release unverified".into()
-                        } else {
-                            "shutdown acknowledged".into()
-                        })
-                    },
-                )
+                        "shutdown acknowledged".into()
+                    })
+                })
             }
             "response" => {
                 if let Some(stopped) = self.aborts.response(event)? {
+                    // A local Stop can cross already emitted source starts. Its first
+                    // receipt orders the barrier; a second pending Stop cannot reopen it.
+                    self.stop_acknowledged = true;
                     return Ok(if self.can_settle() {
                         self.settle()
                     } else {
@@ -540,6 +921,48 @@ impl Turn {
                         return Ok(self.settle());
                     }
                     return Ok(Observation::Approval(event));
+                }
+                if let Some(review) = &self.rewrite_input
+                    && event["id"] == self.command_id
+                    && self.sent
+                    && !self.acknowledged
+                    && event["ok"] == true
+                {
+                    use crate::conversation_rewrite::{Admission, AdmissionOutcome};
+                    let admission = Admission::parse(&event["result"], review, &self.command_id)?;
+                    if admission.outcome == AdmissionOutcome::Failed || admission.close_required {
+                        if self.closing {
+                            self.acknowledged = true;
+                            self.rewrite_admission = Some(admission);
+                            return Ok(Observation::Information(
+                                "Edit/retry interrupted during shutdown; waiting for owned cleanup. Effects remain unverified.".into(),
+                            ));
+                        }
+                        return Err(fail(
+                            "Edit/retry publication or execution is uncertain; reopen to inspect",
+                        ));
+                    }
+                    let refused = admission.outcome == AdmissionOutcome::Refused;
+                    if refused && (self.started || self.terminal.is_some()) {
+                        return Err(fail("Rewrite refusal after execution started"));
+                    }
+                    let reason = admission.reason.clone();
+                    self.rewrite_admission = Some(admission);
+                    if refused {
+                        self.acknowledged = true;
+                        self.admission_refused = true;
+                        self.rewrite_first_terminal = true;
+                        self.terminal =
+                            Some(TerminalOutcome::Refused(reason.expect("verified refusal")));
+                        return Ok(if self.can_settle() {
+                            self.settle()
+                        } else {
+                            Observation::Information(
+                                "Edit/retry refused; waiting for pending input/stop receipts."
+                                    .into(),
+                            )
+                        });
+                    }
                 }
                 if let Some((session, entry)) = &self.continued_input
                     && event["id"] == self.command_id
@@ -623,6 +1046,14 @@ impl Turn {
                         "Input not started; waiting for admission and input/stop receipts.".into(),
                     )
                 })
+            }
+            "turn_start" if self.rewrite_active => self.rewrite_segment(event, model),
+            "rewrite_aftercare" if self.rewrite_active => self.rewrite_aftercare_event(event),
+            "compaction" if self.rewrite_active => self.rewrite_compaction(event),
+            "tool_call" | "generic_tool_requested" | "generic_tool_returned"
+                if self.rewrite_active =>
+            {
+                self.rewrite_tool(event, kind)
             }
             "turn_start"
                 if self.sent && !self.started && self.terminal.is_none() && !self.settled =>
@@ -711,7 +1142,9 @@ impl Turn {
                 Ok(Observation::Activity(activity))
             }
             "tool_approval_requested"
-                if self.started && self.terminal.is_none() && !self.closing =>
+                if ((self.started && self.terminal.is_none())
+                    || self.rewrite_interactive(event))
+                    && !self.closing =>
             {
                 let event = self.approvals.request(event)?;
                 if let crate::approvals::Event::Requested(request) = &event {
@@ -723,7 +1156,11 @@ impl Turn {
                 }
                 Ok(Observation::Approval(event))
             }
-            "user_input_requested" if self.started && self.terminal.is_none() && !self.closing => {
+            "user_input_requested"
+                if ((self.started && self.terminal.is_none())
+                    || self.rewrite_interactive(event))
+                    && !self.closing =>
+            {
                 let event = self.questions.request(event)?;
                 if let crate::questions::Event::Requested(request) = &event {
                     self.content_bytes = self
@@ -756,7 +1193,7 @@ impl Turn {
                         "turn interrupted while quitting; not completed".into(),
                     ));
                 }
-                if !self.acknowledged
+                if (!self.acknowledged && self.rewrite_input.is_none())
                     || (event["stopReason"] != "cancelled"
                         && (!self.approvals.all_closed() || !self.questions.accounted_for()))
                 {
@@ -819,6 +1256,9 @@ impl Turn {
                     }
                 };
                 self.terminal = Some(outcome);
+                if self.rewrite_active {
+                    self.rewrite_first_terminal = true;
+                }
                 if self.can_settle() {
                     Ok(self.settle())
                 } else {
@@ -1221,6 +1661,72 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             ))?,
                         }
                     }
+                    Input::Rewrite(intent) => {
+                        let intent = *intent;
+                        let key = intent.key().clone();
+                        if matches!(intent, crate::conversation_rewrite::Intent::Apply { .. }) {
+                            let prepared = if turn.can_manage() {
+                                management.prepare_rewrite(&intent)
+                            } else {
+                                Err(io::Error::other(
+                                    "Finish the current turn before edit/retry",
+                                ))
+                            };
+                            match prepared {
+                                Ok(prepared) => {
+                                    let operation = turn.submit_rewrite(&prepared.review)?;
+                                    let command = management.begin_rewrite(prepared, &operation)?;
+                                    turn.rewrite_shutdown = Some(command.clone());
+                                    turn.rewrite_current_session =
+                                        Some(key.selection.identity.session.clone());
+                                    owned
+                                        .stdin
+                                        .as_ref()
+                                        .expect("owned stdin")
+                                        .try_send(command)
+                                        .map_err(io::Error::other)?;
+                                    frontend.observe(Observation::Rewrite(
+                                        crate::conversation_rewrite::Update::Submitted { key },
+                                    ))?;
+                                    frontend.observe(Observation::Submission { id: operation })?;
+                                    deadline = Some(Instant::now() + options.timeout);
+                                }
+                                Err(error) => frontend.observe(Observation::Rewrite(
+                                    crate::conversation_rewrite::Update::Rejected {
+                                        key,
+                                        reason: error.to_string(),
+                                    },
+                                ))?,
+                            }
+                        } else {
+                            let command = if turn.can_manage() {
+                                management.request_rewrite(intent)
+                            } else {
+                                Err(io::Error::other(
+                                    "Finish current work before reviewing edit/retry",
+                                ))
+                            };
+                            match command {
+                                Ok(command) => {
+                                    turn.rewrite_current_session =
+                                        Some(key.selection.identity.session.clone());
+                                    owned
+                                        .stdin
+                                        .as_ref()
+                                        .expect("owned stdin")
+                                        .try_send(command)
+                                        .map_err(io::Error::other)?;
+                                    deadline = Some(Instant::now() + options.timeout);
+                                }
+                                Err(error) => frontend.observe(Observation::Rewrite(
+                                    crate::conversation_rewrite::Update::Rejected {
+                                        key,
+                                        reason: error.to_string(),
+                                    },
+                                ))?,
+                            }
+                        }
+                    }
                     Input::History(intent) => {
                         let key = intent.key().clone();
                         let command = if turn.can_engine() {
@@ -1490,7 +1996,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Input::Quit => {
                         management.begin_close();
-                        turn.closing = true;
+                        turn.begin_close();
                         deadline = Some(Instant::now() + Duration::from_secs(20));
                         owned.request_shutdown()?;
                     }
@@ -1522,7 +2028,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         .finish()
                         .map_err(|e| io::Error::other(format!("{e:?}")))?;
                     return if turn.closing {
-                        if (turn.engine_shutdown.is_some() || turn.conversation_shutdown.is_some())
+                        if (turn.engine_shutdown.is_some()
+                            || turn.conversation_shutdown.is_some()
+                            || turn.rewrite_current_session.is_some())
                             && !turn.shutdown_acknowledged
                         {
                             Err(io::Error::other(
@@ -1709,6 +2217,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Step::BackendChanged(opened) => {
+                        if turn.rewrite_current_session.is_some() {
+                            turn.rewrite_current_session = Some(opened.snapshot.session.clone());
+                        }
                         if !turn.closing {
                             turn.policy
                                 .as_ref()
@@ -1735,6 +2246,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Step::ConversationChanged(changed) => {
+                        if turn.rewrite_current_session.is_some() {
+                            turn.rewrite_current_session = Some(changed.snapshot.session.clone());
+                        }
                         if !turn.closing {
                             turn.conversation_completed_shutdown =
                                 turn.conversation_shutdown.clone();
@@ -1755,6 +2269,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Step::Opened(opened) => {
+                        if turn.rewrite_current_session.is_some() {
+                            turn.rewrite_current_session = Some(opened.snapshot.session.clone());
+                        }
                         if !turn.closing {
                             turn.conversation_completed_shutdown =
                                 turn.conversation_shutdown.clone();
@@ -1791,14 +2308,37 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             deadline = None;
                         }
                     }
-                    Step::Event(event) => publish_event(
-                        &mut turn,
-                        &event,
-                        management.backend().unwrap_or(&options.backend),
-                        management.model().unwrap_or(&options.model),
-                        &mut deadline,
-                        frontend,
-                    )?,
+                    Step::Rewrite(update) => {
+                        if !turn.closing {
+                            frontend.observe(Observation::Rewrite(update))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
+                    Step::RewriteSettled(changed) => {
+                        if !turn.closing {
+                            turn.policy
+                                .as_ref()
+                                .expect("launch policy")
+                                .validate(&changed.policy)?;
+                            turn.finish_rewrite()?;
+                            frontend.observe(Observation::RewriteSettled(changed))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
+                    Step::Event(event) => {
+                        if let Some(id) = publish_event(
+                            &mut turn,
+                            &event,
+                            management.backend().unwrap_or(&options.backend),
+                            management.model().unwrap_or(&options.model),
+                            &mut deadline,
+                            frontend,
+                        )? {
+                            management.acknowledge_rewrite_question(&id);
+                        }
+                    }
                     Step::Ignore => {}
                 }
                 if !turn.closing
@@ -1809,6 +2349,24 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     // A scheduled worker may refuse before starting after its
                     // admission was accepted. Preserve the admission receipt.
                     let command = management.read_continuation(turn.admission_refused)?;
+                    owned
+                        .stdin
+                        .as_ref()
+                        .expect("owned stdin")
+                        .try_send(command)
+                        .map_err(io::Error::other)?;
+                    deadline = Some(Instant::now() + options.timeout);
+                }
+                if !turn.closing
+                    && turn.rewrite_readback_ready()
+                    && !management.has_unpaired()
+                    && management.needs_rewrite_readback()
+                {
+                    let admission = turn
+                        .rewrite_admission
+                        .clone()
+                        .ok_or_else(|| io::Error::other("Missing edit/retry admission receipt"))?;
+                    let command = management.read_rewrite(admission)?;
                     owned
                         .stdin
                         .as_ref()
@@ -1862,6 +2420,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    Rewrite(Box<crate::conversation_rewrite::Intent>),
     History(crate::history_view::Intent),
     Theme(crate::theme_controls::Intent),
     Engine(crate::engine_controls::Intent),
@@ -1892,7 +2451,13 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::Engine(_)
+            Observation::Rewrite(_)
+            | Observation::RewriteSettled(_)
+            | Observation::RewriteSegment { .. }
+            | Observation::RewriteAftercare { .. }
+            | Observation::RewriteActivity { .. }
+            | Observation::RewriteStatus { .. }
+            | Observation::Engine(_)
             | Observation::EngineAdmission(_)
             | Observation::State(_)
             | Observation::Commands(_)
@@ -2190,6 +2755,14 @@ impl Interactive {
             .try_send(Input::Commands(intent))
             .map_err(io::Error::other)
     }
+    pub fn rewrite(&self, intent: crate::conversation_rewrite::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Rewrite(Box::new(intent)))
+            .map_err(io::Error::other)
+    }
     pub fn history(&self, intent: crate::history_view::Intent) -> io::Result<()> {
         if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
             return Err(io::Error::other("Runtime is quitting"));
@@ -2315,7 +2888,7 @@ fn publish_event(
     model: &str,
     deadline: &mut Option<Instant>,
     frontend: &mut impl Frontend,
-) -> io::Result<()> {
+) -> io::Result<Option<String>> {
     check_deadline(*deadline)?;
     let observation = turn.accept(event, backend, model)?;
     if let Some(update) = crate::runtime_state::Update::from_event(event)? {
@@ -2340,7 +2913,17 @@ fn publish_event(
     {
         *deadline = None;
     }
-    frontend.observe(observation)
+    // Successful question answers close on their correlated ACK, unlike host
+    // cancellation events. The shared ledger has validated that ACK above.
+    let answered = match &observation {
+        Observation::Question {
+            event: crate::questions::Event::Acknowledged { id, accepted: true },
+            ..
+        } => Some(id.clone()),
+        _ => None,
+    };
+    frontend.observe(observation)?;
+    Ok(answered)
 }
 #[cfg(test)]
 mod deadline_tests {

@@ -333,7 +333,7 @@ class ConversationRepository:
         try:
             self.acquire()
             self.convo_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = (json.dumps(rec, ensure_ascii=False, default=str) + "\n").encode("utf-8")
+            payload = self.record_bytes(rec)
             with self.convo_path.open("a+b") as f:
                 # Never overwrite crash evidence. A missing newline must not
                 # concatenate the next successful record onto the torn one.
@@ -407,14 +407,25 @@ class ConversationRepository:
             return {}
         return out
 
-    def record_snapshot(self, messages: list[dict], reason: str = "", *, store_identity=None, store_injected=None) -> None:
-        """Full-list record. Kept for readability of older files; prefer edit."""
-        self.write_record({
+    @staticmethod
+    def record_bytes(record: dict, *, separator: bool = False) -> bytes:
+        """Canonical appended bytes, including a separator after a torn tail."""
+        return (("\n" if separator else "") + json.dumps(record, ensure_ascii=False, default=str) + "\n").encode("utf-8")
+
+    @staticmethod
+    def snapshot_record(messages: list[dict], reason: str = "", *, store_identity=None, store_injected=None) -> dict:
+        """Build the one snapshot schema for persistence and bounded preflight."""
+        return {
             "type": "snapshot", "ts": time.time(),
             "reason": reason, "messages": messages,
             **({"store_identity": store_identity} if store_identity is not None else {}),
             **({"store_injected": store_injected} if isinstance(store_injected, bool) else {}),
-        })
+        }
+
+    def record_snapshot(self, messages: list[dict], reason: str = "", *, store_identity=None, store_injected=None) -> None:
+        """Full-list record. Kept for readability of older files; prefer edit."""
+        self.write_record(self.snapshot_record(messages, reason, store_identity=store_identity,
+                                               store_injected=store_injected))
 
     def record_edit(self, index: int, message: dict, reason: str = "", *, store_identity=None, store_injected=None) -> None:
         """Record an in-place change to ONE message.

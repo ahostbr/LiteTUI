@@ -6,6 +6,9 @@ use crate::stream::{ExecutionId, Origin};
 use serde_json::{Value, json};
 use std::{collections::HashSet, io};
 
+mod rewrite;
+pub use rewrite::{Changed as RewriteChanged, Prepared as RewritePrepared};
+
 const GENERATION: u64 = 1;
 // These producers call app._rpc_emit. Responses/errors use the direct RPC sink.
 // Unknown producers remain fatal rather than being silently discarded.
@@ -33,6 +36,8 @@ const MIRRORED: &[&str] = &[
     "tool_call",
     "generic_tool_requested",
     "generic_tool_returned",
+    "rewrite_aftercare",
+    "compaction",
 ];
 const IDENTIFIED: &[&str] = &[
     "turn_start",
@@ -161,6 +166,8 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    Rewrite(crate::conversation_rewrite::Update),
+    RewriteSettled(Box<RewriteChanged>),
     SavedHistory(crate::history_view::Update),
     Theme {
         update: crate::theme_controls::Update,
@@ -351,6 +358,13 @@ pub struct Management {
     history_page: Option<crate::history::Page>,
     history_target: Option<(crate::history_view::Target, crate::history::Identity)>,
     history_generation: u64,
+    rewrite_pending: Option<rewrite::Pending>,
+    rewrite_cache: Option<rewrite::Cache>,
+    rewrite_review: Option<RewritePrepared>,
+    rewrite_attempt: Option<rewrite::Attempt>,
+    rewrite_generation: u64,
+    rewrite_protocol: bool,
+    rewrite_chain: Option<rewrite::Chain>,
     startup_history: Option<crate::resume::History>,
     theme: Option<ThemePending>,
     theme_snapshot: Option<crate::theme_controls::Snapshot>,
@@ -414,6 +428,13 @@ impl Default for Management {
             history_page: None,
             history_target: None,
             history_generation: 0,
+            rewrite_pending: None,
+            rewrite_cache: None,
+            rewrite_review: None,
+            rewrite_attempt: None,
+            rewrite_generation: 0,
+            rewrite_protocol: false,
+            rewrite_chain: None,
             startup_history: None,
             theme: None,
             theme_snapshot: None,
@@ -561,6 +582,8 @@ impl Management {
             && self.command.is_none()
             && self.theme.is_none()
             && self.saved_history.is_none()
+            && self.rewrite_pending.is_none()
+            && self.rewrite_attempt.is_none()
             && self.settings.is_none()
             && self.settings_edit.is_none()
             && self.backend.is_none()
@@ -593,6 +616,8 @@ impl Management {
         self.history_snapshot = None;
         self.history_page = None;
         self.history_target = None;
+        self.rewrite_cache = None;
+        self.rewrite_review = None;
         self.browser_preview = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
@@ -621,7 +646,13 @@ impl Management {
         if self.failed {
             return Err(fail("Management connection is uncertain"));
         }
-        let result = if self.history_locate_response_pending(&frame)
+        let result = if self.rewrite_response_pending(&frame)
+            && original_json_bytes > crate::conversation_rewrite::RESPONSE_BYTES
+        {
+            Err(fail(
+                "Edit/retry response exceeds the full 1 MiB wire budget",
+            ))
+        } else if self.history_locate_response_pending(&frame)
             && original_json_bytes > crate::conversation_browser::PAGE_BYTES
         {
             Err(fail(
@@ -841,6 +872,17 @@ impl Management {
                 matched: true,
                 frame,
             } if self
+                .rewrite_pending
+                .as_ref()
+                .is_some_and(|p| Some(&p.id) == id.as_ref()) =>
+            {
+                self.rewrite_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
                 .saved_history
                 .as_ref()
                 .is_some_and(|p| Some(&p.id) == id.as_ref()) =>
@@ -988,6 +1030,11 @@ impl Management {
                 {
                     Ok(Step::Ignore)
                 } else {
+                    let mut event = event;
+                    if self.rewrite_chain.is_some() {
+                        event["rewrite_origin"] = json!({"session_id":frame["session_id"],
+                            "operation_id":frame["operation_id"],"execution_id":frame["execution_id"],"source":frame["source"]});
+                    }
                     Ok(Step::Event(event))
                 }
             }
@@ -1000,6 +1047,9 @@ impl Management {
         }
     }
     fn validate_event(&mut self, frame: &Value, event: &Value) -> io::Result<()> {
+        if event.get("rewrite_origin").is_some() {
+            return Err(fail("Runtime supplied reserved native rewrite metadata"));
+        }
         let (session, backend, model, _) = self.expected.as_ref().expect("begun");
         if let Some(pending) = &self.conversation
             && let Some(mutation) = &pending.mutation
@@ -1120,6 +1170,26 @@ impl Management {
                     "Runtime model changed outside an owned management operation",
                 ));
             }
+        }
+        if self.rewrite_chain.is_some()
+            && (IDENTIFIED.contains(&kind)
+                || matches!(
+                    kind,
+                    "rewrite_aftercare"
+                        | "compaction"
+                        | "tool_call"
+                        | "tool_approval_requested"
+                        | "tool_approval_closed"
+                        | "user_input_requested"
+                        | "user_input_resolved"
+                ))
+        {
+            return self.validate_rewrite_event(frame, event);
+        }
+        if kind == "rewrite_aftercare" || event.get("rewrite_segment").is_some() {
+            return Err(fail(
+                "Rewrite execution metadata outside an admitted action",
+            ));
         }
         if IDENTIFIED.contains(&kind) {
             let (execution, origin, _) = crate::stream::origin(frame, 4096)

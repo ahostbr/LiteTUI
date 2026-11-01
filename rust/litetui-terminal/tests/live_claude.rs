@@ -72,6 +72,12 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 | Observation::Commands(_)
                 | Observation::Theme(_)
                 | Observation::SavedHistory(_)
+                | Observation::Rewrite(_)
+                | Observation::RewriteSettled(_)
+                | Observation::RewriteSegment { .. }
+                | Observation::RewriteAftercare { .. }
+                | Observation::RewriteActivity { .. }
+                | Observation::RewriteStatus { .. }
                 | Observation::Settings(_)
                 | Observation::Backend(_)
                 | Observation::BackendChanged(_)

@@ -1,10 +1,10 @@
 # Remaining LiteTUI Rust parity work
 
-Source audit: 2026-10-31, work/rust-tui-OpenBolt, prior checkpoint 4a488553.
+Source audit: 2026-11-01, work/rust-tui-OpenBolt, prior checkpoint 28e608ba9.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
 continuation and pre-start refusal handling are committed; bounded session browsing has
-passed independent review and the full controlled process gate and portable staging has passed independent review.
+passed independent review and the full controlled process gate. Reviewed host-history edit/retry is implemented and independently reviewed; its final integrated/package evidence is recorded in master.md.
 
 ## Current boundary
 
@@ -14,7 +14,7 @@ approvals/questions, composer/transcript, model/thinking controls,
 exact-UUID resume, held-input recovery, F6 bounded saved-history inspection,
 bounded F8 session browsing with independent saved-row inspection and captured Open,
 F9 backend switching, F10 budget editing, F11 command/skill controls and explicit
-F12 NInfer/Strata engine management, reviewed F8 New/current Rename and source-owned F4 themes. Automated evidence does not replace
+F12 NInfer/Strata engine management, reviewed F8 New/current Rename, F6 host-history edit/retry and source-owned F4 themes. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
 Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs
@@ -28,7 +28,7 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
-| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Alternate-conversation/read-only inspection preserves active context and uses exact-UUID refresh. Edit/retry/compact remain. Preserve draft, UUID/owner, settings and provider continuity. |
+| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Alternate-conversation/read-only inspection preserves active context and uses exact-UUID refresh. Reviewed current host-history plain-text edit/retry preserves canonical compaction/wake and joins owned workers. Manual compaction, native-provider rewind, transaction-aware prewrite hook approvals and background-result continuation remain. Preserve draft, UUID/owner, settings and provider continuity. |
 | Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
@@ -41,22 +41,13 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Fault and resource acceptance | Full-feature controlled process tests; runtime-contract.md P4 protocol | Complete fault/cleanup coverage. Measure Python against Rust + retained Python + owned descendants under equivalent workloads before Ryan approves numerical targets. |
 | Host acceptance | Windows Terminal and LiteSuite embedded terminal | Layout, shortcuts, images, clipboard, scroll/resize and terminal restoration in both; Ryan's visual signoff. Preview approval is not full feature acceptance. |
 
-## Next session-action contract
+## Remaining session-action work
 
-The existing GUI edit/retry path changes and snapshots the host conversation before
-ordinary submission, then returns an acceptance response that does not prove execution.
-A native adapter needs a source-owned review and transaction, immutable message identity,
-attended admission before durable history publication, exact worker settlement and
-independent replay readback. Repeated text or an inspected saved row cannot authorize a
-current-session mutation. Failed admission must preserve original history.
+F6 host-history edit/retry now uses source-issued selection/review tokens, exact message and prefix hashes, canonical admission before durable publication, captured worker ownership and independent history readback. It does not call the legacy GUI edit/retry handlers or infer authority from displayed text. Source-owned automatic/self-compaction, card summaries and maintenance wake streams are tracked through final settlement.
 
-Codex resumes a native thread and Claude uses a durable native segment; neither can be
-rewound by slicing the display transcript. Start with source-offered host-history edit/retry
-capability and keep unsupported native-provider actions explicit. Compaction must wrap the
-existing host, Codex and Claude algorithms with typed outcomes, action-bound progress,
-provider continuity and cleanup/readback. A successful Textual worker does not establish
-successful compaction; continuation or memory-tool effects must be disclosed and settled.
-The source audit is design evidence only; no session-action implementation is claimed.
+Codex resumes a native thread and Claude uses a durable native segment; neither can be rewound by slicing the display transcript. Their edit/retry actions stay explicitly ineligible until exact provider-native rewind/branch contracts exist. Manual compaction needs its own reviewed host/Codex/Claude algorithms with typed outcomes, progress, provider continuity and cleanup/readback.
+
+Prewrite hooks that need a new approval refuse before mutation because the current approval audit writes the old user row. Transaction-aware prewrite approval audit remains separate work. In-turn and compaction approvals/questions are supported. Background-result delivery can create held input or wake another turn, so explicit background tools and tools configured for auto-promotion currently refuse before hooks or tool effects. Foreground backgroundable tools with auto-promotion disabled remain supported. A later protocol must preserve background delivery, held-queue ownership and wake continuations before lifting that limit.
 
 ## Parallel waves
 
@@ -127,13 +118,14 @@ runtime contract describe the evidence and precise shutdown limits.
 Canonical /new, /clear and /reset routes now open the reviewed New control;
 /rename can prefill the same bounded editor. They invoke no mutable handler and
 never apply from resolution alone. Current-conversation paging and inert rich replay
-are implemented; edit/retry/compact remain separate implementation waves.
+and reviewed host-history edit/retry are implemented. Manual compaction and
+provider-native rewind remain separate implementation waves.
 
 Legacy edit/retry truncates live history, saves a snapshot and calls _submit_text,
 then returns accepted:true without checking admission. It cannot serve as a native
-success receipt. Provider-native history/thread continuity, durable edited history,
-normal attended admission, execution identity, refusal and uncertain publication
-must be handled together; retry must never silently duplicate provider work.
+success receipt. The new host-history protocol binds durable publication, canonical
+admission, execution identity, refusal and independent readback together. Provider-native
+history/thread continuity remains separate; retry must never silently duplicate provider work.
 
 The version-1 history implementation is verified in controlled source/native and
 relocated-package gates. It uses a distinct

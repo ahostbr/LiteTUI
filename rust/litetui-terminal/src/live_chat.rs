@@ -41,6 +41,8 @@ pub enum ReplyState {
     Refused,
     Failed,
     Reconciled,
+    Maintenance,
+    MaintenanceSettled,
 }
 #[derive(Default)]
 pub struct Card {
@@ -68,6 +70,14 @@ pub struct Chat {
     pub rows: Vec<Row>,
     pub history: Option<crate::resume::History>,
     pub saved_history: crate::history_view::View,
+    pub rewrite: crate::conversation_rewrite::View,
+    rewrite_pending: bool,
+    rewrite_old_cost: Option<(usize, usize)>,
+    rewrite_start_row: Option<usize>,
+    rewrite_stream_row: Option<usize>,
+    rewrite_segment: Option<u64>,
+    rewrite_rows: std::collections::BTreeMap<String, usize>,
+    rewrite_maintenance: std::collections::HashSet<String>,
     pub ready: bool,
     pub busy: bool,
     pub closed: bool,
@@ -107,6 +117,14 @@ impl Chat {
             rows: Vec::new(),
             history: None,
             saved_history: crate::history_view::View::default(),
+            rewrite: crate::conversation_rewrite::View::default(),
+            rewrite_pending: false,
+            rewrite_old_cost: None,
+            rewrite_start_row: None,
+            rewrite_stream_row: None,
+            rewrite_segment: None,
+            rewrite_rows: std::collections::BTreeMap::new(),
+            rewrite_maintenance: std::collections::HashSet::new(),
             ready: false,
             busy: false,
             closed: false,
@@ -143,6 +161,14 @@ impl Chat {
         self.reserve_row(prompt, false)
     }
     fn reserve_row(&mut self, prompt: &str, recovered: bool) -> io::Result<()> {
+        self.reserve_row_inner(prompt, recovered, false)
+    }
+    fn reserve_row_inner(
+        &mut self,
+        prompt: &str,
+        recovered: bool,
+        rewriting: bool,
+    ) -> io::Result<()> {
         if !self.ready
             || self.busy
             || self.closed
@@ -158,6 +184,8 @@ impl Chat {
             || self.backend_controls.owns_input()
             || self.browser.owns_input()
             || self.queue_pending
+            || self.rewrite_pending
+            || self.rewrite.blocks_composer() && !rewriting
         {
             return Err(io::Error::other(
                 "Wait for the runtime to be ready and the current turn to finish",
@@ -175,6 +203,10 @@ impl Chat {
         self.saved_history.invalidate();
         self.retained_units += units;
         self.retained_bytes += prompt.len();
+        if !rewriting {
+            self.rewrite_stream_row = None;
+            self.rewrite_start_row = None;
+        }
         self.pending = Some(prompt.to_owned());
         self.submission_id = None;
         self.stop_requests = 0;
@@ -262,6 +294,45 @@ impl Chat {
         self.notice = "Continuing saved input; waiting for admission…".into();
         Ok(())
     }
+    pub fn prepare_rewrite(
+        &mut self,
+        intent: &crate::conversation_rewrite::Intent,
+    ) -> io::Result<()> {
+        let prompt = self.rewrite.prepare_apply(intent)?.text.clone();
+        if self.rewrite_pending || self.busy || !self.ready || self.closed || self.quitting {
+            return Err(io::Error::other("Finish current work before edit/retry"));
+        }
+        self.prompt_budget(&prompt)?;
+        self.saved_history.finish();
+        self.browser.finish();
+        self.completion_closed_for_rewrite();
+        let old = (self.retained_bytes, self.retained_units);
+        self.reserve_row_inner(&prompt, false, true)?;
+        self.pending = None;
+        self.rewrite_pending = true;
+        self.rewrite_old_cost = Some(old);
+        self.rewrite_start_row = Some(self.rows.len() - 1);
+        self.rewrite_stream_row = self.rewrite_start_row;
+        self.rewrite_segment = None;
+        self.rewrite_rows.clear();
+        self.rewrite_maintenance.clear();
+        self.notice =
+            "Submitting reviewed edit/retry; admission and saved effects are not yet verified."
+                .into();
+        Ok(())
+    }
+    fn completion_closed_for_rewrite(&mut self) {
+        self.controls.close();
+        self.queue.finish();
+        self.engine.finish();
+        self.commands.finish();
+        self.themes.finish();
+        self.settings.finish();
+        self.backend_controls.finish();
+    }
+    pub fn rewrite_pending(&self) -> bool {
+        self.rewrite_pending || self.rewrite.blocks_composer()
+    }
     pub fn take_submission(&mut self) -> Option<String> {
         self.pending.take()
     }
@@ -287,7 +358,10 @@ impl Chat {
         self.stop_requests += 1;
         self.approvals.take_decision();
         self.questions.take_decision();
-        self.rows.last_mut().expect("busy row").state = ReplyState::Cancelling;
+        if self.pending_row().is_ok() {
+            let index = self.current_row_index()?;
+            self.rows[index].state = ReplyState::Cancelling;
+        }
         self.notice =
             "Stopping; waiting for the runtime. Ctrl+Esc can request a forced stop.".into();
         Ok(())
@@ -337,6 +411,197 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::Rewrite(update) => {
+                if self.rewrite.pending_key() != Some(update.key()) {
+                    return Ok(());
+                }
+                if matches!(update, crate::conversation_rewrite::Update::Rejected { .. })
+                    && self.rewrite_pending
+                {
+                    if self.submission_id.is_some() {
+                        return Err(io::Error::other(
+                            "Dispatched edit/retry cannot be locally refused",
+                        ));
+                    }
+                    let crate::conversation_rewrite::Update::Rejected { reason, .. } = &update
+                    else {
+                        unreachable!()
+                    };
+                    self.rewrite_pending = false;
+                    self.rewrite_old_cost = None;
+                    self.settle(crate::live::TerminalOutcome::Refused(reason.clone()))?;
+                }
+                if matches!(
+                    update,
+                    crate::conversation_rewrite::Update::Submitted { .. }
+                ) && (!self.rewrite_pending || !self.busy)
+                {
+                    return Err(io::Error::other(
+                        "Edit/retry dispatch without a reserved view turn",
+                    ));
+                }
+                self.rewrite.observe(update)?;
+                self.notice = self.rewrite.notice.clone();
+            }
+            Observation::RewriteSettled(changed) => {
+                use crate::conversation_rewrite::{AdmissionOutcome, Update};
+                if !self.rewrite_pending
+                    || self.busy
+                    || self.rewrite.pending_key() != Some(&changed.key)
+                    || self.submission_id.as_deref()
+                        != Some(changed.admission.operation_id.as_str())
+                {
+                    return Err(io::Error::other(
+                        "Edit/retry readback does not match the settled native turn",
+                    ));
+                }
+                if changed.admission.outcome == AdmissionOutcome::Accepted {
+                    let start = self
+                        .rewrite_start_row
+                        .ok_or_else(|| io::Error::other("Missing edit/retry execution rows"))?;
+                    if start >= self.rows.len() {
+                        return Err(io::Error::other("Missing retained rewrite rows"));
+                    }
+                    self.rows.drain(..start);
+                    self.recovered_inputs.clear();
+                    let (bytes, units) = self
+                        .rewrite_old_cost
+                        .take()
+                        .ok_or_else(|| io::Error::other("Missing prior transcript cost"))?;
+                    self.retained_bytes = self
+                        .retained_bytes
+                        .checked_sub(bytes)
+                        .ok_or_else(|| io::Error::other("Invalid retained rewrite byte count"))?;
+                    self.retained_units =
+                        self.retained_units.checked_sub(units).ok_or_else(|| {
+                            io::Error::other("Invalid retained rewrite display count")
+                        })?;
+                } else {
+                    self.rewrite_old_cost = None;
+                }
+                self.runtime_state.opened(changed.snapshot);
+                self.queue
+                    .observe(crate::restored_queue::Update::Snapshot(changed.queue));
+                let descriptor = changed
+                    .history
+                    .descriptor
+                    .as_deref()
+                    .ok_or_else(|| io::Error::other("Missing verified rewrite history"))?;
+                let page = changed
+                    .history
+                    .page
+                    .as_deref()
+                    .ok_or_else(|| io::Error::other("Missing verified rewrite history page"))?;
+                self.saved_history
+                    .install(descriptor.clone(), page.clone(), false)?;
+                self.history = Some(changed.history);
+                self.rewrite_pending = false;
+                self.submission_id = None;
+                self.rewrite_start_row = None;
+                self.rewrite_stream_row = None;
+                self.rewrite_segment = None;
+                self.rewrite_rows.clear();
+                self.rewrite_maintenance.clear();
+                self.rewrite.observe(Update::Settled {
+                    key: changed.key,
+                    outcome: changed.admission.outcome,
+                    reason: changed.admission.reason,
+                })?;
+                self.notice = self.rewrite.notice.clone();
+            }
+            Observation::RewriteSegment {
+                operation_id,
+                execution_id,
+                index,
+                previous_outcome,
+            } => {
+                self.check_rewrite_operation(&operation_id)?;
+                if self.rewrite_rows.contains_key(&execution_id)
+                    || index != self.rewrite_segment.map_or(0, |n| n + 1)
+                {
+                    return Err(io::Error::other("Unexpected rewrite display segment"));
+                }
+                if let Some(outcome) = previous_outcome {
+                    self.settle(outcome)?;
+                }
+                if index == 0 {
+                    if self.rewrite_segment.is_some() || self.pending_row().is_err() {
+                        return Err(io::Error::other("Missing initial rewrite row"));
+                    }
+                } else {
+                    if self.pending_row().is_ok() {
+                        return Err(io::Error::other("Continuation before prior segment ended"));
+                    }
+                    let row =
+                        self.append_rewrite_row("Conversation continuation", ReplyState::Sending)?;
+                    self.rewrite_stream_row = Some(row);
+                }
+                self.rewrite_segment = Some(index);
+                self.rewrite_rows
+                    .insert(execution_id, self.current_row_index()?);
+                self.busy = true;
+                self.notice="Receiving the next source-owned rewrite segment; final saved state is not yet verified.".into();
+            }
+            Observation::RewriteAftercare {
+                operation_id,
+                aftercare_id,
+                running,
+                previous_outcome,
+            } => {
+                self.check_rewrite_operation(&operation_id)?;
+                if running == self.rewrite_rows.contains_key(&aftercare_id)
+                    || (!running && !self.rewrite_maintenance.contains(&aftercare_id))
+                {
+                    return Err(io::Error::other("Unexpected rewrite maintenance boundary"));
+                }
+                if let Some(outcome) = previous_outcome {
+                    self.settle(outcome)?;
+                }
+                if running {
+                    let row = self
+                        .append_rewrite_row("Conversation compaction", ReplyState::Maintenance)?;
+                    self.rewrite_rows.insert(aftercare_id.clone(), row);
+                    self.rewrite_maintenance.insert(aftercare_id);
+                } else {
+                    let row = self
+                        .rows
+                        .get_mut(self.rewrite_rows[&aftercare_id])
+                        .ok_or_else(|| io::Error::other("Missing maintenance row"))?;
+                    row.state = ReplyState::MaintenanceSettled;
+                    for tool in &mut row.tools {
+                        tool.finish();
+                    }
+                    self.rewrite_maintenance.remove(&aftercare_id);
+                }
+                self.refresh_rewrite_busy();
+                self.notice =
+                    "Source follow-up work changed; waiting for final saved-history verification."
+                        .into();
+            }
+            Observation::RewriteActivity {
+                execution_id,
+                activity,
+            } => {
+                let row = self.rewrite_event_row(&execution_id)?;
+                self.activity_at(row, activity)?;
+            }
+            Observation::RewriteStatus { execution_id, text } => {
+                let row = self.rewrite_event_row(&execution_id)?;
+                if !self.rewrite_maintenance.contains(&execution_id) {
+                    return Err(io::Error::other(
+                        "Compaction status outside its active worker",
+                    ));
+                }
+                let units = display_units(&text)?;
+                self.replace_cost((0, 0), (text.len() + 1, units + 32))?;
+                let card = &mut self.rows[row].cards[0];
+                card.answer.push_str(&text);
+                card.answer.push('\n');
+                card.answer_units += units + 32;
+                self.notice =
+                    "Compaction status received; saved effects await independent verification."
+                        .into();
+            }
             Observation::SavedHistory(update) => {
                 if self.saved_history.pending_key() == Some(update.key()) {
                     self.saved_history.observe(update)?;
@@ -551,16 +816,24 @@ impl Chat {
                 self.notice = self.controls.notice.clone();
             }
             Observation::Approval(event) => {
-                if matches!(event, crate::approvals::Event::Requested(_)) {
-                    self.pending_row()?;
+                if matches!(event, crate::approvals::Event::Requested(_))
+                    && self.pending_row().is_err()
+                    && self.rewrite_maintenance.is_empty()
+                {
+                    return Err(io::Error::other("Approval without active source work"));
                 }
                 self.notice = self.approvals.observe(event)?;
+                self.refresh_rewrite_busy();
             }
             Observation::Question { event, settled } => {
-                if matches!(event, crate::questions::Event::Requested(_)) {
-                    self.pending_row()?;
+                if matches!(event, crate::questions::Event::Requested(_))
+                    && self.pending_row().is_err()
+                    && self.rewrite_maintenance.is_empty()
+                {
+                    return Err(io::Error::other("Question without active source work"));
                 }
                 self.notice = self.questions.observe(event)?;
+                self.refresh_rewrite_busy();
                 if let Some(outcome) = settled {
                     self.settle(outcome)?;
                 }
@@ -616,6 +889,62 @@ impl Chat {
         }
         Ok(())
     }
+    fn check_rewrite_operation(&self, operation: &str) -> io::Result<()> {
+        if !self.rewrite_pending || self.submission_id.as_deref() != Some(operation) || self.closed
+        {
+            Err(io::Error::other(
+                "Rewrite display event belongs to another operation",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    fn append_rewrite_row(&mut self, prompt: &str, state: ReplyState) -> io::Result<usize> {
+        let units = self.prompt_budget(prompt)?;
+        self.retained_units += units;
+        self.retained_bytes += prompt.len();
+        let index = self.rows.len();
+        self.rows.push(Row {
+            prompt: prompt.into(),
+            cards: vec![Card::default()],
+            tools: Vec::new(),
+            items: vec![Item::Card(0)],
+            state,
+            stop_reason: None,
+        });
+        Ok(index)
+    }
+    fn rewrite_event_row(&self, execution: &str) -> io::Result<usize> {
+        let row = self
+            .rewrite_rows
+            .get(execution)
+            .copied()
+            .filter(|i| *i < self.rows.len())
+            .ok_or_else(|| io::Error::other("Rewrite observation has no retained execution row"))?;
+        if !self.rewrite_pending
+            || !(self.rewrite_maintenance.contains(execution)
+                || self.rewrite_stream_row == Some(row) && self.pending_row().is_ok())
+        {
+            return Err(io::Error::other(
+                "Rewrite observation arrived after worker settlement",
+            ));
+        }
+        Ok(row)
+    }
+    fn refresh_rewrite_busy(&mut self) {
+        if self.rewrite_pending {
+            self.busy = self.pending_row().is_ok()
+                || !self.rewrite_maintenance.is_empty()
+                || !self.approvals.is_empty()
+                || !self.questions.is_empty();
+        }
+    }
+    fn current_row_index(&self) -> io::Result<usize> {
+        self.rewrite_stream_row
+            .or_else(|| self.rows.len().checked_sub(1))
+            .filter(|i| *i < self.rows.len())
+            .ok_or_else(|| io::Error::other("Missing live row"))
+    }
     fn settle(&mut self, outcome: crate::live::TerminalOutcome) -> io::Result<()> {
         let (state, stop_reason) = match outcome {
             crate::live::TerminalOutcome::Complete => (ReplyState::Complete, None),
@@ -641,7 +970,8 @@ impl Chat {
         }
         self.retained_units += units;
         self.retained_bytes += reason.len();
-        let row = self.rows.last_mut().expect("validated pending row");
+        let index = self.current_row_index()?;
+        let row = &mut self.rows[index];
         row.state = state;
         row.stop_reason = stop_reason;
         for tool in &mut row.tools {
@@ -649,8 +979,13 @@ impl Chat {
         }
         self.busy = false;
         self.stop_confirm = false;
-        self.submission_id = None;
-        self.notice = if self.queue_pending {
+        // Retain the exact operation until the independent rewrite readback.
+        if !self.rewrite_pending {
+            self.submission_id = None;
+        }
+        self.notice = if self.rewrite_pending {
+            "Turn settled; verifying edit/retry history and worker retirement."
+        } else if self.queue_pending {
             "Turn ended. Checking saved input before another prompt."
         } else if row.state == ReplyState::Refused {
             "Input was not started. Submit again explicitly to continue; Ctrl+Q quits."
@@ -664,11 +999,12 @@ impl Chat {
             "Reply completed. Type another prompt; Ctrl+Q quits."
         }
         .into();
+        self.refresh_rewrite_busy();
         Ok(())
     }
     fn pending_row(&self) -> io::Result<&Row> {
         self.rows
-            .last()
+            .get(self.current_row_index()?)
             .filter(|row| {
                 matches!(
                     row.state,
@@ -699,7 +1035,7 @@ impl Chat {
     fn content(&mut self, index: Option<usize>, kind: ContentKind, text: String) -> io::Result<()> {
         let units = display_units(&text)?;
         let row = self.pending_row()?;
-        if index.is_none() && !row.tools.is_empty() {
+        if index.is_none() && !row.tools.is_empty() && !self.rewrite_pending {
             return Err(io::Error::other(
                 "Content without native display ownership after tools",
             ));
@@ -724,7 +1060,8 @@ impl Chat {
             (0, 0)
         };
         self.replace_cost(old, (text.len(), units + if new_card { 320 } else { 0 }))?;
-        let row = self.rows.last_mut().expect("validated");
+        let row_index = self.current_row_index()?;
+        let row = &mut self.rows[row_index];
         if new_card {
             row.cards.push(Card::default());
             row.items.push(Item::Card(index));
@@ -749,7 +1086,11 @@ impl Chat {
         Ok(())
     }
     fn activity(&mut self, activity: Activity) -> io::Result<()> {
-        let row = self.pending_row()?;
+        self.pending_row()?;
+        self.activity_at(self.current_row_index()?, activity)
+    }
+    fn activity_at(&mut self, index: usize, activity: Activity) -> io::Result<()> {
+        let row = &self.rows[index];
         let existing = row.tools.iter().position(|tool| tool.id == activity.id);
         // A first observation mounts after the current card. Later results keep
         // their original position, even when other cards have since arrived.
@@ -775,14 +1116,14 @@ impl Chat {
         let tool = Tool::updated(old, activity)?;
         let new_cost = cost(&tool)?;
         self.replace_cost(old_cost, new_cost)?;
-        let row = self.rows.last_mut().expect("validated");
+        let row = &mut self.rows[index];
         if let Some(index) = existing {
             row.tools[index] = tool;
         } else {
             row.items.push(Item::Tool(row.tools.len()));
             row.tools.push(tool);
         }
-        if row.state != ReplyState::Cancelling {
+        if !matches!(row.state, ReplyState::Cancelling | ReplyState::Maintenance) {
             row.state = ReplyState::Streaming;
         }
         self.notice = "Native tool observation (not an approval or dispatch)".into();
@@ -812,6 +1153,14 @@ impl Chat {
         self.backend_controls.finish();
         self.browser.finish();
         self.queue_pending = false;
+        self.rewrite_pending = false;
+        self.rewrite_old_cost = None;
+        self.rewrite.finish();
+        self.rewrite_start_row = None;
+        self.rewrite_stream_row = None;
+        self.rewrite_segment = None;
+        self.rewrite_rows.clear();
+        self.rewrite_maintenance.clear();
         self.closed = true;
         self.stop_confirm = false;
         self.ready = false;
@@ -825,7 +1174,10 @@ impl Chat {
             }
             if !matches!(
                 row.state,
-                ReplyState::Complete | ReplyState::ApprovalStopped | ReplyState::Cancelled
+                ReplyState::Complete
+                    | ReplyState::ApprovalStopped
+                    | ReplyState::Cancelled
+                    | ReplyState::MaintenanceSettled
             ) {
                 row.state = ReplyState::Incomplete;
             }

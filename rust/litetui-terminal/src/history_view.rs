@@ -1,5 +1,6 @@
 //! Exclusive inert Saved History inspector. It never merges into live turn rows.
 use crate::{
+    conversation_rewrite::{Action as RewriteAction, Selection as RewriteSelection},
     history::{Anchor, Fragment, Kind, Page, PageRequest, Snapshot},
     theme::Theme,
 };
@@ -111,6 +112,9 @@ pub struct View {
     target: Target,
     generation: u64,
     pending: Option<ReadKey>,
+    loaded_key: Option<ReadKey>,
+    selected_user: Option<(u64, String)>,
+    rewrite: Option<(RewriteAction, RewriteSelection)>,
     stale: bool,
     visible: bool,
     intent: Option<Intent>,
@@ -166,7 +170,10 @@ impl View {
             self.max_scroll = 0;
             self.anchor = None;
             self.stale = false;
+            self.loaded_key = None;
+            self.selected_user = None;
         }
+        self.rewrite = None;
         self.target = target;
     }
     fn begin_read(&mut self) -> Option<ReadKey> {
@@ -180,6 +187,7 @@ impl View {
             target: self.target.clone(),
             generation,
         };
+        self.rewrite = None;
         self.pending = Some(key.clone());
         self.waiting = true;
         self.hide();
@@ -194,6 +202,9 @@ impl View {
         verify_target(&Target::Current, &snapshot)?;
         self.target = Target::Current;
         self.pending = None;
+        self.loaded_key = None;
+        self.selected_user = None;
+        self.rewrite = None;
         self.snapshot = Some(snapshot);
         self.page = Some(page);
         self.open = show;
@@ -222,12 +233,119 @@ impl View {
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.intent.take()
     }
+    pub fn selected_message(&self) -> Option<(u64, &str)> {
+        self.selected_user
+            .as_ref()
+            .map(|(index, hash)| (*index, hash.as_str()))
+    }
+    pub fn take_rewrite(&mut self) -> Option<(RewriteAction, RewriteSelection)> {
+        self.rewrite.take()
+    }
+    pub fn suspend_for_rewrite(&mut self) {
+        self.hide();
+    }
+    fn rewrite_reason(&self) -> Option<&'static str> {
+        if self.target != Target::Current {
+            return Some("Inspect only: open this conversation before editing or retrying.");
+        }
+        if self.stale || self.loaded_key.is_none() {
+            return Some("F5 reads fresh current history before edit or retry.");
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return Some("Read current history before edit or retry.");
+        };
+        if snapshot.read_only {
+            return Some("Read-only history cannot be edited or retried.");
+        }
+        if snapshot.pending || !snapshot.materialized {
+            return Some("No saved user message is available for edit or retry.");
+        }
+        None
+    }
+    fn users(&self) -> Vec<(u64, String)> {
+        let mut users = Vec::new();
+        if let Some(page) = &self.page {
+            for fragment in &page.fragments {
+                let user = (fragment.message_index, fragment.message_sha256.clone());
+                if fragment.role == "user" && fragment.kind == Kind::User && !users.contains(&user)
+                {
+                    users.push(user);
+                }
+            }
+        }
+        users
+    }
+    fn choose_user(&mut self, backwards: bool) {
+        if let Some(reason) = self.rewrite_reason() {
+            self.notice = reason.into();
+            return;
+        }
+        let users = self.users();
+        if users.is_empty() {
+            self.notice = "No user message on this page; use Older or Newer.".into();
+            return;
+        }
+        let at = self
+            .selected_user
+            .as_ref()
+            .and_then(|selected| users.iter().position(|u| u == selected));
+        let next = match (at, backwards) {
+            (Some(index), true) => (index + users.len() - 1) % users.len(),
+            (Some(index), false) => (index + 1) % users.len(),
+            (None, true) => users.len() - 1,
+            (None, false) => 0,
+        };
+        self.selected_user = Some(users[next].clone());
+        self.anchor = None;
+        self.edge = Edge::Keep;
+        if let Some(page) = &self.page {
+            let mut lines = Vec::new();
+            for fragment in &page.fragments {
+                if fragment.message_index == users[next].0 {
+                    self.scroll = lines.len();
+                    break;
+                }
+                append_fragment(&mut lines, fragment, self.body.width.max(1) as usize);
+            }
+        }
+        self.notice = format!(
+            "User message {} selected · E edit · R retry",
+            users[next].0 + 1
+        );
+    }
+    fn request_rewrite(&mut self, action: RewriteAction) {
+        if let Some(reason) = self.rewrite_reason() {
+            self.notice = reason.into();
+            return;
+        }
+        let Some((index, hash)) = self
+            .selected_user
+            .as_ref()
+            .filter(|selected| self.users().contains(selected))
+        else {
+            self.notice = "Tab selects a user message on this page before edit or retry.".into();
+            return;
+        };
+        let snapshot = self.snapshot.as_ref().expect("fresh history");
+        let selection = RewriteSelection {
+            history_key: self.loaded_key.clone().expect("fresh read"),
+            identity: snapshot.identity.clone(),
+            history_snapshot: snapshot.token.clone(),
+            context_sha256: snapshot.context_sha256.clone(),
+            messages: snapshot.counts.messages,
+            message_index: *index,
+            message_sha256: hash.clone(),
+        };
+        self.rewrite = Some((action, selection));
+        self.hide();
+    }
     pub fn hide(&mut self) {
         self.visible = false;
         self.pressed = None;
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.rewrite = None;
         if self.intent.take().is_some() {
             self.waiting = false;
             self.pending = None;
@@ -244,6 +362,7 @@ impl View {
     /// An admitted turn invalidates historical navigation but does not erase local outcomes.
     pub fn invalidate(&mut self) {
         self.stale = true;
+        self.rewrite = None;
         self.notice =
             "History changed. F5 reads a fresh saved snapshot; the previous page is retained."
                 .into();
@@ -292,14 +411,27 @@ impl View {
             return Ok(());
         }
         match update {
-            Update::Loaded { snapshot, page, .. } => {
+            Update::Loaded {
+                key,
+                snapshot,
+                page,
+            } => {
+                if self
+                    .snapshot
+                    .as_ref()
+                    .is_none_or(|old| old.token != snapshot.token)
+                {
+                    self.selected_user = None;
+                }
+                self.loaded_key = Some(key);
                 self.snapshot = Some(*snapshot);
                 self.page = Some(*page);
                 self.stale = false;
                 self.anchor = None;
                 self.notice = "Saved display only; no historical action is active.".into();
             }
-            Update::Page { page, .. } => {
+            Update::Page { key, page } => {
+                self.loaded_key = Some(key);
                 self.page = Some(*page);
                 self.stale = false;
                 self.anchor = None;
@@ -310,6 +442,13 @@ impl View {
                 self.edge = Edge::Keep;
                 self.notice = format!("{reason} · F5 refresh; previous page kept.");
             }
+        }
+        if self
+            .selected_user
+            .as_ref()
+            .is_some_and(|selected| !self.users().contains(selected))
+        {
+            self.selected_user = None;
         }
         Ok(())
     }
@@ -365,7 +504,10 @@ impl View {
         if event.kind == KeyEventKind::Release {
             return;
         }
-        if !event.modifiers.is_empty() {
+        if !(event.modifiers.is_empty()
+            || event.modifiers == crossterm::event::KeyModifiers::SHIFT
+                && event.code == KeyCode::BackTab)
+        {
             self.hide();
             return;
         }
@@ -377,6 +519,14 @@ impl View {
             return;
         }
         match event.code {
+            KeyCode::Tab if event.kind == KeyEventKind::Press => self.choose_user(false),
+            KeyCode::BackTab if event.kind == KeyEventKind::Press => self.choose_user(true),
+            KeyCode::Char('e') if event.kind == KeyEventKind::Press => {
+                self.request_rewrite(RewriteAction::Edit)
+            }
+            KeyCode::Char('r') if event.kind == KeyEventKind::Press => {
+                self.request_rewrite(RewriteAction::Retry)
+            }
             KeyCode::Up => self.scroll_up(1),
             KeyCode::Down => self.scroll_down(1),
             KeyCode::PageUp => self.scroll_up(self.body_rows.max(1)),
@@ -450,9 +600,14 @@ impl View {
         );
         self.area = panel;
         frame.render_widget(Clear, panel);
+        let title = if self.rewrite_reason().is_none() {
+            " Saved History · current conversation "
+        } else {
+            " Saved History · read only "
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Saved History · read only ")
+            .title(title)
             .style(Style::default().fg(theme.foreground).bg(theme.background))
             .border_style(Style::default().fg(theme.title));
         let inner = block.inner(panel);
@@ -493,6 +648,8 @@ impl View {
             "Loading · Esc cancels this view"
         } else if self.stale {
             "Snapshot changed · F5 refresh before paging"
+        } else if self.rewrite_reason().is_none() {
+            "Tab selects a user message · E edit · R retry"
         } else {
             "Saved display only · no actions or timers"
         };
@@ -554,6 +711,21 @@ impl View {
             self.edge = Edge::Keep;
             self.scroll = self.scroll.min(self.max_scroll);
             self.anchor = lines.get(self.scroll).map(|l| l.anchor.clone());
+            let selected_blocks = self
+                .page
+                .as_ref()
+                .map(|p| {
+                    p.fragments
+                        .iter()
+                        .filter(|f| {
+                            self.selected_user.as_ref().is_some_and(|(index, hash)| {
+                                f.message_index == *index && f.message_sha256 == *hash
+                            })
+                        })
+                        .map(|f| f.block_id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let shown = lines
                 .into_iter()
                 .skip(self.scroll)
@@ -571,6 +743,11 @@ impl View {
                     } else {
                         Modifier::empty()
                     });
+                    let style = if selected_blocks.contains(&line.anchor.block) {
+                        style.bg(theme.surface).add_modifier(Modifier::BOLD)
+                    } else {
+                        style
+                    };
                     Line::styled(line.text, style)
                 })
                 .collect::<Vec<_>>();

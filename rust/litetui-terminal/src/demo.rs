@@ -218,7 +218,7 @@ impl Demo {
                 || chat.busy
                 || chat.closed
                 || chat.quitting
-                || (chat.queue_pending() || chat.engine.pending())
+                || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
             {
                 self.notice = "Finish the current turn before opening model controls.".into();
                 return;
@@ -242,7 +242,7 @@ impl Demo {
             if chat.busy
                 || chat.closed
                 || chat.quitting
-                || chat.queue_pending()
+                || (chat.queue_pending() || chat.rewrite_pending())
                 || (!chat.ready && chat.engine_admission.is_none())
             {
                 self.notice = "Wait for the owned runtime before engine management.".into();
@@ -272,7 +272,7 @@ impl Demo {
                 || chat.busy
                 || chat.closed
                 || chat.quitting
-                || (chat.queue_pending() || chat.engine.pending())
+                || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
             {
                 self.notice = "Finish current work before opening commands.".into();
                 return;
@@ -282,6 +282,36 @@ impl Demo {
             self.completion.dismiss();
             self.footer.leave();
         }
+    }
+    pub fn has_live_rewrite(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.rewrite.owns_input())
+    }
+    pub fn take_history_rewrite(&mut self) -> std::io::Result<()> {
+        let Some(chat) = self.live.as_mut() else {
+            return Ok(());
+        };
+        let Some((action, selection)) = chat.saved_history.take_rewrite() else {
+            return Ok(());
+        };
+        if chat.busy
+            || chat.closed
+            || chat.quitting
+            || chat.queue_pending()
+            || chat.rewrite_pending()
+        {
+            return Err(std::io::Error::other(
+                "Finish current work before edit/retry",
+            ));
+        }
+        chat.rewrite.open(action, selection)?;
+        chat.saved_history.suspend_for_rewrite();
+        chat.browser.hide();
+        self.themes_open = false;
+        self.completion.dismiss();
+        self.footer.leave();
+        Ok(())
     }
     pub fn has_live_history(&self) -> bool {
         self.live
@@ -296,7 +326,7 @@ impl Demo {
             if chat.busy
                 || chat.closed
                 || chat.quitting
-                || chat.queue_pending()
+                || (chat.queue_pending() || chat.rewrite_pending())
                 || chat.engine.pending()
             {
                 self.notice = "Finish current work before opening Saved History.".into();
@@ -364,7 +394,7 @@ impl Demo {
                 || chat.busy
                 || chat.closed
                 || chat.quitting
-                || (chat.queue_pending() || chat.engine.pending())
+                || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
             {
                 self.notice = "Finish current work before reading settings.".into();
                 return;
@@ -389,7 +419,7 @@ impl Demo {
                 || chat.busy
                 || chat.closed
                 || chat.quitting
-                || (chat.queue_pending() || chat.engine.pending())
+                || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
             {
                 self.notice = "Finish current work before changing backend.".into();
                 return;
@@ -423,7 +453,7 @@ impl Demo {
                 || chat.busy
                 || chat.closed
                 || chat.quitting
-                || (chat.queue_pending() || chat.engine.pending())
+                || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
             {
                 self.notice = "Finish the current turn before browsing conversations.".into();
                 return;
@@ -447,7 +477,7 @@ impl Demo {
                 || chat.busy
                 || chat.closed
                 || chat.quitting
-                || chat.queue_pending()
+                || (chat.queue_pending() || chat.rewrite_pending())
                 || chat.engine.pending()
             {
                 self.notice = "Finish current work before changing conversations.".into();
@@ -474,7 +504,7 @@ impl Demo {
                 || chat.busy
                 || chat.closed
                 || chat.quitting
-                || (chat.queue_pending() || chat.engine.pending())
+                || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
             {
                 self.notice = "Finish the current turn before opening held input.".into();
                 return;
@@ -490,6 +520,7 @@ impl Demo {
             || self.has_live_commands()
             || self.has_live_themes()
             || self.has_live_history()
+            || self.has_live_rewrite()
             || self.has_live_settings()
             || self.has_live_backend()
             || self.has_live_browser()
@@ -551,7 +582,7 @@ impl Demo {
             if chat.closed
                 || chat.quitting
                 || chat.busy
-                || chat.queue_pending()
+                || (chat.queue_pending() || chat.rewrite_pending())
                 || chat.engine.pending()
                 || (!chat.ready && chat.engine_admission.is_none())
             {
@@ -728,11 +759,12 @@ impl Demo {
                 && let Some(chat) = self.live.as_mut()
             {
                 if chat.ready
-                    && !chat.busy
-                    && !chat.closed
-                    && !chat.quitting
-                    && !chat.queue_pending()
-                    && !chat.engine.pending()
+                    && !(chat.busy
+                        || chat.closed
+                        || chat.quitting
+                        || chat.queue_pending()
+                        || chat.rewrite_pending()
+                        || chat.engine.pending())
                 {
                     chat.commands.raw(&text);
                     self.completion.dismiss();

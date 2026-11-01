@@ -25,6 +25,8 @@ def require_open(app):
     native_engine.require_open(app)
     from litetui import conversation_transition
     conversation_transition.require_open(app)
+    from litetui import conversation_rewrite
+    conversation_rewrite.require_open(app)
     reason = getattr(app, "_backend_transition_error", None)
     if reason:
         raise ValueError(reason)
@@ -33,6 +35,9 @@ def require_open(app):
 def submission_refusal(app, *, initializing=False):
     from litetui import conversation_transition
     if reason := conversation_transition.submission_refusal(app):
+        return reason
+    from litetui import conversation_rewrite
+    if reason := conversation_rewrite.submission_refusal(app):
         return reason
     reason = getattr(app, "_backend_transition_error", None)
     if reason:

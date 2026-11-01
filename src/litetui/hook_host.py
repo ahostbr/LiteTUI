@@ -51,6 +51,11 @@ def report_failure(app, event, message):
 
 
 async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=False):
+    from litetui import conversation_rewrite
+    # A prior observe hook can consume cancellation after its approval closes.
+    # Recheck each authorization so later hooks cannot revive input authority.
+    if document.get("event") == "tool_after":
+        allow_prompt = allow_prompt and conversation_rewrite.tool_after_allow_prompt(app)
     workspace = app._hook_workspace
     # The existing classifier receives the command plus its arguments; the
     # runner still executes the original argument array directly.
@@ -65,7 +70,8 @@ async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=Fal
         result = hooks.HookResult(False, refusal[0])
     else:
         options = {}
-        scoped = getattr(app, "_conversation_transition_hook_outcomes", None) is not None
+        scoped = (getattr(app, "_conversation_transition_hook_outcomes", None) is not None
+                  or conversation_rewrite.hook_cleanup_scope(app))
         terminal_seen = False
         if scoped:
             def settled(_result, proof):
@@ -278,7 +284,7 @@ async def admit_prompt(app, item) -> bool:
 
 
 async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
-                              persist_user=None) -> EventOrigin | None:
+                              persist_user=None, allow_prompt=True) -> EventOrigin | None:
     if refuse_engine_admission(app, item, on_refused=on_refused):
         return None
     # Capture input metadata before the first suspension, not from mutable app
@@ -298,7 +304,7 @@ async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
     ctx = {**context(app), "source": item.get("source", "queued"), "turn_id": str(uuid.uuid4())}
     result = await dispatch(app, "prompt_before", {"prompt": item["content"]},
                             profile=seat_authority.turn_profile(app, _turn_source(item), item.get("tool_profile")),
-                            captured=ctx)
+                            captured=ctx, allow_prompt=allow_prompt)
     if refuse_engine_admission(app, item, on_refused=on_refused):
         return None
     if before_accept is not None:

@@ -113,6 +113,13 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     }
     if app.viewport_too_small {
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
+            if app.has_live_rewrite() {
+                let chat = app.live.as_mut().expect("rewrite");
+                chat.rewrite.close();
+                chat.saved_history.hide();
+                chat.browser.hide();
+                return false;
+            }
             if app.has_live_history() {
                 let chat = app.live.as_mut().expect("saved history");
                 chat.saved_history.close();
@@ -214,6 +221,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     }
     if app.has_live_commands() {
         app.live.as_mut().expect("commands").commands.key(key);
+        return false;
+    }
+    if app.has_live_rewrite() {
+        app.live.as_mut().expect("rewrite").rewrite.key(key);
         return false;
     }
     if app.has_live_history() {
@@ -507,6 +518,26 @@ fn handle_key(
     if input.suppress_live_repeat(event) {
         return false;
     }
+    if app.has_live_rewrite() {
+        if !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+            && !app.viewport_too_small
+            && event.kind == KeyEventKind::Press
+            && event.modifiers == KeyModifiers::CONTROL
+            && matches!(event.code, KeyCode::Char('v' | 'V'))
+        {
+            let chat = app.live.as_mut().expect("rewrite");
+            if !chat.quitting && !chat.cancelling() && chat.rewrite.accepts_paste() {
+                match clipboard.read_text() {
+                    Ok(Some(text)) => chat.rewrite.paste(&text),
+                    Ok(None) => {}
+                    Err(error) => chat.rewrite.notice = error,
+                }
+            }
+        }
+        return input.handle(app, event);
+    }
     if app.has_live_input() {
         if !app.stop_open()
             && !app.has_live_approval()
@@ -626,6 +657,16 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_rewrite() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live.as_mut().expect("rewrite").rewrite.paste(text);
+        }
+        return;
+    }
     if app.has_live_history() {
         return;
     }
@@ -718,6 +759,16 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_rewrite() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live.as_mut().expect("rewrite").rewrite.mouse(event);
+        }
+        return;
+    }
     if app.has_live_history() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -1037,6 +1088,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         app.live.as_mut().expect("live").commands.hide();
                         app.live.as_mut().expect("live").themes.hide();
                         app.live.as_mut().expect("live").saved_history.hide();
+                        app.live.as_mut().expect("live").rewrite.hide();
                         app.live.as_mut().expect("live").settings.hide();
                         app.live.as_mut().expect("live").backend_controls.hide();
                         app.live.as_mut().expect("live").browser.hide();
@@ -1103,6 +1155,28 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 view_failure = Some(error.to_string());
                 app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
+            }
+            if !quitting {
+                app.take_history_rewrite()?;
+                if let Some(intent) = app.live.as_mut().expect("live").rewrite.take_intent() {
+                    let key = intent.key().clone();
+                    let preparation = if matches!(
+                        intent,
+                        litetui_terminal::conversation_rewrite::Intent::Apply { .. }
+                    ) {
+                        app.live.as_mut().expect("live").prepare_rewrite(&intent)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(error) = preparation.and_then(|()| runtime.rewrite(intent)) {
+                        app.observe_live(litetui_terminal::live::Observation::Rewrite(
+                            litetui_terminal::conversation_rewrite::Update::Rejected {
+                                key,
+                                reason: error.to_string(),
+                            },
+                        ))?;
+                    }
+                }
             }
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").saved_history.take_intent()
@@ -3485,5 +3559,175 @@ mod theme_router_tests {
                 .submit("must not execute")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod rewrite_router_tests {
+    use super::*;
+    use litetui_terminal::{
+        conversation_rewrite as r, history as h, history_view as hv, live::Observation,
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+    use serde_json::json;
+    #[derive(Default)]
+    struct Clipboard {
+        reads: usize,
+    }
+    impl litetui_terminal::clipboard::Clipboard for Clipboard {
+        fn read_text(&mut self) -> Result<Option<String>, String> {
+            self.reads += 1;
+            Ok(Some(" 雪\nraw".into()))
+        }
+        fn copy_text(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    fn paint(app: &mut Demo, width: u16, height: u16) {
+        Terminal::new(TestBackend::new(width, height))
+            .unwrap()
+            .draw(|f| ui::draw(f, app))
+            .unwrap();
+    }
+    fn selection() -> r::Selection {
+        let session = "12345678-1234-4123-8123-123456789abc".to_owned();
+        r::Selection {
+            history_key: hv::ReadKey {
+                target: hv::Target::Current,
+                generation: 1,
+            },
+            identity: h::Identity {
+                from_session: session.clone(),
+                session,
+                agent: "22345678-1234-4123-8123-123456789abc".into(),
+                backend: "custom".into(),
+                model: "test".into(),
+                scope: h::Scope::Current,
+                catalog: None,
+            },
+            history_snapshot: "a".repeat(64),
+            context_sha256: "b".repeat(64),
+            messages: 3,
+            message_index: 1,
+            message_sha256: "c".repeat(64),
+        }
+    }
+    fn open(action: r::Action) -> (Demo, r::RequestKey) {
+        let mut app = Demo::live("custom".into(), "test".into());
+        app.live.as_mut().unwrap().ready = true;
+        app.insert_text("PRESERVED COMPOSER DRAFT");
+        app.live
+            .as_mut()
+            .unwrap()
+            .rewrite
+            .open(action, selection())
+            .unwrap();
+        let intent = app.live.as_mut().unwrap().rewrite.take_intent().unwrap();
+        (app, intent.key().clone())
+    }
+    fn load(app: &mut Demo, key: r::RequestKey) {
+        let mut v = selection().command(r::SNAPSHOT);
+        for(k,value)in json!({"kind":"conversation_rewrite_snapshot","snapshot":"d".repeat(64),"original_text":"original","original_bytes":8,
+            "prefix_messages":1,"prefix_context_sha256":"e".repeat(64),"discarded_messages":1,
+            "actions":{"edit":{"eligible":true,"reason":null},"retry":{"eligible":true,"reason":null}}}).as_object().unwrap(){v[k]=value.clone();}
+        let snapshot = r::Snapshot::parse(&v, &selection()).unwrap();
+        app.observe_live(Observation::Rewrite(r::Update::Snapshot {
+            key,
+            snapshot: Box::new(snapshot),
+        }))
+        .unwrap();
+    }
+    #[test]
+    fn edit_owns_unicode_clipboard_and_bracketed_paste_while_retry_never_reads_clipboard() {
+        for action in [r::Action::Edit, r::Action::Retry] {
+            let (mut app, key) = open(action);
+            let mut router = KeyRouter::default();
+            let mut clipboard = Clipboard::default();
+            handle_key(
+                &mut app,
+                &mut router,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                &mut clipboard,
+            );
+            assert_eq!(
+                clipboard.reads, 0,
+                "pending source read cannot read clipboard"
+            );
+            load(&mut app, key);
+            paint(&mut app, 100, 40);
+            handle_key(
+                &mut app,
+                &mut router,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                &mut clipboard,
+            );
+            paint(&mut app, 100, 40);
+            paste(&mut app, ":Δ");
+            assert_eq!(clipboard.reads, usize::from(action == r::Action::Edit));
+            assert_eq!(
+                app.live.as_ref().unwrap().rewrite.draft(),
+                if action == r::Action::Edit {
+                    "original 雪\nraw:Δ"
+                } else {
+                    "original"
+                }
+            );
+            assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
+            assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        }
+    }
+    #[test]
+    fn tiny_cancel_and_late_reply_do_not_release_held_keys_into_main_draft() {
+        let (mut app, key) = open(r::Action::Edit);
+        let mut router = KeyRouter::default();
+        let mut clipboard = Clipboard::default();
+        paint(&mut app, 35, 13);
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut clipboard,
+        );
+        assert!(
+            app.has_live_rewrite(),
+            "cancelled in-flight read still owns input"
+        );
+        app.observe_live(Observation::Rewrite(r::Update::Rejected {
+            key,
+            reason: "late read".into(),
+        }))
+        .unwrap();
+        assert!(!app.has_live_rewrite());
+        paint(&mut app, 100, 40);
+        let mut repeat = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        handle_key(&mut app, &mut router, repeat, &mut clipboard);
+        assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
+        assert_eq!(clipboard.reads, 0);
+    }
+    #[test]
+    fn hidden_review_editor_never_accepts_paste_or_clipboard() {
+        let (mut app, key) = open(r::Action::Edit);
+        load(&mut app, key);
+        paint(&mut app, 100, 40);
+        let mut router = KeyRouter::default();
+        let mut clipboard = Clipboard::default();
+        paint(&mut app, 35, 13);
+        paste(&mut app, "hidden");
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.reads, 0);
+        assert_eq!(app.live.as_ref().unwrap().rewrite.draft(), "original");
+        assert_eq!(app.composer.text(), "PRESERVED COMPOSER DRAFT");
     }
 }

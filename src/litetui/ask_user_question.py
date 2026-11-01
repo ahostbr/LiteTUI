@@ -702,42 +702,44 @@ def resolve_over_rpc(app: App, ask_id: str, action: str, answers: object) -> boo
     Called from the rpc dispatch thread; the tool call is parked on the Event
     this sets.
     """
-    entry = _ask_registry(app).get(ask_id)
-    if entry is None:
-        return False
-    done, result_box, states = entry
-    if done.is_set():
-        # A SECOND answer is refused rather than applied. The tool call has
-        # already moved on, so a late write into result_box reaches nobody while
-        # reporting success to whoever sent it.
-        return False
+    from litetui import conversation_rewrite
+    with conversation_rewrite.question_registry_guard(app):
+        entry = _ask_registry(app).get(ask_id)
+        if entry is None:
+            return False
+        done, result_box, states = entry
+        if done.is_set():
+            # A SECOND answer is refused rather than applied. The tool call has
+            # already moved on, so a late write into result_box reaches nobody while
+            # reporting success to whoever sent it.
+            return False
 
-    # A short or malformed answers list is not a reason to fail the call: those
-    # questions simply read as unanswered, which _serialize already states per
-    # question. Failing here would strand the tool call instead.
-    if isinstance(answers, list):
-        for i, state in enumerate(states):
-            if i >= len(answers):
-                break
-            a = answers[i]
-            if not isinstance(a, dict):
-                continue
-            picked = a.get("selected")
-            if isinstance(picked, list):
-                state.selected = {
-                    j for j in picked
-                    if isinstance(j, int) and 0 <= j < len(state.options)
-                }
-                if not state.multi_select and len(state.selected) > 1:
-                    state.selected = {next(j for j in picked if j in state.selected)}
-            note = a.get("note")
-            if isinstance(note, str):
-                state.note = note
+        # A short or malformed answers list is not a reason to fail the call: those
+        # questions simply read as unanswered, which _serialize already states per
+        # question. Failing here would strand the tool call instead.
+        if isinstance(answers, list):
+            for i, state in enumerate(states):
+                if i >= len(answers):
+                    break
+                a = answers[i]
+                if not isinstance(a, dict):
+                    continue
+                picked = a.get("selected")
+                if isinstance(picked, list):
+                    state.selected = {
+                        j for j in picked
+                        if isinstance(j, int) and 0 <= j < len(state.options)
+                    }
+                    if not state.multi_select and len(state.selected) > 1:
+                        state.selected = {next(j for j in picked if j in state.selected)}
+                note = a.get("note")
+                if isinstance(note, str):
+                    state.note = note
 
-    act = action if action in ("submit", "chat", "cancel") else "submit"
-    result_box.append({"action": act, "questions": [s.to_dict() for s in states]})
-    done.set()
-    return True
+        act = action if action in ("submit", "chat", "cancel") else "submit"
+        result_box.append({"action": act, "questions": [s.to_dict() for s in states]})
+        done.set()
+        return True
 
 
 def cancel_pending_asks(app: App) -> list[str]:
@@ -758,16 +760,18 @@ def cancel_pending_asks(app: App) -> list[str]:
     Idempotent by the `is_set` check, so a second abort is a no-op rather than a
     second write into a box nobody is reading.
     """
-    released: list[str] = []
-    for ask_id, (done, result_box, states) in list(_ask_registry(app).items()):
-        if done.is_set():
-            continue
-        result_box.append(
-            {"action": "aborted", "questions": [s.to_dict() for s in states]}
-        )
-        done.set()
-        released.append(ask_id)
-    return released
+    from litetui import conversation_rewrite
+    with conversation_rewrite.question_registry_guard(app):
+        released: list[str] = []
+        for ask_id, (done, result_box, states) in list(_ask_registry(app).items()):
+            if done.is_set():
+                continue
+            result_box.append(
+                {"action": "aborted", "questions": [s.to_dict() for s in states]}
+            )
+            done.set()
+            released.append(ask_id)
+        return released
 
 
 def _run_over_rpc(states: list[QuestionState], app: App) -> str:
@@ -782,28 +786,34 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
     reason: `done` is never set when nobody answers, so the `is_running` check is
     the only thing that ever releases this thread.
     """
+    from litetui import conversation_rewrite
     from litetui.question_result import current_lifetime, question_origin_fields
 
     lifetime = current_lifetime()
     ask_id = "ask-" + uuid4().hex[:12]
     done = threading.Event()
     result_box: list[dict] = []
-    _ask_registry(app)[ask_id] = (done, result_box, states)
+    pending = (done, result_box, states)
     wait_token = getattr(app, "_begin_wait", lambda *_: None)("host", "question")
     try:
-        app._rpc_emit({
-            "type": "user_input_requested",
-            "id": ask_id,
-            "questions": [s.to_dict() for s in states],
-            **question_origin_fields(),
-        })
+        with conversation_rewrite.question_registry_guard(app):
+            if lifetime is not None and lifetime.is_set():
+                return _serialize({"action": "aborted", "questions": [s.to_dict() for s in states]})
+            conversation_rewrite.capture_question(app, ask_id, pending)
+            _ask_registry(app)[ask_id] = pending
+            app._rpc_emit({
+                "type": "user_input_requested",
+                "id": ask_id,
+                "questions": [s.to_dict() for s in states],
+                **question_origin_fields(),
+            })
         while not done.wait(timeout=0.1 if lifetime is not None else 5):
             if lifetime is not None and lifetime.is_set():
-                if done.is_set():
-                    break
-                result_box.append({"action": "aborted", "questions": [s.to_dict() for s in states]})
-                done.set()
-                app._rpc_emit({"type": "user_input_resolved", "id": ask_id, "cancelled": True})
+                with conversation_rewrite.question_registry_guard(app):
+                    if not done.is_set():
+                        result_box.append({"action": "aborted", "questions": [s.to_dict() for s in states]})
+                        done.set()
+                        app._rpc_emit({"type": "user_input_resolved", "id": ask_id, "cancelled": True})
                 break
             if not getattr(app, "is_running", True):
                 return UNANSWERED_EXITED
@@ -812,7 +822,9 @@ def _run_over_rpc(states: list[QuestionState], app: App) -> str:
         return _serialize(result_box[0])
     finally:
         getattr(app, "_end_wait", lambda _token: None)(wait_token)
-        _ask_registry(app).pop(ask_id, None)
+        with conversation_rewrite.question_registry_guard(app):
+            _ask_registry(app).pop(ask_id, None)
+            conversation_rewrite.forget_question(app, ask_id, pending)
 
 
 def run(args: dict, app: App | None) -> str:

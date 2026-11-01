@@ -28,6 +28,7 @@ from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
 from functools import partial
 from litetui.event_origin import EventOrigin
+from litetui import conversation_rewrite
 
 from litetui import settings as settings_mod
 from litetui.settings import Settings
@@ -2414,6 +2415,7 @@ class LiteTUI(App):
         from litetui import conversation_shutdown, native_engine_shutdown
         # Failed joins retain ownership for the supervisor's hard containment
         # bound; they must not fall through the release finally below.
+        await conversation_rewrite.settle_before_shutdown(self)
         await conversation_shutdown.settle_before_shutdown(self)
         await native_engine_shutdown.settle_before_shutdown(self)
         try:
@@ -3457,6 +3459,8 @@ class LiteTUI(App):
         # refusal instead of performing another dead action.
         if loop_refusal := self._loop_refusal(name, args):
             return loop_refusal, False
+        if rewrite_refusal := conversation_rewrite.tool_refusal(self, name, args):
+            return rewrite_refusal, False
         fn = self._dispatch_for(name)
         if fn is None:
             return tool_denied("unknown-tool", name=name), False
@@ -3508,9 +3512,11 @@ class LiteTUI(App):
         background = may_bg and isinstance(args, dict) and bool(args.pop("background", False))
         if isinstance(args, dict):
             args.pop("background", None)
+        fn, rewrite_tool = conversation_rewrite.capture_tool(self, fn)
         aw = asyncio.to_thread(fn, args)
         if run_hooks:
             aw = self._observe_tool_outcome(name, dict(args), aw, hook_profile, hook_context)
+        aw = conversation_rewrite.track_tool(self, rewrite_tool, aw)
         if background:
             return self._start_background(name, args, aw), True
         process_slot = tasks_mod.ProcessSlot() if may_bg else None
@@ -3557,7 +3563,8 @@ class LiteTUI(App):
         finally:
             await hook_host.dispatch(self, "tool_after",
                 {"tool": name, "args": args, "result": str(result), "ok": ok,
-                 "cancelled": cancelled}, profile=profile, captured=captured)
+                 "cancelled": cancelled}, profile=profile, captured=captured,
+                allow_prompt=conversation_rewrite.tool_after_allow_prompt(self))
 
     # ── background tasks (T499) ──────────────────────────────────────────
     #
@@ -3602,10 +3609,11 @@ class LiteTUI(App):
         runtime_log.record("task.started", task_id=task.id, tool=name)
         # Its own group, NOT "chat": `_stream` is exclusive in "chat", and a
         # worker started there would cancel the turn that started it.
-        self.run_worker(
+        worker = self.run_worker(
             self._run_background(task, aw),
             name=task.id, group="tasks", exclusive=False, exit_on_error=False,
         )
+        conversation_rewrite.track_descendant(self, worker)
         return tasks_mod.start_text(task, paths.data_root(), promoted_after=promoted_after)
 
     async def _run_background(self, task, aw) -> None:
@@ -3854,6 +3862,7 @@ class LiteTUI(App):
         self._store_injected = True
         if not self._convo_loading:
             self._edit(0, "store injected")
+            conversation_rewrite.advance_receipts(self)
 
     def _inject_index_once(self) -> None:
         """Merge the cwd repo's AGENT_INDEX.md into the system message, once.
@@ -5814,6 +5823,7 @@ class LiteTUI(App):
 
     def _rpc_emit(self, data: dict, *, origin: EventOrigin | None = None) -> None:
         """Emit one JSON event on stdout (no-op outside --rpc)."""
+        origin = origin or conversation_rewrite.event_origin(self)
         if data.get("type") == "turn_start":
             self._now_turn_active_at = self._active_turn_started_at
             self._paint_now()
@@ -6782,7 +6792,7 @@ class LiteTUI(App):
 
     _apply_context_length = apply_context_length     # arrival alias (PLAN §2b)
 
-    @work(exclusive=True, group="ctx")
+    @conversation_rewrite.captured_work("context", exclusive=True, group="ctx")
     async def fetch_context_window(self) -> None:
         """Ask the backend for the active model's (window, type, loaded).
 
@@ -6892,7 +6902,8 @@ class LiteTUI(App):
         reading has to be retaken once it can be right.
         """
         if not getattr(self, "ctx_loaded", False) and self.model_id:
-            self._fetch_ctx_window()
+            worker = self._fetch_ctx_window()
+            conversation_rewrite.track_descendant(self, worker)
 
     def _autocompact_due(self) -> int | None:
         """The window percent when a compaction is DUE, else None. A TEST — it
@@ -7595,10 +7606,7 @@ class LiteTUI(App):
         # in that group would CANCEL the very turn that just finished and asked
         # for this summary. Its own group, non-exclusive, so several summaries
         # can be in flight while the user carries on typing.
-        self.run_worker(
-            self._summarise_card(card, card.model_name, answer),
-            group="card-summary", exclusive=False, exit_on_error=False,
-        )
+        conversation_rewrite.card_summary(self, partial(self._summarise_card, card, card.model_name, answer))
 
     async def _summarise_card(self, card, model: str, answer: str) -> None:
         """Ask `model` for one line about `answer`, then title `card` with it.
@@ -8222,8 +8230,9 @@ class LiteTUI(App):
 
         Escalates exactly as Escape does: first call asks, second forces.
         """
+        rewrite_pending = conversation_rewrite.stop(self)
         if not self._chat_running():
-            return False
+            return rewrite_pending
         if self._stop_requested:
             self._force_stop()
         else:
@@ -9126,15 +9135,18 @@ class LiteTUI(App):
 
     def _stream(self, *, origin: EventOrigin | None = None):
         """Capture one invocation BEFORE Textual can start its asynchronous body."""
-        captured = (origin or EventOrigin(session_id=self.convo_id)).scheduled()
-        return self.run_worker(
-            partial(self._stream_worker, captured), name="_stream", group="chat",
-            exclusive=True, exit_on_error=True, thread=False, description="_stream()")
+        captured = conversation_rewrite.stream_origin(self, origin).scheduled()
+        runner = conversation_rewrite.stream_runner(self, captured, partial(self._stream_worker, captured))
+        worker = self.run_worker(
+            runner, name="_stream", group="chat", exclusive=True,
+            exit_on_error=True, thread=False, description="_stream()")
+        conversation_rewrite.track_stream(self, worker, captured)
+        return worker
 
     def _stream_inline(self, *, origin: EventOrigin | None = None):
         """Capture now, return an unscheduled coroutine for driven compaction."""
-        captured = (origin or EventOrigin(session_id=self.convo_id)).scheduled()
-        return self._stream_worker(captured)
+        captured = conversation_rewrite.stream_origin(self, origin).scheduled()
+        return conversation_rewrite.inline_runner(self, captured, partial(self._stream_worker, captured))
 
     async def _stream_worker(self, origin: EventOrigin) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
@@ -9171,7 +9183,9 @@ class LiteTUI(App):
         self._active_turn_widget = None
         self._active_turn_tps = None
         self._turn_stop_line_settled = False
-        self._stop_requested = False
+        # A reviewed turn may have accepted Stop while scheduled or while the
+        # maintenance gate above was awaiting. Preserve that action-owned latch.
+        self._stop_requested = conversation_rewrite.stopped(self)
         # Cleared with the flag it explains. A reason that outlived its turn
         # would attribute THIS turn's ending to the last turn's cause.
         self._stop_reason = None
@@ -9199,7 +9213,8 @@ class LiteTUI(App):
         # also the right moment — LM Studio JIT-loads on the previous turn's
         # first request, so by now the real window exists to be read.
         self._resync_ctx_if_stale()
-        emit({"type": "turn_start", "model": self.model_id, "thinking_level": self.thinking_level})
+        emit({"type": "turn_start", "model": self.model_id, "thinking_level": self.thinking_level,
+              **conversation_rewrite.segment(self, origin)})
         # One clock and one final generation rate span the WHOLE agent turn,
         # including all tool rounds. The footer intentionally retains its last
         # rate; this local starts empty so a no-rate turn cannot reuse it.
@@ -9317,6 +9332,12 @@ class LiteTUI(App):
                 # No timeout here — the user is watching and asked for this
                 # turn, so a model that is loading is worth waiting out.
                 await self._ensure_chat_ready()
+                if self._stop_requested or conversation_rewrite.stopped(self):
+                    self._stop_requested = True
+                    self._elapsed.stop_body()
+                    self._thinking_done()
+                    stopped_early = True
+                    break
                 # A closure, not the bound method: test fakes deepcopy their
                 # kwargs, and deepcopying a bound method copies the whole app.
                 stream = await model_transport.for_app(self).create(
@@ -9718,7 +9739,7 @@ class LiteTUI(App):
                     stopped=True,
                 )
                 end("cancelled", final_turn_tps, final_turn_tps_source)
-                self.call_after_refresh(self._maybe_autocompact)
+                conversation_rewrite.after_refresh(self, self._maybe_autocompact)
                 return
 
             if not tool_acc:
@@ -9745,8 +9766,8 @@ class LiteTUI(App):
                     stopped=False,
                 )
                 end("stop", final_turn_tps, final_turn_tps_source)
-                self.call_after_refresh(self._resync_ctx_if_stale)
-                self.call_after_refresh(self._maybe_autocompact)
+                conversation_rewrite.after_refresh(self, self._resync_ctx_if_stale)
+                conversation_rewrite.after_refresh(self, self._maybe_autocompact)
                 return  # plain answer — agent loop done
 
             # Execute each tool call, display the result, feed it back.
@@ -9886,7 +9907,7 @@ class LiteTUI(App):
         if self_compact_request is not None:
             self._system(f"[agent requested compaction: {self_compact_request.reason}]")
             end("cancelled", final_turn_tps, final_turn_tps_source)
-            self.call_after_refresh(self._run_self_compaction, self_compact_request)
+            conversation_rewrite.after_refresh(self, self._run_self_compaction, self_compact_request)
             return
 
         if compact_due:
@@ -9899,7 +9920,7 @@ class LiteTUI(App):
             )
             end("cancelled", final_turn_tps, final_turn_tps_source)
             self._interrupted_compact_resume = (self.backend, self.convo_id, self._active_turn_started_at)
-            self.call_after_refresh(self._maybe_autocompact)
+            conversation_rewrite.after_refresh(self, self._maybe_autocompact)
             return
 
         if stopped_early:
@@ -10327,7 +10348,7 @@ class LiteTUI(App):
         elif not crossed:
             self._owner_reminded = False
 
-    @work(exclusive=True, group="chat")
+    @conversation_rewrite.captured_work("compaction", exclusive=True, group="chat")
     async def _compact(self, extra: str = "", *, handoff: str | None = None) -> None:
         if getattr(self, '_agent_session', None) is not None:
             try:
@@ -10428,6 +10449,17 @@ class LiteTUI(App):
         # body has no parent yet. Awaiting makes the card whole first.
         await self.query_one("#chat-log").mount(card)
         self._compact_card = card
+        def stopped():
+            if not self._stop_requested and not conversation_rewrite.stopped(self):
+                return False
+            self._turn_abandoned = True
+            card.fail("stopped — conversation unchanged")
+            self._system(self._stop_reason or "[stopped by you]")
+            self._emit_compaction("cancelled", tokens_before=trigger_tokens,
+                                  tokens_before_exact=trigger_tokens is not None,
+                                  kept_recent=len(tail))
+            return True
+
         # The shared elapsed loop retires after ~1s idle, and a compaction can
         # begin with nothing else in flight -- without this the clock never ticks.
         self._elapsed.ensure_running()
@@ -10459,10 +10491,14 @@ class LiteTUI(App):
             # being a spinner and a prayer.
             card.set_status(f"checking {self.model_id} is ready")
             await self._ensure_chat_ready(timeout=COMPACT_READY_TIMEOUT_S)
+            if stopped():
+                return
             # A counter, not range(): the owner retry gets its OWN budget of rounds (below),
             # so STEP 1 spending all of compact_max_tool_iters cannot starve the retry.
             round_no, round_budget = 0, self.settings.compact_max_tool_iters
             while round_no < round_budget:
+                if stopped():
+                    return
                 round_no += 1
                 round_started = time.perf_counter()
                 first_chunk_s = None
@@ -10500,6 +10536,8 @@ class LiteTUI(App):
                 # compaction card speaks the same grammar as a normal turn
                 # because it reuses the same chunk shapes and widgets.
                 async for chunk in stream:
+                    if stopped():
+                        return
                     provider_metadata = getattr(chunk, "provider_metadata", None) or provider_metadata
                     if first_chunk_s is None:
                         first_chunk_s = time.perf_counter() - round_started
@@ -10636,10 +10674,7 @@ class LiteTUI(App):
                 timing["tools_s"] = time.perf_counter() - tools_started
                 card.record_round(timing)
                 self._scroll_down()
-                if self._stop_requested:
-                    self._turn_abandoned = True
-                    card.fail("stopped — conversation unchanged")
-                    self._system(self._stop_reason or "[stopped by you]")
+                if stopped():
                     return
             if owner_t0 is not None and owner_retried and not owner_retry_gated:
                 # The retry spent its whole budget on tool calls and never summarised, so no
@@ -10673,6 +10708,11 @@ class LiteTUI(App):
             self._eta.clear_prefill()
             if hasattr(stream, "close"):
                 await stream.close()
+
+        # Readiness, streaming, owner verification and stream.close all await.
+        # A stop at any one of them must precede the destructive truncate below.
+        if stopped():
+            return
 
         if not summary and owner_first_summary:
             # The retry turn produced nothing; the first summary still stands.
@@ -10717,6 +10757,8 @@ class LiteTUI(App):
 
         # Record BEFORE swapping self.conversation: keep_from indexes the list
         # as it stands on disk, which is the pre-compaction one.
+        if stopped():
+            return
         self._truncate(len(self.conversation) - len(tail), pair, "compact", measurements={
             "model": self.model_id, "auto": auto,
             "trigger": "agent" if handoff is not None else ("automatic" if auto else "manual"),
@@ -10737,6 +10779,7 @@ class LiteTUI(App):
             # Replay must equal memory now, not after the next request.
             self._store_injected = False
             self._edit(0, "store snapshot dropped at compaction")
+            conversation_rewrite.advance_receipts(self)
         # AFTER the swap, so the counts describe what the conversation now IS.
         self._emit_compaction("compacted",
                               tokens_before=trigger_tokens,
@@ -10831,13 +10874,13 @@ class LiteTUI(App):
 
         if continuation is not None:
             self._interrupted_compact_resume = continuation
-            self.call_after_refresh(self._continue_interrupted_compact, continuation)
+            conversation_rewrite.after_refresh(self, self._continue_interrupted_compact, continuation)
         elif self.settings.wake_after_compact or handoff is not None:
             # SCHEDULED, never called: see _wake_after_compact for why a
             # direct self._stream() here would cancel this very compact.
             # Success path only - a failed compact produced no summary, and
             # waking on "nothing changed" is a ping with no answer.
-            self.call_after_refresh(self._wake_after_compact)
+            conversation_rewrite.after_refresh(self, self._wake_after_compact)
 
     # ── Commands ─────────────────────────────────────────────────
 

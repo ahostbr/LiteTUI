@@ -60,8 +60,13 @@ def _reader_loop(app: LiteTUI) -> None:
 
 
 def _request_joined_shutdown(app, respond=None):
-    from litetui import conversation_shutdown, native_engine_shutdown
-    return (conversation_shutdown.request_shutdown(app, respond)
+    from litetui import (
+        conversation_rewrite,
+        conversation_shutdown,
+        native_engine_shutdown,
+    )
+    return (conversation_rewrite.request_shutdown(app, respond)
+            or conversation_shutdown.request_shutdown(app, respond)
             or native_engine_shutdown.request_shutdown(app, respond))
 
 
@@ -126,6 +131,8 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             native_engine.operation_allowed(app, cmd_type)
             from litetui import conversation_transition
             conversation_transition.require_execution(app)
+            from litetui import conversation_rewrite
+            conversation_rewrite.operation_allowed(app, cmd_type)
         except ValueError as exc:
             _respond(cmd_id, ok=False, error=str(exc))
             return
@@ -295,18 +302,20 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         for future in getattr(app, "_approval_waiters", {}).values():
             if not future.done():
                 future.cancel()
-        cancelled = auq_mod.cancel_pending_asks(app)
-        for ask_id in cancelled:
-            # The host resolves its own card locally on interrupt, so this is
-            # not what clears the UI. It is the child SAYING what it did, which
-            # is the only record that the question died rather than was answered.
-            app._rpc_emit({
-                "type": "user_input_resolved",
-                "id": ask_id,
-                "cancelled": True,
-                "reason": "abort",
-            })
-        stopped = app.stop_turn_over_rpc()
+        from litetui import conversation_rewrite
+        with conversation_rewrite.question_registry_guard(app):
+            question_origins = conversation_rewrite.question_abort_origins(app)
+            cancelled = auq_mod.cancel_pending_asks(app)
+            for ask_id in cancelled:
+                # Cancellation belongs to the exact question producer, not the
+                # abort command. Capture before releasing a thread that can retire.
+                event = {"type": "user_input_resolved", "id": ask_id,
+                         "cancelled": True, "reason": "abort"}
+                if origin := question_origins.get(ask_id):
+                    app._rpc_emit(event, origin=origin)
+                else:
+                    app._rpc_emit(event)
+            stopped = app.stop_turn_over_rpc()
         # `stopped` is now MEASURED, not asserted. It used to be the literal
         # `True` on every abort, including the ones that did nothing — a reply
         # that agreed with the host while the turn ran on.

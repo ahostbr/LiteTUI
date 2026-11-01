@@ -58,6 +58,7 @@ pub mod prepared_skill;
 pub mod engine_controls;
 
 pub mod conversation_actions;
+pub mod conversation_rewrite;
 
 pub mod theme_controls;
 

@@ -617,6 +617,10 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
             let state = match row.state {
                 crate::live_chat::ReplyState::Sending => "Sending · not yet completed",
                 crate::live_chat::ReplyState::Streaming => "Streaming",
+                crate::live_chat::ReplyState::Maintenance => "Compacting · source work",
+                crate::live_chat::ReplyState::MaintenanceSettled => {
+                    "Compaction worker settled · see source status"
+                }
                 crate::live_chat::ReplyState::Complete => "Completed · stop",
                 crate::live_chat::ReplyState::Cancelling => "Stopping · awaiting runtime",
                 crate::live_chat::ReplyState::Cancelled => "Cancelled · partial output retained",
@@ -768,6 +772,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             chat.commands.hide();
             chat.themes.hide();
             chat.saved_history.hide();
+            chat.rewrite.hide();
             chat.settings.hide();
             chat.backend_controls.hide();
             chat.browser.hide();
@@ -1088,6 +1093,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &t);
     }
     if app.has_live_history()
+        && !app.has_live_rewrite()
         && !app.has_live_approval()
         && !app.has_live_question()
         && !app.stop_open()
@@ -1101,6 +1107,20 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &theme);
     } else if let Some(chat) = app.live.as_mut() {
         chat.saved_history.hide();
+    }
+    if app.has_live_rewrite()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.stop_open()
+        && !app.viewport_too_small
+    {
+        app.live
+            .as_mut()
+            .expect("rewrite control")
+            .rewrite
+            .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.rewrite.hide();
     }
     if app.has_live_themes()
         && !app.stop_open()
@@ -1130,7 +1150,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .backend_controls
             .draw(frame, area, &t);
     }
-    if app.has_live_browser() && !app.has_live_history() {
+    if app.has_live_browser() && !app.has_live_history() && !app.has_live_rewrite() {
         app.live
             .as_mut()
             .expect("conversation browser")
