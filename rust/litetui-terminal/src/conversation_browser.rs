@@ -62,6 +62,7 @@ pub enum Intent {
     Refresh,
     Page { revision: u64, cursor: String },
     Open { revision: u64, session: String },
+    Inspect { revision: u64, session: String },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -228,6 +229,16 @@ impl Page {
         }
         Ok(())
     }
+    /// Inspection proves row membership only; it never grants Open authority.
+    pub fn inspection(&self, revision: u64, session: &str) -> io::Result<&Entry> {
+        if revision != self.revision {
+            return Err(fail("Conversation selection changed; refresh the browser"));
+        }
+        self.entries
+            .iter()
+            .find(|row| row.session == session)
+            .ok_or_else(|| fail("Conversation was not offered for inspection"))
+    }
     pub fn selection(&self, revision: u64, session: &str) -> io::Result<&Entry> {
         if revision != self.revision {
             return Err(fail("Conversation selection changed; refresh the browser"));
@@ -266,6 +277,7 @@ pub struct View {
     selected: usize,
     horizontal: usize,
     intent: Option<Intent>,
+    inspection_pending: bool,
     visible: bool,
     geometry: Option<Rect>,
     hits: Vec<(Rect, usize)>,
@@ -284,6 +296,7 @@ impl View {
             return;
         }
         self.open = true;
+        self.inspection_pending = false;
         self.waiting = true;
         self.page = None;
         self.intent = Some(Intent::Refresh);
@@ -330,6 +343,7 @@ impl View {
         Ok(())
     }
     pub fn close(&mut self) {
+        self.inspection_pending = false;
         self.actions.close();
         self.open = false;
         self.preview = None;
@@ -346,6 +360,19 @@ impl View {
         self.waiting = false;
         self.pending_open = None;
         self.page = None;
+    }
+    /// Preserve the catalogue and selection underneath the exclusive inspector.
+    pub fn suspend_for_inspection(&mut self) {
+        if !self.inspection_pending {
+            self.hide();
+            return;
+        }
+        self.inspection_pending = false;
+        self.intent = None;
+        self.waiting = false;
+        self.pending_open = None;
+        self.preview = None;
+        self.hide();
     }
     fn disarm(&mut self) {
         self.preview_page = 0;
@@ -375,6 +402,7 @@ impl View {
             return Err(fail("Catalogue read cannot complete a conversation open"));
         }
         self.waiting = false;
+        self.inspection_pending = false;
         self.intent = None;
         self.hide();
         self.horizontal = 0;
@@ -553,6 +581,23 @@ impl View {
                 } else {
                     crate::conversation_actions::Action::Rename
                 });
+            }
+            KeyCode::Char('i') if key.kind == KeyEventKind::Press => {
+                self.disarm();
+                if let Some(page) = &self.page
+                    && let Some(row) = page.entries.get(self.selected)
+                {
+                    self.inspection_pending = true;
+                    self.intent = Some(Intent::Inspect {
+                        revision: page.revision,
+                        session: row.session.clone(),
+                    });
+                    self.waiting = true;
+                    self.notice =
+                        "Inspecting saved display; the current conversation stays unchanged."
+                            .into();
+                    self.hide();
+                }
             }
             KeyCode::Char('o') if key.kind == KeyEventKind::Press => {
                 self.disarm();
@@ -761,7 +806,7 @@ impl View {
             Rect::new(inner.x, inner.y, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("Current: ●   Opening never sends input"),
+            Paragraph::new("Current: ● | ←→ row details"),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
         let list = Rect::new(
@@ -828,7 +873,7 @@ impl View {
         } else {
             for (offset, text) in [
                 line(&self.details(), self.horizontal),
-                "↑↓ choose | ←→ inspect".into(),
+                "↑↓ choose | I inspect".into(),
                 "PgUp/PgDn page | R refresh".into(),
                 "O open | N new | E rename | Esc".into(),
             ]

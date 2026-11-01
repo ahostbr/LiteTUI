@@ -1,6 +1,6 @@
 # Remaining LiteTUI Rust parity work
 
-Source audit: 2026-10-31, work/rust-tui-OpenBolt, prior checkpoint 598b1b21.
+Source audit: 2026-10-31, work/rust-tui-OpenBolt, prior checkpoint 4a488553.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
 continuation and pre-start refusal handling are committed; bounded session browsing has
@@ -12,7 +12,7 @@ Rust has owned Windows Python startup, bounded transport and verified event mirr
 captured execution origins, multiple text turns, reasoning/tools, cancellation,
 approvals/questions, composer/transcript, model/thinking controls,
 exact-UUID resume, held-input recovery, F6 bounded saved-history inspection,
-bounded F8 session browsing with captured Open,
+bounded F8 session browsing with independent saved-row inspection and captured Open,
 F9 backend switching, F10 budget editing, F11 command/skill controls and explicit
 F12 NInfer/Strata engine management, reviewed F8 New/current Rename and source-owned F4 themes. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
@@ -21,14 +21,14 @@ Current anchors: live.rs Options::parse accepts the canonical nine startup backe
 Chat::submit explicitly refuses slash commands; the source-backed command router handles
 slash input separately and prepares skills for explicit attended submission. management.rs handles startup,
 model/thinking and restored input; history.rs validates compact context descriptors and inert pages; history_view.rs owns
-the exclusive current-conversation inspector; conversation_browser.rs pages the catalog and reviews captured Open. Source gui_rpc.py OPERATIONS is authoritative.
+the exclusive current/saved-conversation inspector; conversation_browser.rs pages the catalog, selects read-only inspection and separately reviews captured Open. Source gui_rpc.py OPERATIONS is authoritative.
 Historical inventory.md checkboxes are discovery data, not current feature status.
 
 ## Independent implementation packages
 
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
-| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Edit/retry/compact and alternate-conversation/read-only browsing remain. Preserve draft, UUID/owner, settings and provider continuity. |
+| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Alternate-conversation/read-only inspection preserves active context and uses exact-UUID refresh. Edit/retry/compact remain. Preserve draft, UUID/owner, settings and provider continuity. |
 | Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
@@ -40,6 +40,23 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Packaging | New stage-package.ps1/package-launch.ps1 and Python project metadata | Tracked runtime/resources only, external Python explicit, relocated verification. Clean dependency environment, binary/source provenance, upgrade/uninstall and release review remain. |
 | Fault and resource acceptance | Full-feature controlled process tests; runtime-contract.md P4 protocol | Complete fault/cleanup coverage. Measure Python against Rust + retained Python + owned descendants under equivalent workloads before Ryan approves numerical targets. |
 | Host acceptance | Windows Terminal and LiteSuite embedded terminal | Layout, shortcuts, images, clipboard, scroll/resize and terminal restoration in both; Ryan's visual signoff. Preview approval is not full feature acceptance. |
+
+## Next session-action contract
+
+The existing GUI edit/retry path changes and snapshots the host conversation before
+ordinary submission, then returns an acceptance response that does not prove execution.
+A native adapter needs a source-owned review and transaction, immutable message identity,
+attended admission before durable history publication, exact worker settlement and
+independent replay readback. Repeated text or an inspected saved row cannot authorize a
+current-session mutation. Failed admission must preserve original history.
+
+Codex resumes a native thread and Claude uses a durable native segment; neither can be
+rewound by slicing the display transcript. Start with source-offered host-history edit/retry
+capability and keep unsupported native-provider actions explicit. Compaction must wrap the
+existing host, Codex and Claude algorithms with typed outcomes, action-bound progress,
+provider continuity and cleanup/readback. A successful Textual worker does not establish
+successful compaction; continuation or memory-tool effects must be disclosed and settled.
+The source audit is design evidence only; no session-action implementation is claimed.
 
 ## Parallel waves
 

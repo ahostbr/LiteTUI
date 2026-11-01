@@ -328,8 +328,18 @@ struct ConversationPending {
     queue: Option<crate::restored_queue::Snapshot>,
     mutation: Option<CommandId>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryPhase {
+    Locate,
+    Snapshot,
+    Page,
+}
 struct SavedHistoryPending {
     id: CommandId,
+    key: crate::history_view::ReadKey,
+    active: crate::history::Identity,
+    identity: crate::history::Identity,
+    phase: HistoryPhase,
     descriptor: Option<crate::history::Snapshot>,
     position: crate::history::PageRequest,
     prior: Option<crate::history::Page>,
@@ -339,6 +349,8 @@ pub struct Management {
     saved_history: Option<SavedHistoryPending>,
     history_snapshot: Option<crate::history::Snapshot>,
     history_page: Option<crate::history::Page>,
+    history_target: Option<(crate::history_view::Target, crate::history::Identity)>,
+    history_generation: u64,
     startup_history: Option<crate::resume::History>,
     theme: Option<ThemePending>,
     theme_snapshot: Option<crate::theme_controls::Snapshot>,
@@ -400,6 +412,8 @@ impl Default for Management {
             saved_history: None,
             history_snapshot: None,
             history_page: None,
+            history_target: None,
+            history_generation: 0,
             startup_history: None,
             theme: None,
             theme_snapshot: None,
@@ -578,6 +592,7 @@ impl Management {
         self.conversation_review = None;
         self.history_snapshot = None;
         self.history_page = None;
+        self.history_target = None;
         self.browser_preview = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
@@ -606,7 +621,13 @@ impl Management {
         if self.failed {
             return Err(fail("Management connection is uncertain"));
         }
-        let result = if self.history_response_pending(&frame)
+        let result = if self.history_locate_response_pending(&frame)
+            && original_json_bytes > crate::conversation_browser::PAGE_BYTES
+        {
+            Err(fail(
+                "Located conversation response exceeds the full 256 KiB wire budget",
+            ))
+        } else if self.history_response_pending(&frame)
             && original_json_bytes > crate::history::MAX_RESPONSE_BYTES
         {
             Err(fail("History response exceeds the full 1 MiB wire budget"))
@@ -617,6 +638,14 @@ impl Management {
             self.failed = true;
         }
         result
+    }
+    fn history_locate_response_pending(&self, frame: &Value) -> bool {
+        self.history_projection
+            && matches!(frame["type"].as_str(), Some("response" | "error"))
+            && self
+                .saved_history
+                .as_ref()
+                .is_some_and(|p| p.phase == HistoryPhase::Locate && frame["id"] == p.id.to_value())
     }
     fn history_response_pending(&self, frame: &Value) -> bool {
         if !self.history_projection || !matches!(frame["type"].as_str(), Some("response" | "error"))
@@ -1676,6 +1705,11 @@ impl Management {
         }
         let (operation, request, mut command) = match intent {
             Intent::Action(_) | Intent::ConfirmOpen { .. } => unreachable!("handled action"),
+            Intent::Inspect { .. } => {
+                return Err(fail(
+                    "Inspect requires the separate Saved History read route",
+                ));
+            }
             Intent::Refresh => (
                 PAGE,
                 BrowserRequest::Page {
@@ -3843,31 +3877,101 @@ impl Management {
             crate::backend_controls::history(result, session)
         }
     }
+    fn history_active_identity(&self) -> io::Result<crate::history::Identity> {
+        let (session, backend, model, _) = self
+            .expected
+            .as_ref()
+            .ok_or_else(|| fail("History requires an active runtime"))?;
+        self.history_identity(session, backend, model)
+    }
+    fn history_target_matches(
+        identity: &crate::history::Identity,
+        target: &crate::history_view::Target,
+        active: &crate::history::Identity,
+    ) -> bool {
+        use crate::{history::Scope, history_view::Target};
+        match target {
+            Target::Current => identity == active,
+            Target::Saved { session } => {
+                identity.scope == Scope::Preview
+                    && identity.session == *session
+                    && *session != active.session
+                    && identity.from_session == active.session
+                    && identity.agent == active.agent
+                    && identity.backend == active.backend
+                    && identity.model == active.model
+                    && identity.catalog.is_some()
+            }
+        }
+    }
     pub fn request_history(&mut self, intent: crate::history_view::Intent) -> io::Result<Value> {
-        use crate::{history::PageRequest, history_view::Intent};
+        use crate::{
+            history::{Anchor, PageRequest},
+            history_view::{Intent, Target},
+        };
         if !self.ready() || !self.history_projection {
             return Err(fail(
                 "Saved History needs an idle source with projection version 1",
             ));
         }
         self.ensure_drained()?;
-        let (session, backend, model, _) = self.expected.as_ref().expect("active");
-        let (descriptor, position, prior, mut command) = match intent {
-            Intent::Refresh { anchor } => (
-                None,
-                PageRequest::Anchor(anchor),
-                None,
-                self.history_command(session, backend, model)?,
-            ),
-            Intent::Page { snapshot, position } => {
+        let active = self.history_active_identity()?;
+        let key = intent.key().clone();
+        if key.generation == 0 || key.generation <= self.history_generation {
+            return Err(fail("Saved History read generation is stale"));
+        }
+        let admitted = self
+            .history_target
+            .as_ref()
+            .is_some_and(|(target, owner)| target == &key.target && owner == &active);
+        let (phase, identity, descriptor, position, prior, mut command) = match intent {
+            Intent::Inspect {
+                revision, session, ..
+            } => {
+                let catalog = self
+                    .browser_page
+                    .as_ref()
+                    .ok_or_else(|| fail("Refresh the conversation browser before inspecting"))?;
+                if catalog.session != active.session || catalog.agent != active.agent {
+                    return Err(fail(
+                        "Inspection catalogue belongs to another owned runtime",
+                    ));
+                }
+                let selected = catalog.inspection(revision, &session)?;
+                let target = if selected.current {
+                    Target::Current
+                } else {
+                    Target::Saved {
+                        session: session.clone(),
+                    }
+                };
+                if key.target != target {
+                    return Err(fail(
+                        "Inspection target differs from the selected conversation",
+                    ));
+                }
+                self.history_refresh_command(&key.target, &active, Anchor::Tail)
+            }
+            Intent::Refresh { anchor, .. } => {
+                if key.target != Target::Current && !admitted {
+                    return Err(fail(
+                        "Select a saved conversation before refreshing its history",
+                    ));
+                }
+                self.history_refresh_command(&key.target, &active, anchor)
+            }
+            Intent::Page {
+                snapshot, position, ..
+            } => {
+                if key.target != Target::Current && !admitted {
+                    return Err(fail("Saved History target changed; inspect it again"));
+                }
                 let descriptor = self
                     .history_snapshot
                     .as_ref()
                     .filter(|s| {
                         s.token == snapshot
-                            && s.identity.session == *session
-                            && s.identity.backend == *backend
-                            && s.identity.model == *model
+                            && Self::history_target_matches(&s.identity, &key.target, &active)
                     })
                     .ok_or_else(|| fail("Saved History changed; explicitly refresh"))?
                     .clone();
@@ -3880,7 +3984,14 @@ impl Management {
                     return Err(fail("History cursor was not offered by the visible page"));
                 }
                 let command = descriptor.page_request(&position)?;
-                (Some(descriptor), position, prior, command)
+                (
+                    HistoryPhase::Page,
+                    descriptor.identity.clone(),
+                    Some(descriptor),
+                    position,
+                    prior,
+                    command,
+                )
             }
         };
         let id = self
@@ -3888,67 +3999,161 @@ impl Management {
             .register_read()
             .map_err(|_| fail("Cannot reserve history read"))?;
         command["id"] = id.to_value();
+        // A read-only inspection cannot retain a previously offered Open review.
+        self.browser_preview = None;
+        self.history_generation = key.generation;
+        self.history_target = Some((key.target.clone(), active.clone()));
         self.saved_history = Some(SavedHistoryPending {
             id,
+            key,
+            active,
+            identity,
+            phase,
             descriptor,
             position,
             prior,
         });
         Ok(command)
     }
+    fn history_refresh_command(
+        &self,
+        target: &crate::history_view::Target,
+        active: &crate::history::Identity,
+        anchor: crate::history::Anchor,
+    ) -> (
+        HistoryPhase,
+        crate::history::Identity,
+        Option<crate::history::Snapshot>,
+        crate::history::PageRequest,
+        Option<crate::history::Page>,
+        Value,
+    ) {
+        use crate::{history::PageRequest, history_view::Target};
+        let (phase, command) = match target {
+            Target::Current => (
+                HistoryPhase::Snapshot,
+                active.command(crate::history::SNAPSHOT),
+            ),
+            Target::Saved { session } => (
+                HistoryPhase::Locate,
+                json!({"type":crate::conversation_browser::PAGE,"session_id":active.session,"locate_session_id":session}),
+            ),
+        };
+        (
+            phase,
+            active.clone(),
+            None,
+            PageRequest::Anchor(anchor),
+            None,
+            command,
+        )
+    }
     fn saved_history_response(&mut self, frame: Value) -> io::Result<Step> {
         use crate::{
-            history::{Page, PageRequest, Snapshot as HistorySnapshot},
-            history_view::Update,
+            history::{Page, PageRequest, Scope, Snapshot as HistorySnapshot},
+            history_view::{Target, Update},
         };
         let mut pending = self.saved_history.take().expect("matched history read");
         self.ensure_drained()?;
         if self.closing {
             return Ok(Step::Ignore);
         }
+        if self.history_active_identity()? != pending.active {
+            return Err(fail("Active runtime changed during history inspection"));
+        }
         if frame["ok"] != true {
+            // The frontend retains its previous page as stale. No cached cursor
+            // may authorize another read until an explicit refresh succeeds.
             self.history_snapshot = None;
             self.history_page = None;
-            return Ok(Step::SavedHistory(Update::Rejected(
-                text(&frame, "error", 4096)?.into(),
-            )));
-        }
-        if let Some(descriptor) = pending.descriptor {
-            let page = Page::parse(&frame["result"], &descriptor)?;
-            page.accepts(&pending.position)?;
-            if let PageRequest::Cursor(cursor) = &pending.position {
-                page.follows(
-                    pending
-                        .prior
-                        .as_ref()
-                        .ok_or_else(|| fail("History page lacks prior cursor authority"))?,
-                    cursor,
-                )?;
-            }
-            self.history_snapshot = Some(descriptor.clone());
-            self.history_page = Some(page.clone());
-            return Ok(Step::SavedHistory(if pending.prior.is_some() {
-                Update::Page(Box::new(page))
-            } else {
-                Update::Loaded {
-                    snapshot: Box::new(descriptor),
-                    page: Box::new(page),
-                }
+            return Ok(Step::SavedHistory(Update::Rejected {
+                key: pending.key,
+                reason: text(&frame, "error", 4096)?.into(),
             }));
         }
-        let (session, backend, model, _) = self.expected.as_ref().expect("active");
-        let descriptor = HistorySnapshot::parse(
-            &frame["result"],
-            &self.history_identity(session, backend, model)?,
-        )?;
-        let mut command = descriptor.page_request(&pending.position)?;
+        let result = &frame["result"];
+        let mut command = match pending.phase {
+            HistoryPhase::Locate => {
+                let Target::Saved { session } = &pending.key.target else {
+                    return Err(fail("Current history cannot use a saved locator"));
+                };
+                if result["located_session_id"].as_str() != Some(session.as_str()) {
+                    return Err(fail("Located history changed the selected conversation"));
+                }
+                let catalog = crate::conversation_browser::Page::parse(
+                    result,
+                    pending.key.generation,
+                    &pending.active.session,
+                )?;
+                if catalog.agent != pending.active.agent {
+                    return Err(fail("Located history belongs to another owned agent"));
+                }
+                let selected = catalog.inspection(pending.key.generation, session)?;
+                if selected.current {
+                    return Err(fail(
+                        "Saved inspection unexpectedly selected the active conversation",
+                    ));
+                }
+                pending.identity = crate::history::Identity {
+                    session: session.clone(),
+                    scope: Scope::Preview,
+                    catalog: Some(catalog.snapshot),
+                    ..pending.active.clone()
+                };
+                pending.phase = HistoryPhase::Snapshot;
+                pending.identity.command(crate::history::SNAPSHOT)
+            }
+            HistoryPhase::Snapshot => {
+                let descriptor = HistorySnapshot::parse(result, &pending.identity)?;
+                if !Self::history_target_matches(
+                    &descriptor.identity,
+                    &pending.key.target,
+                    &pending.active,
+                ) {
+                    return Err(fail("History descriptor changed its inspection target"));
+                }
+                let command = descriptor.page_request(&pending.position)?;
+                pending.descriptor = Some(descriptor);
+                pending.phase = HistoryPhase::Page;
+                command
+            }
+            HistoryPhase::Page => {
+                let descriptor = pending
+                    .descriptor
+                    .ok_or_else(|| fail("History page lacks its inspected descriptor"))?;
+                let page = Page::parse(result, &descriptor)?;
+                page.accepts(&pending.position)?;
+                if let PageRequest::Cursor(cursor) = &pending.position {
+                    page.follows(
+                        pending
+                            .prior
+                            .as_ref()
+                            .ok_or_else(|| fail("History page lacks prior cursor authority"))?,
+                        cursor,
+                    )?;
+                }
+                self.history_snapshot = Some(descriptor.clone());
+                self.history_page = Some(page.clone());
+                return Ok(Step::SavedHistory(if pending.prior.is_some() {
+                    Update::Page {
+                        key: pending.key,
+                        page: Box::new(page),
+                    }
+                } else {
+                    Update::Loaded {
+                        key: pending.key,
+                        snapshot: Box::new(descriptor),
+                        page: Box::new(page),
+                    }
+                }));
+            }
+        };
         let id = self
             .wire
             .register_read()
-            .map_err(|_| fail("Cannot reserve bounded history page"))?;
+            .map_err(|_| fail("Cannot reserve bounded history read"))?;
         command["id"] = id.to_value();
         pending.id = id;
-        pending.descriptor = Some(descriptor);
         self.saved_history = Some(pending);
         Ok(Step::Write(command))
     }

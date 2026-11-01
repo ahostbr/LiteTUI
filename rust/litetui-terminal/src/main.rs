@@ -112,7 +112,13 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         return true;
     }
     if app.viewport_too_small {
-        if key.code == KeyCode::Esc {
+        if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
+            if app.has_live_history() {
+                let chat = app.live.as_mut().expect("saved history");
+                chat.saved_history.close();
+                chat.browser.hide();
+                return false;
+            }
             if let Some(chat) = app.live.as_mut() {
                 chat.stop_confirm = false;
             }
@@ -620,6 +626,9 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_history() {
+        return;
+    }
     if app.has_live_browser() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -642,9 +651,6 @@ fn paste(app: &mut Demo, text: &str) {
         {
             app.live.as_mut().unwrap().commands.paste(text);
         }
-        return;
-    }
-    if app.has_live_history() {
         return;
     }
     if app.has_live_themes() {
@@ -1100,11 +1106,16 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
             }
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").saved_history.take_intent()
-                && let Err(error) = runtime.history(intent)
             {
-                app.live.as_mut().unwrap().saved_history.observe(
-                    litetui_terminal::history_view::Update::Rejected(error.to_string()),
-                )?;
+                let key = intent.key().clone();
+                if let Err(error) = runtime.history(intent) {
+                    app.live.as_mut().unwrap().saved_history.observe(
+                        litetui_terminal::history_view::Update::Rejected {
+                            key,
+                            reason: error.to_string(),
+                        },
+                    )?;
+                }
             }
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").themes.take_intent()
@@ -1136,8 +1147,10 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 let _ = runtime.quit();
             }
             if !quitting
-                && let Some(intent) = app.live.as_mut().expect("live").browser.take_intent()
-                && let Err(error) = runtime.browser(intent)
+                && let Err(error) = app.take_browser_intent().and_then(|intent| match intent {
+                    Some(intent) => runtime.browser(intent),
+                    None => Ok(()),
+                })
             {
                 view_failure = Some(error.to_string());
                 app.finish_live(view_failure.clone());
@@ -1265,10 +1278,15 @@ mod tests {
         let mut clipboard = TestClipboard::default();
         router.handle(&mut app, KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
         assert!(app.has_live_history());
-        assert!(matches!(
-            app.live.as_mut().unwrap().saved_history.take_intent(),
-            Some(Intent::Refresh { .. })
-        ));
+        let intent = app
+            .live
+            .as_mut()
+            .unwrap()
+            .saved_history
+            .take_intent()
+            .unwrap();
+        let key = intent.key().clone();
+        assert!(matches!(intent, Intent::Refresh { .. }));
         handle_key(
             &mut app,
             &mut router,
@@ -1286,7 +1304,10 @@ mod tests {
             .as_mut()
             .unwrap()
             .saved_history
-            .observe(Update::Rejected("late reply".into()))
+            .observe(Update::Rejected {
+                key,
+                reason: "late reply".into(),
+            })
             .unwrap();
         assert!(!app.has_live_history());
         let mut repeat = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
@@ -2766,6 +2787,138 @@ mod tests {
         assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
         assert_eq!(app.composer.text(), "preserved draft");
     }
+    #[test]
+    fn saved_inspection_retains_browser_selection_through_tiny_viewport_cancel() {
+        use litetui_terminal::{
+            conversation_browser::{Intent as BrowserIntent, Page, Update as BrowserUpdate},
+            history_view::{Intent, Target, Update},
+            live::Observation,
+        };
+        let current = "00000000-0000-4000-8000-000000000001";
+        let target = "00000000-0000-4000-8000-000000000002";
+        let mut app = Demo::live("custom".into(), "model".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("preserved draft");
+        let mut router = KeyRouter::default();
+        router.handle(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        let before_cursor = app.composer.before_cursor().to_owned();
+        let selected = app.composer.selected_text().to_owned();
+        plain(&mut app, &mut router, KeyCode::F(8));
+        assert_eq!(
+            app.take_browser_intent().unwrap(),
+            Some(BrowserIntent::Refresh)
+        );
+        let page = Page::parse(&serde_json::json!({
+            "session_id":current,"agent_id":current,"snapshot":"a".repeat(64),"offset":0,"total":2,
+            "entries":[
+                {"session_id":current,"agent_id":current,"agent_name":"Agent","title":"Current", "message_count":1,"updated_at":2,"current":true,"can_open":false,"reason":"Current"},
+                {"session_id":target,"agent_id":current,"agent_name":"Agent","title":"Saved target", "message_count":2,"updated_at":1,"current":false,"can_open":false,"reason":"Read only"}
+            ],"previous_cursor":null,"next_cursor":null}),7,current).unwrap();
+        app.observe_live(Observation::Browser(BrowserUpdate::Page(page)))
+            .unwrap();
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Down);
+        plain(&mut app, &mut router, KeyCode::Char('i'));
+        assert!(app.take_browser_intent().unwrap().is_none());
+        let first = app
+            .live
+            .as_mut()
+            .unwrap()
+            .saved_history
+            .take_intent()
+            .unwrap();
+        assert!(
+            matches!(&first, Intent::Inspect { revision: 7, session, key }
+            if session == target && key.target == (Target::Saved { session: target.into() }))
+        );
+        render_footer(&mut app);
+        // A suspended browser must not gain fresh keyboard/mouse authority from drawing.
+        app.live
+            .as_mut()
+            .unwrap()
+            .browser
+            .key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(app.take_browser_intent().unwrap().is_none());
+        let mut clipboard = TestClipboard {
+            read: Some("not pasted".into()),
+            ..Default::default()
+        };
+        handle_key(
+            &mut app,
+            &mut router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            &mut clipboard,
+        );
+        paste(&mut app, "not pasted");
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert_eq!(clipboard.reads, 0);
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
+        small.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        assert!(
+            app.has_live_history(),
+            "cancelled sent read must settle before input is released"
+        );
+        assert!(
+            app.has_live_browser(),
+            "underlying browser must survive inspection cancellation"
+        );
+        app.observe_live(Observation::SavedHistory(Update::Rejected {
+            key: first.key().clone(),
+            reason: "late reply".into(),
+        }))
+        .unwrap();
+        assert!(!app.has_live_history());
+        let mut repeat = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        router.handle(&mut app, repeat);
+        assert!(
+            app.has_live_browser(),
+            "late Escape repeat must not close the preserved browser"
+        );
+        render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Char('i'));
+        assert!(app.take_browser_intent().unwrap().is_none());
+        let second = app
+            .live
+            .as_mut()
+            .unwrap()
+            .saved_history
+            .take_intent()
+            .unwrap();
+        assert!(matches!(&second,Intent::Inspect { revision:7,session,.. } if session == target));
+        assert!(second.key().generation > first.key().generation);
+        assert_eq!(second.key().target, first.key().target);
+        assert_eq!(app.composer.text(), "preserved draft");
+        assert_eq!(app.composer.before_cursor(), before_cursor);
+        assert_eq!(app.composer.selected_text(), selected);
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+    }
+
+    #[test]
+    fn stale_history_response_cannot_replace_active_chat_notice_or_pending_target() {
+        use litetui_terminal::{history_view::Update, live::Observation};
+        let mut app = Demo::live("custom".into(), "model".into());
+        app.observe_live(Observation::Ready).unwrap();
+        let chat = app.live.as_mut().unwrap();
+        chat.saved_history.open();
+        let old = chat.saved_history.take_intent().unwrap().key().clone();
+        chat.saved_history.finish();
+        chat.saved_history.open();
+        let new = chat.saved_history.take_intent().unwrap().key().clone();
+        chat.notice = "Current active notice".into();
+        app.observe_live(Observation::SavedHistory(Update::Rejected {
+            key: old,
+            reason: "Stale read".into(),
+        }))
+        .unwrap();
+        let chat = app.live.as_ref().unwrap();
+        assert_eq!(chat.notice, "Current active notice");
+        assert_eq!(chat.saved_history.pending_key(), Some(&new));
+        assert!(chat.saved_history.waiting());
+    }
+
     #[test]
     fn conversation_title_editor_routes_clipboard_shift_and_cancel_without_changing_composer() {
         use litetui_terminal::{

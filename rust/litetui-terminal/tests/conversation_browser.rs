@@ -841,3 +841,124 @@ fn read_only_native_preview_stays_non_actionable_and_late_preview_never_reopens(
         .unwrap();
     assert!(!view.owns_input());
 }
+
+#[test]
+fn inspection_selection_accepts_every_offered_row_without_open_authority() {
+    let mut value = data(0, 4);
+    for (index, reason) in [
+        (1, "Saved history is read-only"),
+        (2, "Backend differs from active runtime"),
+    ] {
+        value["entries"][index]["can_open"] = json!(false);
+        value["entries"][index]["reason"] = json!(reason);
+    }
+    let page = Page::parse(&value, 19, CURRENT).unwrap();
+    for entry in &page.entries {
+        assert_eq!(page.inspection(19, &entry.session).unwrap(), entry);
+    }
+    for index in 1..=3 {
+        assert!(page.selection(19, &id(index)).is_err());
+    }
+    assert!(page.selection(19, &id(4)).is_ok());
+    assert!(page.inspection(18, &id(2)).is_err());
+    assert!(page.inspection(19, &id(99)).is_err());
+}
+#[test]
+fn visible_inspect_is_distinct_for_current_readonly_and_incompatible_rows() {
+    for (width, height) in [(36, 14), (80, 30)] {
+        for index in 0..3 {
+            let mut value = data(0, 3);
+            value["entries"][1]["can_open"] = json!(false);
+            value["entries"][1]["reason"] = json!("Saved history is read-only");
+            value["entries"][2]["can_open"] = json!(false);
+            value["entries"][2]["reason"] = json!("Backend incompatible with Open");
+            let mut v = view();
+            v.observe(Update::Page(Page::parse(&value, 23, CURRENT).unwrap()))
+                .unwrap();
+            v.key(key(KeyCode::Char('i')));
+            assert!(
+                v.take_intent().is_none(),
+                "inspection must first be visible"
+            );
+            assert!(draw(&mut v, width, height).contains("I inspect"));
+            for _ in 0..index {
+                v.key(key(KeyCode::Down));
+            }
+            let mut repeated = key(KeyCode::Char('i'));
+            repeated.kind = KeyEventKind::Repeat;
+            v.key(repeated);
+            assert!(v.take_intent().is_none());
+            v.key(key(KeyCode::Char('i')));
+            assert_eq!(
+                v.take_intent(),
+                Some(Intent::Inspect {
+                    revision: 23,
+                    session: id(index + 1)
+                })
+            );
+            let retained = v.page.clone();
+            v.suspend_for_inspection();
+            assert!(v.open && !v.waiting && v.page == retained);
+            v.key(key(KeyCode::Enter));
+            v.key(key(KeyCode::Char('i')));
+            assert!(
+                v.take_intent().is_none(),
+                "hidden browser actions are disarmed"
+            );
+            draw(&mut v, width, height);
+            v.key(key(KeyCode::Char('i')));
+            assert_eq!(
+                v.take_intent(),
+                Some(Intent::Inspect {
+                    revision: 23,
+                    session: id(index + 1)
+                })
+            );
+        }
+    }
+}
+#[test]
+fn inspection_preserves_page_selection_and_requires_fresh_open_confirmation_after_return() {
+    let mut v = view();
+    select_second(&mut v);
+    arm(&mut v);
+    assert!(draw(&mut v, 80, 30).contains("Open this conversation?"));
+    v.key(key(KeyCode::Char('i')));
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::Inspect {
+            revision: 7,
+            session: id(2)
+        })
+    );
+    let retained = v.page.clone();
+    v.suspend_for_inspection();
+    assert_eq!(v.page, retained);
+    assert!(v.open && !v.waiting);
+    draw(&mut v, 80, 30);
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    arm(&mut v);
+    v.key(key(KeyCode::Enter));
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::Open {
+            revision: 7,
+            session: id(2)
+        })
+    );
+    v.suspend_for_inspection();
+    assert!(v.waiting, "inspection suspension cannot retire a sent Open");
+}
+#[test]
+fn inspection_suspension_does_not_retire_other_sent_catalogue_reads() {
+    let mut v = View::default();
+    v.open();
+    assert_eq!(v.take_intent(), Some(Intent::Refresh));
+    v.suspend_for_inspection();
+    assert!(v.waiting && v.owns_input());
+    v.close();
+    assert!(v.owns_input());
+    v.observe(Update::Page(page())).unwrap();
+    assert!(!v.owns_input());
+}

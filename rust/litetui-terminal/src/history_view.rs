@@ -14,24 +14,65 @@ use ratatui::{
 use std::io;
 use unicode_segmentation::UnicodeSegmentation;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Target {
+    #[default]
+    Current,
+    Saved {
+        session: String,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadKey {
+    pub target: Target,
+    pub generation: u64,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
+    Inspect {
+        key: ReadKey,
+        revision: u64,
+        session: String,
+    },
     Refresh {
+        key: ReadKey,
         anchor: Anchor,
     },
     Page {
+        key: ReadKey,
         snapshot: String,
         position: PageRequest,
     },
 }
+impl Intent {
+    pub fn key(&self) -> &ReadKey {
+        match self {
+            Self::Inspect { key, .. } | Self::Refresh { key, .. } | Self::Page { key, .. } => key,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
     Loaded {
+        key: ReadKey,
         snapshot: Box<Snapshot>,
         page: Box<Page>,
     },
-    Page(Box<Page>),
-    Rejected(String),
+    Page {
+        key: ReadKey,
+        page: Box<Page>,
+    },
+    Rejected {
+        key: ReadKey,
+        reason: String,
+    },
+}
+impl Update {
+    pub fn key(&self) -> &ReadKey {
+        match self {
+            Self::Loaded { key, .. } | Self::Page { key, .. } | Self::Rejected { key, .. } => key,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Edge {
@@ -67,6 +108,9 @@ pub struct View {
     pub notice: String,
     open: bool,
     waiting: bool,
+    target: Target,
+    generation: u64,
+    pending: Option<ReadKey>,
     stale: bool,
     visible: bool,
     intent: Option<Intent>,
@@ -87,12 +131,69 @@ impl View {
         if self.waiting {
             return;
         }
+        self.select_target(Target::Current);
         self.open = true;
         self.refresh();
+    }
+    pub fn inspect(&mut self, revision: u64, session: String, current: bool) {
+        if self.waiting {
+            return;
+        }
+        self.select_target(if current {
+            Target::Current
+        } else {
+            Target::Saved {
+                session: session.clone(),
+            }
+        });
+        self.open = true;
+        let Some(key) = self.begin_read() else {
+            return;
+        };
+        self.intent = Some(Intent::Inspect {
+            key,
+            revision,
+            session,
+        });
+        self.edge = Edge::End;
+        self.notice = "Inspecting saved history; the current conversation stays unchanged.".into();
+    }
+    fn select_target(&mut self, target: Target) {
+        if self.target != target {
+            self.snapshot = None;
+            self.page = None;
+            self.scroll = 0;
+            self.max_scroll = 0;
+            self.anchor = None;
+            self.stale = false;
+        }
+        self.target = target;
+    }
+    fn begin_read(&mut self) -> Option<ReadKey> {
+        let Some(generation) = self.generation.checked_add(1) else {
+            self.notice =
+                "History read identity exhausted; reopen the conversation runtime.".into();
+            return None;
+        };
+        self.generation = generation;
+        let key = ReadKey {
+            target: self.target.clone(),
+            generation,
+        };
+        self.pending = Some(key.clone());
+        self.waiting = true;
+        self.hide();
+        Some(key)
+    }
+    pub fn pending_key(&self) -> Option<&ReadKey> {
+        self.pending.as_ref()
     }
     /// Startup/open may offer a preverified tail without replaying it as live output.
     pub fn install(&mut self, snapshot: Snapshot, page: Page, show: bool) -> io::Result<()> {
         verify_loaded(&snapshot, &page)?;
+        verify_target(&Target::Current, &snapshot)?;
+        self.target = Target::Current;
+        self.pending = None;
         self.snapshot = Some(snapshot);
         self.page = Some(page);
         self.open = show;
@@ -129,11 +230,16 @@ impl View {
         self.open = false;
         if self.intent.take().is_some() {
             self.waiting = false;
+            self.pending = None;
         }
         self.hide();
     }
     pub fn finish(&mut self) {
-        *self = Self::default();
+        let generation = self.generation;
+        *self = Self {
+            generation,
+            ..Self::default()
+        };
     }
     /// An admitted turn invalidates historical navigation but does not erase local outcomes.
     pub fn invalidate(&mut self) {
@@ -147,43 +253,59 @@ impl View {
         if self.waiting {
             return;
         }
-        self.waiting = true;
+        let Some(key) = self.begin_read() else {
+            return;
+        };
         self.intent = Some(Intent::Refresh {
+            key,
             anchor: Anchor::Tail,
         });
         self.edge = Edge::End;
         self.notice = "Reading saved history; no provider refresh or execution.".into();
-        self.hide();
     }
     pub fn observe(&mut self, update: Update) -> io::Result<()> {
+        // Late reads cannot clear a newer pending read, visibility, or retained page.
+        if self.pending.as_ref() != Some(update.key()) {
+            return Ok(());
+        }
+        match &update {
+            Update::Loaded { snapshot, page, .. } => {
+                verify_loaded(snapshot, page)?;
+                verify_target(&self.target, snapshot)?;
+            }
+            Update::Page { page, .. } => {
+                let snapshot = self
+                    .snapshot
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("History page arrived without descriptor"))?;
+                verify_loaded(snapshot, page)?;
+                verify_target(&self.target, snapshot)?;
+            }
+            Update::Rejected { .. } => {}
+        }
         self.waiting = false;
+        self.pending = None;
         self.intent = None;
         self.hide();
-        // A cancelled read settles the wire without reopening or replacing the reader.
+        // A cancelled read settles only its wire, without reopening the inspector.
         if !self.open {
             return Ok(());
         }
         match update {
-            Update::Loaded { snapshot, page } => {
-                verify_loaded(&snapshot, &page)?;
+            Update::Loaded { snapshot, page, .. } => {
                 self.snapshot = Some(*snapshot);
                 self.page = Some(*page);
                 self.stale = false;
                 self.anchor = None;
                 self.notice = "Saved display only; no historical action is active.".into();
             }
-            Update::Page(page) => {
-                let snapshot = self
-                    .snapshot
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("History page arrived without descriptor"))?;
-                verify_loaded(snapshot, &page)?;
+            Update::Page { page, .. } => {
                 self.page = Some(*page);
                 self.stale = false;
                 self.anchor = None;
                 self.notice = "Saved display only; no historical action is active.".into();
             }
-            Update::Rejected(reason) => {
+            Update::Rejected { reason, .. } => {
                 self.stale = true;
                 self.edge = Edge::Keep;
                 self.notice = format!("{reason} · F5 refresh; previous page kept.");
@@ -195,17 +317,23 @@ impl View {
         if self.waiting || self.stale {
             return;
         }
-        let Some(snapshot) = &self.snapshot else {
+        let Some(snapshot) = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.token.clone())
+        else {
+            return;
+        };
+        let Some(key) = self.begin_read() else {
             return;
         };
         self.intent = Some(Intent::Page {
-            snapshot: snapshot.token.clone(),
+            key,
+            snapshot,
             position,
         });
-        self.waiting = true;
         self.edge = edge;
         self.notice = "Loading saved history page…".into();
-        self.hide();
     }
     fn older(&mut self) {
         if let Some(cursor) = self.page.as_ref().and_then(|p| p.previous.clone()) {
@@ -502,6 +630,26 @@ impl View {
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }
+}
+fn verify_target(target: &Target, snapshot: &Snapshot) -> io::Result<()> {
+    let matches = match target {
+        Target::Current => {
+            snapshot.identity.scope == crate::history::Scope::Current
+                && snapshot.identity.session == snapshot.identity.from_session
+                && snapshot.identity.catalog.is_none()
+        }
+        Target::Saved { session } => {
+            snapshot.identity.scope == crate::history::Scope::Preview
+                && &snapshot.identity.session == session
+                && snapshot.identity.catalog.is_some()
+        }
+    };
+    if !matches {
+        return Err(io::Error::other(
+            "History view received another inspection target",
+        ));
+    }
+    Ok(())
 }
 fn verify_loaded(snapshot: &Snapshot, page: &Page) -> io::Result<()> {
     if snapshot.identity != page.identity

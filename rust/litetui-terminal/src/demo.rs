@@ -308,6 +308,43 @@ impl Demo {
             self.footer.leave();
         }
     }
+    /// Route inspection into its read-only view without entering Open review.
+    /// Keeping the browser beneath it preserves its exact page and selection.
+    pub fn take_browser_intent(
+        &mut self,
+    ) -> std::io::Result<Option<crate::conversation_browser::Intent>> {
+        use crate::conversation_browser::{Intent, Update};
+        let Some(chat) = self.live.as_mut() else {
+            return Ok(None);
+        };
+        let Some(intent) = chat.browser.take_intent() else {
+            return Ok(None);
+        };
+        let Intent::Inspect { revision, session } = &intent else {
+            return Ok(Some(intent));
+        };
+        let selected = chat
+            .browser
+            .page
+            .as_ref()
+            .ok_or_else(|| {
+                std::io::Error::other("Refresh the conversation browser before inspecting")
+            })
+            .and_then(|page| page.inspection(*revision, session))
+            .cloned();
+        match selected {
+            Ok(row) => {
+                chat.browser.suspend_for_inspection();
+                chat.saved_history
+                    .inspect(*revision, session.clone(), row.current);
+                self.themes_open = false;
+                self.completion.dismiss();
+                self.footer.leave();
+            }
+            Err(error) => chat.browser.observe(Update::Rejected(error.to_string()))?,
+        }
+        Ok(None)
+    }
     pub fn has_live_themes(&self) -> bool {
         self.live
             .as_ref()

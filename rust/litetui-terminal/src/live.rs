@@ -1222,6 +1222,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Input::History(intent) => {
+                        let key = intent.key().clone();
                         let command = if turn.can_engine() {
                             management.request_history(intent)
                         } else {
@@ -1240,7 +1241,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 deadline = Some(Instant::now() + options.timeout);
                             }
                             Err(error) => frontend.observe(Observation::SavedHistory(
-                                crate::history_view::Update::Rejected(error.to_string()),
+                                crate::history_view::Update::Rejected {
+                                    key,
+                                    reason: error.to_string(),
+                                },
                             ))?,
                         }
                     }

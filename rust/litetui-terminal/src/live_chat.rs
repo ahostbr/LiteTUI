@@ -338,8 +338,10 @@ impl Chat {
         }
         match observation {
             Observation::SavedHistory(update) => {
-                self.saved_history.observe(update)?;
-                self.notice = self.saved_history.notice.clone();
+                if self.saved_history.pending_key() == Some(update.key()) {
+                    self.saved_history.observe(update)?;
+                    self.notice = self.saved_history.notice.clone();
+                }
             }
             Observation::EngineAdmission(admission) => {
                 let first = self.engine_admission.is_none() && !self.ready;

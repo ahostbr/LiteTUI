@@ -1130,12 +1130,14 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .backend_controls
             .draw(frame, area, &t);
     }
-    if app.has_live_browser() {
+    if app.has_live_browser() && !app.has_live_history() {
         app.live
             .as_mut()
             .expect("conversation browser")
             .browser
             .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.browser.hide();
     }
     if app.has_live_controls() {
         app.live

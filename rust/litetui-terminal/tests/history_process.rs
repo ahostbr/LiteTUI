@@ -4,8 +4,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use litetui_terminal::{
     conversation_browser::Update as BrowserUpdate,
     demo::Demo,
-    history::{Anchor, PageRequest},
-    history_view::Intent,
     live::{Interactive, Observation, Options},
     ui,
 };
@@ -233,20 +231,9 @@ fn bounded_saved_history_walks_preserve_live_rows_draft_and_full_context() {
             app.open_history();
             send(runtime, &mut app)?;
             wait_history(runtime, &mut app)?;
-            let snapshot = app
-                .live
-                .as_ref()
-                .unwrap()
-                .saved_history
-                .snapshot
-                .as_ref()
-                .unwrap()
-                .token
-                .clone();
-            runtime.history(Intent::Page {
-                snapshot,
-                position: PageRequest::Anchor(Anchor::Head),
-            })?;
+            draw(&mut app, 100, 32);
+            key(&mut app, KeyCode::Home);
+            send(runtime, &mut app)?;
             wait_history(runtime, &mut app)?;
             let mut blocks = std::collections::HashSet::new();
             let mut pages = 0;

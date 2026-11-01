@@ -242,7 +242,7 @@ fn compact_open_binds_preview_then_requires_settled_current_descriptor() {
 mod viewer {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use litetui_terminal::history_view::{Intent, Update, View};
+    use litetui_terminal::history_view::{Intent, ReadKey, Target, Update, View};
     use ratatui::{Terminal, backend::TestBackend};
     fn draw(v: &mut View, w: u16, h: u16) -> String {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -261,13 +261,14 @@ mod viewer {
     fn loaded() -> View {
         let mut v = View::default();
         v.open();
-        v.take_intent();
+        let key = v.take_intent().unwrap().key().clone();
         let p = Page::parse(
             &page(vec![fragment(1, "saved answer", 0, 12)], false, true),
             &snapshot(),
         )
         .unwrap();
         v.observe(Update::Loaded {
+            key,
             snapshot: Box::new(snapshot()),
             page: Box::new(p),
         })
@@ -290,15 +291,25 @@ mod viewer {
         let mut v = loaded();
         draw(&mut v, 80, 24);
         key(&mut v, KeyCode::Left);
-        v.take_intent();
+        let pending = v.take_intent().unwrap().key().clone();
         key(&mut v, KeyCode::Esc);
         assert!(v.owns_input());
-        v.observe(Update::Rejected("late".into())).unwrap();
+        v.observe(Update::Rejected {
+            key: pending,
+            reason: "late".into(),
+        })
+        .unwrap();
         assert!(!v.owns_input());
         let mut v = loaded();
         let original = v.page.clone();
-        v.observe(Update::Rejected("source snapshot changed".into()))
-            .unwrap();
+        draw(&mut v, 80, 24);
+        key(&mut v, KeyCode::Left);
+        let pending = v.take_intent().unwrap().key().clone();
+        v.observe(Update::Rejected {
+            key: pending,
+            reason: "source snapshot changed".into(),
+        })
+        .unwrap();
         assert_eq!(v.page, original);
         assert!(v.is_stale());
         draw(&mut v, 80, 24);
@@ -306,6 +317,192 @@ mod viewer {
         assert!(v.take_intent().is_none());
         key(&mut v, KeyCode::F(5));
         assert!(matches!(v.take_intent(), Some(Intent::Refresh { .. })));
+    }
+    fn rejected(key: ReadKey, reason: &str) -> Update {
+        Update::Rejected {
+            key,
+            reason: reason.into(),
+        }
+    }
+    fn saved_loaded(key: ReadKey, read_only: bool) -> Update {
+        let mut identity = id();
+        identity.scope = Scope::Preview;
+        identity.session = TARGET.into();
+        identity.catalog = Some("f".repeat(64));
+        let mut raw = descriptor();
+        raw["session_id"] = json!(TARGET);
+        raw["scope"] = json!("preview");
+        raw["catalog_snapshot"] = json!("f".repeat(64));
+        raw["read_only"] = json!(read_only);
+        raw["open_effects"] =
+            json!({"lifecycle_hooks":true,"provider_cleanup":true,"materialize":false});
+        raw["open_action_id"] = json!(AGENT);
+        let snapshot = Snapshot::parse(&raw, &identity).unwrap();
+        let mut raw_page = page(vec![fragment(1, "saved answer", 0, 12)], false, true);
+        raw_page["session_id"] = json!(TARGET);
+        raw_page["scope"] = json!("preview");
+        raw_page["catalog_snapshot"] = json!("f".repeat(64));
+        let page = Page::parse(&raw_page, &snapshot).unwrap();
+        Update::Loaded {
+            key,
+            snapshot: Box::new(snapshot),
+            page: Box::new(page),
+        }
+    }
+    #[test]
+    fn saved_inspection_binds_revision_session_and_read_only_display_without_open_authority() {
+        for read_only in [false, true] {
+            let mut view = View::default();
+            view.inspect(17, TARGET.into(), false);
+            let intent = view.take_intent().unwrap();
+            let pending = intent.key().clone();
+            assert_eq!(
+                intent,
+                Intent::Inspect {
+                    key: pending.clone(),
+                    revision: 17,
+                    session: TARGET.into()
+                }
+            );
+            assert_eq!(
+                pending.target,
+                Target::Saved {
+                    session: TARGET.into()
+                }
+            );
+            view.observe(saved_loaded(pending, read_only)).unwrap();
+            let rendered = draw(&mut view, 80, 24);
+            assert!(rendered.contains("saved answer"));
+            assert!(!rendered.contains("Enter: open"));
+            key(&mut view, KeyCode::Enter);
+            assert!(view.take_intent().is_none());
+            key(&mut view, KeyCode::F(5));
+            let refresh = view.take_intent().unwrap();
+            assert!(matches!(refresh, Intent::Refresh { .. }));
+            assert_eq!(
+                refresh.key().target,
+                Target::Saved {
+                    session: TARGET.into()
+                }
+            );
+        }
+    }
+    #[test]
+    fn generations_survive_finish_and_stale_updates_do_not_retire_newer_reads() {
+        let mut view = View::default();
+        view.inspect(3, TARGET.into(), false);
+        let old = view.take_intent().unwrap().key().clone();
+        view.finish();
+        view.inspect(4, TARGET.into(), false);
+        let next = view.take_intent().unwrap().key().clone();
+        assert!(next.generation > old.generation);
+        let notice = view.notice.clone();
+        view.observe(rejected(old.clone(), "old refusal")).unwrap();
+        view.observe(saved_loaded(old, false)).unwrap();
+        assert!(view.waiting());
+        assert_eq!(view.pending_key(), Some(&next));
+        assert_eq!(view.notice, notice);
+        assert!(view.page.is_none());
+        let mut wrong_target = next.clone();
+        wrong_target.target = Target::Current;
+        view.observe(rejected(wrong_target, "wrong target"))
+            .unwrap();
+        assert_eq!(view.pending_key(), Some(&next));
+        view.observe(saved_loaded(next.clone(), true)).unwrap();
+        assert!(!view.waiting());
+        let retained = view.page.clone();
+        view.observe(rejected(next, "duplicate refusal")).unwrap();
+        assert_eq!(view.page, retained);
+        assert!(!view.is_stale());
+    }
+    #[test]
+    fn current_inspect_and_f6_after_saved_inspection_have_distinct_monotonic_reads() {
+        let mut view = View::default();
+        view.inspect(3, SESSION.into(), true);
+        let initial = view.take_intent().unwrap();
+        assert_eq!(initial.key().target, Target::Current);
+        assert!(
+            matches!(initial, Intent::Inspect { revision: 3, ref session, .. } if session == SESSION)
+        );
+        view.finish();
+        view.inspect(4, TARGET.into(), false);
+        let saved = view.take_intent().unwrap().key().clone();
+        view.observe(saved_loaded(saved.clone(), false)).unwrap();
+        view.close();
+        view.open();
+        let current = view.take_intent().unwrap();
+        assert_eq!(current.key().target, Target::Current);
+        assert!(current.key().generation > saved.generation);
+        assert!(view.page.is_none() && view.snapshot.is_none());
+        view.observe(saved_loaded(saved, false)).unwrap();
+        assert!(view.page.is_none() && view.waiting());
+    }
+    #[test]
+    fn close_before_send_retires_only_unsent_key_and_close_after_send_holds_input() {
+        let mut view = View::default();
+        view.inspect(1, TARGET.into(), false);
+        let unsent = view.pending_key().unwrap().clone();
+        view.close();
+        assert!(!view.owns_input() && view.pending_key().is_none());
+        view.inspect(2, TARGET.into(), false);
+        let sent = view.take_intent().unwrap().key().clone();
+        view.close();
+        view.observe(rejected(unsent, "late unsent")).unwrap();
+        assert!(view.owns_input() && !view.is_open());
+        assert_eq!(view.pending_key(), Some(&sent));
+        view.observe(saved_loaded(sent, true)).unwrap();
+        assert!(!view.owns_input() && view.page.is_none());
+    }
+    #[test]
+    fn matching_key_cannot_adopt_a_different_saved_target() {
+        let mut view = View::default();
+        view.inspect(1, TARGET.into(), false);
+        let pending = view.take_intent().unwrap().key().clone();
+        let mut wrong = saved_loaded(pending.clone(), false);
+        if let Update::Loaded { snapshot, page, .. } = &mut wrong {
+            snapshot.identity.session = SESSION.into();
+            page.identity.session = SESSION.into();
+        }
+        assert!(view.observe(wrong).is_err());
+        assert_eq!(view.pending_key(), Some(&pending));
+        assert!(view.page.is_none() && view.waiting());
+    }
+    #[test]
+    fn each_page_and_refresh_has_one_new_key_and_repeated_keys_cannot_release_input() {
+        let mut view = loaded();
+        draw(&mut view, 80, 24);
+        key(&mut view, KeyCode::Left);
+        let page_read = view.take_intent().unwrap();
+        assert!(matches!(page_read, Intent::Page { .. }));
+        let page_key = page_read.key().clone();
+        draw(&mut view, 80, 24);
+        for _ in 0..3 {
+            key(&mut view, KeyCode::F(5));
+        }
+        assert!(view.take_intent().is_none());
+        assert_eq!(view.pending_key(), Some(&page_key));
+        view.observe(rejected(page_key.clone(), "source changed"))
+            .unwrap();
+        let retained = view.page.clone();
+        draw(&mut view, 80, 24);
+        key(&mut view, KeyCode::F(5));
+        let refresh = view.take_intent().unwrap();
+        assert!(matches!(refresh, Intent::Refresh { .. }));
+        assert!(refresh.key().generation > page_key.generation);
+        view.observe(Update::Page {
+            key: page_key,
+            page: Box::new(retained.clone().unwrap()),
+        })
+        .unwrap();
+        assert_eq!(view.pending_key(), Some(refresh.key()));
+        assert!(view.waiting() && view.is_stale());
+        assert_eq!(view.page, retained);
+        assert!(draw(&mut view, 36, 14).contains("Esc"));
+        key(&mut view, KeyCode::Esc);
+        assert!(view.owns_input() && !view.is_open());
+        view.observe(rejected(refresh.key().clone(), "settled after close"))
+            .unwrap();
+        assert!(!view.owns_input());
     }
     #[test]
     fn compact_resize_retains_visible_modal_escape_and_inert_controls() {

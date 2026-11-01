@@ -237,9 +237,20 @@ def _unchanged(app, session_id, before):
 def page(app, cmd):
     """Stat the bounded catalog, replay only this page, and never write/repair."""
     current = valid_id(cmd.get("session_id"))
+    located = None
+    if "locate_session_id" in cmd:
+        if "cursor" in cmd:
+            raise ValueError("Conversation locator cannot be combined with a cursor field")
+        located = valid_id(cmd["locate_session_id"])
     before = _catalog(app, current)
     _, _, authority, records, snapshot = before
-    offset = _offset(cmd.get("cursor"), current, authority.agent_id, snapshot, len(records))
+    if located is None:
+        offset = _offset(cmd.get("cursor"), current, authority.agent_id, snapshot, len(records))
+    else:
+        index = next((index for index, record in enumerate(records) if record.session_id == located), None)
+        if index is None:
+            raise ValueError("Conversation target is absent from the owned catalog")
+        offset = index // PAGE_SIZE * PAGE_SIZE
     rows = []
     remaining = MAX_PAGE_READ
     for record in records[offset:offset + PAGE_SIZE]:
@@ -252,7 +263,13 @@ def page(app, cmd):
               "previous_cursor": _cursor(current, authority.agent_id, snapshot, max(0, offset - PAGE_SIZE))
               if offset else None,
               "next_cursor": _cursor(current, authority.agent_id, snapshot, end) if end < len(records) else None}
-    if len(json.dumps(result, allow_nan=False).encode("utf-8")) > MAX_RESPONSE:
+    response = result
+    if located is not None:
+        result["located_session_id"] = located
+        response = {"type": "response", "ok": True, "result": result}
+        if cmd.get("id") is not None:
+            response["id"] = cmd["id"]
+    if len(json.dumps(response, allow_nan=False).encode("utf-8")) > MAX_RESPONSE:
         raise ValueError("Conversation page exceeds the response byte budget")
     return result
 
