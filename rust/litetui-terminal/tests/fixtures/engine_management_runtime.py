@@ -293,8 +293,11 @@ async def serve(app):
                             await asyncio.sleep(0.3)
                         if action_finished and case == "policy-drift" and command["type"] == "gui.state":
                             result["tool_policy"]["tools_enabled"] = not result["tool_policy"]["tools_enabled"]
-                        if action_finished and case == "history-drift" and command["type"] == "gui.conversations.read":
-                            result["messages"].append({"role": "user", "content": "Controlled changed history"})
+                        if action_finished and case == "history-drift" and command["type"] in {"gui.conversations.read", "gui.history.native_snapshot"}:
+                            if "context_sha256" in result:
+                                result["context_sha256"] = "0" * 64
+                            else:
+                                result["messages"].append({"role": "user", "content": "Controlled changed history"})
                         if case == "readback-drift" and command["type"] == "gui.engine.native_readback":
                             result["generation"] += 1
                         return result

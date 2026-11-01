@@ -1570,6 +1570,10 @@ class LiteTUI(App):
         owner_notice=None,
         **app_kwargs,
     ):
+        if launch_options is not None:
+            launch_options.validate_history_projection()
+            if launch_options.history_projection_version is not None and (rpc is not True or hold_restored_input is not True):
+                raise ValueError('History projection requires RPC and restored-input holds')
         if agent_session is None:
             from litetui.agent_store import StoreError
             raise StoreError('Mutable LiteTUI startup requires an owned agent session; launch via litetui CLI')
@@ -4263,14 +4267,15 @@ class LiteTUI(App):
             return False
         return True
 
-    def _resume(self, path: Path, *, startup: bool = False) -> bool:
-        from litetui import native_engine
+    def _resume(self, path: Path, *, startup: bool = False, _native_capture=None) -> bool:
+        from litetui import native_engine, native_history
         from litetui.backend_transition import submission_refusal
+        guarded = native_history.guarded_capture(self, _native_capture, path)
 
         if native_engine.state(self) is not None:
             self._system("Reopen explicitly to change this engine session")
             return False
-        if reason := submission_refusal(self, initializing=startup and not getattr(self, "_rpc_ready_sent", False)):
+        if not guarded and (reason := submission_refusal(self, initializing=startup and not getattr(self, "_rpc_ready_sent", False))):
             self._system(reason)
             return False
         if getattr(self, '_agent_session', None) is not None:
@@ -4282,7 +4287,11 @@ class LiteTUI(App):
                 self._system(str(exc))
                 return False
         try:
-            meta, msgs = ConversationRepository.read(path)
+            if native_history.enabled(self):
+                captured = _native_capture if guarded else native_history.capture_file(path)
+                meta, msgs = captured.meta, captured.messages
+            else:
+                meta, msgs = ConversationRepository.read(path)
         except OSError as e:
             # The file name stays (it IS the action); the raw OS error goes to
             # the sink, never into chat.
@@ -4325,13 +4334,14 @@ class LiteTUI(App):
             self._system(f"Conversation is read-only: {exc}")
             return False
         previous = getattr(self, "_backend", None)
-        if getattr(previous, "owns_native_turns", False):
+        if not guarded and getattr(previous, "owns_native_turns", False):
             bridge = getattr(previous, "_claude_tools", None)
             if bridge:
                 bridge.stop()
             from litetui.claude_backend import close_native
             close_native(self, previous)
-        hook_host.leave_conversation(self)
+        if not guarded:
+            hook_host.leave_conversation(self)
         self.conversation = msgs
         self._prompt_store_identity = saved_identity
         receipt = meta.get("store_injected")
@@ -4345,7 +4355,9 @@ class LiteTUI(App):
         self.convo_path = path
         self.convo_dir = path.parent
         self.convo_id = meta.get("id") or path.parent.name
-        self._bind_task_store()
+        task_store_bound = self._bind_task_store()
+        if guarded and task_store_bound is not True:
+            raise ValueError("Resumed conversation task store did not bind cleanly")
         saved_name = meta.get("agent_name")
         saved_name = saved_name.strip() if isinstance(saved_name, str) else ""
         owned = getattr(self, '_agent_session', None)
@@ -4411,7 +4423,7 @@ class LiteTUI(App):
         self._startup_history_path = path
         self._resume_connection_error = "Resumed provider is connecting; retry when connected."
         self._resume_connect_worker = None
-        if not startup and not self._resume_backend_error:
+        if not startup and not guarded and not self._resume_backend_error:
             # Reuse the connection lifecycle for EVERY provider. Native history
             # and queued input wait until the destination has connected.
             self._resume_connect_worker = self.connect()
@@ -4423,7 +4435,10 @@ class LiteTUI(App):
         backend = self.backend
         try:
             changed = await model_transport.for_app(self).refresh_history()
-        except (model_transport.ProviderError, OSError, TimeoutError):
+        except (model_transport.ProviderError, OSError, TimeoutError) as exc:
+            from litetui.native_history import connection_reader
+            if connection_reader(self):
+                self._native_history_open_history_error = "Provider history refresh failed: " + type(exc).__name__
             if self.conversation is conversation and self.backend is backend:
                 self._system("Native history could not be refreshed; saved activity is still available.")
             return
@@ -4432,6 +4447,11 @@ class LiteTUI(App):
             self._render_resumed(path, preserve_view=True)
 
     def _render_resumed(self, path: Path, *, preserve_view: bool = False) -> None:
+        from litetui import native_history
+        if native_history.enabled(self):
+            # Native saved history has its own bounded presentation. Python
+            # retains the full model context and canonical resume lifecycle.
+            return
         from litetui.codex_trace import capture_view, restore_view
 
         view = capture_view(self) if preserve_view else None
@@ -5574,6 +5594,8 @@ class LiteTUI(App):
             rows = await backend.list_models()
             if self.backend is not backend or self.conversation is not conversation:
                 return
+            if getattr(self, "_native_history_open_capture", None) is not None:
+                require_open(self)
             self._gui_connection_success = True
             SKIP = {"embed", "embedding"}
             rows = [
@@ -5651,7 +5673,12 @@ class LiteTUI(App):
                         f"{self.model_id!r}. (/settings to change it.)"
                     )
                 self._update_header()
-                self._fetch_ctx_window()
+                context_worker = self._fetch_ctx_window()
+                from litetui import native_history
+                if native_history.track_connection_worker(self, context_worker):
+                    from litetui.conversation_transition import _joined
+                    await _joined(context_worker.wait())
+                    require_open(self)
                 # 🔴 DO NOT auto-apply the context length here. This used to call
                 # _apply_context_length() on EVERY connect, which shells out to
                 # `lms load <model> --context-length N`. Every app boot — including
@@ -5668,6 +5695,8 @@ class LiteTUI(App):
                     seat_authority.warn_if_below_floor(self)
                 if resume_path is not None and hasattr(self.backend, "app_server"):
                     self._native_history_worker = self._refresh_native_history(resume_path)
+                    from litetui.native_history import track_history_worker
+                    track_history_worker(self, self._native_history_worker)
                 self._startup_history_path = None
                 if self._pending_input and (resume_path is not None or hasattr(self.backend, "app_server")):
                     self.call_after_refresh(self._flush_pending_input)
@@ -5682,7 +5711,8 @@ class LiteTUI(App):
                 if len(self.available_models) > 1:
                     self._system(f"{len(self.available_models)} models available — /models to list, /model <n> to switch")
                 if (self.backend.name == "lmstudio" and self._cli_thinking_level is None
-                        and not getattr(self, "_backend_transition_inflight", False)):
+                        and not getattr(self, "_backend_transition_inflight", False)
+                        and not native_history.enabled(self)):
                     self._probe_thinking()
                 self._rpc_emit_model_state()
             else:
@@ -5924,6 +5954,7 @@ class LiteTUI(App):
             'context_source': 'user_declared' if self.backend.name == 'custom' else 'backend_reported',
             "protocol_version": 1,
             "management_protocols": [1],
+            "history_projection_version": getattr(self._launch_options, "history_projection_version", None),
             "capabilities": list(OPERATIONS),
             "version": __version__,
             **self._rpc_model_state(),

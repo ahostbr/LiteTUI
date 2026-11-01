@@ -33,6 +33,7 @@ async def main():
     from litetui import gui_rpc, rpc, seat_authority
     from litetui.claude_tools import ClaudeTools
     from litetui.event_origin import EventOrigin
+    from litetui.launch_options import LaunchOptions
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("Provider/network invocation forbidden in authority fixture")
@@ -45,8 +46,13 @@ async def main():
             patch.object(httpx.Client, "send", side_effect=forbidden), \
             patch.object(httpx.AsyncClient, "send", side_effect=forbidden):
         try:
+            # This fixture bypasses CLI construction but preserves the actual
+            # native launch negotiation before the owned app captures history.
+            projection = int(sys.argv[sys.argv.index("--history-projection-version") + 1])
             app = owned_app(rpc=True, tool_profile="strict", initial_backend="claude",
-                            initial_model="claude-sonnet-5-5")
+                            initial_model="claude-sonnet-5-5",
+                            hold_restored_input="--hold-restored-input" in sys.argv,
+                            launch_options=LaunchOptions(history_projection_version=projection))
             # This fixture bypasses on_mount/provider readiness. Select only its
             # controlled catalog entry before observing the real state read.
             app.model_id = "claude-sonnet-5-5"
@@ -63,6 +69,7 @@ async def main():
             app.store.convo_dir.mkdir()
             app.store.pending = False
             app.conversation = []
+            app.store.record_meta(app.model_id)
             app._paint_now = lambda: None
             if MODE.startswith("controls"):
                 app.available_models = ["claude-sonnet-5-5", "claude-opus-5"]
@@ -91,7 +98,8 @@ async def main():
                       "tools_enabled": app.tools_enabled,"mcp_enabled": app.settings.mcp_enabled,
                       "tool_profile": app._active_tool_profile,"tool_profile_requested": app._cli_tool_profile,
                       "approval_route": seat_authority.confirm_route(app),"cwd": os.getcwd(),
-                      "management_protocols": [1],"capabilities": list(gui_rpc.OPERATIONS)})
+                      "management_protocols": [1],"capabilities": list(gui_rpc.OPERATIONS),
+                      "history_projection_version": app._launch_options.history_projection_version})
             target = Path.cwd() / "controlled-write.txt"
             turn = 0
 

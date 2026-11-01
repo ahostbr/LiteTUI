@@ -777,3 +777,67 @@ fn preview_must_echo_the_exact_selection_and_source_authority() {
         assert!(!client.ready());
     }
 }
+
+fn native_preview(read_only: bool) -> Box<litetui_terminal::history::Snapshot> {
+    use litetui_terminal::history::{Identity, Scope, Snapshot};
+    let identity = Identity {
+        from_session: CURRENT.into(),
+        session: id(2),
+        agent: AGENT.into(),
+        backend: "custom".into(),
+        model: "test".into(),
+        scope: Scope::Preview,
+        catalog: Some("a".repeat(64)),
+    };
+    Box::new(Snapshot::parse(&json!({"version":1,"kind":"history_snapshot","projection_version":1,"scope":"preview","from_session_id":CURRENT,"session_id":id(2),"agent_id":AGENT,"backend":"custom","model":"test","catalog_snapshot":"a".repeat(64),"snapshot":"b".repeat(64),"transcript_revision":"c".repeat(64),"context_sha256":"d".repeat(64),"replay_sha256":"e".repeat(64),"pending":false,"materialized":true,"title":"Reviewed saved conversation","read_only":read_only,"open_effects":{"lifecycle_hooks":true,"provider_cleanup":true,"materialize":false},"open_action_id":AGENT,"fresh_system_context":false,"counts":{"messages":1203,"non_system":1202,"system":1,"blocks":1202}}),&identity).unwrap())
+}
+fn requested_native_preview() -> View {
+    let mut view = view();
+    select_second(&mut view);
+    arm(&mut view);
+    view.key(key(KeyCode::Enter));
+    assert!(matches!(view.take_intent(), Some(Intent::Open { .. })));
+    view
+}
+#[test]
+fn native_open_requires_new_visible_review_after_preview_and_never_auto_opens() {
+    let mut view = requested_native_preview();
+    view.observe(Update::Preview(native_preview(false)))
+        .unwrap();
+    view.key(key(KeyCode::Enter));
+    assert!(view.take_intent().is_none());
+    for _ in 0..20 {
+        let screen = draw(&mut view, 42, 18);
+        if screen.contains("Enter: open once") {
+            view.key(key(KeyCode::Enter));
+            assert!(matches!(
+                view.take_intent(),
+                Some(Intent::ConfirmOpen { .. })
+            ));
+            return;
+        }
+        view.key(key(KeyCode::PageDown));
+    }
+    panic!("Review never became fully visible");
+}
+#[test]
+fn read_only_native_preview_stays_non_actionable_and_late_preview_never_reopens() {
+    let mut view = requested_native_preview();
+    view.observe(Update::Preview(native_preview(true))).unwrap();
+    for _ in 0..10 {
+        let screen = draw(&mut view, 80, 30);
+        assert!(screen.contains("read-only"));
+        assert!(!screen.contains("Enter: open once"));
+        view.key(key(KeyCode::Enter));
+        assert!(view.take_intent().is_none());
+        view.key(key(KeyCode::PageDown));
+    }
+    view.key(key(KeyCode::Esc));
+    assert!(view.open);
+    let mut view = requested_native_preview();
+    view.key(key(KeyCode::Esc));
+    assert!(view.owns_input());
+    view.observe(Update::Preview(native_preview(false)))
+        .unwrap();
+    assert!(!view.owns_input());
+}

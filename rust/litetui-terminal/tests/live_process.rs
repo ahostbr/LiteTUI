@@ -22,20 +22,30 @@ identified = {'turn_start','turn_refused','turn_end','text_delta','reasoning_del
               'native_activity','native_usage','native_event','generic_tool_requested','generic_tool_returned'}
 def emit(value):
     global execution
+    if mode.startswith('history_wire_') and isinstance(value.get('result'), dict) and value['result'].get('kind') == 'history_snapshot':
+        if mode == 'history_wire_escaped':
+            value['padding'] = '\u96ea' * 200000
+        wire = json.dumps(value).encode('utf-8')
+        if mode != 'history_wire_escaped':
+            target = 1048576 + (mode == 'history_wire_over')
+            wire += b' ' * (target - len(wire))
+        sys.stdout.buffer.write(wire + (b'\r\n' if mode == 'history_wire_crlf' else b'\n'))
+        sys.stdout.buffer.flush()
+        return
     print(json.dumps(value), flush=True)
     if gui_enabled and value['type'] not in {'response','error'}:
         if value['type'] in {'turn_start', 'turn_refused'}:
             execution = str(uuid.uuid4())
         envelope = dict(type='gui.event',event_id=str(uuid.uuid4()),
-                        session_id='controlled-conversation',operation_id=operation,event=value)
+                        session_id='12345678-1234-4123-8123-123456789abc',operation_id=operation,event=value)
         if value['type'] in identified:
             envelope.update(execution_id=execution,hook_id=None,source='rpc')
         if mode == 'management_wrong_origin' and value['type'] == 'text_delta':
             envelope['operation_id'] = 'unrelated-prompt'
         print(json.dumps(envelope), flush=True)
 ready = dict(type='ready', protocol_version=1, launch_status='ready', backend='claude', model='claude-sonnet-5-5')
-ready.update(conversation_id='controlled-conversation', thinking_level='low', context_length=200000,
-             management_protocols=[1], capabilities=['hello','state'])
+ready.update(conversation_id='12345678-1234-4123-8123-123456789abc', thinking_level='low', context_length=200000,
+             management_protocols=[1], capabilities=['hello','state'], history_projection_version=1)
 settings = json.loads((root/'settings.json').read_text())
 for marker in ['LITETUI_OWNER', 'LITETUI_SPAWN_IDENTITY', 'LITEHARNESS_SPAWNED_BY']:
     assert marker not in os.environ, marker
@@ -45,6 +55,10 @@ ready.update(tools_enabled=settings['tools_enabled'], mcp_enabled=settings['mcp_
              approval_route='host' if os.environ.get('LITETUI_APPROVAL_HOST') == '1' else 'refuse',
              cwd=os.getcwd())
 
+if mode == 'history_missing':
+    ready.pop('history_projection_version')
+if mode == 'history_wrong':
+    ready['history_projection_version'] = 2
 if mode.startswith('policy_'):
     field = mode.removeprefix('policy_')
     ready[field] = {'tools_enabled':False,'tool_profile':'autonomous',
@@ -82,12 +96,13 @@ for line in sys.stdin:
         gui_enabled = True
         emit(dict(type='response',id=command['id'],ok=True,
                   result=dict(protocol_version=2 if mode == 'management_bad_version' else 1,
-                              data_version=1,capabilities=['hello','state'],operations=['gui.hello','gui.state'])))
+                              data_version=1,capabilities=['hello','state'],operations=['gui.hello','gui.state','gui.history.native_snapshot','gui.history.native_page','gui.conversations.native_open'])))
         continue
     if command['type'] == 'gui.state':
-        state = dict(session_id='controlled-conversation',busy=False,mode='normal',
+        state = dict(session_id='12345678-1234-4123-8123-123456789abc',busy=False,mode='normal',
                      tool_profile=profile,model=dict(model=ready['model'],backend=ready['backend']),
-                     ownership=dict(writable=True,data_version=1),schedules_paused=False,
+                     ownership=dict(writable=True,data_version=1,agent_id='22345678-1234-4123-8123-123456789abc'),schedules_paused=False,
+                     restored_input=dict(policy='hold',held=0),
                      conversations=[],jobs=[],tasks=[],active_work=[],pending_approvals=[],
                      pending_questions=[],pending_model_loads=[],settings={'private_fixture':'do-not-display'})
         if mode == 'management_state_busy':
@@ -97,6 +112,19 @@ for line in sys.stdin:
         if mode == 'management_state_malformed':
             state['ownership']['writable'] = 'true'
         emit(dict(type='response',id=command['id'],ok=True,result=state))
+        continue
+    if command['type'] in {'gui.history.native_snapshot', 'gui.history.native_page'}:
+        result = dict(version=1,projection_version=1,scope='current',
+                      from_session_id=ready['conversation_id'],session_id=ready['conversation_id'],
+                      agent_id='22345678-1234-4123-8123-123456789abc',backend=ready['backend'],model=ready['model'],
+                      catalog_snapshot=None,snapshot='a'*64,context_sha256='b'*64,replay_sha256='c'*64,
+                      counts=dict(messages=0,non_system=0,system=0,blocks=0))
+        if command['type'] == 'gui.history.native_snapshot':
+            result.update(kind='history_snapshot',transcript_revision=None,pending=True,materialized=False,
+                          title='',read_only=False,open_effects=None,open_action_id=None,fresh_system_context=True)
+        else:
+            result.update(kind='history_page',fragments=[],previous_cursor=None,next_cursor=None,at_start=True,at_end=True)
+        emit(dict(type='response',id=command['id'],ok=True,result=result))
         continue
     if command['type'] == 'prompt':
         operation = command['id']
@@ -1418,7 +1446,14 @@ fn management_reads_precede_prompt_and_selected_envelopes_do_not_double_text() {
             .iter()
             .map(|v| v["type"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["gui.hello", "gui.state", "prompt", "shutdown"]
+        [
+            "gui.hello",
+            "gui.state",
+            "gui.history.native_snapshot",
+            "gui.history.native_page",
+            "prompt",
+            "shutdown"
+        ]
     );
     let output = String::from_utf8_lossy(&result.stdout);
     assert_eq!(output.matches("After tool").count(), 1);
@@ -1816,19 +1851,46 @@ fn saved_conversation_process(mode: SavedInput) {
                     let ready = matches!(&event, Observation::Ready);
                     let done = matches!(&event, Observation::Complete);
                     if let Observation::History(h) = &event {
-                        assert!(pass > 0);
-                        assert_eq!(h.session, session);
-                        assert_eq!(h.messages.len(), if claude_continue { 3 } else { 2 });
-                        assert_eq!(h.messages[0].text, "remember SAVED-CONTEXT");
-                        assert_eq!(h.messages[1].text, "Saved first reply");
-                        if claude_continue {
-                            assert_eq!(h.messages[2].text, "UNSENT prepared");
+                        assert!(h.messages.is_empty());
+                        let descriptor = h.descriptor.as_ref().expect("bounded full-context proof");
+                        let page = h.page.as_ref().expect("bounded startup page");
+                        if pass > 0 {
+                            assert_eq!(h.session, session);
+                            assert_eq!(
+                                descriptor.counts.non_system,
+                                if claude_continue { 3 } else { 2 }
+                            );
+                            assert!(page.at_start && page.at_end);
+                            let rows: Vec<_> = page
+                                .fragments
+                                .iter()
+                                .filter(|fragment| {
+                                    matches!(
+                                        fragment.kind,
+                                        litetui_terminal::history::Kind::User
+                                            | litetui_terminal::history::Kind::Assistant
+                                    )
+                                })
+                                .map(|fragment| {
+                                    assert_eq!(fragment.start, 0);
+                                    assert_eq!(fragment.end, fragment.total);
+                                    (fragment.role.as_str(), fragment.text.as_str())
+                                })
+                                .collect();
+                            let mut expected = vec![
+                                ("user", "remember SAVED-CONTEXT"),
+                                ("assistant", "Saved first reply"),
+                            ];
+                            if claude_continue {
+                                expected.push(("user", "UNSENT prepared"));
+                            }
+                            assert_eq!(rows, expected);
                         }
                         history_seen = true;
                     }
                     chat.observe(event)?;
                     if ready {
-                        assert_eq!(history_seen, pass > 0);
+                        assert!(history_seen);
                         let snapshot = chat.runtime_state.startup().unwrap();
                         assert_eq!(
                             snapshot.held_restored_input,
@@ -2399,9 +2461,9 @@ fn saved_conversation_process(mode: SavedInput) {
     assert_eq!(
         commands
             .iter()
-            .filter(|v| v["type"] == "gui.conversations.read")
+            .filter(|v| v["type"] == "gui.history.native_snapshot")
             .count(),
-        if restart_refusal { 2 } else { 1 }
+        if restart_refusal { 3 } else { 2 }
     );
     assert_eq!(
         commands.iter().filter(|v| v["type"] == "shutdown").count(),
@@ -2428,7 +2490,7 @@ fn saved_conversation_process(mode: SavedInput) {
     let after = fs::read(root.join("resume-commands.jsonl")).unwrap();
     let suffix = String::from_utf8_lossy(&after[before.len()..]);
     assert!(
-        suffix.contains("gui.conversations.read") && suffix.contains("shutdown"),
+        suffix.contains("gui.history.native_snapshot") && suffix.contains("shutdown"),
         "Expected history-stage timeout: {error}; commands after hold: {suffix}"
     );
     assert!(!suffix.contains("\"type\": \"prompt\""));
@@ -2639,7 +2701,8 @@ fn unmarked_or_mismatched_resume_root_never_starts_python_or_overwrites_files() 
             .map(|v| v.to_string_lossy().into_owned())
             .collect();
         let mut options = Options::parse(&args).unwrap();
-        options.resume = Some("12345678-1234-4123-8123-123456789abc".into());
+        // Keep the requested identity distinct from the controlled ready session.
+        options.resume = Some("32345678-1234-4123-8123-123456789abc".into());
         if mode == "bad-settings" {
             fs::write(
                 root.join("settings.json"),
@@ -2890,66 +2953,41 @@ fn owned_browser_process(fault: &str) {
                 .take_intent()
                 .expect("fresh visible confirmation"),
         )?;
-        if display_budget {
-            loop {
-                let event = runtime
-                    .events
-                    .recv_timeout(Duration::from_secs(25))
-                    .map_err(std::io::Error::other)?;
-                let rejected = matches!(
-                    &event,
-                    Observation::Browser(litetui_terminal::conversation_browser::Update::Rejected(
-                        _
-                    ))
-                );
-                assert!(!matches!(
-                    &event,
-                    Observation::Opened(_) | Observation::Submission { .. }
-                ));
-                if let Observation::Browser(
-                    litetui_terminal::conversation_browser::Update::Rejected(reason),
-                ) = &event
-                {
-                    assert!(
-                        reason.contains("display")
-                            && reason.contains("Current conversation remains open"),
-                        "{reason}"
-                    );
-                }
-                app.observe_live(event)?;
-                if rejected {
-                    break;
-                }
-            }
-            assert_eq!(
-                app.live
-                    .as_ref()
-                    .unwrap()
-                    .runtime_state
-                    .startup()
-                    .unwrap()
-                    .session,
-                identity["current"]
+        loop {
+            let event = runtime
+                .events
+                .recv_timeout(Duration::from_secs(25))
+                .map_err(std::io::Error::other)?;
+            let preview = matches!(
+                event,
+                Observation::Browser(litetui_terminal::conversation_browser::Update::Preview(_))
             );
-            assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
-            assert!(!root.join("connect-entered").exists());
-            app.live.as_mut().unwrap().browser.close();
-            app.submit();
-            runtime.submit(app.live.as_mut().unwrap().take_submission().unwrap())?;
-            loop {
-                let event = runtime
-                    .events
-                    .recv_timeout(Duration::from_secs(25))
-                    .map_err(std::io::Error::other)?;
-                let done = matches!(event, Observation::Complete);
-                app.observe_live(event)?;
-                if done {
-                    break;
-                }
+            assert!(!matches!(event, Observation::Opened(_)));
+            app.observe_live(event)?;
+            if preview {
+                break;
             }
-            runtime.quit()?;
-            return Ok(());
         }
+        app.live
+            .as_mut()
+            .unwrap()
+            .browser
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        app.live
+            .as_mut()
+            .unwrap()
+            .browser
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        runtime.browser(
+            app.live
+                .as_mut()
+                .unwrap()
+                .browser
+                .take_intent()
+                .expect("fresh native open review"),
+        )?;
         for gate in ["connect", "history"] {
             if gate == "history" && fault == "failure" {
                 break;
@@ -2977,7 +3015,7 @@ fn owned_browser_process(fault: &str) {
                 "explicit controlled release",
             )?;
         }
-        if !fault.is_empty() {
+        if fails {
             loop {
                 match runtime.events.recv_timeout(Duration::from_secs(25)) {
                     Ok(event) => {
@@ -3011,9 +3049,12 @@ fn owned_browser_process(fault: &str) {
             chat.history
                 .as_ref()
                 .unwrap()
-                .messages
+                .page
+                .as_ref()
+                .unwrap()
+                .fragments
                 .iter()
-                .any(|message| message.text == "Source history barrier completed")
+                .any(|fragment| fragment.text == "Source history barrier completed")
         );
         assert_eq!(
             chat.runtime_state.startup().unwrap().held_restored_input,
@@ -3060,9 +3101,9 @@ fn owned_browser_process(fault: &str) {
     assert_eq!(
         commands
             .iter()
-            .filter(|cmd| cmd["type"] == "gui.conversations.open")
+            .filter(|cmd| cmd["type"] == "gui.conversations.native_open")
             .count(),
-        usize::from(!display_budget)
+        1
     );
     assert_eq!(
         commands
@@ -3092,7 +3133,7 @@ fn owned_browser_process(fault: &str) {
     if !fails {
         let proof: serde_json::Value =
             serde_json::from_slice(&fs::read(root.join("browser-proof.json")).unwrap()).unwrap();
-        assert_eq!(proof["held"]["held"], usize::from(!display_budget));
+        assert_eq!(proof["held"]["held"], 1);
         let prompts: Vec<&str> = proof["messages"]
             .as_array()
             .unwrap()
@@ -3100,17 +3141,12 @@ fn owned_browser_process(fault: &str) {
             .filter(|m| m["role"] == "user")
             .map(|m| m["content"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            prompts,
-            [
-                if display_budget {
-                    "Current saved conversation"
-                } else {
-                    "Saved browser target"
-                },
-                "UNSENT HUMAN DRAFT"
-            ]
-        );
+        let original = if display_budget {
+            "x".repeat(40000)
+        } else {
+            "Saved browser target".into()
+        };
+        assert_eq!(prompts, [original.as_str(), "UNSENT HUMAN DRAFT"]);
     }
 }
 #[test]
@@ -3130,7 +3166,48 @@ fn owned_conversation_browser_policy_drift_closes_before_any_prompt() {
 }
 
 #[test]
-#[ignore = "actual owned CLI preview rejecting unsupported display budget; dependency Python required"]
-fn owned_conversation_browser_preview_budget_refusal_keeps_original_session_usable() {
+#[ignore = "actual owned CLI bounded large preview; dependency Python required"]
+fn owned_conversation_browser_large_preview_opens_with_bounded_history() {
     owned_browser_process("budget");
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn requested_history_projection_never_silently_falls_back_or_submits() {
+    for mode in ["history_missing", "history_wrong"] {
+        let (mut command, root) = setup(mode);
+        let result = command.output().unwrap();
+        assert!(!result.status.success(), "{mode}");
+        assert!(String::from_utf8_lossy(&result.stderr).contains("requested history projection"));
+        let commands = fs::read_to_string(root.join("all-commands.jsonl")).unwrap();
+        assert!(!commands.contains("gui.hello"));
+        assert!(!commands.contains("rust-live-prompt"));
+        assert!(!commands.contains("gui.conversations.read"));
+    }
+}
+
+#[test]
+#[ignore = "controlled Python child, requires LITETUI_TEST_PYTHON"]
+fn native_history_response_limit_counts_original_envelope_and_json_escapes() {
+    for mode in [
+        "history_wire_exact",
+        "history_wire_crlf",
+        "history_wire_over",
+        "history_wire_escaped",
+    ] {
+        let (mut command, root) = setup(mode);
+        let result = command.output().unwrap();
+        let accepted = matches!(mode, "history_wire_exact" | "history_wire_crlf");
+        assert_eq!(
+            result.status.success(),
+            accepted,
+            "{mode}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let commands = fs::read_to_string(root.join("all-commands.jsonl")).unwrap();
+        assert_eq!(commands.contains("rust-live-prompt"), accepted, "{mode}");
+        if !accepted {
+            assert!(String::from_utf8_lossy(&result.stderr).contains("full 1 MiB wire budget"));
+        }
+    }
 }

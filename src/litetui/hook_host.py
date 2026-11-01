@@ -84,7 +84,7 @@ async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=Fal
                 app._conversation_transition_cleanup_error = "Lifecycle hook did not report terminal cleanup proof"
     app.hook_results[(hook.scope, hook.id)] = result
     recorder = getattr(app, "_conversation_transition_hook_outcomes", None)
-    if recorder is not None and document.get("event") in ("conversation_leave", "conversation_start"):
+    if recorder is not None and document.get("event") in ("conversation_leave", "conversation_start", "conversation_resume"):
         recorder.append({"event": document["event"], "scope": hook.scope, "id": hook.id,
                          "conversation_id": document.get("conversation_id"), "allowed": result.allowed,
                          "executed": not bool(refusal), "exit_code": result.exit_code})

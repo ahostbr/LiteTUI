@@ -366,8 +366,11 @@ async def serve(app):
                 await asyncio.sleep(0.3)
             if applied and case == "policy-drift" and operation == "gui.state":
                 result["tool_policy"]["tools_enabled"] = not result["tool_policy"]["tools_enabled"]
-            if applied and case == "history-drift" and operation == "gui.conversations.read":
-                result["messages"].append({"role": "assistant", "content": "Contradictory extra history"})
+            if applied and case == "history-drift" and operation in {"gui.conversations.read", "gui.history.native_snapshot"}:
+                if "context_sha256" in result:
+                    result["context_sha256"] = "0" * 64
+                else:
+                    result["messages"].append({"role": "assistant", "content": "Contradictory extra history"})
             if applied and case == "title-drift" and operation == "gui.conversations.native_snapshot":
                 result["current"]["title"] = "Contradictory title"
             if applied and case == "session-drift" and operation == "gui.state":

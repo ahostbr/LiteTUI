@@ -548,7 +548,21 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
     let t = app.palette();
     if let Some(chat) = &app.live {
         let mut lines = Vec::new();
-        if let Some(history) = &chat.history {
+        if let Some(descriptor) = chat.history.as_ref().and_then(|h| h.descriptor.as_ref()) {
+            tool_body(
+                t,
+                &mut lines,
+                &format!(
+                    "Saved context: {} messages · F6 Saved History (separate from live activity)",
+                    descriptor.counts.messages
+                ),
+                t.thinking_text,
+                width,
+            );
+        }
+        if let Some(history) = &chat.history
+            && history.descriptor.is_none()
+        {
             tool_body(
                 t,
                 &mut lines,
@@ -753,6 +767,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             chat.engine.invalidate();
             chat.commands.hide();
             chat.themes.hide();
+            chat.saved_history.hide();
             chat.settings.hide();
             chat.backend_controls.hide();
             chat.browser.hide();
@@ -1071,6 +1086,21 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .expect("commands")
             .commands
             .draw(frame, area, &t);
+    }
+    if app.has_live_history()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.stop_open()
+        && !app.viewport_too_small
+    {
+        let theme = app.palette().clone();
+        app.live
+            .as_mut()
+            .expect("live")
+            .saved_history
+            .draw(frame, area, &theme);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.saved_history.hide();
     }
     if app.has_live_themes()
         && !app.stop_open()

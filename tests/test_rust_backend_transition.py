@@ -443,3 +443,45 @@ async def test_bounded_history_read_uses_full_ascii_wire_size_and_preserves_sess
     assert app.backend is original_backend and app.store is original_store
     assert disk(app) == before and not getattr(app, "_backend_transition_error", None)
     assert await gui_rpc.async_dispatch(app, request) == result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["absent", "legacy", "v1"])
+async def test_backend_switch_preserves_negotiated_history_protocol(switch_app, mode):
+    from litetui import native_history
+    from litetui.launch_options import LaunchOptions
+
+    app = switch_app
+    version = 1 if mode == "v1" else None
+    app._launch_options = None if mode == "absent" else LaunchOptions(history_projection_version=version)
+    messages = copy.deepcopy(app.conversation)
+
+    def history_command(operation):
+        return {"type": operation, "version": 1, "from_session_id": app.convo_id,
+                "session_id": app.convo_id, "agent_id": app._agent_session.authority.agent_id,
+                "backend": app.backend.name, "model": app.model_id,
+                "scope": "current", "catalog_snapshot": None}
+
+    before = gui_rpc.dispatch(app, history_command("gui.history.native_snapshot")) if version else None
+    result = await gui_rpc.async_dispatch(app, command(app))
+    assert result["status"] == "connected", result
+    if version:
+        assert before is not None
+        after = gui_rpc.dispatch(app, history_command("gui.history.native_snapshot"))
+        assert after["context_sha256"] == before["context_sha256"]
+        assert after["replay_sha256"] == before["replay_sha256"]
+        assert after["snapshot"] != before["snapshot"]
+        page = gui_rpc.dispatch(app, {**history_command("gui.history.native_page"),
+                                     "snapshot": after["snapshot"], "anchor": "tail"})
+        assert page["at_end"] and page["fragments"][-1]["text"] == "Preserve history"
+    else:
+        with pytest.raises(ValueError, match="Restart with history projection"):
+            gui_rpc.dispatch(app, history_command("gui.history.native_snapshot"))
+        legacy = gui_rpc.dispatch(app, {"type": "gui.conversations.read", "session_id": app.convo_id})
+        assert legacy["messages"] == messages
+    assert app._launch_options.history_projection_version == version
+    assert native_history.enabled(app) is (version == 1)
+    assert app.conversation == messages
+    assert app._launch_options.server_mode == "connect" and app._launch_options.load_model is False
+    for path in (app.convo_dir / "settings.json", app._agent_session.store.data_root / "settings.json"):
+        assert "history_projection_version" not in json.loads(path.read_text(encoding="utf-8"))

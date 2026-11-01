@@ -56,7 +56,9 @@ def submission_refusal(app):
 def require_open(app):
     why = submission_refusal(app)
     owner = getattr(app, "_conversation_transition_task", None)
-    if why and (getattr(app, "_conversation_transition_error", None) or owner is not _task()):
+    from litetui.native_history import connection_reader
+    reader = connection_reader(app) if owner is not None else False
+    if why and (getattr(app, "_conversation_transition_error", None) or owner is not _task() and not reader):
         raise ValueError(why)
 
 

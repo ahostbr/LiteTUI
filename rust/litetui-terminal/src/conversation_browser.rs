@@ -57,6 +57,7 @@ pub struct Page {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
+    ConfirmOpen { snapshot: String, action_id: String },
     Action(crate::conversation_actions::Intent),
     Refresh,
     Page { revision: u64, cursor: String },
@@ -64,6 +65,7 @@ pub enum Intent {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
+    Preview(Box<crate::history::Snapshot>),
     Action(crate::conversation_actions::Update),
     Page(Page),
     /// Only after correlated open + owned state + held-input verification.
@@ -271,6 +273,10 @@ pub struct View {
     armed: bool,
     confirmation_visible: bool,
     pending_open: Option<String>,
+    preview: Option<Box<crate::history::Snapshot>>,
+    preview_page: usize,
+    preview_pages: usize,
+    preview_seen: Vec<bool>,
 }
 impl View {
     pub fn open(&mut self) {
@@ -282,6 +288,7 @@ impl View {
         self.page = None;
         self.intent = Some(Intent::Refresh);
         self.pending_open = None;
+        self.preview = None;
         self.notice = "Reading owned conversations…".into();
         self.hide();
     }
@@ -325,6 +332,7 @@ impl View {
     pub fn close(&mut self) {
         self.actions.close();
         self.open = false;
+        self.preview = None;
         self.hide();
         if self.intent.take().is_some() {
             // Unsent intent can be discarded; sent commands still own input.
@@ -340,6 +348,8 @@ impl View {
         self.page = None;
     }
     fn disarm(&mut self) {
+        self.preview_page = 0;
+        self.preview_seen.clear();
         self.armed = false;
         self.confirmation_visible = false;
         self.pressed = None;
@@ -369,6 +379,21 @@ impl View {
         self.hide();
         self.horizontal = 0;
         match update {
+            Update::Preview(preview) => {
+                if self.open {
+                    if self.pending_open.as_ref() != Some(&preview.identity.session) {
+                        return Err(fail("Preview changed the selected conversation"));
+                    }
+                    self.notice = if preview.read_only {
+                        "Saved history is read-only; opening is unavailable. Current conversation is unchanged."
+                    } else {
+                        "Review opening effects. No conversation has changed."
+                    }.into();
+                    self.preview = Some(preview);
+                } else {
+                    self.pending_open = None;
+                }
+            }
             Update::Action(_) => unreachable!("handled action"),
             Update::Page(page) => {
                 self.selected = page.entries.iter().position(|row| row.current).unwrap_or(0);
@@ -381,6 +406,7 @@ impl View {
             }
             Update::Rejected(error) => {
                 self.pending_open = None;
+                self.preview = None;
                 self.page = None;
                 self.notice = error;
             }
@@ -446,7 +472,11 @@ impl View {
             return;
         }
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
-            if self.armed {
+            if !self.waiting && self.preview.is_some() {
+                self.preview = None;
+                self.pending_open = None;
+                self.disarm();
+            } else if self.armed {
                 self.disarm();
             } else {
                 self.close();
@@ -454,6 +484,38 @@ impl View {
             return;
         }
         if !self.open || !self.visible || self.waiting {
+            return;
+        }
+        if let Some(preview) = &self.preview {
+            match key.code {
+                KeyCode::PageDown if self.preview_seen.get(self.preview_page) == Some(&true) => {
+                    self.preview_page =
+                        (self.preview_page + 1).min(self.preview_pages.saturating_sub(1));
+                    self.visible = false;
+                    self.confirmation_visible = false;
+                }
+                KeyCode::PageUp => {
+                    self.preview_page = self.preview_page.saturating_sub(1);
+                    self.visible = false;
+                    self.confirmation_visible = false;
+                }
+                KeyCode::Enter
+                    if key.kind == KeyEventKind::Press
+                        && self.confirmation_visible
+                        && !preview.read_only =>
+                {
+                    self.intent = Some(Intent::ConfirmOpen {
+                        snapshot: preview.token.clone(),
+                        action_id: preview.open_action_id.clone().expect("preview action"),
+                    });
+                    self.waiting = true;
+                    self.notice =
+                        "Opening reviewed conversation; waiting for lifecycle and owned readback…"
+                            .into();
+                    self.hide();
+                }
+                _ => self.disarm(),
+            }
             return;
         }
         match key.code {
@@ -515,8 +577,7 @@ impl View {
                     });
                     self.pending_open = Some(row.session.clone());
                     self.waiting = true;
-                    self.notice =
-                        "Opening; verifying connection, history, ownership and held input…".into();
+                    self.notice = "Inspecting the selected history before opening…".into();
                     self.hide();
                 }
             }
@@ -530,6 +591,10 @@ impl View {
         }
         self.armed = false;
         self.confirmation_visible = false;
+        if self.preview.is_some() {
+            self.disarm();
+            return;
+        }
         if !self.open || !self.visible || self.waiting || event.modifiers != KeyModifiers::NONE {
             self.pressed = None;
             return;
@@ -600,6 +665,75 @@ impl View {
             .border_style(Style::default().fg(theme.title));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
+        if let Some(preview) = &self.preview {
+            let effects = preview.open_effects.as_ref().expect("preview effects");
+            let text = if preview.read_only {
+                format!(
+                    "Saved conversation: {}\n{} saved messages.\n\nThis saved history is read-only; opening is unavailable.\n\nYour current conversation and composer draft remain unchanged.\nPress Esc to return to the catalogue.",
+                    line(&preview.title, 0),
+                    preview.counts.messages
+                )
+            } else {
+                format!(
+                    "Open saved conversation: {}\n{} saved messages; no prompt will be sent.\n\nLifecycle hooks: {}\nProvider cleanup: {}\nNo new conversation is created; restored input stays held\n\nHook tools still require existing source authorization; this confirmation grants none.\nThe composer draft stays intact.\n\nRead every page, then press Enter to open once.",
+                    line(&preview.title, 0),
+                    preview.counts.messages,
+                    if effects.lifecycle_hooks {
+                        "configured leave/resume hooks will run"
+                    } else {
+                        "none configured"
+                    },
+                    if effects.provider_cleanup {
+                        "outgoing provider session will be closed"
+                    } else {
+                        "not required"
+                    }
+                )
+            };
+            let lines = crate::ui::wrap(&text, inner.width as usize);
+            let rows = usize::from(inner.height.saturating_sub(3)).max(1);
+            self.preview_pages = lines.len().div_ceil(rows).max(1);
+            if self.preview_seen.len() != self.preview_pages {
+                self.preview_seen = vec![false; self.preview_pages];
+                self.preview_page = 0;
+            }
+            self.preview_page = self.preview_page.min(self.preview_pages - 1);
+            self.preview_seen[self.preview_page] = true;
+            frame.render_widget(
+                Paragraph::new(
+                    lines
+                        .iter()
+                        .skip(self.preview_page * rows)
+                        .take(rows)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                Rect::new(inner.x, inner.y, inner.width, rows as u16),
+            );
+            self.confirmation_visible = self.open
+                && !preview.read_only
+                && !self.waiting
+                && self.preview_page + 1 == self.preview_pages
+                && self.preview_seen.iter().all(|v| *v);
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "Page {}/{} · PgUp/PgDn\n{} · Esc cancels",
+                    self.preview_page + 1,
+                    self.preview_pages,
+                    if preview.read_only {
+                        "Read-only; Open unavailable"
+                    } else if self.confirmation_visible {
+                        "Enter: open once"
+                    } else {
+                        "Read all pages"
+                    }
+                )),
+                Rect::new(inner.x, inner.bottom() - 2, inner.width, 2),
+            );
+            self.visible = self.open && !self.waiting;
+            return;
+        }
         let page_label = self
             .page
             .as_ref()

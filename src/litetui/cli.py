@@ -14,9 +14,9 @@ number itself must stay cheap.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import os
 import sys
+from pathlib import Path
 
 
 def main() -> None:
@@ -108,6 +108,11 @@ def main() -> None:
         parser.error("--agent-id is valid only with --create-agent")
     try:
         launch_options = from_args(args)
+        if launch_options.history_projection_version is not None:
+            if not args.rpc or not args.hold_restored_input:
+                raise ValueError('--history-projection-version requires --rpc and --hold-restored-input')
+            if args.export_conversation or args.export_output:
+                raise ValueError('--history-projection-version cannot be combined with conversation export')
         if launch_options.engine_management:
             if not args.rpc or not args.hold_restored_input:
                 raise ValueError('--engine-management requires --rpc and --hold-restored-input')

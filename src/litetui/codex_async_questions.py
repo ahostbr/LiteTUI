@@ -16,6 +16,14 @@ from litetui.question_result import (
 from litetui.tool_events import native_lifecycle
 
 
+def question_rank(entry, index):
+    """Pure precedence shared by current questions and inert history replay."""
+    revision = entry.get("revision", 0)
+    if not isinstance(revision, int):
+        revision = 0
+    return revision, entry.get("state") != "pending", index
+
+
 def latest_question(app, ident, thread_id):
     """Prefer newer revisions; old unversioned terminal copies beat pending ones."""
     found = None
@@ -28,10 +36,7 @@ def latest_question(app, ident, thread_id):
                 continue
             if entry.get("threadId") != thread_id:
                 continue
-            revision = entry.get("revision", 0)
-            if not isinstance(revision, int):
-                revision = 0
-            candidate = (revision, entry.get("state") != "pending", index)
+            candidate = question_rank(entry, index)
             if rank is None or candidate >= rank:
                 found, rank = (metadata, entry), candidate
     return found

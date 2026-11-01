@@ -190,8 +190,11 @@ async def serve(app):
         value = await gui_rpc.async_dispatch(app, cmd)
         if transitioned and case == "policy-drift" and cmd["type"] == "gui.state":
             value["tool_policy"]["tools_enabled"] = True
-        if transitioned and case == "history-drift" and cmd["type"] == "gui.conversations.read":
-            value["messages"].append({"role": "assistant", "content": "Unexpected changed history"})
+        if transitioned and case == "history-drift" and cmd["type"] in {"gui.conversations.read", "gui.history.native_snapshot"}:
+            if "context_sha256" in value:
+                value["context_sha256"] = "0" * 64
+            else:
+                value["messages"].append({"role": "assistant", "content": "Unexpected changed history"})
         return value
 
     with ExitStack() as stack:

@@ -1,6 +1,6 @@
 # Remaining LiteTUI Rust parity work
 
-Source audit: 2026-10-30, work/rust-tui-OpenBolt, prior checkpoint 3dd8bf20.
+Source audit: 2026-10-31, work/rust-tui-OpenBolt, prior checkpoint 598b1b21.
 This is an implementation map, not release acceptance. The newest checkpoint in
 [master.md](master.md) supersedes historical status in older plans. Claude
 continuation and pre-start refusal handling are committed; bounded session browsing has
@@ -10,8 +10,9 @@ passed independent review and the full controlled process gate and portable stag
 
 Rust has owned Windows Python startup, bounded transport and verified event mirrors,
 captured execution origins, multiple text turns, reasoning/tools, cancellation,
-approvals/questions, composer/transcript, model/thinking controls, static themes,
-exact-UUID resume, held-input recovery, bounded F8 session browsing with preflight,
+approvals/questions, composer/transcript, model/thinking controls,
+exact-UUID resume, held-input recovery, F6 bounded saved-history inspection,
+bounded F8 session browsing with captured Open,
 F9 backend switching, F10 budget editing, F11 command/skill controls and explicit
 F12 NInfer/Strata engine management, reviewed F8 New/current Rename and source-owned F4 themes. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
@@ -19,15 +20,15 @@ both-host acceptance. Source remains authoritative for execution and persistence
 Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs
 Chat::submit explicitly refuses slash commands; the source-backed command router handles
 slash input separately and prepares skills for explicit attended submission. management.rs handles startup,
-model/thinking and restored input; resume.rs still has bounded saved-history projection; conversation_browser.rs pages
-the catalog and validates history before opening. Source gui_rpc.py OPERATIONS is authoritative.
+model/thinking and restored input; history.rs validates compact context descriptors and inert pages; history_view.rs owns
+the exclusive current-conversation inspector; conversation_browser.rs pages the catalog and reviews captured Open. Source gui_rpc.py OPERATIONS is authoritative.
 Historical inventory.md checkboxes are discovery data, not current feature status.
 
 ## Independent implementation packages
 
 | Package | Source authority / Rust surface | Dependencies and acceptance |
 | --- | --- | --- |
-| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented; expand history/edit/retry next. Preserve draft, UUID/owner, settings and provider continuity. Add paging beyond 100 visible messages, native activity/image replay and failed-open/readback tests. |
+| Sessions and history | gui.conversations list/read/open/create/rename/edit/retry/compact; new browser/history views | Catalog paging/open/preflight and current-session New/Rename are implemented. Current-conversation paging, inert rich replay and captured Open are implemented with controlled source/native/package evidence. Edit/retry/compact and alternate-conversation/read-only browsing remain. Preserve draft, UUID/owner, settings and provider continuity. |
 | Backends and engines | llm_backend.py catalog/classes; gui.backend.set and gui.engine operations | Canonical startup flags and controlled generic-event paths are implemented. Guarded F9 backend/model switching and F10 settings inspection are implemented with controlled source/process validation. Conversation output-budget edits and explicit NInfer/Strata start/stop are implemented. Engine configuration, second-instance confirmation, other settings edits and actual installed-service/inference acceptance remain. Preserve owned-vs-shared lifecycle and persistent connect-only restrictions. |
 | Settings and models | Settings service/scope/runtime; gui.settings, context, model discovery/reconnect/load/unload/configure/confirm | F10 requested/effective inspection and guarded conversation output-budget edits are implemented; broader editing and lifecycle controls remain. Independent readback after mutation; failed persistence/reconnect cannot imply effective change. Existing model/thinking picker is partial coverage. |
 | Work management | gui.jobs/tasks/goals/calendar/work | Jobs/calendar, task output/cancel and goal views can use separate files. Disposable owned jobs must prove actual single execution, cancellation and cleanup. |
@@ -108,8 +109,8 @@ runtime contract describe the evidence and precise shutdown limits.
 
 Canonical /new, /clear and /reset routes now open the reviewed New control;
 /rename can prefill the same bounded editor. They invoke no mutable handler and
-never apply from resolution alone. Larger history, rich replay and edit/retry
-remain separate implementation waves.
+never apply from resolution alone. Current-conversation paging and inert rich replay
+are implemented; edit/retry/compact remain separate implementation waves.
 
 Legacy edit/retry truncates live history, saves a snapshot and calls _submit_text,
 then returns accepted:true without checking admission. It cannot serve as a native
@@ -117,13 +118,17 @@ success receipt. Provider-native history/thread continuity, durable edited histo
 normal attended admission, execution identity, refusal and uncertain publication
 must be handled together; retry must never silently duplicate provider work.
 
-History paging needs a distinct bounded source projection, not a larger unbounded
-transport frame. Current catalog/open guards allow at most 100 visible messages,
-1,000 total messages, an 8 MiB source transcript and a 1 MiB preview, while native
-retained/display budgets are enforced independently. Preserve those bounds per
-page, bind pages to a stable owned transcript revision, and keep full source model
-context independent of the visible window. Rich replay must interpret source
-message/activity/image shapes instead of presenting their JSON as faithful UI.
+The version-1 history implementation is verified in controlled source/native and
+relocated-package gates. It uses a distinct
+source projection and exclusive F6 inspector, with authenticated cursors, stable
+UTF-8 fragments and separate raw/context, projection, index and wire bounds.
+Whole-context preservation proofs replace visible-row equality in startup, F8,
+F9, F12 and New/Rename. Full source model context remains independent of the
+resident page. Historical native activity, reasoning, plans and summaries are
+inert; image and question notices cannot execute or fetch anything. The old
+100-visible/1,000-total limits remain only in legacy protocol compatibility.
+F8 previews retain reviewed Open effects and readonly drift refuses mutation;
+alternate-conversation/read-only history navigation remains future work.
 
 ## Next contracts identified by source audit
 

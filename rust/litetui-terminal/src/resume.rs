@@ -74,6 +74,8 @@ pub struct Message {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct History {
+    pub descriptor: Option<Box<crate::history::Snapshot>>,
+    pub page: Option<Box<crate::history::Page>>,
     pub session: String,
     pub messages: Vec<Message>,
     pub hidden_system_messages: usize,
@@ -81,6 +83,24 @@ pub struct History {
     pub(crate) units: usize,
 }
 impl History {
+    pub fn projected(descriptor: crate::history::Snapshot) -> Self {
+        Self {
+            session: descriptor.identity.session.clone(),
+            hidden_system_messages: descriptor.counts.system as usize,
+            descriptor: Some(Box::new(descriptor)),
+            page: None,
+            messages: Vec::new(),
+            bytes: 0,
+            units: 0,
+        }
+    }
+    pub fn preserves_context(&self, prior: &Self) -> bool {
+        match (&self.descriptor, &prior.descriptor) {
+            (Some(after), Some(before)) => after.preserves_context(before),
+            (None, None) => self == prior,
+            _ => false,
+        }
+    }
     pub fn parse(value: &Value, session: &str) -> io::Result<Self> {
         if value["session_id"] != session
             || value["read_only"] != false
@@ -96,6 +116,8 @@ impl History {
             .filter(|v| !v.is_empty() && v.len() <= 1000)
             .ok_or_else(|| io::Error::other("Saved transcript requires 1..1000 messages"))?;
         let mut history = Self {
+            descriptor: None,
+            page: None,
             session: session.into(),
             messages: Vec::new(),
             hidden_system_messages: 0,

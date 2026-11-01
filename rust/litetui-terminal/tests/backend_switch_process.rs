@@ -17,11 +17,19 @@ use std::{
     time::{Duration, Instant},
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+fn runtime_source() -> PathBuf {
+    std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .canonicalize()
+        .unwrap()
+}
 fn launch(initial: &str, target: &str, case: &str) -> (Interactive, PathBuf) {
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let fixture_source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .unwrap();
+    let actual = runtime_source();
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target/backend-switch-process-tests")
         .join(format!(
@@ -51,7 +59,7 @@ s = json.loads(p.read_text())
 s.update(user_name_asked=True, skills_enabled=False, footer_task_manager=False, tts_enabled=False, sidecar_enabled=False, autocompact_enabled=False, tool_auto_background_s=0, custom_context_length=8192, lm_host='http://127.0.0.1:45121', llama_host='http://127.0.0.1:45122', llama_attach_hosts=['http://127.0.0.1:45129'])
 p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
-"#,quote(&actual.to_string_lossy()),quote(target),quote(case),quote(&actual.join("rust/litetui-terminal/tests/fixtures/backend_switch_runtime.py").to_string_lossy()))).unwrap();
+"#,quote(&actual.to_string_lossy()),quote(target),quote(case),quote(&fixture_source.join("rust/litetui-terminal/tests/fixtures/backend_switch_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
     let python = std::env::var("LITETUI_AUTHORITY_PYTHON").expect("dependency Python required");
     let mut args = vec![
@@ -295,7 +303,7 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
         );
     }
     assert_eq!(changed, success);
-    if retry || ["held", "oversized-history"].contains(&case) {
+    if retry || case == "held" {
         assert!(refused);
     }
     let sent = commands(&root);
@@ -303,16 +311,7 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
         .iter()
         .filter(|c| c["type"] == "gui.backend.set")
         .count();
-    assert_eq!(
-        mutations,
-        if retry {
-            2
-        } else if case == "oversized-history" {
-            0
-        } else {
-            1
-        }
-    );
+    assert_eq!(mutations, if retry { 2 } else { 1 });
     let prompts = sent.iter().filter(|c| c["type"] == "prompt").count();
     assert_eq!(
         prompts,
@@ -329,14 +328,25 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
             .filter(|c| c["type"] == "gui.state")
             .all(|c| c["include_conversations"] == false)
     );
+    assert!(!sent.iter().any(|c| c["type"] == "gui.conversations.read"));
     assert!(
         sent.iter()
-            .filter(|c| c["type"] == "gui.conversations.read")
-            .all(|c| c["max_response_bytes"] == 1048576)
+            .filter(|c| c["type"] == "gui.history.native_snapshot")
+            .count()
+            >= 2
+    );
+    let report: Value =
+        serde_json::from_slice(&fs::read(root.join("switch-report.json")).unwrap()).unwrap();
+    assert_eq!(
+        PathBuf::from(report["source_app"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        runtime_source()
+            .join("src/litetui/app.py")
+            .canonicalize()
+            .unwrap()
     );
     if success {
-        let report: Value =
-            serde_json::from_slice(&fs::read(root.join("switch-report.json")).unwrap()).unwrap();
         assert!(report["denied"].as_array().unwrap().is_empty());
         assert_eq!(report["after"]["backend"], target);
         assert_eq!(
@@ -344,6 +354,20 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
             report["after"]["session_id"]
         );
         assert_eq!(report["requests"].as_array().unwrap().len(), prompts);
+        if case == "oversized-history" {
+            let complete_large_answer = "X".repeat(2200 * 1024);
+            for request in report["requests"].as_array().unwrap() {
+                assert!(
+                    request["messages"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|row| row["role"] == "assistant"
+                            && row["content"].as_str() == Some(complete_large_answer.as_str())),
+                    "The entire large saved assistant row must reach both explicit SDK requests"
+                );
+            }
+        }
         if case != "empty" {
             assert!(
                 report["requests"].as_array().unwrap().last().unwrap()["messages"]
@@ -400,6 +424,6 @@ fn owned_backend_switch_accepts_empty_pending_conversation_without_materializing
 
 #[test]
 #[ignore = "controlled oversized owned history; dependency Python required"]
-fn oversized_backend_preflight_keeps_old_connection_and_draft_usable() {
-    scenario("custom", "lmstudio", "oversized-history", false, false);
+fn large_saved_history_backend_switch_uses_full_context_proof_and_keeps_draft() {
+    scenario("custom", "lmstudio", "oversized-history", true, false);
 }

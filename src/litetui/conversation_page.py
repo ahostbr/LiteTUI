@@ -205,6 +205,7 @@ def _summary(app, authority, record, remaining):
     meta, messages = ConversationRepository.read(record.path, max_bytes=min(MAX_TRANSCRIPT, remaining))
     if meta.get("id") != record.session_id:
         raise ValueError("Conversation transcript identity disagrees with its directory")
+    from litetui.native_history import enabled as paged_history
     current = record.session_id == app.convo_id
     writable = bool(record.stamp[5] & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
     reason = ("Already open" if current else
@@ -212,9 +213,9 @@ def _summary(app, authority, record, remaining):
               "Restart with restored-input holds before opening saved conversations"
               if getattr(app, "_hold_restored_input", False) is not True else
               "Native browser history requires 1..1000 saved messages"
-              if not 1 <= len(messages) <= 1000 else
+              if not paged_history(app) and not 1 <= len(messages) <= 1000 else
               "Native browser history supports at most 100 visible messages"
-              if sum(message.get("role") != "system" for message in messages) > 100 else
+              if not paged_history(app) and sum(message.get("role") != "system" for message in messages) > 100 else
               _compatibility(app, authority, record))
     row = {"session_id": record.session_id, "agent_id": valid_id(authority.agent_id),
            "agent_name": _text(authority.name, 1024),

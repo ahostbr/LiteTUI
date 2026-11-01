@@ -161,6 +161,7 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    SavedHistory(crate::history_view::Update),
     Theme {
         update: crate::theme_controls::Update,
         policy: Option<Value>,
@@ -206,6 +207,7 @@ enum Phase {
     Hello,
     State,
     History,
+    HistoryPage,
     Active,
 }
 
@@ -243,6 +245,9 @@ struct QueuePending {
     succeeded: bool,
 }
 enum BrowserRequest {
+    PreviewPage {
+        descriptor: crate::history::Snapshot,
+    },
     Preview {
         target: String,
         agent: String,
@@ -253,6 +258,7 @@ enum BrowserRequest {
         cursor: Option<String>,
     },
     Open {
+        preview: Option<Box<crate::history::Snapshot>>,
         target: String,
         agent: String,
         mutation: CommandId,
@@ -314,7 +320,7 @@ struct ConversationPending {
     title: String,
     snapshot: Option<crate::conversation_actions::Snapshot>,
     review: Option<crate::conversation_actions::Review>,
-    history_before: Option<Value>,
+    history_before: Option<crate::resume::History>,
     history: Option<crate::resume::History>,
     policy: Option<Value>,
     state: Option<Snapshot>,
@@ -322,7 +328,18 @@ struct ConversationPending {
     queue: Option<crate::restored_queue::Snapshot>,
     mutation: Option<CommandId>,
 }
+struct SavedHistoryPending {
+    id: CommandId,
+    descriptor: Option<crate::history::Snapshot>,
+    position: crate::history::PageRequest,
+    prior: Option<crate::history::Page>,
+}
 pub struct Management {
+    history_projection: bool,
+    saved_history: Option<SavedHistoryPending>,
+    history_snapshot: Option<crate::history::Snapshot>,
+    history_page: Option<crate::history::Page>,
+    startup_history: Option<crate::resume::History>,
     theme: Option<ThemePending>,
     theme_snapshot: Option<crate::theme_controls::Snapshot>,
     theme_review: Option<crate::theme_controls::Review>,
@@ -330,7 +347,12 @@ pub struct Management {
     theme_startup: Option<(Snapshot, Option<crate::resume::History>)>,
     conversation: Option<ConversationPending>,
     conversation_snapshot: Option<crate::conversation_actions::Snapshot>,
-    conversation_review: Option<(crate::conversation_actions::Review, Value, Value, Snapshot)>,
+    conversation_review: Option<(
+        crate::conversation_actions::Review,
+        crate::resume::History,
+        Value,
+        Snapshot,
+    )>,
     closing: bool,
     engine: Option<EnginePending>,
     engine_instance: Option<(String, u64, crate::engine_controls::Admission)>,
@@ -352,6 +374,7 @@ pub struct Management {
     backend_catalog: Option<crate::backend_controls::Catalog>,
     browser: Option<BrowserPending>,
     browser_page: Option<crate::conversation_browser::Page>,
+    browser_preview: Option<crate::history::Snapshot>,
     browser_authority: Option<(String, bool)>,
     continuation: Option<(String, crate::restored_queue::Entry)>,
     menu: Option<Choices>,
@@ -373,6 +396,11 @@ pub struct Management {
 impl Default for Management {
     fn default() -> Self {
         Self {
+            history_projection: false,
+            saved_history: None,
+            history_snapshot: None,
+            history_page: None,
+            startup_history: None,
             theme: None,
             theme_snapshot: None,
             theme_review: None,
@@ -408,6 +436,7 @@ impl Default for Management {
             backend_catalog: None,
             browser: None,
             browser_page: None,
+            browser_preview: None,
             browser_authority: None,
             continuation: None,
             menu: None,
@@ -447,6 +476,11 @@ impl Management {
         result
     }
     fn begin_inner(&mut self, ready: &Value) -> io::Result<Value> {
+        self.history_projection = match ready.get("history_projection_version") {
+            None | Some(Value::Null) => false,
+            Some(value) if value.as_u64() == Some(1) => true,
+            _ => return Err(fail("Unsupported history projection version")),
+        };
         if !ready
             .get("management_protocols")
             .and_then(Value::as_array)
@@ -512,6 +546,7 @@ impl Management {
             && self.conversation.is_none()
             && self.command.is_none()
             && self.theme.is_none()
+            && self.saved_history.is_none()
             && self.settings.is_none()
             && self.settings_edit.is_none()
             && self.backend.is_none()
@@ -541,6 +576,9 @@ impl Management {
         self.browser_page = None;
         self.conversation_snapshot = None;
         self.conversation_review = None;
+        self.history_snapshot = None;
+        self.history_page = None;
+        self.browser_preview = None;
         self.prompt = Some(id.to_owned());
         self.origin = None;
         Ok(())
@@ -559,14 +597,60 @@ impl Management {
         }
     }
     pub fn accept(&mut self, frame: Value) -> io::Result<Step> {
+        // In-memory callers have no wire encoding; the real supervisor always
+        // supplies the original frame size through accept_wire.
+        let bytes = serde_json::to_vec(&frame)?.len();
+        self.accept_wire(frame, bytes)
+    }
+    pub fn accept_wire(&mut self, frame: Value, original_json_bytes: usize) -> io::Result<Step> {
         if self.failed {
             return Err(fail("Management connection is uncertain"));
         }
-        let result = self.accept_inner(frame);
+        let result = if self.history_response_pending(&frame)
+            && original_json_bytes > crate::history::MAX_RESPONSE_BYTES
+        {
+            Err(fail("History response exceeds the full 1 MiB wire budget"))
+        } else {
+            self.accept_inner(frame)
+        };
         if result.is_err() {
             self.failed = true;
         }
         result
+    }
+    fn history_response_pending(&self, frame: &Value) -> bool {
+        if !self.history_projection || !matches!(frame["type"].as_str(), Some("response" | "error"))
+        {
+            return false;
+        }
+        let matches = |id: &CommandId| frame["id"] == id.to_value();
+        (matches!(self.phase, Phase::History | Phase::HistoryPage)
+            && self.history_id.as_ref().is_some_and(matches))
+            || self.saved_history.as_ref().is_some_and(|p| matches(&p.id))
+            || self
+                .backend
+                .as_ref()
+                .is_some_and(|p| matches(&p.id) && matches!(p.stage, 1 | 4))
+            || self
+                .engine
+                .as_ref()
+                .is_some_and(|p| p.id.as_ref().is_some_and(matches) && matches!(p.stage, 2 | 8))
+            || self
+                .conversation
+                .as_ref()
+                .is_some_and(|p| matches(&p.id) && matches!(p.stage, 2 | 8))
+            || self.browser.as_ref().is_some_and(|p| {
+                matches(&p.id)
+                    && match &p.request {
+                        BrowserRequest::Preview { .. } | BrowserRequest::PreviewPage { .. } => true,
+                        BrowserRequest::Open {
+                            preview: Some(_),
+                            stage,
+                            ..
+                        } => *stage <= 2,
+                        _ => false,
+                    }
+            })
     }
     fn accept_inner(&mut self, frame: Value) -> io::Result<Step> {
         match self.wire.ingest(GENERATION, frame) {
@@ -587,6 +671,15 @@ impl Management {
                         .all(|name| operations.iter().any(|v| v == name))
                 {
                     return Err(fail("Negotiated runtime lacks hello/state capabilities"));
+                }
+                if self.history_projection
+                    && !crate::history::OPERATIONS
+                        .iter()
+                        .all(|op| operations.iter().any(|v| v == op))
+                {
+                    return Err(fail(
+                        "Negotiated history projection lacks required operations",
+                    ));
                 }
                 self.operations = operations;
                 let id = self
@@ -626,17 +719,18 @@ impl Management {
                     .filter(|id| !id.is_empty() && id.len() <= 128)
                     .map(|id| (id.to_owned(), snapshot.schedules_paused));
                 self.state_id = None;
-                if let Some(session) = &self.resume {
+                if self.resume.is_some() || self.history_projection {
+                    let session = &snapshot.session;
                     if snapshot.held_restored_input.is_none() {
                         return Err(fail(
                             "Resume requires verified held-input policy; update Python source",
                         ));
                     }
-                    if !snapshot.writable
+                    if (!snapshot.writable && self.resume.is_some())
                         || !self
                             .operations
                             .iter()
-                            .any(|op| op == "gui.conversations.read")
+                            .any(|op| op == self.history_operation())
                     {
                         return Err(fail(
                             "Resume requires writable owned state and transcript read support",
@@ -646,7 +740,8 @@ impl Management {
                         .wire
                         .register_read()
                         .map_err(|_| fail("Cannot reserve saved transcript read"))?;
-                    let command = json!({"type":"gui.conversations.read","id":id.to_value(),"session_id":session});
+                    let mut command = self.history_command(session, backend, model)?;
+                    command["id"] = id.to_value();
                     self.history_id = Some(id);
                     self.startup = Some(snapshot);
                     self.phase = Phase::History;
@@ -664,14 +759,64 @@ impl Management {
                     return Err(fail("Runtime rejected saved transcript read"));
                 }
                 self.ensure_drained()?;
-                let history = crate::resume::History::parse(
-                    &frame["result"],
-                    self.resume.as_deref().expect("resume"),
-                )?;
+                let (session, backend, model, _) = self.expected.as_ref().expect("startup");
+                let history = if self.history_projection {
+                    self.parse_history(&frame["result"], session, backend, model)?
+                } else {
+                    crate::resume::History::parse(&frame["result"], session)?
+                };
+                if let Some(descriptor) = &history.descriptor {
+                    let id = self
+                        .wire
+                        .register_read()
+                        .map_err(|_| fail("Cannot reserve startup history page"))?;
+                    let mut command = descriptor.page_request(
+                        &crate::history::PageRequest::Anchor(crate::history::Anchor::Tail),
+                    )?;
+                    command["id"] = id.to_value();
+                    self.history_id = Some(id);
+                    self.startup_history = Some(history);
+                    self.phase = Phase::HistoryPage;
+                    return Ok(Step::Write(command));
+                }
                 self.history_id = None;
                 self.phase = Phase::Active;
                 let snapshot = self.startup.take().expect("startup");
                 self.startup_theme(snapshot, Some(history))
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self.phase == Phase::HistoryPage && id == self.history_id => {
+                if frame["ok"] != true {
+                    return Err(fail("Runtime rejected bounded startup history page"));
+                }
+                self.ensure_drained()?;
+                let mut history = self.startup_history.take().expect("startup descriptor");
+                let descriptor = history.descriptor.as_deref().expect("projected descriptor");
+                let page = crate::history::Page::parse(&frame["result"], descriptor)?;
+                page.accepts(&crate::history::PageRequest::Anchor(
+                    crate::history::Anchor::Tail,
+                ))?;
+                self.history_snapshot = Some(descriptor.clone());
+                self.history_page = Some(page.clone());
+                history.page = Some(Box::new(page));
+                self.history_id = None;
+                self.phase = Phase::Active;
+                let snapshot = self.startup.take().expect("startup");
+                self.startup_theme(snapshot, Some(history))
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .saved_history
+                .as_ref()
+                .is_some_and(|p| Some(&p.id) == id.as_ref()) =>
+            {
+                self.saved_history_response(frame)
             }
             Notice::Response {
                 id,
@@ -1466,8 +1611,16 @@ impl Management {
 
         if ![
             PAGE,
-            PREVIEW,
-            OPEN,
+            if self.history_projection {
+                crate::history::SNAPSHOT
+            } else {
+                PREVIEW
+            },
+            if self.history_projection {
+                crate::history::OPEN
+            } else {
+                OPEN
+            },
             "gui.state",
             crate::restored_queue::READ,
         ]
@@ -1478,9 +1631,51 @@ impl Management {
                 "Connected runtime does not support the conversation browser",
             ));
         }
-        let (session, _, _, _) = self.expected.as_ref().expect("active");
+        let (session, backend, model, _) = self.expected.as_ref().expect("active");
+        if let Intent::ConfirmOpen {
+            snapshot,
+            action_id,
+        } = &intent
+        {
+            let preview = self
+                .browser_preview
+                .as_ref()
+                .filter(|p| {
+                    p.token == *snapshot
+                        && p.open_action_id.as_ref() == Some(action_id)
+                        && p.identity.from_session == *session
+                        && p.identity.backend == *backend
+                        && p.identity.model == *model
+                })
+                .ok_or_else(|| fail("Conversation preview is stale; explicitly review again"))?
+                .clone();
+            let mut command = preview.open_request()?;
+            let id = self
+                .wire
+                .register_request()
+                .map_err(|_| fail("Cannot reserve reviewed open"))?;
+            command["id"] = id.to_value();
+            self.browser = Some(BrowserPending {
+                id: id.clone(),
+                request: BrowserRequest::Open {
+                    target: preview.identity.session.clone(),
+                    agent: preview.identity.agent.clone(),
+                    preview: Some(Box::new(preview)),
+                    mutation: id,
+                    stage: 0,
+                    history: None,
+                    state: None,
+                    policy: None,
+                    model: None,
+                },
+            });
+            self.browser_preview = None;
+            self.menu = None;
+            self.queue_menu = None;
+            return Ok(command);
+        }
         let (operation, request, mut command) = match intent {
-            Intent::Action(_) => unreachable!("handled action"),
+            Intent::Action(_) | Intent::ConfirmOpen { .. } => unreachable!("handled action"),
             Intent::Refresh => (
                 PAGE,
                 BrowserRequest::Page {
@@ -1518,14 +1713,33 @@ impl Management {
                     .as_ref()
                     .ok_or_else(|| fail("Refresh the conversation browser before opening"))?;
                 page.selection(revision, &target)?;
+                let command = if self.history_projection {
+                    crate::history::Identity {
+                        from_session: session.clone(),
+                        session: target.clone(),
+                        agent: page.agent.clone(),
+                        backend: backend.clone(),
+                        model: model.clone(),
+                        scope: crate::history::Scope::Preview,
+                        catalog: Some(page.snapshot.clone()),
+                    }
+                    .command(crate::history::SNAPSHOT)
+                } else {
+                    json!({"session_id":target,"from_session_id":session,"snapshot":page.snapshot})
+                };
+                self.browser_preview = None;
                 (
-                    PREVIEW,
+                    if self.history_projection {
+                        crate::history::SNAPSHOT
+                    } else {
+                        PREVIEW
+                    },
                     BrowserRequest::Preview {
                         target: target.clone(),
                         agent: page.agent.clone(),
                         snapshot: page.snapshot.clone(),
                     },
-                    json!({"session_id":target,"from_session_id":session,"snapshot":page.snapshot}),
+                    command,
                 )
             }
         };
@@ -1546,6 +1760,23 @@ impl Management {
         self.ensure_drained()?;
         let success = frame["ok"] == true;
         match &mut pending.request {
+            BrowserRequest::PreviewPage { descriptor } => {
+                if !success {
+                    self.browser_preview = None;
+                    return Ok(Step::Browser(Update::Rejected(
+                        text(&frame, "error", 4096)?.into(),
+                    )));
+                }
+                let page = crate::history::Page::parse(&frame["result"], descriptor)?;
+                page.accepts(&crate::history::PageRequest::Anchor(
+                    crate::history::Anchor::Tail,
+                ))?;
+                if self.closing {
+                    return Ok(Step::Ignore);
+                }
+                self.browser_preview = Some(descriptor.clone());
+                Ok(Step::Browser(Update::Preview(Box::new(descriptor.clone()))))
+            }
             BrowserRequest::Preview {
                 target,
                 agent,
@@ -1559,6 +1790,35 @@ impl Management {
                 }
                 let result = &frame["result"];
                 let current = &self.expected.as_ref().expect("active").0;
+                if self.history_projection {
+                    let (_, backend, model, _) = self.expected.as_ref().expect("active");
+                    let identity = crate::history::Identity {
+                        from_session: current.clone(),
+                        session: target.clone(),
+                        agent: agent.clone(),
+                        backend: backend.clone(),
+                        model: model.clone(),
+                        scope: crate::history::Scope::Preview,
+                        catalog: Some(snapshot.clone()),
+                    };
+                    let descriptor = crate::history::Snapshot::parse(result, &identity)?;
+                    if self.closing {
+                        return Ok(Step::Ignore);
+                    }
+                    let id = self
+                        .wire
+                        .register_read()
+                        .map_err(|_| fail("Cannot reserve preview page"))?;
+                    let mut command = descriptor.page_request(
+                        &crate::history::PageRequest::Anchor(crate::history::Anchor::Tail),
+                    )?;
+                    command["id"] = id.to_value();
+                    self.browser = Some(BrowserPending {
+                        id,
+                        request: BrowserRequest::PreviewPage { descriptor },
+                    });
+                    return Ok(Step::Write(command));
+                }
                 if result["session_id"] != *target
                     || result["from_session_id"] != *current
                     || result["agent_id"] != *agent
@@ -1584,6 +1844,7 @@ impl Management {
                 self.browser = Some(BrowserPending {
                     id: id.clone(),
                     request: BrowserRequest::Open {
+                        preview: None,
                         target: target.clone(),
                         agent: agent.clone(),
                         mutation: id,
@@ -1627,6 +1888,7 @@ impl Management {
                 Ok(Step::Browser(Update::Page(page)))
             }
             BrowserRequest::Open {
+                preview,
                 target,
                 agent,
                 stage,
@@ -1643,85 +1905,151 @@ impl Management {
                     )));
                 }
                 let result = &frame["result"];
-                match *stage {
-                    0 => {
-                        *history = Some(crate::conversation_browser::connected_history(
-                            result, target,
-                        )?);
+                if self.closing {
+                    return Ok(Step::Ignore);
+                }
+                if preview.is_some() && *stage == 1 {
+                    let before = history
+                        .as_ref()
+                        .and_then(|h| h.descriptor.as_deref())
+                        .expect("open receipt history");
+                    let after = crate::history::Snapshot::parse(result, &before.identity)?;
+                    if &after != before || after.read_only {
+                        return Err(fail("Opened history changed before independent readback"));
                     }
-                    1 => {
-                        let snapshot = Snapshot::parse(result)?;
-                        let (_, backend, model, profile) = self.expected.as_ref().expect("active");
-                        if snapshot.session != *target
-                            || snapshot.backend != *backend
-                            || snapshot.profile != *profile
-                            || !snapshot.writable
-                            || snapshot.held_restored_input.is_none()
-                            || self.browser_authority.as_ref().map(|value| value.1)
-                                != Some(snapshot.schedules_paused)
-                            || result["ownership"]["agent_id"] != *agent
-                            || (snapshot.model != *model
-                                && transition_model.as_ref() != Some(&snapshot.model))
-                            || transition_model
-                                .as_ref()
-                                .is_some_and(|value| value != &snapshot.model)
-                        {
-                            return Err(fail(
-                                "Opened conversation state contradicts its owned identity, policy, or model transition",
-                            ));
+                } else if preview.is_some() && *stage == 2 {
+                    let history = history.as_mut().expect("open history");
+                    let page =
+                        crate::history::Page::parse(result, history.descriptor.as_ref().unwrap())?;
+                    page.accepts(&crate::history::PageRequest::Anchor(
+                        crate::history::Anchor::Tail,
+                    ))?;
+                    history.page = Some(Box::new(page));
+                } else {
+                    let logical_stage = if preview.is_some() && *stage >= 3 {
+                        *stage - 2
+                    } else {
+                        *stage
+                    };
+                    match logical_stage {
+                        0 => {
+                            if let Some(preview) = preview {
+                                match crate::history::OpenResult::parse(result, preview)? {
+                                    crate::history::OpenResult::Refused(reason) => {
+                                        self.browser_preview = None;
+                                        return Ok(Step::Browser(Update::Rejected(reason)));
+                                    }
+                                    crate::history::OpenResult::Connected(descriptor) => {
+                                        *history =
+                                            Some(crate::resume::History::projected(*descriptor));
+                                    }
+                                }
+                            } else {
+                                *history = Some(crate::conversation_browser::connected_history(
+                                    result, target,
+                                )?);
+                            }
                         }
-                        *policy = Some(result["tool_policy"].clone());
-                        *state = Some(snapshot);
-                    }
-                    2 => {
-                        self.revision = self
-                            .revision
-                            .checked_add(1)
-                            .ok_or_else(|| fail("Conversation revision exhausted"))?;
-                        let queue = crate::restored_queue::Snapshot::parse(result, self.revision)?;
-                        let snapshot = state.take().expect("state read");
-                        if queue.session != snapshot.session
-                            || queue.backend != snapshot.backend
-                            || queue.model != snapshot.model
-                            || Some(queue.entries.len()) != snapshot.held_restored_input
-                        {
-                            return Err(fail(
-                                "Opened conversation held-input readback contradicts state",
-                            ));
+                        1 => {
+                            let snapshot = Snapshot::parse(result)?;
+                            let (_, backend, model, profile) =
+                                self.expected.as_ref().expect("active");
+                            if snapshot.session != *target
+                                || snapshot.backend != *backend
+                                || snapshot.profile != *profile
+                                || !snapshot.writable
+                                || snapshot.held_restored_input.is_none()
+                                || self.browser_authority.as_ref().map(|value| value.1)
+                                    != Some(snapshot.schedules_paused)
+                                || result["ownership"]["agent_id"] != *agent
+                                || (snapshot.model != *model
+                                    && transition_model.as_ref() != Some(&snapshot.model))
+                                || transition_model
+                                    .as_ref()
+                                    .is_some_and(|value| value != &snapshot.model)
+                            {
+                                return Err(fail(
+                                    "Opened conversation state contradicts its owned identity, policy, or model transition",
+                                ));
+                            }
+                            *policy = Some(result["tool_policy"].clone());
+                            *state = Some(snapshot);
                         }
-                        self.engine_instance = None;
-                        self.engine_snapshot = None;
-                        self.engine_review = None;
-                        self.expected = Some((
-                            snapshot.session.clone(),
-                            snapshot.backend.clone(),
-                            snapshot.model.clone(),
-                            snapshot.profile.clone(),
-                        ));
-                        self.prompt = None;
-                        self.origin = None;
-                        self.menu = None;
-                        self.browser_page = None;
-                        self.queue_menu = Some(queue.clone());
-                        return Ok(Step::Opened(Box::new(Opened {
-                            snapshot,
-                            history: history.take().expect("connected history"),
-                            queue,
-                            policy: policy.take().expect("policy read"),
-                        })));
+                        2 => {
+                            self.revision = self
+                                .revision
+                                .checked_add(1)
+                                .ok_or_else(|| fail("Conversation revision exhausted"))?;
+                            let queue =
+                                crate::restored_queue::Snapshot::parse(result, self.revision)?;
+                            let snapshot = state.take().expect("state read");
+                            if queue.session != snapshot.session
+                                || queue.backend != snapshot.backend
+                                || queue.model != snapshot.model
+                                || Some(queue.entries.len()) != snapshot.held_restored_input
+                            {
+                                return Err(fail(
+                                    "Opened conversation held-input readback contradicts state",
+                                ));
+                            }
+                            self.engine_instance = None;
+                            self.engine_snapshot = None;
+                            self.engine_review = None;
+                            self.expected = Some((
+                                snapshot.session.clone(),
+                                snapshot.backend.clone(),
+                                snapshot.model.clone(),
+                                snapshot.profile.clone(),
+                            ));
+                            self.prompt = None;
+                            self.origin = None;
+                            self.menu = None;
+                            self.browser_page = None;
+                            self.queue_menu = Some(queue.clone());
+                            return Ok(Step::Opened(Box::new(Opened {
+                                snapshot,
+                                history: history.take().expect("connected history"),
+                                queue,
+                                policy: policy.take().expect("policy read"),
+                            })));
+                        }
+                        _ => return Err(fail("Invalid conversation opening phase")),
                     }
-                    _ => return Err(fail("Invalid conversation opening phase")),
                 }
                 *stage += 1;
                 let id = self
                     .wire
                     .register_read()
                     .map_err(|_| fail("Cannot reserve conversation readback"))?;
-                let command = if *stage == 1 {
-                    json!({"type":"gui.state","id":id.to_value(),"include_conversations":false})
+                let mut command = if preview.is_some() {
+                    match *stage {
+                        1 => history
+                            .as_ref()
+                            .unwrap()
+                            .descriptor
+                            .as_ref()
+                            .unwrap()
+                            .identity
+                            .command(crate::history::SNAPSHOT),
+                        2 => history
+                            .as_ref()
+                            .unwrap()
+                            .descriptor
+                            .as_ref()
+                            .unwrap()
+                            .page_request(&crate::history::PageRequest::Anchor(
+                                crate::history::Anchor::Tail,
+                            ))?,
+                        3 => json!({"type":"gui.state","include_conversations":false}),
+                        4 => json!({"type":crate::restored_queue::READ,"session_id":target}),
+                        _ => return Err(fail("Invalid compact open phase")),
+                    }
+                } else if *stage == 1 {
+                    json!({"type":"gui.state","include_conversations":false})
                 } else {
-                    json!({"type":crate::restored_queue::READ,"id":id.to_value(),"session_id":target})
+                    json!({"type":crate::restored_queue::READ,"session_id":target})
                 };
+                command["id"] = id.to_value();
                 pending.id = id;
                 self.browser = Some(pending);
                 Ok(Step::Write(command))
@@ -1746,7 +2074,7 @@ impl Management {
                 LIST,
                 SET,
                 "gui.state",
-                "gui.conversations.read",
+                self.history_operation(),
                 crate::restored_queue::READ,
             ]
             .iter()
@@ -1772,7 +2100,11 @@ impl Management {
                     1,
                     Some((name, model)),
                     Some(catalog.clone()),
-                    json!({"type":"gui.conversations.read","session_id":session,"max_response_bytes":1048576}),
+                    self.history_command(
+                        session,
+                        &self.expected.as_ref().unwrap().1,
+                        &self.expected.as_ref().unwrap().2,
+                    )?,
                 )
             }
         };
@@ -1834,7 +2166,7 @@ impl Management {
         }
         let (name, model) = pending.selection.as_ref().expect("target").clone();
         match pending.stage {
-            1 => match crate::backend_controls::history(result, &session) {
+            1 => match self.parse_history(result, &session, &old_backend, &old_model) {
                 Ok(history) => pending.history = Some(history),
                 Err(error) => {
                     self.backend_catalog = None;
@@ -1887,10 +2219,12 @@ impl Management {
                     || snapshot.model != model
                     || snapshot.profile != profile
                     || (!snapshot.writable
-                        && pending
-                            .history
-                            .as_ref()
-                            .is_none_or(|history| !history.messages.is_empty()))
+                        && pending.history.as_ref().is_none_or(|history| {
+                            !history
+                                .descriptor
+                                .as_ref()
+                                .map_or(history.messages.is_empty(), |d| d.pending)
+                        }))
                     || snapshot.held_restored_input != Some(0)
                     || snapshot.schedules_paused != schedules
                     || result["ownership"]["agent_id"] != agent
@@ -1903,8 +2237,12 @@ impl Management {
                 pending.state = Some(snapshot);
             }
             4 => {
-                let history = crate::backend_controls::history(result, &session)?;
-                if Some(&history) != pending.history.as_ref() {
+                let history = self.parse_history(result, &session, &name, &model)?;
+                if !pending
+                    .history
+                    .as_ref()
+                    .is_some_and(|before| history.preserves_context(before))
+                {
                     return Err(fail("Backend transition changed the saved conversation"));
                 }
             }
@@ -1976,9 +2314,7 @@ impl Management {
                 json!({"type":SET,"version":1,"session_id":session,"agent_id":agent,"snapshot":pending.catalog.as_ref().expect("catalog").snapshot,"name":name,"model":model})
             }
             3 => json!({"type":"gui.state","include_conversations":false}),
-            4 => {
-                json!({"type":"gui.conversations.read","session_id":session,"max_response_bytes":1048576})
-            }
+            4 => self.history_command(&session, &name, &model)?,
             5 => json!({"type":LIST,"session_id":session}),
             6 => json!({"type":crate::restored_queue::READ,"session_id":session}),
             _ => return Err(fail("Invalid backend readback operation")),
@@ -2486,7 +2822,7 @@ impl Management {
             .chain(
                 [
                     "gui.state",
-                    "gui.conversations.read",
+                    self.history_operation(),
                     crate::restored_queue::READ,
                 ]
                 .iter(),
@@ -2644,7 +2980,7 @@ impl Management {
                 pending.policy = Some(result["tool_policy"].clone());
                 pending.state = Some(state);
             }
-            2 => match crate::backend_controls::history(result, &session) {
+            2 => match self.parse_history(result, &session, &backend, &model) {
                 Ok(history) => pending.history = Some(history),
                 Err(error) => {
                     return Ok(Step::Engine {
@@ -2717,8 +3053,12 @@ impl Management {
                     .verify_readback(result)?;
             }
             8 => {
-                let history = crate::backend_controls::history(result, &session)?;
-                if Some(&history) != pending.history.as_ref() {
+                let history = self.parse_history(result, &session, &backend, &model)?;
+                if !pending
+                    .history
+                    .as_ref()
+                    .is_some_and(|before| history.preserves_context(before))
+                {
                     return Err(fail("Engine lifecycle changed saved conversation"));
                 }
             }
@@ -2729,9 +3069,7 @@ impl Management {
         }
         pending.stage += 1;
         let mut command = match pending.stage {
-            2 | 8 => {
-                json!({"type":"gui.conversations.read","session_id":session,"max_response_bytes":1048576})
-            }
+            2 | 8 => self.history_command(&session, &backend, &model)?,
             3 | 9 => json!({"type":crate::restored_queue::READ,"session_id":session}),
             4 => pending
                 .snapshot
@@ -2790,7 +3128,7 @@ impl Management {
             .chain(
                 [
                     "gui.state",
-                    "gui.conversations.read",
+                    self.history_operation(),
                     crate::restored_queue::READ,
                     crate::conversation_browser::PAGE,
                 ]
@@ -2990,7 +3328,12 @@ impl Management {
                         "Conversation history exceeded requested response budget",
                     ));
                 }
-                let history = match crate::backend_controls::history(result, &selected.session) {
+                let history = match self.parse_history(
+                    result,
+                    &selected.session,
+                    &selected.backend,
+                    &selected.model,
+                ) {
                     Ok(h) => h,
                     Err(e) if pending.stage == 2 => {
                         return Ok(reject(format!("Cannot review conversation action: {e}")));
@@ -2998,26 +3341,39 @@ impl Management {
                     Err(e) => return Err(e),
                 };
                 if pending.stage == 2 {
-                    pending.history_before = Some(result["messages"].clone());
+                    pending.history_before = Some(history.clone());
                 } else {
                     let review = pending.review.as_ref().unwrap();
                     if pending.action == Action::Rename
-                        && (pending.history_before.as_ref() != Some(&result["messages"])
-                            || result["meta"]["name"] != json!(review.title))
+                        && (!pending
+                            .history_before
+                            .as_ref()
+                            .is_some_and(|before| history.preserves_context(before))
+                            || history.descriptor.as_ref().map_or_else(
+                                || result["meta"]["name"] != json!(review.title),
+                                |d| Some(&d.title) != review.title.as_ref(),
+                            ))
                     {
                         return Err(fail(
                             "Rename changed history/provider references or did not persist its exact title",
                         ));
                     }
                     if pending.action == Action::New
-                        && !result["messages"].as_array().is_some_and(|rows| {
-                            rows.iter().all(|m| {
-                                m["role"] == "system"
-                                    && m.as_object().is_some_and(|o| {
-                                        o.keys().all(|k| matches!(k.as_str(), "role" | "content"))
+                        && !history.descriptor.as_ref().map_or_else(
+                            || {
+                                result["messages"].as_array().is_some_and(|rows| {
+                                    rows.iter().all(|m| {
+                                        m["role"] == "system"
+                                            && m.as_object().is_some_and(|o| {
+                                                o.keys().all(|k| {
+                                                    matches!(k.as_str(), "role" | "content")
+                                                })
+                                            })
                                     })
-                            })
-                        })
+                                })
+                            },
+                            |d| d.fresh_system_context,
+                        )
                     {
                         return Err(fail(
                             "New conversation inherited messages or provider references",
@@ -3151,9 +3507,7 @@ impl Management {
         }
         pending.stage += 1;
         let mut command = match pending.stage {
-            2 | 8 => {
-                json!({"type":"gui.conversations.read","session_id":selected.session,"max_response_bytes":1048576})
-            }
+            2 | 8 => self.history_command(&selected.session, &selected.backend, &selected.model)?,
             3 | 9 => json!({"type":crate::restored_queue::READ,"session_id":selected.session}),
             4 => pending
                 .snapshot
@@ -3422,6 +3776,180 @@ impl Management {
         command["id"] = id.to_value();
         p.id = id;
         self.theme = Some(p);
+        Ok(Step::Write(command))
+    }
+}
+
+impl Management {
+    fn history_identity(
+        &self,
+        session: &str,
+        backend: &str,
+        model: &str,
+    ) -> io::Result<crate::history::Identity> {
+        let agent = self
+            .browser_authority
+            .as_ref()
+            .ok_or_else(|| fail("History requires owned-agent authority"))?
+            .0
+            .clone();
+        Ok(crate::history::Identity {
+            from_session: session.into(),
+            session: session.into(),
+            agent,
+            backend: backend.into(),
+            model: model.into(),
+            scope: crate::history::Scope::Current,
+            catalog: None,
+        })
+    }
+    fn history_operation(&self) -> &'static str {
+        if self.history_projection {
+            crate::history::SNAPSHOT
+        } else {
+            "gui.conversations.read"
+        }
+    }
+    fn history_command(&self, session: &str, backend: &str, model: &str) -> io::Result<Value> {
+        if self.history_projection {
+            Ok(self
+                .history_identity(session, backend, model)?
+                .command(crate::history::SNAPSHOT))
+        } else {
+            Ok(
+                json!({"type":"gui.conversations.read","session_id":session,"max_response_bytes":1048576}),
+            )
+        }
+    }
+    fn parse_history(
+        &self,
+        result: &Value,
+        session: &str,
+        backend: &str,
+        model: &str,
+    ) -> io::Result<crate::resume::History> {
+        if self.history_projection {
+            let descriptor = crate::history::Snapshot::parse(
+                result,
+                &self.history_identity(session, backend, model)?,
+            )?;
+            if descriptor.read_only {
+                return Err(fail(
+                    "Current history proof requires writable owned context",
+                ));
+            }
+            Ok(crate::resume::History::projected(descriptor))
+        } else {
+            crate::backend_controls::history(result, session)
+        }
+    }
+    pub fn request_history(&mut self, intent: crate::history_view::Intent) -> io::Result<Value> {
+        use crate::{history::PageRequest, history_view::Intent};
+        if !self.ready() || !self.history_projection {
+            return Err(fail(
+                "Saved History needs an idle source with projection version 1",
+            ));
+        }
+        self.ensure_drained()?;
+        let (session, backend, model, _) = self.expected.as_ref().expect("active");
+        let (descriptor, position, prior, mut command) = match intent {
+            Intent::Refresh { anchor } => (
+                None,
+                PageRequest::Anchor(anchor),
+                None,
+                self.history_command(session, backend, model)?,
+            ),
+            Intent::Page { snapshot, position } => {
+                let descriptor = self
+                    .history_snapshot
+                    .as_ref()
+                    .filter(|s| {
+                        s.token == snapshot
+                            && s.identity.session == *session
+                            && s.identity.backend == *backend
+                            && s.identity.model == *model
+                    })
+                    .ok_or_else(|| fail("Saved History changed; explicitly refresh"))?
+                    .clone();
+                let prior = self.history_page.clone();
+                if let PageRequest::Cursor(cursor) = &position
+                    && !prior.as_ref().is_some_and(|p| {
+                        p.previous.as_ref() == Some(cursor) || p.next.as_ref() == Some(cursor)
+                    })
+                {
+                    return Err(fail("History cursor was not offered by the visible page"));
+                }
+                let command = descriptor.page_request(&position)?;
+                (Some(descriptor), position, prior, command)
+            }
+        };
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve history read"))?;
+        command["id"] = id.to_value();
+        self.saved_history = Some(SavedHistoryPending {
+            id,
+            descriptor,
+            position,
+            prior,
+        });
+        Ok(command)
+    }
+    fn saved_history_response(&mut self, frame: Value) -> io::Result<Step> {
+        use crate::{
+            history::{Page, PageRequest, Snapshot as HistorySnapshot},
+            history_view::Update,
+        };
+        let mut pending = self.saved_history.take().expect("matched history read");
+        self.ensure_drained()?;
+        if self.closing {
+            return Ok(Step::Ignore);
+        }
+        if frame["ok"] != true {
+            self.history_snapshot = None;
+            self.history_page = None;
+            return Ok(Step::SavedHistory(Update::Rejected(
+                text(&frame, "error", 4096)?.into(),
+            )));
+        }
+        if let Some(descriptor) = pending.descriptor {
+            let page = Page::parse(&frame["result"], &descriptor)?;
+            page.accepts(&pending.position)?;
+            if let PageRequest::Cursor(cursor) = &pending.position {
+                page.follows(
+                    pending
+                        .prior
+                        .as_ref()
+                        .ok_or_else(|| fail("History page lacks prior cursor authority"))?,
+                    cursor,
+                )?;
+            }
+            self.history_snapshot = Some(descriptor.clone());
+            self.history_page = Some(page.clone());
+            return Ok(Step::SavedHistory(if pending.prior.is_some() {
+                Update::Page(Box::new(page))
+            } else {
+                Update::Loaded {
+                    snapshot: Box::new(descriptor),
+                    page: Box::new(page),
+                }
+            }));
+        }
+        let (session, backend, model, _) = self.expected.as_ref().expect("active");
+        let descriptor = HistorySnapshot::parse(
+            &frame["result"],
+            &self.history_identity(session, backend, model)?,
+        )?;
+        let mut command = descriptor.page_request(&pending.position)?;
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve bounded history page"))?;
+        command["id"] = id.to_value();
+        pending.id = id;
+        pending.descriptor = Some(descriptor);
+        self.saved_history = Some(pending);
         Ok(Step::Write(command))
     }
 }

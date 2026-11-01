@@ -60,3 +60,6 @@ pub mod engine_controls;
 pub mod conversation_actions;
 
 pub mod theme_controls;
+
+pub mod history;
+pub mod history_view;

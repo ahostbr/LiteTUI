@@ -736,6 +736,8 @@ pub fn history(value: &Value, session: &str) -> io::Result<crate::resume::Histor
             return Err(fail("Invalid empty owned conversation history"));
         }
         return Ok(crate::resume::History {
+            descriptor: None,
+            page: None,
             session: session.into(),
             messages: Vec::new(),
             hidden_system_messages: 0,

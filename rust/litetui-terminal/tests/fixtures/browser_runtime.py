@@ -25,9 +25,16 @@ def forbidden(*_args, **_kwargs):
 
 async def serve(app):
     import uuid
-    from types import SimpleNamespace
 
-    from litetui import gui_rpc, restored_input, rpc, seat_authority, store_identity
+    from litetui import (
+        conversation_shutdown,
+        gui_rpc,
+        native_history,
+        restored_input,
+        rpc,
+        seat_authority,
+        store_identity,
+    )
     from litetui.conversation import ConversationRepository
     from litetui.event_origin import EventOrigin
 
@@ -100,12 +107,13 @@ async def serve(app):
         app._connect_settled = True
         app._gui_connection_success = True
         app._resume_connection_error = None
-        app._native_history_worker = SimpleNamespace(wait=history_wait)
+        app._native_history_worker = app.run_worker(history_wait(), name="native-history", group="native-history", exit_on_error=False)
+        native_history.track_history_worker(app, app._native_history_worker)
         app._rpc_emit_model_state()
         app._rpc_emit({"type": "usage", "usage": {"context_tokens": 12, "max_context_tokens": 1000}})
         mark("connect-complete")
 
-    app.connect = lambda: SimpleNamespace(wait=connection_wait)
+    app.connect = lambda: app.run_worker(connection_wait(), name="connect", group="connect", exit_on_error=False)
     app.available_models = [app.model_id]
     app._active_tool_profile = app._cli_tool_profile
     app._rpc_ready_sent = True
@@ -114,22 +122,27 @@ async def serve(app):
         "thinking_level": app.thinking_level, "tools_enabled": app.tools_enabled,
         "mcp_enabled": app.settings.mcp_enabled, "tool_profile": app._active_tool_profile,
         "tool_profile_requested": app._cli_tool_profile, "approval_route": seat_authority.confirm_route(app),
-        "cwd": os.getcwd(), "management_protocols": [1], "capabilities": list(gui_rpc.OPERATIONS)})
+        "cwd": os.getcwd(), "management_protocols": [1], "capabilities": list(gui_rpc.OPERATIONS),
+        "history_projection_version": app._launch_options.history_projection_version})
     try:
         while line := await asyncio.to_thread(sys.stdin.readline):
             command = json.loads(line)
             with (root / "browser-commands.jsonl").open("a", encoding="utf-8") as log:
                 log.write(json.dumps(command) + "\n")
             if command["type"] == "shutdown":
-                rpc._respond(command["id"], ok=True, result={"ok": True})
+                proof = await conversation_shutdown.settle_before_shutdown(app)
+                result = {"ok": True}
+                if proof is not None:
+                    result["conversation_shutdown"] = proof
+                rpc._respond(command["id"], ok=True, result=result)
                 break
             if command["type"].startswith("gui."):
                 try:
                     with patch("litetui.gpu_gate.is_rtx_5090", return_value=False):
                         result = await gui_rpc.async_dispatch(app, command)
-                    if command["type"] == "gui.conversations.open":
+                    if command["type"] == "gui.conversations.native_open" and result["status"] == "connected":
                         assert (root / "connect-complete").exists() and (root / "history-complete").exists()
-                        assert result["connected"] and result["session_id"] == target
+                        assert result["worker_settled"] and result["connection_settled"] and result["history_settled"] and result["session_id"] == target
                         assert restored_input.status(app) == {"policy": "hold", "held": 1}
                         mark("open-complete")
                     if command["type"] == "gui.state":
@@ -144,14 +157,9 @@ async def serve(app):
                     rpc._respond(command["id"], ok=False, error=str(exc))
                 continue
             assert command["type"] == "prompt"
-            if display_budget:
-                assert app.convo_id == current
-                assert not (root / "connect-entered").exists()
-                assert restored_input.status(app) == {"policy": "hold", "held": 0}
-            else:
-                assert app.convo_id == target
-                assert (root / "browser-held.json").exists()
-                assert restored_input.status(app) == {"policy": "hold", "held": 1}
+            assert app.convo_id == target
+            assert (root / "browser-held.json").exists()
+            assert restored_input.status(app) == {"policy": "hold", "held": 1}
             assert command["message"] == "UNSENT HUMAN DRAFT"
             app._append({"role": "user", "content": command["message"]})
             origin = EventOrigin(session_id=app.convo_id, operation_id=command["id"], source="rpc").scheduled()

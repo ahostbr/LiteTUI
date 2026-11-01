@@ -203,7 +203,8 @@ async def transition(app, cmd):
         launch = LaunchOptions(server_mode="connect" if name in _LOCAL else "auto",
                                timeout=getattr(old_launch, "timeout", 600),
                                max_tokens=getattr(old_launch, "max_tokens", None)
-                               if name not in {"codex", "claude"} else None)
+                               if name not in {"codex", "claude"} else None,
+                               history_projection_version=getattr(old_launch, "history_projection_version", None))
         candidate = llm_backend.make_backend(settings)
         if name == "llamacpp":
             candidate.require_existing_server()

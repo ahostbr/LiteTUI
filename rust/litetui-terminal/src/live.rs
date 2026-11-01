@@ -186,6 +186,7 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    SavedHistory(crate::history_view::Update),
     Theme(crate::theme_controls::Update),
     ConversationChanged(Box<crate::conversation_actions::Changed>),
     ConversationUnverified(String),
@@ -1100,6 +1101,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             "litetui.cli",
             "--rpc",
             "--hold-restored-input",
+            "--history-projection-version",
+            "1",
             "--backend",
             &options.backend,
             "--model",
@@ -1218,6 +1221,29 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             ))?,
                         }
                     }
+                    Input::History(intent) => {
+                        let command = if turn.can_engine() {
+                            management.request_history(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish current work before reading Saved History",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::SavedHistory(
+                                crate::history_view::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
+                    }
                     Input::Theme(intent) => {
                         let reading = matches!(intent, crate::theme_controls::Intent::Read);
                         let command = if turn.can_manage() || reading && turn.can_engine() {
@@ -1305,6 +1331,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             Ok(value) => {
                                 if value["type"] == crate::conversation_actions::APPLY {
                                     turn.conversation_shutdown = Some(value.clone());
+                                } else if value["type"] == crate::history::OPEN {
+                                    turn.conversation_shutdown =
+                                        Some(crate::history::shutdown_identity(&value)?);
                                 }
                                 owned
                                     .stdin
@@ -1512,9 +1541,16 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 let event = value.expect("complete nonblank frame");
                 check_mirror_deadline(mirror_deadline)?;
                 use crate::management::Step;
-                match management.accept(event)? {
+                match management.accept_wire(event, crate::history::wire_response_bytes(&frame))? {
+                    Step::SavedHistory(update) => {
+                        if !turn.closing {
+                            frontend.observe(Observation::SavedHistory(update))?;
+                            deadline = None;
+                        }
+                    }
                     Step::Bootstrap(ready) => {
                         turn.accept(&ready, &options.backend, &options.model)?;
+                        crate::history::require_projection(&ready)?;
                         startup_facts = if turn.can_manage() {
                             crate::runtime_state::Update::from_event(&ready)?
                         } else {
@@ -1716,6 +1752,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Step::Opened(opened) => {
                         if !turn.closing {
+                            turn.conversation_completed_shutdown =
+                                turn.conversation_shutdown.clone();
                             turn.policy
                                 .as_ref()
                                 .expect("launch policy")
@@ -1820,6 +1858,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    History(crate::history_view::Intent),
     Theme(crate::theme_controls::Intent),
     Engine(crate::engine_controls::Intent),
     Control(crate::model_controls::Intent),
@@ -1854,6 +1893,7 @@ impl Frontend for OneShot {
             | Observation::State(_)
             | Observation::Commands(_)
             | Observation::Theme(_)
+            | Observation::SavedHistory(_)
             | Observation::Settings(_)
             | Observation::Backend(_)
             | Observation::BackendChanged(_)
@@ -1864,6 +1904,13 @@ impl Frontend for OneShot {
             | Observation::Queue(_)
             | Observation::Submission { .. } => {} // Read-only footer facts; no one-shot action.
             Observation::History(history) => {
+                if let Some(descriptor) = &history.descriptor {
+                    writeln!(
+                        self.output,
+                        "Saved context verified: {} messages; bounded display available in interactive Saved History.",
+                        descriptor.counts.messages
+                    )?;
+                }
                 writeln!(
                     self.output,
                     "Restored conversation {}",
@@ -2137,6 +2184,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Commands(intent))
+            .map_err(io::Error::other)
+    }
+    pub fn history(&self, intent: crate::history_view::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::History(intent))
             .map_err(io::Error::other)
     }
     pub fn theme(&self, intent: crate::theme_controls::Intent) -> io::Result<()> {

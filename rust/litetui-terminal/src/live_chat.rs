@@ -67,6 +67,7 @@ pub struct Chat {
     pub model: String,
     pub rows: Vec<Row>,
     pub history: Option<crate::resume::History>,
+    pub saved_history: crate::history_view::View,
     pub ready: bool,
     pub busy: bool,
     pub closed: bool,
@@ -105,6 +106,7 @@ impl Chat {
             model,
             rows: Vec::new(),
             history: None,
+            saved_history: crate::history_view::View::default(),
             ready: false,
             busy: false,
             closed: false,
@@ -151,6 +153,7 @@ impl Chat {
             || self.engine.pending()
             || self.commands.owns_input()
             || self.themes.owns_input()
+            || self.saved_history.owns_input()
             || self.settings.owns_input()
             || self.backend_controls.owns_input()
             || self.browser.owns_input()
@@ -169,6 +172,7 @@ impl Chat {
             ));
         }
         let units = self.prompt_budget(prompt)?;
+        self.saved_history.invalidate();
         self.retained_units += units;
         self.retained_bytes += prompt.len();
         self.pending = Some(prompt.to_owned());
@@ -248,6 +252,7 @@ impl Chat {
         self.engine.finish();
         self.commands.finish();
         self.themes.finish();
+        self.saved_history.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -317,6 +322,14 @@ impl Chat {
         self.questions.clear();
         self.retained_bytes = history.bytes;
         self.retained_units = history.units;
+        self.saved_history.finish();
+        if let (Some(descriptor), Some(page)) =
+            (history.descriptor.as_deref(), history.page.as_deref())
+        {
+            self.saved_history
+                .install(descriptor.clone(), page.clone(), false)
+                .expect("verified history page");
+        }
         self.history = Some(history);
     }
     pub fn observe(&mut self, observation: Observation) -> io::Result<()> {
@@ -324,6 +337,10 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::SavedHistory(update) => {
+                self.saved_history.observe(update)?;
+                self.notice = self.saved_history.notice.clone();
+            }
             Observation::EngineAdmission(admission) => {
                 let first = self.engine_admission.is_none() && !self.ready;
                 self.engine_admission = Some(admission);
@@ -429,6 +446,8 @@ impl Chat {
                 self.backend = changed.snapshot.backend.clone();
                 self.model = changed.snapshot.model.clone();
                 self.runtime_state.opened(changed.snapshot);
+                self.saved_history.finish();
+                self.history = Some(changed.history);
                 self.controls = crate::model_controls::View::default();
                 self.browser = crate::conversation_browser::View::default();
                 self.queue = crate::restored_queue::View::default();
@@ -478,7 +497,18 @@ impl Chat {
                 }
                 self.retained_bytes = history.bytes;
                 self.retained_units = history.units;
-                self.notice = format!("Restored {} saved messages.", history.messages.len());
+                if let (Some(descriptor), Some(page)) =
+                    (history.descriptor.as_deref(), history.page.as_deref())
+                {
+                    self.saved_history
+                        .install(descriptor.clone(), page.clone(), false)?;
+                    self.notice = format!(
+                        "Saved context verified: {} messages. F6 opens Saved History.",
+                        descriptor.counts.messages
+                    );
+                } else {
+                    self.notice = format!("Restored {} saved messages.", history.messages.len());
+                }
                 self.history = Some(history);
             }
             Observation::Submission { id } => {
@@ -762,6 +792,7 @@ impl Chat {
         self.engine.finish();
         self.commands.finish();
         self.themes.finish();
+        self.saved_history.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();
@@ -774,6 +805,7 @@ impl Chat {
         self.engine.finish();
         self.commands.finish();
         self.themes.finish();
+        self.saved_history.finish();
         self.settings.finish();
         self.backend_controls.finish();
         self.browser.finish();

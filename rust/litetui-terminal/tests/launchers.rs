@@ -2,6 +2,14 @@
 //! Exercise the actual PowerShell argument forwarding with build/runtime tripwires.
 use std::{fs, path::PathBuf, process::Command};
 
+fn stage_launch_options(base: &std::path::Path) {
+    fs::write(
+        base.join("launch-options.ps1"),
+        include_str!("../launch-options.ps1"),
+    )
+    .unwrap();
+}
+
 #[test]
 #[ignore = "controlled PowerShell launcher test; no Python or provider"]
 fn launchers_forward_only_explicit_profiles_and_reject_invalid_choices() {
@@ -9,6 +17,7 @@ fn launchers_forward_only_explicit_profiles_and_reject_invalid_choices() {
         .join("target/profile-launcher-tests")
         .join(std::process::id().to_string());
     fs::create_dir_all(&base).unwrap();
+    stage_launch_options(&base);
     for (name, source) in [
         ("chat", include_str!("../open-chat.ps1")),
         ("live", include_str!("../open-live.ps1")),
@@ -86,6 +95,7 @@ fn chat_launcher_forwards_explicit_resume_without_creating_a_new_root() {
         .join("target/resume-launcher-tests")
         .join(std::process::id().to_string());
     fs::create_dir_all(&base).unwrap();
+    stage_launch_options(&base);
     let script = base.join("chat.ps1");
     fs::write(
         &script,

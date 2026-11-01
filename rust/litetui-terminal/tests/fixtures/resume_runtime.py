@@ -223,7 +223,8 @@ async def serve(app):
         "thinking_level": app.thinking_level, "tools_enabled": app.tools_enabled,
         "mcp_enabled": app.settings.mcp_enabled, "tool_profile": app._active_tool_profile,
         "tool_profile_requested": app._cli_tool_profile, "approval_route": seat_authority.confirm_route(app),
-        "cwd": os.getcwd(), "management_protocols": [1], "capabilities": list(gui_rpc.OPERATIONS)})
+        "cwd": os.getcwd(), "management_protocols": [1], "capabilities": list(gui_rpc.OPERATIONS),
+        "history_projection_version": app._launch_options.history_projection_version})
     with (root / "launches.jsonl").open("a", encoding="utf-8") as log:
         log.write(json.dumps({"session": app.convo_id, "agent": app._agent_session.authority.agent_id,
                              "thinking": app.thinking_level, "argv": sys.argv,
@@ -241,7 +242,7 @@ async def serve(app):
             if command["type"] == "shutdown":
                 rpc._respond(command["id"], ok=True, result={"ok": True})
                 break
-            if command["type"] == "gui.conversations.read" and (root / "hold-history").exists():
+            if command["type"] in {"gui.conversations.read", "gui.history.native_snapshot"} and (root / "hold-history").exists():
                 continue
             if command["type"].startswith("gui."):
                 if reconcile_fixture and command["type"] == "gui.restored_input.reconcile":

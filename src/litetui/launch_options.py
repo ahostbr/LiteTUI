@@ -29,6 +29,12 @@ class LaunchOptions:
     timeout: int = 600
     codex_engine: str | None = None
     engine_management: bool = False
+    history_projection_version: int | None = None
+
+    def validate_history_projection(self) -> None:
+        version = self.history_projection_version
+        if version is not None and (type(version) is not int or version != 1):
+            raise ValueError('--history-projection-version must be integer 1 when selected')
 
     def validate_engine_management(self, backend, model):
         # Validate before endpoint discovery, settings overlays or hardware checks.
@@ -46,6 +52,7 @@ class LaunchOptions:
             raise ValueError('--engine-management requires --server-mode connect without automatic start/load')
 
     def overrides(self, settings, backend, model):
+        self.validate_history_projection()
         self.validate_engine_management(backend, model)
         from litetui.custom_backend import api_base
         values = {}
@@ -151,6 +158,8 @@ class LaunchOptions:
 
 
 def add_arguments(parser):
+    parser.add_argument('--history-projection-version', type=int, choices=(1,),
+                        help='Bounded saved-history RPC projection; requires --rpc and --hold-restored-input')
     parser.add_argument('--engine-management', action='store_true',
                         help='Owned RPC engine controls only; requires --hold-restored-input, --backend ninfer|strata, --model and --server-mode connect; never submits a launch prompt')
     parser.add_argument('--codex-engine', choices=('native', 'http'),
@@ -190,7 +199,9 @@ def from_args(args):
     options = LaunchOptions(args.base_url, args.server_mode, args.load_model, args.context_length,
                             args.max_tokens, args.server_executable, args.model_path, command,
                             args.api_key_env, args.server_timeout, codex_engine,
-                            getattr(args, 'engine_management', False))
+                            getattr(args, 'engine_management', False),
+                            getattr(args, 'history_projection_version', None))
+    options.validate_history_projection()
     options.validate_engine_management(args.backend, getattr(args, 'model', None))
     if options.engine_management and getattr(args, 'prompt', None) is not None:
         raise ValueError('--engine-management cannot carry --prompt; submit explicitly after a verified connection')
@@ -199,8 +210,9 @@ def from_args(args):
 
 def to_argv(options):
     """Use the same public arguments for supervised and external agents."""
+    options.validate_history_projection()
     args = ['--server-mode', options.server_mode, '--server-timeout', str(options.timeout)]
-    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine'):
+    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine', 'history_projection_version'):
         value = getattr(options, name)
         if value is not None:
             args += ['--' + name.replace('_', '-'), str(value)]
@@ -215,6 +227,8 @@ def to_argv(options):
 
 async def prepare(app):
     options = getattr(app, '_launch_options', None)
+    if options is not None and getattr(options, 'history_projection_version', None) is not None:
+        options.validate_history_projection()
     if options is not None and getattr(options, 'engine_management', False):
         options.validate_engine_management(
             app.backend.name, getattr(app, '_cli_initial_model', None) or getattr(app, 'model_id', None))
