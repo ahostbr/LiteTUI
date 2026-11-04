@@ -97,8 +97,26 @@ def _create_agent_and_relaunch(app, arg: str) -> None:
         "--backend", authority.backend, "--model", authority.model,
         "--thinking-level", authority.thinking_level,
     ]
+    app._relaunch_env = _relaunch_env(app)
     app.system_message(f"Creating agent {wanted} ({authority.backend} / {authority.model}) and switching this window to it ...")
     app.exit()
+
+
+def _relaunch_env(app):
+    """Environment for the relaunched agent window, or None to inherit this process's.
+
+    This app exports LITETUI_AGENT_SHELL=1 into its own environment (app.py, every seat), so an inherited
+    child reads itself as agent-launched and every CONFIRM is refused (T1049). A hand-launched seat's child is
+    a hand launch too: drop the marker. An agent-launched seat keeps it, and so does a spawned one.
+    """
+    if getattr(app, "_agent_launched", True) or getattr(app, "_spawned_seat", True):
+        return None
+    from litetui import harness
+    from litetui.agent_supervisor import child_process_env
+
+    env = child_process_env()
+    env.pop(harness.AGENT_SHELL_MARKER, None)
+    return env
 
 
 def _cmd_new(app, name: str, arg: str) -> None:

@@ -38,6 +38,18 @@ def test_a_new_name_relaunches_this_window_as_a_created_agent(seat):
     assert app.said[-1] == 'EXIT'
 
 
+@pytest.mark.parametrize('agent_launched,inherits', [(False, False), (True, True)])
+def test_the_child_drops_the_agent_shell_marker_only_for_a_hand_launched_seat(seat, monkeypatch, agent_launched, inherits):
+    from litetui import harness
+    monkeypatch.setenv(harness.AGENT_SHELL_MARKER, '1')    # this app exports it into its own environment
+    app = _app(seat, _agent_launched=agent_launched, _spawned_seat=False)
+    convo._cmd_agent_new(app, '/agent-new', 'Scout')
+    if inherits:
+        assert app._relaunch_env is None                    # inherit: the marker reaches the child, as before
+    else:
+        assert harness.AGENT_SHELL_MARKER not in app._relaunch_env
+
+
 def test_slash_new_with_a_name_is_the_same_command_and_plain_new_is_not(seat):
     named = _app(seat)
     convo._cmd_new(named, '/new', 'Scout')
@@ -113,7 +125,7 @@ def test_the_cli_relaunches_only_after_this_window_has_released_its_home(tmp_pat
         def run(self, **kwargs):
             self._relaunch_argv = ["child", "--create-agent", "Scout"]
 
-    def call(argv):
+    def call(argv, **kwargs):
         # By now the parent's home must be free: the child will want its own lease, and this one proves it.
         with acquire(tmp_path, "LiteTUI") as reopened:
             seen.append((argv, reopened.authority.name))
@@ -220,7 +232,7 @@ def test_a_relaunch_that_fails_is_reported_on_the_terminal(tmp_path, monkeypatch
         def run(self, **kwargs):
             self._relaunch_argv = ["child"]
 
-    def call(argv):
+    def call(argv, **kwargs):
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
