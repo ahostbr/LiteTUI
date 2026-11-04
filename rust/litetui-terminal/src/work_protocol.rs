@@ -180,6 +180,7 @@ pub struct Snapshot {
     pub scheduler_notice: Option<String>,
     pub deferred_job: Option<crate::deferred_control::Snapshot>,
     pub deferred_advertised: bool,
+    pub execution_receipt: Option<crate::work_execution_controls::Recovery>,
 }
 impl Snapshot {
     pub fn parse(v: &Value, identity: &Identity) -> io::Result<Self> {
@@ -226,6 +227,20 @@ impl Snapshot {
             goal: v["goal"].clone(),
             can_pause,
             pause_reason,
+            execution_receipt: v
+                .get("execution_receipt")
+                .map(|value| {
+                    crate::work_execution_controls::Recovery::parse(
+                        value,
+                        &crate::work_lifecycle::Identity {
+                            session: identity.session.clone(),
+                            agent: identity.agent.clone(),
+                            backend: identity.backend.clone(),
+                            model: identity.model.clone(),
+                        },
+                    )
+                })
+                .transpose()?,
             deferred_advertised: v.get("deferred_job").is_some(),
             deferred_job: match v.get("deferred_job") {
                 None | Some(Value::Null) => None,

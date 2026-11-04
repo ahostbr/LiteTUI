@@ -628,3 +628,74 @@ fn actual_source_pending_and_uncertain_discard_preserve_audit_and_verify_absence
         assert_eq!(fresh.instance, snapshot.instance);
     }
 }
+
+#[test]
+fn actual_source_scheduled_new_accepts_only_exact_execution_shutdown_extension() {
+    use litetui_terminal::work_execution_controls as execution;
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/scheduled_execution_handoff.json")).unwrap();
+    let identity = Identity::parse(&fixture["capture"]["identity"]).unwrap();
+    let mut operations = execution::OPERATIONS.map(str::to_owned).to_vec();
+    operations.extend([life::CAPTURE, life::ACTIVATE, life::SETTLED].map(str::to_owned));
+    let execution = execution::Capabilities::negotiate(&operations)
+        .unwrap()
+        .unwrap();
+    let capture =
+        Capture::parse_execution(&fixture["capture"], &identity, Some(&execution)).unwrap();
+    let proposal = schedule::Proposal::parse(
+        &fixture["proposal"]["proposal"],
+        &identity,
+        &capture.instance,
+        capture.provider,
+    )
+    .unwrap();
+    let parse = |value: &Value| {
+        schedule::Decision::parse(
+            value,
+            &proposal,
+            fixture["result"]["operation_id"].as_str().unwrap(),
+            schedule::DecisionRequest::Accept,
+        )
+    };
+    let decision = parse(&fixture["result"]).unwrap();
+    assert_eq!(decision.status, schedule::Status::Staged);
+    let proof = execution::Shutdown::parse(
+        &decision.transition.as_ref().unwrap()["work_execution_shutdown"],
+    )
+    .unwrap();
+    proof.verify_idle(&identity, &capture.instance).unwrap();
+    for mutation in [
+        "target_identity",
+        "foreign_instance",
+        "version",
+        "unjoined",
+        "effects",
+        "extra",
+        "null",
+    ] {
+        let mut value = fixture["result"].clone();
+        let proof = &mut value["transition"]["work_execution_shutdown"];
+        match mutation {
+            "target_identity" => {
+                proof["identity"]["session_id"] = json!(proposal.transition.target)
+            }
+            "foreign_instance" => proof["work_instance"] = json!("1".repeat(64)),
+            "version" => proof["execution_version"] = json!(true),
+            "unjoined" => proof["owners"]["launch"] = json!("active"),
+            "effects" => proof["effects_verified"] = json!(true),
+            "extra" => proof["unexpected"] = json!(false),
+            "null" => *proof = Value::Null,
+            _ => unreachable!(),
+        }
+        assert!(parse(&value).is_err(), "{mutation}");
+    }
+    // This parser preserves legacy scheduled-only receipts. The manager owns
+    // negotiated-required E verification and rejects its omission when active.
+    let mut legacy = fixture["result"].clone();
+    legacy["transition"]
+        .as_object_mut()
+        .unwrap()
+        .remove("work_execution_shutdown");
+    parse(&legacy).unwrap();
+    assert!(execution::Shutdown::parse(&legacy["transition"]["work_execution_shutdown"]).is_err());
+}

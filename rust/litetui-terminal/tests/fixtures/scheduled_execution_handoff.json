@@ -1,0 +1,223 @@
+{
+  "provenance": "Actual frozen source scheduled cron child 36164-0-1793806277788670100-cron; captured before native rejected the negotiated nested execution shutdown extension.",
+  "capture": {
+    "kind": "work_capture",
+    "version": 1,
+    "instance": "51b9d40b3e7990c12ef71bee6f7437a0d2a58d94faaa8b74aed057b76302df3e",
+    "activation_token": "f425439ca3a90904ee8f70551eee8f92e8cc50af8ec6b331f493601cf7e2e535",
+    "sequence": 0,
+    "identity": {
+      "session_id": "beaa7484-4320-4810-89db-473823e45fb4",
+      "agent_id": "91a1a3e9-4c4e-44dd-ba0b-1921e90285c0",
+      "backend": "custom",
+      "model": "switch-old"
+    },
+    "provider": "host",
+    "limits": {
+      "producers": 256,
+      "inputs": 256,
+      "payload_bytes": 65536,
+      "ledger_bytes": 33554432,
+      "envelope_bytes": 131072,
+      "reply_bytes": 1048576
+    },
+    "recovered": [],
+    "deferred_jobs": [],
+    "execution_version": 1,
+    "execution_receipt": {
+      "status": "absent",
+      "document": null,
+      "document_sha256": null,
+      "reason": null
+    }
+  },
+  "proposal": {
+    "type": "work_transition_proposed",
+    "version": 1,
+    "instance": "51b9d40b3e7990c12ef71bee6f7437a0d2a58d94faaa8b74aed057b76302df3e",
+    "sequence": 1,
+    "identity": {
+      "session_id": "beaa7484-4320-4810-89db-473823e45fb4",
+      "agent_id": "91a1a3e9-4c4e-44dd-ba0b-1921e90285c0",
+      "backend": "custom",
+      "model": "switch-old"
+    },
+    "scheduled_transition_version": 1,
+    "proposal": {
+      "proposal_id": "dc9bb47e-e79e-4297-aff5-77a78d95e5c6",
+      "proposal_token": "c37af4835ab150645374b80688c60d78dc5f522491677eac88c766e7432a6419",
+      "trigger": "automatic",
+      "job_id": "native-scheduled",
+      "kind": "cron",
+      "source": "scheduled",
+      "requested_profile": "strict",
+      "due_slot": "2026-11-04T10:31",
+      "prior_run_count": 0,
+      "job_snapshot": "{\"created\":\"2026-11-04T10:31:15\",\"enabled\":true,\"id\":\"native-scheduled\",\"interval_minutes\":0,\"kind\":\"cron\",\"label\":\"\",\"last_fired_slot\":null,\"new_conversation\":true,\"next_run_at\":null,\"owner_convo_id\":\"\",\"prompt\":\"CANONICAL SCHEDULED INPUT Δ\",\"run_count\":0,\"schedule\":\"* * * * *\",\"tool_profile\":\"strict\"}",
+      "job_sha256": "62ae9b7604b727f5a436d8b2d1e11208e6b4561c8060491b52b64f6c05675eb1",
+      "transition": {
+        "version": 1,
+        "kind": "conversation_transition_review",
+        "session_id": "beaa7484-4320-4810-89db-473823e45fb4",
+        "agent_id": "91a1a3e9-4c4e-44dd-ba0b-1921e90285c0",
+        "backend": "custom",
+        "model": "switch-old",
+        "snapshot": "95046b29b9a30a7713e8aedbc14b2c1a4eefff24f94a3113b0311d93eec54727",
+        "review": "01b457f481e913328263e01bd005fbbc439bbc6f94d73759da8eba4f00f93491",
+        "action_id": "9ec1ef19-c1d5-4a5d-a4ac-e0ff64d1daee",
+        "action": "new",
+        "target_session_id": "8e55ded3-ad92-4918-8801-3a986d240a27",
+        "title": null,
+        "effects": {
+          "materialize": true,
+          "provider_cleanup": false,
+          "lifecycle_hooks": false
+        }
+      }
+    }
+  },
+  "result": {
+    "kind": "work_schedule_result",
+    "version": 1,
+    "schedule_version": 1,
+    "operation_id": "g1-c10",
+    "old_instance": "51b9d40b3e7990c12ef71bee6f7437a0d2a58d94faaa8b74aed057b76302df3e",
+    "proposal_id": "dc9bb47e-e79e-4297-aff5-77a78d95e5c6",
+    "proposal_token": "c37af4835ab150645374b80688c60d78dc5f522491677eac88c766e7432a6419",
+    "pre_job_sha256": "62ae9b7604b727f5a436d8b2d1e11208e6b4561c8060491b52b64f6c05675eb1",
+    "status": "staged",
+    "reason": null,
+    "stamp": {
+      "slot": "2026-11-04T10:31",
+      "run_count": 1,
+      "job_snapshot": "{\"created\":\"2026-11-04T10:31:15\",\"enabled\":true,\"id\":\"native-scheduled\",\"interval_minutes\":0,\"kind\":\"cron\",\"label\":\"\",\"last_fired_slot\":\"2026-11-04T10:31\",\"new_conversation\":true,\"next_run_at\":null,\"owner_convo_id\":\"\",\"prompt\":\"CANONICAL SCHEDULED INPUT Δ\",\"run_count\":1,\"schedule\":\"* * * * *\",\"tool_profile\":\"strict\"}",
+      "job_sha256": "32d5b5670c6238e85a04791be23ec49090cc7c1f06443e99f31b03e174210759"
+    },
+    "transition": {
+      "version": 1,
+      "kind": "conversation_transition_apply",
+      "session_id": "8e55ded3-ad92-4918-8801-3a986d240a27",
+      "agent_id": "91a1a3e9-4c4e-44dd-ba0b-1921e90285c0",
+      "backend": "custom",
+      "model": "switch-old",
+      "from_session_id": "beaa7484-4320-4810-89db-473823e45fb4",
+      "snapshot": "95046b29b9a30a7713e8aedbc14b2c1a4eefff24f94a3113b0311d93eec54727",
+      "review": "01b457f481e913328263e01bd005fbbc439bbc6f94d73759da8eba4f00f93491",
+      "action_id": "9ec1ef19-c1d5-4a5d-a4ac-e0ff64d1daee",
+      "action": "new",
+      "target_session_id": "8e55ded3-ad92-4918-8801-3a986d240a27",
+      "title": null,
+      "status": "created",
+      "mutated": true,
+      "close_required": false,
+      "error": null,
+      "persistence": {
+        "transcript": true,
+        "settings": true
+      },
+      "lifecycle": {
+        "settled": true,
+        "hooks_completed": true,
+        "provider_cleanup_completed": true
+      },
+      "work_shutdown": {
+        "version": 1,
+        "instance": "51b9d40b3e7990c12ef71bee6f7437a0d2a58d94faaa8b74aed057b76302df3e",
+        "closing_sequence": 2,
+        "final_sequence": 2,
+        "admission_closed": true,
+        "worker_settled": true,
+        "callback_settled": true,
+        "process_settled": true,
+        "producer_ids": [],
+        "inputs": [],
+        "admission_ids": [],
+        "ledger_sha256": "6d45055c2bc690784ae50c0cb835d0552aa012f27cc125046ccfbb6aa1d8f0f0",
+        "effects_verified": false
+      },
+      "work_recapture_required": true,
+      "work_execution_shutdown": {
+        "version": 1,
+        "execution_version": 1,
+        "identity": {
+          "session_id": "beaa7484-4320-4810-89db-473823e45fb4",
+          "agent_id": "91a1a3e9-4c4e-44dd-ba0b-1921e90285c0",
+          "backend": "custom",
+          "model": "switch-old"
+        },
+        "work_instance": "51b9d40b3e7990c12ef71bee6f7437a0d2a58d94faaa8b74aed057b76302df3e",
+        "action_id": null,
+        "review_sha256": null,
+        "apply_operation_id": null,
+        "stop_ids": [],
+        "stop_operation_ids": [],
+        "launch_readback_published": false,
+        "stop_readbacks_published": [],
+        "effect_attempted": false,
+        "document_sha256": null,
+        "disposition": "idle",
+        "owners": {
+          "launch": "absent",
+          "delivery": "absent",
+          "admission": "absent",
+          "callbacks": "absent"
+        },
+        "input_id": null,
+        "admission_id": null,
+        "admission_closed": true,
+        "worker_settled": true,
+        "callback_settled": true,
+        "effects_verified": false
+      }
+    },
+    "deferred": {
+      "invocation_id": "41b7444d-bf9d-4425-bbeb-d257f6911ed2",
+      "job_id": "native-scheduled",
+      "kind": "cron",
+      "generation": 1,
+      "source": "scheduled",
+      "requested_profile": "strict",
+      "payload": {
+        "content": "CANONICAL SCHEDULED INPUT Δ",
+        "text": "CANONICAL SCHEDULED INPUT Δ",
+        "tool_profile": "strict",
+        "source": "scheduled"
+      },
+      "job_snapshot": "{\"created\":\"2026-11-04T10:31:15\",\"enabled\":true,\"id\":\"native-scheduled\",\"interval_minutes\":0,\"kind\":\"cron\",\"label\":\"\",\"last_fired_slot\":\"2026-11-04T10:31\",\"new_conversation\":true,\"next_run_at\":null,\"owner_convo_id\":\"\",\"prompt\":\"CANONICAL SCHEDULED INPUT Δ\",\"run_count\":1,\"schedule\":\"* * * * *\",\"tool_profile\":\"strict\"}",
+      "job_sha256": "32d5b5670c6238e85a04791be23ec49090cc7c1f06443e99f31b03e174210759",
+      "epoch": {
+        "instance": "51b9d40b3e7990c12ef71bee6f7437a0d2a58d94faaa8b74aed057b76302df3e",
+        "identity": {
+          "session_id": "beaa7484-4320-4810-89db-473823e45fb4",
+          "agent_id": "91a1a3e9-4c4e-44dd-ba0b-1921e90285c0",
+          "backend": "custom",
+          "model": "switch-old"
+        },
+        "provider": "host"
+      },
+      "target": {
+        "session_id": "8e55ded3-ad92-4918-8801-3a986d240a27",
+        "agent_id": "91a1a3e9-4c4e-44dd-ba0b-1921e90285c0"
+      },
+      "shutdown": {
+        "version": 1,
+        "instance": "51b9d40b3e7990c12ef71bee6f7437a0d2a58d94faaa8b74aed057b76302df3e",
+        "closing_sequence": 2,
+        "final_sequence": 2,
+        "admission_closed": true,
+        "worker_settled": true,
+        "callback_settled": true,
+        "process_settled": true,
+        "producer_ids": [],
+        "inputs": [],
+        "admission_ids": [],
+        "ledger_sha256": "6d45055c2bc690784ae50c0cb835d0552aa012f27cc125046ccfbb6aa1d8f0f0",
+        "effects_verified": false
+      },
+      "state": "held",
+      "reason": "Live owned invocation awaits a fresh Work activation"
+    },
+    "deferred_journal_sha256": "eee8b73f9b65686a77d4c133f898fb8dc89e99d4333699e922ea524ad86371ff",
+    "close_required": false
+  }
+}

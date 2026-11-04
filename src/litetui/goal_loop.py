@@ -23,6 +23,8 @@ from litetui import background_input, paths, scheduler, seat_authority
 from litetui.tool_policy import INTERACTIVE
 
 GOAL_FILENAME = "goal.json"
+START_INSTRUCTION = "Work autonomously until the transcript contains verifiable completion evidence."
+RESUME_INSTRUCTION = "Resume from the existing transcript evidence."
 _INTERVAL = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
 _VERDICTS = frozenset({"met", "not_met", "blocked", "impossible"})
 
@@ -340,14 +342,18 @@ class GoalRuntime:
             self.app._pending_input.append(item)
 
 
-def _deliver_goal_turn(app: Any, state: GoalState, instruction: str) -> None:
+def goal_turn_item(state: GoalState, instruction: str) -> dict:
     text = f"[goal {state.id}]\nObjective: {state.objective}\n{instruction}"
-    item = {"content": text, "text": text, "tool_profile": state.tool_profile,
+    return {"content": text, "text": text, "tool_profile": state.tool_profile,
             "goal_continuation": True, "source": seat_authority.goal_source(state)}
+
+
+def _deliver_goal_turn(app: Any, state: GoalState, instruction: str):
+    item = goal_turn_item(state, instruction)
+    text = item["content"]
     background_input.require_recapture_complete(app)
     if background_input.enabled(app):
-        background_input.start_goal(app, state, item)
-        return
+        return background_input.start_goal(app, state, item)
     if app._chat_running():
         app._user_bubble(text, False, queued=True)
         app._pending_input.append({
@@ -410,7 +416,7 @@ def goal_command(app: Any, arg: str) -> None:
         state.status = "active"
         state.updated = datetime.now().isoformat(timespec="seconds")
         save_goal(app.convo_dir, state)
-        _deliver_goal_turn(app, state, "Resume from the existing transcript evidence.")
+        _deliver_goal_turn(app, state, RESUME_INSTRUCTION)
         return
 
     app._materialise_convo()
@@ -423,8 +429,7 @@ def goal_command(app: Any, arg: str) -> None:
     _deliver_goal_turn(
         app,
         state,
-        "Work autonomously until the transcript contains verifiable completion "
-        "evidence.",
+        START_INSTRUCTION,
     )
 
 

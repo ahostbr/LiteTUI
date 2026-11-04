@@ -51,7 +51,9 @@ def report_failure(app, event, message):
 
 
 async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=False):
-    from litetui import background_input, conversation_rewrite
+    from litetui import background_input, conversation_rewrite, native_work_execution
+    if native_work_execution.pre_turn_hook(app):
+        allow_prompt = False
     # A prior observe hook can consume cancellation after its approval closes.
     # Recheck each authorization so later hooks cannot revive input authority.
     if document.get("event") == "tool_after":
@@ -130,7 +132,8 @@ def queue_lifecycle(app, event, conversation_id=None):
         return
     ctx = {**context(app), "conversation_id": conversation_id}
     app._hook_lifecycle.append((event, ctx, snapshot(app)))
-    if (app.is_running and not getattr(app, "_hook_shutting_down", False)
+    from litetui import native_work_execution
+    if (app.is_running and not native_work_execution.pre_turn_hook(app) and not getattr(app, "_hook_shutting_down", False)
             and getattr(app, "_conversation_transition_hook_outcomes", None) is None):
         app.run_worker(drain_lifecycle(app), group="hooks", exit_on_error=False)
 

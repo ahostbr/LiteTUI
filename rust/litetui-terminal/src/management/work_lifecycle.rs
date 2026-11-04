@@ -10,6 +10,7 @@ pub(super) struct Control {
     enabled: Option<Profile>,
     supported: bool,
     scheduled: Option<crate::scheduled_transition::Capabilities>,
+    execution: Option<crate::work_execution_controls::Capabilities>,
     expected_deferred: Option<lifecycle::DeferredJob>,
     active: bool,
     rebind: bool,
@@ -81,6 +82,9 @@ impl Management {
             execution: execution.to_owned(),
         })
     }
+    pub(super) fn execution_ledger(&self) -> Option<&lifecycle::Ledger> {
+        self.work_lifecycle.ledger.as_ref()
+    }
     pub fn work_lifecycle_active(&self) -> bool {
         self.work_lifecycle.active
     }
@@ -148,6 +152,7 @@ impl Management {
         ledger.verify_shutdown(
             proof.ok_or_else(|| fail("Identity mutation omitted Work shutdown proof"))?,
         )?;
+        self.verify_execution_shutdown(&value["work_execution_shutdown"])?;
         self.work_lifecycle.retired_shutdown = proof.cloned();
         self.work_lifecycle.active = false;
         self.work_lifecycle.rebind = true;
@@ -179,6 +184,8 @@ impl Management {
         self.work_lifecycle.supported = count == 3;
         self.work_lifecycle.scheduled =
             crate::scheduled_transition::Capabilities::negotiate(operations)?;
+        self.work_lifecycle.execution =
+            crate::work_execution_controls::Capabilities::negotiate(operations)?;
         Ok(())
     }
     fn lifecycle_identity(&self) -> io::Result<lifecycle::Identity> {
@@ -236,7 +243,11 @@ impl Management {
             ));
         }
         self.ensure_drained()?;
-        let mut command = self.lifecycle_identity()?.request(lifecycle::CAPTURE);
+        let identity = self.lifecycle_identity()?;
+        let mut command = match self.work_lifecycle.execution.as_ref() {
+            Some(capabilities) => capabilities.capture_request(&identity),
+            None => identity.request(lifecycle::CAPTURE),
+        };
         let id = self
             .wire
             .register_request()
@@ -284,7 +295,11 @@ impl Management {
         match pending.phase {
             PendingPhase::Capture => {
                 self.ensure_drained()?;
-                let capture = lifecycle::Capture::parse(result, &self.lifecycle_identity()?)?;
+                let capture = lifecycle::Capture::parse_execution(
+                    result,
+                    &self.lifecycle_identity()?,
+                    self.work_lifecycle.execution.as_ref(),
+                )?;
                 if let Some(expected) = self.work_lifecycle.expected_deferred.as_ref()
                     && (capture.deferred_jobs.as_slice() != std::slice::from_ref(expected)
                         || !capture.recovered.is_empty())
@@ -311,10 +326,17 @@ impl Management {
                         "Work lifecycle launch profile differs from verified startup",
                     ));
                 }
-                let mut command = match self.work_lifecycle.scheduled.as_ref() {
-                    Some(capabilities) => capture.activation_request_scheduled(capabilities),
-                    None => capture.activation_request(),
+                let mut command = match self.work_lifecycle.execution.as_ref() {
+                    Some(capabilities) => capture.activation_request_execution(
+                        self.work_lifecycle.scheduled.as_ref(),
+                        capabilities,
+                    ),
+                    None => match self.work_lifecycle.scheduled.as_ref() {
+                        Some(capabilities) => capture.activation_request_scheduled(capabilities),
+                        None => capture.activation_request(),
+                    },
                 };
+                self.execution_capture(&capture)?;
                 let mut ledger = lifecycle::Ledger::new(capture, seat);
                 if let Some(capabilities) = self.work_lifecycle.scheduled.as_ref() {
                     ledger.request_scheduled_transitions(capabilities)?;
@@ -355,8 +377,10 @@ impl Management {
                     .ok_or_else(|| fail("Work activation lost deferred startup"))?;
                 if self.closing {
                     ledger.begin_close();
+                    self.execution_activated();
                     Ok(Step::Ignore)
                 } else {
+                    self.execution_activated();
                     Ok(*startup)
                 }
             }

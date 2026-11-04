@@ -162,7 +162,7 @@ pub enum Provider {
     Claude,
 }
 impl Provider {
-    fn parse(v: &Value, key: &str) -> io::Result<Self> {
+    pub(crate) fn parse(v: &Value, key: &str) -> io::Result<Self> {
         match text(v, key, 16)?.as_str() {
             "host" => Ok(Self::Host),
             "codex" => Ok(Self::Codex),
@@ -232,7 +232,7 @@ pub struct Producer {
     pub execution: Option<String>,
 }
 impl Producer {
-    fn parse(v: &Value) -> io::Result<Self> {
+    pub(crate) fn parse(v: &Value) -> io::Result<Self> {
         keys(
             v,
             &[
@@ -293,7 +293,7 @@ pub struct Input {
     pub revision: u64,
 }
 impl Input {
-    fn parse(v: &Value) -> io::Result<Self> {
+    pub(crate) fn parse(v: &Value) -> io::Result<Self> {
         keys(
             v,
             &[
@@ -353,7 +353,7 @@ impl Payload {
         }
         Ok(payload)
     }
-    fn evidence(
+    pub(crate) fn evidence(
         v: &Value,
         expected_source: &str,
         requested: Profile,
@@ -476,7 +476,7 @@ pub struct Admission {
     pub delivery: Option<(String, String)>,
 }
 impl Admission {
-    fn parse(v: &Value) -> io::Result<Self> {
+    pub(crate) fn parse(v: &Value) -> io::Result<Self> {
         keys(
             v,
             &[
@@ -774,9 +774,41 @@ pub struct Capture {
     pub provider: Provider,
     pub recovered: Vec<Recovered>,
     pub deferred_jobs: Vec<DeferredJob>,
+    pub execution_receipt: Option<crate::work_execution_controls::Recovery>,
 }
 impl Capture {
     pub fn parse(v: &Value, expected: &Identity) -> io::Result<Self> {
+        Self::parse_execution(v, expected, None)
+    }
+    pub fn parse_execution(
+        v: &Value,
+        expected: &Identity,
+        execution: Option<&crate::work_execution_controls::Capabilities>,
+    ) -> io::Result<Self> {
+        let execution_receipt = if execution.is_some() {
+            if number(v, "execution_version", true)? != 1 {
+                return Err(bad("Work execution capture version changed"));
+            }
+            Some(crate::work_execution_controls::Recovery::parse(
+                &v["execution_receipt"],
+                expected,
+            )?)
+        } else {
+            None
+        };
+        let mut legacy = v.clone();
+        if execution.is_some() {
+            legacy
+                .as_object_mut()
+                .ok_or_else(|| bad("Work capture is not an object"))?
+                .remove("execution_version");
+            legacy
+                .as_object_mut()
+                .expect("capture object")
+                .remove("execution_receipt");
+        }
+        bounded(v, REPLY_BYTES)?;
+        let v = &legacy;
         bounded(v, REPLY_BYTES)?;
         keys(
             v,
@@ -900,7 +932,21 @@ impl Capture {
             provider: Provider::parse(v, "provider")?,
             recovered,
             deferred_jobs,
+            execution_receipt,
         })
+    }
+    pub fn activation_request_execution(
+        &self,
+        scheduled: Option<&crate::scheduled_transition::Capabilities>,
+        _: &crate::work_execution_controls::Capabilities,
+    ) -> Value {
+        let mut v = if let Some(cap) = scheduled {
+            self.activation_request_scheduled(cap)
+        } else {
+            self.activation_request()
+        };
+        v["execution_version"] = json!(1);
+        v
     }
     pub fn activation_request_scheduled(
         &self,
@@ -1083,6 +1129,7 @@ pub struct Ledger {
     failed: bool,
     local_closing: bool,
     shutdown: bool,
+    shutdown_proof: Option<Value>,
     sequence: u64,
     producers: BTreeMap<String, ProducerRecord>,
     inputs: BTreeMap<String, InputRecord>,
@@ -1139,6 +1186,7 @@ impl Ledger {
             failed: false,
             local_closing: false,
             shutdown: false,
+            shutdown_proof: None,
             sequence: 0,
             producers,
             inputs,
@@ -1152,6 +1200,221 @@ impl Ledger {
     }
     pub fn capture(&self) -> &Capture {
         &self.capture
+    }
+    /// Compare immutable launch references with genuine events already consumed by this ledger.
+    pub fn verify_execution_document(
+        &self,
+        d: &crate::work_execution_controls::Document,
+    ) -> io::Result<()> {
+        if self.failed
+            || d.identity != self.capture.identity
+            || d.work_instance != self.capture.instance
+            || d.provider != self.capture.provider
+        {
+            return Err(bad(
+                "Execution receipt belongs to a different or failed Work epoch",
+            ));
+        }
+        let p = self
+            .producers
+            .get(&d.producer.id)
+            .ok_or_else(|| bad("Execution producer has not been observed"))?;
+        let i = self
+            .inputs
+            .get(&d.input.id)
+            .ok_or_else(|| bad("Execution input has not been observed"))?;
+        if p.producer != d.producer
+            || p.input.as_deref() != Some(d.input.id.as_str())
+            || i.input != d.input
+            || i.recovered
+            || i.epoch_instance != d.work_instance
+        {
+            return Err(bad("Execution receipt changed observed Work references"));
+        }
+        Payload::parse(&d.wire["payload"], &i.input)?;
+        Ok(())
+    }
+    /// Return only the genuine admission already observed for this exact immutable launch input.
+    pub fn execution_admission(
+        &self,
+        document: &crate::work_execution_controls::Document,
+    ) -> io::Result<Option<Admission>> {
+        self.verify_execution_document(document)?;
+        Ok(self.inputs[&document.input.id].admission.clone())
+    }
+    /// A sampled lifecycle may lag newer genuine events; it cannot invent ownership or regress a terminal proof.
+    pub fn verify_execution_lifecycle(
+        &self,
+        d: &crate::work_execution_controls::Document,
+        l: &crate::work_execution_controls::Lifecycle,
+    ) -> io::Result<()> {
+        self.verify_execution_document(d)?;
+        let p = &self.producers[&d.producer.id];
+        let i = &self.inputs[&d.input.id];
+        let producer_ok = match l.producer_phase {
+            Some(ProducerState::Registered) => p.state != ProducerState::Recovered,
+            Some(ProducerState::Running) => matches!(
+                p.state,
+                ProducerState::Running | ProducerState::StopRequested | ProducerState::Retired
+            ),
+            Some(ProducerState::StopRequested) => matches!(
+                p.state,
+                ProducerState::StopRequested | ProducerState::Retired
+            ),
+            Some(ProducerState::Retired) => p.state == ProducerState::Retired,
+            _ => false,
+        };
+        let input_ok = match l.input_state {
+            Some(InputState::Queued) => true,
+            Some(InputState::Held | InputState::Claiming) => i.state != InputState::Queued,
+            Some(InputState::Admitted) => matches!(
+                i.state,
+                InputState::Admitted | InputState::Uncertain | InputState::Settled
+            ),
+            Some(InputState::Uncertain) => matches!(
+                i.state,
+                InputState::Uncertain | InputState::Settled | InputState::Reconciled
+            ),
+            Some(InputState::Cancelled) => i.state == InputState::Cancelled,
+            Some(InputState::Settled) => i.state == InputState::Settled,
+            Some(InputState::Reconciled) => i.state == InputState::Reconciled,
+            None => false,
+        };
+        if !producer_ok
+            || !input_ok
+            || l.admission
+                .as_ref()
+                .is_some_and(|a| i.admission.as_ref() != Some(a))
+            || l.settlement
+                .as_ref()
+                .is_some_and(|s| i.settled.as_ref() != Some(s))
+        {
+            return Err(bad(
+                "Execution lifecycle invents or contradicts observed Work progress",
+            ));
+        }
+        Ok(())
+    }
+    /// Cross-check execution Quit evidence against the independently verified Work close cutoff.
+    pub fn verify_execution_shutdown(
+        &self,
+        e: &crate::work_execution_controls::Shutdown,
+        review: Option<&crate::work_execution_controls::Review>,
+    ) -> io::Result<()> {
+        let proof = self
+            .shutdown_proof
+            .as_ref()
+            .filter(|_| self.shutdown && !self.failed)
+            .ok_or_else(|| bad("Execution shutdown requires verified Work shutdown first"))?;
+        if e.identity != self.capture.identity || e.work_instance != self.capture.instance {
+            return Err(bad("Execution shutdown changed observed Work epoch"));
+        }
+        let input = optional_uuid(&e.wire, "input_id")?;
+        let admission = optional_uuid(&e.wire, "admission_id")?;
+        let Some(r) = review else {
+            if input.is_some() || admission.is_some() || e.wire["disposition"] != "idle" {
+                return Err(bad("Execution shutdown has no retained review owner"));
+            }
+            return Ok(());
+        };
+        if r.identity != self.capture.identity
+            || r.work_instance != self.capture.instance
+            || r.provider != self.capture.provider
+            || e.wire["action_id"] != r.action_id
+        {
+            return Err(bad(
+                "Execution shutdown review belongs to another Work epoch",
+            ));
+        }
+        let kind = match r.action {
+            crate::work_execution_controls::Action::JobRun if r.edit.section == "loops" => {
+                ProducerKind::Loop
+            }
+            crate::work_execution_controls::Action::JobRun => ProducerKind::Cron,
+            _ => ProducerKind::Goal,
+        };
+        let matches_producer = |p: &ProducerRecord| {
+            p.producer.kind == kind
+                && p.producer.object == r.target_id
+                && p.producer.generation == r.producer_generation
+                && p.producer.session == r.identity.session
+        };
+        let matches_input = |i: &InputRecord| {
+            !i.recovered
+                && i.epoch_instance == r.work_instance
+                && i.input.session == r.identity.session
+                && i.input.source == r.payload.source
+                && i.input.requested == r.payload.profile
+                && r.wire["payload_sha256"] == i.input.payload_sha256
+                && self
+                    .producers
+                    .get(&i.input.producer)
+                    .is_some_and(matches_producer)
+        };
+        if let Some(id) = input {
+            let i = self
+                .inputs
+                .get(&id)
+                .filter(|i| matches_input(i))
+                .ok_or_else(|| {
+                    bad("Execution shutdown input does not match reviewed generation/payload")
+                })?;
+            if i.admission.as_ref().map(|a| a.id.as_str()) != admission.as_deref() {
+                return Err(bad(
+                    "Execution shutdown omitted or changed actual Work admission",
+                ));
+            }
+            let cutoff = self.cutoff.as_ref().expect("verified cutoff");
+            let producer = &self.producers[&i.input.producer];
+            if producer.state != ProducerState::Retired
+                && !cutoff.producers.contains(&i.input.producer)
+            {
+                return Err(bad(
+                    "Execution shutdown lacks producer retirement/cutoff proof",
+                ));
+            }
+            // Already-settled records intentionally leave the active shutdown cutoff.
+            // Their exact prior Work terminal event supplies the independent proof instead.
+            let disposition = match i.state {
+                InputState::Settled if i.settled.is_some() => "settled",
+                InputState::Reconciled if i.reconciled.is_some() => "reconciled",
+                InputState::Cancelled if producer.state == ProducerState::Retired => "cancelled",
+                _ => {
+                    if !cutoff.inputs.contains(&id) && !cutoff.late_inputs.contains(&id)
+                        || admission
+                            .as_ref()
+                            .is_some_and(|a| !cutoff.admissions.contains(a))
+                    {
+                        return Err(bad(
+                            "Execution shutdown refs are outside the verified Work cutoff",
+                        ));
+                    }
+                    proof["inputs"]
+                        .as_array()
+                        .expect("verified shutdown inputs")
+                        .iter()
+                        .find(|v| v["input_id"] == id)
+                        .and_then(|row| row["disposition"].as_str())
+                        .ok_or_else(|| bad("Execution shutdown omitted its input disposition"))?
+                }
+            };
+            match e.wire["disposition"].as_str() {
+                Some("admitted_settled") if disposition != "settled" => {
+                    return Err(bad(
+                        "Execution shutdown overstated uncertain admission as settled",
+                    ));
+                }
+                Some("cancelled_before_admission") if disposition != "cancelled" => {
+                    return Err(bad("Execution shutdown invented cancellation"));
+                }
+                _ => {}
+            }
+        } else if admission.is_some() {
+            return Err(bad("Execution shutdown admission lacks its exact input"));
+        }
+        // Null refs are attested by the exact invocation proof. Matching a job,
+        // generation and payload cannot attribute an unrelated automatic firing.
+        Ok(())
     }
     pub fn sequence(&self) -> u64 {
         self.sequence
@@ -1184,7 +1447,15 @@ impl Ledger {
             if self.scheduled_requested {
                 fields.push("scheduled_transition_version");
             }
+            if self.capture.execution_receipt.is_some() {
+                fields.push("execution_version");
+            }
             keys(v, &fields)?;
+            if self.capture.execution_receipt.is_some()
+                && number(v, "execution_version", true)? != 1
+            {
+                return Err(bad("Work execution activation echo changed"));
+            }
             if self.scheduled_requested && number(v, "scheduled_transition_version", true)? != 1 {
                 return Err(bad("Scheduled transition activation echo changed"));
             }
@@ -1827,6 +2098,7 @@ impl Ledger {
             self.failed = true;
         } else {
             self.shutdown = true;
+            self.shutdown_proof = Some(v.clone());
         }
         result
     }
@@ -1918,4 +2190,62 @@ impl Ledger {
         }
         Ok(())
     }
+}
+
+/// Validate a sampled genuine settlement without granting admission or advancing the ledger.
+pub(crate) fn validate_execution_settlement(
+    v: &Value,
+    identity: &Identity,
+    instance: &str,
+) -> io::Result<()> {
+    bounded(v, ENVELOPE_BYTES)?;
+    keys(
+        v,
+        &[
+            "type",
+            "version",
+            "instance",
+            "sequence",
+            "identity",
+            "input",
+            "admission",
+            "outcome",
+            "proof",
+            "history_sha256",
+            "ledger_sha256",
+        ],
+    )?;
+    if v["type"] != "work_settled"
+        || number(v, "version", true)? != 1
+        || hash(v, "instance")? != instance
+        || Identity::parse(&v["identity"])? != *identity
+    {
+        return Err(bad("Execution settlement changed Work epoch"));
+    }
+    number(v, "sequence", true)?;
+    let input = Input::parse(&v["input"])?;
+    let admission = Admission::parse(&v["admission"])?;
+    if input.session != identity.session
+        || admission.input != input.id
+        || admission.origin.session != input.session
+        || admission.requested != input.requested
+        || !matches!(
+            text(v, "outcome", 16)?.as_str(),
+            "completed" | "cancelled" | "failed" | "deferred"
+        )
+    {
+        return Err(bad("Execution settlement changed Work input/admission"));
+    }
+    proof(
+        &v["proof"],
+        &[
+            "worker_retired",
+            "callbacks_retired",
+            "streams_retired",
+            "input_durable",
+        ],
+    )?;
+    hash(v, "history_sha256")?;
+    hash(v, "ledger_sha256")?;
+    Ok(())
 }

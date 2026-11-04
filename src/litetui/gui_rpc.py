@@ -57,6 +57,7 @@ OPERATIONS = (
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
     "work.native_capture", "work.native_activate", "work.native_settled",
+    "work.native_execution_validate", "work.native_execution_apply", "work.native_execution_readback", "work.native_execution_stop",
     "work.native_schedule_accept", "work.native_schedule_decline", "work.native_schedule_readback",
     "work.native_deferred_validate", "work.native_deferred_discard", "work.native_deferred_readback",
     "work.native_snapshot", "work.native_page", "work.native_tail", "work.native_calendar",
@@ -525,13 +526,18 @@ def dispatch(app, cmd):
     """Execute nonblocking operations on the existing app loop."""
     from litetui import native_engine
     native_engine.operation_allowed(app, str(cmd.get("type", "")))
-    from litetui import native_schedule
+    from litetui import native_schedule, native_work_execution
+    native_work_execution.operation_allowed(app, str(cmd.get("type", "")))
     native_schedule.operation_allowed(app, str(cmd.get("type", "")))
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
     operation = str(cmd.get("type", ""))[4:]
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
+    if operation in {"work.native_execution_validate", "work.native_execution_readback"}:
+        return getattr(native_work_execution, operation.removeprefix("work.native_execution_"))(app, cmd)
+    if operation.startswith("work.native_execution_"):
+        raise ValueError("Explicit execution requires asynchronous dispatch")
     if operation in {"history.native_snapshot", "history.native_page"}:
         from litetui import native_history
         return native_history.snapshot(app, cmd) if operation.endswith("snapshot") else native_history.page(app, cmd)
@@ -856,6 +862,15 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    from litetui import native_work_execution
+    if operation in native_work_execution.OPERATIONS:
+        token = OPERATION_CONTEXT.set(cmd.get("id"))
+        try:
+            handler = getattr(native_work_execution, operation.removeprefix(native_work_execution.PREFIX))
+            return await handler(app, cmd) if operation.endswith(("_apply", "_stop")) else handler(app, cmd)
+        finally:
+            OPERATION_CONTEXT.reset(token)
+    native_work_execution.operation_allowed(app, operation)
     # A known scheduled decision/readback grants no execution by itself. Route
     # it before generic shutdown refusal so a closing pre-stamp owner can return
     # its correlated safe refusal. accept still revalidates execution and every

@@ -229,6 +229,17 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         }
         return false;
     }
+    if app
+        .live
+        .as_ref()
+        .is_some_and(|chat| chat.execution_pending())
+        && key.code == KeyCode::Esc
+        && key.kind == KeyEventKind::Press
+        && key.modifiers.is_empty()
+    {
+        app.open_stop();
+        return false;
+    }
     if app.has_live_work() {
         app.live.as_mut().expect("Work").work.key(key);
         return false;
@@ -1213,6 +1224,14 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 }
             }
             if !quitting
+                && let Some(action_id) = app.live.as_mut().expect("live").take_execution_stop()
+                && let Err(error) = runtime.execution_stop(action_id)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
+            if !quitting
                 && let Some(prompt_id) = app.live.as_mut().expect("live").take_abort()
                 && let Err(error) = runtime.abort(prompt_id)
             {
@@ -1333,13 +1352,20 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
             }
-            if !quitting
-                && let Some(intent) = app.live.as_mut().expect("live").work.take_intent()
-                && let Err(error) = runtime.work(intent)
-            {
-                view_failure = Some(error.to_string());
-                app.finish_live(view_failure.clone());
-                let _ = runtime.quit();
+            if !quitting && let Some(intent) = app.live.as_mut().expect("live").work.take_intent() {
+                if let Err(error) = app.live.as_mut().expect("live").prepare_work(&intent) {
+                    app.live.as_mut().expect("live").work.observe(
+                        litetui_terminal::work_view::Update {
+                            generation: intent.generation,
+                            data: litetui_terminal::work_view::Data::Rejected(error.to_string()),
+                        },
+                    );
+                    app.notice = error.to_string();
+                } else if let Err(error) = runtime.work(intent) {
+                    view_failure = Some(error.to_string());
+                    app.finish_live(view_failure.clone());
+                    let _ = runtime.quit();
+                }
             }
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").settings.take_intent()
@@ -4581,5 +4607,167 @@ mod work_controls_clipboard_tests {
         assert_eq!((clipboard.reads, clipboard.copies), (0, 0));
         assert_eq!(main_draft(&app), before);
         assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+    }
+}
+
+#[cfg(test)]
+mod execution_keys_tests {
+    use super::*;
+    use litetui_terminal::{
+        live::Observation, work_execution_controls as execution, work_lifecycle as life,
+        work_protocol as p, work_view as v,
+    };
+    use ratatui::backend::TestBackend;
+    use serde_json::{Value, json};
+    fn paint(app: &mut Demo) {
+        Terminal::new(TestBackend::new(90, 36))
+            .unwrap()
+            .draw(|frame| ui::draw(frame, app))
+            .unwrap();
+    }
+    fn press(app: &mut Demo, router: &mut KeyRouter, code: KeyCode) {
+        router.handle(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    fn reads(app: &mut Demo, fixture: &Value) {
+        let raw = &fixture["snapshot"];
+        let snapshot = p::Snapshot::parse(
+            raw,
+            &p::Identity {
+                session: raw["session_id"].as_str().unwrap().into(),
+                agent: raw["agent_id"].as_str().unwrap().into(),
+                backend: raw["backend"].as_str().unwrap().into(),
+                model: raw["model"].as_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        while let Some(intent) = app.live.as_mut().unwrap().work.take_intent() {
+            let data = match intent.request {
+                v::Request::Snapshot => v::Data::Snapshot(Box::new(snapshot.clone())),
+                v::Request::Page { section, offset } => {
+                    let mut page = snapshot.request();
+                    let rows = &fixture["selected"][section.key()];
+                    page["kind"] = json!("work_page");
+                    page["section"] = json!(section.key());
+                    page["offset"] = json!(offset);
+                    page["rows"] = rows.clone();
+                    page["total"] = json!(rows.as_array().unwrap().len());
+                    page["next_offset"] = Value::Null;
+                    v::Data::Page(p::Page::parse(&page, &snapshot, section, offset, 32).unwrap())
+                }
+                other => panic!("Unexpected read {other:?}"),
+            };
+            app.observe_live(Observation::Work(v::Update {
+                generation: intent.generation,
+                data,
+            }))
+            .unwrap();
+        }
+    }
+    #[test]
+    fn pending_launch_escape_reaches_exact_stop_and_preserves_composer_selection() {
+        let all: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/work_execution_controls.json"
+        ))
+        .unwrap();
+        let f = all["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "goal_start-cron")
+            .unwrap();
+        let mut app = Demo::live(
+            f["snapshot"]["backend"].as_str().unwrap().into(),
+            f["snapshot"]["model"].as_str().unwrap().into(),
+        );
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("keep composer α selected Ω");
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let before = (
+            app.composer.text().to_owned(),
+            app.composer.selected_text().to_owned(),
+            app.composer.before_cursor().to_owned(),
+        );
+        let mut router = KeyRouter::default();
+        press(&mut app, &mut router, KeyCode::F(1));
+        reads(&mut app, f);
+        for _ in 0..4 {
+            paint(&mut app);
+            press(&mut app, &mut router, KeyCode::Tab);
+            reads(&mut app, f);
+        }
+        paint(&mut app);
+        press(&mut app, &mut router, KeyCode::Char('n'));
+        paint(&mut app);
+        paste(
+            &mut app,
+            f["review"]["draft"]["objective"].as_str().unwrap(),
+        );
+        press(&mut app, &mut router, KeyCode::Enter);
+        let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        let v::Request::ExecutionValidate(edit) = intent.request else {
+            panic!("Expected inert goal validation")
+        };
+        let review = execution::Review::parse(
+            &f["review"],
+            &edit,
+            f["capture"]["instance"].as_str().unwrap(),
+            life::Provider::Host,
+        )
+        .unwrap();
+        app.observe_live(Observation::Work(v::Update {
+            generation: intent.generation,
+            data: v::Data::ExecutionReview(Box::new(review.clone())),
+        }))
+        .unwrap();
+        let mut apply = None;
+        for _ in 0..2000 {
+            paint(&mut app);
+            press(&mut app, &mut router, KeyCode::Enter);
+            if let Some(intent) = app.live.as_mut().unwrap().work.take_intent() {
+                apply = Some(intent);
+                break;
+            }
+        }
+        let apply = apply.expect("Painted whole exact review");
+        app.live.as_mut().unwrap().prepare_work(&apply).unwrap();
+        app.observe_live(Observation::WorkLaunchPending {
+            action_id: review.action_id.clone(),
+            generation: apply.generation,
+            reason: "Waiting for actual admission".into(),
+        })
+        .unwrap();
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .submit("must remain unsent")
+                .is_err()
+        );
+        paint(&mut app);
+        press(&mut app, &mut router, KeyCode::Esc);
+        assert!(app.stop_open());
+        press(&mut app, &mut router, KeyCode::Enter);
+        assert!(app.live.as_mut().unwrap().take_execution_stop().is_none());
+        press(&mut app, &mut router, KeyCode::Esc);
+        paint(&mut app);
+        press(&mut app, &mut router, KeyCode::Tab);
+        press(&mut app, &mut router, KeyCode::Enter);
+        assert_eq!(
+            app.live.as_mut().unwrap().take_execution_stop(),
+            Some(review.action_id)
+        );
+        assert!(app.live.as_mut().unwrap().take_execution_stop().is_none());
+        assert!(app.live.as_mut().unwrap().take_abort().is_none());
+        assert_eq!(
+            (
+                app.composer.text().to_owned(),
+                app.composer.selected_text().to_owned(),
+                app.composer.before_cursor().to_owned()
+            ),
+            before
+        );
+        assert!(app.live.as_ref().unwrap().execution_pending());
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
     }
 }

@@ -89,7 +89,15 @@ pub struct Row {
     pub state: ReplyState,
     pub stop_reason: Option<String>,
 }
+struct LaunchReservation {
+    action_id: String,
+    generation: u64,
+    stop_requested: bool,
+    stop_sent: bool,
+    stop_handed_off: bool,
+}
 pub struct Chat {
+    launch: Option<LaunchReservation>,
     schedule_proposal: Option<String>,
     schedule_reserved: bool,
     schedule_prompt_held: bool,
@@ -152,6 +160,7 @@ pub struct Chat {
 impl Chat {
     pub fn new(backend: String, model: String) -> Self {
         Self {
+            launch: None,
             schedule_proposal: None,
             schedule_reserved: false,
             schedule_prompt_held: false,
@@ -215,6 +224,7 @@ impl Chat {
     pub fn decide_schedule(&mut self, external_idle: bool) -> Option<(String, bool)> {
         let id = self.schedule_proposal.take()?;
         let idle = external_idle
+            && self.launch.is_none()
             && self.ready
             && !self.schedule_prompt_held
             && !self.busy
@@ -262,6 +272,7 @@ impl Chat {
         rewriting: bool,
     ) -> io::Result<()> {
         if !self.ready
+            || self.launch.is_some()
             || self.busy
             || !self.work_uncertain.is_empty()
             || self.closed
@@ -471,20 +482,84 @@ impl Chat {
     pub fn rewrite_pending(&self) -> bool {
         self.rewrite_pending || self.rewrite.blocks_composer() || self.compact.blocks_composer()
     }
+    pub fn prepare_work(&mut self, intent: &crate::work_view::Intent) -> io::Result<()> {
+        let crate::work_view::Request::ExecutionApply(review) = &intent.request else {
+            return Ok(());
+        };
+        if !self.ready
+            || self.busy
+            || self.closed
+            || self.quitting
+            || self.launch.is_some()
+            || self.pending.is_some()
+            || self.queue_pending
+            || self.rewrite_pending
+            || self.compact_active
+            || !self.work_uncertain.is_empty()
+            || !self.work_admissions.is_empty()
+            || !self.approvals.is_empty()
+            || !self.questions.is_empty()
+            || self.work.pending_generation() != Some(intent.generation)
+        {
+            return Err(io::Error::other(
+                "Finish current work before starting this invocation",
+            ));
+        }
+        self.prompt_budget(review.wire["payload"]["text"].as_str().ok_or_else(|| {
+            io::Error::other("Execution review omitted its exact display payload")
+        })?)?;
+        self.launch = Some(LaunchReservation {
+            action_id: review.action_id.clone(),
+            generation: intent.generation,
+            stop_requested: false,
+            stop_sent: false,
+            stop_handed_off: false,
+        });
+        self.notice =
+            "Starting reviewed Work; waiting for its exact launch receipt. Ctrl+Esc stops it."
+                .into();
+        Ok(())
+    }
+    pub fn execution_pending(&self) -> bool {
+        self.launch.is_some()
+    }
+    pub fn take_execution_stop(&mut self) -> Option<String> {
+        let launch = self.launch.as_mut()?;
+        if !launch.stop_requested || launch.stop_sent || self.quitting {
+            return None;
+        }
+        launch.stop_sent = true;
+        Some(launch.action_id.clone())
+    }
     pub fn take_submission(&mut self) -> Option<String> {
         self.pending.take()
     }
     pub fn cancelling(&self) -> bool {
-        self.busy && self.stop_requests > 0
+        self.launch.as_ref().is_some_and(|p| p.stop_requested)
+            || self.busy && self.stop_requests > 0
     }
     pub fn open_stop(&mut self) {
-        if self.busy && !self.closed && !self.quitting && self.stop_requests < 2 {
+        if !self.closed
+            && !self.quitting
+            && (self.launch.as_ref().is_some_and(|p| !p.stop_requested)
+                || self.busy && self.stop_requests < 2 && self.launch.is_none())
+        {
             self.stop_confirm = true;
             self.stop_selected = false;
         }
     }
     pub fn request_stop(&mut self) -> io::Result<()> {
         self.stop_confirm = false;
+        if !self.closed
+            && !self.quitting
+            && let Some(launch) = self.launch.as_mut()
+        {
+            launch.stop_requested = true;
+            self.approvals.take_decision();
+            self.questions.take_decision();
+            self.notice = "Stopping the exact invocation; waiting for verified retirement. Goal Pause is separate.".into();
+            return Ok(());
+        }
         if !self.busy || self.closed || self.quitting || self.stop_requests >= 2 {
             return Ok(());
         }
@@ -505,7 +580,7 @@ impl Chat {
         Ok(())
     }
     pub fn take_abort(&mut self) -> Option<String> {
-        if !self.busy || self.stops_sent >= self.stop_requests {
+        if self.launch.is_some() || !self.busy || self.stops_sent >= self.stop_requests {
             return None;
         }
         let id = self.submission_id.clone()?;
@@ -558,6 +633,95 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::WorkLaunchStop {
+                action_id,
+                generation,
+                stopped_operation,
+            } => {
+                let launch = self
+                    .launch
+                    .as_mut()
+                    .filter(|p| p.action_id == action_id && p.generation == generation)
+                    .ok_or_else(|| {
+                        io::Error::other("Execution Stop handoff changed its exact reservation")
+                    })?;
+                if !launch.stop_requested || !launch.stop_sent || launch.stop_handed_off {
+                    return Err(io::Error::other(
+                        "Execution Stop handoff was unsolicited or repeated",
+                    ));
+                }
+                launch.stop_handed_off = true;
+                if let Some(operation) = stopped_operation {
+                    if self.submission_id.as_ref() != Some(&operation) || !self.busy {
+                        return Err(io::Error::other(
+                            "Execution Stop handoff changed actual admitted operation",
+                        ));
+                    }
+                    self.stop_requests += 1;
+                    self.stops_sent += 1;
+                    if let Ok(index) = self.current_row_index() {
+                        self.rows[index].state = ReplyState::Cancelling;
+                    }
+                }
+                self.notice="Stop is verified for the admitted turn; launch publication is still pending. Goal Pause is separate.".into();
+            }
+            Observation::WorkLaunchPending {
+                action_id,
+                generation,
+                reason,
+            } => {
+                if !self
+                    .launch
+                    .as_ref()
+                    .is_some_and(|p| p.action_id == action_id && p.generation == generation)
+                {
+                    return Err(io::Error::other(
+                        "Pending launch notice changed its exact reservation",
+                    ));
+                }
+                self.notice = reason.clone();
+                self.work.notice = reason;
+            }
+            Observation::WorkLaunchFinished {
+                action_id,
+                update,
+                stopped_operation,
+                stop_verified,
+            } => {
+                let launch = self
+                    .launch
+                    .take()
+                    .ok_or_else(|| io::Error::other("Unreserved Work launch result"))?;
+                if launch.action_id != action_id || launch.generation != update.generation {
+                    self.launch = Some(launch);
+                    return Err(io::Error::other(
+                        "Work launch result changed its local reservation",
+                    ));
+                }
+                if launch.stop_requested && !stop_verified {
+                    self.launch = Some(launch);
+                    return Ok(());
+                }
+                self.work.observe(update);
+                if let Some(operation) = stopped_operation {
+                    if !launch.stop_requested
+                        || !launch.stop_sent
+                        || launch.stop_handed_off
+                        || self.submission_id.as_ref() != Some(&operation)
+                        || !self.busy
+                    {
+                        return Err(io::Error::other(
+                            "Work launch Stop changed its admitted operation",
+                        ));
+                    }
+                    self.stop_requests += 1;
+                    self.stops_sent += 1;
+                    if let Ok(index) = self.current_row_index() {
+                        self.rows[index].state = ReplyState::Cancelling;
+                    }
+                }
+                self.notice = self.work.notice.clone();
+            }
             Observation::WorkExecution(update) => self.observe_work(*update)?,
             Observation::Compact(update) => {
                 if self.compact.pending_key() != Some(update.key()) {

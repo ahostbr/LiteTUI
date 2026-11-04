@@ -1,5 +1,28 @@
 # LiteTUI Rust terminal port
 
+## Reviewed job and goal execution - 2026-11-04
+
+F1 Jobs/Loops R now reviews one same-conversation Run; Goal N accepts a literal objective and R resumes the saved goal. Review binds the exact selected raw state, payload, profile, source ownership and before/after changes. A disabled, not-yet-due or same-minute job may run only by this fresh explicit review. Canonical scheduler transactions preserve siblings/extensions and stamp one generation. Start creates a fresh goal; Resume preserves its identity, evidence and authority. Manual New-conversation Run remains held.
+
+Execution negotiates a separate four-operation capability on each Work capture/activation. Source publishes one bounded immutable launch receipt before any wake/claim/admission. The receipt survives fast goal evaluation as historical launch evidence, grants no replay authority, and cannot be silently replaced after drift. Rust reserves the invocation without inventing a prompt row. Actual Work admission creates its row; pre-admission hooks cannot borrow interactive approval authority.
+
+Launch and Stop retain independent correlation, publication/readback and deadlines. Esc/Control+Esc reaches exact Stop even after launch readback while a hook is pending. Verified admitted Stop uses ordinary turn abort immediately, without waiting for a delayed launch readback or sending a second abort later. Quit joins exact launch, delivery, admission and callback owners before/after producer creation, preserves uncertainty and proves the original epoch beside independent Work shutdown. Initial captured-but-unactivated Quit has no invented execution proof; unrelated automatic firing cannot be attributed to a refused manual action merely by matching generation.
+
+Final evidence from unchanged source/test inputs: **917 source tests across 41 files; 931 ordinary Rust tests across 85 summaries, with 158 explicitly ignored there; strict all-target Clippy, scoped formatting, debug build and executable help pass.** Scoped Python adapter/fixture checks pass; touched shared files retain exactly their baseline 121 Ruff and 36 typed-body mypy diagnostics against 9a920848. This does not claim those existing files are globally clean.
+
+The coherent relocated-package matrix passes **43 test bodies across nine groups and 120 owned child lifetimes: 118 normal reports plus intentional exits 73 and 74**. Ten explicit-execution tests cover 37 children: manual cron/loop variants, literal goal commands, replacement/resume, real fast evaluator, raw/sibling drift, automatic-generation race, persistence/receipt ambiguity, historical restart, pre-turn hooks, initial capture Quit and independent launch/Stop ordering. Existing Work inspection/execution/Task Stop/reconciliation, history edit/retry/compaction, scheduled handoff and durable controls also pass. Both intentional crash children are reaped without a normal cleanup claim; separate restart children prove no replay. Expected native uncertainty failures retain their exact error classification and verified normal source cleanup.
+
+A first package sweep found that scheduled New's strict nested receipt parser omitted the negotiated execution shutdown field. The fix accepts only that exact extension, validates its full schema and binds it to the old identity/instance; manager-level required/unexpected proof checks still precede target activation. Its actual-source regression and all seven scheduled process groups passed before the complete final rebuild/package sweep. The failed package and earlier fixture failures remain preserved, not counted as acceptance.
+
+All **358 package filenames/SHA-256 hashes** remain unchanged after the final matrix and manifest verification; packaged runtime matches the frozen source and supplied executable. Binary SHA-256: `ac8592daac5d76f480366c575096b4adfb141df6b369c17f4a7c19c79ab6ee6a`. Compiled Interactive tests use exact packaged Python; packaged executable help is separate. Interactive packaged-executable, real-provider, device and both-terminal-host acceptance remain open. The 42 unrelated one-NUL lock files are unchanged. This checkpoint does not merge, push or complete the full-port goal; the next implementation slice is live Tools/Authority/Plan controls.
+
+Local retained evidence under `rust/litetui-terminal/target/`:
+
+- `execution-controls-source-final-7906fa844c3745f78a2451abd947c1a5/source-proof.json`
+- `execution-controls-rust-final-097ef8a4e1ed48e6bb2114f0d89745ca/rust-proof.json`
+- `execution-controls-clean-package-05e83176d5954642a79a0e4e6167a2b8/execution-controls-native-package-proof.json`
+- `execution-controls-independent-synthesis.md`
+
 ## Scheduled handoff and durable Work controls - 2026-11-04
 
 Automatic cron/loop jobs that request a new conversation now propose a handoff before any stamp or identity mutation. Source ownership, policy, exact scheduler state and native quiescence gate one durable stamp, source-owned New, old-epoch shutdown, independent readback and fresh Work capture/activation. Only the published activation releases the retained invocation. Competing human identity changes retain a historical no-effect decision receipt; they cannot lend authority to an obsolete proposal. Editors, approvals, questions and queued local submissions remain protected. A declined local submission stays visible and is never replayed automatically.

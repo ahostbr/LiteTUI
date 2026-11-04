@@ -37,7 +37,10 @@ def activation(app, cmd, value):
     if value.activation_publication is not None:
         raise ValueError("Work activation publication was already reserved")
     result = {"kind": "work_active", "version": work.VERSION, "instance": value.instance,
-              "sequence": 0, "identity": dict(value.identity), "scheduled_transition_version": VERSION}
+              "sequence": 0, "identity": dict(value.identity)}
+    for key in ("scheduled_transition_version", "execution_version"):
+        if key in cmd:
+            result[key] = cmd[key]
     value.activation_publication = ActivationPublication(app, value, work.encoded(cmd), result,
                                                         work.encoded(result), work._task(),
                                                         getattr(app, "_native_work_deferred", None))
@@ -62,7 +65,7 @@ def prepare_publication(app: Any, cmd: dict, result: dict) -> ActivationPublicat
             raise ValueError("Scheduled response publication is already reserved")
         pending.publication = ticket
         return ticket
-    if cmd.get("type") != "gui.work.native_activate" or "scheduled_transition_version" not in cmd:
+    if cmd.get("type") != "gui.work.native_activate" or not {"scheduled_transition_version", "execution_version"} & cmd.keys():
         return None
     value = work.bridge(app)
     activation_ticket = None if value is None else value.activation_publication
@@ -113,7 +116,8 @@ def finish_publication(app, ticket):
             if not schedule_owner.readback_published or getattr(app, "_native_schedule_pending", None) is not schedule_owner:
                 raise ValueError("Scheduled activation lacks exact published readback")
             app._native_schedule_last, app._native_schedule_pending = schedule_owner, None
-        work._activate(app, value, scheduled_transition_version=VERSION)
+        work._activate(app, value, scheduled_transition_version=ticket.result.get("scheduled_transition_version"),
+                       execution_version=ticket.result.get("execution_version"))
     except BaseException:
         value.closing = True
         value.error = "Work activation publication is uncertain; close without replay"

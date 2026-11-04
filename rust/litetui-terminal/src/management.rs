@@ -8,6 +8,7 @@ use std::{collections::HashSet, io};
 
 mod action;
 mod compact;
+mod execution;
 mod scheduled;
 mod settings;
 mod work;
@@ -17,6 +18,10 @@ mod rewrite;
 pub use rewrite::{Changed as RewriteChanged, Prepared as RewritePrepared};
 
 const GENERATION: u64 = 1;
+// One foreground request, its separately correlated execution Stop, and one
+// genuine Work settlement read can overlap. Their controllers each retain one
+// slot; increasing correlation capacity does not authorize another mutation.
+const MAX_PENDING_REQUESTS: usize = 3;
 // These producers call app._rpc_emit. Responses/errors use the direct RPC sink.
 // Unknown producers remain fatal rather than being silently discarded.
 const MIRRORED: &[&str] = &[
@@ -181,6 +186,22 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    WorkLaunchStop {
+        action_id: String,
+        generation: u64,
+        admission: Box<crate::work_lifecycle::Admission>,
+    },
+    WorkLaunchPending {
+        action_id: String,
+        generation: u64,
+        reason: String,
+    },
+    WorkLaunch {
+        action_id: String,
+        update: crate::work_view::Update,
+        stop: Option<crate::work_lifecycle::Admission>,
+        stop_verified: bool,
+    },
     ScheduledProposal(String),
     ScheduledHeld {
         reason: String,
@@ -372,6 +393,7 @@ struct SavedHistoryPending {
     prior: Option<crate::history::Page>,
 }
 pub struct Management {
+    execution: execution::Control,
     scheduled: scheduled::Control,
     work_lifecycle: work_lifecycle::Control,
     work: work::Control,
@@ -447,6 +469,7 @@ pub struct Management {
 impl Default for Management {
     fn default() -> Self {
         Self {
+            execution: execution::Control::default(),
             scheduled: scheduled::Control::default(),
             work_lifecycle: work_lifecycle::Control::default(),
             work: work::Control::default(),
@@ -475,7 +498,7 @@ impl Default for Management {
             conversation_review: None,
             wire: WireClient::new(
                 GENERATION,
-                2,
+                MAX_PENDING_REQUESTS,
                 MIRRORED
                     .iter()
                     .map(|name| ((*name).to_owned(), Delivery::Mirrored)),
@@ -611,6 +634,7 @@ impl Management {
             && !self.failed
             && !self.work_lifecycle_starting()
             && !self.schedule_pending()
+            && !self.execution_barrier()
             && self.work.pending.is_none()
             && self.engine.is_none()
             && self.conversation.is_none()
@@ -723,6 +747,10 @@ impl Management {
                 && original_json_bytes > crate::work_lifecycle::REPLY_BYTES
             {
                 Err(fail("Scheduled response exceeds full wire budget"))
+            } else if self.execution_response_pending(&frame)
+                && original_json_bytes > crate::work_lifecycle::REPLY_BYTES
+            {
+                Err(fail("Execution response exceeds full wire budget"))
             } else if self.work_response_pending(&frame)
                 && original_json_bytes > crate::work_protocol::MAX_BYTES
             {
@@ -971,6 +999,11 @@ impl Management {
                 frame,
                 ..
             } if self.schedule_response_pending(&frame) => self.schedule_response(frame),
+            Notice::Response {
+                matched: true,
+                frame,
+                ..
+            } if self.execution_response_pending(&frame) => self.execution_response(frame),
             Notice::Response {
                 id,
                 matched: true,

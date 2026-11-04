@@ -21,7 +21,7 @@ const COMMON: &[&str] = &[
     "instance",
     "snapshot",
 ];
-const JOB: &[&str] = &[
+pub(crate) const JOB: &[&str] = &[
     "prompt",
     "schedule",
     "id",
@@ -37,7 +37,7 @@ const JOB: &[&str] = &[
     "interval_minutes",
     "next_run_at",
 ];
-const GOAL: &[&str] = &[
+pub(crate) const GOAL: &[&str] = &[
     "objective",
     "id",
     "status",
@@ -110,7 +110,7 @@ fn timestamp(v: &Value, key: &str, nullable: bool) -> io::Result<()> {
     }
     Ok(())
 }
-fn job(v: &Value) -> io::Result<()> {
+pub(crate) fn job(v: &Value) -> io::Result<()> {
     bounded(v, 128 * 1024)?;
     keys(v, JOB)?;
     for (key, max, empty) in [
@@ -141,7 +141,7 @@ fn job(v: &Value) -> io::Result<()> {
     }
     Ok(())
 }
-fn goal(v: &Value) -> io::Result<()> {
+pub(crate) fn goal(v: &Value) -> io::Result<()> {
     bounded(v, 128 * 1024)?;
     keys(v, GOAL)?;
     for (key, max, empty) in [

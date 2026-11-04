@@ -299,30 +299,35 @@ def _jobs(app):
     return list(_budget_rows(_job(row) for row in value)), revision
 
 
+def goal_row(value):
+    if not isinstance(value, dict) or not {'id', 'objective', 'created', 'updated'} <= value.keys():
+        raise ValueError('Goal is missing canonical persisted identity or fields')
+    goal = GoalState(**{k: v for k, v in value.items() if k in GoalState.__dataclass_fields__})
+    row = asdict(goal)
+    for key, cap in (('id', 128), ('objective', 65536), ('last_reason', 65536), ('last_verdict', 128),
+                     ('tool_profile', 4096), ('started_by', 4096)):
+        text(row[key], cap, empty=key not in ('id', 'objective'))
+    for key in ('created', 'updated'):
+        iso(row[key])
+    for key in ('evaluated_turns', 'max_turns', 'no_progress_count'):
+        integer(row[key])
+    if row['status'] not in ('active', 'paused', 'met', 'blocked', 'impossible'):
+        raise ValueError('Goal has an unknown status')
+    if not isinstance(row['missing_evidence'], list) or len(row['missing_evidence']) > 256:
+        raise ValueError('Goal evidence exceeds its bounded list')
+    for item in row['missing_evidence']:
+        text(item, 4096, empty=True)
+    encoded(row, MAX_ROW)
+    return row
+
+
 def _goal(app):
     try:
         raw, revision = _read(app._agent_session.conversation_directory(app.convo_id) / GOAL_FILENAME)
         if raw is None:
             return {'status': 'absent', 'revision': revision, 'value': None, 'reason': None}
         value = json.loads(raw.decode('utf-8-sig'))
-        if not isinstance(value, dict) or not {'id', 'objective', 'created', 'updated'} <= value.keys():
-            raise ValueError('Goal is missing canonical persisted identity or fields')
-        goal = GoalState(**{k: v for k, v in value.items() if k in GoalState.__dataclass_fields__})
-        row = asdict(goal)
-        for key, cap in (('id', 128), ('objective', 65536), ('last_reason', 65536), ('last_verdict', 128),
-                         ('tool_profile', 4096), ('started_by', 4096)):
-            text(row[key], cap, empty=key not in ('id', 'objective'))
-        for key in ('created', 'updated'):
-            iso(row[key])
-        for key in ('evaluated_turns', 'max_turns', 'no_progress_count'):
-            integer(row[key])
-        if row['status'] not in ('active', 'paused', 'met', 'blocked', 'impossible'):
-            raise ValueError('Goal has an unknown status')
-        if not isinstance(row['missing_evidence'], list) or len(row['missing_evidence']) > 256:
-            raise ValueError('Goal evidence exceeds its bounded list')
-        for item in row['missing_evidence']:
-            text(item, 4096, empty=True)
-        encoded(row, MAX_ROW)
+        row = goal_row(value)
         return {'status': 'present', 'revision': revision, 'value': row, 'reason': None}
     except (OSError, ValueError, TypeError, KeyError, OverflowError) as exc:
         return {'status': 'unavailable', 'revision': None, 'value': None,
@@ -353,7 +358,9 @@ def snapshot(app, cmd):
              'counts': {key: len(rows[key]) for key in SECTIONS}, 'sources': sources, 'goal': _goal(app),
              'pause': {'allowed': not paused and not quitting,
                        'reason': 'This runtime is closing.' if quitting else 'Future scheduled prompts are already paused.' if paused else None}}
-    from litetui import native_deferred, native_schedule
+    from litetui import native_deferred, native_schedule, native_work_execution
+    if native_work_execution.enabled(app):
+        value["execution_receipt"] = native_work_execution.recovery(app)
     if native_schedule.enabled(app):
         value['deferred_job'] = native_deferred.snapshot_evidence(app)
     value['snapshot'] = digest({'metadata': value, 'rows': rows})

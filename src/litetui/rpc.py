@@ -131,8 +131,9 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         app.run_worker(manage(), group="gui-management", exit_on_error=False)
         return
 
-    from litetui import native_schedule
+    from litetui import native_schedule, native_work_execution
     try:
+        native_work_execution.operation_allowed(app, cmd_type)
         native_schedule.operation_allowed(app, cmd_type)
     except ValueError as exc:
         _respond(cmd_id, ok=False, error=str(exc))

@@ -168,6 +168,8 @@ class Bridge:
         self.active = False
         self.activation_publication: Any = None
         self.scheduled_transition_version: int | None = None
+        self.execution_version: int | None = None
+        self.requested_execution_version: int | None = None
         self.closing = False
         self.sequence = 0
         self.revision = 0
@@ -313,7 +315,9 @@ def _command(app, cmd, operation, extras=(), *, admission=True, expected_identit
 def capture(app, cmd):
     from litetui import native_schedule
     native_schedule.capture_allowed(app)
-    _command(app, cmd, "capture")
+    _command(app, cmd, "capture", ("execution_version",) if "execution_version" in cmd else ())
+    if "execution_version" in cmd and (type(cmd["execution_version"]) is not int or cmd["execution_version"] != VERSION):
+        raise ValueError("Explicit execution requires exact version 1")
     value = bridge(app)
     if value is None:
         from litetui import restored_input
@@ -327,16 +331,20 @@ def capture(app, cmd):
     value.check()
     if value.active or value.activation_publication is not None:
         raise ValueError("Work capture is already active or awaiting publication")
+    value.requested_execution_version = cmd.get("execution_version")
     result = {"kind": "work_capture", "version": VERSION, "instance": value.instance,
               "activation_token": value.activation_token, "sequence": 0, "identity": value.identity,
               "provider": provider(app), "limits": dict(LIMITS), "recovered": copy.deepcopy(value.recovered), "deferred_jobs": deferred_evidence(app)}
+    if value.requested_execution_version is not None:
+        from litetui import native_work_execution
+        result.update(execution_version=VERSION, execution_receipt=native_work_execution.recovery(app))
     if len(encoded(result)) > LIMITS["reply_bytes"]:
         raise ValueError("Recovered Work snapshot exceeds reply bound; no activation")
     return result
 
 
 def activate(app, cmd):
-    extras = ("instance", "activation_token", *(("scheduled_transition_version",) if "scheduled_transition_version" in cmd else ()))
+    extras = ("instance", "activation_token", *(("scheduled_transition_version",) if "scheduled_transition_version" in cmd else ()), *(("execution_version",) if "execution_version" in cmd else ()))
     _command(app, cmd, "activate", extras)
     requested = cmd.get("scheduled_transition_version")
     if "scheduled_transition_version" in cmd and (type(requested) is not int or requested != VERSION):
@@ -345,18 +353,21 @@ def activate(app, cmd):
     if value is None or value.active or cmd.get("instance") != value.instance or cmd.get("activation_token") != value.activation_token:
         raise ValueError("Unknown or consumed Work activation")
     value.check()
+    execution = cmd.get("execution_version")
+    if execution != value.requested_execution_version or "execution_version" in cmd and (type(execution) is not int or execution != VERSION):
+        raise ValueError("Activation changed exact execution negotiation")
     deferred = getattr(app, "_native_work_deferred", None)
     if getattr(deferred, "schedule_owner", None) is not None and requested != VERSION:
         raise ValueError("Scheduled handoff activation requires negotiated response publication")
     if value.activation_publication is not None:
         raise ValueError("Work activation publication is already reserved")
-    if requested is not None:
+    if requested is not None or execution is not None:
         from litetui import native_schedule
         return native_schedule.activation(app, cmd, value)
     return _activate(app, value)
 
 
-def _activate(app, value, *, scheduled_transition_version=None):
+def _activate(app, value, *, scheduled_transition_version=None, execution_version=None):
     value.check()
     recapture = getattr(app, "_native_work_recapture_required", None)
     if recapture is not None:
@@ -365,6 +376,9 @@ def _activate(app, value, *, scheduled_transition_version=None):
         app._native_work_recapture_required = None
     value.active = True
     value.scheduled_transition_version = scheduled_transition_version
+    value.execution_version = execution_version
+    from litetui import native_work_execution
+    native_work_execution.activated(app, value)
     app._native_work_initial_activated = True
     deferred = getattr(app, "_native_work_deferred", None)
     if deferred is not None and not deferred.claimed:
@@ -563,8 +577,12 @@ def enqueue(app, producer, item):
     entry = Input(ref, payload, item, producer, epoch={"instance": value.instance, "identity": copy.deepcopy(value.identity), "provider": value.provider})
     producer.input_id = ref["input_id"]
     value.inputs[ref["input_id"]] = entry
+    from litetui import native_work_execution
+    native_work_execution.bind_entry(app, entry)
     item["_work_input_id"] = ref["input_id"]
     value.input_event(entry, "held" if value.closing or value.error else "queued", "Runtime closing or uncertain; completion retained without wake" if value.closing or value.error else None)
+    from litetui import native_work_execution
+    native_work_execution.claim_entry(app, entry)
     return entry
 
 
@@ -598,6 +616,8 @@ def current_origin(app):
 
 
 def _begin(app, entry, in_turn):
+    from litetui import native_work_execution
+    native_work_execution.admission_allowed(app, entry)
     value = bridge(app)
     assert value is not None
     value.check()
@@ -1344,6 +1364,9 @@ async def before_identity_transition(app):
         return copy.deepcopy(value.transition_proof)
     if app._chat_running() or app._pending_input or any(i.claim_task is not None for i in value.inputs.values()):
         raise ValueError("Work identity transition requires the existing quiet queue boundary")
+    from litetui import native_work_execution
+    if why := native_work_execution.mutation_hold(app):
+        raise ValueError(why)
     # A human identity control can race an already emitted scheduler proposal.
     # Retain only its exact no-effect decision capability through the old close.
     from litetui import native_schedule
@@ -1369,9 +1392,11 @@ def after_identity_transition(app, proof):
     app._validate_owned_identity()
     # Existing ledger partitions remain on disk under their owned conversation;
     # unresolved records preserve their original epoch when subsequently read.
+    from litetui import native_work_execution
+    execution = native_work_execution.identity_retired(app, value)
     app._native_work_bridge = None
     app._native_work_recapture_required = {"previous_instance": value.instance, "identity": identity(app)}
-    return {"work_shutdown": copy.deepcopy(proof), "work_recapture_required": True}
+    return {"work_shutdown": copy.deepcopy(proof), "work_recapture_required": True, **execution}
 
 
 
@@ -1627,6 +1652,11 @@ async def run_job(app, job, manual=False):
 
 
 def transition_waiters(app):
+    from litetui import native_work_execution
+    execution = native_work_execution.owned(app)
+    if (execution is not None and execution.parent is not None and not execution.parent.is_finished
+            and getattr(execution.parent, "_task", None) is execution.parent_task):
+        return (execution.parent,)
     from textual.worker import NoActiveWorker, get_current_worker
     try:
         worker = get_current_worker()
@@ -1646,6 +1676,9 @@ async def _run_job(app, job, manual=False):
     value = bridge(app)
     assert value is not None
     reservation = reserve(app)
+    from litetui import native_work_execution
+    if execution := native_work_execution.owned(app, job):
+        execution.reservation = reservation
     try:
         snapshot = encoded(asdict(job))
         if len(snapshot) > LIMITS["payload_bytes"]:
@@ -1771,6 +1804,9 @@ def cancel_deferred(app):
 
 
 def prompt_refusal(app):
+    from litetui import native_work_execution
+    if why := native_work_execution.mutation_hold(app):
+        return why
     from litetui import native_schedule
     if why := native_schedule.admission_refusal(app):
         return why
@@ -1894,7 +1930,7 @@ def retain_failed_stream(app, worker, origin):
         _watch_admission(app, entry)
 
 
-def _goal_producer(app, state):
+def _goal_producer(app, state, reservation=None):
     from litetui import tasks
     from litetui.task_supervisor import process_creation_identity
     value = bridge(app)
@@ -1902,7 +1938,7 @@ def _goal_producer(app, state):
     generation = max([state.evaluated_turns + 1, *(p.ref["generation"] + 1
         for p in value.producers.values() if p.ref["kind"] == "goal" and p.ref["object_id"] == state.id)])
     return register_producer(app, "goal", state.id, owner_instance=tasks._INSTANCE_ID,
-                             owner_created=process_creation_identity(os.getpid()), generation=generation)
+                             owner_created=process_creation_identity(os.getpid()), generation=generation, reservation=reservation)
 
 
 def goal_input(app, item, *, wake):
@@ -1921,7 +1957,7 @@ def goal_input(app, item, *, wake):
     return entry
 
 
-def start_goal(app, state, item):
+def start_goal(app, state, item, *, reservation=None, execution=None):
     require_recapture_complete(app)
     if not enabled(app):
         return None
@@ -1933,8 +1969,13 @@ def start_goal(app, state, item):
     if len(encoded(payload)) > LIMITS["payload_bytes"]:
         raise ValueError("Goal input exceeds the captured payload byte limit")
     from litetui import conversation_action as action
-    record = _goal_producer(app, state)
+    record = _goal_producer(app, state, reservation=reservation)
     async def deliver():
+        if execution is not None:
+            from litetui import native_work_execution
+            if native_work_execution._attempt(app) is not execution:
+                raise ValueError("Goal delivery lost its exact execution owner")
+            execution.delivery_task = _task()
         return goal_input(app, item, wake=True)
     worker = app.run_worker(producer_runner(app, record, deliver()), group="work-goals",
                             exclusive=False, exit_on_error=False)
@@ -2455,16 +2496,20 @@ def require_new_execution(app):
 
 def prepare_publication(app, cmd, result):
     """Prepare one exact known response barrier, never an arbitrary callback."""
-    from litetui import native_deferred, native_schedule
-    ticket = native_schedule.prepare_publication(app, cmd, result)
+    from litetui import native_deferred, native_schedule, native_work_execution
+    ticket = native_work_execution.prepare_publication(app, cmd, result)
+    if ticket is None:
+        ticket = native_schedule.prepare_publication(app, cmd, result)
     if ticket is None:
         ticket = native_deferred.prepare_publication(app, cmd, result)
     return ticket if ticket is not None else prepare_reconciliation_readback(app, cmd, result)
 
 
 def finish_publication(app, ticket):
-    from litetui import native_deferred, native_schedule
-    if isinstance(ticket, (native_schedule.ActivationPublication, native_schedule.DecisionPublication)):
+    from litetui import native_deferred, native_schedule, native_work_execution
+    if isinstance(ticket, native_work_execution.Publication):
+        native_work_execution.finish_publication(app, ticket)
+    elif isinstance(ticket, (native_schedule.ActivationPublication, native_schedule.DecisionPublication)):
         native_schedule.finish_publication(app, ticket)
     elif isinstance(ticket, native_deferred.Publication):
         native_deferred.finish_publication(app, ticket)

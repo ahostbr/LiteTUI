@@ -2859,6 +2859,11 @@ class LiteTUI(App):
         background_mail.deliver(self, background_mail.item(self, msg))
 
     def _fire_job(self, job, *, manual: bool = False, _work_prepare: bool = False):
+        from litetui import native_work_execution
+        if not _work_prepare and (why := native_work_execution.mutation_hold(self)):
+            if manual:
+                raise ValueError(why)
+            return None
         if background_input.activation_pending(self):
             if manual:
                 raise ValueError("Work activation is required before scheduled execution")
@@ -2948,6 +2953,8 @@ class LiteTUI(App):
             return None
         from litetui import native_schedule
         accepted = native_schedule.preflight(self, job, manual=manual, now=now) if _work_prepare else None
+        from litetui import native_work_execution
+        execution = native_work_execution.preflight_job(self, job, manual=manual) if _work_prepare else None
         if accepted is not None:
             accepted.stamp_attempted = True
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
@@ -2965,8 +2972,8 @@ class LiteTUI(App):
         try:
             sched_mod.save(self.jobs, paths.data_root())
         except OSError:
-            if accepted is not None:
-                raise  # Attempted durable automatic stamp is never rolled back or replayed.
+            if accepted is not None or execution is not None:
+                raise  # Attempted durable owned stamp is never rolled back or replayed.
             job.last_fired_slot, job.run_count = prior_slot, prior_count
             self._system("Scheduled work was not delivered because its execution stamp could not be saved.")
             return False
@@ -2974,6 +2981,7 @@ class LiteTUI(App):
         if _work_prepare:
             background_input.verify_job_stamp(self, job)
             native_schedule.stamped(self, job)
+            native_work_execution.stamped(self, job)
 
         label = job.label or job.id
         text = job.prompt

@@ -949,10 +949,13 @@ async def _finish_exit(app):
     result = None
     error = None
     try:
-        from litetui import background_input
+        from litetui import background_input, native_work_execution
+        execution_task = asyncio.create_task(native_work_execution.settle_before_shutdown(app))
         work_task = asyncio.create_task(background_input.settle_before_shutdown(app))
-        results = await asyncio.gather(settle_all_before_shutdown(app), work_task, return_exceptions=True)
-        actions, work = results
+        results = await asyncio.gather(settle_all_before_shutdown(app), work_task, execution_task, return_exceptions=True)
+        actions, work, execution = results
+        if isinstance(execution, BaseException):
+            raise execution
         if isinstance(actions, BaseException):
             raise actions
         if isinstance(work, BaseException):
@@ -968,6 +971,8 @@ async def _finish_exit(app):
         result = {"ok": True, **actions}
         if work is not None:
             result["work_shutdown"] = work
+        if execution is not None:
+            result["work_execution_shutdown"] = execution
         if conversation is not None:
             result["conversation_shutdown"] = conversation
         if engine is not None:
@@ -987,8 +992,10 @@ async def _finish_exit(app):
 
 def request_shutdown(app, respond=None):
     from litetui import background_input
-    if not background_input.enabled(app) and getattr(app, "_native_work_deferred", None) is None and not any(getattr(app, "_conversation_" + kind + "_protocol", False) is True
-               for kind in ("rewrite", "compact")):
+    if (not background_input.enabled(app) and getattr(app, "_native_work_deferred", None) is None
+            and getattr(app, "_native_work_execution", None) is None
+            and getattr(app, "_native_execution_predecessor", None) is None and not any(getattr(app, "_conversation_" + kind + "_protocol", False) is True
+               for kind in ("rewrite", "compact"))):
         return False
     background_input.begin_close(app)
     app._gui_quitting = True

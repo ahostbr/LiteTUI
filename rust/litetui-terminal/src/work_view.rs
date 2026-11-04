@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKi
 #[path = "work_form.rs"]
 mod form;
 use crate::work_controls as controls;
+use crate::work_execution_controls as execution;
 use protocol::{Calendar, Page, PauseReview, Row, Section, Snapshot, StopReview, Tail};
 use ratatui::{
     Frame,
@@ -13,6 +14,8 @@ use ratatui::{
 };
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    ExecutionValidate(Box<execution::Edit>),
+    ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
     ControlApply(Box<controls::Review>),
     DeferredValidate,
@@ -40,6 +43,12 @@ pub struct Intent {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    ExecutionReview(Box<execution::Review>),
+    ExecutionVerified {
+        action: execution::Action,
+        status: String,
+        reason: Option<String>,
+    },
     ControlReview(Box<controls::Review>),
     ControlSaved {
         action: controls::Action,
@@ -64,18 +73,20 @@ pub struct Update {
 }
 #[derive(Clone)]
 enum Review {
-    Control(controls::Review),
-    Deferred(crate::deferred_control::Review),
-    Pause(PauseReview),
-    Stop(StopReview),
+    Execution(Box<execution::Review>),
+    Control(Box<controls::Review>),
+    Deferred(Box<crate::deferred_control::Review>),
+    Pause(Box<PauseReview>),
+    Stop(Box<StopReview>),
 }
 impl Review {
     fn request(&self) -> Request {
         match self {
-            Self::Control(review) => Request::ControlApply(Box::new(review.clone())),
-            Self::Deferred(review) => Request::DeferredApply(Box::new(review.clone())),
-            Self::Pause(review) => Request::PauseApply(Box::new(review.clone())),
-            Self::Stop(review) => Request::StopApply(Box::new(review.clone())),
+            Self::Execution(review) => Request::ExecutionApply(review.clone()),
+            Self::Control(review) => Request::ControlApply(review.clone()),
+            Self::Deferred(review) => Request::DeferredApply(review.clone()),
+            Self::Pause(review) => Request::PauseApply(review.clone()),
+            Self::Stop(review) => Request::StopApply(review.clone()),
         }
     }
 }
@@ -100,6 +111,7 @@ pub struct View {
     review: Option<Review>,
     form: Option<form::Form>,
     saved_control: Option<(controls::Action, serde_json::Value)>,
+    execution_result: Option<(execution::Action, String, Option<String>)>,
     stopped: Option<Row>,
     review_page: usize,
     seen: Vec<bool>,
@@ -167,6 +179,7 @@ impl View {
         self.review = None;
         self.form = None;
         self.saved_control = None;
+        self.execution_result = None;
         self.stopped = None;
         self.tail = None;
         self.page = None;
@@ -228,7 +241,9 @@ impl View {
         let pending = self.pending.take().expect("pending");
         let compatible = matches!(
             (&pending, &update.data),
-            (Request::ControlValidate(_), Data::ControlReview(_))
+            (Request::ExecutionValidate(_), Data::ExecutionReview(_))
+                | (Request::ExecutionApply(_), Data::ExecutionVerified { .. })
+                | (Request::ControlValidate(_), Data::ControlReview(_))
                 | (Request::ControlApply(_), Data::ControlSaved { .. })
                 | (Request::DeferredValidate, Data::DeferredReview(_))
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
@@ -251,8 +266,38 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::ExecutionReview(review) => {
+                self.review = Some(Review::Execution(review));
+                self.review_page = 0;
+                self.seen.clear();
+                self.notice = "Read every page before starting this Work.".into();
+            }
+            Data::ExecutionVerified {
+                action,
+                status,
+                reason,
+            } => {
+                self.review = None;
+                if status == "published" {
+                    self.form = None;
+                }
+                self.snapshot = None;
+                self.page = None;
+                self.calendar = None;
+                self.tail = None;
+                self.details = true;
+                self.notice = if status == "published" {
+                    "Launch independently verified. Work activity shows execution; Stop does not pause a goal."
+                } else {
+                    "Work was not started. The refusal was independently verified; F5 refreshes Work."
+                }.into();
+                if let Some(detail) = &reason {
+                    self.notice = format!("{detail} {}", self.notice);
+                }
+                self.execution_result = Some((action, status, reason));
+            }
             Data::ControlReview(review) => {
-                self.review = Some(Review::Control(*review));
+                self.review = Some(Review::Control(review));
                 self.review_page = 0;
                 self.seen.clear();
                 self.notice = "Read every page before saving this Work change.".into();
@@ -270,7 +315,7 @@ impl View {
             }
 
             Data::DeferredReview(review) => {
-                self.review = Some(Review::Deferred(*review));
+                self.review = Some(Review::Deferred(review));
                 self.review_page = 0;
                 self.seen.clear();
                 self.notice = "Read every page before discarding this staged invocation.".into();
@@ -328,7 +373,7 @@ impl View {
                     "Calendar · Enter opens the selected day · Left/Right change month".into();
             }
             Data::Review(review) => {
-                self.review = Some(Review::Pause(*review));
+                self.review = Some(Review::Pause(review));
                 self.review_page = 0;
                 self.seen.clear();
                 self.notice = "Read every page; confirm only on the last visible page.".into();
@@ -345,7 +390,7 @@ impl View {
                         .into();
             }
             Data::StopReview(review) => {
-                self.review = Some(Review::Stop(*review));
+                self.review = Some(Review::Stop(review));
                 self.review_page = 0;
                 self.seen.clear();
                 self.notice = "Read every page before confirming this task Stop.".into();
@@ -417,6 +462,17 @@ impl View {
             }
         }
     }
+    fn execution(&mut self, action: execution::Action, row: Option<Row>, draft: serde_json::Value) {
+        let result = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Refresh Work before reviewing execution"))
+            .and_then(|snapshot| execution::Edit::new(snapshot, action, row.as_ref(), draft));
+        match result {
+            Ok(edit) => self.request(Request::ExecutionValidate(Box::new(edit))),
+            Err(error) => self.notice = error.to_string(),
+        }
+    }
     fn control(&mut self, action: controls::Action, row: Option<Row>, draft: serde_json::Value) {
         let result = self
             .snapshot
@@ -472,6 +528,10 @@ impl View {
             match form.key(key) {
                 Ok(true) => match form.draft() {
                     Ok(draft) => {
+                        if form.is_goal() {
+                            self.execution(execution::Action::GoalStart, None, draft);
+                            return;
+                        }
                         let row = form.row.clone();
                         let action = if row.is_some() {
                             controls::Action::JobUpdate
@@ -561,6 +621,32 @@ impl View {
                 KeyCode::BackTab => {
                     self.section = (self.section + 6) % 7;
                     self.section_request();
+                    return;
+                }
+                KeyCode::Char('n') if self.section == 4 => {
+                    if self.snapshot.is_none() {
+                        self.notice = "Refresh Work before starting a goal.".into();
+                    } else {
+                        match form::Form::goal() {
+                            Ok(form) => {
+                                self.form = Some(form);
+                                self.hide();
+                            }
+                            Err(error) => self.notice = error.to_string(),
+                        }
+                    }
+                    return;
+                }
+                KeyCode::Char('r') if matches!(self.section, 2 | 3) => {
+                    if let Some(row) = self.current_row().cloned() {
+                        self.execution(execution::Action::JobRun, Some(row), serde_json::json!({}));
+                    } else {
+                        self.notice = "Select the exact job to review Run.".into();
+                    }
+                    return;
+                }
+                KeyCode::Char('r') if self.section == 4 => {
+                    self.execution(execution::Action::GoalResume, None, serde_json::json!({}));
                     return;
                 }
                 KeyCode::Char('c') if matches!(self.section, 2 | 3) => {
@@ -754,6 +840,7 @@ impl View {
     }
     fn review_lines(&self) -> Vec<String> {
         let r = match self.review.as_ref().unwrap() {
+            Review::Execution(review) => return review.detail_lines(),
             Review::Control(review) => return vec![
                 review.edit.action.label().into(),review.consequence.clone(),
                 format!("Conversation: {}",review.edit.snapshot.identity.session),
@@ -827,6 +914,12 @@ impl View {
         lines
     }
     fn detail_content(&self) -> Vec<String> {
+        if let Some((action, status, reason)) = &self.execution_result {
+            return vec![action.label().into(), format!("Launch result: {status}"),
+                reason.clone().unwrap_or_else(|| "The source launch receipt and Work ledger were independently read back.".into()),
+                "A recorded launch is not model completion. Follow the actual Work activity.".into(),
+                "Stop cancels the current invocation or turn. Goal Pause separately prevents future goal work.".into()];
+        }
         if let Some((action, row)) = &self.saved_control {
             return vec![
                 format!("{} verified", action.label()),
@@ -875,7 +968,7 @@ impl View {
             return rows;
         }
         if self.section == 6 {
-            return self
+            let mut lines = self
                 .snapshot
                 .as_ref()
                 .and_then(|s| s.deferred_job.as_ref())
@@ -893,6 +986,28 @@ impl View {
                         ]
                     },
                 );
+            if let Some(receipt) = self
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.execution_receipt.as_ref())
+            {
+                lines.push("Reviewed Work launch history".into());
+                lines.push(
+                    "This receipt records a past launch. It cannot start, resume or cancel work."
+                        .into(),
+                );
+                lines.push(format!("Availability: {}", receipt.status));
+                if let Some(reason) = &receipt.reason {
+                    lines.push(reason.clone());
+                }
+                if let Some(document) = &receipt.document {
+                    lines.push(
+                        serde_json::to_string_pretty(&document.wire)
+                            .expect("validated historical launch"),
+                    );
+                }
+            }
+            return lines;
         }
         if self.section == 4 {
             let Some(s) = &self.snapshot else {
@@ -1161,9 +1276,9 @@ impl View {
             format!(
                 "Tab categories · F5 refresh · {}\n{}",
                 match self.section {
-                    2 => "C create · E edit · D delete",
-                    3 => "C create · E edit · D delete · Space enable/pause",
-                    4 => "P pause goal · D clear goal",
+                    2 => "R run · C create · E edit · D delete",
+                    3 => "R run · C create · E edit · D delete · Space enable/pause",
+                    4 => "N new goal · R resume · P pause · D clear",
                     6 => "D discard staged invocation",
                     _ => "P pause schedules · T output · K Stop task",
                 },

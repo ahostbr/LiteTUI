@@ -9,11 +9,11 @@ use std::io;
 #[derive(Default)]
 pub(super) struct Control {
     pub pending: Option<Pending>,
-    snapshot: Option<protocol::Snapshot>,
-    page: Option<protocol::Page>,
+    pub(super) snapshot: Option<protocol::Snapshot>,
+    pub(super) page: Option<protocol::Page>,
     review: Option<protocol::PauseReview>,
     stop_review: Option<protocol::StopReview>,
-    generation: u64,
+    pub(super) generation: u64,
     deferred_review: Option<deferred::Review>,
     control_review: Option<controls::Review>,
 }
@@ -29,6 +29,7 @@ pub(super) struct Pending {
 }
 impl Management {
     pub(super) fn invalidate_work_selection(&mut self) {
+        self.invalidate_execution_review();
         self.work.snapshot = None;
         self.work.page = None;
         self.work.review = None;
@@ -37,7 +38,7 @@ impl Management {
         self.work.control_review = None;
     }
     pub fn work_pending(&self) -> bool {
-        self.work.pending.is_some()
+        self.work.pending.is_some() || self.execution_review_pending()
     }
     fn work_identity(&self) -> io::Result<protocol::Identity> {
         let (session, backend, model, _) = self
@@ -65,6 +66,12 @@ impl Management {
     }
     /// Ordinary streaming does not own the management lane. Transitions do.
     pub fn request_work(&mut self, intent: view::Intent) -> io::Result<Value> {
+        if matches!(
+            &intent.request,
+            view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_)
+        ) {
+            return self.request_execution(intent);
+        }
         if !self.ready() {
             return Err(fail(
                 "Finish the current management operation before opening Work",
@@ -75,6 +82,9 @@ impl Management {
         }
         let identity = self.work_identity()?;
         let op = match &intent.request {
+            view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_) => {
+                unreachable!()
+            }
             view::Request::ControlValidate(_) => controls::VALIDATE,
             view::Request::ControlApply(_) => controls::APPLY,
             view::Request::DeferredValidate => deferred::VALIDATE,
@@ -114,6 +124,7 @@ impl Management {
         }
         self.work.generation = intent.generation;
         let mut command = if matches!(&intent.request, view::Request::Snapshot) {
+            self.invalidate_execution_review();
             self.work.snapshot = None;
             self.work.page = None;
             self.work.review = None;
@@ -131,6 +142,9 @@ impl Management {
             snapshot.request()
         };
         match &intent.request {
+            view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_) => {
+                unreachable!()
+            }
             view::Request::ControlValidate(edit) => {
                 self.work.control_review = None;
                 if self.work.snapshot.as_ref() != Some(&edit.snapshot) {
@@ -352,9 +366,13 @@ impl Management {
         }
         let value = &frame["result"];
         let data = match &pending.request {
+            view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_) => {
+                unreachable!()
+            }
             view::Request::Snapshot => {
                 let snapshot = protocol::Snapshot::parse(value, &self.work_identity()?)?;
                 self.require_deferred_snapshot(&snapshot)?;
+                self.require_execution_snapshot(&snapshot)?;
                 self.work.snapshot = Some(snapshot.clone());
                 view::Data::Snapshot(Box::new(snapshot))
             }
@@ -583,7 +601,9 @@ impl Management {
                             }
                         }
                     }
-                    view::Request::Snapshot => unreachable!(),
+                    view::Request::Snapshot
+                    | view::Request::ExecutionValidate(_)
+                    | view::Request::ExecutionApply(_) => unreachable!(),
                 }
             }
         };

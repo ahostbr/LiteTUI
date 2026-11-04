@@ -84,6 +84,9 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 | Observation::RewriteAftercare { .. }
                 | Observation::RewriteActivity { .. }
                 | Observation::RewriteStatus { .. }
+                | Observation::WorkLaunchStop { .. }
+                | Observation::WorkLaunchPending { .. }
+                | Observation::WorkLaunchFinished { .. }
                 | Observation::Work(_)
                 | Observation::WorkExecution(_)
                 | Observation::Settings(_)

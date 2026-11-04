@@ -1,4 +1,4 @@
-//! Local typed job drafts. Only source review can authorize persistence.
+//! Local typed Work drafts. Only source review can authorize a change or execution.
 use crate::{prepared_skill::Draft, work_protocol::Row};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
@@ -55,6 +55,22 @@ impl Field {
     }
 }
 impl Form {
+    pub fn goal() -> io::Result<Self> {
+        Ok(Self {
+            row: None,
+            kind: "goal".into(),
+            fields: vec![Field::new(
+                "objective",
+                "Objective",
+                Kind::Text,
+                &json!(""),
+            )?],
+            selected: 0,
+        })
+    }
+    pub fn is_goal(&self) -> bool {
+        self.kind == "goal"
+    }
     pub fn new(kind: &str, row: Option<Row>) -> io::Result<Self> {
         if !matches!(kind, "cron" | "loop") {
             return Err(io::Error::other("Select Jobs or Loops to create a job"));
@@ -102,7 +118,7 @@ impl Form {
     }
     pub fn draft(&self) -> io::Result<Value> {
         let mut value = serde_json::Map::new();
-        if self.row.is_none() {
+        if self.row.is_none() && !self.is_goal() {
             value.insert("kind".into(), json!(self.kind));
         }
         for field in &self.fields {
@@ -178,11 +194,15 @@ impl Form {
         }
         let field = &self.fields[self.selected];
         let mut out = vec![
-            format!(
-                "{} {} job",
-                if self.row.is_some() { "Edit" } else { "Create" },
-                self.kind
-            ),
+            if self.is_goal() {
+                "Start a new goal".into()
+            } else {
+                format!(
+                    "{} {} job",
+                    if self.row.is_some() { "Edit" } else { "Create" },
+                    self.kind
+                )
+            },
             format!(
                 "Field {}/{}: {}",
                 self.selected + 1,

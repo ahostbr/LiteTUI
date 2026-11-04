@@ -1322,15 +1322,27 @@ fn stop_dialog(frame: &mut Frame, app: &Demo, area: Rect) {
         height,
     );
     frame.render_widget(Clear, rect);
-    let title = if chat.cancelling() {
+    let title = if chat.execution_pending() {
+        " Stop this work? "
+    } else if chat.cancelling() {
         " Force stop? "
     } else {
         " Stop this turn? "
     };
     let text = vec![
-        Line::raw("Partial output stays visible."),
-        Line::raw("Tool effects are not undone."),
-        Line::raw(if chat.cancelling() {
+        Line::raw(if chat.execution_pending() {
+            "Any saved run or goal is kept."
+        } else {
+            "Partial output stays visible."
+        }),
+        Line::raw(if chat.execution_pending() {
+            "Goal Pause is a separate action."
+        } else {
+            "Tool effects are not undone."
+        }),
+        Line::raw(if chat.execution_pending() {
+            "Wait for verified retirement."
+        } else if chat.cancelling() {
             "Second stop forces interruption."
         } else {
             "Wait for runtime settlement."
@@ -1342,7 +1354,13 @@ fn stop_dialog(frame: &mut Frame, app: &Demo, area: Rect) {
             "[> Keep going <]"
         }),
         Line::raw(if chat.stop_selected {
-            "[> Stop turn <]"
+            if chat.execution_pending() {
+                "[> Stop work <]"
+            } else {
+                "[> Stop turn <]"
+            }
+        } else if chat.execution_pending() {
+            "[  Stop work  ]"
         } else {
             "[  Stop turn  ]"
         }),

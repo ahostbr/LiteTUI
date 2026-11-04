@@ -188,6 +188,16 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    WorkLaunchStop {
+        action_id: String,
+        generation: u64,
+        stopped_operation: Option<String>,
+    },
+    WorkLaunchPending {
+        action_id: String,
+        generation: u64,
+        reason: String,
+    },
     ScheduledProposal(String),
     ScheduledHeld(String),
     ScheduledLocalNotSent {
@@ -196,6 +206,12 @@ pub enum Observation {
     },
     ScheduledConversationChanged(Box<crate::conversation_actions::Changed>),
     WorkExecution(Box<WorkExecution>),
+    WorkLaunchFinished {
+        action_id: String,
+        update: crate::work_view::Update,
+        stopped_operation: Option<String>,
+        stop_verified: bool,
+    },
     Compact(crate::conversation_compact::Update),
     CompactSettled(Box<crate::management::CompactChanged>),
     Rewrite(crate::conversation_rewrite::Update),
@@ -1834,6 +1850,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let mut startup_facts = None;
     let mut mirror_deadline = None;
     let mut work_deadline = None;
+    let mut execution_deadline = None;
+    let mut execution_stop_deadline = None;
     let mut schedule_deadline = None;
     let mut management_deadline = None;
     let mut work_retirement_deadlines = std::collections::HashMap::<String, Instant>::new();
@@ -1853,6 +1871,14 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             } else {
                 work_deadline = None;
             }
+            if turn.closing || !management.execution_launch_pending() {
+                execution_deadline = None;
+            }
+            if turn.closing || !management.execution_stop_pending() {
+                execution_stop_deadline = None;
+            }
+            check_deadline(execution_deadline)?;
+            check_deadline(execution_stop_deadline)?;
             check_mirror_deadline(mirror_deadline)?;
             // An autonomous source turn can overlap an already-dispatched read.
             // Neither completion may erase the other's timeout. Reviewed action
@@ -2126,7 +2152,15 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Input::Work(intent) => {
                         let generation = intent.generation;
+                        let launch_action = match &intent.request {
+                            crate::work_view::Request::ExecutionApply(review) => {
+                                Some(review.action_id.clone())
+                            }
+                            _ => None,
+                        };
                         let permitted = match &intent.request {
+                            crate::work_view::Request::ExecutionValidate(_)
+                            | crate::work_view::Request::ExecutionApply(_) => turn.can_manage(),
                             crate::work_view::Request::ControlValidate(_)
                             | crate::work_view::Request::ControlApply(_) => turn.can_manage(),
                             crate::work_view::Request::DeferredValidate
@@ -2150,15 +2184,39 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .expect("owned stdin")
                                     .try_send(value)
                                     .map_err(io::Error::other)?;
-                                work_deadline = Some(Instant::now() + options.timeout);
+                                if launch_action.is_some() {
+                                    execution_deadline = Some(Instant::now() + options.timeout);
+                                } else {
+                                    work_deadline = Some(Instant::now() + options.timeout);
+                                }
                             }
                             Err(error) => {
-                                frontend.observe(Observation::Work(crate::work_view::Update {
+                                let update = crate::work_view::Update {
                                     generation,
                                     data: crate::work_view::Data::Rejected(error.to_string()),
-                                }))?
+                                };
+                                if let Some(action_id) = launch_action {
+                                    frontend.observe(Observation::WorkLaunchFinished {
+                                        action_id,
+                                        update,
+                                        stopped_operation: None,
+                                        stop_verified: true,
+                                    })?;
+                                } else {
+                                    frontend.observe(Observation::Work(update))?;
+                                }
                             }
                         }
+                    }
+                    Input::ExecutionStop(action_id) => {
+                        let command = management.request_execution_stop(&action_id)?;
+                        owned
+                            .stdin
+                            .as_ref()
+                            .expect("owned stdin")
+                            .try_send(command)
+                            .map_err(io::Error::other)?;
+                        execution_stop_deadline = Some(Instant::now() + Duration::from_secs(20));
                     }
                     Input::Settings(intent) => {
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
@@ -2695,6 +2753,29 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         for update in updates {
                             frontend.observe(update)?;
                         }
+                        match management.execution_after_work()? {
+                            Step::WorkLaunch {
+                                action_id,
+                                update,
+                                stop: None,
+                                stop_verified: false,
+                            } if !turn.closing => {
+                                check_deadline(execution_deadline)?;
+                                execution_deadline = None;
+                                frontend.observe(Observation::WorkLaunchFinished {
+                                    action_id,
+                                    update,
+                                    stopped_operation: None,
+                                    stop_verified: false,
+                                })?;
+                            }
+                            Step::Ignore => {}
+                            _ => {
+                                return Err(io::Error::other(
+                                    "Unexpected execution completion during Work event",
+                                ));
+                            }
+                        }
                         if starts && !turn.closing {
                             deadline = Some(Instant::now() + options.timeout);
                         }
@@ -2707,6 +2788,79 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             if !turn.closing {
                                 frontend.observe(update)?;
                             }
+                        }
+                    }
+                    Step::WorkLaunchStop {
+                        action_id,
+                        generation,
+                        admission,
+                    } => {
+                        check_deadline(execution_stop_deadline)?;
+                        execution_stop_deadline = None;
+                        if !turn.closing {
+                            let mut stopped_operation = None;
+                            if let Some(command) = turn.abort(&admission.operation)? {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(command)
+                                    .map_err(io::Error::other)?;
+                                stopped_operation = Some(admission.operation.clone());
+                                let until = Instant::now() + Duration::from_secs(20);
+                                deadline = Some(deadline.map_or(until, |d| d.min(until)));
+                            }
+                            frontend.observe(Observation::WorkLaunchStop {
+                                action_id,
+                                generation,
+                                stopped_operation,
+                            })?;
+                        }
+                    }
+                    Step::WorkLaunchPending {
+                        action_id,
+                        generation,
+                        reason,
+                    } => {
+                        if !turn.closing {
+                            frontend.observe(Observation::WorkLaunchPending {
+                                action_id,
+                                generation,
+                                reason,
+                            })?;
+                        }
+                    }
+                    Step::WorkLaunch {
+                        action_id,
+                        update,
+                        stop,
+                        stop_verified,
+                    } => {
+                        check_deadline(execution_deadline)?;
+                        check_deadline(execution_stop_deadline)?;
+                        execution_deadline = None;
+                        execution_stop_deadline = None;
+                        if !turn.closing {
+                            let mut stopped_operation = None;
+                            if let Some(admission) = stop
+                                && let Some(command) = turn.abort(&admission.operation)?
+                            {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(command)
+                                    .map_err(io::Error::other)?;
+                                stopped_operation = Some(admission.operation);
+                                let until = Instant::now() + Duration::from_secs(20);
+                                deadline = Some(deadline.map_or(until, |d| d.min(until)));
+                            }
+                            frontend.observe(Observation::WorkLaunchFinished {
+                                action_id,
+                                update,
+                                stopped_operation,
+                                stop_verified,
+                            })?;
                         }
                     }
                     Step::Work(update) => {
@@ -2887,6 +3041,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             && event["ok"] == true
                         {
                             management.verify_work_shutdown(&event["result"]["work_shutdown"])?;
+                            management.verify_execution_shutdown(
+                                &event["result"]["work_execution_shutdown"],
+                            )?;
                         }
                         let action_segment = turn.rewrite_active && event["type"] == "turn_start";
                         if let Some(id) = publish_event(
@@ -3026,6 +3183,7 @@ pub enum Input {
     Queue(crate::restored_queue::Intent),
     Commands(crate::command_palette::Intent),
     Work(crate::work_view::Intent),
+    ExecutionStop(String),
     Settings(crate::settings_view::Intent),
     Backend(crate::backend_controls::Intent),
     Browser(crate::conversation_browser::Intent),
@@ -3072,6 +3230,9 @@ impl Frontend for OneShot {
             | Observation::Theme(_)
             | Observation::SavedHistory(_)
             | Observation::WorkExecution(_)
+            | Observation::WorkLaunchStop { .. }
+            | Observation::WorkLaunchPending { .. }
+            | Observation::WorkLaunchFinished { .. }
             | Observation::Work(_)
             | Observation::Settings(_)
             | Observation::Backend(_)
@@ -3405,6 +3566,14 @@ impl Interactive {
         self.commands
             .try_send(Input::Theme(intent))
             .map_err(|e| io::Error::other(e.to_string()))
+    }
+    pub fn execution_stop(&self, action_id: String) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::ExecutionStop(action_id))
+            .map_err(io::Error::other)
     }
     pub fn work(&self, intent: crate::work_view::Intent) -> io::Result<()> {
         if self.quitting.load(std::sync::atomic::Ordering::Acquire) {

@@ -206,7 +206,7 @@ impl NewReview {
         i.session = self.target.clone();
         i
     }
-    fn receipt(&self, v: &Value, success: bool) -> io::Result<()> {
+    fn receipt(&self, v: &Value, success: bool, instance: &str) -> io::Result<()> {
         let mut expected = vec![
             "version",
             "kind",
@@ -231,7 +231,16 @@ impl NewReview {
         if v.get("work_shutdown").is_some() || v.get("work_recapture_required").is_some() {
             expected.extend(["work_shutdown", "work_recapture_required"]);
         }
+        if v.get("work_execution_shutdown").is_some() {
+            expected.push("work_execution_shutdown");
+        }
         keys(v, &expected)?;
+        if let Some(value) = v.get("work_execution_shutdown") {
+            let proof = crate::work_execution_controls::Shutdown::parse(value)?;
+            if proof.identity != self.identity || proof.work_instance != instance {
+                return Err(bad("Scheduled New changed its execution retirement epoch"));
+            }
+        }
         version(v, "version")?;
         if v["kind"] != "conversation_transition_apply"
             || v["from_session_id"] != self.identity.session
@@ -535,7 +544,7 @@ impl Decision {
             None
         } else {
             p.transition
-                .receipt(&v["transition"], status == Status::Staged)?;
+                .receipt(&v["transition"], status == Status::Staged, &p.instance)?;
             Some(v["transition"].clone())
         };
         let deferred = if v["deferred"].is_null() {
