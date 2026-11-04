@@ -26,6 +26,8 @@ Bounded saved history: interactive launches negotiate the bounded history protoc
 
 ## Change tools, authority, and Plan mode during chat
 
+During live chat, **Ctrl+L** opens New conversation for review. **Ctrl+B** selects the previous tool in the transcript, wrapping to the newest tool. **Ctrl+E** expands or collapses the selected tool, or the newest tool if none is selected. With no tool in the transcript, Ctrl+E moves the caret to the end of the draft.
+
 Press **Ctrl+T** to switch tools on or off, **Shift+Tab** to review the next authority profile, or **Ctrl+P** to change Plan mode. The review shows the proposed value and its effect. Enabling tools also shows the directory they will use. Page down through the review, press Tab to select Apply, then Enter to confirm. Escape dismisses the review and returns to your draft. The footer reflects the runtime's verified state.
 
 Calls that already started keep the tools and approval policy they captured. Later calls use the verified change. If saving fails, the result tells you whether the change took effect for this session. On resume, pass the saved tools setting and provide an absolute workspace when tools are enabled.

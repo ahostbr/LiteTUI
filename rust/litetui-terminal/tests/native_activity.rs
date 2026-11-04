@@ -145,6 +145,7 @@ fn live_renderer_keeps_native_tools_between_cards_and_shows_reported_failure() {
     ] {
         app.observe_live(observation).unwrap();
     }
+    assert!(app.live.as_mut().unwrap().toggle_recent_tool());
     let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
     terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
     let text = terminal

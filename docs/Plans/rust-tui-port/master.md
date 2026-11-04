@@ -1,5 +1,9 @@
 # LiteTUI Rust terminal port
 
+## Live conversation shortcuts - 2026-11-04
+
+Ctrl+L opens the existing New conversation review from an idle composer. Ctrl+B and Ctrl+E navigate and expand tool calls across turns, including calls that have already finished. The branch passed 956 Rust tests and strict all-target Clippy. A hidden Windows pseudoconsole drove the relocated executable through Ctrl+L, both context and runtime-status readers, a Plan change, resize and shutdown. The original draft, saved conversation and package payload were verified afterward.
+
 ## Context and runtime inspection - 2026-11-04
 
 Press I in F1 Work to page through the active system prompt and the agent’s memory, soul and handoff documents. Each page is tied to the selected document revision. Press I in F10 Settings to inspect the current runtime, session, model, persistence state and cached MCP server status. Escape returns to the parent panel and preserves the draft.

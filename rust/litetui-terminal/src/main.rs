@@ -511,6 +511,35 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         KeyCode::F(2) => app.toggle_tool(),
         KeyCode::Tab => app.next_tool(),
         KeyCode::BackTab => app.previous_tool(),
+        KeyCode::Char('l')
+            if app.live.is_some()
+                && key.kind == KeyEventKind::Press
+                && key.modifiers == KeyModifiers::CONTROL =>
+        {
+            if let Err(error) = app
+                .open_conversation_action(litetui_terminal::conversation_actions::Action::New, "")
+            {
+                app.notice = error.to_string();
+            }
+        }
+        KeyCode::Char('b' | 'e')
+            if app.live.is_some() && key.modifiers == KeyModifiers::CONTROL =>
+        {
+            if key.kind != KeyEventKind::Press {
+                return false;
+            }
+            let chat = app.live.as_mut().expect("live shortcut");
+            let selected = if key.code == KeyCode::Char('b') {
+                chat.select_previous_tool()
+            } else {
+                chat.toggle_recent_tool()
+            };
+            if selected {
+                app.follow_selection = true;
+            } else if key.code == KeyCode::Char('e') {
+                app.composer.move_cursor(Motion::End, false);
+            }
+        }
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.composer.move_cursor(Motion::End, false)
         }
@@ -4928,5 +4957,169 @@ mod execution_keys_tests {
         );
         assert!(app.live.as_ref().unwrap().execution_pending());
         assert!(app.live.as_ref().unwrap().rows.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod live_keyboard_navigation_tests {
+    use super::*;
+    use litetui_terminal::{
+        conversation_actions::{Action, Intent},
+        conversation_browser,
+        live::Observation,
+        native_activity::Activity,
+    };
+    use ratatui::backend::TestBackend;
+
+    fn press(app: &mut Demo, router: &mut KeyRouter, character: char) {
+        router.handle(
+            app,
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL),
+        );
+    }
+    fn draw(app: &mut Demo, width: u16, height: u16) -> String {
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|frame| ui::draw(frame, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    enum Detail<'a> {
+        Input(&'a str),
+        Result(&'a str, Option<bool>),
+    }
+    fn record(app: &mut Demo, id: &str, name: &str, detail: Detail<'_>) {
+        let mut frame = serde_json::json!({"type":"native_activity","provider":"claude","id":id,
+            "name":name,"card_index":0,"complete":true,"input":null,"result":null,"is_error":null});
+        match detail {
+            Detail::Input(text) => {
+                frame["kind"] = "tool_use".into();
+                frame["input"] = serde_json::json!({"argument":text});
+            }
+            Detail::Result(text, error) => {
+                frame["kind"] = "tool_result".into();
+                frame["result"] = text.into();
+                frame["is_error"] = serde_json::json!(error);
+            }
+        }
+        app.observe_live(Observation::Activity(Activity::from_event(&frame).unwrap()))
+            .unwrap();
+    }
+
+    #[test]
+    fn live_ctrl_l_only_requests_reviewed_new_after_an_idle_fresh_press() {
+        let mut app = Demo::live("custom".into(), "m".into());
+        let mut router = KeyRouter::default();
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("Keep the selected draft");
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let draft = (
+            app.composer.text().to_owned(),
+            app.composer.before_cursor().to_owned(),
+            app.composer.selected_text().to_owned(),
+        );
+        draw(&mut app, 80, 24);
+        router.handle(
+            &mut app,
+            KeyEvent::new_with_kind(
+                KeyCode::Char('l'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Repeat,
+            ),
+        );
+        assert!(!app.has_live_input());
+        app.open_settings();
+        press(&mut app, &mut router, 'l');
+        assert!(app.live.as_ref().unwrap().settings.owns_input());
+        assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
+        app.live.as_mut().unwrap().settings.close();
+        app.live.as_mut().unwrap().submit("q").unwrap();
+        press(&mut app, &mut router, 'l');
+        assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
+        app.observe_live(Observation::Complete).unwrap();
+        press(&mut app, &mut router, 'l');
+        let action = app.live.as_mut().unwrap().browser.take_intent().unwrap();
+        assert!(matches!(
+            action,
+            conversation_browser::Intent::Action(Intent::Read {
+                action: Action::New
+            })
+        ));
+        press(&mut app, &mut router, 'l');
+        assert!(app.live.as_mut().unwrap().browser.take_intent().is_none());
+        assert_eq!(app.live.as_ref().unwrap().rows.len(), 1);
+        assert_eq!(
+            draft,
+            (
+                app.composer.text().to_owned(),
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn live_ctrl_b_e_follow_owned_cards_across_turns_updates_and_reflow() {
+        let mut app = Demo::live("claude".into(), "m".into());
+        let mut router = KeyRouter::default();
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("draft stays");
+        app.composer.move_cursor(Motion::Home, false);
+        press(&mut app, &mut router, 'b');
+        press(&mut app, &mut router, 'e'); // composer End when there are no observed tools
+        assert_eq!(app.composer.before_cursor(), "draft stays");
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let selection = app.composer.selected_text().to_owned();
+        app.live.as_mut().unwrap().submit("first").unwrap();
+        record(
+            &mut app,
+            "same",
+            "OldRecord",
+            Detail::Input("old arguments"),
+        );
+        record(
+            &mut app,
+            "same",
+            "OldRecord",
+            Detail::Result("old returned body", Some(false)),
+        );
+        app.observe_live(Observation::Complete).unwrap();
+        app.live.as_mut().unwrap().backend = "custom".into();
+        app.live.as_mut().unwrap().submit("second").unwrap();
+        record(
+            &mut app,
+            "same",
+            "NewRecord",
+            Detail::Input("new arguments"),
+        );
+        press(&mut app, &mut router, 'b');
+        assert!(draw(&mut app, 110, 60).contains("› ▾ Host tool · NewRecord"));
+        press(&mut app, &mut router, 'e');
+        assert!(!draw(&mut app, 110, 60).contains("new arguments"));
+        record(
+            &mut app,
+            "same",
+            "NewRecord",
+            Detail::Result("new returned body", None),
+        );
+        let collapsed = draw(&mut app, 110, 60);
+        assert!(collapsed.contains("outcome unknown") && !collapsed.contains("new returned body"));
+        press(&mut app, &mut router, 'b');
+        press(&mut app, &mut router, 'e');
+        let small = draw(&mut app, 42, 18);
+        assert!(small.contains("› ▾ Claude · OldRecord"));
+        let full = draw(&mut app, 110, 60);
+        assert!(full.contains("old returned body") && !full.contains("new returned body"));
+        press(&mut app, &mut router, 'b');
+        assert!(draw(&mut app, 110, 60).contains("› ▸ Host tool · NewRecord"));
+        app.open_work();
+        press(&mut app, &mut router, 'e');
+        assert!(app.live.as_ref().unwrap().work.owns_input());
+        assert_eq!(app.composer.selected_text(), selection);
+        assert_eq!(app.composer.text(), "draft stays");
     }
 }

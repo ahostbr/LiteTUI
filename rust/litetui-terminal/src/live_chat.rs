@@ -77,6 +77,25 @@ struct PendingWorkSegment {
     admission: String,
     input: WorkInput,
 }
+/// Local presentation follows the row across source updates and transcript rebasing.
+#[derive(Default)]
+pub(crate) struct ToolView {
+    provider: &'static str,
+    pub selected: Option<usize>,
+    expanded: std::collections::BTreeMap<usize, bool>,
+}
+impl ToolView {
+    fn new(backend: &str) -> Self {
+        Self {
+            provider: match backend {
+                "claude" => "Claude",
+                "codex" => "Codex",
+                _ => "Host tool",
+            },
+            ..Self::default()
+        }
+    }
+}
 pub struct Row {
     pub source_owned: bool,
     pub source: Option<WorkSource>,
@@ -85,10 +104,29 @@ pub struct Row {
     pub prompt: String,
     pub cards: Vec<Card>,
     pub tools: Vec<Tool>,
+    pub(crate) tool_view: ToolView,
     pub items: Vec<Item>,
     pub state: ReplyState,
     pub stop_reason: Option<String>,
 }
+impl Row {
+    pub(crate) fn tool_provider(&self) -> &'static str {
+        self.tool_view.provider
+    }
+    pub(crate) fn tool_expanded(&self, index: usize) -> bool {
+        self.tool_view
+            .expanded
+            .get(&index)
+            .copied()
+            .unwrap_or_else(|| {
+                !matches!(
+                    self.tools[index].result,
+                    crate::native_activity::ResultState::Returned { .. }
+                )
+            })
+    }
+}
+
 struct LaunchReservation {
     action_id: String,
     generation: u64,
@@ -263,6 +301,46 @@ impl Chat {
         }
         Some((id, idle))
     }
+    fn newest_tool_before(&self, end: usize) -> Option<(usize, usize)> {
+        self.rows[..end]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(row, record)| record.tools.len().checked_sub(1).map(|tool| (row, tool)))
+    }
+    fn focus_live_tool(&mut self, previous: bool) -> Option<(&mut Row, usize)> {
+        let selected = self
+            .rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, record)| record.tool_view.selected.map(|tool| (row, tool)));
+        let target = match selected {
+            Some((row, tool)) if !previous => Some((row, tool)),
+            Some((row, tool)) if tool > 0 => Some((row, tool - 1)),
+            Some((row, _)) => self
+                .newest_tool_before(row)
+                .or_else(|| self.newest_tool_before(self.rows.len())),
+            None => self.newest_tool_before(self.rows.len()),
+        }?;
+        if let Some((row, _)) = selected {
+            self.rows[row].tool_view.selected = None;
+        }
+        let (row, index) = target;
+        self.rows[row].tool_view.selected = Some(index);
+        Some((&mut self.rows[row], index))
+    }
+    pub fn select_previous_tool(&mut self) -> bool {
+        self.focus_live_tool(true).is_some()
+    }
+    pub fn toggle_recent_tool(&mut self) -> bool {
+        let Some((row, index)) = self.focus_live_tool(false) else {
+            return false;
+        };
+        let expanded = !row.tool_expanded(index);
+        row.tool_view.expanded.insert(index, expanded);
+        true
+    }
+
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
         self.reserve_row(prompt, false)
     }
@@ -331,6 +409,7 @@ impl Chat {
             prompt: prompt.into(),
             cards: vec![Card::default()],
             tools: Vec::new(),
+            tool_view: ToolView::new(&self.backend),
             items: vec![Item::Card(0)],
             state: ReplyState::Sending,
             stop_reason: None,
@@ -391,6 +470,7 @@ impl Chat {
             prompt: entry.content.clone(),
             cards: Vec::new(),
             tools: Vec::new(),
+            tool_view: ToolView::new(&self.backend),
             items: Vec::new(),
             state: ReplyState::Reconciled,
             stop_reason: None,
@@ -1490,6 +1570,7 @@ impl Chat {
             prompt,
             cards: vec![Card::default()],
             tools: Vec::new(),
+            tool_view: ToolView::new(&self.backend),
             items: vec![Item::Card(0)],
             state: ReplyState::Sending,
             stop_reason: None,
@@ -1911,6 +1992,7 @@ impl Chat {
             prompt: prompt.into(),
             cards: vec![Card::default()],
             tools: Vec::new(),
+            tool_view: ToolView::new(&self.backend),
             items: vec![Item::Card(0)],
             state,
             stop_reason: None,

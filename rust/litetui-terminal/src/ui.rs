@@ -496,21 +496,28 @@ fn work_source(
 fn native_tool(
     t: &crate::theme::Theme,
     lines: &mut Vec<Line<'static>>,
-    tool: &crate::native_activity::Tool,
+    row: &crate::live_chat::Row,
+    index: usize,
     width: usize,
 ) {
     use crate::native_activity::ResultState;
+    let tool = &row.tools[index];
+    let expanded = row.tool_expanded(index);
+    let selected = row.tool_view.selected == Some(index);
     let metadata = |text: &str| display_safe(text).replace('\n', "\\u{a}");
-    tool_body(
-        t,
-        lines,
-        &format!(
-            "Claude · {}",
-            metadata(tool.name.as_deref().unwrap_or(&tool.id))
-        ),
-        t.tool_text,
-        width,
+    let header = format!(
+        "{} {} · {}",
+        if expanded { "▾" } else { "▸" },
+        row.tool_provider(),
+        metadata(tool.name.as_deref().unwrap_or(&tool.id))
     );
+    let color = if selected { t.title } else { t.tool_text };
+    for fragment in wrap(&header, width.saturating_sub(8)) {
+        lines.push(Line::styled(
+            format!("   {} {fragment}", if selected { "›" } else { " " }),
+            style(color, t.tool_background).add_modifier(Modifier::BOLD),
+        ));
+    }
     let (status, color) = match &tool.result {
         ResultState::Pending => ("Request observed · result pending", t.title),
         ResultState::Incomplete => ("Incomplete · result unavailable", t.error),
@@ -527,6 +534,10 @@ fn native_tool(
         }
     };
     tool_body(t, lines, status, color, width);
+    if !expanded {
+        lines.push(Line::raw(""));
+        return;
+    }
     tool_body(
         t,
         lines,
@@ -568,6 +579,7 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
     let t = app.palette();
     if let Some(chat) = &app.live {
         let mut lines = Vec::new();
+        let mut selected = (0, 0);
         if let Some(descriptor) = chat.history.as_ref().and_then(|h| h.descriptor.as_ref()) {
             tool_body(
                 t,
@@ -719,7 +731,11 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                         lines.push(Line::raw(""));
                     }
                     crate::live_chat::Item::Tool(index) => {
-                        native_tool(t, &mut lines, &row.tools[index], width)
+                        let start = lines.len();
+                        native_tool(t, &mut lines, row, index, width);
+                        if row.tool_view.selected == Some(index) {
+                            selected = (start, lines.len());
+                        }
                     }
                     crate::live_chat::Item::Card(index) => {
                         let card = &row.cards[index];
@@ -760,7 +776,7 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 lines.push(Line::raw(""));
             }
         }
-        return (lines, (0, 0));
+        return (lines, selected);
     }
     let mut lines = vec![
         Line::styled(
@@ -918,7 +934,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     let (lines, selected) = transcript(app, viewport.width as usize);
     let height = viewport.height as usize;
     app.max_scroll = lines.len().saturating_sub(height);
-    if app.follow_selection {
+    let size = (viewport.width, viewport.height);
+    let resized = app.transcript_viewport.replace(size) != Some(size);
+    if app.follow_selection || (app.live.is_some() && selected.1 > selected.0 && resized) {
         if selected.0 < app.scroll || selected.1.saturating_sub(selected.0) >= height {
             app.scroll = selected.0;
         } else if selected.1 > app.scroll.saturating_add(height) {
