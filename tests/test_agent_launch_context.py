@@ -48,7 +48,7 @@ def test_bootstrap_matching_flags_settings_win_without_persistence(owned):
     before = (owned.memory_root / 'settings.json').read_bytes()
     agent_launch_context.apply_settings(owned, settings)
     assert (settings.backend, settings.default_model, settings.thinking_level) == ('codex', 'fixture', 'high')
-    assert settings.seat_name == 'QuietHelm'
+    assert settings.seat_name == 'LiteTUI', 'the agent name is never copied onto the shared seat_name setting (T0836)'
     assert (owned.memory_root / 'settings.json').read_bytes() == before
 
 
