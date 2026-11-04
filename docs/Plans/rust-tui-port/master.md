@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Context and runtime inspection - 2026-11-04
+
+Press I in F1 Work to page through the active system prompt and the agent’s memory, soul and handoff documents. Each page is tied to the selected document revision. Press I in F10 Settings to inspect the current runtime, session, model, persistence state and cached MCP server status. Escape returns to the parent panel and preserves the draft.
+
+The checkout passed 954 Rust tests, strict all-target Clippy, a binary build and 145 Python tests. Two controlled process tests exercised both readers against the runtime from the relocated package. The launcher verified its 360 payload files afterward (361 files including the manifest).
+
 ## Tools, authority and Plan mode during chat - 2026-11-04
 
 Ctrl+T, Shift+Tab and Ctrl+P open source-backed reviews for tools, authority and Plan mode. Reviews display the proposed change, workspace or plan text, and persistence consequences before confirmation. The Rust footer adopts the result after an independent readback. Approvals, questions, Stop and Quit retain priority over the panel. The composer retains its draft and selection.

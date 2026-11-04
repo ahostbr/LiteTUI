@@ -292,7 +292,7 @@ fn assistant_card(
 
 // Retain original wire text in the projection; terminal escapes and bidi
 // controls are printable escapes ONLY at this presentation boundary.
-fn display_safe(text: &str) -> String {
+pub(crate) fn display_safe(text: &str) -> String {
     let mut safe = String::new();
     for ch in text.chars() {
         match ch {

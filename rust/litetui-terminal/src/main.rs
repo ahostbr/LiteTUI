@@ -111,8 +111,29 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('q')) {
         return true;
     }
+    if key.code == KeyCode::Esc
+        && key.modifiers == KeyModifiers::CONTROL
+        && key.kind == KeyEventKind::Press
+    {
+        app.open_stop();
+        return false;
+    }
     if app.viewport_too_small {
-        if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
+        if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press && key.modifiers.is_empty() {
+            if !app.stop_open()
+                && !app.has_live_approval()
+                && !app.has_live_question()
+                && let Some(chat) = app.live.as_mut()
+            {
+                if chat.work.context_open() {
+                    chat.work.key(key);
+                    return false;
+                }
+                if chat.settings.runtime_status_open() {
+                    chat.settings.key(key);
+                    return false;
+                }
+            }
             if app.has_live_compact() {
                 let chat = app.live.as_mut().expect("compact");
                 chat.compact.close();
@@ -159,13 +180,6 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             app.themes_open = false;
             app.completion.dismiss();
         }
-        return false;
-    }
-    if key.code == KeyCode::Esc
-        && key.modifiers == KeyModifiers::CONTROL
-        && key.kind == KeyEventKind::Press
-    {
-        app.open_stop();
         return false;
     }
     if app.stop_open() {
@@ -4505,6 +4519,34 @@ mod work_router_tests {
         router.handle(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
         assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
         assert_eq!(draft(&app), before);
+    }
+    #[test]
+    fn tiny_context_escape_returns_to_work_while_the_read_drains() {
+        let (mut app, mut router) = setup();
+        read(&mut app);
+        paint(&mut app, 100, 34);
+        let before = draft(&app);
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+        );
+        let pending = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        assert!(matches!(pending.request, v::Request::Context(_)));
+        paint(&mut app, 20, 10);
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let work = &app.live.as_ref().unwrap().work;
+        assert!(work.open && work.waiting && !work.context_open());
+        app.observe_live(Observation::Work(v::Update {
+            generation: pending.generation,
+            data: v::Data::Rejected("read retired".into()),
+        }))
+        .unwrap();
+        assert!(app.has_live_work());
+        assert!(!app.live.as_ref().unwrap().work.waiting);
+        assert_eq!(draft(&app), before);
+
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::CONTROL));
+        assert!(app.stop_open());
     }
     #[test]
     fn tiny_terminal_can_close_work_and_quit_clears_stale_updates() {

@@ -395,6 +395,13 @@ struct SavedHistoryPending {
     position: crate::history::PageRequest,
     prior: Option<crate::history::Page>,
 }
+enum SettingsRead {
+    Values,
+    RuntimeStatus {
+        identity: crate::work_protocol::Identity,
+        instance: String,
+    },
+}
 pub struct Management {
     runtime_controls: runtime::Control,
     execution: execution::Control,
@@ -440,7 +447,7 @@ pub struct Management {
     model_target_state: Option<(Snapshot, Value)>,
     queue: Option<QueuePending>,
     queue_menu: Option<crate::restored_queue::Snapshot>,
-    settings: Option<CommandId>,
+    settings: Option<(CommandId, SettingsRead)>,
     command: Option<CommandPending>,
     command_catalog: Option<crate::command_palette::Catalog>,
     command_prepared: Option<crate::prepared_skill::Prepared>,
@@ -1016,8 +1023,11 @@ impl Management {
                 frame,
                 ..
             } if self.execution_response_pending(&frame) => self.execution_response(frame),
-            Notice::Response { matched: true, frame, .. }
-                if self.runtime_response_pending(&frame) => self.runtime_response(frame),
+            Notice::Response {
+                matched: true,
+                frame,
+                ..
+            } if self.runtime_response_pending(&frame) => self.runtime_response(frame),
             Notice::Response {
                 id,
                 matched: true,
@@ -1179,7 +1189,13 @@ impl Management {
                 id,
                 matched: true,
                 frame,
-            } if id == self.settings && self.settings.is_some() => self.settings_response(frame),
+            } if self
+                .settings
+                .as_ref()
+                .is_some_and(|(pending, _)| id.as_ref() == Some(pending)) =>
+            {
+                self.settings_response(frame)
+            }
             Notice::Response {
                 matched: false,
                 frame,
@@ -1515,17 +1531,27 @@ impl Management {
         };
         if let Some(menu) = pending.target_menu.take() {
             if !success {
-                return Err(fail("Cannot verify the new model's effective runtime policy"));
+                return Err(fail(
+                    "Cannot verify the new model's effective runtime policy",
+                ));
             }
             self.ensure_drained()?;
             let result = &frame["result"];
             let state = Snapshot::parse(result)?;
-            let (agent, schedules) = self.browser_authority.as_ref().ok_or_else(|| fail("Model change lacks captured ownership"))?;
-            if state.session != menu.session || state.backend != menu.backend || state.model != menu.model
-                || state.schedules_paused != *schedules || state.held_restored_input.is_none()
+            let (agent, schedules) = self
+                .browser_authority
+                .as_ref()
+                .ok_or_else(|| fail("Model change lacks captured ownership"))?;
+            if state.session != menu.session
+                || state.backend != menu.backend
+                || state.model != menu.model
+                || state.schedules_paused != *schedules
+                || state.held_restored_input.is_none()
                 || result["ownership"]["agent_id"] != *agent
             {
-                return Err(fail("New model policy readback changed the captured target"));
+                return Err(fail(
+                    "New model policy readback changed the captured target",
+                ));
             }
             let profile = &self.expected.as_ref().expect("active").3;
             self.verify_target_profile(&state, &result["tool_policy"], profile)?;
@@ -1601,8 +1627,12 @@ impl Management {
         if menu.model != *model {
             self.require_work_identity_rebind()?;
             if self.retired_runtime_policy().is_some() {
-                let id = self.wire.register_read().map_err(|_| fail("Cannot reserve model target policy readback"))?;
-                let command = json!({"type":"gui.state","id":id.to_value(),"include_conversations":false});
+                let id = self
+                    .wire
+                    .register_read()
+                    .map_err(|_| fail("Cannot reserve model target policy readback"))?;
+                let command =
+                    json!({"type":"gui.state","id":id.to_value(),"include_conversations":false});
                 pending.id = id;
                 pending.target_menu = Some(menu);
                 self.control = Some(pending);
@@ -2725,7 +2755,10 @@ impl Management {
 
 impl Management {
     pub fn request_settings(&mut self, intent: crate::settings_view::Intent) -> io::Result<Value> {
-        if !matches!(intent, crate::settings_view::Intent::Read) {
+        if matches!(
+            intent,
+            crate::settings_view::Intent::Editor(_) | crate::settings_view::Intent::Compaction(_)
+        ) {
             return self.request_settings_editor(intent);
         }
         if !self.ready() {
@@ -2739,17 +2772,52 @@ impl Management {
                 "Runtime omitted owned settings authority; update Python source",
             ));
         }
+        let (mut command, read) = if matches!(intent, crate::settings_view::Intent::RuntimeStatus) {
+            if !self
+                .operations
+                .iter()
+                .any(|op| op == crate::inspection::OPERATION)
+            {
+                return Err(fail("This runtime does not support status inspection"));
+            }
+            let identity = self.work_identity()?;
+            let instance = self.context_instance()?.to_owned();
+            (
+                crate::inspection::command(&identity, &instance),
+                SettingsRead::RuntimeStatus { identity, instance },
+            )
+        } else {
+            (
+                json!({"type":"gui.state","include_conversations":false}),
+                SettingsRead::Values,
+            )
+        };
         let id = self
             .wire
             .register_read()
             .map_err(|_| fail("Cannot reserve settings read"))?;
-        let command = json!({"type":"gui.state","id":id.to_value(),"include_conversations":false});
-        self.settings = Some(id);
+        command["id"] = id.to_value();
+        self.settings = Some((id, read));
         Ok(command)
     }
     fn settings_response(&mut self, frame: Value) -> io::Result<Step> {
-        self.settings = None;
+        let (_, read) = self.settings.take().expect("matched settings read");
         self.ensure_drained()?;
+        if let SettingsRead::RuntimeStatus { identity, instance } = read {
+            let status = if frame["ok"] != true {
+                Err(text(&frame, "error", 4096)?.to_owned())
+            } else if identity != self.work_identity()? || instance != self.context_instance()? {
+                Err("Runtime changed during inspection. Open status again.".into())
+            } else {
+                crate::inspection::Snapshot::parse(&frame["result"], &identity, &instance)
+                    .map(Box::new)
+                    .map_err(|error| error.to_string())
+            };
+            return Ok(Step::Settings {
+                update: crate::settings_view::Update::RuntimeStatus(status),
+                policy: None,
+            });
+        }
         if frame["ok"] != true {
             return Ok(Step::Settings {
                 update: crate::settings_view::Update::Rejected(text(&frame, "error", 4096)?.into()),

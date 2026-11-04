@@ -33,12 +33,14 @@ pub struct Snapshot {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
+    RuntimeStatus,
     Read,
     Editor(crate::settings_editor::Intent),
     Compaction(crate::compaction_settings::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
+    RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
     Rejected(String),
     Editor(crate::settings_editor::Update),
@@ -191,6 +193,7 @@ fn display(value: &str) -> String {
 
 #[derive(Default)]
 pub struct View {
+    runtime_status: crate::inspection::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
     pub open: bool,
@@ -218,6 +221,9 @@ impl View {
         self.notice = "Reading current settings…".into();
         self.hide();
     }
+    pub fn runtime_status_open(&self) -> bool {
+        self.runtime_status.is_open()
+    }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting || self.editor.owns_input() || self.compaction.owns_input()
     }
@@ -229,6 +235,7 @@ impl View {
             .or_else(|| self.intent.take())
     }
     pub fn hide(&mut self) {
+        self.runtime_status.hide();
         self.editor.hide();
         self.compaction.hide();
         self.visible = false;
@@ -237,6 +244,7 @@ impl View {
         self.pressed = None;
     }
     pub fn close(&mut self) {
+        self.runtime_status.close();
         self.editor.close();
         self.compaction.close();
         self.open = false;
@@ -297,6 +305,14 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
+            Update::RuntimeStatus(status) => {
+                if self.runtime_status.is_open() {
+                    match status {
+                        Ok(snapshot) => self.runtime_status.apply(*snapshot),
+                        Err(reason) => self.runtime_status.reject(&reason),
+                    }
+                }
+            }
             Update::Editor(_)
             | Update::Edited { .. }
             | Update::Compaction(_)
@@ -331,6 +347,13 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.runtime_status.is_open() {
+            if self.runtime_status.key(key) && !self.waiting {
+                self.waiting = true;
+                self.intent = Some(Intent::RuntimeStatus);
+            }
+            return;
+        }
         if self.compaction.owns_input() {
             self.compaction.key(key);
             return;
@@ -357,6 +380,12 @@ impl View {
             KeyCode::End => self.select(usize::MAX),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(4),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(4).min(self.max_scroll),
+            KeyCode::Char('i') if key.kind == KeyEventKind::Press => {
+                self.runtime_status.open();
+                self.waiting = true;
+                self.intent = Some(Intent::RuntimeStatus);
+                self.hide();
+            }
             KeyCode::Char('r') if key.kind == KeyEventKind::Press => self.open(),
             KeyCode::Char('c') if key.kind == KeyEventKind::Press => self.compaction.open(),
             KeyCode::Char('e') if key.kind == KeyEventKind::Press => {
@@ -378,6 +407,10 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.runtime_status.is_open() {
+            self.runtime_status.mouse(event);
+            return;
+        }
         if self.compaction.owns_input() {
             self.compaction.mouse(event);
             return;
@@ -426,6 +459,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.runtime_status.is_open() {
+            self.runtime_status.draw(frame, area, theme);
+            return;
+        }
         if self.compaction.owns_input() {
             self.compaction.draw(frame, area, theme);
             return;
@@ -582,7 +619,7 @@ impl View {
             Rect::new(inner.x, inner.bottom() - 2, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("E edit · C compaction · R refresh · Esc close"),
+            Paragraph::new("I runtime status · E edit · C compaction · R refresh · Esc close"),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
         self.visible = self.open && !self.waiting;

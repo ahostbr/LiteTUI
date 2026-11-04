@@ -1215,6 +1215,82 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         finally:
             self._release_claim()
 
+    def _cached_server_state(self, name, sc, invalid_entry, srv, declared, lazy):
+        # ORPHAN OUTRANKS CONNECTED, and that ordering is the point: a
+        # running server the file no longer declares IS connected, so the
+        # obvious `if srv: "connected"` is true and useless — it hides the
+        # one fact the user needs, which is that a restart will not bring
+        # this back. Naming the state is the only way the row can say so.
+        srv_error = getattr(srv, "error", None) if srv is not None else None
+        if invalid_entry:
+            state, error = "failed", "invalid config entry (not an object)"
+        elif srv is not None and srv_error:
+            # A running transport that has POISONED at runtime is not healthy;
+            # surface it rather than reporting a bare "connected".
+            state, error = "failed", srv_error
+        elif srv is not None:
+            state = "connected" if declared else "orphan"
+            # T0124: "connected" with no tools reads as healthy and is not.
+            error = self.failures.get(name) or (
+                None if getattr(srv, "tools", None) else "connected, but listed 0 tools")
+        elif name in self.failures:
+            state, error = "failed", self.failures.get(name)
+        elif not self.allowed(name):
+            state, error = "excluded", None
+        elif sc.get("disabled"):
+            state, error = "disabled", None
+        elif lazy:
+            state, error = "not started (lazy)", None
+        else:
+            state, error = "stopped", None
+        return state, error
+
+    def inspect_cached(self) -> dict:
+        """Project at most 32 cached declarations/servers without enumerating a tool inventory."""
+        import re
+        from itertools import islice
+
+        limit = 32
+        configs = self.configs
+        # A reconcile worker owns this lock briefly while publishing a cache
+        # update. A status read must never wait for a transport operation.
+        if not self._servers_lock.acquire(blocking=False):
+            return {"available": False, "complete": False, "remaining": None, "servers": []}
+        try:
+            declared = list(islice(configs, limit))
+            running = list(islice(self.servers, limit))
+            total = None
+            if len(self.servers) <= limit:
+                total = len(configs) + sum(name not in configs for name in running)
+            elif len(configs) <= limit:
+                total = len(self.servers) + sum(name not in self.servers for name in declared)
+            candidates = declared + [name for name in running if name not in configs]
+            rows = []
+            for name in candidates:
+                if type(name) is not str or not 1 <= len(name) <= 96 or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                    continue
+                raw = configs.get(name)
+                config = raw if type(raw) is dict else {}
+                server = self.servers.get(name)
+                state, _ = self._cached_server_state(name, config, raw is not None and type(raw) is not dict,
+                                                      server, name in configs, name in self._lazy_pending)
+                tools = getattr(server, "tools", None)
+                count = 0 if server is None else len(tools) if type(tools) in (tuple, list, dict) else None
+                transport = None
+                if type(raw) is dict:
+                    if config.get("command"):
+                        transport = "stdio"
+                    elif config.get("url"):
+                        transport = "http"
+                rows.append({"name": name, "transport": transport, "state": state,
+                             "tool_count": count if count is not None and count <= 9007199254740991 else None})
+                if len(rows) == limit:
+                    break
+        finally:
+            self._servers_lock.release()
+        remaining = total - len(rows) if total is not None and total <= 9007199254740991 else None
+        return {"available": True, "complete": remaining == 0, "remaining": remaining, "servers": rows}
+
     def describe(self) -> list[dict]:
         """One row per server the CONFIGS declare, plus any orphan running one.
 
@@ -1232,33 +1308,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             invalid_entry = raw is not None and not isinstance(raw, dict)
             srv = servers.get(name)
             declared = name in self.configs
-            # ORPHAN OUTRANKS CONNECTED, and that ordering is the point: a
-            # running server the file no longer declares IS connected, so the
-            # obvious `if srv: "connected"` is true and useless — it hides the
-            # one fact the user needs, which is that a restart will not bring
-            # this back. Naming the state is the only way the row can say so.
-            srv_error = getattr(srv, "error", None) if srv is not None else None
-            if invalid_entry:
-                state, error = "failed", "invalid config entry (not an object)"
-            elif srv is not None and srv_error:
-                # A running transport that has POISONED at runtime is not healthy;
-                # surface it rather than reporting a bare "connected".
-                state, error = "failed", srv_error
-            elif srv is not None:
-                state = "connected" if declared else "orphan"
-                # T0124: "connected" with no tools reads as healthy and is not.
-                error = self.failures.get(name) or (
-                    None if srv.tools else "connected, but listed 0 tools")
-            elif name in self.failures:
-                state, error = "failed", self.failures.get(name)
-            elif not self.allowed(name):
-                state, error = "excluded", None
-            elif sc.get("disabled"):
-                state, error = "disabled", None
-            elif name in self.lazy_names():
-                state, error = "not started (lazy)", None
-            else:
-                state, error = "stopped", None
+            with self._servers_lock:
+                lazy = name in self._lazy_pending
+            state, error = self._cached_server_state(name, sc, invalid_entry, srv, declared, lazy)
             http = bool(sc.get("url") and not sc.get("command"))
             rows.append(
                 {

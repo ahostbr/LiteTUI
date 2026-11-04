@@ -68,6 +68,12 @@ Keep-recent, summary tokens, tool rounds, thinking and wake save with the conver
 
 A saved or partial result is shown only after independent source and runtime readback. The ordinary composer remains unchanged. Current verification status is in the port master; this work does not establish live-provider or terminal-host acceptance.
 
+## Read conversation context and runtime status
+
+In **F1 Work**, press **I** to read the current system prompt or the active agent’s `memory.md`, `soul.md`, and `handoff.md`. Tab or Left/Right switches documents. Use `[` and `]` to load adjacent pages, the arrow keys to scroll, and F5 to refresh a changed document. The reader distinguishes missing and empty documents and accepts documents up to 256 KiB.
+
+In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, and cached MCP server information. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
+
 ## Work inspection (in progress)
 
 F1 opens Work during ordinary chat. Tab/Shift+Tab switch between host tasks, provider activity, scheduled jobs, loops, the current goal and the calendar. Enter opens complete details; T reads a selected finished host task's bounded output suffix. N/PageDown and B/PageUp follow actual source page offsets, including pages shortened to fit their byte budget. Calendar Left/Right changes month and Enter opens the selected day's complete schedule entries. F5 refreshes the captured facts.

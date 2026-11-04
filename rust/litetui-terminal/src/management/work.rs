@@ -40,7 +40,13 @@ impl Management {
     pub fn work_pending(&self) -> bool {
         self.work.pending.is_some() || self.execution_review_pending()
     }
-    fn work_identity(&self) -> io::Result<protocol::Identity> {
+    pub(super) fn context_instance(&self) -> io::Result<&str> {
+        self.execution_ledger()
+            .filter(|_| self.work_lifecycle_active() && !self.work_identity_transition_pending())
+            .map(|ledger| ledger.capture().instance.as_str())
+            .ok_or_else(|| fail("This inspection requires an active Work session"))
+    }
+    pub(super) fn work_identity(&self) -> io::Result<protocol::Identity> {
         let (session, backend, model, _) = self
             .expected
             .as_ref()
@@ -89,6 +95,7 @@ impl Management {
             view::Request::ControlApply(_) => controls::APPLY,
             view::Request::DeferredValidate => deferred::VALIDATE,
             view::Request::DeferredApply(_) => deferred::DISCARD,
+            view::Request::Context(_) => crate::context::OPERATION,
             view::Request::Snapshot => protocol::READ,
             view::Request::Page { .. } => protocol::PAGE,
             view::Request::Tail(_) => protocol::TAIL,
@@ -215,6 +222,9 @@ impl Management {
                     ));
                 }
                 command = retained.request();
+            }
+            view::Request::Context(request) => {
+                command = request.command(&identity, self.context_instance()?);
             }
             view::Request::Snapshot => {}
             view::Request::Page { section, offset } => {
@@ -386,6 +396,15 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
+                    view::Request::Context(request) => match crate::context::Page::parse(
+                        value,
+                        &snapshot.identity,
+                        self.context_instance()?,
+                        request,
+                    ) {
+                        Ok(page) => view::Data::Context(Box::new(page)),
+                        Err(error) => view::Data::Rejected(error.to_string()),
+                    },
                     view::Request::ControlValidate(edit) => {
                         let review = controls::Review::parse(value, edit)?;
                         self.work.control_review = Some(review.clone());

@@ -54,6 +54,7 @@ OPERATIONS = (
     "calendar.list", "diagnostics.get", "host_tools.register", "host_tools.unregister", "host_tools.result",
     "images.attach", "images.clear", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
+    "context.native_page", "inspection.native_status",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
     "runtime.native_snapshot", "runtime.native_validate", "runtime.native_apply", "runtime.native_readback",
@@ -535,6 +536,12 @@ def dispatch(app, cmd):
     operation = str(cmd.get("type", ""))[4:]
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
+    if operation == "inspection.native_status":
+        from litetui import native_inspection
+        return native_inspection.status(app, cmd)
+    if operation == "context.native_page":
+        from litetui import native_context
+        return native_context.page(app, cmd)
     if operation in {"work.native_execution_validate", "work.native_execution_readback"}:
         return getattr(native_work_execution, operation.removeprefix("work.native_execution_"))(app, cmd)
     if operation.startswith("work.native_execution_"):

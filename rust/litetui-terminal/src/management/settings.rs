@@ -315,7 +315,7 @@ impl Management {
                     reviewed: Some(review),
                 },
             ),
-            view::Intent::Read => {
+            view::Intent::Read | view::Intent::RuntimeStatus => {
                 return Err(fail("Expected a reviewed settings editor operation"));
             }
         };

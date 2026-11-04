@@ -14,6 +14,7 @@ use ratatui::{
 };
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    Context(crate::context::Request),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
@@ -43,6 +44,7 @@ pub struct Intent {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    Context(Box<crate::context::Page>),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
         action: execution::Action,
@@ -99,6 +101,7 @@ pub struct View {
     pub page: Option<Page>,
     pub calendar: Option<Calendar>,
     pub tail: Option<Tail>,
+    context: crate::context_view::View,
     section: usize,
     selected: usize,
     page_back: Vec<usize>,
@@ -122,6 +125,9 @@ pub struct View {
     intent: Option<Intent>,
 }
 impl View {
+    pub fn context_open(&self) -> bool {
+        self.context.is_open()
+    }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
     }
@@ -133,9 +139,11 @@ impl View {
         self.refresh();
     }
     pub fn hide(&mut self) {
+        self.context.hide();
         self.visible = false;
     }
     pub fn close(&mut self) {
+        self.context.close();
         self.open = false;
         self.hide();
         // A sent read still owns its correlated reply. Retain input ownership
@@ -176,6 +184,7 @@ impl View {
         self.hide();
     }
     fn refresh(&mut self) {
+        self.context.close();
         self.review = None;
         self.form = None;
         self.saved_control = None;
@@ -247,6 +256,7 @@ impl View {
                 | (Request::ControlApply(_), Data::ControlSaved { .. })
                 | (Request::DeferredValidate, Data::DeferredReview(_))
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
+                | (Request::Context(_), Data::Context(_))
                 | (Request::Snapshot, Data::Snapshot(_))
                 | (Request::Page { .. }, Data::Page(_))
                 | (Request::Tail(_), Data::Tail(_))
@@ -266,6 +276,16 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::Context(page) => {
+                if self.context.is_open() {
+                    self.context.apply(*page);
+                }
+            }
+            Data::Rejected(reason) if matches!(pending, Request::Context(_)) => {
+                if self.context.is_open() {
+                    self.context.reject(&reason);
+                }
+            }
             Data::ExecutionReview(review) => {
                 self.review = Some(Review::Execution(review));
                 self.review_page = 0;
@@ -506,6 +526,12 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.context.is_open() {
+            if let Some(request) = self.context.key(key) {
+                self.request(Request::Context(request));
+            }
+            return;
+        }
         if self.form.is_some() && self.review.is_none() && !self.waiting {
             if key.kind == KeyEventKind::Release {
                 return;
@@ -609,6 +635,11 @@ impl View {
         }
         if key.kind == KeyEventKind::Press {
             match key.code {
+                KeyCode::Char('i') if !self.details && self.snapshot.is_some() => {
+                    let request = self.context.open();
+                    self.request(Request::Context(request));
+                    return;
+                }
                 KeyCode::F(5) => {
                     self.refresh();
                     return;
@@ -812,6 +843,12 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.context.is_open() {
+            if let Some(request) = self.context.mouse(event) {
+                self.request(Request::Context(request));
+            }
+            return;
+        }
         if !self.open || !self.visible || self.waiting || !event.modifiers.is_empty() {
             return;
         }
@@ -1071,6 +1108,10 @@ impl View {
         if !self.owns_input() {
             return;
         }
+        if self.context.is_open() {
+            self.context.draw(frame, area, theme);
+            return;
+        }
         if area.width < 48 || area.height < 18 {
             self.seen.clear();
             self.review_page = 0;
@@ -1274,7 +1315,7 @@ impl View {
             self.notice.clone()
         } else {
             format!(
-                "Tab categories · F5 refresh · {}\n{}",
+                "I Context · Tab categories · F5 refresh · {}\n{}",
                 match self.section {
                     2 => "R run · C create · E edit · D delete",
                     3 => "R run · C create · E edit · D delete · Space enable/pause",

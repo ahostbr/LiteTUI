@@ -64,8 +64,11 @@ pub mod conversation_rewrite;
 
 pub mod theme_controls;
 
+pub mod context;
+pub mod context_view;
 pub mod history;
 pub mod history_view;
+pub mod inspection;
 
 pub mod work_lifecycle;
 

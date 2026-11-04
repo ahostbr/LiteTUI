@@ -1,0 +1,110 @@
+"""Read one fixed context document under the current owned native Work identity."""
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import stat
+
+from litetui import background_input as work
+from litetui.agent_store import MEMORY_FILES, _unlinked
+
+OPERATION = "gui.context.native_page"
+MAX_DOCUMENT = 262144
+PAGE_BYTES = 4096
+DOCUMENTS = MEMORY_FILES | {"system"}
+
+
+def _stamp(info):
+    return info.st_dev, info.st_ino, info.st_nlink, info.st_mode, info.st_size, info.st_mtime_ns
+
+
+def _memory(app, document):
+    if getattr(app, "_owner_memory_dir", None) is not None:
+        raise ValueError("Owner memory overrides are outside this current-agent view")
+    path = _unlinked(app._agent_session.memory_root / document)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return "missing", None
+    if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+            or getattr(before, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise ValueError("Agent memory must be a regular unlinked file")
+    if before.st_size > MAX_DOCUMENT:
+        return "oversize", None
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if _stamp(before) != _stamp(opened):
+            raise ValueError("Agent memory changed before it could be read")
+        data = stream.read(MAX_DOCUMENT + 1)
+        finished = os.fstat(stream.fileno())
+    after = _unlinked(path).lstat()
+    if not (_stamp(before) == _stamp(finished) == _stamp(after)) or len(data) != before.st_size:
+        raise ValueError("Agent memory changed while reading")
+    return "content", data
+
+
+def _system(app):
+    # Same first-system-row selection as gui.system.get. Read only the actual
+    # conversation row; rendering prompt sections would discard its store snapshot.
+    row = next((message for message in app.conversation if message.get("role") == "system"), None)
+    if row is None:
+        return "missing", None
+    value = row.get("content")
+    if not isinstance(value, str):
+        raise ValueError("Current system content must be plain text")  # noqa: TRY004 - invalid source evidence
+    if len(value) > MAX_DOCUMENT:  # Each Unicode code point encodes at least one byte.
+        return "oversize", None
+    data = value.encode("utf-8")
+    return ("oversize", None) if len(data) > MAX_DOCUMENT else ("content", data)
+
+
+def read_binding(app, cmd, operation, *fields):
+    bridge = work.bridge(app)
+    if bridge is None or not bridge.active or getattr(app, "_gui_quitting", False):
+        raise ValueError("Inspection requires an active, owned Work session")
+    bridge.check()
+    app._validate_owned_identity()
+    binding = {**bridge.identity, "work_instance": bridge.instance}
+    work._keys(cmd, ("type", "id", "version", *binding, *fields))
+    if (cmd["type"] != operation or type(cmd["version"]) is not int or cmd["version"] != 1
+            or any(cmd[key] != value for key, value in binding.items())):
+        raise ValueError("Inspection belongs to another version or Work session")
+    work.text(cmd["id"])
+    return bridge, binding
+
+
+def page(app, cmd):
+    bridge, binding = read_binding(app, cmd, OPERATION, "document", "offset", "revision")
+    document, offset, expected = cmd["document"], cmd["offset"], cmd["revision"]
+    if type(document) is not str or document not in DOCUMENTS:
+        raise ValueError("Unknown current context document")
+    if type(offset) is not int or not 0 <= offset < MAX_DOCUMENT or (expected is None and offset != 0):
+        raise ValueError("Invalid context byte offset")
+    if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+        raise ValueError("Invalid context document revision")
+    status, data = _system(app) if document == "system" else _memory(app, document)
+    bridge.check()
+    response = {"version": 1, "kind": "context_page", **binding, "document": document, "offset": offset,
+                "status": status, "revision": None, "total_bytes": None, "next_offset": None, "text": ""}
+    revision = hashlib.sha256(data).hexdigest() if data is not None else None
+    if expected is not None and revision != expected:
+        response["status"] = "changed"
+        return response
+    if data is None:
+        return response
+    data.decode("utf-8")  # Validate the whole bounded document, including pages after this one.
+    response.update(revision=revision, total_bytes=len(data))
+    if not data:
+        if offset:
+            raise ValueError("Empty documents start at offset zero")
+        response["status"] = "empty"
+        return response
+    if offset >= len(data) or data[offset] & 0xC0 == 0x80:
+        raise ValueError("Context offset is outside the document or splits a UTF-8 code point")
+    end = min(offset + PAGE_BYTES, len(data))
+    while end < len(data) and data[end] & 0xC0 == 0x80:
+        end -= 1
+    response.update(status="page", text=data[offset:end].decode("utf-8"),
+                    next_offset=end if end < len(data) else None)
+    return response
