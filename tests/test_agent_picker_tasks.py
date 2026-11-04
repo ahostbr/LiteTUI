@@ -1,6 +1,7 @@
 """Owned picker/new-process boundary and task write confinement; fixture-only."""
 from types import SimpleNamespace
 import json
+import sys
 
 import pytest
 
@@ -43,29 +44,22 @@ def test_picker_is_agent_first_and_same_agent_resume_stays_owned(tmp_path, monke
         assert resumed == [str(target)]
 
 
-@pytest.mark.asyncio
-async def test_other_agent_picker_explicit_action_launches_not_hot_switch(tmp_path, monkeypatch):
+def test_other_agent_conversation_pick_switches_this_window_and_exits(tmp_path, monkeypatch):
     with home(tmp_path, 'OtherAgent', BID) as other:
         transcript(other, 'other conversation')
     with home(tmp_path, 'QuietHelm', AID) as session:
         original = session.authority
-        messages, picks, coroutines, opened = [], [], [], []
+        messages, picks, exits = [], [], []
         app = SimpleNamespace(_agent_session=session, store=SimpleNamespace(persist_error=None),
-             system_message=messages.append, run_worker=lambda coro, **kw: coroutines.append(coro))
+             system_message=messages.append, exit=lambda: exits.append(True))
         monkeypatch.setattr(convo, 'pick', lambda app, title, items, callback, **kw:
                             picks.append((title, items, callback)))
-        async def launch(app, identity, conversation):
-            opened.append((identity, conversation))
-            return 'fixture own-seat launch accepted'
-        monkeypatch.setattr(agent_seat_launch, 'open_seat', launch)
         convo._open_convos_picker(app)
         picks[0][2](BID)
         picks[1][2](CID)
-        assert picks[2][1] == [('open', 'Open OtherAgent in its own seat')]
-        assert not opened and not coroutines
-        picks[2][2]('open')
-        await coroutines[0]
-        assert opened == [(BID, CID)]
+        assert len(picks) == 2  # no 'separate agent seat' picker, no spawn
+        assert app._relaunch_argv == [sys.executable, '-m', 'litetui.cli', '--agent', 'OtherAgent', '--convo', CID]
+        assert exits == [True]
         assert session.authority == original
 
 
