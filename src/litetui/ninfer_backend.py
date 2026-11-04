@@ -46,6 +46,7 @@ from pathlib import Path
 from . import ninfer_engine
 from .engine_lifecycle import OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
+from .turn_engine import is_deepseek_model
 
 #: Where LiteSuite keeps the config that names the live engine. The env var is
 #: LiteSuite's own override, honoured so a test (or a second install) points
@@ -248,6 +249,13 @@ def format_timings(timings: object) -> str | None:
 #: the user's 2026-09-21 contract is the template-safe set below. `none` is the
 #: wire spelling; the shared thinking UI renders it as `off`.
 NINFER_REASONING_LEVELS = ("none", "low", "medium", "xhigh")
+
+#: DeepSeek-V4 chat template (`ds-source-small/chat_template.jinja`, lines 12-38)
+#: takes `reasoning_effort` low / high / max (or an integer 1-100), default high.
+#: `none` is off via `thinking_mode` "chat". minimal, medium and xhigh are not in
+#: its set; NInfer maps them to the nearest accepted value, and the fold in
+#: `turn_engine._resolve_reasoning_effort` does the same before the wire.
+NINFER_DEEPSEEK_REASONING_LEVELS = ("none", "low", "high", "max")
 
 
 # ── the backend ──────────────────────────────────────────────────────────────
@@ -594,7 +602,7 @@ class NInferBackend(OwnedEngineLifecycle):
     # -- capabilities -----------------------------------------------------
 
     def reasoning_levels(self, model: str | None = None) -> list[str]:
-        """The template-safe thinking levels LiteTUI offers for NInfer.
+        """The template-safe thinking levels LiteTUI offers for NInfer, per served model.
 
         🔴 THE USER, 12:1x: *"agents have seem to try to rebuild every system for
         every backend over and again ... were writing the same code to do the
@@ -612,11 +620,17 @@ class NInferBackend(OwnedEngineLifecycle):
         `off` to the wire's `none`, and folds stale wider-vocabulary values from
         older conversations onto this set before they reach the template.
 
-        ⬜ THE MODEL ARGUMENT IS ACCEPTED AND UNUSED, DELIBERATELY. One artifact
-        per process: the model cannot differ from the one this engine serves, so
-        a per-model answer would be the same answer with a false implication
-        that it varies.
+        ⬜ THE MODEL ARGUMENT NOW VARIES, AND THE SERVED ID IS THE SIGNAL. One
+        artifact per process, so the engine's vocabulary is the served model's.
+        Qwen3.8 and DeepSeek-V4 take different efforts (DeepSeek has no medium or
+        xhigh), so a single tuple offered levels the template rejects. The
+        answer is decided from the id the caller passes, else the id cached from
+        `/v1/models` by `_list_sync`. No network call here: this is read on the
+        synchronous `/think` path.
         """
+        served = model or self._model_id
+        if is_deepseek_model(served):
+            return list(NINFER_DEEPSEEK_REASONING_LEVELS)
         return list(NINFER_REASONING_LEVELS)
 
     def reload_hint(self, rec: dict | None = None) -> str:

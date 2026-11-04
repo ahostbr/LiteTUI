@@ -520,6 +520,30 @@ def test_stale_ninfer_levels_are_folded_before_the_template_sees_them():
     assert _resolve_reasoning_effort("invented", "ninfer") is None
 
 
+def test_deepseek_gets_its_own_levels_and_stale_values_fold_to_its_set():
+    """DeepSeek-V4 takes none/low/high/max. Qwen's tuple must not leak onto it.
+
+    Signal: the served id, passed in or cached from /v1/models (`_model_id`).
+    """
+    from litetui.turn_engine import _resolve_reasoning_effort
+
+    deepseek = "deepseek-v4.1-flash-coder-ninfer"
+    backend = NInferBackend(_Settings())
+    assert backend.reasoning_levels(deepseek) == ["none", "low", "high", "max"]
+    backend._model_id = deepseek   # what _list_sync caches
+    assert backend.reasoning_levels(None) == ["none", "low", "high", "max"]
+    assert backend.reasoning_levels("qwen3.8-27b") == ["none", "low", "medium", "xhigh"]
+
+    # Stored Qwen-era values fold onto DeepSeek's set, as NInfer maps them.
+    assert _resolve_reasoning_effort("xhigh", "ninfer", deepseek) == "max"
+    assert _resolve_reasoning_effort("medium", "ninfer", deepseek) == "high"
+    assert _resolve_reasoning_effort("minimal", "ninfer", deepseek) == "low"
+    # Off must go on the wire explicitly: an omitted effort defaults to thinking on.
+    assert _resolve_reasoning_effort("off", "ninfer", deepseek) == "none"
+    # Qwen's fold is unchanged.
+    assert _resolve_reasoning_effort("max", "ninfer", "qwen3.8-27b") == "xhigh"
+
+
 def test_an_unsupported_level_is_named_rather_than_read_as_a_broken_engine():
     """A differently constrained artifact still gets an actionable error."""
     code, action = classify_ninfer_error('{"code":"reasoning_effort_not_supported"}')

@@ -44,6 +44,16 @@ from litetui import llm_backend
 _EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 
+def is_deepseek_model(model_id: str | None) -> bool:
+    """True when a served model id names a DeepSeek model.
+
+    Case-insensitive substring on the id, which is the one name NInfer serves
+    (`deepseek-v4.1-flash-coder-ninfer`). Shared by the NInfer thinking levels
+    and the NInfer effort fold so the two cannot disagree about which vocabulary applies.
+    """
+    return "deepseek" in (model_id or "").lower()
+
+
 def side_call_reasoning_effort(
     level: str | None,
     backend_name: str,
@@ -104,6 +114,19 @@ def _resolve_reasoning_effort(
     if level == "off":
         return "none"
     if backend_name == "ninfer":
+        # Folds mirror NInfer's own nearest-accepted mapping for the served template
+        # (ninfer frontend/chat_template.cpp). DeepSeek-V4 takes none/low/high/max, so
+        # its `none` must be sent explicitly: an omitted effort defaults to thinking on.
+        if is_deepseek_model(model_id):
+            return {
+                "none": "none",
+                "minimal": "low",
+                "low": "low",
+                "medium": "high",
+                "high": "high",
+                "xhigh": "max",
+                "max": "max",
+            }.get(level)
         return {
             "minimal": "low",
             "low": "low",
