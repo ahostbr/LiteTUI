@@ -119,6 +119,29 @@ def _relaunch_env(app):
     return env
 
 
+def _switch_window_to(app, agent_name: str, conversation_id: str | None) -> None:
+    """Continue this terminal as another owned agent, and its conversation when one was picked.
+
+    Same relaunch as /agent-new: cli.py runs `litetui.cli --agent NAME [--convo ID]` in this console after
+    this app releases its leases. No spawn, no split pane, no second window.
+    """
+    import sys
+
+    if getattr(app, "_chat_running", lambda: False)():
+        app.system_message("Finish or stop the current turn before switching agents.")
+        return
+    if getattr(app, "_rpc", False) or getattr(app, "_spawned_marker", False):
+        app.system_message("Switching agents is for a hand-launched window; a spawned or headless seat keeps its agent.")
+        return
+    argv = [sys.executable, "-m", "litetui.cli", "--agent", agent_name]
+    if conversation_id is not None:
+        argv.extend(["--convo", conversation_id])
+    app._relaunch_argv = argv
+    app._relaunch_env = _relaunch_env(app)
+    app.system_message(f"Switching this window to {agent_name} ...")
+    app.exit()
+
+
 def _cmd_new(app, name: str, arg: str) -> None:
     if name == "/new" and arg.strip():
         _cmd_agent_new(app, name, arg)   # /new NAME makes that agent; plain /new stays a fresh conversation
@@ -198,27 +221,14 @@ def _open_convos_picker(app, agent_id=None) -> None:
         app.system_message(f'Agent catalog blocked: {exc}')
         return
     if session is None or session.authority.agent_id != agent.agent_id:
-        # Selecting another agent is an explicit process boundary, never a hot
-        # identity switch in this seat. The single action launches via harness.
+        # Another agent's conversation: this terminal switches to it, through the same relaunch /agent-new uses.
         items = [(row[0].parent.name, ConversationRepository.label(row[1], row[2])) for row in rows]
         if not items:
             items = [('new', 'Start a new conversation')]
         def choose(selected):
             if not selected:
                 return
-            def opened(action):
-                if action != 'open':
-                    return
-                async def launch():
-                    from litetui.agent_seat_launch import open_seat
-                    try:
-                        result = await open_seat(app, agent.agent_id, None if selected == 'new' else selected)
-                        app.system_message(result)
-                    except (StoreError, OSError, TimeoutError) as exc:
-                        app.system_message(f'Own-seat launch blocked: {exc}')
-                app.run_worker(launch(), name='open-owned-agent', group='open-owned-agent', exclusive=True)
-            pick(app, f'{agent.name}: separate agent seat',
-                 [('open', f'Open {agent.name} in its own seat')], opened)
+            _switch_window_to(app, agent.name, None if selected == 'new' else selected)
         pick(app, f'{agent.name}: choose a conversation', items, choose)
         return
     if not rows:
