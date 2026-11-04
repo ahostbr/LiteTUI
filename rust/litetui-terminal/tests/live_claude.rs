@@ -65,9 +65,11 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                     f.key == litetui_terminal::footer::FieldKey::Context && !f.text.contains('—')
                 });
             }
+            Ok(Observation::RuntimePolicy(policy)) => state.install_runtime_policy(policy.facts),
             Ok(Observation::History(_)) => panic!("Unrequested restored history"),
             Ok(
-                Observation::ScheduledProposal(_)
+                Observation::RuntimeControls(_)
+                | Observation::ScheduledProposal(_)
                 | Observation::ScheduledHeld(_)
                 | Observation::ScheduledLocalNotSent { .. }
                 | Observation::ScheduledConversationChanged(_)

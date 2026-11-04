@@ -846,6 +846,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     if app.viewport_too_small {
         if let Some(chat) = app.live.as_mut() {
+            chat.runtime_controls.hide();
             chat.controls.hide();
             chat.queue.hide();
             chat.engine.invalidate();
@@ -1232,6 +1233,17 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .draw(frame, area, &t);
     } else if let Some(chat) = app.live.as_mut() {
         chat.themes.hide();
+    }
+    if app.has_live_runtime_controls()
+        && !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+    {
+        app.live
+            .as_mut()
+            .expect("runtime controls")
+            .runtime_controls
+            .draw(frame, frame.area(), &t);
     }
     if app.has_live_work()
         && !app.stop_open()

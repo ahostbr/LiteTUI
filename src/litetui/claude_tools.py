@@ -6,9 +6,11 @@ background launches and unsafe host control-plane tools are denied explicitly.
 from __future__ import annotations
 
 import asyncio
+import copy
 import threading
 from pathlib import Path
 
+from litetui import native_runtime_controls as controls
 from litetui import paths, tool_policy
 
 NATIVE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "AskUserQuestion", "TodoWrite"]
@@ -77,6 +79,44 @@ class ClaudeTools:
         self.cancelled = threading.Event()
         self._host_lock = asyncio.Lock()
         self._decisions = set()
+        self._turn = None
+        self._observed = {}
+        self._deciding = set()
+        self._pending = {}
+
+    def bind_turn(self, origin):
+        if self._turn is not None:
+            raise ValueError("Claude tool bridge already belongs to a turn")
+        self._turn = (self.backend.session, origin)
+        return self._turn
+
+    def observed(self, turn, tool_id, name, args):
+        if (self._turn is turn and isinstance(tool_id, str) and tool_id and isinstance(args, dict)
+                and len(self._observed) < controls.LIMITS["authorizations"]):
+            self._observed[tool_id] = (name, copy.deepcopy(args))
+
+    def completed(self, turn, tool_id):
+        if self._turn is not turn:
+            return
+        self._observed.pop(tool_id, None)
+        record = self._pending.pop(tool_id, None)
+        if record:
+            lifetime, question, _ = record
+            lifetime.close()
+            if question:
+                question.close()
+
+    def finish_turn(self, turn):
+        if turn is not None and self._turn is turn:
+            for tool_id in list(self._pending):
+                self.completed(turn, tool_id)
+            self._observed.clear()
+            self._turn = None
+
+    def _owns_turn(self, turn):
+        return (turn is not None and self._turn is turn and self.backend.session is turn[0]
+                and self.current())
+
 
     def current(self):
         return (not self.cancelled.is_set() and not self.app._stop_requested
@@ -85,6 +125,7 @@ class ClaudeTools:
 
     def stop(self):
         self.cancelled.set()
+        self.finish_turn(self._turn)
         from litetui.ask_user_question import cancel_pending_asks
         from litetui.tool_approval import DENIED
         cancel_pending_asks(self.app)
@@ -102,13 +143,40 @@ class ClaudeTools:
 
     async def pre_tool(self, data, tool_id, context):
         name, args = data.get("tool_name", ""), data.get("tool_input", {})
+        guarded, turn = controls.enabled(self.app), self._turn
+        origin = None
+        if guarded:
+            if (not self._owns_turn(turn) or not isinstance(tool_id, str) or not tool_id
+                    or tool_id in self._deciding or tool_id in self._pending):
+                return self._denied("Stale or unowned Claude callback")
+            # SDK callbacks have no native turn id. Only a tool-use event from
+            # this stream proves an exact execution owner for a mid-turn change.
+            if self._observed.get(tool_id) == (name, args):
+                origin = turn[1]
+            self._deciding.add(tool_id)
+        try:
+            async with controls.authorization(self.app, origin=origin) as ticket:
+                if guarded and (ticket is None or not self._owns_turn(turn)):
+                    return self._denied("Claude callback expired before authorization")
+                return await self._authorize(name, args, tool_id, ticket, turn)
+        except controls.AuthorizationClosed as exc:
+            return self._denied(str(exc))
+        finally:
+            if guarded:
+                self._deciding.discard(tool_id)
+
+    @staticmethod
+    def _denied(reason):
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
+
+    async def _authorize(self, name, args, tool_id, ticket, turn):
         plain = name.removeprefix("mcp__litetui__")
         reason = None
-        if not self.current() or not self.app.tools_enabled:
+        if not self.current() or not (ticket.tools_enabled if ticket else self.app.tools_enabled):
             reason = "Claude tool call cancelled, stale, or tools are off"
         elif not isinstance(args, dict):
             reason = "Invalid tool arguments"
-        elif plain in (self.app.settings.tools_disabled or ()):
+        elif plain in (ticket.disabled if ticket else self.app.settings.tools_disabled or ()):
             # The user switched this tool off. `_execute_tool` enforces the same
             # list, but only host calls reach it — a native tool never does, and
             # withholding the name from `sdk_options` does not cover a model
@@ -126,17 +194,22 @@ class ClaudeTools:
             elif args.get("run_in_background"):
                 reason = "Native background work is not enabled"
             else:
-                reason = await self._decide(name, policy_args, policy)
-        if not self.current():
+                reason = await self._decide(name, policy_args, policy, ticket)
+        if not self.current() or ticket and not self._owns_turn(turn):
             reason = reason or "Claude callback expired"
         if reason:
-            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
+            return self._denied(reason)
+        if ticket and not name.startswith("mcp__litetui__"):
+            question_args = copy.deepcopy(args) if name == "AskUserQuestion" else None
+            self._pending[tool_id] = (controls.retain_authorization(self.app),
+                                      controls.retain_authorization(self.app) if question_args is not None else None,
+                                      question_args)
         # Questions must reach can_use_tool to provide structured answers. Other
         # classified calls have already passed LiteTUI approval exactly once.
         decision = "ask" if name == "AskUserQuestion" else "allow"
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision}}
 
-    async def _decide(self, name, args, policy):
+    async def _decide(self, name, args, policy, ticket):
         """Authorize one native call under a deadline this side owns.
 
         The await runs in a task we hold for two reasons: `stop()` can cancel a
@@ -146,11 +219,12 @@ class ClaudeTools:
         is fail to reply.
         """
         decision_s, _ = _deadlines(self.app)
-        task = asyncio.ensure_future(self.app._authorize_action(
+        decision = self.app._authorize_action(
             name, args, policy,
-            profile=self.app._active_tool_profile,
+            profile=ticket.profile if ticket else self.app._active_tool_profile,
             workspace=self.workspace, stop_on_denial=False,
-        ))
+        )
+        task = asyncio.ensure_future(controls.child_call(self.app, decision))
         self._decisions.add(task)
         try:
             refusal = await asyncio.wait_for(task, decision_s)
@@ -178,8 +252,30 @@ class ClaudeTools:
         return refusal[0] if refusal else None
 
     async def can_use_tool(self, name, arguments, context):
+        from claude_agent_sdk import PermissionResultDeny
+        if controls.enabled(self.app):
+            turn = self._turn
+            if name != "AskUserQuestion" or not self._owns_turn(turn) or controls._state(self.app).closing:
+                return PermissionResultDeny(message="Unapproved or expired native request")
+            tool_id = getattr(context, "tool_use_id", None)
+            record = self._pending.get(tool_id) if isinstance(tool_id, str) else None
+            if record is None or record[1] is None or record[2] != arguments:
+                return PermissionResultDeny(message="Question does not match its authorized tool call")
+            lifetime, question, expected = record
+            self._pending[tool_id] = (lifetime, None, expected)
+            try:
+                answer = await question.run(self._answer_question, name, arguments)
+            except controls.AuthorizationClosed:
+                return PermissionResultDeny(message="Question authorization expired")
+            if not self._owns_turn(turn):
+                return PermissionResultDeny(message="Question callback expired")
+            return answer
+        return await self._answer_question(name, arguments)
+
+    async def _answer_question(self, name, arguments):
         from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
-        if name != "AskUserQuestion" or not self.current() or not self.app.tools_enabled:
+        ticket = controls.current_authorization(self.app)
+        if name != "AskUserQuestion" or not self.current() or not (ticket.tools_enabled if ticket else self.app.tools_enabled):
             return PermissionResultDeny(message="Unapproved or expired native request")
         from litetui import ask_user_question
         from litetui.question_result import (
@@ -241,11 +337,24 @@ class ClaudeTools:
         }
 
     async def host_call(self, name, args, spec):
+        turn = self._turn
+        guarded = controls.enabled(self.app)
+        try:
+            # MCP supplies no tool-use id. The host call is independent of
+            # any earlier native preflight, and must obtain its own ticket.
+            async with controls.authorization(self.app) as ticket, self._host_lock:
+                if guarded and (ticket is None or ticket.state.closing or not self._owns_turn(turn)):
+                    raise controls.AuthorizationClosed("Claude host callback expired")
+                return await self._host_call(name, args, spec, ticket)
+        except controls.AuthorizationClosed as exc:
+            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+
+    async def _host_call(self, name, args, spec, ticket):
         # Optional transitive dependency of the claude extra; it ships no stubs
         # and pulling a types package in for one validate() call is not worth it.
         import jsonschema  # type: ignore[import-untyped]
         error = None
-        if not self.current() or not self.app.tools_enabled:
+        if not self.current() or not (ticket.tools_enabled if ticket else self.app.tools_enabled):
             error = "Host callback cancelled, stale, or tools off"
         elif name not in HOST_TOOLS:
             error = "Host tool not bridged"
@@ -258,19 +367,18 @@ class ClaudeTools:
                 error = "Invalid host arguments"
         if error:
             return {"content": [{"type": "text", "text": error}], "isError": True}
-        async with self._host_lock:
-            names = {s["function"]["name"] for s in self.app._all_tools() if s.get("type") == "function"}
-            if not self.current() or name not in names:
-                return {"content": [{"type": "text", "text": "Host inventory changed or callback expired"}], "isError": True}
-            # Serialize host calls and scope the shared image staging buffer to
-            # this result; never borrow images from an unrelated tool call.
-            previous = self.app._pending_tool_images
-            self.app._pending_tool_images = []
-            try:
-                text, ok = await self.app._execute_tool(name, dict(args))
-                content = [{"type": "text", "text": text}]
-                for _, image in self.app._pending_tool_images:
-                    content.append({"type": "image", "data": image, "mimeType": "image/png"})
-                return {"content": content, "isError": not ok}
-            finally:
-                self.app._pending_tool_images = previous
+        names = {s["function"]["name"] for s in self.app._all_tools() if s.get("type") == "function"}
+        if not self.current() or name not in names:
+            return {"content": [{"type": "text", "text": "Host inventory changed or callback expired"}], "isError": True}
+        # Serialize host calls and scope the shared image staging buffer to
+        # this result; never borrow images from an unrelated tool call.
+        previous = self.app._pending_tool_images
+        self.app._pending_tool_images = []
+        try:
+            text, ok = await self.app._execute_tool(name, dict(args))
+            content = [{"type": "text", "text": text}]
+            for _, image in self.app._pending_tool_images:
+                content.append({"type": "image", "data": image, "mimeType": "image/png"})
+            return {"content": content, "isError": not ok}
+        finally:
+            self.app._pending_tool_images = previous

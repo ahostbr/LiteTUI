@@ -16,7 +16,7 @@ pub(super) struct Pending {
     decision: Option<schedule::Decision>,
     before: Option<(Snapshot, Value)>,
     current: Option<actions::Snapshot>,
-    state: Option<Snapshot>,
+    state: Option<(Snapshot, Value)>,
     history: Option<crate::resume::History>,
     queue: Option<crate::restored_queue::Snapshot>,
 }
@@ -206,13 +206,14 @@ impl Management {
             }
             Phase::Decision => {
                 let operation = pending.id.as_ref().unwrap().to_value();
-                let decision = schedule::Decision::parse(
+                let decision = schedule::Decision::parse_with_runtime(
                     result,
                     &pending.proposal,
                     operation
                         .as_str()
                         .ok_or_else(|| fail("Scheduled operation is not text"))?,
                     pending.request,
+                    self.historical_runtime_binding(),
                 )?;
                 if decision.status == schedule::Status::Uncertain {
                     return Err(fail("Scheduled transition is uncertain; close required"));
@@ -249,12 +250,13 @@ impl Management {
                 pending.current = Some(current);
             }
             Phase::State => {
-                pending.state = Some(self.verify_conversation_state(
+                let state = self.verify_conversation_state(
                     result,
                     &identity,
                     false,
                     pending.before.as_ref(),
-                )?);
+                )?;
+                pending.state = Some((state, result["tool_policy"].clone()));
             }
             Phase::History => {
                 pending.history = Some(self.verify_new_conversation_history(result, &identity)?);
@@ -284,7 +286,7 @@ impl Management {
                 if self.closing {
                     return Ok(Step::Ignore);
                 }
-                let state = pending.state.take().unwrap();
+                let (state, policy) = pending.state.take().unwrap();
                 let queue = pending.queue.take().unwrap();
                 self.expect_scheduled_capture(
                     pending
@@ -302,7 +304,7 @@ impl Management {
                         snapshot: state,
                         history: pending.history.take().unwrap(),
                         queue,
-                        policy: pending.before.take().unwrap().1,
+                        policy,
                         current,
                         page,
                     },
@@ -351,6 +353,39 @@ impl Management {
         };
         self.schedule_send(pending, command).map(Step::Write)
     }
+    /// Check target state against immutable host constraints while the old Work
+    /// epoch is retired. Only the matching new capture/activation adopts it.
+    pub(super) fn verify_target_profile(
+        &self,
+        state: &Snapshot,
+        policy: &Value,
+        previous_profile: &str,
+    ) -> io::Result<()> {
+        let Some(previous) = self.retired_runtime_policy() else {
+            if state.profile != previous_profile {
+                return Err(fail("Target changed the legacy launch profile"));
+            }
+            return Ok(());
+        };
+        let expected = crate::tool_mode::Expected {
+            enabled: previous.facts.tools_enabled,
+            profile: previous.facts.seat_profile,
+            workspace: previous.facts.cwd.clone().into(),
+        };
+        expected.validate_mode(policy, crate::tool_mode::ValidationMode::Target)?;
+        if policy["tool_profile"] != state.profile
+            || policy["tool_profile_requested"].as_str()
+                != previous
+                    .facts
+                    .requested_cli_profile
+                    .map(crate::tool_mode::Profile::as_str)
+        {
+            return Err(fail(
+                "Target profile contradicts its state or retained launch choice",
+            ));
+        }
+        Ok(())
+    }
     pub(super) fn verify_conversation_state(
         &self,
         result: &Value,
@@ -359,15 +394,20 @@ impl Management {
         before: Option<&(Snapshot, Value)>,
     ) -> io::Result<Snapshot> {
         let state = Snapshot::parse(result)?;
+        let previous_profile = &self
+            .expected
+            .as_ref()
+            .ok_or_else(|| fail("Missing conversation authority"))?
+            .3;
+        let changed_session = before.is_some_and(|(old, _)| old.session != identity.session);
+        if changed_session {
+            self.verify_target_profile(&state, &result["tool_policy"], previous_profile)?;
+        } else if state.profile != *previous_profile {
+            return Err(fail("Conversation state changed the current profile"));
+        }
         if state.session != identity.session
             || state.backend != identity.backend
             || state.model != identity.model
-            || state.profile
-                != self
-                    .expected
-                    .as_ref()
-                    .ok_or_else(|| fail("Missing conversation authority"))?
-                    .3
             || !(state.writable || allow_pending)
             || state.held_restored_input != Some(0)
             || Some(state.schedules_paused) != self.browser_authority.as_ref().map(|v| v.1)
@@ -377,8 +417,10 @@ impl Management {
                 "Conversation state changed identity, authority or holds",
             ));
         }
-        if before
-            .is_some_and(|(old, policy)| old.mode != state.mode || policy != &result["tool_policy"])
+        if !(changed_session && self.retired_runtime_policy().is_some())
+            && before.is_some_and(|(old, policy)| {
+                old.mode != state.mode || policy != &result["tool_policy"]
+            })
         {
             return Err(fail("Conversation transition changed tool policy"));
         }

@@ -206,13 +206,14 @@ impl Turn {
                 {
                     return Err(io::Error::other("Unowned or repeated Work admission"));
                 }
-                if self
-                    .policy
+                let future_seat = self
+                    .runtime_policy
                     .as_ref()
-                    .is_none_or(|p| p.profile != admission.seat)
-                {
+                    .map(|policy| policy.facts.seat_profile)
+                    .or_else(|| self.policy.as_ref().map(|launch| launch.profile));
+                if Some(admission.seat) != future_seat {
                     return Err(io::Error::other(
-                        "Work admission differs from launch authority",
+                        "Work admission differs from the verified seat authority",
                     ));
                 }
                 let mut suspended_submission = None;
@@ -614,6 +615,58 @@ mod tests {
         assert!(turn.work_waits().is_empty());
         assert!(turn.verify_work("a").is_err());
     }
+    #[test]
+    fn reviewed_seat_is_used_for_future_work_without_rewriting_admitted_work() {
+        use crate::runtime_controls::{Binding, Facts, Policy};
+        let mut turn = idle();
+        admit(&mut turn, "old", "a", Mode::NewTurn);
+        let recorded = turn.work.pending["a"].admission.clone();
+        let facts = Facts::parse(&json!({
+            "tools_enabled":true, "settings_profile":"interactive", "chosen_profile":"interactive",
+            "seat_profile":"interactive", "effective_profile":"interactive", "requested_cli_profile":null,
+            "plan_mode":false, "mcp_enabled":false, "approval_route":"host",
+            "cwd":std::env::temp_dir(), "provider":"host", "inventory":"host_request"
+        }), life::Provider::Host).unwrap();
+        turn.runtime_policy = Some(Policy {
+            binding: Binding {
+                identity: life::Identity {
+                    session: "session".into(),
+                    agent: "agent".into(),
+                    backend: "custom".into(),
+                    model: "fixture".into(),
+                },
+                work_instance: "a".repeat(64),
+                provider: life::Provider::Host,
+            },
+            generation: 1,
+            facts,
+        });
+        stream(&mut turn);
+        assert_eq!(turn.work.pending["a"].admission, recorded);
+        source_retired(&mut turn, "a", "completed");
+        turn.verify_work("a").unwrap();
+        let (input, mut next, payload) = admission("new", "b", Mode::NewTurn);
+        assert!(
+            turn.accept_work(life::Effect::Admission {
+                input: input.clone(),
+                admission: next.clone(),
+                payload: payload.clone(),
+                drain_only: false
+            })
+            .is_err()
+        );
+        next.seat = Profile::Interactive;
+        assert!(
+            turn.accept_work(life::Effect::Admission {
+                input,
+                admission: next,
+                payload,
+                drain_only: false
+            })
+            .is_ok()
+        );
+    }
+
     #[test]
     fn readback_cannot_consume_an_unretired_admission() {
         let mut turn = idle();

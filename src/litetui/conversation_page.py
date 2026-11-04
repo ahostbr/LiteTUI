@@ -192,7 +192,9 @@ def _compatibility(app, authority, record):
     if not getattr(app, "_cli_tool_profile", None):
         profile = convo_settings.resolved(cs, candidate, "tool_policy_profile")
         if profile != seat_authority.seat_profile(app):
-            return "Saved conversation changes the tool profile; reopen with an explicit matching profile"
+            from litetui import native_runtime_controls, tool_policy
+            if profile not in tool_policy.PROFILES or not native_runtime_controls.enabled(app):
+                return "Saved conversation changes the tool profile; reopen with an explicit matching profile"
     marker = getattr(app, "_spawned_marker", None)
     if marker is not None and (marker or cs.seat_spawned is True) != getattr(app, "_spawned_seat", True):
         return "Saved conversation changes launch provenance; reopen explicitly"

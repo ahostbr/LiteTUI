@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from litetui import lifecycle_hooks as hooks
-from litetui import seat_authority, tool_policy
+from litetui import native_runtime_controls, seat_authority, tool_policy
 from litetui.event_origin import EventOrigin
 from litetui.widgets import _mark_delivered
 
@@ -51,6 +51,16 @@ def report_failure(app, event, message):
 
 
 async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=False):
+    try:
+        async with native_runtime_controls.authorization(app, profile=profile, captured={
+                key: document.get(key) for key in ("source", "conversation_id", "turn_id")}) as ticket:
+            return await _invoke(app, hook, document, ticket.profile if ticket else profile,
+                                 allow_prompt=allow_prompt, testing=testing)
+    except native_runtime_controls.AuthorizationClosed as exc:
+        return hooks.HookResult(False, str(exc))
+
+
+async def _invoke(app, hook, document, profile, *, allow_prompt, testing):
     from litetui import background_input, conversation_rewrite, native_work_execution
     if native_work_execution.pre_turn_hook(app):
         allow_prompt = False
@@ -113,6 +123,17 @@ async def dispatch(app, event, data, *, profile=None, captured=None,
     matches = state.matching(event, ctx["source"], data.get("tool", ""))
     if not matches:
         return hooks.HookResult(True)
+    try:
+        async with native_runtime_controls.authorization(app, profile=profile, captured=captured) as ticket:
+            if ticket is not None:
+                ctx, profile = ticket.context, ticket.profile
+                matches = state.matching(event, ctx["source"], data.get("tool", ""))
+            return await _dispatch_matches(app, event, data, ctx, profile, matches, allow_prompt)
+    except native_runtime_controls.AuthorizationClosed as exc:
+        return hooks.HookResult(False, str(exc))
+
+
+async def _dispatch_matches(app, event, data, ctx, profile, matches, allow_prompt):
     document = hooks.event_document(event, app._hook_workspace, data, **ctx)
     profile = profile or getattr(app, "_active_tool_profile", None) or tool_policy.STRICT
     refusals = []

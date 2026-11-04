@@ -144,6 +144,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             }
             app.approval_open = false;
             if let Some(chat) = app.live.as_mut() {
+                chat.runtime_controls.close();
                 chat.controls.close();
                 chat.queue.close();
                 chat.engine.close();
@@ -238,6 +239,14 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         && key.modifiers.is_empty()
     {
         app.open_stop();
+        return false;
+    }
+    if app.has_live_runtime_controls() {
+        app.live
+            .as_mut()
+            .expect("runtime controls")
+            .runtime_controls
+            .key(key);
         return false;
     }
     if app.has_live_work() {
@@ -378,6 +387,20 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 app.open_models(litetui_terminal::model_controls::Kind::Thinking);
                 return false;
             }
+            if app.live.is_some() {
+                use litetui_terminal::{footer::FooterAction, runtime_controls_view::Field};
+                match intent {
+                    Some(FooterAction::Authority) => {
+                        app.open_runtime_controls(Field::Profile);
+                        return false;
+                    }
+                    Some(FooterAction::Plan) => {
+                        app.open_runtime_controls(Field::Plan);
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
             app.notice = match intent {
                 Some(intent) => {
                     format!("Not applied: {intent:?} (runtime controls not wired).")
@@ -418,6 +441,25 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::Char('t' | 'p')
+            if app.live.is_some()
+                && key.kind == KeyEventKind::Press
+                && key.modifiers == KeyModifiers::CONTROL =>
+        {
+            let field = if key.code == KeyCode::Char('t') {
+                litetui_terminal::runtime_controls_view::Field::Tools
+            } else {
+                litetui_terminal::runtime_controls_view::Field::Plan
+            };
+            app.open_runtime_controls(field);
+        }
+        KeyCode::BackTab
+            if app.live.is_some()
+                && key.kind == KeyEventKind::Press
+                && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+        {
+            app.open_runtime_controls(litetui_terminal::runtime_controls_view::Field::Profile);
+        }
         KeyCode::F(1) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_work();
         }
@@ -733,6 +775,9 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_runtime_controls() && !app.has_live_question() {
+        return;
+    }
     if app.has_live_work() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -851,6 +896,16 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_runtime_controls() && !app.has_live_question() {
+        if !app.viewport_too_small && !app.stop_open() && !app.has_live_approval() {
+            app.live
+                .as_mut()
+                .expect("runtime controls")
+                .runtime_controls
+                .mouse(event);
+        }
+        return;
+    }
     if app.has_live_work() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -1197,6 +1252,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         false
                     }
                     Event::FocusLost | Event::Resize(..) => {
+                        app.live.as_mut().expect("live").runtime_controls.hide();
                         app.live.as_mut().expect("live").engine.invalidate();
                         app.live.as_mut().expect("live").commands.hide();
                         app.live.as_mut().expect("live").themes.hide();
@@ -1262,6 +1318,19 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 if let Err(error) = runtime.quit() {
                     app.notice = error.to_string();
                 }
+            }
+            if !quitting
+                && let Some(intent) = app
+                    .live
+                    .as_mut()
+                    .expect("live")
+                    .runtime_controls
+                    .take_intent()
+                && let Err(error) = runtime.runtime_controls(intent)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
             }
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").engine.take_intent()
@@ -2611,6 +2680,54 @@ mod tests {
             settled: None,
         })
         .unwrap();
+    }
+
+    #[test]
+    fn runtime_shortcuts_preserve_the_draft_and_yield_to_a_late_question() {
+        use litetui_terminal::runtime_controls_view::{Field, Intent};
+        for (shortcut, expected) in [
+            (
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                Field::Tools,
+            ),
+            (
+                KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+                Field::Profile,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                Field::Plan,
+            ),
+        ] {
+            let mut app = live_approval_app();
+            app.composer.select_all();
+            let selected = app.composer.selected_text().to_owned();
+            let mut router = KeyRouter::default();
+            router.handle(&mut app, shortcut);
+            assert_eq!(
+                app.live.as_mut().unwrap().runtime_controls.take_intent(),
+                Some(Intent::Read(expected))
+            );
+            paste(&mut app, "unowned paste");
+            request_question(&mut app);
+            let pending = app.live.as_mut().unwrap().questions.current_mut().unwrap();
+            pending.jump(1);
+            pending.focus = 1;
+            paste(&mut app, "answer");
+            assert_eq!(
+                app.live
+                    .as_ref()
+                    .unwrap()
+                    .questions
+                    .current()
+                    .unwrap()
+                    .notes[1]
+                    .text(),
+                "answer"
+            );
+            assert_eq!(app.composer.selected_text(), selected);
+            assert!(app.live.as_ref().unwrap().rows.len() == 1);
+        }
     }
 
     #[test]

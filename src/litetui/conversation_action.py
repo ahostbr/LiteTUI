@@ -954,6 +954,8 @@ async def _finish_exit(app):
         work_task = asyncio.create_task(background_input.settle_before_shutdown(app))
         results = await asyncio.gather(settle_all_before_shutdown(app), work_task, execution_task, return_exceptions=True)
         actions, work, execution = results
+        from litetui import native_runtime_controls
+        runtime = await native_runtime_controls.shutdown(app)
         if isinstance(execution, BaseException):
             raise execution
         if isinstance(actions, BaseException):
@@ -968,7 +970,7 @@ async def _finish_exit(app):
             if (engine["worker_settled"] is not True or proof["retained"] is not False
                     or proof["owned"] is not False and proof["main_exited"] is not True):
                 raise RuntimeError("Engine cleanup remains unproven")
-        result = {"ok": True, **actions}
+        result = {"ok": True, **actions, **runtime}
         if work is not None:
             result["work_shutdown"] = work
         if execution is not None:

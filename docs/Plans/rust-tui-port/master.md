@@ -1,5 +1,17 @@
 # LiteTUI Rust terminal port
 
+## Tools, authority and Plan mode during chat - 2026-11-04
+
+Ctrl+T, Shift+Tab and Ctrl+P open source-backed reviews for tools, authority and Plan mode. Reviews display the proposed change, workspace or plan text, and persistence consequences before confirmation. The Rust footer adopts the result after an independent readback. Approvals, questions, Stop and Quit retain priority over the panel. The composer retains its draft and selection.
+
+Host calls and correlated native provider callbacks retain the authority they started with. Subsequent calls wait for publication. Opening a saved conversation verifies its actual saved profile and starts a new generation. Ordinary host tool requests and results appear in order in the transcript with the tool result attached to its original request.
+
+The Rust suite passed 945 tests and strict all-target Clippy. Four controlled process groups passed across 14 fresh Python child processes. The Rust parser also verified six exported Python transactions through shutdown, including a stale review and two distinct persistence failure outcomes.
+
+The broad Python run passed 1,270 of 1,271 cases with pytest's temporary directory under Cargo’s target tree. The remaining shell-policy assertion failed in the same path layout on the parent commit and passed on both revisions with pytest's ordinary temporary directory. All seven tests in the candidate’s policy file passed there.
+
+The rebuilt executable also ran inside a Windows pseudoconsole from the relocated 359-file package. Keyboard input, Plan confirmation, shrinking and restoring the viewport, returning to the draft, leaving the alternate screen, showing the cursor and exiting with status zero were verified. The package manifest and payload hashes matched before and after. The controlled relocated-package matrix passed 47 process tests across 134 child lifetimes. Of these, 132 returned normal cleanup reports and two exited intentionally at the existing crash-test boundaries. Hands-on Windows Terminal, LiteSuite terminal and live-provider acceptance remain open.
+
 ## Reviewed job and goal execution - 2026-11-04
 
 F1 Jobs/Loops R now reviews one same-conversation Run; Goal N accepts a literal objective and R resumes the saved goal. Review binds the exact selected raw state, payload, profile, source ownership and before/after changes. A disabled, not-yet-due or same-minute job may run only by this fresh explicit review. Canonical scheduler transactions preserve siblings/extensions and stamp one generation. Start creates a fresh goal; Resume preserves its identity, evidence and authority. Manual New-conversation Run remains held.

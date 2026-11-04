@@ -21,6 +21,44 @@ fn turn(backend: &str) -> Turn {
     turn
 }
 #[test]
+fn generic_calls_and_late_results_keep_their_transcript_positions() {
+    use litetui_terminal::{live_chat::Item, native_activity::ResultState};
+    let mut turn = turn("custom");
+    let mut chat = Chat::new("custom".into(), "m".into());
+    chat.observe(Observation::Ready).unwrap();
+    chat.submit("question").unwrap();
+    let id = "00112233-4455-4677-8899-aabbccddeeff";
+    let request = json!({"type":"generic_tool_requested","observation_id":id,
+        "round":0,"slot":0,"provider_call_id":"p","name":"read"});
+    let result = json!({"type":"generic_tool_returned","observation_id":id,
+        "result":"observed result","ok":true});
+    assert!(turn.accept(&result, "custom", "m").is_err());
+    for event in [
+        json!({"type":"text_delta","text":"Before"}),
+        request.clone(),
+        json!({"type":"tool_call","name":"read","args":{}}),
+        json!({"type":"text_delta","text":"After"}),
+        result.clone(),
+        json!({"type":"text_delta","text":" the tool."}),
+    ] {
+        chat.observe(turn.accept(&event, "custom", "m").unwrap())
+            .unwrap();
+    }
+    assert!(turn.accept(&request, "custom", "m").is_err());
+    assert!(turn.accept(&result, "custom", "m").is_err());
+    let row = &chat.rows[0];
+    assert_eq!(row.items, [Item::Card(0), Item::Tool(0), Item::Card(1)]);
+    assert_eq!(row.cards[0].answer, "Before");
+    assert_eq!(row.cards[1].answer, "After the tool.");
+    assert_eq!(
+        row.tools[0].result,
+        ResultState::Returned {
+            text: "observed result".into(),
+            is_error: Some(false)
+        }
+    );
+}
+#[test]
 fn native_reasoning_requires_explicit_reconciliation_and_never_counts_as_answer() {
     let mut turn = turn("claude");
     assert_eq!(

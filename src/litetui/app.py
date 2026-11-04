@@ -28,7 +28,7 @@ from litetui import vram_dialog
 from dataclasses import dataclass, fields as fields_of, is_dataclass, replace
 from functools import partial
 from litetui.event_origin import EventOrigin
-from litetui import background_input
+from litetui import background_input, native_runtime_controls
 from litetui import conversation_compact, conversation_rewrite
 
 from litetui import settings as settings_mod
@@ -1925,7 +1925,7 @@ class LiteTUI(App):
         # toggle uses, and an absent section leaves nothing behind.
         self.plugins.add_prompt_section(
             "host", _ord["PLAN"],
-            lambda: "\n" + paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n",
+            lambda: self._plan_prompt_section(self._plan_mode),
             enabled=lambda: self._plan_mode and paths.PLAN_PROMPT_FILE.exists(),
         )
         self.plugins.add_prompt_section(
@@ -1945,11 +1945,7 @@ class LiteTUI(App):
             # straight onto the first word of this one. Caught by
             # test_prompt_compose's reference fold, which is exactly what that
             # test exists to notice.
-            lambda: (
-                "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
-                if self.tools_enabled
-                else TOOLS_DISABLED_PROMPT
-            ),
+            lambda: self._tools_prompt_section(self.tools_enabled),
             # Gated on BOTH the toggle and the file. A missing file must not
             # render as an empty section: the tools would still be OFFERED to
             # the model with no instructions on how to use them, which is a
@@ -3178,11 +3174,15 @@ class LiteTUI(App):
                               name, "child")
         return bool(answer)
 
+    @native_runtime_controls.tool_authorization
     async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False):
         """Shared policy and approval door for tools and hook processes."""
         # T1085: FIRST, before evaluate, the floor, the relay and the modal. Only
         # Owner's own seat may directly write a data root's jobs.json; ownership is
         # not a profile cap or a spawner's to APPROVE (T1133 caps stay removed).
+        ticket = native_runtime_controls.current_authorization(self)
+        if ticket is not None:
+            profile = ticket.profile
         shell = tool_policy.proven_shell(name, policy)
         if why := seat_authority.jobs_file_refusal(self, args, workspace or paths.ROOT, policy, shell=shell):
             return tool_denied("profile", name=name, reason=why), False
@@ -3221,8 +3221,8 @@ class LiteTUI(App):
             # A non-owner seat routes any CONFIRM here independently of profile.
             # T1049-B routes by seat_authority.confirm_route. The ONE turn source read
             # here is `_hook_source` (Dijkstra D1).
-            source = getattr(self, "_hook_source", None)
-            route = seat_authority.confirm_route(self)
+            source = ticket.context["source"] if ticket else getattr(self, "_hook_source", None)
+            route = ticket.route if ticket else seat_authority.confirm_route(self)
             # T0408-L, the ONE reserved insertion. Stage 1 only COUNTS and answers False.
             # No failure in it, an import error included, may alter the route below.
             try:
@@ -3425,6 +3425,7 @@ class LiteTUI(App):
         if len(hist) > 12:
             del hist[: len(hist) - 12]
 
+    @native_runtime_controls.tool_authorization
     async def _execute_tool(self, name: str, args: dict, *, hooks_enabled=True) -> tuple[str, bool]:
         """The one host authorization door before any tool side effect."""
         from litetui.tool_events import external_lifecycle
@@ -3437,7 +3438,8 @@ class LiteTUI(App):
         # 🔴 DELIBERATELY NOT EXECUTABLE, AND THE TEXT FORM IS DELIBERATELY NOT
         # PARSED: detect-and-execute would defeat the one guarantee this
         # setting exists to make.
-        if not self.tools_enabled:
+        ticket = native_runtime_controls.current_authorization(self)
+        if not (ticket.tools_enabled if ticket else self.tools_enabled):
             return tool_denied("tools-off"), False
         # MCP maintenance is reconnecting servers off-loop; the dispatch map is
         # being rebuilt. Pause ALL tool dispatch (conservative — an MCP tool
@@ -3468,7 +3470,7 @@ class LiteTUI(App):
         #
         # Before resolution, for the same reason the global toggle is: a tool
         # the user switched off must not run even if a branch is added above.
-        if name in (self.settings.tools_disabled or ()):
+        if name in (ticket.disabled if ticket else (self.settings.tools_disabled or ())):
             return tool_denied("tool-disabled", name=name), False
         # LOOP-BREAK (tracker above): a call deep in a no-change repetition is
         # refused BEFORE it runs, so a stuck model spends its round reading the
@@ -3483,12 +3485,14 @@ class LiteTUI(App):
         policy = self.plugins.policy_for(name)
         if policy is None:
             return tool_denied("no-metadata", name=name), False
-        hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.STRICT
+        hook_profile = ticket.profile if ticket else getattr(self, "_active_tool_profile", None) or tool_policy.STRICT
+        hook_context = ticket.context if ticket else hook_host.context(self)
         authorize = getattr(self, "_authorize_action", partial(LiteTUI._authorize_action, self))
         refusal = await authorize(name, args, policy, profile=hook_profile)
         if refusal:
             return refusal
-        hook_context = hook_host.context(self)
+        if ticket and self._stop_requested:
+            return tool_denied("profile", name=name, reason="stopped by user"), False
         run_hooks = (hooks_enabled and getattr(self, "hook_config", None) is not None
                      and not getattr(self, "_hooks_suppressed", False))
         if run_hooks:
@@ -3538,6 +3542,7 @@ class LiteTUI(App):
             aw = asyncio.to_thread(fn, args)
             if run_hooks:
                 aw = self._observe_tool_outcome(name, dict(args), aw, hook_profile, hook_context)
+            aw = native_runtime_controls.child_call(self, aw, work_call=work_call)
             aw = conversation_rewrite.track_tool(self, rewrite_tool, aw)
             aw = background_input.track_tool(work_call, aw)
             if background:
@@ -3837,7 +3842,37 @@ class LiteTUI(App):
         from litetui.store_identity import capture
         self._prompt_store_identity = capture(self)
         self._store_injected = False
-        return self.plugins.compose_prompt() + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
+        return LiteTUI._runtime_control_prompt(self)
+
+    def _runtime_control_prompt(self, *, tools_enabled=None, plan_mode=None) -> str:
+        """Compose the same sections for a pure Review without changing live flags."""
+        replacements = {}
+        if tools_enabled is not None:
+            replacements[plugins_mod.PROMPT_ORDER["TOOLS"]] = LiteTUI._tools_prompt_section(tools_enabled)
+            # These canonical renderers return empty text for an empty inventory.
+            # Their live enabled predicates also depend on the tools toggle.
+            tool_indices = {plugins_mod.PROMPT_ORDER["DEFERRED_TOOLS"], plugins_mod.PROMPT_ORDER["SKILLS_INDEX"]}
+            for section in self.plugins.sections_sorted():
+                if section.order in tool_indices:
+                    replacements[section.order] = section.render() if tools_enabled else ""
+        if plan_mode is not None:
+            replacements[plugins_mod.PROMPT_ORDER["PLAN"]] = LiteTUI._plan_prompt_section(plan_mode)
+        base = self.plugins.compose_prompt(replacements) if replacements else self.plugins.compose_prompt()
+        return base + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
+
+    @staticmethod
+    def _plan_prompt_section(enabled):
+        if not enabled or not paths.PLAN_PROMPT_FILE.exists():
+            return ""
+        return "\n" + paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
+
+    @staticmethod
+    def _tools_prompt_section(enabled):
+        if not enabled:
+            return TOOLS_DISABLED_PROMPT
+        if not paths.TOOLS_PROMPT_FILE.exists():
+            return ""
+        return "\n" + paths.TOOLS_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
 
     def _load_system_prompt(self) -> None:
         base = self._system_prompt_text()
@@ -4679,7 +4714,11 @@ class LiteTUI(App):
         Ctrl+T as a deliberate temporary override and chose one behaviour
         everywhere: "make all three persist".
         """
-        self.tools_enabled = not self.tools_enabled
+        LiteTUI.set_tools_enabled(self, not self.tools_enabled)
+
+    def set_tools_enabled(self, enabled: bool) -> None:
+        changed = self.tools_enabled != enabled
+        self.tools_enabled = enabled
         # Written through the SAME field the settings screen binds to, so
         # there is nothing to keep in sync — there is one value with three
         # surfaces onto it.
@@ -4691,7 +4730,7 @@ class LiteTUI(App):
             # out loud rather than swallowed: a silent half-success here is
             # exactly the disagreement this change exists to remove.
             self._system("could not save the tools setting — this session only")
-        if self.conversation and self.conversation[0].get("role") == "system":
+        if changed and self.conversation and self.conversation[0].get("role") == "system":
             # Rebuilt through the single builder. The store and index blocks
             # leave with the old text; the next request appends fresh ones.
             self.conversation[0]["content"] = self._system_prompt_text()
@@ -5173,6 +5212,9 @@ class LiteTUI(App):
         if getattr(cs, field, None) == value:
             return
         setattr(cs, field, value)
+        from litetui import native_runtime_controls
+        if native_runtime_controls.defer_remembered(self, field, value):
+            return
         try:
             convo_settings_mod.save(self.convo_dir, cs, agent_session=self._agent_session)
         except OSError as e:
@@ -5869,6 +5911,8 @@ class LiteTUI(App):
     def _rpc_emit(self, data: dict, *, origin: EventOrigin | None = None) -> None:
         """Emit one JSON event on stdout (no-op outside --rpc)."""
         origin = origin or conversation_rewrite.event_origin(self)
+        from litetui import native_runtime_controls
+        native_runtime_controls.observe_event(self, data, origin)
         if data.get("type") == "turn_start":
             self._now_turn_active_at = self._active_turn_started_at
             self._paint_now()
@@ -8287,6 +8331,8 @@ class LiteTUI(App):
             self._force_stop()
         else:
             self._stop_requested = True
+        from litetui import native_runtime_controls
+        native_runtime_controls.signal_stop(self)
         return True
 
     def _on_stop_answer(self, stop: bool | None) -> None:
@@ -8669,7 +8715,8 @@ class LiteTUI(App):
             self._refuse_submit("message_over_budget", oversize)
             return
 
-        profile = seat_authority.seat_profile(self)
+        profile = (seat_authority.turn_profile(self, source, requested=None)
+                   if source == "rpc" and native_runtime_controls.enabled(self) else seat_authority.seat_profile(self))
         claude_metadata = {}
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import (
@@ -10087,7 +10134,7 @@ class LiteTUI(App):
         returns out of the worker before this point, so it still ends the turn
         and sends next -- queue and interrupt stay two different verbs.
         """
-        if background_input.activation_pending(self):
+        if background_input.activation_pending(self) or native_runtime_controls.mutation_hold(self):
             return False
         from litetui.backend_transition import submission_refusal
         if submission_refusal(self):
@@ -10127,7 +10174,7 @@ class LiteTUI(App):
         exclusive in that group, and a flush that streamed now would CANCEL
         whichever is running.
         """
-        if background_input.activation_pending(self):
+        if background_input.activation_pending(self) or native_runtime_controls.mutation_hold(self):
             return
         from litetui.backend_transition import submission_refusal
 

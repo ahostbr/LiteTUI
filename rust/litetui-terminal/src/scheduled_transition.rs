@@ -206,7 +206,13 @@ impl NewReview {
         i.session = self.target.clone();
         i
     }
-    fn receipt(&self, v: &Value, success: bool, instance: &str) -> io::Result<()> {
+    fn receipt(
+        &self,
+        v: &Value,
+        success: bool,
+        proposal: &Proposal,
+        historical: Option<&crate::runtime_controls::Binding>,
+    ) -> io::Result<()> {
         let mut expected = vec![
             "version",
             "kind",
@@ -234,10 +240,43 @@ impl NewReview {
         if v.get("work_execution_shutdown").is_some() {
             expected.push("work_execution_shutdown");
         }
+        if v.get("runtime_controls_shutdown").is_some()
+            || v.get("runtime_controls_historical_shutdown").is_some()
+        {
+            expected.extend([
+                "runtime_controls_shutdown",
+                "runtime_controls_historical_shutdown",
+            ]);
+        }
         keys(v, &expected)?;
+        if let Some(value) = v.get("runtime_controls_shutdown") {
+            if v.get("work_shutdown").is_none() || v["work_recapture_required"] != true {
+                return Err(bad("Scheduled control retirement lacks its Work barrier"));
+            }
+            crate::runtime_controls::Shutdown::parse(
+                value,
+                &crate::runtime_controls::Binding {
+                    identity: self.identity.clone(),
+                    work_instance: proposal.instance.clone(),
+                    provider: proposal.provider,
+                },
+            )?;
+            let retained = &v["runtime_controls_historical_shutdown"];
+            match (retained.is_null(), historical) {
+                (true, None) => {}
+                (false, Some(binding)) => {
+                    crate::runtime_controls::HistoricalShutdown::parse(retained, binding)?;
+                }
+                _ => {
+                    return Err(bad(
+                        "Scheduled historical control retirement changed its obligation",
+                    ));
+                }
+            }
+        }
         if let Some(value) = v.get("work_execution_shutdown") {
             let proof = crate::work_execution_controls::Shutdown::parse(value)?;
-            if proof.identity != self.identity || proof.work_instance != instance {
+            if proof.identity != self.identity || proof.work_instance != proposal.instance {
                 return Err(bad("Scheduled New changed its execution retirement epoch"));
             }
         }
@@ -494,6 +533,15 @@ impl Decision {
         operation: &str,
         request: DecisionRequest,
     ) -> io::Result<Self> {
+        Self::parse_with_runtime(v, p, operation, request, None)
+    }
+    pub(crate) fn parse_with_runtime(
+        v: &Value,
+        p: &Proposal,
+        operation: &str,
+        request: DecisionRequest,
+        historical: Option<&crate::runtime_controls::Binding>,
+    ) -> io::Result<Self> {
         bounded(v, life::REPLY_BYTES)?;
         keys(
             v,
@@ -544,7 +592,7 @@ impl Decision {
             None
         } else {
             p.transition
-                .receipt(&v["transition"], status == Status::Staged, &p.instance)?;
+                .receipt(&v["transition"], status == Status::Staged, p, historical)?;
             Some(v["transition"].clone())
         };
         let deferred = if v["deferred"].is_null() {
@@ -724,5 +772,107 @@ impl Readback {
         Ok(Self {
             decision: d.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod runtime_retirement_tests {
+    use super::*;
+    use crate::runtime_controls::Binding;
+
+    fn body(binding: &Binding, kind: &str, fields: Value) -> Value {
+        let mut value = binding.request("");
+        let object = value.as_object_mut().unwrap();
+        object.remove("type");
+        object.insert("kind".into(), json!(kind));
+        object.extend(fields.as_object().unwrap().clone());
+        value
+    }
+
+    #[test]
+    fn scheduled_new_binds_current_and_historical_control_shutdown_to_separate_epochs() {
+        let source: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/scheduled_execution_handoff.json"
+        ))
+        .unwrap();
+        let identity = Identity::parse(&source["capture"]["identity"]).unwrap();
+        let provider = life::Provider::parse(&source["capture"], "provider").unwrap();
+        let p = Proposal::parse(
+            &source["proposal"]["proposal"],
+            &identity,
+            source["capture"]["instance"].as_str().unwrap(),
+            provider,
+        )
+        .unwrap();
+        let current = Binding {
+            identity,
+            provider,
+            work_instance: p.instance.clone(),
+        };
+        let historical = Binding {
+            identity: Identity {
+                session: "00000000-0000-4000-8000-000000000009".into(),
+                ..current.identity.clone()
+            },
+            provider,
+            work_instance: "a".repeat(64),
+        };
+        let mut result = source["result"].clone();
+        let op = result["operation_id"].as_str().unwrap().to_owned();
+        let parse = |r: &Value, old: Option<&Binding>| {
+            Decision::parse_with_runtime(r, &p, &op, DecisionRequest::Accept, old)
+        };
+        result["transition"]["runtime_controls_shutdown"] = body(
+            &current,
+            "runtime_controls_shutdown",
+            json!({
+                "published_generation":0,"action_id":null,"review_token":null,"apply_operation_id":null,
+                "readback_operation_id":null,"result_sha256":null,"readback_sha256":null,"pending_at_close":false,
+                "readback_published":false,"effect_attempted":false,"disposition":"idle","authorization_closed":true,
+                "admission_closed":true,"control_owner":"absent","publication_owner":"absent",
+                "authorization_owners_joined":true,"waiter_owners_joined":true,"remaining_authorizations":0,
+                "remaining_waiters":0,"effects_verified":false
+            }),
+        );
+        assert!(parse(&result, None).is_err(), "paired key is required");
+        result["transition"]["runtime_controls_historical_shutdown"] = Value::Null;
+        assert!(parse(&result, None).is_ok());
+        assert!(
+            parse(&result, Some(&historical)).is_err(),
+            "retained old command cannot vanish"
+        );
+        let old_proof = body(
+            &historical,
+            "runtime_controls_historical_shutdown",
+            json!({
+                "action_id":"00000000-0000-4000-8000-000000000010","review_token":"b".repeat(64),
+                "apply_operation_id":"apply-retired","readback_operation_id":null,"result_sha256":null,
+                "readback_sha256":null,"readback_published":false,"disposition":"refused","effect_attempted":false,
+                "execution_authority":false,"command_owner":"joined","publication_owner":"absent","effects_verified":false
+            }),
+        );
+        result["transition"]["runtime_controls_historical_shutdown"] = old_proof;
+        let decision = parse(&result, Some(&historical)).unwrap();
+        assert_eq!(decision.transition.as_ref(), Some(&result["transition"]));
+        assert!(
+            parse(&result, None).is_err(),
+            "unsolicited historical owner"
+        );
+        assert!(
+            parse(&result, Some(&current)).is_err(),
+            "current owner cannot prove an earlier epoch"
+        );
+        let mut wrong = result.clone();
+        wrong["transition"]["runtime_controls_shutdown"]["session_id"] = json!(p.transition.target);
+        assert!(
+            parse(&wrong, Some(&historical)).is_err(),
+            "target identity may not retire the old conversation"
+        );
+        result["transition"]["runtime_controls_historical_shutdown"]["effect_attempted"] =
+            json!(true);
+        assert!(
+            parse(&result, Some(&historical)).is_err(),
+            "a retired review grants no execution authority"
+        );
     }
 }

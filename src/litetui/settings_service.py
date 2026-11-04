@@ -209,7 +209,7 @@ class SettingsService:
             object.__setattr__(effective, '_baseline', asdict(effective))
         return SettingsSnapshot(saved, effective, revisions)
 
-    def save_patch(self, conversation_id, changes, expected_revisions, *, max_bytes=None):
+    def save_patch(self, conversation_id, changes, expected_revisions, *, max_bytes=None, before_write=None):
         read = _read if max_bytes is None else lambda path: _read(path, max_bytes=max_bytes)
         paths = self._paths(conversation_id)
         groups = {}
@@ -269,6 +269,8 @@ class SettingsService:
                 if destination == 'conversation':
                     self._writable(conversation_id)
                 with coordinated_write(path):
+                    if before_write is not None:
+                        before_write()
                     raw, revision = read(path)
                     if expected_revisions.get(destination) != revision:
                         raise ValueError(f'Stale {destination} revision; reload before retry')

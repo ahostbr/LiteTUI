@@ -144,11 +144,12 @@ fn parse_wire_value(text: &str, depth_left: usize) -> Result<Value, DecodeError>
                 ) -> Result<Value, A::Error> {
                     let mut object = serde_json::Map::new();
                     while let Some((key, raw)) = entries.next_entry::<String, &RawValue>()? {
-                        // Validate every occurrence BEFORE last-key-wins insertion:
-                        // overwritten children must not bypass the depth bound.
+                        // Preserve one meaning for each field before command correlation.
                         let value = parse_wire_value(raw.get(), self.0)
                             .map_err(serde::de::Error::custom)?;
-                        object.insert(key, value);
+                        if object.insert(key, value).is_some() {
+                            return Err(serde::de::Error::custom("duplicate JSON object key"));
+                        }
                     }
                     Ok(Value::Object(object))
                 }

@@ -18,6 +18,7 @@ pub(super) struct Control {
     retired_shutdown: Option<Value>,
     pub pending: Option<Pending>,
     startup: Option<Box<Step>>,
+    deferred_activation: Option<Value>,
     ledger: Option<lifecycle::Ledger>,
     operations: HashSet<String>,
     announced: Option<lifecycle::Origin>,
@@ -85,6 +86,16 @@ impl Management {
     pub(super) fn execution_ledger(&self) -> Option<&lifecycle::Ledger> {
         self.work_lifecycle.ledger.as_ref()
     }
+    pub(super) fn install_future_work_seat(
+        &mut self,
+        policy: &crate::runtime_controls::Policy,
+    ) -> io::Result<()> {
+        self.work_lifecycle
+            .ledger
+            .as_mut()
+            .ok_or_else(|| fail("Runtime choice lost captured Work ledger"))?
+            .install_runtime_policy(policy)
+    }
     pub fn work_lifecycle_active(&self) -> bool {
         self.work_lifecycle.active
     }
@@ -129,7 +140,17 @@ impl Management {
         let proof = value.get("work_shutdown");
         let recapture = value.get("work_recapture_required");
         if self.work_lifecycle.enabled.is_none() || !changed {
-            if proof.is_some() || recapture.is_some() || self.work_lifecycle.transition_closing {
+            if proof.is_some()
+                || recapture.is_some()
+                || self.work_lifecycle.transition_closing
+                || [
+                    "runtime_controls_shutdown",
+                    "runtime_controls_historical_shutdown",
+                    "work_execution_shutdown",
+                ]
+                .iter()
+                .any(|key| value.get(*key).is_some())
+            {
                 return Err(fail("Unexpected Work identity retirement receipt"));
             }
             return Ok(());
@@ -153,6 +174,7 @@ impl Management {
             proof.ok_or_else(|| fail("Identity mutation omitted Work shutdown proof"))?,
         )?;
         self.verify_execution_shutdown(&value["work_execution_shutdown"])?;
+        self.verify_runtime_shutdown(value)?;
         self.work_lifecycle.retired_shutdown = proof.cloned();
         self.work_lifecycle.active = false;
         self.work_lifecycle.rebind = true;
@@ -186,6 +208,7 @@ impl Management {
             crate::scheduled_transition::Capabilities::negotiate(operations)?;
         self.work_lifecycle.execution =
             crate::work_execution_controls::Capabilities::negotiate(operations)?;
+        self.configure_runtime_controls(operations)?;
         Ok(())
     }
     fn lifecycle_identity(&self) -> io::Result<lifecycle::Identity> {
@@ -248,6 +271,7 @@ impl Management {
             Some(capabilities) => capabilities.capture_request(&identity),
             None => identity.request(lifecycle::CAPTURE),
         };
+        self.runtime_capture_request(&mut command);
         let id = self
             .wire
             .register_request()
@@ -295,11 +319,35 @@ impl Management {
         match pending.phase {
             PendingPhase::Capture => {
                 self.ensure_drained()?;
+                let base_capture = self.runtime_capture(result, &self.lifecycle_identity()?)?;
                 let capture = lifecycle::Capture::parse_execution(
-                    result,
+                    &base_capture,
                     &self.lifecycle_identity()?,
                     self.work_lifecycle.execution.as_ref(),
                 )?;
+                if self.retired_runtime_policy().is_some() {
+                    let model_target = self.take_model_target_state();
+                    let (state, reported) = match self.work_lifecycle.startup.as_deref() {
+                        Some(Step::Opened(target)) => (&target.snapshot, &target.policy),
+                        Some(Step::BackendChanged(target)) => (&target.snapshot, &target.policy),
+                        Some(
+                            Step::ScheduledConversationChanged(target)
+                            | Step::ConversationChanged(target),
+                        ) => (&target.snapshot, &target.policy),
+                        Some(Step::Control(super::Update::Choices(_))) => model_target
+                            .as_ref()
+                            .map(|(state, reported)| (state, reported))
+                            .ok_or_else(|| {
+                                fail("Model recapture omitted independent target state")
+                            })?,
+                        _ => {
+                            return Err(fail(
+                                "Runtime control recapture lacks a verified identity transition",
+                            ));
+                        }
+                    };
+                    self.verify_target_runtime_capture(state, reported)?;
+                }
                 if let Some(expected) = self.work_lifecycle.expected_deferred.as_ref()
                     && (capture.deferred_jobs.as_slice() != std::slice::from_ref(expected)
                         || !capture.recovered.is_empty())
@@ -317,16 +365,19 @@ impl Management {
                 {
                     return Err(fail("Work recapture reused the retired epoch"));
                 }
-                let seat = self
-                    .work_lifecycle
-                    .enabled
-                    .expect("explicit lifecycle opt-in");
-                if Profile::parse(&self.expected.as_ref().expect("startup").3)? != seat {
+                let seat = self.runtime_capture_seat().unwrap_or_else(|| {
+                    self.work_lifecycle
+                        .enabled
+                        .expect("explicit lifecycle opt-in")
+                });
+                if self.runtime_capture_seat().is_none()
+                    && Profile::parse(&self.expected.as_ref().expect("startup").3)? != seat
+                {
                     return Err(fail(
                         "Work lifecycle launch profile differs from verified startup",
                     ));
                 }
-                let mut command = match self.work_lifecycle.execution.as_ref() {
+                let command = match self.work_lifecycle.execution.as_ref() {
                     Some(capabilities) => capture.activation_request_execution(
                         self.work_lifecycle.scheduled.as_ref(),
                         capabilities,
@@ -346,25 +397,21 @@ impl Management {
                     self.work_lifecycle.startup = None;
                     return Ok(Step::Ignore);
                 }
-                let id = self
-                    .wire
-                    .register_request()
-                    .map_err(|_| fail("Cannot reserve Work activation"))?;
-                command["id"] = id.to_value();
-                self.work_lifecycle.pending = Some(Pending {
-                    id,
-                    phase: PendingPhase::Activate,
-                });
-                Ok(Step::Write(command))
+                if self.historical_runtime_pending() {
+                    self.work_lifecycle.deferred_activation = Some(command);
+                    return Ok(Step::Ignore);
+                }
+                self.work_activation_command(command).map(Step::Write)
             }
             PendingPhase::Activate => {
                 self.ensure_drained()?;
+                let base_activation = self.runtime_activation(result)?;
                 let ledger = self
                     .work_lifecycle
                     .ledger
                     .as_mut()
                     .expect("captured lifecycle");
-                ledger.activate(result)?;
+                ledger.activate(&base_activation)?;
                 self.work_lifecycle.active = true;
                 self.work_lifecycle.retired_shutdown = None;
                 self.work_lifecycle.expected_deferred = None;
@@ -402,6 +449,28 @@ impl Management {
                 }
             }
         }
+    }
+    fn work_activation_command(&mut self, mut command: Value) -> io::Result<Value> {
+        self.runtime_activation_request(&mut command);
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve Work activation"))?;
+        command["id"] = id.to_value();
+        self.work_lifecycle.pending = Some(Pending {
+            id,
+            phase: PendingPhase::Activate,
+        });
+        Ok(command)
+    }
+    pub fn take_deferred_work_activation(&mut self) -> io::Result<Option<Value>> {
+        if self.closing || self.historical_runtime_pending() {
+            return Ok(None);
+        }
+        let command = self.work_lifecycle.deferred_activation.take();
+        command
+            .map(|value| self.work_activation_command(value))
+            .transpose()
     }
     pub(super) fn close_work_lifecycle(&mut self) {
         self.work_lifecycle.verified_reconciliation = None;
@@ -450,6 +519,9 @@ impl Management {
             return Err(fail("Work admission lacks actual Turn execution authority"));
         }
         let effect = ledger.observe(frame, authority.flatten())?;
+        if matches!(&effect, lifecycle::Effect::Admission { .. }) && self.runtime_gate_held() {
+            return Err(fail("Work admission overtook runtime control publication"));
+        }
         if matches!(effect, lifecycle::Effect::Reconciled { .. }) {
             self.work_lifecycle.reconciliation = Some((frame["event"].clone(), Box::new(effect)));
             // A typed event alone is not the independent queue readback.

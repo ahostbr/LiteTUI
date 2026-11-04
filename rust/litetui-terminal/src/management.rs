@@ -9,6 +9,7 @@ use std::{collections::HashSet, io};
 mod action;
 mod compact;
 mod execution;
+mod runtime;
 mod scheduled;
 mod settings;
 mod work;
@@ -186,6 +187,7 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    RuntimeControls(crate::runtime_controls_view::Update),
     WorkLaunchStop {
         action_id: String,
         generation: u64,
@@ -275,6 +277,7 @@ struct ControlPending {
     mutation_id: Option<CommandId>,
     failure: Option<String>,
     succeeded: bool,
+    target_menu: Option<Choices>,
 }
 pub struct Continuation {
     pub command: Value,
@@ -393,6 +396,7 @@ struct SavedHistoryPending {
     prior: Option<crate::history::Page>,
 }
 pub struct Management {
+    runtime_controls: runtime::Control,
     execution: execution::Control,
     scheduled: scheduled::Control,
     work_lifecycle: work_lifecycle::Control,
@@ -433,6 +437,7 @@ pub struct Management {
 
     wire: WireClient,
     control: Option<ControlPending>,
+    model_target_state: Option<(Snapshot, Value)>,
     queue: Option<QueuePending>,
     queue_menu: Option<crate::restored_queue::Snapshot>,
     settings: Option<CommandId>,
@@ -469,6 +474,7 @@ pub struct Management {
 impl Default for Management {
     fn default() -> Self {
         Self {
+            runtime_controls: runtime::Control::default(),
             execution: execution::Control::default(),
             scheduled: scheduled::Control::default(),
             work_lifecycle: work_lifecycle::Control::default(),
@@ -510,6 +516,7 @@ impl Default for Management {
             engine_snapshot: None,
             engine_review: None,
             control: None,
+            model_target_state: None,
             queue: None,
             queue_menu: None,
             settings: None,
@@ -634,6 +641,7 @@ impl Management {
             && !self.failed
             && !self.work_lifecycle_starting()
             && !self.schedule_pending()
+            && !self.runtime_controls_pending()
             && !self.execution_barrier()
             && self.work.pending.is_none()
             && self.engine.is_none()
@@ -747,6 +755,10 @@ impl Management {
                 && original_json_bytes > crate::work_lifecycle::REPLY_BYTES
             {
                 Err(fail("Scheduled response exceeds full wire budget"))
+            } else if self.runtime_response_pending(&frame)
+                && original_json_bytes > crate::work_lifecycle::REPLY_BYTES
+            {
+                Err(fail("Runtime controls response exceeds full wire budget"))
             } else if self.execution_response_pending(&frame)
                 && original_json_bytes > crate::work_lifecycle::REPLY_BYTES
             {
@@ -1004,6 +1016,8 @@ impl Management {
                 frame,
                 ..
             } if self.execution_response_pending(&frame) => self.execution_response(frame),
+            Notice::Response { matched: true, frame, .. }
+                if self.runtime_response_pending(&frame) => self.runtime_response(frame),
             Notice::Response {
                 id,
                 matched: true,
@@ -1394,6 +1408,11 @@ impl Management {
                 "Rewrite execution metadata outside an admitted action",
             ));
         }
+        if kind == "tool_call"
+            && (self.prompt.is_none() || frame["operation_id"].as_str() != self.prompt.as_deref())
+        {
+            return Err(fail("Tool diagnostic belongs to another prompt operation"));
+        }
         if IDENTIFIED.contains(&kind) {
             self.validate_work_stream_origin(frame)?;
             let (execution, origin, _) = crate::stream::origin(frame, 4096)
@@ -1476,11 +1495,15 @@ impl Management {
             selection,
             failure: None,
             succeeded: false,
+            target_menu: None,
         });
         self.menu = None;
         self.queue_menu = None;
         self.browser_page = None;
         Ok(command)
+    }
+    pub(super) fn take_model_target_state(&mut self) -> Option<(Snapshot, Value)> {
+        self.model_target_state.take()
     }
     fn control_response(&mut self, frame: Value) -> io::Result<Step> {
         let mut pending = self.control.take().expect("matched control");
@@ -1490,6 +1513,34 @@ impl Management {
         } else {
             Some(text(&frame, "error", 4096)?.to_owned())
         };
+        if let Some(menu) = pending.target_menu.take() {
+            if !success {
+                return Err(fail("Cannot verify the new model's effective runtime policy"));
+            }
+            self.ensure_drained()?;
+            let result = &frame["result"];
+            let state = Snapshot::parse(result)?;
+            let (agent, schedules) = self.browser_authority.as_ref().ok_or_else(|| fail("Model change lacks captured ownership"))?;
+            if state.session != menu.session || state.backend != menu.backend || state.model != menu.model
+                || state.schedules_paused != *schedules || state.held_restored_input.is_none()
+                || result["ownership"]["agent_id"] != *agent
+            {
+                return Err(fail("New model policy readback changed the captured target"));
+            }
+            let profile = &self.expected.as_ref().expect("active").3;
+            self.verify_target_profile(&state, &result["tool_policy"], profile)?;
+            if self.model_target_state.is_some() {
+                return Err(fail("Earlier model policy readback still awaits capture"));
+            }
+            let expected = self.expected.as_mut().expect("active");
+            expected.2 = state.model.clone();
+            expected.3 = state.profile.clone();
+            self.model_target_state = Some((state, result["tool_policy"].clone()));
+            self.origin = None;
+            self.prompt = None;
+            self.menu = Some(menu.clone());
+            return Ok(Step::Control(Update::Choices(menu)));
+        }
         if pending.applying {
             let changing_model = success
                 && pending.kind == Kind::Model
@@ -1540,7 +1591,7 @@ impl Management {
         if pending.succeeded && pending.selection.as_deref() != Some(menu.current.as_str()) {
             return Err(fail("Runtime did not retain the requested selection"));
         }
-        if let Some(error) = pending.failure {
+        if let Some(error) = pending.failure.take() {
             menu.message = Some(format!(
                 "Request failed: {error}. Current setting read back from runtime."
             ));
@@ -1549,6 +1600,14 @@ impl Management {
         }
         if menu.model != *model {
             self.require_work_identity_rebind()?;
+            if self.retired_runtime_policy().is_some() {
+                let id = self.wire.register_read().map_err(|_| fail("Cannot reserve model target policy readback"))?;
+                let command = json!({"type":"gui.state","id":id.to_value(),"include_conversations":false});
+                pending.id = id;
+                pending.target_menu = Some(menu);
+                self.control = Some(pending);
+                return Ok(Step::Write(command));
+            }
             self.expected.as_mut().expect("active").2 = menu.model.clone();
             self.origin = None;
             self.prompt = None;
@@ -2288,9 +2347,9 @@ impl Management {
                             let snapshot = Snapshot::parse(result)?;
                             let (_, backend, model, profile) =
                                 self.expected.as_ref().expect("active");
+                            self.verify_target_profile(&snapshot, &result["tool_policy"], profile)?;
                             if snapshot.session != *target
                                 || snapshot.backend != *backend
-                                || snapshot.profile != *profile
                                 || !snapshot.writable
                                 || snapshot.held_restored_input.is_none()
                                 || self.browser_authority.as_ref().map(|value| value.1)
@@ -2552,10 +2611,10 @@ impl Management {
             }
             3 => {
                 let snapshot = Snapshot::parse(result)?;
+                self.verify_target_profile(&snapshot, &result["tool_policy"], &profile)?;
                 if snapshot.session != session
                     || snapshot.backend != name
                     || snapshot.model != model
-                    || snapshot.profile != profile
                     || (!snapshot.writable
                         && pending.history.as_ref().is_none_or(|history| {
                             !history
@@ -2624,7 +2683,7 @@ impl Management {
                 self.engine_instance = None;
                 self.engine_snapshot = None;
                 self.engine_review = None;
-                self.expected = Some((session, name, model, profile));
+                self.expected = Some((session, name, model, snapshot.profile.clone()));
                 self.prompt = None;
                 self.origin = None;
                 self.menu = None;

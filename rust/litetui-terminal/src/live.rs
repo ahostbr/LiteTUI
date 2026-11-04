@@ -188,6 +188,8 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    RuntimeControls(crate::runtime_controls_view::Update),
+    RuntimePolicy(crate::runtime_controls::Policy),
     WorkLaunchStop {
         action_id: String,
         generation: u64,
@@ -322,8 +324,9 @@ pub struct Turn {
     rewrite_segments: Vec<String>,
     rewrite_aftercare: std::collections::BTreeMap<String, Option<String>>,
     rewrite_executions: std::collections::HashSet<String>,
-    rewrite_tools: std::collections::BTreeMap<String, (String, bool)>,
-    rewrite_tool_count: usize,
+    // Host observation IDs are scoped to the operation; returns update the request's card.
+    observed_tools: std::collections::BTreeMap<String, (String, usize, bool)>,
+    host_content_follows_tool: bool,
     visible_answers: std::collections::BTreeSet<usize>,
     tools_seen: bool,
     card_count: usize,
@@ -338,6 +341,8 @@ pub struct Turn {
     approvals: crate::approvals::Ledger,
     questions: crate::questions::Ledger,
     policy: Option<crate::tool_mode::Expected>,
+    runtime_policy: Option<crate::runtime_controls::Policy>,
+    ordinary_runtime_prompt: bool,
     aborts: crate::cancellation::Ledger,
     stop_requests: usize,
     stop_acknowledged: bool,
@@ -361,6 +366,119 @@ impl Turn {
         if identity.is_some() && self.conversation_shutdown.as_ref() == identity {
             self.conversation_shutdown = self.conversation_completed_shutdown.clone();
         }
+    }
+    fn can_runtime_controls(&self) -> bool {
+        self.ready
+            && !self.closing
+            && !self.rewrite_active
+            && !self.work.uncertain
+            && self
+                .engine_admission
+                .is_none_or(|a| a == crate::engine_controls::Admission::PromptReady)
+            && self.approvals.settled()
+            && self.questions.settled()
+            && (!self.sent || self.started || self.settled)
+    }
+    fn validate_current_policy(&self, value: &Value) -> io::Result<()> {
+        let expected = self.policy.as_ref().expect("launch policy");
+        let mode = match self.runtime_policy.as_ref() {
+            Some(policy) => crate::tool_mode::ValidationMode::Current(policy),
+            None => crate::tool_mode::ValidationMode::Launch,
+        };
+        expected.validate_mode(value, mode)
+    }
+    fn install_runtime_policy(
+        &mut self,
+        policy: crate::runtime_controls::Policy,
+    ) -> io::Result<()> {
+        let expected = self.policy.as_ref().expect("launch policy");
+        let mode = if self.runtime_policy.is_none() {
+            crate::tool_mode::ValidationMode::Launch
+        } else {
+            crate::tool_mode::ValidationMode::Target
+        };
+        expected.validate_facts(&policy.facts, mode)?;
+        if let Some(old) = self.runtime_policy.as_ref() {
+            if old.binding == policy.binding && policy.generation != old.generation + 1 {
+                return Err(io::Error::other(
+                    "Runtime control policy generation was repeated or skipped",
+                ));
+            }
+            if old.binding != policy.binding && policy.generation != 0 {
+                return Err(io::Error::other(
+                    "New runtime control epoch did not start at generation zero",
+                ));
+            }
+        } else if policy.generation != 0 {
+            return Err(io::Error::other(
+                "Initial runtime control policy did not start at generation zero",
+            ));
+        }
+        self.runtime_policy = Some(policy);
+        Ok(())
+    }
+    fn verify_runtime_owner(
+        &self,
+        owner: &crate::runtime_controls::Owner,
+        known: Option<crate::work_lifecycle::Origin>,
+        current: bool,
+    ) -> io::Result<()> {
+        use crate::runtime_controls::OwnerState;
+        let valid = match owner.state {
+            OwnerState::Idle => (!self.sent || self.settled) && !self.work.owns_work(),
+            OwnerState::Active | OwnerState::Terminal => {
+                let origin = owner.origin.as_ref().expect("strict owner parser");
+                self.started
+                    && origin.operation == self.command_id
+                    && known.as_ref() == Some(origin)
+                    && match owner.state {
+                        OwnerState::Active => !current || self.terminal.is_none() && !self.settled,
+                        OwnerState::Terminal => self.terminal.is_some(),
+                        _ => false,
+                    }
+            }
+        };
+        if !valid {
+            return Err(io::Error::other(
+                "Runtime control owner differs from the exact admitted stream",
+            ));
+        }
+        Ok(())
+    }
+    fn verify_runtime_readback(
+        &self,
+        value: &crate::runtime_controls::Readback,
+        receipt: Option<&crate::runtime_controls::Receipt>,
+        known: Option<crate::work_lifecycle::Origin>,
+    ) -> io::Result<()> {
+        use crate::runtime_controls::{EffectiveTransition, OwnerState, Release};
+        let receipt =
+            receipt.ok_or_else(|| io::Error::other("Runtime readback lacks its exact result"))?;
+        if value.release == Release::Close {
+            return Ok(());
+        }
+        if let Some(owner) = value.owner.as_ref() {
+            self.verify_runtime_owner(owner, known.clone(), true)?;
+            if value.release == Release::Install
+                && owner.state == OwnerState::Idle
+                && let Some(previous) = receipt.owner_after.as_ref().and_then(|o| o.origin.as_ref())
+                && (known.as_ref() != Some(previous)
+                    || self.command_id != previous.operation
+                    || !self.settled)
+            {
+                return Err(io::Error::other(
+                    "Runtime readback lost the exact settled predecessor",
+                ));
+            }
+        }
+        // The current source has no ordinary turn-finish seat restoration. A
+        // terminal event alone is not evidence of such a policy assignment.
+        if value.effective_transition == Some(EffectiveTransition::RestoreSeat) {
+            return Err(io::Error::other(
+                "Runtime effective-profile restoration has no canonical source transition",
+            ));
+        }
+        Ok(())
     }
     fn can_manage(&self) -> bool {
         self.can_engine()
@@ -399,9 +517,16 @@ impl Turn {
             return Err(io::Error::other("Prompt is empty or exceeds 64 KiB"));
         }
         let id = self.reserve_operation()?;
-        Ok(
-            json!({"type":"prompt","id":id,"message":prompt,"tool_profile":self.policy.as_ref().map_or("strict",|p|p.profile.as_str())}),
-        )
+        if let Some(policy) = &self.runtime_policy {
+            self.ordinary_runtime_prompt = true;
+            Ok(
+                json!({"type":"prompt","id":id,"message":prompt,"runtime_policy":policy.prompt_binding()}),
+            )
+        } else {
+            Ok(
+                json!({"type":"prompt","id":id,"message":prompt,"tool_profile":self.policy.as_ref().map_or("strict",|p|p.profile.as_str())}),
+            )
+        }
     }
     fn reserve_operation(&mut self) -> io::Result<String> {
         if !self.ready
@@ -428,6 +553,7 @@ impl Turn {
     fn reset_operation(&mut self, operation: String) -> io::Result<()> {
         self.work.reserve_operation(&operation)?;
         self.command_id = operation;
+        self.ordinary_runtime_prompt = false;
         self.continued_input = None;
         self.rewrite_input = None;
         self.compact_input = None;
@@ -439,8 +565,8 @@ impl Turn {
         self.rewrite_segments.clear();
         self.rewrite_aftercare.clear();
         self.rewrite_executions.clear();
-        self.rewrite_tools.clear();
-        self.rewrite_tool_count = 0;
+        self.observed_tools.clear();
+        self.host_content_follows_tool = false;
         self.sent = true;
         self.started = false;
         self.native_turns.clear();
@@ -725,7 +851,6 @@ impl Turn {
             .is_ok_and(|execution| self.rewrite_aftercare.contains_key(&execution))
     }
     fn rewrite_tool(&mut self, event: &Value, kind: &str) -> io::Result<Observation> {
-        use crate::native_activity::{Activity, Detail};
         let execution = self.rewrite_origin(event)?;
         let maintenance = self.rewrite_aftercare.contains_key(&execution);
         if !(maintenance
@@ -735,16 +860,31 @@ impl Turn {
                 "Tool observation has no active rewrite worker",
             ));
         }
+        let activity = self.tool_activity(event, kind, &execution, 0)?;
+        Ok(Observation::RewriteActivity {
+            execution_id: execution,
+            activity,
+        })
+    }
+
+    fn tool_activity(
+        &mut self,
+        event: &Value,
+        kind: &str,
+        execution: &str,
+        mut card: usize,
+    ) -> io::Result<crate::native_activity::Activity> {
+        use crate::native_activity::{Activity, Detail};
         let (id, name, detail) = if kind == "generic_tool_returned" {
             let id = crate::stream::required_uuid4(event, "observation_id")
                 .map_err(|_| io::Error::other("Invalid tool observation identity"))?
                 .to_owned();
-            let pair = self
-                .rewrite_tools
+            let (_, request_card, _) = self
+                .observed_tools
                 .get(&id)
-                .filter(|(owner, returned)| owner == &execution && !returned)
+                .filter(|(owner, _, returned)| owner == execution && !returned)
                 .ok_or_else(|| io::Error::other("Missing or already returned tool observation"))?;
-            let _ = pair;
+            card = *request_card;
             let result = event["result"]
                 .as_str()
                 .filter(|s| s.len() <= FRAME_BYTES)
@@ -762,8 +902,8 @@ impl Turn {
                 },
             )
         } else {
-            if self.rewrite_tool_count >= 100 {
-                return Err(io::Error::other("Rewrite tool observation limit exceeded"));
+            if self.observed_tools.len() >= 100 {
+                return Err(io::Error::other("Tool observation limit exceeded"));
             }
             let name = event["name"]
                 .as_str()
@@ -774,7 +914,7 @@ impl Turn {
                 let id = crate::stream::required_uuid4(event, "observation_id")
                     .map_err(|_| io::Error::other("Invalid tool observation identity"))?
                     .to_owned();
-                if self.rewrite_tools.contains_key(&id)
+                if self.observed_tools.contains_key(&id)
                     || event["round"].as_u64().is_none()
                     || event["slot"].as_u64().is_none()
                     || !event["provider_call_id"]
@@ -802,7 +942,7 @@ impl Turn {
                     return Err(io::Error::other("Tool arguments must be an object"));
                 }
                 (
-                    format!("display-tool-{}", self.rewrite_tool_count),
+                    format!("display-tool-{}", self.observed_tools.len()),
                     Some(name),
                     Detail::Input {
                         text: Some(event["args"].to_string()),
@@ -812,7 +952,7 @@ impl Turn {
             }
         };
         let activity = Activity {
-            card: 0,
+            card,
             id: id.clone(),
             name,
             detail,
@@ -823,15 +963,12 @@ impl Turn {
             .filter(|n| *n <= 4 * FRAME_BYTES)
             .ok_or_else(|| io::Error::other("Live content budget exceeded"))?;
         if kind == "generic_tool_returned" {
-            self.rewrite_tools.get_mut(&id).expect("validated").1 = true;
+            self.observed_tools.get_mut(&id).expect("validated").2 = true;
         } else {
-            self.rewrite_tool_count += 1;
-            self.rewrite_tools.insert(id, (execution.clone(), false));
+            self.observed_tools
+                .insert(id, (execution.to_owned(), card, false));
         }
-        Ok(Observation::RewriteActivity {
-            execution_id: execution,
-            activity,
-        })
+        Ok(activity)
     }
     fn rewrite_compaction(&mut self, event: &Value) -> io::Result<Observation> {
         let execution = self.rewrite_origin(event)?;
@@ -1294,6 +1431,33 @@ impl Turn {
             {
                 self.rewrite_tool(event, kind)
             }
+            "generic_tool_requested" | "generic_tool_returned"
+                if self.started
+                    && self.terminal.is_none()
+                    && !matches!(backend, "claude" | "codex") =>
+            {
+                let operation = self.command_id.clone();
+                let activity =
+                    self.tool_activity(event, kind, &operation, self.card_count.saturating_sub(1))?;
+                if kind == "generic_tool_requested" {
+                    self.host_content_follows_tool = true;
+                }
+                Ok(Observation::Activity(activity))
+            }
+            // The separate tool_call diagnostic has no stable invocation ID. It cannot
+            // stand in for a generic request, a result, or a permission decision.
+            "tool_call" if self.started && self.terminal.is_none() => {
+                let name = event["name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty() && name.len() <= 512)
+                    .ok_or_else(|| fail("Invalid tool diagnostic name"))?;
+                if !event["args"].is_object() {
+                    return Err(fail("Invalid tool diagnostic arguments"));
+                }
+                Ok(Observation::Information(format!(
+                    "Tool call observed: {name}"
+                )))
+            }
             "turn_start"
                 if self.sent && !self.started && self.terminal.is_none() && !self.settled =>
             {
@@ -1306,11 +1470,26 @@ impl Turn {
             "text_delta" | "native_text_snapshot" | "reasoning_delta"
                 if self.started && self.terminal.is_none() =>
             {
-                let card = crate::native_activity::card_index(event)?;
+                let mut card = crate::native_activity::card_index(event)?;
+                if !self.rewrite_active
+                    && !self.observed_tools.is_empty()
+                    && !matches!(backend, "claude" | "codex")
+                {
+                    // The generic source streams each round without a card index. Place
+                    // the first later text after the tools while retaining earlier cards.
+                    if card.is_none() {
+                        card = Some(if self.host_content_follows_tool {
+                            self.card_count
+                        } else {
+                            self.card_count.saturating_sub(1)
+                        });
+                    }
+                    self.host_content_follows_tool = false;
+                }
                 if card.is_none() && self.tools_seen {
                     return Err(fail("Content without native display ownership after tools"));
                 }
-                if card.is_some_and(|index| index > self.card_count) {
+                if card.is_some_and(|index| index >= 100 || index > self.card_count) {
                     return Err(fail("Invalid native card sequence"));
                 }
                 let reasoning = kind == "reasoning_delta";
@@ -1852,6 +2031,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let mut work_deadline = None;
     let mut execution_deadline = None;
     let mut execution_stop_deadline = None;
+    let mut runtime_controls_deadline = None;
+    let mut runtime_control_failure = None;
     let mut schedule_deadline = None;
     let mut management_deadline = None;
     let mut work_retirement_deadlines = std::collections::HashMap::<String, Instant>::new();
@@ -1879,6 +2060,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             }
             check_deadline(execution_deadline)?;
             check_deadline(execution_stop_deadline)?;
+            if turn.closing || !management.runtime_controls_pending() {
+                runtime_controls_deadline = None;
+            }
+            check_deadline(runtime_controls_deadline)?;
             check_mirror_deadline(mirror_deadline)?;
             // An autonomous source turn can overlap an already-dispatched read.
             // Neither completion may erase the other's timeout. Reviewed action
@@ -1919,6 +2104,30 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             .expect("owned stdin")
                             .try_send(value)
                             .map_err(io::Error::other)?;
+                    }
+                    Input::RuntimeControls(intent) => {
+                        let command = if turn.can_runtime_controls() {
+                            management.request_runtime_controls(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish the pending approval or owned action before changing runtime controls",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                runtime_controls_deadline
+                                    .get_or_insert_with(|| Instant::now() + options.timeout);
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                            }
+                            Err(error) => frontend.observe(Observation::RuntimeControls(
+                                crate::runtime_controls_view::Update::Rejected(error.to_string()),
+                            ))?,
+                        }
                     }
                     Input::Engine(intent) => {
                         let command = if turn.can_engine() {
@@ -2525,6 +2734,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             Err(io::Error::other(
                                 "Owned runtime exited without verified shutdown acknowledgement",
                             ))
+                        } else if let Some(failure) = runtime_control_failure.take() {
+                            Err(io::Error::other(failure))
                         } else {
                             Ok(())
                         }
@@ -2543,11 +2754,72 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 check_mirror_deadline(mirror_deadline)?;
                 use crate::management::Step;
                 let authority = turn.work_current(management.known_work_origin());
-                match management.accept_wire_with_work(
+                let step = management.accept_wire_with_work(
                     event,
                     crate::history::wire_response_bytes(&frame),
                     authority.as_ref(),
-                )? {
+                )?;
+                if let Some(policy) = management.take_runtime_policy() {
+                    turn.install_runtime_policy(policy.clone())?;
+                    frontend.observe(Observation::RuntimePolicy(policy))?;
+                }
+                match step {
+                    Step::RuntimeControls(update) => {
+                        check_deadline(runtime_controls_deadline)?;
+                        match &update {
+                            crate::runtime_controls_view::Update::Snapshot { snapshot, .. } => {
+                                turn.verify_runtime_owner(
+                                    &snapshot.owner,
+                                    management.known_work_origin(),
+                                    false,
+                                )?;
+                            }
+                            crate::runtime_controls_view::Update::Review(review) => {
+                                turn.verify_runtime_owner(
+                                    &review.owner_before,
+                                    management.known_work_origin(),
+                                    false,
+                                )?;
+                            }
+                            crate::runtime_controls_view::Update::Settled(readback) => {
+                                let verified = turn
+                                    .verify_runtime_readback(
+                                        readback,
+                                        management.runtime_control_receipt(readback),
+                                        management.known_work_origin(),
+                                    )
+                                    .and_then(|()| management.install_runtime_readback(readback));
+                                if let Err(error) = verified {
+                                    runtime_control_failure = Some(error.to_string());
+                                    if !turn.closing {
+                                        frontend.observe(Observation::RuntimeControls(crate::runtime_controls_view::Update::Rejected(format!("Could not verify the change: {error}. Closing this runtime."))))?;
+                                        management.begin_close();
+                                        turn.begin_close();
+                                        deadline = Some(Instant::now() + Duration::from_secs(20));
+                                        owned.request_shutdown()?;
+                                    }
+                                    continue;
+                                }
+                                if let Some(command) = management.take_deferred_work_activation()? {
+                                    owned
+                                        .stdin
+                                        .as_ref()
+                                        .expect("owned stdin")
+                                        .try_send(command)
+                                        .map_err(io::Error::other)?;
+                                }
+                                if let Some(policy) = management.take_runtime_policy() {
+                                    turn.install_runtime_policy(policy.clone())?;
+                                    frontend.observe(Observation::RuntimePolicy(policy))?;
+                                }
+                            }
+                            _ => {}
+                        }
+                        runtime_controls_deadline = None;
+                        if !turn.closing {
+                            frontend.observe(Observation::RuntimeControls(update))?;
+                        }
+                    }
                     Step::SavedHistory(update) => {
                         if !turn.closing {
                             frontend.observe(Observation::SavedHistory(update))?;
@@ -2634,10 +2906,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     } => {
                         if !turn.closing {
                             if let Some(policy) = policy {
-                                turn.policy
-                                    .as_ref()
-                                    .expect("launch policy")
-                                    .validate(&policy)?;
+                                turn.validate_current_policy(&policy)?;
                             }
                             if let crate::engine_controls::Update::Settled { admission, .. } =
                                 &update
@@ -2658,10 +2927,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     Step::Commands { update, policy } => {
                         if !turn.closing {
                             if let Some(policy) = policy {
-                                turn.policy
-                                    .as_ref()
-                                    .expect("launch policy")
-                                    .validate(&policy)?;
+                                turn.validate_current_policy(&policy)?;
                             }
                             frontend.observe(Observation::Commands(update))?;
                             check_deadline(deadline)?;
@@ -2675,10 +2941,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     } => {
                         if !turn.closing {
                             if let Some(policy) = policy {
-                                turn.policy
-                                    .as_ref()
-                                    .expect("launch policy")
-                                    .validate(&policy)?;
+                                turn.validate_current_policy(&policy)?;
                             }
                             frontend.observe(Observation::Theme(update))?;
                             if let Some((snapshot, history)) = startup {
@@ -2735,10 +2998,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             turn.compact_current_session = Some(changed.snapshot.session.clone());
                         }
                         if !turn.closing {
-                            turn.policy
-                                .as_ref()
-                                .expect("launch policy")
-                                .validate(&changed.policy)?;
+                            turn.validate_current_policy(&changed.policy)?;
                             turn.conversation_completed_shutdown =
                                 turn.conversation_shutdown.clone();
                             frontend.observe(Observation::ScheduledConversationChanged(changed))?;
@@ -2748,7 +3008,23 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let starts = matches!(effect.as_ref(),crate::work_lifecycle::Effect::Admission{admission,..}
                             if admission.mode==crate::work_lifecycle::Mode::NewTurn);
                         check_deadline(deadline)?;
+                        let effective = match effect.as_ref() {
+                            crate::work_lifecycle::Effect::Admission {
+                                admission,
+                                drain_only: false,
+                                ..
+                            } => Some(admission.effective),
+                            _ => None,
+                        };
                         let updates = turn.accept_work(*effect)?;
+                        if let Some(policy) =
+                            effective.and_then(|profile| management.runtime_effective(profile))
+                        {
+                            turn.runtime_policy = Some(policy.clone());
+                            if !turn.closing {
+                                frontend.observe(Observation::RuntimePolicy(policy))?;
+                            }
+                        }
                         turn.work_observed_deadline(&updates, &mut deadline);
                         for update in updates {
                             frontend.observe(update)?;
@@ -2796,6 +3072,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         admission,
                     } => {
                         check_deadline(execution_stop_deadline)?;
+                        if turn.closing || !management.runtime_controls_pending() {
+                            runtime_controls_deadline = None;
+                        }
+                        check_deadline(runtime_controls_deadline)?;
                         execution_stop_deadline = None;
                         if !turn.closing {
                             let mut stopped_operation = None;
@@ -2838,6 +3118,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     } => {
                         check_deadline(execution_deadline)?;
                         check_deadline(execution_stop_deadline)?;
+                        if turn.closing || !management.runtime_controls_pending() {
+                            runtime_controls_deadline = None;
+                        }
+                        check_deadline(runtime_controls_deadline)?;
                         execution_deadline = None;
                         execution_stop_deadline = None;
                         if !turn.closing {
@@ -2873,10 +3157,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     Step::Settings { update, policy } => {
                         if !turn.closing {
                             if let Some(policy) = policy {
-                                turn.policy
-                                    .as_ref()
-                                    .expect("launch policy")
-                                    .validate(&policy)?;
+                                turn.validate_current_policy(&policy)?;
                             }
                             frontend.observe(Observation::Settings(update))?;
                             check_deadline(deadline)?;
@@ -2898,10 +3179,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             turn.compact_current_session = Some(opened.snapshot.session.clone());
                         }
                         if !turn.closing {
-                            turn.policy
-                                .as_ref()
-                                .expect("launch policy")
-                                .validate(&opened.policy)?;
+                            turn.validate_current_policy(&opened.policy)?;
                             frontend.observe(Observation::BackendChanged(opened))?;
                             check_deadline(deadline)?;
                             deadline = None;
@@ -2910,10 +3188,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     Step::ConversationAction { update, policy } => {
                         if !turn.closing {
                             if let Some(policy) = policy {
-                                turn.policy
-                                    .as_ref()
-                                    .expect("launch policy")
-                                    .validate(&policy)?;
+                                turn.validate_current_policy(&policy)?;
                             }
                             frontend.observe(Observation::Browser(
                                 crate::conversation_browser::Update::Action(update),
@@ -2932,10 +3207,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         if !turn.closing {
                             turn.conversation_completed_shutdown =
                                 turn.conversation_shutdown.clone();
-                            turn.policy
-                                .as_ref()
-                                .expect("launch policy")
-                                .validate(&changed.policy)?;
+                            turn.validate_current_policy(&changed.policy)?;
                             frontend.observe(Observation::ConversationChanged(changed))?;
                             check_deadline(deadline)?;
                             deadline = None;
@@ -2958,10 +3230,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         if !turn.closing {
                             turn.conversation_completed_shutdown =
                                 turn.conversation_shutdown.clone();
-                            turn.policy
-                                .as_ref()
-                                .expect("launch policy")
-                                .validate(&opened.policy)?;
+                            turn.validate_current_policy(&opened.policy)?;
                             frontend.observe(Observation::Opened(opened))?;
                             check_deadline(deadline)?;
                             deadline = None;
@@ -3005,10 +3274,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Step::RewriteSettled(changed) => {
                         if !turn.closing {
-                            turn.policy
-                                .as_ref()
-                                .expect("launch policy")
-                                .validate(&changed.policy)?;
+                            turn.validate_current_policy(&changed.policy)?;
                             turn.finish_rewrite()?;
                             frontend.observe(Observation::RewriteSettled(changed))?;
                             check_deadline(deadline)?;
@@ -3024,10 +3290,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Step::CompactSettled(changed) => {
                         if !turn.closing {
-                            turn.policy
-                                .as_ref()
-                                .expect("launch policy")
-                                .validate(&changed.policy)?;
+                            turn.validate_current_policy(&changed.policy)?;
                             turn.finish_rewrite()?;
                             frontend.observe(Observation::CompactSettled(changed))?;
                             check_deadline(deadline)?;
@@ -3044,6 +3307,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             management.verify_execution_shutdown(
                                 &event["result"]["work_execution_shutdown"],
                             )?;
+                            management.verify_runtime_shutdown(&event["result"])?;
                         }
                         let action_segment = turn.rewrite_active && event["type"] == "turn_start";
                         if let Some(id) = publish_event(
@@ -3056,6 +3320,19 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         )? {
                             management.acknowledge_rewrite_question(&id);
                             management.acknowledge_compact_question(&id);
+                        }
+                        // A negotiated attended prompt supplies no profile override. Its
+                        // actual ordinary stream start is the canonical admission at seat.
+                        if !turn.closing
+                            && !action_segment
+                            && turn.ordinary_runtime_prompt
+                            && event["type"] == "turn_start"
+                            && let Some(seat) =
+                                turn.runtime_policy.as_ref().map(|p| p.facts.seat_profile)
+                            && let Some(policy) = management.runtime_effective(seat)
+                        {
+                            turn.runtime_policy = Some(policy.clone());
+                            frontend.observe(Observation::RuntimePolicy(policy))?;
                         }
                         if action_segment && !turn.closing {
                             deadline = Some(Instant::now() + options.timeout);
@@ -3173,6 +3450,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    RuntimeControls(crate::runtime_controls_view::Intent),
     ScheduleDecision { proposal_id: String, accept: bool },
     Compact(Box<crate::conversation_compact::Intent>),
     Rewrite(Box<crate::conversation_rewrite::Intent>),
@@ -3211,7 +3489,9 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::ScheduledProposal(_)
+            Observation::RuntimeControls(_)
+            | Observation::RuntimePolicy(_)
+            | Observation::ScheduledProposal(_)
             | Observation::ScheduledHeld(_)
             | Observation::ScheduledLocalNotSent { .. }
             | Observation::ScheduledConversationChanged(_)
@@ -3520,6 +3800,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Control(intent))
+            .map_err(io::Error::other)
+    }
+    pub fn runtime_controls(&self, intent: crate::runtime_controls_view::Intent) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::RuntimeControls(intent))
             .map_err(io::Error::other)
     }
     pub fn engine(&self, intent: crate::engine_controls::Intent) -> io::Result<()> {

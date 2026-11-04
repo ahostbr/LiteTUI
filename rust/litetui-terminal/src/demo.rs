@@ -159,6 +159,9 @@ impl Demo {
             self.themes_open = false;
             self.completion.dismiss();
             self.footer.leave();
+            if let Some(chat) = self.live.as_mut() {
+                chat.runtime_controls.hide();
+            }
         }
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
@@ -210,6 +213,35 @@ impl Demo {
         self.live
             .as_ref()
             .is_some_and(|chat| !chat.questions.is_empty())
+    }
+    pub fn has_live_runtime_controls(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|chat| chat.runtime_controls.owns_input())
+    }
+    pub fn open_runtime_controls(&mut self, field: crate::runtime_controls_view::Field) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.closed
+                || chat.quitting
+                || chat.cancelling()
+                || chat.execution_pending()
+                || chat.queue_pending()
+                || chat.rewrite_pending()
+                || chat.engine.pending()
+                || chat.runtime_controls.pending()
+            {
+                self.notice = "Finish the pending action before changing runtime controls.".into();
+                return;
+            }
+            chat.runtime_controls.open(field);
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
     }
     pub fn has_live_controls(&self) -> bool {
         self.live
@@ -579,7 +611,8 @@ impl Demo {
         }
     }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_engine()
+        self.has_live_runtime_controls()
+            || self.has_live_engine()
             || self.has_live_commands()
             || self.has_live_themes()
             || self.has_live_history()

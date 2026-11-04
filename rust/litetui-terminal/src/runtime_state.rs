@@ -125,12 +125,16 @@ impl Update {
 
 #[derive(Default)]
 pub struct State {
+    runtime_policy: Option<crate::runtime_controls::Facts>,
     startup: Option<crate::management::Snapshot>,
     ready: Option<ReadyFacts>,
     usage: Option<(u64, Option<u64>)>,
     rate: Option<f64>,
 }
 impl State {
+    pub fn install_runtime_policy(&mut self, facts: crate::runtime_controls::Facts) {
+        self.runtime_policy = Some(facts);
+    }
     pub fn engine_changed(&mut self) {
         self.ready = None;
         self.usage = None;
@@ -195,6 +199,14 @@ impl State {
         self.startup.as_ref()
     }
     pub fn tool_description(&self) -> Option<String> {
+        if let Some(policy) = self.runtime_policy.as_ref() {
+            return Some(format!(
+                "Tools {} · {} · approvals: {}",
+                if policy.tools_enabled { "on" } else { "off" },
+                policy.effective_profile.as_str(),
+                policy.approval_route
+            ));
+        }
         self.ready
             .as_ref()?
             .tools
@@ -241,7 +253,24 @@ impl State {
         if let Some(rate) = self.rate {
             fields.push(F::new(K::Throughput, format!("{rate:.1} tok/s")));
         }
-        if let Some(tools) = &ready.tools {
+        if let Some(policy) = &self.runtime_policy {
+            fields.push(F::new(
+                K::Authority,
+                format!(
+                    "{} · tools:{}",
+                    policy.effective_profile.as_str(),
+                    if policy.tools_enabled { "on" } else { "off" }
+                ),
+            ));
+            fields.push(F::new(
+                K::Plan,
+                if policy.plan_mode {
+                    "plan:on"
+                } else {
+                    "plan:off"
+                },
+            ));
+        } else if let Some(tools) = &ready.tools {
             fields.push(F::new(
                 K::Authority,
                 format!(

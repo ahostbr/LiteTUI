@@ -17,7 +17,7 @@ F1 paged Work/task/calendar inspection with reviewed scheduler pause and owned T
 captured background/goal/inbox/child/provider input and verified retirement/rebind,
 reviewed durable job/loop and goal pause/clear controls, same-conversation Run and literal goal start/resume, staged-invocation discard,
 F9 backend switching, F10 budget and compaction-preference editing, F11 command/skill controls and explicit
-F12 NInfer/Strata engine management, reviewed F8 New/current Rename, F6 host-history edit/retry and manual compaction, and source-owned F4 themes. Automated evidence does not replace
+F12 NInfer/Strata engine management, reviewed F8 New/current Rename, F6 host-history edit/retry and manual compaction, source-owned F4 themes, and live reviewed Tools/Authority/Plan controls. Automated evidence does not replace
 both-host acceptance. Source remains authoritative for execution and persistence.
 
 Current anchors: live.rs Options::parse accepts the canonical nine startup backends; live_chat.rs

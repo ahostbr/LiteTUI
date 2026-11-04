@@ -13,6 +13,7 @@ from pathlib import Path
 from rich.text import Text
 
 from litetui import claude_cache, restored_input
+from litetui import native_runtime_controls as controls
 from litetui.claude_persistence import ClaudeLedger
 from litetui.event_origin import EventOrigin
 from litetui.stream_sink import StreamSink
@@ -582,6 +583,7 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
     interrupted_for_compact = False
     terminal = False
     submitted = False
+    tool_turn = None
     monitor = None
     bridge = getattr(backend, "_claude_tools", None)
     normalizer = getattr(backend, "_claude_events", None)
@@ -623,6 +625,8 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
         notice = getattr(app, "_store_notice_text", None) if not ledger.store_notice_delivered else None
         ledger.update_delivery(entry_id, "submitted", **({"store_notice": notice} if notice else {}))
         submitted = True
+        if controls.enabled(app):
+            tool_turn = bridge.bind_turn(origin)
         await _query_with_store_notice(session, ledger, entry_id, item["content"], notice)
         clock = claude_cache.clock_for(app, segment["id"])
         clock.model, clock.effort = app.model_id, effort or "default"
@@ -772,6 +776,11 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
                         thinking.finalize()
                         thinking.freeze_header()
                 elif event.kind in {"tool_use", "tool_result"}:
+                    if tool_turn is not None:
+                        if event.kind == "tool_result":
+                            bridge.completed(tool_turn, event.tool_id)
+                        elif event.complete:
+                            bridge.observed(tool_turn, event.tool_id, event.tool_name, event.tool_input)
                     emit({"type": "native_activity", "provider": "claude", "kind": event.kind,
                                    "id": event.tool_id, "name": event.tool_name, "complete": event.complete,
                                    "input": event.tool_input, "result": event.tool_result,
@@ -879,6 +888,8 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
         if not isinstance(exc, Exception):
             raise
     finally:
+        if tool_turn is not None:
+            bridge.finish_turn(tool_turn)
         if monitor:
             if not monitor.done() and not terminal:
                 monitor.cancel()

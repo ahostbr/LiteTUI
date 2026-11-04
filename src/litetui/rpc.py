@@ -31,7 +31,9 @@ def rpc_emit(data: dict[str, Any]) -> None:
         _real_stdout.write(json.dumps(data, default=str) + "\n")
         _real_stdout.flush()
     except (BrokenPipeError, OSError):
-        pass
+        result = data.get("result")
+        if isinstance(result, dict) and "runtime_controls_version" in result:
+            raise  # A publication ticket can release only after the actual response flush.
 
 
 def start_rpc_reader(app: LiteTUI) -> None:
@@ -47,8 +49,9 @@ def _reader_loop(app: LiteTUI) -> None:
         if not raw:
             continue
         try:
-            cmd = json.loads(raw)
-        except json.JSONDecodeError:
+            from litetui.background_input import strict_json
+            cmd = strict_json(raw)
+        except (ValueError, RecursionError):
             rpc_emit({"type": "error", "error": "invalid JSON"})
             continue
         if not isinstance(cmd, dict) or "type" not in cmd:
@@ -115,7 +118,13 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         return
 
     if cmd_type.startswith("gui."):
+        from litetui import native_runtime_controls
         from litetui.gui_rpc import async_dispatch
+        try:
+            reservation = native_runtime_controls.reserve_command(app, cmd)
+        except (ValueError, OSError) as exc:
+            _respond(cmd_id, ok=False, error=str(exc))
+            return
         async def manage():
             from litetui import background_input
             try:
@@ -128,11 +137,14 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             # the wire. No await may separate publication from the one-use release.
             _respond(cmd_id, ok=True, result=result)
             background_input.finish_publication(app, ticket)
-        app.run_worker(manage(), group="gui-management", exit_on_error=False)
+        worker = app.run_worker(manage(), group="gui-management", exit_on_error=False)
+        if reservation is not None:
+            reservation.worker = worker
         return
 
-    from litetui import native_schedule, native_work_execution
+    from litetui import native_runtime_controls, native_schedule, native_work_execution
     try:
+        native_runtime_controls.operation_allowed(app, cmd)
         native_work_execution.operation_allowed(app, cmd_type)
         native_schedule.operation_allowed(app, cmd_type)
     except ValueError as exc:

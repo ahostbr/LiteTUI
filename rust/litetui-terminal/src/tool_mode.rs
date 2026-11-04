@@ -81,31 +81,65 @@ pub struct Expected {
     pub profile: Profile,
     pub workspace: PathBuf,
 }
+/// Callers choose the ownership path explicitly. Target only checks immutable
+/// host constraints; it never installs policy or authorizes a transition.
+pub enum ValidationMode<'a> {
+    Launch,
+    Current(&'a crate::runtime_controls::Policy),
+    Target,
+}
 impl Expected {
     pub fn validate(&self, event: &Value) -> io::Result<()> {
-        let facts = Facts::from_ready(event)?.ok_or_else(|| {
-            io::Error::other(
-                "Runtime omitted tool-policy facts; update the Python source before submitting",
-            )
-        })?;
-        if facts.enabled != self.enabled
-            || facts.profile != self.profile
-            || facts.route != "host"
-            || event["tool_profile_requested"].as_str() != Some(self.profile.as_str())
-        {
-            return Err(io::Error::other(
-                "Runtime tool mode/profile/approval route differs from this launch; no prompt sent",
-            ));
-        }
+        self.validate_mode(event, ValidationMode::Launch)
+    }
+    pub fn validate_mode(&self, event: &Value, mode: ValidationMode<'_>) -> io::Result<()> {
+        let facts = Facts::from_ready(event)?
+            .ok_or_else(|| io::Error::other("Runtime omitted tool-policy facts; no prompt sent"))?;
+        let requested = match event.get("tool_profile_requested") {
+            Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(Profile::parse(value)?),
+            _ => {
+                return Err(io::Error::other(
+                    "Runtime omitted nullable requested CLI profile",
+                ));
+            }
+        };
         let cwd = event["cwd"]
             .as_str()
             .ok_or_else(|| io::Error::other("Runtime workspace missing"))?;
-        if !same_workspace(cwd, &self.workspace) {
+        if facts.route != "host" || !same_workspace(cwd, &self.workspace) {
             return Err(io::Error::other(
-                "Runtime workspace differs from this launch; no prompt sent",
+                "Runtime workspace or approval route differs from owned host",
+            ));
+        }
+        let expected = match mode {
+            ValidationMode::Launch => Some((self.enabled, self.profile, Some(self.profile))),
+            ValidationMode::Current(policy) => Some((
+                policy.facts.tools_enabled,
+                policy.facts.effective_profile,
+                policy.facts.requested_cli_profile,
+            )),
+            ValidationMode::Target => None,
+        };
+        if expected.is_some_and(|(enabled, profile, cli)| {
+            facts.enabled != enabled || facts.profile != profile || requested != cli
+        }) {
+            return Err(io::Error::other(
+                "Runtime policy differs from the exact launch/current boundary; no prompt sent",
             ));
         }
         Ok(())
+    }
+    pub fn validate_facts(
+        &self,
+        facts: &crate::runtime_controls::Facts,
+        mode: ValidationMode<'_>,
+    ) -> io::Result<()> {
+        self.validate_mode(&serde_json::json!({
+            "tools_enabled":facts.tools_enabled,"tool_profile":facts.effective_profile.as_str(),
+            "tool_profile_requested":facts.requested_cli_profile.map(Profile::as_str),
+            "mcp_enabled":facts.mcp_enabled,"approval_route":facts.approval_route,"cwd":facts.cwd,
+        }), mode)
     }
 }
 

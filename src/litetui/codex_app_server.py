@@ -15,6 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from litetui import native_runtime_controls as controls
 from litetui import paths, sanitize, tool_context
 from litetui.codex_runtime import RuntimeActivity
 from litetui.codex_workspace import workspace
@@ -493,6 +494,36 @@ class AppServerTransport:
                     session.cleanup_errors.extend(errors)
 
     async def _server_request(self, message, *, interrupt_on_stop=True):
+        method = message["method"]
+        refusals = {
+            "item/tool/call": {"success": False, "contentItems": [{"type": "inputText", "text": "Tool request expired."}]},
+            "item/tool/requestUserInput": {"answers": {}},
+            "item/commandExecution/requestApproval": {"decision": "cancel"},
+            "item/fileChange/requestApproval": {"decision": "cancel"},
+            "item/permissions/requestApproval": {"permissions": {}, "scope": "turn"},
+        }
+        if controls.enabled(self.app) and method in refusals:
+            policy = getattr(getattr(self.server, "native_bridge", None), "policy", None)
+            turn = policy.turn if policy is not None else None
+            params = message.get("params", {})
+            if (turn is not None and turn[2] is not None and not self.app._stop_requested
+                    and not controls._state(self.app).closing
+                    and (params.get("threadId"), params.get("turnId")) == turn[:2]):
+                try:
+                    if method != "item/tool/call":
+                        continuation = policy.take_permission(params, method)
+                        if continuation is not None:
+                            return await continuation.run(self._answer_request, message, interrupt_on_stop)
+                    async with controls.authorization(self.app, origin=turn[2]):
+                        if policy.turn is turn and not self.app._stop_requested:
+                            return await self._answer_request(message, interrupt_on_stop)
+                except controls.AuthorizationClosed:
+                    pass
+            await self.server.send({"id": message["id"], "result": refusals[method]})
+            return
+        return await self._answer_request(message, interrupt_on_stop)
+
+    async def _answer_request(self, message, interrupt_on_stop):
         method, params = message["method"], message.get("params", {})
         result = None
         if method == "item/tool/call":
@@ -543,7 +574,8 @@ class AppServerTransport:
             "item/permissions/requestApproval",
         ):
             approved = False
-            if self.app and self.app.tools_enabled:
+            ticket = controls.current_authorization(self.app)
+            if self.app and not getattr(self.app, '_stop_requested', False) and (ticket.tools_enabled if ticket else self.app.tools_enabled):
                 from litetui.tool_policy import (
                     EXTERNAL_WRITE,
                     NETWORK,
@@ -847,6 +879,9 @@ class AppServerTransport:
 
             questions = QuestionRequests(self)
             try:
+                policy = getattr(getattr(self.server, "native_bridge", None), "policy", None)
+                if policy is not None and controls.enabled(self.app):
+                    policy.bind_turn(self.thread_id, self.turn_id, origin)
                 if self.app:
                     for original_index in range(len(self.app.conversation) - 1, -1, -1):
                         original = self.app.conversation[original_index]

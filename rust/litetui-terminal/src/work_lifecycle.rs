@@ -1198,6 +1198,24 @@ impl Ledger {
             cutoff: None,
         }
     }
+    /// Change only the seat against which FUTURE admission is checked. Existing
+    /// Admission records and their eventual settlement receipts are immutable.
+    pub(crate) fn install_runtime_policy(
+        &mut self,
+        policy: &crate::runtime_controls::Policy,
+    ) -> io::Result<()> {
+        if !self.active
+            || self.failed
+            || self.local_closing
+            || policy.binding.identity != self.capture.identity
+            || policy.binding.work_instance != self.capture.instance
+            || policy.binding.provider != self.capture.provider
+        {
+            return Err(bad("Runtime choice does not own this active Work ledger"));
+        }
+        self.seat = policy.facts.seat_profile;
+        Ok(())
+    }
     pub fn capture(&self) -> &Capture {
         &self.capture
     }

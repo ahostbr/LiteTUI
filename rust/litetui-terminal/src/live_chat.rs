@@ -134,6 +134,7 @@ pub struct Chat {
     pub runtime_state: crate::runtime_state::State,
     pub approvals: crate::approvals::View,
     pub questions: crate::questions::View,
+    pub runtime_controls: crate::runtime_controls_view::View,
     pub controls: crate::model_controls::View,
     pub queue: crate::restored_queue::View,
     pub engine: crate::engine_controls::View,
@@ -197,6 +198,7 @@ impl Chat {
             runtime_state: crate::runtime_state::State::default(),
             approvals: crate::approvals::View::default(),
             questions: crate::questions::View::default(),
+            runtime_controls: crate::runtime_controls_view::View::default(),
             controls: crate::model_controls::View::default(),
             queue: crate::restored_queue::View::default(),
             engine: crate::engine_controls::View::default(),
@@ -239,6 +241,8 @@ impl Chat {
             && self.approvals.is_empty()
             && self.questions.is_empty()
             && !self.stop_confirm
+            && !self.runtime_controls.owns_input()
+            && !self.runtime_controls.pending()
             && !self.controls.owns_input()
             && !self.queue.owns_input()
             && !self.engine.owns_input()
@@ -277,6 +281,8 @@ impl Chat {
             || !self.work_uncertain.is_empty()
             || self.closed
             || self.quitting
+            || self.runtime_controls.owns_input()
+            || self.runtime_controls.pending()
             || self.controls.owns_input()
             || self.queue.owns_input()
             || self.engine.owns_input()
@@ -633,6 +639,13 @@ impl Chat {
             return Err(io::Error::other("Observation after live view closed"));
         }
         match observation {
+            Observation::RuntimeControls(update) => {
+                self.runtime_controls.apply(update);
+                self.notice = self.runtime_controls.notice.clone();
+            }
+            Observation::RuntimePolicy(policy) => {
+                self.runtime_state.install_runtime_policy(policy.facts);
+            }
             Observation::WorkLaunchStop {
                 action_id,
                 generation,
@@ -2151,6 +2164,7 @@ impl Chat {
         Ok(())
     }
     pub fn begin_quit(&mut self) {
+        self.runtime_controls.close();
         self.controls.finish();
         self.queue.finish();
         self.engine.finish();
@@ -2165,6 +2179,7 @@ impl Chat {
         self.notice = "Closing Python runtime and its owned process tree…".into();
     }
     pub fn finish(&mut self, failure: Option<String>) {
+        self.runtime_controls.close();
         self.controls.finish();
         self.queue.finish();
         self.engine.finish();

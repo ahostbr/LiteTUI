@@ -419,7 +419,7 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             "id": approval_id,
             "tool": name,
             "input": args,
-            "profile": str(getattr(app, "_active_tool_profile", None)),
+            "profile": str(getattr(decision, "profile", getattr(app, "_active_tool_profile", None))),
             "why": decision.reason,
             "timeout_s": timeout,
         })

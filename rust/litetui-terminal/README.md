@@ -24,6 +24,12 @@ Bounded saved history: interactive launches negotiate the bounded history protoc
 
 **Verification (2026-10-29):** 327 ordinary Rust tests, 33 controlled-process tests and two launcher tests passed. The real-source fixture executes Python's actual CLI/acquire/resume/store path across two process lifetimes, verifies prior context and saved thinking, rejects a competing owner/missing conversation/wrong model, and proves no duplicate submission. A withheld transcript response times out and cleans up. Provider, hardware and visual boundaries are controlled. Rust fmt/Clippy/build and fixture Ruff/mypy pass. Existing unchanged Python resume tests report 14 passes and 31 ownership-fixture baseline failures. Real-provider and hands-on terminal acceptance remain pending.
 
+## Change tools, authority, and Plan mode during chat
+
+Press **Ctrl+T** to switch tools on or off, **Shift+Tab** to review the next authority profile, or **Ctrl+P** to change Plan mode. The review shows the proposed value and its effect. Enabling tools also shows the directory they will use. Page down through the review, press Tab to select Apply, then Enter to confirm. Escape dismisses the review and returns to your draft. The footer reflects the runtime's verified state.
+
+Calls that already started keep the tools and approval policy they captured. Later calls use the verified change. If saving fails, the result tells you whether the change took effect for this session. On resume, pass the saved tools setting and provide an absolute workspace when tools are enabled.
+
 ## Browse owned saved conversations
 
 In idle live chat, **F8** opens the current agent's saved conversations. Up/Down or paired clicks select a row; PageUp/PageDown request the previous/next source page. Left/Right inspect long metadata, R refreshes, and Escape closes. **I** opens an inert history inspector for the selected row, including read-only or incompatible-to-open conversations. **O**, then a fresh **Enter** on the visible full-UUID confirmation, opens the selected conversation. The draft is preserved. A hidden, resized or changed selection cannot confirm.

@@ -434,6 +434,14 @@ async def resume_capture(app: Any, capture: Captured) -> None:
     target_settings = capture.path.parent / "settings.json"
     if backend_catalog._disk_hash(target_settings, conversation_page.MAX_SETTINGS) != app._native_history_target_settings:
         raise ValueError("Target settings changed after the open review")
+    from litetui import convo_settings, native_runtime_controls, settings_runtime, tool_policy
+    if native_runtime_controls.enabled(app) and policy["tool_profile_requested"] is None:
+        saved = settings_runtime.service_for(app).snapshot(target, read_only=True,
+                                                            max_bytes=conversation_page.MAX_SETTINGS)
+        selected = convo_settings.resolved(convo_settings.load(capture.path.parent), saved.saved, "tool_policy_profile")
+        if selected not in tool_policy.PROFILES:
+            raise ValueError("Saved target has an unknown tool profile")
+        policy["tool_profile"] = selected
     offset = len(app._conversation_transition_hook_outcomes)
     if not app._resume(capture.path, _native_capture=capture):
         raise ValueError("Canonical captured conversation resume was refused")

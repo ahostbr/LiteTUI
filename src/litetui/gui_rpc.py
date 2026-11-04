@@ -56,6 +56,7 @@ OPERATIONS = (
     "models.load", "models.unload", "models.config", "models.configure",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
+    "runtime.native_snapshot", "runtime.native_validate", "runtime.native_apply", "runtime.native_readback",
     "work.native_capture", "work.native_activate", "work.native_settled",
     "work.native_execution_validate", "work.native_execution_apply", "work.native_execution_readback", "work.native_execution_stop",
     "work.native_schedule_accept", "work.native_schedule_decline", "work.native_schedule_readback",
@@ -862,7 +863,15 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    from litetui import native_work_execution
+    from litetui import native_runtime_controls, native_work_execution
+    if operation in native_runtime_controls.OPERATIONS:
+        token = OPERATION_CONTEXT.set(cmd.get("id"))
+        try:
+            handler = getattr(native_runtime_controls, operation.removeprefix(native_runtime_controls.PREFIX))
+            return await handler(app, cmd) if operation.endswith("_apply") else handler(app, cmd)
+        finally:
+            OPERATION_CONTEXT.reset(token)
+    native_runtime_controls.operation_allowed(app, cmd)
     if operation in native_work_execution.OPERATIONS:
         token = OPERATION_CONTEXT.set(cmd.get("id"))
         try:

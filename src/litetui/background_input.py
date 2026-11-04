@@ -170,6 +170,8 @@ class Bridge:
         self.scheduled_transition_version: int | None = None
         self.execution_version: int | None = None
         self.requested_execution_version: int | None = None
+        self.runtime_controls_version: int | None = None
+        self.requested_runtime_controls_version: int | None = None
         self.closing = False
         self.sequence = 0
         self.revision = 0
@@ -315,7 +317,9 @@ def _command(app, cmd, operation, extras=(), *, admission=True, expected_identit
 def capture(app, cmd):
     from litetui import native_schedule
     native_schedule.capture_allowed(app)
-    _command(app, cmd, "capture", ("execution_version",) if "execution_version" in cmd else ())
+    _command(app, cmd, "capture", tuple(k for k in ("execution_version", "runtime_controls_version") if k in cmd))
+    if "runtime_controls_version" in cmd and (type(cmd["runtime_controls_version"]) is not int or cmd["runtime_controls_version"] != VERSION):
+        raise ValueError("Runtime controls require exact version 1")
     if "execution_version" in cmd and (type(cmd["execution_version"]) is not int or cmd["execution_version"] != VERSION):
         raise ValueError("Explicit execution requires exact version 1")
     value = bridge(app)
@@ -332,9 +336,13 @@ def capture(app, cmd):
     if value.active or value.activation_publication is not None:
         raise ValueError("Work capture is already active or awaiting publication")
     value.requested_execution_version = cmd.get("execution_version")
+    value.requested_runtime_controls_version = cmd.get("runtime_controls_version")
     result = {"kind": "work_capture", "version": VERSION, "instance": value.instance,
               "activation_token": value.activation_token, "sequence": 0, "identity": value.identity,
               "provider": provider(app), "limits": dict(LIMITS), "recovered": copy.deepcopy(value.recovered), "deferred_jobs": deferred_evidence(app)}
+    if value.requested_runtime_controls_version is not None:
+        from litetui import native_runtime_controls
+        result.update(native_runtime_controls.capture(app, value))
     if value.requested_execution_version is not None:
         from litetui import native_work_execution
         result.update(execution_version=VERSION, execution_receipt=native_work_execution.recovery(app))
@@ -344,7 +352,7 @@ def capture(app, cmd):
 
 
 def activate(app, cmd):
-    extras = ("instance", "activation_token", *(("scheduled_transition_version",) if "scheduled_transition_version" in cmd else ()), *(("execution_version",) if "execution_version" in cmd else ()))
+    extras = ("instance", "activation_token", *(k for k in ("scheduled_transition_version", "execution_version", "runtime_controls_version") if k in cmd))
     _command(app, cmd, "activate", extras)
     requested = cmd.get("scheduled_transition_version")
     if "scheduled_transition_version" in cmd and (type(requested) is not int or requested != VERSION):
@@ -353,6 +361,9 @@ def activate(app, cmd):
     if value is None or value.active or cmd.get("instance") != value.instance or cmd.get("activation_token") != value.activation_token:
         raise ValueError("Unknown or consumed Work activation")
     value.check()
+    runtime = cmd.get("runtime_controls_version")
+    if runtime != value.requested_runtime_controls_version or "runtime_controls_version" in cmd and (type(runtime) is not int or runtime != VERSION):
+        raise ValueError("Activation changed exact runtime controls negotiation")
     execution = cmd.get("execution_version")
     if execution != value.requested_execution_version or "execution_version" in cmd and (type(execution) is not int or execution != VERSION):
         raise ValueError("Activation changed exact execution negotiation")
@@ -361,13 +372,13 @@ def activate(app, cmd):
         raise ValueError("Scheduled handoff activation requires negotiated response publication")
     if value.activation_publication is not None:
         raise ValueError("Work activation publication is already reserved")
-    if requested is not None or execution is not None:
+    if requested is not None or execution is not None or runtime is not None:
         from litetui import native_schedule
         return native_schedule.activation(app, cmd, value)
     return _activate(app, value)
 
 
-def _activate(app, value, *, scheduled_transition_version=None, execution_version=None):
+def _activate(app, value, *, scheduled_transition_version=None, execution_version=None, runtime_controls_version=None):
     value.check()
     recapture = getattr(app, "_native_work_recapture_required", None)
     if recapture is not None:
@@ -379,6 +390,10 @@ def _activate(app, value, *, scheduled_transition_version=None, execution_versio
     value.execution_version = execution_version
     from litetui import native_work_execution
     native_work_execution.activated(app, value)
+    value.runtime_controls_version = runtime_controls_version
+    if runtime_controls_version is not None:
+        from litetui import native_runtime_controls
+        native_runtime_controls.activated(app, value)
     app._native_work_initial_activated = True
     deferred = getattr(app, "_native_work_deferred", None)
     if deferred is not None and not deferred.claimed:
@@ -616,7 +631,9 @@ def current_origin(app):
 
 
 def _begin(app, entry, in_turn):
-    from litetui import native_work_execution
+    from litetui import native_runtime_controls, native_work_execution
+    if why := native_runtime_controls.mutation_hold(app):
+        raise ValueError(why)
     native_work_execution.admission_allowed(app, entry)
     value = bridge(app)
     assert value is not None
@@ -774,6 +791,9 @@ def _announce(app, entry, origin, mode):
 
 
 def before_stream(app, origin):
+    from litetui import native_runtime_controls
+    if why := native_runtime_controls.mutation_hold(app):
+        raise ValueError(why)
     require_recapture_complete(app)
     value = bridge(app)
     if value is not None and value.active:
@@ -888,6 +908,8 @@ async def settled(app, cmd):
 
 
 def begin_close(app):
+    from litetui import native_runtime_controls
+    native_runtime_controls.begin_close(app)
     cancel_deferred(app)
     value = bridge(app)
     if value is None or not value.active:
@@ -1095,6 +1117,7 @@ class ToolCall:
     claimed: bool = False
     future: Any = None
     handed: bool = False
+    authorization_child: Any = None
 
 
 def capture_tool(app, callback, *, allow_error=False):
@@ -1167,6 +1190,8 @@ async def join_call(call):
                 call.retired.set()  # Never invoked; cancellation prevents any later call.
         if not call.retired.is_set():
             raise RuntimeError("Work callback ran without its registered join future")
+        if call.authorization_child is not None:
+            call.authorization_child.close()
         return
     try:
         await join_task(call.future)
@@ -1175,6 +1200,8 @@ async def join_call(call):
         runtime_log.record("work.tool_settled_error", error=type(exc).__name__)
     if not call.future.done() or not call.retired.is_set():
         raise RuntimeError("Work tool callback has not retired")
+    if call.authorization_child is not None:
+        call.authorization_child.close()
 
 
 async def finish_tool(call):
@@ -1370,12 +1397,16 @@ async def before_identity_transition(app):
     # A human identity control can race an already emitted scheduler proposal.
     # Retain only its exact no-effect decision capability through the old close.
     from litetui import native_schedule
+    from litetui import native_runtime_controls
+    if why := native_runtime_controls.mutation_hold(app):
+        raise ValueError(why)
     native_schedule.retire_proposal(app, value)
     cutoff = begin_close(app)
     if value.shutdown_task is None:
         value.shutdown_task = _observe(_settle_shutdown(app, value, cutoff, cancel=False))
     from litetui.shutdown_wait import join_task
     proof = await join_task(value.shutdown_task)
+    value.runtime_controls_retirement = await native_runtime_controls.shutdown(app)
     value.transition_proof = copy.deepcopy(proof)
     return copy.deepcopy(proof)
 
@@ -1393,10 +1424,12 @@ def after_identity_transition(app, proof):
     # Existing ledger partitions remain on disk under their owned conversation;
     # unresolved records preserve their original epoch when subsequently read.
     from litetui import native_work_execution
+    from litetui import native_runtime_controls
+    runtime = native_runtime_controls.retired(app, value)
     execution = native_work_execution.identity_retired(app, value)
     app._native_work_bridge = None
     app._native_work_recapture_required = {"previous_instance": value.instance, "identity": identity(app)}
-    return {"work_shutdown": copy.deepcopy(proof), "work_recapture_required": True, **execution}
+    return {"work_shutdown": copy.deepcopy(proof), "work_recapture_required": True, **execution, **runtime}
 
 
 
@@ -1804,7 +1837,9 @@ def cancel_deferred(app):
 
 
 def prompt_refusal(app):
-    from litetui import native_work_execution
+    from litetui import native_runtime_controls, native_work_execution
+    if why := native_runtime_controls.mutation_hold(app):
+        return why
     if why := native_work_execution.mutation_hold(app):
         return why
     from litetui import native_schedule
@@ -2497,7 +2532,10 @@ def require_new_execution(app):
 def prepare_publication(app, cmd, result):
     """Prepare one exact known response barrier, never an arbitrary callback."""
     from litetui import native_deferred, native_schedule, native_work_execution
-    ticket = native_work_execution.prepare_publication(app, cmd, result)
+    from litetui import native_runtime_controls
+    ticket = native_runtime_controls.prepare_publication(app, cmd, result)
+    if ticket is None:
+        ticket = native_work_execution.prepare_publication(app, cmd, result)
     if ticket is None:
         ticket = native_schedule.prepare_publication(app, cmd, result)
     if ticket is None:
@@ -2507,7 +2545,10 @@ def prepare_publication(app, cmd, result):
 
 def finish_publication(app, ticket):
     from litetui import native_deferred, native_schedule, native_work_execution
-    if isinstance(ticket, native_work_execution.Publication):
+    from litetui import native_runtime_controls
+    if isinstance(ticket, native_runtime_controls.Publication):
+        native_runtime_controls.finish_publication(app, ticket)
+    elif isinstance(ticket, native_work_execution.Publication):
         native_work_execution.finish_publication(app, ticket)
     elif isinstance(ticket, (native_schedule.ActivationPublication, native_schedule.DecisionPublication)):
         native_schedule.finish_publication(app, ticket)

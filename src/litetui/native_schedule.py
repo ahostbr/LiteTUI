@@ -41,6 +41,9 @@ def activation(app, cmd, value):
     for key in ("scheduled_transition_version", "execution_version"):
         if key in cmd:
             result[key] = cmd[key]
+    if "runtime_controls_version" in cmd:
+        from litetui import native_runtime_controls
+        result.update(native_runtime_controls.activation(app, value))
     value.activation_publication = ActivationPublication(app, value, work.encoded(cmd), result,
                                                         work.encoded(result), work._task(),
                                                         getattr(app, "_native_work_deferred", None))
@@ -65,7 +68,7 @@ def prepare_publication(app: Any, cmd: dict, result: dict) -> ActivationPublicat
             raise ValueError("Scheduled response publication is already reserved")
         pending.publication = ticket
         return ticket
-    if cmd.get("type") != "gui.work.native_activate" or not {"scheduled_transition_version", "execution_version"} & cmd.keys():
+    if cmd.get("type") != "gui.work.native_activate" or not {"scheduled_transition_version", "execution_version", "runtime_controls_version"} & cmd.keys():
         return None
     value = work.bridge(app)
     activation_ticket = None if value is None else value.activation_publication
@@ -75,6 +78,11 @@ def prepare_publication(app: Any, cmd: dict, result: dict) -> ActivationPublicat
             or activation_ticket.prepared or activation_ticket.used):
         raise ValueError("Activation publication lacks its exact unconsumed owner")
     value.check()
+    if value.requested_runtime_controls_version is not None:
+        from litetui import native_runtime_controls
+        policy = native_runtime_controls.activation(app, value)
+        if any(result.get(key) != expected for key, expected in policy.items()):
+            raise ValueError("Runtime policy changed before activation publication")
     activation_ticket.prepared = True
     return activation_ticket
 
@@ -117,7 +125,8 @@ def finish_publication(app, ticket):
                 raise ValueError("Scheduled activation lacks exact published readback")
             app._native_schedule_last, app._native_schedule_pending = schedule_owner, None
         work._activate(app, value, scheduled_transition_version=ticket.result.get("scheduled_transition_version"),
-                       execution_version=ticket.result.get("execution_version"))
+                       execution_version=ticket.result.get("execution_version"),
+                       runtime_controls_version=ticket.result.get("runtime_controls_version"))
     except BaseException:
         value.closing = True
         value.error = "Work activation publication is uncertain; close without replay"

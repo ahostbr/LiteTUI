@@ -1,8 +1,10 @@
 """Apply shared host policy at Codex's synchronous native tool hook boundary."""
 
 import json
+from dataclasses import dataclass
 
 from litetui import hook_host, sanitize, tool_policy
+from litetui import native_runtime_controls as controls
 from litetui.codex_workspace import workspace
 
 
@@ -63,10 +65,43 @@ def identity(name):
     return name, {name}, tool_policy.MCP_UNKNOWN_POLICY
 
 
+@dataclass
+class _Pending:
+    context: dict | None
+    name: str
+    args: dict
+    profile: str | None
+    outcome: object
+    permission: object
+
+
 class NativePolicy:
     def __init__(self, app):
         self.app = app
         self.pending = {}
+        self.deciding = set()
+        self.turn = None
+
+    def bind_turn(self, thread_id, turn_id, origin):
+        if self.turn is not None:
+            raise ValueError("Codex policy already belongs to a turn")
+        self.turn = (thread_id, turn_id, origin)
+
+    def take_permission(self, params, method):
+        key = (params.get("threadId"), params.get("turnId"), params.get("itemId"))
+        if not isinstance(key[2], str) or not key[2]:
+            return None
+        record = self.pending.get(key)
+        if record is None:
+            return None
+        if method == "item/tool/requestUserInput" and record.name != "request_user_input":
+            return None
+        if method == "item/commandExecution/requestApproval" and record.name != "bash":
+            return None
+        if method == "item/fileChange/requestApproval" and record.name != "apply_patch":
+            return None
+        continuation, record.permission = record.permission, None
+        return continuation
 
     async def handle(self, event):
         name = str(event.get("tool_name", ""))
@@ -91,23 +126,46 @@ class NativePolicy:
             return {}
         if kind != "PreToolUse":
             return {}
+        turn = self.turn
+        guarded = controls.enabled(self.app)
+        if guarded:
+            if (turn is None or turn[2] is None or key[:2] != turn[:2]
+                    or not isinstance(key[2], str) or not key[2]
+                    or key in self.deciding or key in self.pending):
+                return denial("Stale or unowned Codex tool request")
+            self.deciding.add(key)
+        try:
+            async with controls.authorization(self.app, origin=turn[2] if turn else None) as ticket:
+                if guarded and (ticket is None or self.turn is not turn):
+                    return denial("Codex turn expired before authorization")
+                return await self._authorize(name, canonical, aliases, policy, args, key, turn, ticket)
+        except controls.AuthorizationClosed as exc:
+            return denial(str(exc))
+        finally:
+            if guarded:
+                self.deciding.discard(key)
+
+    async def _authorize(self, name, canonical, aliases, policy, args, key, turn, ticket):
         if getattr(self.app, "_stop_requested", False):
             return denial("Turn stopped by user")
-        if not self.app.tools_enabled:
+        enabled = ticket.tools_enabled if ticket else self.app.tools_enabled
+        if not enabled:
             return denial("Tools are disabled in LiteTUI")
-        if aliases.intersection(self.app.settings.tools_disabled or ()):
+        if aliases.intersection(ticket.disabled if ticket else self.app.settings.tools_disabled or ()):
             return denial(f"Tool {canonical} is disabled in LiteTUI")
-        profile = getattr(self.app, "_active_tool_profile", None)
+        profile = ticket.profile if ticket else getattr(self.app, "_active_tool_profile", None)
         registered = self.app.plugins.policy_for(name)
-        refusal = await self.app._authorize_action(
-            canonical, args, registered or policy, workspace=workspace(self.app)
-        )
+        options = {"workspace": workspace(self.app)}
+        if ticket:
+            options["profile"] = ticket.profile
+        refusal = await self.app._authorize_action(canonical, args, registered or policy, **options)
         if refusal:
             return denial(str(refusal[0]))
+        captured = None
         if getattr(self.app, "hook_config", None) is not None and not getattr(
             self.app, "_hooks_suppressed", False
         ):
-            captured = hook_host.context(self.app)
+            captured = ticket.context if ticket else hook_host.context(self.app)
             result = await hook_host.dispatch(
                 self.app,
                 "tool_before",
@@ -120,7 +178,12 @@ class NativePolicy:
             )
             if not result.allowed:
                 return denial(result.reason)
-            self.pending[key] = (captured, canonical, dict(args), profile)
+        if getattr(self.app, "_stop_requested", False) or ticket and self.turn is not turn:
+            return denial("Codex turn expired before authorization completed")
+        if captured is not None or ticket:
+            self.pending[key] = _Pending(captured, canonical, dict(args), profile,
+                                         controls.retain_authorization(self.app),
+                                         controls.retain_authorization(self.app))
         return {}
 
     async def completed(self, payload):
@@ -129,7 +192,6 @@ class NativePolicy:
         pending = self.pending.pop(key, None)
         if pending is None:
             return
-        captured, name, args, profile = pending
         output = item.get(
             "aggregatedOutput", item.get("result", item.get("status", ""))
         )
@@ -140,35 +202,34 @@ class NativePolicy:
             and item.get("exitCode") in (None, 0)
             and item.get("success") is not False
         )
-        await hook_host.dispatch(
-            self.app,
-            "tool_after",
-            {
-                "tool": name,
-                "args": args,
-                "result": output,
-                "ok": ok,
-                "cancelled": item.get("status") in ("cancelled", "interrupted"),
-            },
-            captured=captured,
-            profile=profile,
-        )
+        await self._settle(pending, output=output, ok=ok,
+                           cancelled=item.get("status") in ("cancelled", "interrupted"))
+
+    async def _settle(self, record, *, output, ok, cancelled):
+        if record.permission:
+            record.permission.close()
+        if record.context is None:
+            if record.outcome:
+                record.outcome.close()
+            return
+        data = {"tool": record.name, "args": record.args, "result": output,
+                "ok": ok, "cancelled": cancelled}
+        kwargs = {"captured": record.context, "profile": record.profile}
+        if record.outcome:
+            await record.outcome.run(hook_host.dispatch, self.app, "tool_after", data, **kwargs)
+        else:
+            await hook_host.dispatch(self.app, "tool_after", data, **kwargs)
 
     async def finish(self):
+        self.turn = None
         pending, self.pending = self.pending, {}
-        # Unknown results are never reported as successful. A later native
-        # completion cannot fire a second after hook after this drain.
-        for captured, name, args, profile in pending.values():
-            await hook_host.dispatch(
-                self.app,
-                "tool_after",
-                {
-                    "tool": name,
-                    "args": args,
-                    "result": "",
-                    "ok": False,
-                    "cancelled": True,
-                },
-                captured=captured,
-                profile=profile,
-            )
+        try:
+            while pending:
+                _, record = pending.popitem()
+                await self._settle(record, output="", ok=False, cancelled=True)
+        finally:
+            for record in pending.values():
+                if record.permission:
+                    record.permission.close()
+                if record.outcome:
+                    record.outcome.close()

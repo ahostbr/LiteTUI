@@ -128,6 +128,19 @@ fn nested_payloads_preserve_json_types_and_enforce_a_depth_bound() {
 }
 
 #[test]
+fn repeated_authority_fields_fail_before_the_frame_reaches_a_consumer() {
+    for wire in [
+        "{\"id\":\"one\",\"id\":\"two\"}\n",
+        "{\"review\":{\"tools_enabled\":false,\"tools_enabled\":true}}\n",
+    ] {
+        assert!(matches!(
+            decode_chunks(&[wire.as_bytes()], 256),
+            Err(DecodeError::InvalidJson(_))
+        ));
+    }
+}
+
+#[test]
 fn duplicate_keys_cannot_hide_an_overdepth_wire_subtree() {
     let wire = format!(
         "{{\"x\":{}null{},\"x\":null}}\n",

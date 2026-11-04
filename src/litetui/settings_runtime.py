@@ -123,7 +123,10 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
 
 
 def persist_or_raise(app, candidate, *, baseline=None):
-    result = persist_settings(app, candidate, baseline=baseline)
+    from litetui import native_runtime_controls
+    result = native_runtime_controls.persist_selection(app, candidate)
+    if result is None:
+        result = persist_settings(app, candidate, baseline=baseline)
     failures = [p.error for p in result.persistence if not p.saved]
     if failures:
         raise OSError('; '.join(failures))

@@ -5,6 +5,7 @@ import json
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from litetui import native_runtime_controls as controls
 from litetui.model_transport import ProviderError
 
 _NOT_NATIVE = object()
@@ -33,9 +34,14 @@ def fingerprint(value):
     ).hexdigest()
 
 
+def _tools_enabled(app):
+    ticket = controls.current_authorization(app)
+    return ticket.tools_enabled if ticket else getattr(app, "tools_enabled", True)
+
+
 def build_inventory(specs, app=None):
     active, deferred, known = [], [], {}
-    if app is not None and not getattr(app, "tools_enabled", True):
+    if app is not None and not _tools_enabled(app):
         specs = []
         deferred_specs = []
     else:
@@ -91,7 +97,7 @@ def dispatch_denial(registered, app, name):
     schemas = registered.get("schemas")
     if not isinstance(schemas, dict) or "litetui_" + name not in schemas:
         return "This tool was not registered in this Codex thread."
-    if not getattr(app, "tools_enabled", True):
+    if not _tools_enabled(app):
         return "Host tools are disabled."
     registry = getattr(app, "plugins", None)
     if registry is None or not callable(getattr(registry, "tool_specs", None)):

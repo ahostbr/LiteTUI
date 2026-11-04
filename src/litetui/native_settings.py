@@ -164,11 +164,15 @@ def _receipt(app, cmd, status, *, mutated=False, close_required=False, error=Non
 
 
 def _documents(service, context):
+    return owned_documents(service, context.session_id, context.session)
+
+
+def owned_documents(service, session_id, session):
     """Read bounded canonical settings documents without migrations or writes."""
     from litetui.agent_store import _unlinked
 
-    paths = service._paths(context.session_id)
-    paths['agent'] = context.session.memory_root / 'settings.json'
+    paths = service._paths(session_id)
+    paths['agent'] = session.memory_root / 'settings.json'
     documents: dict[str, dict] = {}
     revisions: dict[str, str] = {}
     for name, target in paths.items():
