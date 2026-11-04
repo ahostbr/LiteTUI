@@ -72,3 +72,8 @@ pub mod work_lifecycle;
 pub mod work_protocol;
 
 pub mod work_view;
+
+pub mod deferred_control;
+pub mod scheduled_transition;
+
+pub mod work_controls;

@@ -87,7 +87,8 @@ def rows_on_disk(path: Path) -> list[dict]:
 
 
 def apply_delta(
-    baseline: list[dict], mine: list[dict], disk: list[dict], *, key: str = "id"
+    baseline: list[dict], mine: list[dict], disk: list[dict], *, key: str = "id",
+    known_fields: frozenset[str] | None = None,
 ) -> list[dict]:
     """`disk`, with the changes `mine` made since `baseline`. Pure.
 
@@ -100,7 +101,9 @@ def apply_delta(
     now = {r[key]: r for r in mine if key in r}
 
     removed = set(base) - set(now)
-    changed = {k: v for k, v in now.items() if base.get(k) != v}
+    def comparable(row):
+        return row if known_fields is None or row is None else {k:v for k,v in row.items() if k in known_fields}
+    changed = {k: v for k, v in now.items() if comparable(base.get(k)) != comparable(v)}
 
     out: list[dict] = []
     seen: set = set()
@@ -112,7 +115,8 @@ def apply_delta(
         if rid in removed:
             continue
         seen.add(rid)
-        out.append(changed.get(rid, row))
+        replacement = changed.get(rid)
+        out.append(row if replacement is None else replacement if known_fields is None else {**row, **replacement})
 
     for rid, row in now.items():
         if rid in seen:
@@ -136,6 +140,7 @@ def write(
     key: str = "id",
     prefix: str,
     ensure_ascii: bool = True,
+    known_fields: frozenset[str] | None = None,
 ) -> None:
     """Re-read, apply this process's delta, replace atomically, rebaseline.
 
@@ -148,7 +153,7 @@ def write(
     from litetui.shared_state import coordinated_write
     with coordinated_write(path):
         merged = apply_delta(
-            _BASELINE.get(_key_of(path), []), rows, rows_on_disk(path), key=key
+            _BASELINE.get(_key_of(path), []), rows, rows_on_disk(path), key=key, known_fields=known_fields
         )
         _replace(path, merged, prefix, ensure_ascii)
     # Our own rows, NOT `merged`: adopting a sibling's rows as ours would make
@@ -202,3 +207,20 @@ def add_missing(
         if new:
             _replace(path, disk + new, prefix, ensure_ascii)
     return len(new)
+
+
+def checked_update(path: Path, read_rows, transform, *, prefix: str, committed=None) -> None:
+    """Apply a bounded caller's checked transformation under the canonical lock.
+
+    Unlike a stale whole-list save, the transform sees exact current disk rows.
+    It must validate its selected-row precondition before returning a replacement.
+    No baseline is adopted here: the owning caller refreshes its live row objects.
+    """
+    from litetui.shared_state import coordinated_write
+
+    path = Path(path)
+    with coordinated_write(path):
+        rows = transform(read_rows(path))
+        _replace(path, rows, prefix, False)
+        if committed is not None:
+            committed()

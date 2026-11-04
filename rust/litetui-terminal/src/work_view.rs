@@ -1,6 +1,9 @@
 //! Work inspection stays separate from the ordinary composer and execution authority.
 use crate::{live::terminal_text, theme::Theme, work_protocol as protocol};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
+#[path = "work_form.rs"]
+mod form;
+use crate::work_controls as controls;
 use protocol::{Calendar, Page, PauseReview, Row, Section, Snapshot, StopReview, Tail};
 use ratatui::{
     Frame,
@@ -10,6 +13,10 @@ use ratatui::{
 };
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    ControlValidate(Box<controls::Edit>),
+    ControlApply(Box<controls::Review>),
+    DeferredValidate,
+    DeferredApply(Box<crate::deferred_control::Review>),
     Snapshot,
     Page {
         section: Section,
@@ -33,6 +40,13 @@ pub struct Intent {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    ControlReview(Box<controls::Review>),
+    ControlSaved {
+        action: controls::Action,
+        row: serde_json::Value,
+    },
+    DeferredReview(Box<crate::deferred_control::Review>),
+    DeferredDiscarded(Box<Snapshot>),
     Snapshot(Box<Snapshot>),
     Page(Page),
     Tail(Tail),
@@ -50,12 +64,16 @@ pub struct Update {
 }
 #[derive(Clone)]
 enum Review {
+    Control(controls::Review),
+    Deferred(crate::deferred_control::Review),
     Pause(PauseReview),
     Stop(StopReview),
 }
 impl Review {
     fn request(&self) -> Request {
         match self {
+            Self::Control(review) => Request::ControlApply(Box::new(review.clone())),
+            Self::Deferred(review) => Request::DeferredApply(Box::new(review.clone())),
             Self::Pause(review) => Request::PauseApply(Box::new(review.clone())),
             Self::Stop(review) => Request::StopApply(Box::new(review.clone())),
         }
@@ -80,6 +98,8 @@ pub struct View {
     max_scroll: usize,
     month: String,
     review: Option<Review>,
+    form: Option<form::Form>,
+    saved_control: Option<(controls::Action, serde_json::Value)>,
     stopped: Option<Row>,
     review_page: usize,
     seen: Vec<bool>,
@@ -145,6 +165,8 @@ impl View {
     }
     fn refresh(&mut self) {
         self.review = None;
+        self.form = None;
+        self.saved_control = None;
         self.stopped = None;
         self.tail = None;
         self.page = None;
@@ -190,7 +212,12 @@ impl View {
                 offset: 0,
             });
         } else {
-            self.notice = "Current conversation goal · F5 refresh".into();
+            self.notice = if self.section == 6 {
+                "Staged invocation recovery · D reviews discard · F5 refresh"
+            } else {
+                "Current conversation goal · F5 refresh"
+            }
+            .into();
             self.hide();
         }
     }
@@ -201,7 +228,11 @@ impl View {
         let pending = self.pending.take().expect("pending");
         let compatible = matches!(
             (&pending, &update.data),
-            (Request::Snapshot, Data::Snapshot(_))
+            (Request::ControlValidate(_), Data::ControlReview(_))
+                | (Request::ControlApply(_), Data::ControlSaved { .. })
+                | (Request::DeferredValidate, Data::DeferredReview(_))
+                | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
+                | (Request::Snapshot, Data::Snapshot(_))
                 | (Request::Page { .. }, Data::Page(_))
                 | (Request::Tail(_), Data::Tail(_))
                 | (Request::Calendar { .. }, Data::Calendar(_))
@@ -220,6 +251,38 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::ControlReview(review) => {
+                self.review = Some(Review::Control(*review));
+                self.review_page = 0;
+                self.seen.clear();
+                self.notice = "Read every page before saving this Work change.".into();
+            }
+            Data::ControlSaved { action, row } => {
+                self.review = None;
+                self.form = None;
+                self.snapshot = None;
+                self.page = None;
+                self.calendar = None;
+                self.tail = None;
+                self.saved_control = Some((action, row));
+                self.details = true;
+                self.notice="Saved configuration independently verified. F5 refreshes Work before another action.".into();
+            }
+
+            Data::DeferredReview(review) => {
+                self.review = Some(Review::Deferred(*review));
+                self.review_page = 0;
+                self.seen.clear();
+                self.notice = "Read every page before discarding this staged invocation.".into();
+            }
+            Data::DeferredDiscarded(snapshot) => {
+                self.snapshot = Some(*snapshot);
+                self.review = None;
+                self.page = None;
+                self.details = false;
+                self.notice="Staged invocation discarded and read back. Nothing replayed; existing input uncertainty is unchanged.".into();
+            }
+
             Data::Snapshot(snapshot) => {
                 self.month = snapshot.calendar_month.clone();
                 self.snapshot = Some(*snapshot);
@@ -354,7 +417,77 @@ impl View {
             }
         }
     }
+    fn control(&mut self, action: controls::Action, row: Option<Row>, draft: serde_json::Value) {
+        let result = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Refresh Work before editing"))
+            .and_then(|snapshot| controls::Edit::new(snapshot, action, row.as_ref(), draft));
+        match result {
+            Ok(edit) => self.request(Request::ControlValidate(Box::new(edit))),
+            Err(error) => self.notice = error.to_string(),
+        }
+    }
+    pub fn accepts_paste(&self) -> bool {
+        self.open
+            && self.visible
+            && !self.waiting
+            && self.review.is_none()
+            && self.form.as_ref().is_some_and(form::Form::accepts_paste)
+    }
+    pub fn clipboard_error(&mut self, error: String) {
+        self.notice = error;
+    }
+    pub fn paste(&mut self, text: &str) {
+        if self.open
+            && self.visible
+            && !self.waiting
+            && self.review.is_none()
+            && let Some(form) = self.form.as_mut()
+            && let Err(error) = form.paste(text)
+        {
+            self.notice = error.to_string();
+        }
+    }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.form.is_some() && self.review.is_none() && !self.waiting {
+            if key.kind == KeyEventKind::Release {
+                return;
+            }
+            if key.code == KeyCode::Esc
+                && key.modifiers.is_empty()
+                && key.kind == KeyEventKind::Press
+            {
+                self.form = None;
+                self.hide();
+                return;
+            }
+            if !self.open || !self.visible {
+                return;
+            }
+            if key.code == KeyCode::Enter && key.kind != KeyEventKind::Press {
+                return;
+            }
+            let form = self.form.as_mut().unwrap();
+            match form.key(key) {
+                Ok(true) => match form.draft() {
+                    Ok(draft) => {
+                        let row = form.row.clone();
+                        let action = if row.is_some() {
+                            controls::Action::JobUpdate
+                        } else {
+                            controls::Action::JobCreate
+                        };
+                        self.control(action, row, draft);
+                    }
+                    Err(error) => self.notice = error.to_string(),
+                },
+                Ok(false) => {}
+                Err(error) => self.notice = error.to_string(),
+            }
+            return;
+        }
+
         let back_tab =
             key.code == KeyCode::BackTab && key.modifiers == crossterm::event::KeyModifiers::SHIFT;
         if key.kind == KeyEventKind::Release || (!key.modifiers.is_empty() && !back_tab) {
@@ -421,13 +554,77 @@ impl View {
                     return;
                 }
                 KeyCode::Tab => {
-                    self.section = (self.section + 1) % 6;
+                    self.section = (self.section + 1) % 7;
                     self.section_request();
                     return;
                 }
                 KeyCode::BackTab => {
-                    self.section = (self.section + 5) % 6;
+                    self.section = (self.section + 6) % 7;
                     self.section_request();
+                    return;
+                }
+                KeyCode::Char('c') if matches!(self.section, 2 | 3) => {
+                    match form::Form::new(if self.section == 2 { "cron" } else { "loop" }, None) {
+                        Ok(form) => {
+                            self.form = Some(form);
+                            self.hide();
+                        }
+                        Err(error) => self.notice = error.to_string(),
+                    }
+                    return;
+                }
+                KeyCode::Char('e') if matches!(self.section, 2 | 3) => {
+                    if let Some(row) = self.current_row().cloned() {
+                        match form::Form::new(&row.kind, Some(row.clone())) {
+                            Ok(form) => {
+                                self.form = Some(form);
+                                self.hide();
+                            }
+                            Err(error) => self.notice = error.to_string(),
+                        }
+                    }
+                    return;
+                }
+                KeyCode::Char('d') if matches!(self.section, 2 | 3) => {
+                    if let Some(row) = self.current_row().cloned() {
+                        self.control(
+                            controls::Action::JobDelete,
+                            Some(row),
+                            serde_json::json!({}),
+                        );
+                    }
+                    return;
+                }
+                KeyCode::Char(' ') if self.section == 3 => {
+                    if let Some(row) = self.current_row().cloned() {
+                        let enabled = row.raw["enabled"] != true;
+                        self.control(
+                            controls::Action::LoopEnable,
+                            Some(row),
+                            serde_json::json!({"enabled":enabled}),
+                        );
+                    }
+                    return;
+                }
+                KeyCode::Char('p') if self.section == 4 => {
+                    self.control(controls::Action::GoalPause, None, serde_json::json!({}));
+                    return;
+                }
+                KeyCode::Char('d') if self.section == 4 => {
+                    self.control(controls::Action::GoalClear, None, serde_json::json!({}));
+                    return;
+                }
+                KeyCode::Char('d') if self.section == 6 => {
+                    if self
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.deferred_job.as_ref())
+                        .is_some_and(|d| d.eligible)
+                    {
+                        self.request(Request::DeferredValidate);
+                    } else {
+                        self.notice="No eligible staged invocation to discard; refresh Work for current evidence.".into();
+                    }
                     return;
                 }
                 KeyCode::Char('k') => {
@@ -454,7 +651,7 @@ impl View {
                 _ => {}
             }
         }
-        if self.details || self.section == 4 {
+        if self.details || self.section == 4 || self.section == 6 {
             match key.code {
                 KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
                 KeyCode::Down => self.scroll = (self.scroll + 1).min(self.max_scroll),
@@ -539,14 +736,14 @@ impl View {
         }
         match event.kind {
             MouseEventKind::ScrollUp => {
-                if self.details || self.section == 4 {
+                if self.details || self.section == 4 || self.section == 6 {
                     self.scroll = self.scroll.saturating_sub(3);
                 } else {
                     self.selected = self.selected.saturating_sub(1);
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.details || self.section == 4 {
+                if self.details || self.section == 4 || self.section == 6 {
                     self.scroll = (self.scroll + 3).min(self.max_scroll);
                 } else {
                     self.selected = (self.selected + 1).min(self.count().saturating_sub(1));
@@ -557,6 +754,23 @@ impl View {
     }
     fn review_lines(&self) -> Vec<String> {
         let r = match self.review.as_ref().unwrap() {
+            Review::Control(review) => return vec![
+                review.edit.action.label().into(),review.consequence.clone(),
+                format!("Conversation: {}",review.edit.snapshot.identity.session),
+                format!("Scope: {}",review.wire["scope"]),
+                "Before:".into(),serde_json::to_string_pretty(&review.before).expect("validated control before"),
+                "After:".into(),serde_json::to_string_pretty(&review.after).expect("validated control after"),
+                review.rearm_minutes.map_or_else(||"Run counters are preserved. This save does not run a job.".into(),|minutes|format!("Next run is rearmed at save time plus {minutes} minutes. This save does not run the job.")),
+                "Enter on the last visible page confirms once. Esc cancels; local draft is kept.".into(),
+            ],
+            Review::Deferred(review) => return vec![
+                "Discard this staged invocation".into(),crate::deferred_control::CONSEQUENCE.into(),
+                format!("Conversation: {}",review.identity.session),format!("Agent: {}",review.identity.agent),
+                "Exact retained job and delivery evidence:".into(),
+                serde_json::to_string_pretty(&review.selected.wire).expect("validated deferred evidence"),
+                "The stamped run is retained. No job is run, no input is marked complete, and no effect is undone.".into(),
+                "Enter on the last visible page confirms once. Esc cancels.".into(),
+            ],
             Review::Pause(review) => review,
             Review::Stop(review) => {
                 let mut lines = vec![
@@ -613,6 +827,14 @@ impl View {
         lines
     }
     fn detail_content(&self) -> Vec<String> {
+        if let Some((action, row)) = &self.saved_control {
+            return vec![
+                format!("{} verified", action.label()),
+                serde_json::to_string_pretty(row).expect("validated saved control"),
+                "F5 refreshes Work. No prompt was dispatched by this save.".into(),
+            ];
+        }
+
         if let Some(row) = &self.stopped {
             return vec![
                 "Task Stop independently verified. Workers, callbacks and process retired.".into(),
@@ -651,6 +873,26 @@ impl View {
             }
             rows.extend(t.text.lines().map(str::to_owned));
             return rows;
+        }
+        if self.section == 6 {
+            return self
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.deferred_job.as_ref())
+                .map_or_else(
+                    || vec!["No retained staged invocation.".into()],
+                    |d| {
+                        vec![
+                            "Staged invocation recovery".into(),
+                            crate::deferred_control::CONSEQUENCE.into(),
+                            serde_json::to_string_pretty(&d.wire)
+                                .expect("validated deferred evidence"),
+                            d.reason.clone().unwrap_or_else(|| {
+                                "D reviews discard. Nothing is replayed.".into()
+                            }),
+                        ]
+                    },
+                );
         }
         if self.section == 4 {
             let Some(s) = &self.snapshot else {
@@ -777,6 +1019,8 @@ impl View {
         );
         let label = if self.section < 4 {
             Section::ALL[self.section].label()
+        } else if self.section == 6 {
+            "Recovery"
         } else if self.section == 4 {
             "Goal"
         } else {
@@ -806,7 +1050,12 @@ impl View {
                 .flat_map(|line| crate::ui::wrap(&terminal_text(&line), body.width as usize))
                 .collect()
         };
-        let lines = if self.review.is_some() {
+        let lines = if self.form.is_some() && self.review.is_none() {
+            self.form
+                .as_ref()
+                .unwrap()
+                .visible_lines(body.width as usize, body.height as usize)
+        } else if self.review.is_some() {
             let lines = wrap(self.review_lines());
             let per = body.height.max(1) as usize;
             let pages = lines.len().div_ceil(per).max(1);
@@ -830,7 +1079,7 @@ impl View {
                 .skip(self.review_page * per)
                 .take(per)
                 .collect::<Vec<_>>()
-        } else if self.details || self.section == 4 {
+        } else if self.details || self.section == 4 || self.section == 6 {
             let lines = wrap(self.detail_lines());
             self.max_scroll = lines.len().saturating_sub(body.height as usize);
             self.scroll = self.scroll.min(self.max_scroll);
@@ -904,11 +1153,20 @@ impl View {
             }
         };
         frame.render_widget(Paragraph::new(lines.join("\n")), body);
-        let footer = if self.review.is_some() {
+        let footer = if self.form.is_some() && self.review.is_none() {
+            "Tab field | Space toggles | Ctrl+U clears\nEnter reviews | Shift+Enter newline | Esc cancel".into()
+        } else if self.review.is_some() {
             self.notice.clone()
         } else {
             format!(
-                "Tab categories · F5 refresh · P pause · T output · K Stop task\n{}",
+                "Tab categories · F5 refresh · {}\n{}",
+                match self.section {
+                    2 => "C create · E edit · D delete",
+                    3 => "C create · E edit · D delete · Space enable/pause",
+                    4 => "P pause goal · D clear goal",
+                    6 => "D discard staged invocation",
+                    _ => "P pause schedules · T output · K Stop task",
+                },
                 self.notice
             )
         };

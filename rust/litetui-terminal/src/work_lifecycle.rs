@@ -10,21 +10,22 @@ use std::{
 pub const CAPTURE: &str = "gui.work.native_capture";
 pub const ACTIVATE: &str = "gui.work.native_activate";
 pub const SETTLED: &str = "gui.work.native_settled";
-pub const EVENTS: [&str; 6] = [
+pub const EVENTS: [&str; 7] = [
     "work_producer",
     "work_input",
     "work_admission",
     "work_settled",
     "work_closing",
     "work_reconciled",
+    "work_transition_proposed",
 ];
 pub const ENVELOPE_BYTES: usize = 131_072;
 pub const PAYLOAD_BYTES: usize = 65_536;
 pub const REPLY_BYTES: usize = 1_048_576;
-fn bad(message: &str) -> io::Error {
+pub(crate) fn bad(message: &str) -> io::Error {
     io::Error::other(message.to_owned())
 }
-fn keys(v: &Value, expected: &[&str]) -> io::Result<()> {
+pub(crate) fn keys(v: &Value, expected: &[&str]) -> io::Result<()> {
     let o = v
         .as_object()
         .ok_or_else(|| bad("Work value is not an object"))?;
@@ -33,21 +34,21 @@ fn keys(v: &Value, expected: &[&str]) -> io::Result<()> {
     }
     Ok(())
 }
-fn text(v: &Value, key: &str, max: usize) -> io::Result<String> {
+pub(crate) fn text(v: &Value, key: &str, max: usize) -> io::Result<String> {
     v.get(key)
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty() && !s.contains('\0') && s.len() <= max)
         .map(str::to_owned)
         .ok_or_else(|| bad(&format!("Invalid Work {key}")))
 }
-fn optional(v: &Value, key: &str, max: usize) -> io::Result<Option<String>> {
+pub(crate) fn optional(v: &Value, key: &str, max: usize) -> io::Result<Option<String>> {
     match v.get(key) {
         Some(Value::Null) => Ok(None),
         Some(_) => text(v, key, max).map(Some),
         None => Err(bad("Missing nullable Work field")),
     }
 }
-fn number(v: &Value, key: &str, positive: bool) -> io::Result<u64> {
+pub(crate) fn number(v: &Value, key: &str, positive: bool) -> io::Result<u64> {
     v.get(key)
         .and_then(Value::as_u64)
         .filter(|n| !positive || *n > 0)
@@ -64,21 +65,21 @@ fn uuid_text(s: &str) -> bool {
             }
         })
 }
-fn uuid(v: &Value, key: &str) -> io::Result<String> {
+pub(crate) fn uuid(v: &Value, key: &str) -> io::Result<String> {
     let s = text(v, key, 36)?;
     if !uuid_text(&s) {
         return Err(bad("Invalid canonical Work UUID"));
     }
     Ok(s)
 }
-fn optional_uuid(v: &Value, key: &str) -> io::Result<Option<String>> {
+pub(crate) fn optional_uuid(v: &Value, key: &str) -> io::Result<Option<String>> {
     let s = optional(v, key, 36)?;
     if s.as_ref().is_some_and(|s| !uuid_text(s)) {
         return Err(bad("Invalid nullable Work UUID"));
     }
     Ok(s)
 }
-fn hash(v: &Value, key: &str) -> io::Result<String> {
+pub(crate) fn hash(v: &Value, key: &str) -> io::Result<String> {
     let s = text(v, key, 64)?;
     if s.len() != 64
         || !s
@@ -89,13 +90,13 @@ fn hash(v: &Value, key: &str) -> io::Result<String> {
     }
     Ok(s)
 }
-fn bounded(v: &Value, max: usize) -> io::Result<()> {
+pub(crate) fn bounded(v: &Value, max: usize) -> io::Result<()> {
     if serde_json::to_vec(v)?.len() > max {
         return Err(bad("Work wire byte budget exceeded"));
     }
     Ok(())
 }
-fn profile(v: &Value, key: &str) -> io::Result<Profile> {
+pub(crate) fn profile(v: &Value, key: &str) -> io::Result<Profile> {
     Profile::parse(&text(v, key, 32)?)
 }
 fn rank(p: Profile) -> u8 {
@@ -638,7 +639,7 @@ pub struct DeferredJob {
     pub reason: String,
 }
 impl DeferredJob {
-    fn parse(v: &Value, current: &Identity) -> io::Result<Self> {
+    pub fn parse(v: &Value, current: &Identity) -> io::Result<Self> {
         keys(
             v,
             &[
@@ -681,7 +682,7 @@ impl DeferredJob {
         let payload = Payload::evidence(&v["payload"], &source, requested, None)?;
         let job_snapshot = text(v, "job_snapshot", PAYLOAD_BYTES)?;
         // Preserve exact opaque JSON, including its original numeric spelling.
-        let _: Value = serde_json::from_str(&job_snapshot)?;
+        crate::deferred_control::strict_object(&job_snapshot)?;
         let job_sha256 = hash(v, "job_sha256")?;
         if format!("{:x}", Sha256::digest(job_snapshot.as_bytes())) != job_sha256 {
             return Err(bad("Deferred Work job snapshot changed"));
@@ -901,6 +902,14 @@ impl Capture {
             deferred_jobs,
         })
     }
+    pub fn activation_request_scheduled(
+        &self,
+        _: &crate::scheduled_transition::Capabilities,
+    ) -> Value {
+        let mut v = self.activation_request();
+        v["scheduled_transition_version"] = json!(1);
+        v
+    }
     pub fn activation_request(&self) -> Value {
         let mut v = self.identity.request(ACTIVATE);
         v["instance"] = json!(self.instance);
@@ -1005,6 +1014,9 @@ impl Reconciliation {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
+    ScheduledProposal {
+        proposal: Box<crate::scheduled_transition::Proposal>,
+    },
     Producer {
         producer: Producer,
         state: ProducerState,
@@ -1064,6 +1076,10 @@ pub struct Ledger {
     capture: Capture,
     seat: Profile,
     active: bool,
+    scheduled_requested: bool,
+    scheduled_ids: BTreeSet<String>,
+    scheduled_tokens: BTreeSet<String>,
+    scheduled_actions: BTreeSet<String>,
     failed: bool,
     local_closing: bool,
     shutdown: bool,
@@ -1116,6 +1132,10 @@ impl Ledger {
             capture,
             seat,
             active: false,
+            scheduled_requested: false,
+            scheduled_ids: BTreeSet::new(),
+            scheduled_tokens: BTreeSet::new(),
+            scheduled_actions: BTreeSet::new(),
             failed: false,
             local_closing: false,
             shutdown: false,
@@ -1142,10 +1162,32 @@ impl Ledger {
     pub fn begin_close(&mut self) {
         self.local_closing = true;
     }
+    pub fn request_scheduled_transitions(
+        &mut self,
+        _: &crate::scheduled_transition::Capabilities,
+    ) -> io::Result<()> {
+        if self.active || self.failed || self.local_closing || self.scheduled_requested {
+            return Err(bad(
+                "Scheduled transitions must be requested once before activation",
+            ));
+        }
+        self.scheduled_requested = true;
+        Ok(())
+    }
+    pub fn scheduled_transitions_active(&self) -> bool {
+        self.active && self.scheduled_requested && !self.failed && !self.local_closing
+    }
     pub fn activate(&mut self, v: &Value) -> io::Result<()> {
         let result = (|| {
             bounded(v, REPLY_BYTES)?;
-            keys(v, &["kind", "version", "instance", "sequence", "identity"])?;
+            let mut fields = vec!["kind", "version", "instance", "sequence", "identity"];
+            if self.scheduled_requested {
+                fields.push("scheduled_transition_version");
+            }
+            keys(v, &fields)?;
+            if self.scheduled_requested && number(v, "scheduled_transition_version", true)? != 1 {
+                return Err(bad("Scheduled transition activation echo changed"));
+            }
             if self.active
                 || self.failed
                 || self.local_closing
@@ -1238,6 +1280,7 @@ impl Ledger {
                 "reason",
                 "proof",
             ],
+            "work_transition_proposed" => &["scheduled_transition_version", "proposal"],
             "work_input" => &["phase", "input", "reason"],
             "work_admission" => &["status", "input", "admission", "payload"],
             "work_settled" => &[
@@ -1271,6 +1314,33 @@ impl Ledger {
                 .collect::<Vec<_>>(),
         )?;
         let effect = match kind.as_str() {
+            "work_transition_proposed" => {
+                if !self.scheduled_requested
+                    || self.cutoff.is_some()
+                    || number(event, "scheduled_transition_version", true)? != 1
+                {
+                    return Err(bad("Unnegotiated or source-closed scheduled proposal"));
+                }
+                let proposal = crate::scheduled_transition::Proposal::parse(
+                    &event["proposal"],
+                    &self.capture.identity,
+                    &self.capture.instance,
+                    self.capture.provider,
+                )?;
+                if !self.scheduled_ids.insert(proposal.id.clone())
+                    || !self.scheduled_tokens.insert(proposal.token.clone())
+                    || !self
+                        .scheduled_actions
+                        .insert(proposal.transition.action_id.clone())
+                {
+                    return Err(bad(
+                        "Scheduled proposal reused an identity or review action",
+                    ));
+                }
+                Effect::ScheduledProposal {
+                    proposal: Box::new(proposal),
+                }
+            }
             "work_producer" => self.producer_event(event)?,
             "work_input" => self.input_event(event)?,
             "work_admission" => self.admission_event(event, current)?,

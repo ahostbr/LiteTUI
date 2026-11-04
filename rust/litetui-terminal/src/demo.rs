@@ -199,6 +199,13 @@ impl Demo {
         }
         Ok(())
     }
+    pub fn take_schedule_decision(&mut self) -> Option<(String, bool)> {
+        let idle = !self.command_quit
+            && !self.themes_open
+            && !self.approval_open
+            && !self.completion.is_open();
+        self.live.as_mut()?.decide_schedule(idle)
+    }
     pub fn has_live_question(&self) -> bool {
         self.live
             .as_ref()

@@ -2880,34 +2880,40 @@ class LiteTUI(App):
             return
         try:
             with Lease(paths.data_root() / ".scheduler.lease"):
-                from litetui.row_store import rows_on_disk
-                job_path = sched_mod.jobs_path(paths.data_root())
-                disk = next((r for r in rows_on_disk(job_path) if r.get("id") == job.id), None)
-                if not manual and disk is None and job_path.exists():
-                    return  # deleted after this process selected its candidate
-                if disk is not None:
-                    if not manual and disk.get("kind") == "loop" and disk.get("owner_convo_id") not in ("", None, self.convo_id):
-                        return  # a sibling must not pause the owning conversation's loop
-                    if not manual and not disk.get("enabled", True):
-                        return
-                    if not manual and disk.get("last_fired_slot") == sched_mod.slot_of(datetime.now()):  # noqa: DTZ005 - scheduler local wall time
-                        return
-                    # A competing scheduler may have advanced a loop while our
-                    # in-memory candidate was waiting for its lease.
-                    if (not manual and disk.get("kind") == "loop" and disk.get("next_run_at")
-                            and datetime.fromisoformat(disk["next_run_at"]) > datetime.now()):  # noqa: DTZ005 - scheduler local wall time
-                        return
-                    if not manual:
-                        for field in sched_mod.Job.__dataclass_fields__:
-                            if field in disk:
-                                setattr(job, field, disk[field])
-                        if not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
-                            return
+                if LiteTUI._fire_job_candidate_owned(self, job, manual=manual, now=datetime.now()) is None:  # noqa: DTZ005 - canonical local scheduler slot
+                    return
                 if _work_prepare:
                     return LiteTUI._fire_job_owned(self, job, manual=manual, _work_prepare=True)
                 return LiteTUI._fire_job_owned(self, job, manual=manual)
         except OwnershipError:
             return  # another scheduler owns this tick
+
+    def _fire_job_candidate_owned(self, job, *, manual: bool, now):
+        """Read/check the canonical candidate while the caller owns scheduler lease."""
+        from litetui.row_store import rows_on_disk
+        job_path = sched_mod.jobs_path(paths.data_root())
+        disk = next((r for r in rows_on_disk(job_path) if r.get("id") == job.id), None)
+        if not manual and disk is None and job_path.exists():
+            return  # deleted after this process selected its candidate
+        if disk is not None:
+            if not manual and disk.get("kind") == "loop" and disk.get("owner_convo_id") not in ("", None, self.convo_id):
+                return  # a sibling must not pause the owning conversation's loop
+            if not manual and not disk.get("enabled", True):
+                return
+            if not manual and disk.get("last_fired_slot") == sched_mod.slot_of(now):
+                return
+            # A competing scheduler may have advanced a loop while our
+            # in-memory candidate was waiting for its lease.
+            if (not manual and disk.get("kind") == "loop" and disk.get("next_run_at")
+                    and datetime.fromisoformat(disk["next_run_at"]) > now):
+                return
+            if not manual:
+                for field in sched_mod.Job.__dataclass_fields__:
+                    if field in disk:
+                        setattr(job, field, disk[field])
+                if not sched_mod.due([job], now):
+                    return
+        return job
 
     def _say_withheld(self, job, why: str) -> None:
         """Say a skipped job ONCE per job per slot: a due job is re-offered on every
@@ -2940,6 +2946,10 @@ class LiteTUI(App):
                 return False
             LiteTUI._say_withheld(self, job, why)
             return None
+        from litetui import native_schedule
+        accepted = native_schedule.preflight(self, job, manual=manual, now=now) if _work_prepare else None
+        if accepted is not None:
+            accepted.stamp_attempted = True
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
         if blocked:
             try:
@@ -2955,12 +2965,15 @@ class LiteTUI(App):
         try:
             sched_mod.save(self.jobs, paths.data_root())
         except OSError:
+            if accepted is not None:
+                raise  # Attempted durable automatic stamp is never rolled back or replayed.
             job.last_fired_slot, job.run_count = prior_slot, prior_count
             self._system("Scheduled work was not delivered because its execution stamp could not be saved.")
             return False
 
         if _work_prepare:
             background_input.verify_job_stamp(self, job)
+            native_schedule.stamped(self, job)
 
         label = job.label or job.id
         text = job.prompt

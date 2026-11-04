@@ -166,6 +166,8 @@ class Bridge:
         self.instance = secrets.token_hex(32)
         self.activation_token = secrets.token_hex(32)
         self.active = False
+        self.activation_publication: Any = None
+        self.scheduled_transition_version: int | None = None
         self.closing = False
         self.sequence = 0
         self.revision = 0
@@ -293,19 +295,24 @@ class Bridge:
         return self.emit("work_input", phase=phase, input=entry.ref, reason=reason)
 
 
-def _command(app, cmd, operation, extras=(), *, admission=True):
+def _command(app, cmd, operation, extras=(), *, admission=True, expected_identity=None):
     expected = {"version", "id", "session_id", "agent_id", "backend", "model", *extras}
     if set(cmd) - {"type"} != expected or "type" in cmd and cmd["type"] != "gui.work.native_" + operation:
         raise ValueError("Work command fields do not match its exact operation")
     if type(cmd.get("version")) is not int or cmd["version"] != VERSION:
         raise ValueError("Work lifecycle requires version1")
-    if any(cmd.get(key) != value for key, value in identity(app).items()):
+    if expected_identity is not None and admission:
+        raise ValueError("Historical Work identity cannot grant execution")
+    owner = identity(app) if expected_identity is None else expected_identity
+    if any(cmd.get(key) != value for key, value in owner.items()):
         raise ValueError("Work command belongs to another owned identity")
     text(cmd.get("id"))
     (app._validate_owned_execution if admission else app._validate_owned_identity)()
 
 
 def capture(app, cmd):
+    from litetui import native_schedule
+    native_schedule.capture_allowed(app)
     _command(app, cmd, "capture")
     value = bridge(app)
     if value is None:
@@ -318,8 +325,8 @@ def capture(app, cmd):
         value = Bridge(app)
         app._native_work_bridge = value
     value.check()
-    if value.active:
-        raise ValueError("Work capture is already active")
+    if value.active or value.activation_publication is not None:
+        raise ValueError("Work capture is already active or awaiting publication")
     result = {"kind": "work_capture", "version": VERSION, "instance": value.instance,
               "activation_token": value.activation_token, "sequence": 0, "identity": value.identity,
               "provider": provider(app), "limits": dict(LIMITS), "recovered": copy.deepcopy(value.recovered), "deferred_jobs": deferred_evidence(app)}
@@ -329,10 +336,27 @@ def capture(app, cmd):
 
 
 def activate(app, cmd):
-    _command(app, cmd, "activate", ("instance", "activation_token"))
+    extras = ("instance", "activation_token", *(("scheduled_transition_version",) if "scheduled_transition_version" in cmd else ()))
+    _command(app, cmd, "activate", extras)
+    requested = cmd.get("scheduled_transition_version")
+    if "scheduled_transition_version" in cmd and (type(requested) is not int or requested != VERSION):
+        raise ValueError("Scheduled transitions require exact version1")
     value = bridge(app)
     if value is None or value.active or cmd.get("instance") != value.instance or cmd.get("activation_token") != value.activation_token:
         raise ValueError("Unknown or consumed Work activation")
+    value.check()
+    deferred = getattr(app, "_native_work_deferred", None)
+    if getattr(deferred, "schedule_owner", None) is not None and requested != VERSION:
+        raise ValueError("Scheduled handoff activation requires negotiated response publication")
+    if value.activation_publication is not None:
+        raise ValueError("Work activation publication is already reserved")
+    if requested is not None:
+        from litetui import native_schedule
+        return native_schedule.activation(app, cmd, value)
+    return _activate(app, value)
+
+
+def _activate(app, value, *, scheduled_transition_version=None):
     value.check()
     recapture = getattr(app, "_native_work_recapture_required", None)
     if recapture is not None:
@@ -340,6 +364,7 @@ def activate(app, cmd):
             raise ValueError("Work recapture changed its verified transition target")
         app._native_work_recapture_required = None
     value.active = True
+    value.scheduled_transition_version = scheduled_transition_version
     app._native_work_initial_activated = True
     deferred = getattr(app, "_native_work_deferred", None)
     if deferred is not None and not deferred.claimed:
@@ -1319,6 +1344,10 @@ async def before_identity_transition(app):
         return copy.deepcopy(value.transition_proof)
     if app._chat_running() or app._pending_input or any(i.claim_task is not None for i in value.inputs.values()):
         raise ValueError("Work identity transition requires the existing quiet queue boundary")
+    # A human identity control can race an already emitted scheduler proposal.
+    # Retain only its exact no-effect decision capability through the old close.
+    from litetui import native_schedule
+    native_schedule.retire_proposal(app, value)
     cutoff = begin_close(app)
     if value.shutdown_task is None:
         value.shutdown_task = _observe(_settle_shutdown(app, value, cutoff, cancel=False))
@@ -1360,13 +1389,15 @@ class DeferredJob:
     claimed: bool = False
     handle: Any = None
     worker: Any = None
+    schedule_owner: Any = None
 
 
 def _write_deferred(app, document, expected):
     if not app.store.owned or app.store.pending:
         raise ValueError("Deferred job requires its materialized owned target conversation")
     app._validate_owned_identity()
-    path = Path(app.convo_dir) / DEFERRED_FILENAME
+    owner = (app._agent_session, app.store, Path(app.convo_dir), identity(app))
+    path = owner[2] / DEFERRED_FILENAME
     if _read(path, LIMITS["reply_bytes"]) != expected:
         raise ValueError("Deferred job journal changed outside its exact owner")
     raw = encoded(document)
@@ -1378,6 +1409,15 @@ def _write_deferred(app, document, expected):
             output.write(raw)
             output.flush()
             os.fsync(output.fileno())
+        # The conversation lease excludes cooperating writers. Recheck the
+        # exact bytes immediately before replacement to retain detected drift;
+        # this is not an OS compare-and-swap against arbitrary external writers.
+        app._validate_owned_identity()
+        if (app._agent_session is not owner[0] or app.store is not owner[1]
+                or Path(app.convo_dir) != owner[2] or identity(app) != owner[3]
+                or not app.store.owned or app.store.pending
+                or _read(path, LIMITS["reply_bytes"]) != expected):
+            raise ValueError("Deferred job journal or owner changed before replacement")
         os.replace(name, path)
         if _read(path, LIMITS["reply_bytes"]) != raw:
             raise OSError("Deferred job readback differs")
@@ -1386,15 +1426,26 @@ def _write_deferred(app, document, expected):
     return raw
 
 
-def deferred_evidence(app):
+def deferred_document(app):
+    """Return exact validated disk bytes and document, without display projection."""
     path = Path(app.convo_dir) / DEFERRED_FILENAME
     raw = _read(path, LIMITS["reply_bytes"])
     if raw is None:
-        return []
+        return None
     document = strict_json(raw)
-    _keys(document, ("version", "state", "input_id", "record"))
-    if type(document["version"]) is not int or document["version"] != VERSION or document["state"] not in {"pending", "delivered", "cancelled", "uncertain"}:
-        raise ValueError("Malformed deferred job journal")
+    if type(document) is not dict or type(document.get("version")) is not int:
+        raise ValueError("Malformed deferred job journal version")
+    version = document["version"]
+    if version == 1:
+        _keys(document, ("version", "state", "input_id", "record"))
+        if document["state"] not in {"pending", "delivered", "cancelled", "uncertain"}:
+            raise ValueError("Malformed deferred job journal")
+    elif version == 2:
+        _keys(document, ("version", "state", "input_id", "record", "retirement"))
+        if document["state"] != "discarded":
+            raise ValueError("Deferred journal version 2 is terminal only")
+    else:
+        raise ValueError("Unknown deferred job journal version")
     row = document["record"]
     _keys(row, ("invocation_id", "job_id", "kind", "generation", "source", "requested_profile", "payload", "job_snapshot", "job_sha256", "epoch", "target", "shutdown", "state", "reason"))
     canonical_id(row["invocation_id"])
@@ -1443,15 +1494,52 @@ def deferred_evidence(app):
             canonical_id(item)
     if type(shutdown["inputs"]) is not list or len(shutdown["inputs"]) > LIMITS["inputs"]:
         raise ValueError("Deferred job retirement inputs malformed")
+    seen_inputs = set()
     for item in shutdown["inputs"]:
         _keys(item, ("input_id", "disposition"))
         canonical_id(item["input_id"])
+        if item["input_id"] in seen_inputs:
+            raise ValueError("Duplicate deferred job retirement input")
+        seen_inputs.add(item["input_id"])
         if item["disposition"] not in {"settled", "held", "cancelled", "uncertain", "reconciled"}:
             raise ValueError("Deferred job retirement input disposition malformed")
+    if row["reason"] is not None:
+        text(row["reason"], 2048)
     if document["input_id"] is not None:
         canonical_id(document["input_id"])
-    if document["state"] in {"delivered", "cancelled"}:
+    if version == 2:
+        audit = document["retirement"]
+        _keys(audit, ("operation_id", "review", "previous_sha256", "previous_state",
+                      "identity", "reason", "no_replay", "effects_undone"))
+        text(audit["operation_id"])
+        _hash(audit["review"])
+        _hash(audit["previous_sha256"])
+        if (audit["previous_state"] not in {"pending", "uncertain"}
+                or audit["reason"] != "user_discarded" or audit["no_replay"] is not True
+                or audit["effects_undone"] is not False):
+            raise ValueError("Malformed deferred retirement audit")
+        retired = audit["identity"]
+        _keys(retired, ("session_id", "agent_id", "backend", "model"))
+        canonical_id(retired["session_id"])
+        canonical_id(retired["agent_id"])
+        text(retired["backend"], 64)
+        text(retired["model"], 1024)
+        if any(retired[key] != row["target"][key] for key in ("session_id", "agent_id")):
+            raise ValueError("Deferred retirement belongs to another owned target")
+    return raw, document
+
+
+def deferred_evidence(app):
+    evidence = deferred_document(app)
+    if evidence is None:
         return []
+    raw, document = evidence
+    if document["state"] in {"delivered", "cancelled", "discarded"}:
+        return []
+    row = document["record"]
+    live = getattr(app, "_native_work_deferred", None)
+    if live is not None and live.raw == raw and live.session is app._agent_session and live.store is app.store:
+        return [copy.deepcopy(row)]
     row = copy.deepcopy(row)
     row["state"] = "uncertain" if document["state"] == "uncertain" else "held"
     row["reason"] = "Owned staged invocation retained; restart never grants replay authority"
@@ -1463,6 +1551,9 @@ class _ScheduledTransitionHold(ValueError):
 
 
 def _native_job_transition_reason(app, job):
+    from litetui import native_schedule
+    if native_schedule.accepted_owner(app, job) is not None:
+        return None
     version = getattr(getattr(app, "_launch_options", None), "work_lifecycle_version", None)
     if type(version) is int and version == VERSION and job.new_conversation:
         return ("Scheduled jobs that open a new conversation are held in this Rust session. "
@@ -1484,6 +1575,9 @@ def _hold_scheduled_job(app, job, reason, *, manual):
 
 
 def start_job(app, job, *, manual=False):
+    from litetui import native_schedule
+    if native_schedule.offer(app, job, manual=manual):
+        return None
     reason = _native_job_transition_reason(app, job)
     if reason is not None:
         return _hold_scheduled_job(app, job, reason, manual=manual)
@@ -1574,7 +1668,12 @@ async def _run_job(app, job, manual=False):
             proof = await before_identity_transition(app)
             if getattr(app, "_gui_quitting", False):
                 raise ValueError("Scheduled transition stopped by Quit before publication")
-            result = await conversation_transition.apply(app, transition)
+            from litetui import native_schedule
+            pending = native_schedule.accepted_owner(app, job)
+            result = (await conversation_transition.apply(app, transition) if pending is None
+                      else await conversation_transition.apply_review(app, transition, pending.review))
+            if pending is not None:
+                pending.transition = result
             if result["status"] != "created":
                 if not result["close_required"] and bridge(app) is value:
                     after_identity_transition(app, proof)
@@ -1672,6 +1771,9 @@ def cancel_deferred(app):
 
 
 def prompt_refusal(app):
+    from litetui import native_schedule
+    if why := native_schedule.admission_refusal(app):
+        return why
     if activation_pending(app):
         return "Work startup capture and activation are required before input admission"
     if getattr(app, "_native_work_recapture_required", None) is not None:
@@ -1713,7 +1815,11 @@ def prepare_job(app, job):
     if job.kind not in {"cron", "loop"} or len(snapshot) > LIMITS["payload_bytes"] or len(encoded(item)) > LIMITS["payload_bytes"]:
         raise ValueError("Scheduled invocation exceeds captured bounds before its durable stamp")
     transition = None
-    if job.new_conversation and not app._chat_running():
+    from litetui import native_schedule
+    pending = native_schedule.accepted_owner(app, job)
+    if pending is not None:
+        transition = copy.deepcopy(pending.proposal["transition"])
+    elif job.new_conversation and not app._chat_running():
         cmd = {"version": VERSION, **identity(app)}
         state = conversation_transition.snapshot(app, cmd)
         transition = conversation_transition.validate(app, {**cmd, "snapshot": state["snapshot"], "action": "new"})
@@ -1737,10 +1843,11 @@ def strict_json(raw):
 def verify_job_stamp(app, job):
     from dataclasses import asdict
 
-    from litetui import paths, scheduler
+    from litetui import native_work, paths, scheduler
     raw = _read(scheduler.jobs_path(paths.data_root()))
     rows = strict_json(raw) if raw is not None else []
-    if type(rows) is not list or [row for row in rows if type(row) is dict and row.get("id") == job.id] != [asdict(job)]:
+    if (type(rows) is not list
+            or [native_work._job(row)["row"] for row in rows if type(row) is dict and row.get("id") == job.id] != [asdict(job)]):
         raise ValueError("Scheduled invocation stamp failed exact durable readback; no input delivered")
 
 
@@ -1753,6 +1860,9 @@ def activation_pending(app):
 
 
 def require_recapture_complete(app):
+    from litetui import native_schedule
+    if why := native_schedule.admission_refusal(app):
+        raise ValueError(why)
     if activation_pending(app):
         raise ValueError("Work startup capture and activation are required before execution")
     if getattr(app, "_native_work_recapture_required", None) is not None:
@@ -2341,3 +2451,22 @@ def require_new_execution(app):
     value = bridge(app)
     if value is not None and value.active:
         value.check()
+
+
+def prepare_publication(app, cmd, result):
+    """Prepare one exact known response barrier, never an arbitrary callback."""
+    from litetui import native_deferred, native_schedule
+    ticket = native_schedule.prepare_publication(app, cmd, result)
+    if ticket is None:
+        ticket = native_deferred.prepare_publication(app, cmd, result)
+    return ticket if ticket is not None else prepare_reconciliation_readback(app, cmd, result)
+
+
+def finish_publication(app, ticket):
+    from litetui import native_deferred, native_schedule
+    if isinstance(ticket, (native_schedule.ActivationPublication, native_schedule.DecisionPublication)):
+        native_schedule.finish_publication(app, ticket)
+    elif isinstance(ticket, native_deferred.Publication):
+        native_deferred.finish_publication(app, ticket)
+    else:
+        finish_reconciliation_readback(app, ticket)

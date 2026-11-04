@@ -57,9 +57,12 @@ OPERATIONS = (
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
     "work.native_capture", "work.native_activate", "work.native_settled",
+    "work.native_schedule_accept", "work.native_schedule_decline", "work.native_schedule_readback",
+    "work.native_deferred_validate", "work.native_deferred_discard", "work.native_deferred_readback",
     "work.native_snapshot", "work.native_page", "work.native_tail", "work.native_calendar",
     "work.native_pause_validate", "work.native_pause_apply", "work.native_pause_readback",
     "work.native_stop_validate", "work.native_stop_apply", "work.native_stop_settled",
+    "work.native_control_validate", "work.native_control_apply", "work.native_control_readback",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
     "engine.native_inspect", "engine.native_validate", "engine.native_action", "engine.native_readback",
@@ -522,6 +525,8 @@ def dispatch(app, cmd):
     """Execute nonblocking operations on the existing app loop."""
     from litetui import native_engine
     native_engine.operation_allowed(app, str(cmd.get("type", "")))
+    from litetui import native_schedule
+    native_schedule.operation_allowed(app, str(cmd.get("type", "")))
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
     operation = str(cmd.get("type", ""))[4:]
@@ -530,6 +535,16 @@ def dispatch(app, cmd):
     if operation in {"history.native_snapshot", "history.native_page"}:
         from litetui import native_history
         return native_history.snapshot(app, cmd) if operation.endswith("snapshot") else native_history.page(app, cmd)
+    if operation in {"work.native_control_validate", "work.native_control_apply", "work.native_control_readback"}:
+        from litetui import native_work_controls
+        return getattr(native_work_controls, operation.removeprefix("work.native_control_"))(app, cmd)
+    if operation.startswith("work.native_deferred_"):
+        from litetui import native_deferred
+        return getattr(native_deferred, operation.removeprefix("work.native_deferred_"))(app, cmd)
+    if operation in {"work.native_schedule_decline", "work.native_schedule_readback"}:
+        return getattr(native_schedule, operation.removeprefix("work.native_schedule_"))(app, cmd)
+    if operation == "work.native_schedule_accept":
+        raise ValueError("Scheduled acceptance requires asynchronous dispatch")
     if operation in {"work.native_capture", "work.native_activate"}:
         from litetui import background_input
         return background_input.capture(app, cmd) if operation.endswith("capture") else background_input.activate(app, cmd)
@@ -841,8 +856,23 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    # A known scheduled decision/readback grants no execution by itself. Route
+    # it before generic shutdown refusal so a closing pre-stamp owner can return
+    # its correlated safe refusal. accept still revalidates execution and every
+    # canonical effect under its exact worker and scheduler lease.
+    if operation in {"gui.work.native_schedule_accept", "gui.work.native_schedule_decline", "gui.work.native_schedule_readback"}:
+        from litetui import native_schedule
+        token = OPERATION_CONTEXT.set(cmd.get("id"))
+        try:
+            if operation.endswith("_accept"):
+                return await native_schedule.accept(app, cmd)
+            return getattr(native_schedule, operation.removeprefix("gui.work.native_schedule_"))(app, cmd)
+        finally:
+            OPERATION_CONTEXT.reset(token)
     from litetui import native_engine
     native_engine.operation_allowed(app, operation)
+    from litetui import native_schedule
+    native_schedule.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
     if operation == "gui.work.native_settled":
@@ -886,6 +916,8 @@ async def _async_dispatch(app, cmd):
     operation = cmd["type"]
     from litetui import native_engine
     native_engine.operation_allowed(app, operation)
+    from litetui import native_schedule
+    native_schedule.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
     if operation == "gui.work.native_stop_apply":

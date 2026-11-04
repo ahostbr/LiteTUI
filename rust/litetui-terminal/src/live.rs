@@ -188,6 +188,13 @@ impl ContentKind {
 }
 #[derive(Debug, PartialEq)]
 pub enum Observation {
+    ScheduledProposal(String),
+    ScheduledHeld(String),
+    ScheduledLocalNotSent {
+        prompt: String,
+        reason: String,
+    },
+    ScheduledConversationChanged(Box<crate::conversation_actions::Changed>),
     WorkExecution(Box<WorkExecution>),
     Compact(crate::conversation_compact::Update),
     CompactSettled(Box<crate::management::CompactChanged>),
@@ -331,6 +338,13 @@ impl Turn {
     /// Stop admitting user work while the source drains its owned shutdown.
     pub fn begin_close(&mut self) {
         self.closing = true;
+    }
+    fn retire_scheduled_refusal(&mut self, identity: Option<&Value>) {
+        // An automatically declined proposal may race a human New. It never
+        // owned that human transition's outstanding shutdown obligation.
+        if identity.is_some() && self.conversation_shutdown.as_ref() == identity {
+            self.conversation_shutdown = self.conversation_completed_shutdown.clone();
+        }
     }
     fn can_manage(&self) -> bool {
         self.can_engine()
@@ -1820,6 +1834,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let mut startup_facts = None;
     let mut mirror_deadline = None;
     let mut work_deadline = None;
+    let mut schedule_deadline = None;
     let mut management_deadline = None;
     let mut work_retirement_deadlines = std::collections::HashMap::<String, Instant>::new();
     let mut tail = Vec::new();
@@ -1827,6 +1842,12 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let result = (|| -> io::Result<()> {
         loop {
             check_deadline(deadline)?;
+            if turn.closing {
+                schedule_deadline = None;
+            } else if management.schedule_pending() {
+                schedule_deadline.get_or_insert_with(|| Instant::now() + options.timeout);
+            }
+            check_deadline(schedule_deadline)?;
             if management.work_pending() {
                 check_deadline(work_deadline)?;
             } else {
@@ -1860,6 +1881,19 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                 && let Some(command) = frontend.command()?
             {
                 match command {
+                    Input::ScheduleDecision {
+                        proposal_id,
+                        accept,
+                    } => {
+                        let value =
+                            management.decide_schedule(&proposal_id, accept, turn.can_manage())?;
+                        owned
+                            .stdin
+                            .as_ref()
+                            .expect("owned stdin")
+                            .try_send(value)
+                            .map_err(io::Error::other)?;
+                    }
                     Input::Engine(intent) => {
                         let command = if turn.can_engine() {
                             management.request_engine(intent)
@@ -2092,7 +2126,23 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Input::Work(intent) => {
                         let generation = intent.generation;
-                        match management.request_work(intent) {
+                        let permitted = match &intent.request {
+                            crate::work_view::Request::ControlValidate(_)
+                            | crate::work_view::Request::ControlApply(_) => turn.can_manage(),
+                            crate::work_view::Request::DeferredValidate
+                            | crate::work_view::Request::DeferredApply(_) => {
+                                turn.can_reconcile_work()
+                            }
+                            _ => true,
+                        };
+                        let request = if permitted {
+                            management.request_work(intent)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish owned execution before changing durable Work",
+                            ))
+                        };
+                        match request {
                             Ok(value) => {
                                 owned
                                     .stdin
@@ -2302,6 +2352,15 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Input::Prompt(prompt) => {
+                        if management.schedule_pending()
+                            || (schedule_deadline.is_some() && !management.ready())
+                        {
+                            frontend.observe(Observation::ScheduledLocalNotSent {
+                                prompt,
+                                reason: "Prompt was not sent while a scheduled handoff was being resolved. Its text remains in the conversation; submit it again after the handoff settles.".into(),
+                            })?;
+                            continue;
+                        }
                         if !management.ready() {
                             return Err(io::Error::other("Management startup is not complete"));
                         }
@@ -2462,6 +2521,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Step::Write(command) => {
                         if !turn.closing {
+                            if let Some(identity) = management.scheduled_shutdown_identity(&command)
+                            {
+                                turn.conversation_shutdown = Some(identity);
+                            }
                             owned
                                 .stdin
                                 .as_ref()
@@ -2573,6 +2636,54 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 check_deadline(deadline)?;
                                 deadline = None;
                             }
+                        }
+                    }
+                    Step::ScheduledProposal(proposal_id) => {
+                        if !turn.closing {
+                            schedule_deadline = Some(Instant::now() + options.timeout);
+                            if frontend.scheduled_handoff() {
+                                frontend.observe(Observation::ScheduledProposal(proposal_id))?;
+                            } else {
+                                let command = management.decide_schedule(
+                                    &proposal_id,
+                                    false,
+                                    turn.can_manage(),
+                                )?;
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(command)
+                                    .map_err(io::Error::other)?;
+                            }
+                        }
+                    }
+                    Step::ScheduledHeld {
+                        reason,
+                        shutdown_identity,
+                    } => {
+                        schedule_deadline = None;
+                        turn.retire_scheduled_refusal(shutdown_identity.as_ref());
+                        if !turn.closing {
+                            frontend.observe(Observation::ScheduledHeld(reason))?;
+                        }
+                    }
+                    Step::ScheduledConversationChanged(changed) => {
+                        schedule_deadline = None;
+                        if turn.rewrite_current_session.is_some() {
+                            turn.rewrite_current_session = Some(changed.snapshot.session.clone());
+                        }
+                        if turn.compact_current_session.is_some() {
+                            turn.compact_current_session = Some(changed.snapshot.session.clone());
+                        }
+                        if !turn.closing {
+                            turn.policy
+                                .as_ref()
+                                .expect("launch policy")
+                                .validate(&changed.policy)?;
+                            turn.conversation_completed_shutdown =
+                                turn.conversation_shutdown.clone();
+                            frontend.observe(Observation::ScheduledConversationChanged(changed))?;
                         }
                     }
                     Step::WorkLifecycle(effect) => {
@@ -2905,6 +3016,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    ScheduleDecision { proposal_id: String, accept: bool },
     Compact(Box<crate::conversation_compact::Intent>),
     Rewrite(Box<crate::conversation_rewrite::Intent>),
     History(crate::history_view::Intent),
@@ -2924,6 +3036,9 @@ pub enum Input {
     Quit,
 }
 trait Frontend {
+    fn scheduled_handoff(&self) -> bool {
+        false
+    }
     fn command(&mut self) -> io::Result<Option<Input>>;
     fn observe(&mut self, observation: Observation) -> io::Result<()>;
 }
@@ -2938,7 +3053,11 @@ impl Frontend for OneShot {
     }
     fn observe(&mut self, observation: Observation) -> io::Result<()> {
         match observation {
-            Observation::Compact(_)
+            Observation::ScheduledProposal(_)
+            | Observation::ScheduledHeld(_)
+            | Observation::ScheduledLocalNotSent { .. }
+            | Observation::ScheduledConversationChanged(_)
+            | Observation::Compact(_)
             | Observation::CompactSettled(_)
             | Observation::Rewrite(_)
             | Observation::RewriteSettled(_)
@@ -3117,6 +3236,9 @@ struct Bridge {
     events: mpsc::SyncSender<Observation>,
 }
 impl Frontend for Bridge {
+    fn scheduled_handoff(&self) -> bool {
+        true
+    }
     fn command(&mut self) -> io::Result<Option<Input>> {
         if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(Some(Input::Quit));
@@ -3132,6 +3254,15 @@ impl Frontend for Bridge {
     }
 }
 impl Interactive {
+    pub fn scheduled_decision(&self, proposal_id: String, accept: bool) -> io::Result<()> {
+        self.commands
+            .try_send(Input::ScheduleDecision {
+                proposal_id,
+                accept,
+            })
+            .map_err(io::Error::other)
+    }
+
     pub fn start(options: Options) -> Self {
         let (commands, input) = mpsc::sync_channel(2);
         let (events, output) = mpsc::sync_channel(64);
@@ -3589,5 +3720,28 @@ mod engine_admission_tests {
         }
         assert!(require_work_lifecycle(&json!({})).is_err());
         assert!(require_work_lifecycle(&json!({"work_lifecycle_version":1})).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod scheduled_shutdown_tests {
+    use super::*;
+    #[test]
+    fn declined_schedule_cannot_retire_a_competing_human_transition() {
+        let human = json!({"action_id":"human-new"});
+        let scheduled = json!({"action_id":"scheduled-new"});
+        let completed = json!({"action_id":"previous-completed"});
+        let mut turn = Turn {
+            conversation_shutdown: Some(human.clone()),
+            conversation_completed_shutdown: Some(completed.clone()),
+            ..Turn::default()
+        };
+        turn.retire_scheduled_refusal(None);
+        assert_eq!(turn.conversation_shutdown, Some(human.clone()));
+        turn.retire_scheduled_refusal(Some(&scheduled));
+        assert_eq!(turn.conversation_shutdown, Some(human));
+        turn.conversation_shutdown = Some(scheduled.clone());
+        turn.retire_scheduled_refusal(Some(&scheduled));
+        assert_eq!(turn.conversation_shutdown, Some(completed));
     }
 }

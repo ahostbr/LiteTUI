@@ -743,3 +743,92 @@ fn failed_reply_after_retirement_cannot_reopen_the_old_epoch() {
     );
     assert!(!m.ready());
 }
+
+#[test]
+fn quit_during_rebind_accepts_only_exact_already_verified_retirement() {
+    for stage in 0..3 {
+        for fault in [
+            None,
+            Some("instance"),
+            Some("ledger_sha256"),
+            Some("callback_settled"),
+        ] {
+            let mut m = connect();
+            let apply = select_model(&mut m, "next");
+            transition_barrier(&mut m);
+            let read = write(reply(&mut m, &apply, transition_receipt()).unwrap());
+            if stage > 0 {
+                let cap = write(reply(&mut m, &read, model_choices("next")).unwrap());
+                if stage > 1 {
+                    let _activate = write(reply(&mut m, &cap, new_capture()).unwrap());
+                }
+            }
+            m.begin_close();
+            let mut proof = transition_receipt()["work_shutdown"].clone();
+            if let Some(field) = fault {
+                proof[field] = if field == "callback_settled" {
+                    json!(false)
+                } else {
+                    json!("e".repeat(64))
+                };
+            }
+            assert_eq!(
+                m.verify_work_shutdown(&proof).is_ok(),
+                fault.is_none(),
+                "stage {stage}, {fault:?}"
+            );
+            assert!(!m.ready() && !m.work_lifecycle_active());
+        }
+    }
+}
+#[test]
+fn new_activation_cannot_reuse_retired_epoch_shutdown() {
+    let mut m = connect();
+    let apply = select_model(&mut m, "next");
+    transition_barrier(&mut m);
+    let read = write(reply(&mut m, &apply, transition_receipt()).unwrap());
+    let cap = write(reply(&mut m, &read, model_choices("next")).unwrap());
+    let activate = write(reply(&mut m, &cap, new_capture()).unwrap());
+    let mut ack = activation();
+    ack["instance"] = json!("c".repeat(64));
+    ack["identity"]["model"] = json!("next");
+    reply(&mut m, &activate, ack).unwrap();
+    m.begin_close();
+    assert!(
+        m.verify_work_shutdown(&transition_receipt()["work_shutdown"])
+            .is_err()
+    );
+    let mut uncaptured = Management::default();
+    assert!(
+        uncaptured
+            .verify_work_shutdown(&transition_receipt()["work_shutdown"])
+            .is_err()
+    );
+}
+
+#[test]
+fn quit_drains_refused_capture_and_activation_without_startup() {
+    for activating in [false, true] {
+        let mut m = Management::default();
+        let state_cmd = negotiate(&mut m, &[work::CAPTURE, work::ACTIVATE, work::SETTLED]);
+        let cap = write(reply(&mut m, &state_cmd, state()).unwrap());
+        let command = if activating {
+            write(reply(&mut m, &cap, capture()).unwrap())
+        } else {
+            cap
+        };
+        m.begin_close();
+        assert!(matches!(
+            m.accept(json!({"type":"response", "id":command["id"],
+            "ok":false,"error":"Runtime is shutting down"}))
+                .unwrap(),
+            Step::Ignore
+        ));
+        assert!(!m.ready() && !m.work_lifecycle_pending() && !m.work_lifecycle_active());
+        m.verify_work_shutdown(&Value::Null).unwrap();
+        assert!(
+            m.verify_work_shutdown(&transition_receipt()["work_shutdown"])
+                .is_err()
+        );
+    }
+}

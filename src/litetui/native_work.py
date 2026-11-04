@@ -353,6 +353,9 @@ def snapshot(app, cmd):
              'counts': {key: len(rows[key]) for key in SECTIONS}, 'sources': sources, 'goal': _goal(app),
              'pause': {'allowed': not paused and not quitting,
                        'reason': 'This runtime is closing.' if quitting else 'Future scheduled prompts are already paused.' if paused else None}}
+    from litetui import native_deferred, native_schedule
+    if native_schedule.enabled(app):
+        value['deferred_job'] = native_deferred.snapshot_evidence(app)
     value['snapshot'] = digest({'metadata': value, 'rows': rows})
     if _owner(app, _identity(app)) != owner:
         raise ValueError('Work ownership changed during inspection')

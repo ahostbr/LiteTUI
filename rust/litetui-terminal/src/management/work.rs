@@ -1,5 +1,7 @@
 //! Work inspection, reviewed scheduler pause and exact owned task Stop.
 use super::{CommandId, Management, Step, fail, text};
+use crate::deferred_control as deferred;
+use crate::work_controls as controls;
 use crate::{work_protocol as protocol, work_view as view};
 use serde_json::{Value, json};
 use std::io;
@@ -12,6 +14,8 @@ pub(super) struct Control {
     review: Option<protocol::PauseReview>,
     stop_review: Option<protocol::StopReview>,
     generation: u64,
+    deferred_review: Option<deferred::Review>,
+    control_review: Option<controls::Review>,
 }
 pub(super) struct Pending {
     pub id: CommandId,
@@ -19,8 +23,19 @@ pub(super) struct Pending {
     request: view::Request,
     receipt: Option<protocol::PauseReceipt>,
     stop_receipt: Option<protocol::StopReceipt>,
+    deferred_receipt: Option<deferred::ResultReceipt>,
+    deferred_verified: bool,
+    control_receipt: Option<controls::Receipt>,
 }
 impl Management {
+    pub(super) fn invalidate_work_selection(&mut self) {
+        self.work.snapshot = None;
+        self.work.page = None;
+        self.work.review = None;
+        self.work.stop_review = None;
+        self.work.deferred_review = None;
+        self.work.control_review = None;
+    }
     pub fn work_pending(&self) -> bool {
         self.work.pending.is_some()
     }
@@ -60,6 +75,10 @@ impl Management {
         }
         let identity = self.work_identity()?;
         let op = match &intent.request {
+            view::Request::ControlValidate(_) => controls::VALIDATE,
+            view::Request::ControlApply(_) => controls::APPLY,
+            view::Request::DeferredValidate => deferred::VALIDATE,
+            view::Request::DeferredApply(_) => deferred::DISCARD,
             view::Request::Snapshot => protocol::READ,
             view::Request::Page { .. } => protocol::PAGE,
             view::Request::Tail(_) => protocol::TAIL,
@@ -69,6 +88,20 @@ impl Management {
             view::Request::StopValidate(_) => protocol::STOP_VALIDATE,
             view::Request::StopApply(_) => protocol::STOP_APPLY,
         };
+        if matches!(
+            &intent.request,
+            view::Request::ControlValidate(_) | view::Request::ControlApply(_)
+        ) && controls::OPERATIONS
+            .iter()
+            .any(|op| !self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail("Runtime lacks complete durable Work controls"));
+        }
+        if matches!(&intent.request, view::Request::DeferredApply(_))
+            && !self.operations.iter().any(|v| v == deferred::READBACK)
+        {
+            return Err(fail("Runtime lacks deferred discard readback"));
+        }
         if !self.operations.iter().any(|v| v == op)
             || matches!(&intent.request, view::Request::PauseApply(_))
                 && !self.operations.iter().any(|v| v == protocol::READBACK)
@@ -85,6 +118,8 @@ impl Management {
             self.work.page = None;
             self.work.review = None;
             self.work.stop_review = None;
+            self.work.deferred_review = None;
+            self.work.control_review = None;
             identity.request()
         } else {
             let snapshot = self
@@ -96,6 +131,77 @@ impl Management {
             snapshot.request()
         };
         match &intent.request {
+            view::Request::ControlValidate(edit) => {
+                self.work.control_review = None;
+                if self.work.snapshot.as_ref() != Some(&edit.snapshot) {
+                    return Err(fail("Work edit changed captured snapshot"));
+                }
+                if !edit.action.is_goal()
+                    && edit.action != controls::Action::JobCreate
+                    && !self.work.page.as_ref().is_some_and(|p| {
+                        p.rows.iter().any(|row| {
+                            Some(&row.id) == edit.target_id.as_ref()
+                                && Some(&row.revision) == edit.target_revision.as_ref()
+                                && row.raw == edit.before
+                        })
+                    })
+                {
+                    return Err(fail("Select the exact captured job before editing"));
+                }
+                command = edit.request();
+            }
+            view::Request::ControlApply(review) => {
+                let retained = self
+                    .work
+                    .control_review
+                    .take()
+                    .ok_or_else(|| fail("Review durable Work change again"))?;
+                if &retained != review.as_ref()
+                    || self.work.snapshot.as_ref() != Some(&retained.edit.snapshot)
+                {
+                    return Err(fail(
+                        "Work change differs from retained review or current capture",
+                    ));
+                }
+                command = retained.request();
+            }
+            view::Request::DeferredValidate => {
+                self.work.deferred_review = None;
+                let snapshot = self.work.snapshot.as_ref().expect("snapshot");
+                let selected = snapshot
+                    .deferred_job
+                    .as_ref()
+                    .ok_or_else(|| fail("Refresh Work and select a staged invocation"))?;
+                command = selected.validate_request(
+                    &crate::work_lifecycle::Identity {
+                        session: identity.session.clone(),
+                        agent: identity.agent.clone(),
+                        backend: identity.backend.clone(),
+                        model: identity.model.clone(),
+                    },
+                    &snapshot.instance,
+                    &snapshot.token,
+                )?;
+            }
+            view::Request::DeferredApply(review) => {
+                let retained = self
+                    .work
+                    .deferred_review
+                    .take()
+                    .ok_or_else(|| fail("Review staged invocation discard again"))?;
+                if &retained != review.as_ref()
+                    || self.work.snapshot.as_ref().is_none_or(|s| {
+                        s.token != retained.snapshot
+                            || s.instance != retained.instance
+                            || s.deferred_job.as_ref() != Some(&retained.selected)
+                    })
+                {
+                    return Err(fail(
+                        "Deferred discard differs from its exact review or current capture",
+                    ));
+                }
+                command = retained.request();
+            }
             view::Request::Snapshot => {}
             view::Request::Page { section, offset } => {
                 let snapshot = self.work.snapshot.as_ref().expect("snapshot");
@@ -186,7 +292,10 @@ impl Management {
         command["type"] = json!(op);
         let id = if matches!(
             &intent.request,
-            view::Request::PauseApply(_) | view::Request::StopApply(_)
+            view::Request::PauseApply(_)
+                | view::Request::StopApply(_)
+                | view::Request::DeferredApply(_)
+                | view::Request::ControlApply(_)
         ) {
             self.wire.register_request()
         } else {
@@ -200,6 +309,9 @@ impl Management {
             request: intent.request,
             receipt: None,
             stop_receipt: None,
+            deferred_receipt: None,
+            deferred_verified: false,
+            control_receipt: None,
         });
         Ok(command)
     }
@@ -209,6 +321,18 @@ impl Management {
             let reason = text(&frame, "error", 4096)?.to_owned();
             self.work.review = None;
             self.work.stop_review = None;
+            self.work.deferred_review = None;
+            self.work.control_review = None;
+            if matches!(pending.request, view::Request::ControlApply(_)) {
+                return Err(fail(&format!(
+                    "Durable Work save or readback failed; inspect saved state: {reason}"
+                )));
+            }
+            if matches!(pending.request, view::Request::DeferredApply(_)) {
+                return Err(fail(&format!(
+                    "Deferred discard or readback failed; close and inspect: {reason}"
+                )));
+            }
             if matches!(pending.request, view::Request::StopApply(_)) {
                 return Err(fail(&format!(
                     "Task Stop or retirement readback failed; close and inspect: {reason}"
@@ -230,6 +354,7 @@ impl Management {
         let data = match &pending.request {
             view::Request::Snapshot => {
                 let snapshot = protocol::Snapshot::parse(value, &self.work_identity()?)?;
+                self.require_deferred_snapshot(&snapshot)?;
                 self.work.snapshot = Some(snapshot.clone());
                 view::Data::Snapshot(Box::new(snapshot))
             }
@@ -243,6 +368,117 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
+                    view::Request::ControlValidate(edit) => {
+                        let review = controls::Review::parse(value, edit)?;
+                        self.work.control_review = Some(review.clone());
+                        view::Data::ControlReview(Box::new(review))
+                    }
+                    view::Request::ControlApply(review) => {
+                        if let Some(receipt) = pending.control_receipt.as_ref() {
+                            let readback = controls::Readback::parse(value, review, receipt)?;
+                            self.invalidate_work_selection();
+                            view::Data::ControlSaved {
+                                action: review.edit.action,
+                                row: readback.row,
+                            }
+                        } else {
+                            let receipt = controls::Receipt::parse(value, review)?;
+                            if self.closing {
+                                return Ok(Step::Ignore);
+                            }
+                            let mut command = receipt.request(review);
+                            command["type"] = json!(controls::READBACK);
+                            let id = self
+                                .wire
+                                .register_read()
+                                .map_err(|_| fail("Cannot reserve durable Work readback"))?;
+                            command["id"] = id.to_value();
+                            pending.id = id;
+                            pending.control_receipt = Some(receipt);
+                            self.work.pending = Some(pending);
+                            return Ok(Step::Write(command));
+                        }
+                    }
+                    view::Request::DeferredValidate => {
+                        let selected = snapshot
+                            .deferred_job
+                            .as_ref()
+                            .ok_or_else(|| fail("Deferred Work evidence was lost"))?;
+                        let identity = crate::work_lifecycle::Identity {
+                            session: snapshot.identity.session.clone(),
+                            agent: snapshot.identity.agent.clone(),
+                            backend: snapshot.identity.backend.clone(),
+                            model: snapshot.identity.model.clone(),
+                        };
+                        let review = deferred::Review::parse(
+                            value,
+                            &identity,
+                            &snapshot.instance,
+                            &snapshot.token,
+                            selected,
+                        )?;
+                        self.work.deferred_review = Some(review.clone());
+                        view::Data::DeferredReview(Box::new(review))
+                    }
+                    view::Request::DeferredApply(review) => {
+                        if pending.deferred_verified {
+                            let fresh = protocol::Snapshot::parse(value, &self.work_identity()?)?;
+                            self.require_deferred_snapshot(&fresh)?;
+                            if fresh.instance != review.instance || fresh.deferred_job.is_some() {
+                                return Err(fail(
+                                    "Discard readback retained staged invocation or changed epoch",
+                                ));
+                            }
+                            self.work.snapshot = Some(fresh.clone());
+                            self.work.page = None;
+                            view::Data::DeferredDiscarded(Box::new(fresh))
+                        } else {
+                            let mut command =
+                                if let Some(receipt) = pending.deferred_receipt.as_ref() {
+                                    deferred::Readback::parse(value, receipt)?;
+                                    pending.deferred_verified = true;
+                                    let mut command = self.work_identity()?.request();
+                                    command["type"] = json!(protocol::READ);
+                                    command
+                                } else {
+                                    let operation = pending.id.to_value();
+                                    let receipt = deferred::ResultReceipt::parse(
+                                        value,
+                                        review,
+                                        operation.as_str().ok_or_else(|| {
+                                            fail("Deferred operation is not text")
+                                        })?,
+                                    )?;
+                                    match receipt.status {
+                                        deferred::Status::Refused => {
+                                            return Ok(Step::Work(view::Update {
+                                                generation: pending.generation,
+                                                data: view::Data::Rejected(receipt.reason.unwrap()),
+                                            }));
+                                        }
+                                        deferred::Status::Uncertain => {
+                                            return Err(fail(
+                                                "Deferred discard is uncertain; close required",
+                                            ));
+                                        }
+                                        deferred::Status::Discarded => {}
+                                    }
+                                    let command = receipt.readback_request()?;
+                                    pending.deferred_receipt = Some(receipt);
+                                    command
+                                };
+                            if self.closing {
+                                return Ok(Step::Ignore);
+                            }
+                            let id = self.wire.register_read().map_err(|_| {
+                                fail("Cannot reserve deferred discard verification")
+                            })?;
+                            command["id"] = id.to_value();
+                            pending.id = id;
+                            self.work.pending = Some(pending);
+                            return Ok(Step::Write(command));
+                        }
+                    }
                     view::Request::Page { section, offset } => {
                         let page = protocol::Page::parse(
                             value,
@@ -352,10 +588,7 @@ impl Management {
             }
         };
         if self.closing {
-            self.work.snapshot = None;
-            self.work.page = None;
-            self.work.review = None;
-            self.work.stop_review = None;
+            self.invalidate_work_selection();
             Ok(Step::Ignore)
         } else {
             Ok(Step::Work(view::Update {

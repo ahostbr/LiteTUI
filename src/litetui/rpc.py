@@ -120,15 +120,22 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             from litetui import background_input
             try:
                 result = await async_dispatch(app, cmd)
-                ticket = background_input.prepare_reconciliation_readback(app, cmd, result)
+                ticket = background_input.prepare_publication(app, cmd, result)
             except Exception as exc:  # noqa: BLE001 - isolate malformed management requests at the wire boundary
                 _respond(cmd_id, ok=False, error=str(exc))
                 return
             # Keep the admission barrier until the exact readback response is on
             # the wire. No await may separate publication from the one-use release.
             _respond(cmd_id, ok=True, result=result)
-            background_input.finish_reconciliation_readback(app, ticket)
+            background_input.finish_publication(app, ticket)
         app.run_worker(manage(), group="gui-management", exit_on_error=False)
+        return
+
+    from litetui import native_schedule
+    try:
+        native_schedule.operation_allowed(app, cmd_type)
+    except ValueError as exc:
+        _respond(cmd_id, ok=False, error=str(exc))
         return
 
     from litetui import native_engine

@@ -425,6 +425,7 @@ def save(jobs: list[Job], root: Path) -> None:
         [asdict(j) for j in jobs],
         prefix=".jobs-",
         ensure_ascii=False,
+        known_fields=frozenset(Job.__dataclass_fields__),
     )
 
 
@@ -438,3 +439,16 @@ def refresh(jobs: list[Job], root: Path) -> None:
             setattr(held, name, getattr(fresh, name))
         current.append(held)
     jobs[:] = current
+
+
+def reviewed_update(root: Path, read_rows, transform, *, committed=None) -> None:
+    """Serialize a reviewed configuration change with canonical scheduler stamps.
+
+    Lock order matches firing: scheduler lease, then jobs.json's write lock.
+    The caller checks its selected raw row inside transform, never across UI RPCs.
+    """
+    from litetui.shared_state import Lease
+
+    with Lease(root / ".scheduler.lease"):
+        row_store.checked_update(jobs_path(root), read_rows, transform,
+                                 prefix=".jobs-", committed=committed)

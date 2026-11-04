@@ -26,7 +26,7 @@ ECHO = (*IDENTITY, "version", "snapshot", "review", "action_id", "action", "targ
 @dataclass(frozen=True)
 class Review:
     wire: bytes
-    context: object
+    context: backend_catalog._Context
     hooks: lifecycle_hooks.Snapshot
     registry: tuple
     protected: bytes
@@ -204,7 +204,8 @@ def validate_title_input(raw: object) -> str:
     return raw
 
 
-def validate(app, cmd):
+def build_review(app, cmd):
+    """Build the canonical owned review without replacing any human cache."""
     current, context, hooks, registry = _snapshot(app, cmd)
     if cmd.get("snapshot") != current["snapshot"]:
         raise ValueError("Conversation review is stale; refresh")
@@ -236,10 +237,16 @@ def validate(app, cmd):
                           "provider_cleanup": action == "new" and bool(getattr(app.backend, "owns_native_turns", False)),
                           "lifecycle_hooks": any(_matching(hooks, event, source) for event in events)}}
     _bounded(result)
-    app._conversation_transition_review = Review(_encoded(result), context, hooks, registry, _protected(app),
+    review = Review(_encoded(result), context, hooks, registry, _protected(app),
         _encoded(app.conversation), backend_catalog._disk_hash(app.convo_path, 8 * 1024 * 1024),
         backend_catalog._disk_hash(app.convo_dir / "settings.json", 1024 * 1024), source)
-    return copy.deepcopy(result)
+    return review, copy.deepcopy(result)
+
+
+def validate(app, cmd):
+    review, result = build_review(app, cmd)
+    app._conversation_transition_review = review
+    return result
 
 
 def _receipt(app, cmd, status, *, mutated=False, close_required=False, error=None,
@@ -339,6 +346,11 @@ async def apply(app, cmd):
     if not isinstance(review, Review):
         return _receipt(app, cmd, "refused", error="No unconsumed conversation review; review again")
     app._conversation_transition_review = None
+    return await apply_review(app, cmd, review)
+
+
+async def apply_review(app, cmd, review: Review):
+    """One canonical executor for human and exact source-owned reviews."""
     wire = json.loads(review.wire)
     try:
         if any(cmd.get(key) != wire.get(key) for key in ECHO):
@@ -418,6 +430,9 @@ async def apply(app, cmd):
                            transcript=True, settings=True, settled=True, hooks=True, cleanup=True)
         if action == "new":
             receipt.update(background_input.after_identity_transition(app, work_proof))
+            cached = getattr(app, "_conversation_transition_review", None)
+            if isinstance(cached, Review) and json.loads(cached.wire)["session_id"] != app.convo_id:
+                app._conversation_transition_review = None
         return _bounded(receipt)
     except BaseException as exc:  # noqa: BLE001 - cancellation after effects is not rollback
         app._conversation_transition_error = CLOSE_REQUIRED

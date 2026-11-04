@@ -543,6 +543,26 @@ fn handle_key(
     if input.suppress_live_repeat(event) {
         return false;
     }
+    if app.has_live_work() {
+        if !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+            && !app.viewport_too_small
+            && event.kind == KeyEventKind::Press
+            && event.modifiers == KeyModifiers::CONTROL
+            && matches!(event.code, KeyCode::Char('v' | 'V'))
+        {
+            let chat = app.live.as_mut().expect("Work");
+            if !chat.quitting && !chat.cancelling() && chat.work.accepts_paste() {
+                match clipboard.read_text() {
+                    Ok(Some(text)) => chat.work.paste(&text),
+                    Ok(None) => {}
+                    Err(error) => chat.work.clipboard_error(error),
+                }
+            }
+        }
+        return input.handle(app, event);
+    }
     if app.has_live_compact() {
         if !app.stop_open()
             && !app.has_live_approval()
@@ -702,6 +722,17 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_work() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live.as_mut().expect("Work").work.paste(text);
+        }
+        return;
+    }
+
     if app.has_live_compact() {
         if !app.viewport_too_small
             && !app.stop_open()
@@ -1289,6 +1320,14 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").themes.take_intent()
                 && let Err(error) = runtime.theme(intent)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
+            }
+            if !quitting
+                && let Some((proposal_id, accept)) = app.take_schedule_decision()
+                && let Err(error) = runtime.scheduled_decision(proposal_id, accept)
             {
                 view_failure = Some(error.to_string());
                 app.finish_live(view_failure.clone());
@@ -4350,5 +4389,197 @@ mod work_router_tests {
         .unwrap();
         assert!(!app.has_live_work());
         assert!(app.live.as_ref().unwrap().quitting);
+    }
+}
+
+#[cfg(test)]
+mod work_controls_clipboard_tests {
+    use super::*;
+    use litetui_terminal::{
+        live::Observation, work_controls as c, work_protocol as p, work_view as v,
+    };
+    use ratatui::backend::TestBackend;
+    use serde_json::{Value, json};
+    #[derive(Default)]
+    struct Clipboard {
+        reads: usize,
+        copies: usize,
+    }
+    impl litetui_terminal::clipboard::Clipboard for Clipboard {
+        fn read_text(&mut self) -> Result<Option<String>, String> {
+            self.reads += 1;
+            Ok(Some("CLIPBOARD\nΩ".into()))
+        }
+        fn copy_text(&mut self, _: &str) -> Result<(), String> {
+            self.copies += 1;
+            Ok(())
+        }
+    }
+    fn paint(app: &mut Demo) {
+        Terminal::new(TestBackend::new(100, 36))
+            .unwrap()
+            .draw(|f| ui::draw(f, app))
+            .unwrap();
+    }
+    fn flow() -> Value {
+        serde_json::from_str::<Value>(include_str!("../tests/fixtures/work_controls.json")).unwrap()
+            ["jobs_job_update_off"]
+            .clone()
+    }
+    fn setup(active: bool) -> (Demo, KeyRouter, Value) {
+        let f = flow();
+        let raw = &f["snapshot"];
+        let s = p::Snapshot::parse(
+            raw,
+            &p::Identity {
+                session: raw["session_id"].as_str().unwrap().into(),
+                agent: raw["agent_id"].as_str().unwrap().into(),
+                backend: raw["backend"].as_str().unwrap().into(),
+                model: raw["model"].as_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        let mut app = Demo::live("custom".into(), "old-model".into());
+        app.observe_live(Observation::Ready).unwrap();
+        if active {
+            let chat = app.live.as_mut().unwrap();
+            chat.submit("Active source operation").unwrap();
+            chat.take_submission();
+        }
+        app.insert_text("KEEP ordinary composer Ω draft");
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let mut router = KeyRouter::default();
+        router.handle(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        app.observe_live(Observation::Work(v::Update {
+            generation: intent.generation,
+            data: v::Data::Snapshot(Box::new(s.clone())),
+        }))
+        .unwrap();
+        let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        let mut page = s.request();
+        page["kind"] = json!("work_page");
+        page["section"] = json!("tasks");
+        page["offset"] = json!(0);
+        page["total"] = json!(0);
+        page["next_offset"] = Value::Null;
+        page["rows"] = json!([]);
+        app.observe_live(Observation::Work(v::Update {
+            generation: intent.generation,
+            data: v::Data::Page(p::Page::parse(&page, &s, p::Section::Tasks, 0, 32).unwrap()),
+        }))
+        .unwrap();
+        for _ in 0..2 {
+            paint(&mut app);
+            router.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        page["section"] = json!("jobs");
+        page["total"] = json!(1);
+        page["rows"] = json!([f["target"]]);
+        app.observe_live(Observation::Work(v::Update {
+            generation: intent.generation,
+            data: v::Data::Page(p::Page::parse(&page, &s, p::Section::Jobs, 0, 32).unwrap()),
+        }))
+        .unwrap();
+        paint(&mut app);
+        router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        );
+        paint(&mut app);
+        assert!(app.live.as_ref().unwrap().work.accepts_paste());
+        (app, router, f)
+    }
+    fn main_draft(app: &Demo) -> (String, String, String) {
+        (
+            app.composer.text().into(),
+            app.composer.before_cursor().into(),
+            app.composer.selected_text().into(),
+        )
+    }
+    fn chord(app: &mut Demo, router: &mut KeyRouter, clipboard: &mut Clipboard) {
+        handle_key(
+            app,
+            router,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            clipboard,
+        );
+    }
+    #[test]
+    fn visible_work_form_reads_clipboard_once_and_preserves_composer_selection() {
+        let (mut app, mut router, f) = setup(false);
+        let before = main_draft(&app);
+        let mut clipboard = Clipboard::default();
+        chord(&mut app, &mut router, &mut clipboard);
+        let mut repeat = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        repeat.kind = KeyEventKind::Repeat;
+        handle_key(&mut app, &mut router, repeat, &mut clipboard);
+        assert_eq!((clipboard.reads, clipboard.copies), (1, 0));
+        assert_eq!(main_draft(&app), before);
+        router.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        let v::Request::ControlValidate(edit) = intent.request else {
+            panic!()
+        };
+        assert_eq!(
+            edit.draft["prompt"],
+            format!(
+                "{}CLIPBOARD\nΩ",
+                f["target"]["row"]["prompt"].as_str().unwrap()
+            )
+        );
+    }
+    #[test]
+    fn hidden_form_review_and_boolean_field_never_read_clipboard() {
+        let (mut app, mut router, f) = setup(false);
+        let before = main_draft(&app);
+        let mut clipboard = Clipboard::default();
+        app.live.as_mut().unwrap().work.hide();
+        chord(&mut app, &mut router, &mut clipboard);
+        assert_eq!(clipboard.reads, 0);
+        paint(&mut app);
+        for _ in 0..3 {
+            router.handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        chord(&mut app, &mut router, &mut clipboard);
+        assert_eq!(clipboard.reads, 0);
+        // Return to Label and form the exact edit represented by the real source fixture.
+        for _ in 0..2 {
+            router.handle(
+                &mut app,
+                KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            );
+        }
+        paste(&mut app, "Reviewed label");
+        router.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        let v::Request::ControlValidate(edit) = intent.request else {
+            panic!()
+        };
+        let review = c::Review::parse(&f["review"], &edit).unwrap();
+        app.observe_live(Observation::Work(v::Update {
+            generation: intent.generation,
+            data: v::Data::ControlReview(Box::new(review)),
+        }))
+        .unwrap();
+        paint(&mut app);
+        chord(&mut app, &mut router, &mut clipboard);
+        assert_eq!((clipboard.reads, clipboard.copies), (0, 0));
+        assert_eq!(main_draft(&app), before);
+        assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+    }
+    #[test]
+    fn pending_approval_preempts_form_clipboard_without_host_io() {
+        let (mut app, mut router, _) = setup(true);
+        let before = main_draft(&app);
+        let mut clipboard = Clipboard::default();
+        let event=litetui_terminal::approvals::Ledger::default().request(&json!({"type":"tool_approval_requested","id":"control-approval","tool":"write","input":{"path":"fixture"},"profile":"strict","why":"writes","timeout_s":300.0})).unwrap();
+        app.observe_live(Observation::Approval(event)).unwrap();
+        paint(&mut app);
+        chord(&mut app, &mut router, &mut clipboard);
+        assert_eq!((clipboard.reads, clipboard.copies), (0, 0));
+        assert_eq!(main_draft(&app), before);
+        assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
     }
 }

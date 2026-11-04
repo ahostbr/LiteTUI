@@ -9,9 +9,12 @@ pub(super) struct Control {
     advertised: bool,
     enabled: Option<Profile>,
     supported: bool,
+    scheduled: Option<crate::scheduled_transition::Capabilities>,
+    expected_deferred: Option<lifecycle::DeferredJob>,
     active: bool,
     rebind: bool,
     transition_closing: bool,
+    retired_shutdown: Option<Value>,
     pub pending: Option<Pending>,
     startup: Option<Box<Step>>,
     ledger: Option<lifecycle::Ledger>,
@@ -38,6 +41,29 @@ impl Management {
             ));
         }
         self.work_lifecycle.enabled = Some(launch_profile);
+        Ok(())
+    }
+    pub(super) fn expect_scheduled_capture(
+        &mut self,
+        deferred: lifecycle::DeferredJob,
+    ) -> io::Result<()> {
+        if self
+            .work_lifecycle
+            .expected_deferred
+            .replace(deferred)
+            .is_some()
+        {
+            return Err(fail("Repeated scheduled capture expectation"));
+        }
+        Ok(())
+    }
+    pub(super) fn require_deferred_snapshot(
+        &self,
+        snapshot: &crate::work_protocol::Snapshot,
+    ) -> io::Result<()> {
+        if let Some(capabilities) = self.work_lifecycle.scheduled.as_ref() {
+            snapshot.require_deferred(capabilities)?;
+        }
         Ok(())
     }
     /// Last already-validated stream origin; the Turn decides whether it is active.
@@ -69,7 +95,8 @@ impl Management {
         if self.work_lifecycle.enabled.is_none() {
             return false;
         }
-        self.work_lifecycle.rebind
+        self.schedule_identity_pending()
+            || self.work_lifecycle.rebind
             || self.work_lifecycle.transition_closing
             || self.control.as_ref().is_some_and(|p| {
                 p.applying && p.kind == super::Kind::Model && p.selection.as_deref() != self.model()
@@ -121,6 +148,7 @@ impl Management {
         ledger.verify_shutdown(
             proof.ok_or_else(|| fail("Identity mutation omitted Work shutdown proof"))?,
         )?;
+        self.work_lifecycle.retired_shutdown = proof.cloned();
         self.work_lifecycle.active = false;
         self.work_lifecycle.rebind = true;
         self.work_lifecycle.announced = None;
@@ -149,6 +177,8 @@ impl Management {
             ));
         }
         self.work_lifecycle.supported = count == 3;
+        self.work_lifecycle.scheduled =
+            crate::scheduled_transition::Capabilities::negotiate(operations)?;
         Ok(())
     }
     fn lifecycle_identity(&self) -> io::Result<lifecycle::Identity> {
@@ -178,6 +208,7 @@ impl Management {
             | Step::BackendChanged(_)
             | Step::Opened(_)
             | Step::ConversationChanged(_)
+            | Step::ScheduledConversationChanged(_)
                 if self.work_lifecycle.rebind =>
             {
                 None
@@ -233,6 +264,18 @@ impl Management {
             .take()
             .expect("Work lifecycle request");
         if frame["ok"] != true {
+            if self.closing
+                && matches!(
+                    pending.phase,
+                    PendingPhase::Capture | PendingPhase::Activate
+                )
+            {
+                // A reserved capture/activation may be refused after Quit wins.
+                // Retain the old verified epoch and final shutdown obligations;
+                // never publish startup or schedule another activation here.
+                self.work_lifecycle.startup = None;
+                return Ok(Step::Ignore);
+            }
             return Err(fail(
                 "Work lifecycle request failed; ownership is uncertain",
             ));
@@ -242,6 +285,14 @@ impl Management {
             PendingPhase::Capture => {
                 self.ensure_drained()?;
                 let capture = lifecycle::Capture::parse(result, &self.lifecycle_identity()?)?;
+                if let Some(expected) = self.work_lifecycle.expected_deferred.as_ref()
+                    && (capture.deferred_jobs.as_slice() != std::slice::from_ref(expected)
+                        || !capture.recovered.is_empty())
+                {
+                    return Err(fail(
+                        "Scheduled capture changed the exact staged invocation or inherited input",
+                    ));
+                }
                 if self.work_lifecycle.rebind
                     && self
                         .work_lifecycle
@@ -260,8 +311,15 @@ impl Management {
                         "Work lifecycle launch profile differs from verified startup",
                     ));
                 }
-                let mut command = capture.activation_request();
-                self.work_lifecycle.ledger = Some(lifecycle::Ledger::new(capture, seat));
+                let mut command = match self.work_lifecycle.scheduled.as_ref() {
+                    Some(capabilities) => capture.activation_request_scheduled(capabilities),
+                    None => capture.activation_request(),
+                };
+                let mut ledger = lifecycle::Ledger::new(capture, seat);
+                if let Some(capabilities) = self.work_lifecycle.scheduled.as_ref() {
+                    ledger.request_scheduled_transitions(capabilities)?;
+                }
+                self.work_lifecycle.ledger = Some(ledger);
                 if self.closing {
                     self.work_lifecycle.startup = None;
                     return Ok(Step::Ignore);
@@ -286,6 +344,8 @@ impl Management {
                     .expect("captured lifecycle");
                 ledger.activate(result)?;
                 self.work_lifecycle.active = true;
+                self.work_lifecycle.retired_shutdown = None;
+                self.work_lifecycle.expected_deferred = None;
                 self.work_lifecycle.rebind = false;
                 self.work_lifecycle.transition_closing = false;
                 let startup = self
@@ -392,6 +452,9 @@ impl Management {
             self.prompt = Some(admission.operation.clone());
             self.origin = None;
             self.work_lifecycle.announced = Some(admission.origin.clone());
+        }
+        if let lifecycle::Effect::ScheduledProposal { proposal } = effect {
+            return self.propose_schedule(*proposal);
         }
         Ok(Step::WorkLifecycle(Box::new(effect)))
     }
@@ -554,7 +617,12 @@ impl Management {
                 .as_mut()
                 .expect("active lifecycle")
                 .verify_shutdown(value)
-        } else if value.is_null() {
+        } else if value.is_null()
+            || self.work_lifecycle.rebind
+                && self.work_lifecycle.retired_shutdown.as_ref() == Some(value)
+        {
+            // Quit may have joined the old epoch before its transition response
+            // arrived. Reuse only that exact already-verified retirement receipt.
             Ok(())
         } else {
             Err(fail("Uncaptured runtime supplied Work shutdown authority"))

@@ -178,6 +178,8 @@ pub struct Snapshot {
     pub can_pause: bool,
     pub pause_reason: Option<String>,
     pub scheduler_notice: Option<String>,
+    pub deferred_job: Option<crate::deferred_control::Snapshot>,
+    pub deferred_advertised: bool,
 }
 impl Snapshot {
     pub fn parse(v: &Value, identity: &Identity) -> io::Result<Self> {
@@ -224,12 +226,34 @@ impl Snapshot {
             goal: v["goal"].clone(),
             can_pause,
             pause_reason,
+            deferred_advertised: v.get("deferred_job").is_some(),
+            deferred_job: match v.get("deferred_job") {
+                None | Some(Value::Null) => None,
+                Some(row) => Some(crate::deferred_control::Snapshot::parse(
+                    row,
+                    &crate::work_lifecycle::Identity {
+                        session: identity.session.clone(),
+                        agent: identity.agent.clone(),
+                        backend: identity.backend.clone(),
+                        model: identity.model.clone(),
+                    },
+                )?),
+            },
             scheduler_notice: if v["scheduler_notice"].is_null() {
                 None
             } else {
                 Some(text(v, "scheduler_notice", 2048, false)?.to_owned())
             },
         })
+    }
+    pub fn require_deferred(
+        &self,
+        _: &crate::scheduled_transition::Capabilities,
+    ) -> io::Result<()> {
+        if !self.deferred_advertised {
+            return Err(fail("Negotiated Work snapshot omitted deferred evidence"));
+        }
+        Ok(())
     }
     pub fn source(&self, section: Section) -> &Source {
         &self.sources[Section::ALL.iter().position(|s| *s == section).unwrap()]

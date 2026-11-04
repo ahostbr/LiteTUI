@@ -8,6 +8,7 @@ use std::{collections::HashSet, io};
 
 mod action;
 mod compact;
+mod scheduled;
 mod settings;
 mod work;
 mod work_lifecycle;
@@ -51,6 +52,7 @@ const MIRRORED: &[&str] = &[
     "work_settled",
     "work_reconciled",
     "work_closing",
+    "work_transition_proposed",
 ];
 const IDENTIFIED: &[&str] = &[
     "turn_start",
@@ -179,6 +181,12 @@ impl Snapshot {
 }
 #[derive(Debug)]
 pub enum Step {
+    ScheduledProposal(String),
+    ScheduledHeld {
+        reason: String,
+        shutdown_identity: Option<Value>,
+    },
+    ScheduledConversationChanged(Box<crate::conversation_actions::Changed>),
     WorkLifecycle(Box<crate::work_lifecycle::Effect>),
     WorkLifecycleVerified {
         admission_id: String,
@@ -364,6 +372,7 @@ struct SavedHistoryPending {
     prior: Option<crate::history::Page>,
 }
 pub struct Management {
+    scheduled: scheduled::Control,
     work_lifecycle: work_lifecycle::Control,
     work: work::Control,
     history_projection: bool,
@@ -438,6 +447,7 @@ pub struct Management {
 impl Default for Management {
     fn default() -> Self {
         Self {
+            scheduled: scheduled::Control::default(),
             work_lifecycle: work_lifecycle::Control::default(),
             work: work::Control::default(),
             history_projection: false,
@@ -600,6 +610,7 @@ impl Management {
             && !self.closing
             && !self.failed
             && !self.work_lifecycle_starting()
+            && !self.schedule_pending()
             && self.work.pending.is_none()
             && self.engine.is_none()
             && self.conversation.is_none()
@@ -708,6 +719,10 @@ impl Management {
                 Err(fail(
                     "Work lifecycle reply exceeds the full 1 MiB wire budget",
                 ))
+            } else if self.schedule_response_pending(&frame)
+                && original_json_bytes > crate::work_lifecycle::REPLY_BYTES
+            {
+                Err(fail("Scheduled response exceeds full wire budget"))
             } else if self.work_response_pending(&frame)
                 && original_json_bytes > crate::work_protocol::MAX_BYTES
             {
@@ -951,6 +966,11 @@ impl Management {
                 let snapshot = self.startup.take().expect("startup");
                 self.startup_theme(snapshot, Some(history))
             }
+            Notice::Response {
+                matched: true,
+                frame,
+                ..
+            } if self.schedule_response_pending(&frame) => self.schedule_response(frame),
             Notice::Response {
                 id,
                 matched: true,
@@ -3405,31 +3425,21 @@ impl Management {
                             .into(),
                     ));
                 }
-                let state = Snapshot::parse(result)?;
-                if state.session != selected.session
-                    || state.backend != selected.backend
-                    || state.model != selected.model
-                    || state.profile != self.expected.as_ref().unwrap().3
-                    || !(state.writable
-                        || pending.stage == 1
-                            && pending.snapshot.as_ref().is_some_and(|s| s.pending))
-                    || state.held_restored_input != Some(0)
-                    || Some(state.schedules_paused) != self.browser_authority.as_ref().map(|v| v.1)
-                    || result["ownership"]["agent_id"] != selected.agent
-                {
-                    return Err(fail(
-                        "Conversation action state changed identity, authority or holds",
-                    ));
-                }
-                if pending.stage == 7
-                    && (pending.policy.as_ref() != Some(&result["tool_policy"])
-                        || pending
-                            .state
-                            .as_ref()
-                            .is_none_or(|before| before.mode != state.mode))
-                {
-                    return Err(fail("Conversation action changed tool policy"));
-                }
+                let before = pending.state.clone().zip(pending.policy.clone());
+                let state = self.verify_conversation_state(
+                    result,
+                    selected,
+                    pending.stage == 1 && pending.snapshot.as_ref().is_some_and(|s| s.pending),
+                    if pending.stage == 7 {
+                        Some(
+                            before
+                                .as_ref()
+                                .ok_or_else(|| fail("Missing reviewed conversation policy"))?,
+                        )
+                    } else {
+                        None
+                    },
+                )?;
                 pending.policy = Some(result["tool_policy"].clone());
                 pending.state = Some(state);
             }
@@ -3439,17 +3449,21 @@ impl Management {
                         "Conversation history exceeded requested response budget",
                     ));
                 }
-                let history = match self.parse_history(
-                    result,
-                    &selected.session,
-                    &selected.backend,
-                    &selected.model,
-                ) {
-                    Ok(h) => h,
-                    Err(e) if pending.stage == 2 => {
-                        return Ok(reject(format!("Cannot review conversation action: {e}")));
+                let history = if pending.stage == 8 && pending.action == Action::New {
+                    self.verify_new_conversation_history(result, selected)?
+                } else {
+                    match self.parse_history(
+                        result,
+                        &selected.session,
+                        &selected.backend,
+                        &selected.model,
+                    ) {
+                        Ok(h) => h,
+                        Err(e) if pending.stage == 2 => {
+                            return Ok(reject(format!("Cannot review conversation action: {e}")));
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
                 };
                 if pending.stage == 2 {
                     pending.history_before = Some(history.clone());
@@ -3469,45 +3483,11 @@ impl Management {
                             "Rename changed history/provider references or did not persist its exact title",
                         ));
                     }
-                    if pending.action == Action::New
-                        && !history.descriptor.as_ref().map_or_else(
-                            || {
-                                result["messages"].as_array().is_some_and(|rows| {
-                                    rows.iter().all(|m| {
-                                        m["role"] == "system"
-                                            && m.as_object().is_some_and(|o| {
-                                                o.keys().all(|k| {
-                                                    matches!(k.as_str(), "role" | "content")
-                                                })
-                                            })
-                                    })
-                                })
-                            },
-                            |d| d.fresh_system_context,
-                        )
-                    {
-                        return Err(fail(
-                            "New conversation inherited messages or provider references",
-                        ));
-                    }
                     pending.history = Some(history);
                 }
             }
             3 | 9 => {
-                self.revision = self
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| fail("Conversation revision exhausted"))?;
-                let queue = crate::restored_queue::Snapshot::parse(result, self.revision)?;
-                if queue.session != selected.session
-                    || queue.backend != selected.backend
-                    || queue.model != selected.model
-                    || !queue.entries.is_empty()
-                {
-                    return Err(fail(
-                        "Conversation action has changed or nonempty held input",
-                    ));
-                }
+                let queue = self.verify_empty_conversation_queue(result, selected)?;
                 pending.queue = Some(queue);
             }
             4 => {
@@ -3585,24 +3565,7 @@ impl Management {
                 }
                 let state = pending.state.take().unwrap();
                 let queue = pending.queue.take().unwrap();
-                self.expected = Some((
-                    state.session.clone(),
-                    state.backend.clone(),
-                    state.model.clone(),
-                    state.profile.clone(),
-                ));
-                self.origin = None;
-                self.prompt = None;
-                self.menu = None;
-                self.command_catalog = None;
-                self.command_prepared = None;
-                self.backend_catalog = None;
-                self.settings_snapshot = None;
-                self.settings_review = None;
-                self.conversation_snapshot = None;
-                self.conversation_review = None;
-                self.browser_page = Some(page.clone());
-                self.queue_menu = Some(queue.clone());
+                self.install_verified_conversation(&state, &queue, &page);
                 return Ok(Step::ConversationChanged(Box::new(Changed {
                     action: pending.action,
                     snapshot: state,

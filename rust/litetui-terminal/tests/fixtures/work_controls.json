@@ -1,0 +1,1946 @@
+{
+  "cron_create": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "96778800-0deb-42ed-894e-4d667b18867c",
+      "agent_id": "9d3e6135-3d75-41e8-b3f0-150aed74a728",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "a730ca4f4d593d22f50cd55f5754018aef52b88d61d7040bb64650346e4bf878",
+      "captured_at": 1793565106.5724094,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "640a07904a57a496c71964794472de642f7a280f673a779e9a3d42e48266ce42"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "96778800-0deb-42ed-894e-4d667b18867c",
+      "agent_id": "9d3e6135-3d75-41e8-b3f0-150aed74a728",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "a730ca4f4d593d22f50cd55f5754018aef52b88d61d7040bb64650346e4bf878",
+      "snapshot": "640a07904a57a496c71964794472de642f7a280f673a779e9a3d42e48266ce42",
+      "action": "job_create",
+      "target_id": "f6da4fe7",
+      "target_revision": null,
+      "draft": {
+        "kind": "cron",
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "label": "Created by review",
+        "enabled": false,
+        "schedule": "0 9 * * 1-5"
+      },
+      "review": "6041396e374553862bd4ca3a6a3f3e498a17e8e85674c3d2e25524e3e2f8bea1",
+      "action_id": "ae9c09bd-4b7b-4004-90f7-8748dc007f57",
+      "scope": "data_root",
+      "before": null,
+      "after": {
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "schedule": "0 9 * * 1-5",
+        "id": "f6da4fe7",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:46",
+        "label": "Created by review",
+        "tool_profile": "strict",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "rearm_minutes": null,
+      "consequence": "Save this job configuration only. An enabled job may run on a later normal scheduler tick; this save starts no work.",
+      "raw_revision": "absent"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "96778800-0deb-42ed-894e-4d667b18867c",
+      "agent_id": "9d3e6135-3d75-41e8-b3f0-150aed74a728",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "a730ca4f4d593d22f50cd55f5754018aef52b88d61d7040bb64650346e4bf878",
+      "snapshot": "640a07904a57a496c71964794472de642f7a280f673a779e9a3d42e48266ce42",
+      "action": "job_create",
+      "target_id": "f6da4fe7",
+      "review": "6041396e374553862bd4ca3a6a3f3e498a17e8e85674c3d2e25524e3e2f8bea1",
+      "action_id": "ae9c09bd-4b7b-4004-90f7-8748dc007f57",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "schedule": "0 9 * * 1-5",
+        "id": "f6da4fe7",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:46",
+        "label": "Created by review",
+        "tool_profile": "strict",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "store_revision": "f96b4d67268c3ce4d7b853958c906ffbd6a49df910180bdb2958c31c06066ce4",
+      "receipt": "03ed7dcca720ad9204b37ed41caf9554ddc4692b6ebf5c9b974f566da6378ff4"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "96778800-0deb-42ed-894e-4d667b18867c",
+      "agent_id": "9d3e6135-3d75-41e8-b3f0-150aed74a728",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "a730ca4f4d593d22f50cd55f5754018aef52b88d61d7040bb64650346e4bf878",
+      "snapshot": "640a07904a57a496c71964794472de642f7a280f673a779e9a3d42e48266ce42",
+      "action": "job_create",
+      "target_id": "f6da4fe7",
+      "review": "6041396e374553862bd4ca3a6a3f3e498a17e8e85674c3d2e25524e3e2f8bea1",
+      "action_id": "ae9c09bd-4b7b-4004-90f7-8748dc007f57",
+      "receipt": "03ed7dcca720ad9204b37ed41caf9554ddc4692b6ebf5c9b974f566da6378ff4",
+      "verified": true,
+      "row": {
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "schedule": "0 9 * * 1-5",
+        "id": "f6da4fe7",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:46",
+        "label": "Created by review",
+        "tool_profile": "strict",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "store_revision": "f96b4d67268c3ce4d7b853958c906ffbd6a49df910180bdb2958c31c06066ce4"
+    }
+  },
+  "loop_create": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "822dc9ac-0cd3-4de7-a868-76882078fba1",
+      "agent_id": "f3e5e80f-b483-4c8c-a548-498edb20bb45",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "bf3ba66c92ee9f81b2e258e488bb995d156423ecd1ce37aa618c9dce322a989b",
+      "captured_at": 1793565106.892213,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "24659189c453e2941ca052c4ed203cb2c762ed6077d74b6a7ac85a1472a0b2f6"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "822dc9ac-0cd3-4de7-a868-76882078fba1",
+      "agent_id": "f3e5e80f-b483-4c8c-a548-498edb20bb45",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "bf3ba66c92ee9f81b2e258e488bb995d156423ecd1ce37aa618c9dce322a989b",
+      "snapshot": "24659189c453e2941ca052c4ed203cb2c762ed6077d74b6a7ac85a1472a0b2f6",
+      "action": "job_create",
+      "target_id": "ec582bfa",
+      "target_revision": null,
+      "draft": {
+        "kind": "loop",
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "label": "Created by review",
+        "enabled": false,
+        "interval_minutes": 15
+      },
+      "review": "2d673eef4b1974b6484aa2b8dd0765a33933d22dc802da3bbf62f17e3f03b0c9",
+      "action_id": "b6571a1d-3cb7-47f4-98f6-8f64ffdb2ad9",
+      "scope": "data_root",
+      "before": null,
+      "after": {
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "schedule": "@every 15m",
+        "id": "ec582bfa",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:46",
+        "label": "Created by review",
+        "tool_profile": "strict",
+        "kind": "loop",
+        "owner_convo_id": "822dc9ac-0cd3-4de7-a868-76882078fba1",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:46"
+      },
+      "rearm_minutes": 15,
+      "consequence": "Save this job configuration only. An enabled job may run on a later normal scheduler tick; this save starts no work.",
+      "raw_revision": "absent"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "822dc9ac-0cd3-4de7-a868-76882078fba1",
+      "agent_id": "f3e5e80f-b483-4c8c-a548-498edb20bb45",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "bf3ba66c92ee9f81b2e258e488bb995d156423ecd1ce37aa618c9dce322a989b",
+      "snapshot": "24659189c453e2941ca052c4ed203cb2c762ed6077d74b6a7ac85a1472a0b2f6",
+      "action": "job_create",
+      "target_id": "ec582bfa",
+      "review": "2d673eef4b1974b6484aa2b8dd0765a33933d22dc802da3bbf62f17e3f03b0c9",
+      "action_id": "b6571a1d-3cb7-47f4-98f6-8f64ffdb2ad9",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "schedule": "@every 15m",
+        "id": "ec582bfa",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:46",
+        "label": "Created by review",
+        "tool_profile": "strict",
+        "kind": "loop",
+        "owner_convo_id": "822dc9ac-0cd3-4de7-a868-76882078fba1",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:46"
+      },
+      "store_revision": "45cecf016f7a5af063c7311aaa8fa03458f859e50061b3d3d086fbe39251d305",
+      "receipt": "0167da421b0f9cedeb017883eea6d44c5c219e71c68980ca0e9d4bf6f829b3ab"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "822dc9ac-0cd3-4de7-a868-76882078fba1",
+      "agent_id": "f3e5e80f-b483-4c8c-a548-498edb20bb45",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "bf3ba66c92ee9f81b2e258e488bb995d156423ecd1ce37aa618c9dce322a989b",
+      "snapshot": "24659189c453e2941ca052c4ed203cb2c762ed6077d74b6a7ac85a1472a0b2f6",
+      "action": "job_create",
+      "target_id": "ec582bfa",
+      "review": "2d673eef4b1974b6484aa2b8dd0765a33933d22dc802da3bbf62f17e3f03b0c9",
+      "action_id": "b6571a1d-3cb7-47f4-98f6-8f64ffdb2ad9",
+      "receipt": "0167da421b0f9cedeb017883eea6d44c5c219e71c68980ca0e9d4bf6f829b3ab",
+      "verified": true,
+      "row": {
+        "prompt": "exact\nconfiguration ÃƒÆ’Ã†â€™Ãƒâ€¦Ã‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©",
+        "schedule": "@every 15m",
+        "id": "ec582bfa",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:46",
+        "label": "Created by review",
+        "tool_profile": "strict",
+        "kind": "loop",
+        "owner_convo_id": "822dc9ac-0cd3-4de7-a868-76882078fba1",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:46"
+      },
+      "store_revision": "45cecf016f7a5af063c7311aaa8fa03458f859e50061b3d3d086fbe39251d305"
+    }
+  },
+  "goal_pause": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "86a30be5-0d3b-4e2f-9735-0ee35f91a3f1",
+      "agent_id": "420f43ec-964c-4d5a-9e80-0db8a29e771a",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4d886982c47c4f0dedb93d6e56c22e78530e6994925e2213833f394a03b0b31d",
+      "captured_at": 1793565107.2264209,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "present",
+        "revision": "95f53f82615e98159478fdd5c831bbb7e7e64dd339fb7629e654395a962942d4",
+        "value": {
+          "objective": "Objective",
+          "id": "goal-owned",
+          "status": "active",
+          "created": "2026-11-01T15:31:47",
+          "updated": "2026-11-01T15:31:47",
+          "evaluated_turns": 4,
+          "max_turns": 0,
+          "last_verdict": "",
+          "last_reason": "Evidence retained",
+          "missing_evidence": [
+            "missing"
+          ],
+          "no_progress_count": 0,
+          "tool_profile": "interactive",
+          "started_by": ""
+        },
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "82bbe1e992637a8e988e49ecd1c5f5eb6c0601d4fc983056e506d538587358c8"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "86a30be5-0d3b-4e2f-9735-0ee35f91a3f1",
+      "agent_id": "420f43ec-964c-4d5a-9e80-0db8a29e771a",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4d886982c47c4f0dedb93d6e56c22e78530e6994925e2213833f394a03b0b31d",
+      "snapshot": "82bbe1e992637a8e988e49ecd1c5f5eb6c0601d4fc983056e506d538587358c8",
+      "action": "goal_pause",
+      "target_id": "goal-owned",
+      "target_revision": "95f53f82615e98159478fdd5c831bbb7e7e64dd339fb7629e654395a962942d4",
+      "draft": {},
+      "review": "fe0a1a345cafc8c5a18268ff89bd3d6891d0dea08dd52f67440e47cb6c5fbd66",
+      "action_id": "00838376-a258-41bd-9299-48cd85e2249f",
+      "scope": "conversation",
+      "before": {
+        "objective": "Objective",
+        "id": "goal-owned",
+        "status": "active",
+        "created": "2026-11-01T15:31:47",
+        "updated": "2026-11-01T15:31:47",
+        "evaluated_turns": 4,
+        "max_turns": 0,
+        "last_verdict": "",
+        "last_reason": "Evidence retained",
+        "missing_evidence": [
+          "missing"
+        ],
+        "no_progress_count": 0,
+        "tool_profile": "interactive",
+        "started_by": ""
+      },
+      "after": {
+        "objective": "Objective",
+        "id": "goal-owned",
+        "status": "paused",
+        "created": "2026-11-01T15:31:47",
+        "updated": "2026-11-01T15:31:47",
+        "evaluated_turns": 4,
+        "max_turns": 0,
+        "last_verdict": "",
+        "last_reason": "Evidence retained",
+        "missing_evidence": [
+          "missing"
+        ],
+        "no_progress_count": 0,
+        "tool_profile": "interactive",
+        "started_by": ""
+      },
+      "rearm_minutes": null,
+      "consequence": "Pause future goal evaluation; no work is started and no transcript is changed.",
+      "raw_revision": "95f53f82615e98159478fdd5c831bbb7e7e64dd339fb7629e654395a962942d4"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "86a30be5-0d3b-4e2f-9735-0ee35f91a3f1",
+      "agent_id": "420f43ec-964c-4d5a-9e80-0db8a29e771a",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4d886982c47c4f0dedb93d6e56c22e78530e6994925e2213833f394a03b0b31d",
+      "snapshot": "82bbe1e992637a8e988e49ecd1c5f5eb6c0601d4fc983056e506d538587358c8",
+      "action": "goal_pause",
+      "target_id": "goal-owned",
+      "review": "fe0a1a345cafc8c5a18268ff89bd3d6891d0dea08dd52f67440e47cb6c5fbd66",
+      "action_id": "00838376-a258-41bd-9299-48cd85e2249f",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "objective": "Objective",
+        "id": "goal-owned",
+        "status": "paused",
+        "created": "2026-11-01T15:31:47",
+        "updated": "2026-11-01T15:31:47",
+        "evaluated_turns": 4,
+        "max_turns": 0,
+        "last_verdict": "",
+        "last_reason": "Evidence retained",
+        "missing_evidence": [
+          "missing"
+        ],
+        "no_progress_count": 0,
+        "tool_profile": "interactive",
+        "started_by": ""
+      },
+      "store_revision": "0a30a2cd2fb0a417d179721197430e85727e894f38cdb7bd6fa947fdc4c6de72",
+      "receipt": "0f22946d4fe8d638f3042c6bd898399b6e956417797a2d157e1fe79853972321"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "86a30be5-0d3b-4e2f-9735-0ee35f91a3f1",
+      "agent_id": "420f43ec-964c-4d5a-9e80-0db8a29e771a",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4d886982c47c4f0dedb93d6e56c22e78530e6994925e2213833f394a03b0b31d",
+      "snapshot": "82bbe1e992637a8e988e49ecd1c5f5eb6c0601d4fc983056e506d538587358c8",
+      "action": "goal_pause",
+      "target_id": "goal-owned",
+      "review": "fe0a1a345cafc8c5a18268ff89bd3d6891d0dea08dd52f67440e47cb6c5fbd66",
+      "action_id": "00838376-a258-41bd-9299-48cd85e2249f",
+      "receipt": "0f22946d4fe8d638f3042c6bd898399b6e956417797a2d157e1fe79853972321",
+      "verified": true,
+      "row": {
+        "objective": "Objective",
+        "id": "goal-owned",
+        "status": "paused",
+        "created": "2026-11-01T15:31:47",
+        "updated": "2026-11-01T15:31:47",
+        "evaluated_turns": 4,
+        "max_turns": 0,
+        "last_verdict": "",
+        "last_reason": "Evidence retained",
+        "missing_evidence": [
+          "missing"
+        ],
+        "no_progress_count": 0,
+        "tool_profile": "interactive",
+        "started_by": ""
+      },
+      "store_revision": "0a30a2cd2fb0a417d179721197430e85727e894f38cdb7bd6fa947fdc4c6de72"
+    }
+  },
+  "goal_clear": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "814b5c7b-d310-4e21-bb8e-d18bf0b997cd",
+      "agent_id": "2a1c7254-b5dc-42c0-bc10-ae2b3a37a6c6",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "7d8636beaa4b6494952e14933fcf62c50128f4f23095e84af0dc031b06b722cb",
+      "captured_at": 1793565107.5474048,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "present",
+        "revision": "95f53f82615e98159478fdd5c831bbb7e7e64dd339fb7629e654395a962942d4",
+        "value": {
+          "objective": "Objective",
+          "id": "goal-owned",
+          "status": "active",
+          "created": "2026-11-01T15:31:47",
+          "updated": "2026-11-01T15:31:47",
+          "evaluated_turns": 4,
+          "max_turns": 0,
+          "last_verdict": "",
+          "last_reason": "Evidence retained",
+          "missing_evidence": [
+            "missing"
+          ],
+          "no_progress_count": 0,
+          "tool_profile": "interactive",
+          "started_by": ""
+        },
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "9747dcfb5670feb5aacdf15e3fde690052cb3767db99cfb60673542cfc082c23"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "814b5c7b-d310-4e21-bb8e-d18bf0b997cd",
+      "agent_id": "2a1c7254-b5dc-42c0-bc10-ae2b3a37a6c6",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "7d8636beaa4b6494952e14933fcf62c50128f4f23095e84af0dc031b06b722cb",
+      "snapshot": "9747dcfb5670feb5aacdf15e3fde690052cb3767db99cfb60673542cfc082c23",
+      "action": "goal_clear",
+      "target_id": "goal-owned",
+      "target_revision": "95f53f82615e98159478fdd5c831bbb7e7e64dd339fb7629e654395a962942d4",
+      "draft": {},
+      "review": "57a75ff2a372a031d89f726dec7f774122c55ff9517c185b4de83e93fd2d6059",
+      "action_id": "e751df11-4a52-45cf-93e3-7aa2a720887d",
+      "scope": "conversation",
+      "before": {
+        "objective": "Objective",
+        "id": "goal-owned",
+        "status": "active",
+        "created": "2026-11-01T15:31:47",
+        "updated": "2026-11-01T15:31:47",
+        "evaluated_turns": 4,
+        "max_turns": 0,
+        "last_verdict": "",
+        "last_reason": "Evidence retained",
+        "missing_evidence": [
+          "missing"
+        ],
+        "no_progress_count": 0,
+        "tool_profile": "interactive",
+        "started_by": ""
+      },
+      "after": null,
+      "rearm_minutes": null,
+      "consequence": "Clear the saved goal only; no transcript is removed and no work is started.",
+      "raw_revision": "95f53f82615e98159478fdd5c831bbb7e7e64dd339fb7629e654395a962942d4"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "814b5c7b-d310-4e21-bb8e-d18bf0b997cd",
+      "agent_id": "2a1c7254-b5dc-42c0-bc10-ae2b3a37a6c6",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "7d8636beaa4b6494952e14933fcf62c50128f4f23095e84af0dc031b06b722cb",
+      "snapshot": "9747dcfb5670feb5aacdf15e3fde690052cb3767db99cfb60673542cfc082c23",
+      "action": "goal_clear",
+      "target_id": "goal-owned",
+      "review": "57a75ff2a372a031d89f726dec7f774122c55ff9517c185b4de83e93fd2d6059",
+      "action_id": "e751df11-4a52-45cf-93e3-7aa2a720887d",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": null,
+      "store_revision": "absent",
+      "receipt": "ebc394d3deac004b0318f02eddec634a6385e63be1a2c1b85949c4cb306622dd"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "814b5c7b-d310-4e21-bb8e-d18bf0b997cd",
+      "agent_id": "2a1c7254-b5dc-42c0-bc10-ae2b3a37a6c6",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "7d8636beaa4b6494952e14933fcf62c50128f4f23095e84af0dc031b06b722cb",
+      "snapshot": "9747dcfb5670feb5aacdf15e3fde690052cb3767db99cfb60673542cfc082c23",
+      "action": "goal_clear",
+      "target_id": "goal-owned",
+      "review": "57a75ff2a372a031d89f726dec7f774122c55ff9517c185b4de83e93fd2d6059",
+      "action_id": "e751df11-4a52-45cf-93e3-7aa2a720887d",
+      "receipt": "ebc394d3deac004b0318f02eddec634a6385e63be1a2c1b85949c4cb306622dd",
+      "verified": true,
+      "row": null,
+      "store_revision": "absent"
+    }
+  },
+  "jobs_job_update_off": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "3fa12655-f1b7-4c4f-9cc2-a53d551bf47f",
+      "agent_id": "6a0e09c8-cf59-49a6-a7e8-f8939ef7b0c5",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4744acd4c2accdfb15c4a7538edb2aa6541b8be6dcb32ce54f12b092c37f3e66",
+      "captured_at": 1793565107.8685353,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 1,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "daa8ce0c566cf6ee5ebfcb1d757fcb3f11daf4c5c5ce58af560dbca07a05b76d"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "daa8ce0c566cf6ee5ebfcb1d757fcb3f11daf4c5c5ce58af560dbca07a05b76d"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "a66e18729ad6d375be0fc3b550c584413d392e1cbaf270c69381ef6c600225d6"
+    },
+    "target": {
+      "kind": "cron",
+      "effective_tool_profile": "interactive",
+      "row": {
+        "prompt": "Selected prompt",
+        "schedule": "0 9 * * *",
+        "id": "d2bf20f5",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 7,
+        "created": "2026-11-01T15:31:47",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "revision": "fd7f84bfdbe9d66d51cb269a6ba1c7b55070d242cd14465f20150e212d2908a9"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "3fa12655-f1b7-4c4f-9cc2-a53d551bf47f",
+      "agent_id": "6a0e09c8-cf59-49a6-a7e8-f8939ef7b0c5",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4744acd4c2accdfb15c4a7538edb2aa6541b8be6dcb32ce54f12b092c37f3e66",
+      "snapshot": "a66e18729ad6d375be0fc3b550c584413d392e1cbaf270c69381ef6c600225d6",
+      "action": "job_update",
+      "target_id": "d2bf20f5",
+      "target_revision": "fd7f84bfdbe9d66d51cb269a6ba1c7b55070d242cd14465f20150e212d2908a9",
+      "draft": {
+        "label": "Reviewed label"
+      },
+      "review": "4dc30cb135a4fcb1b8e0c9a37e44e00df7364980638a92c959d6897777890b45",
+      "action_id": "c67a846d-7764-4adc-84d8-9dc1eb15d1e2",
+      "scope": "data_root",
+      "before": {
+        "prompt": "Selected prompt",
+        "schedule": "0 9 * * *",
+        "id": "d2bf20f5",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 7,
+        "created": "2026-11-01T15:31:47",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "after": {
+        "prompt": "Selected prompt",
+        "schedule": "0 9 * * *",
+        "id": "d2bf20f5",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 7,
+        "created": "2026-11-01T15:31:47",
+        "label": "Reviewed label",
+        "tool_profile": "interactive",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "rearm_minutes": null,
+      "consequence": "Save this job configuration only. An enabled job may run on a later normal scheduler tick; this save starts no work.",
+      "raw_revision": "54c0d4e62e026c2fd9b0b74a1e7396a1aac2b05d34717519f7ef265d45ddf48f"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "3fa12655-f1b7-4c4f-9cc2-a53d551bf47f",
+      "agent_id": "6a0e09c8-cf59-49a6-a7e8-f8939ef7b0c5",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4744acd4c2accdfb15c4a7538edb2aa6541b8be6dcb32ce54f12b092c37f3e66",
+      "snapshot": "a66e18729ad6d375be0fc3b550c584413d392e1cbaf270c69381ef6c600225d6",
+      "action": "job_update",
+      "target_id": "d2bf20f5",
+      "review": "4dc30cb135a4fcb1b8e0c9a37e44e00df7364980638a92c959d6897777890b45",
+      "action_id": "c67a846d-7764-4adc-84d8-9dc1eb15d1e2",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "prompt": "Selected prompt",
+        "schedule": "0 9 * * *",
+        "id": "d2bf20f5",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 7,
+        "created": "2026-11-01T15:31:47",
+        "label": "Reviewed label",
+        "tool_profile": "interactive",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "store_revision": "712086f034174c4f873e29d663a146e841a19902ea9d5fa6149ad9ac56a41df3",
+      "receipt": "99fb855d7baba85f0c1e1524a5b8c6ec4b697860f6efc80a85a3fcad1393e77d"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "3fa12655-f1b7-4c4f-9cc2-a53d551bf47f",
+      "agent_id": "6a0e09c8-cf59-49a6-a7e8-f8939ef7b0c5",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "4744acd4c2accdfb15c4a7538edb2aa6541b8be6dcb32ce54f12b092c37f3e66",
+      "snapshot": "a66e18729ad6d375be0fc3b550c584413d392e1cbaf270c69381ef6c600225d6",
+      "action": "job_update",
+      "target_id": "d2bf20f5",
+      "review": "4dc30cb135a4fcb1b8e0c9a37e44e00df7364980638a92c959d6897777890b45",
+      "action_id": "c67a846d-7764-4adc-84d8-9dc1eb15d1e2",
+      "receipt": "99fb855d7baba85f0c1e1524a5b8c6ec4b697860f6efc80a85a3fcad1393e77d",
+      "verified": true,
+      "row": {
+        "prompt": "Selected prompt",
+        "schedule": "0 9 * * *",
+        "id": "d2bf20f5",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 7,
+        "created": "2026-11-01T15:31:47",
+        "label": "Reviewed label",
+        "tool_profile": "interactive",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "store_revision": "712086f034174c4f873e29d663a146e841a19902ea9d5fa6149ad9ac56a41df3"
+    }
+  },
+  "jobs_job_delete_off": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "2767373f-d67b-4107-a3d5-b27a38ceafd4",
+      "agent_id": "3a3b5b95-0005-4b56-b91c-de95d82f7c59",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d35ccc3cfdeb3c9c18366489cd07c42af938fb4685da63bcb1cca83957e0a5f3",
+      "captured_at": 1793565108.22609,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 1,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "f77cdcaabd80759a44c979af3a864c90f2f30eb01654f4c91afd29b30902fa9e"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "f77cdcaabd80759a44c979af3a864c90f2f30eb01654f4c91afd29b30902fa9e"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "1cebd9f4924bcb629d0896ffad12a002be910e42b7d7fe0867fde7bb644f8094"
+    },
+    "target": {
+      "kind": "cron",
+      "effective_tool_profile": "interactive",
+      "row": {
+        "prompt": "Selected prompt",
+        "schedule": "0 9 * * *",
+        "id": "95a3b6ee",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 7,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "revision": "3cfd710bc977989948c1ce082afb09b07c1c432cf2f4135b0d8109e74feb2006"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "2767373f-d67b-4107-a3d5-b27a38ceafd4",
+      "agent_id": "3a3b5b95-0005-4b56-b91c-de95d82f7c59",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d35ccc3cfdeb3c9c18366489cd07c42af938fb4685da63bcb1cca83957e0a5f3",
+      "snapshot": "1cebd9f4924bcb629d0896ffad12a002be910e42b7d7fe0867fde7bb644f8094",
+      "action": "job_delete",
+      "target_id": "95a3b6ee",
+      "target_revision": "3cfd710bc977989948c1ce082afb09b07c1c432cf2f4135b0d8109e74feb2006",
+      "draft": {},
+      "review": "b52c73903deacc2ae2230df39c381e5e28fb17405378fabf1db7edfdf1bbda0b",
+      "action_id": "e84cba75-b192-44c4-a98a-9c0e6c5ffaec",
+      "scope": "data_root",
+      "before": {
+        "prompt": "Selected prompt",
+        "schedule": "0 9 * * *",
+        "id": "95a3b6ee",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 7,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "after": null,
+      "rearm_minutes": null,
+      "consequence": "Delete only the saved job; accepted work is not cancelled.",
+      "raw_revision": "80bb71ede33e161faa9526aa4ca9939a92aff65263a5a54f2918ed315e91e16e"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "2767373f-d67b-4107-a3d5-b27a38ceafd4",
+      "agent_id": "3a3b5b95-0005-4b56-b91c-de95d82f7c59",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d35ccc3cfdeb3c9c18366489cd07c42af938fb4685da63bcb1cca83957e0a5f3",
+      "snapshot": "1cebd9f4924bcb629d0896ffad12a002be910e42b7d7fe0867fde7bb644f8094",
+      "action": "job_delete",
+      "target_id": "95a3b6ee",
+      "review": "b52c73903deacc2ae2230df39c381e5e28fb17405378fabf1db7edfdf1bbda0b",
+      "action_id": "e84cba75-b192-44c4-a98a-9c0e6c5ffaec",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": null,
+      "store_revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "receipt": "921390e68af56137e09c61e198916c1085c029c93b6e87251001f2d13f2f904a"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "2767373f-d67b-4107-a3d5-b27a38ceafd4",
+      "agent_id": "3a3b5b95-0005-4b56-b91c-de95d82f7c59",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d35ccc3cfdeb3c9c18366489cd07c42af938fb4685da63bcb1cca83957e0a5f3",
+      "snapshot": "1cebd9f4924bcb629d0896ffad12a002be910e42b7d7fe0867fde7bb644f8094",
+      "action": "job_delete",
+      "target_id": "95a3b6ee",
+      "review": "b52c73903deacc2ae2230df39c381e5e28fb17405378fabf1db7edfdf1bbda0b",
+      "action_id": "e84cba75-b192-44c4-a98a-9c0e6c5ffaec",
+      "receipt": "921390e68af56137e09c61e198916c1085c029c93b6e87251001f2d13f2f904a",
+      "verified": true,
+      "row": null,
+      "store_revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
+  "loops_job_update_off": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+      "agent_id": "dab33008-606f-481f-9cac-bd2b2f998883",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "645ac0534e439a95e7f27fd74f2838bb028489b3ba8273c194b7f2969f98f470",
+      "captured_at": 1793565108.598918,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 1
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "ba438a5f582efd4debda0cf5cb342a4319a8fc344f1e511762a666e69ee9aed9"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "ba438a5f582efd4debda0cf5cb342a4319a8fc344f1e511762a666e69ee9aed9"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "86d84da24c127afee364543b33b0ff16302c763cc5ab60f2997378b7c76f3324"
+    },
+    "target": {
+      "kind": "loop",
+      "effective_tool_profile": "interactive",
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "ac1e7a28",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:48"
+      },
+      "revision": "04bdb3e8353e441cdf121dbb3e9a779bcf464f13832cf1de363ea194669dd77b"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+      "agent_id": "dab33008-606f-481f-9cac-bd2b2f998883",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "645ac0534e439a95e7f27fd74f2838bb028489b3ba8273c194b7f2969f98f470",
+      "snapshot": "86d84da24c127afee364543b33b0ff16302c763cc5ab60f2997378b7c76f3324",
+      "action": "job_update",
+      "target_id": "ac1e7a28",
+      "target_revision": "04bdb3e8353e441cdf121dbb3e9a779bcf464f13832cf1de363ea194669dd77b",
+      "draft": {
+        "prompt": "Loop edited"
+      },
+      "review": "f968e26f73831145ad8125b3b3445b436c7abdaf7defbd49cfbb5e43ab84138e",
+      "action_id": "9fc04e22-2b4c-4631-b06c-0cf387842b6e",
+      "scope": "data_root",
+      "before": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "ac1e7a28",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:48"
+      },
+      "after": {
+        "prompt": "Loop edited",
+        "schedule": "@every 15m",
+        "id": "ac1e7a28",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:48"
+      },
+      "rearm_minutes": null,
+      "consequence": "Save this job configuration only. An enabled job may run on a later normal scheduler tick; this save starts no work.",
+      "raw_revision": "03a5f989eb8fc5b76c8d71fde2123f5f3ba32283e687ab320894af00b15ec736"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+      "agent_id": "dab33008-606f-481f-9cac-bd2b2f998883",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "645ac0534e439a95e7f27fd74f2838bb028489b3ba8273c194b7f2969f98f470",
+      "snapshot": "86d84da24c127afee364543b33b0ff16302c763cc5ab60f2997378b7c76f3324",
+      "action": "job_update",
+      "target_id": "ac1e7a28",
+      "review": "f968e26f73831145ad8125b3b3445b436c7abdaf7defbd49cfbb5e43ab84138e",
+      "action_id": "9fc04e22-2b4c-4631-b06c-0cf387842b6e",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "prompt": "Loop edited",
+        "schedule": "@every 15m",
+        "id": "ac1e7a28",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:48"
+      },
+      "store_revision": "5d1250c5d1ed158237ed1a785d0ab354472268acf90af804383e86276ee1faf4",
+      "receipt": "f951b356512bb4c855094b18c5d69ee13eb1916c7770a386523a212922f0e692"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+      "agent_id": "dab33008-606f-481f-9cac-bd2b2f998883",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "645ac0534e439a95e7f27fd74f2838bb028489b3ba8273c194b7f2969f98f470",
+      "snapshot": "86d84da24c127afee364543b33b0ff16302c763cc5ab60f2997378b7c76f3324",
+      "action": "job_update",
+      "target_id": "ac1e7a28",
+      "review": "f968e26f73831145ad8125b3b3445b436c7abdaf7defbd49cfbb5e43ab84138e",
+      "action_id": "9fc04e22-2b4c-4631-b06c-0cf387842b6e",
+      "receipt": "f951b356512bb4c855094b18c5d69ee13eb1916c7770a386523a212922f0e692",
+      "verified": true,
+      "row": {
+        "prompt": "Loop edited",
+        "schedule": "@every 15m",
+        "id": "ac1e7a28",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "c414486d-3d4e-4a1d-81b1-f77c276cf2f2",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:48"
+      },
+      "store_revision": "5d1250c5d1ed158237ed1a785d0ab354472268acf90af804383e86276ee1faf4"
+    }
+  },
+  "loops_job_delete_off": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "617f7fab-5ed3-4ba5-9beb-f7bfc4cee0bc",
+      "agent_id": "76c46a4a-54b0-4835-9147-75f5d62ddcf3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "e4afcd928ee5059b6ec12b5fa1781b1227732dd2d0deded564f91d18ebb17169",
+      "captured_at": 1793565108.927297,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 1
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "19eec8ba7e2c4da8f187f3bfdf73c7fc673fdbbdf989b4b97537c50bbf440189"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "19eec8ba7e2c4da8f187f3bfdf73c7fc673fdbbdf989b4b97537c50bbf440189"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "13eb16409aa033710908f8cdc2b8526f47e83fa036e0ca8d38a739040e09d1a3"
+    },
+    "target": {
+      "kind": "loop",
+      "effective_tool_profile": "interactive",
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "7195031a",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "617f7fab-5ed3-4ba5-9beb-f7bfc4cee0bc",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:48"
+      },
+      "revision": "58906bc0f641f68fccbc124fb490022887f4c323fe249ef67f306ea612412395"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "617f7fab-5ed3-4ba5-9beb-f7bfc4cee0bc",
+      "agent_id": "76c46a4a-54b0-4835-9147-75f5d62ddcf3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "e4afcd928ee5059b6ec12b5fa1781b1227732dd2d0deded564f91d18ebb17169",
+      "snapshot": "13eb16409aa033710908f8cdc2b8526f47e83fa036e0ca8d38a739040e09d1a3",
+      "action": "job_delete",
+      "target_id": "7195031a",
+      "target_revision": "58906bc0f641f68fccbc124fb490022887f4c323fe249ef67f306ea612412395",
+      "draft": {},
+      "review": "66337b2b2da86f32162e8bf94ed364232be31d9da3c53132dd6abfbebf17a054",
+      "action_id": "49506ee0-587c-4de0-8235-e225c6a9c4e7",
+      "scope": "data_root",
+      "before": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "7195031a",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:48",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "617f7fab-5ed3-4ba5-9beb-f7bfc4cee0bc",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:48"
+      },
+      "after": null,
+      "rearm_minutes": null,
+      "consequence": "Delete only the saved job; accepted work is not cancelled.",
+      "raw_revision": "df1a1f7dc5f0b69c703bc3d4dd57bf60621d566e18ff50901ddcedc02da4fe51"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "617f7fab-5ed3-4ba5-9beb-f7bfc4cee0bc",
+      "agent_id": "76c46a4a-54b0-4835-9147-75f5d62ddcf3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "e4afcd928ee5059b6ec12b5fa1781b1227732dd2d0deded564f91d18ebb17169",
+      "snapshot": "13eb16409aa033710908f8cdc2b8526f47e83fa036e0ca8d38a739040e09d1a3",
+      "action": "job_delete",
+      "target_id": "7195031a",
+      "review": "66337b2b2da86f32162e8bf94ed364232be31d9da3c53132dd6abfbebf17a054",
+      "action_id": "49506ee0-587c-4de0-8235-e225c6a9c4e7",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": null,
+      "store_revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "receipt": "c0681c1d9a09db60ec39495c4f9f85a1a1aed2551433063106fc47b5a0e787b8"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "617f7fab-5ed3-4ba5-9beb-f7bfc4cee0bc",
+      "agent_id": "76c46a4a-54b0-4835-9147-75f5d62ddcf3",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "e4afcd928ee5059b6ec12b5fa1781b1227732dd2d0deded564f91d18ebb17169",
+      "snapshot": "13eb16409aa033710908f8cdc2b8526f47e83fa036e0ca8d38a739040e09d1a3",
+      "action": "job_delete",
+      "target_id": "7195031a",
+      "review": "66337b2b2da86f32162e8bf94ed364232be31d9da3c53132dd6abfbebf17a054",
+      "action_id": "49506ee0-587c-4de0-8235-e225c6a9c4e7",
+      "receipt": "c0681c1d9a09db60ec39495c4f9f85a1a1aed2551433063106fc47b5a0e787b8",
+      "verified": true,
+      "row": null,
+      "store_revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
+  "loops_loop_enable_off": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+      "agent_id": "064f1a98-c85c-49ad-b369-3373536d1627",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "98736e0a3aea23f4a6ecabc778fe799cfccb30b1b0693ff0d9855d060e1ff1ef",
+      "captured_at": 1793565109.2367287,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 1
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "429ac4586faecc6a5609ece75f1c626dbea1cbabaa469190d0e4dd6bafb2e4d0"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "429ac4586faecc6a5609ece75f1c626dbea1cbabaa469190d0e4dd6bafb2e4d0"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "9c144bbbf255aafb0340f10c49bff5be54ea77d206bf6634faa0173d875e633a"
+    },
+    "target": {
+      "kind": "loop",
+      "effective_tool_profile": "interactive",
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "f705ba00",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "revision": "f5403f9fc2bc79fea1094d6a3f05d37c094095729f69c846171d5ddcec341af0"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+      "agent_id": "064f1a98-c85c-49ad-b369-3373536d1627",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "98736e0a3aea23f4a6ecabc778fe799cfccb30b1b0693ff0d9855d060e1ff1ef",
+      "snapshot": "9c144bbbf255aafb0340f10c49bff5be54ea77d206bf6634faa0173d875e633a",
+      "action": "loop_enable",
+      "target_id": "f705ba00",
+      "target_revision": "f5403f9fc2bc79fea1094d6a3f05d37c094095729f69c846171d5ddcec341af0",
+      "draft": {
+        "enabled": false
+      },
+      "review": "0440a46c6ee754f373a429a5de3afc1dc00dfe22c56b29bb97162fc8aee7db82",
+      "action_id": "b9000ecd-aff9-48d8-b914-15d79ce0da3b",
+      "scope": "data_root",
+      "before": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "f705ba00",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "after": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "f705ba00",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "rearm_minutes": null,
+      "consequence": "Save this job configuration only. An enabled job may run on a later normal scheduler tick; this save starts no work.",
+      "raw_revision": "aeaa6e2b20387ed0954c89b8e3f480d629d1b5e1ee83f0e28cbfd445e79f8c03"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+      "agent_id": "064f1a98-c85c-49ad-b369-3373536d1627",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "98736e0a3aea23f4a6ecabc778fe799cfccb30b1b0693ff0d9855d060e1ff1ef",
+      "snapshot": "9c144bbbf255aafb0340f10c49bff5be54ea77d206bf6634faa0173d875e633a",
+      "action": "loop_enable",
+      "target_id": "f705ba00",
+      "review": "0440a46c6ee754f373a429a5de3afc1dc00dfe22c56b29bb97162fc8aee7db82",
+      "action_id": "b9000ecd-aff9-48d8-b914-15d79ce0da3b",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "f705ba00",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "store_revision": "1bbca113bd69b0ba57d1e0ec3e2e4bca6e8734a7b4540276fe492174877b2b09",
+      "receipt": "c818e46eda140b18cf5fd9485e1c862a907c4ce3dc2226e9addc6f8d4f886ef9"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+      "agent_id": "064f1a98-c85c-49ad-b369-3373536d1627",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "98736e0a3aea23f4a6ecabc778fe799cfccb30b1b0693ff0d9855d060e1ff1ef",
+      "snapshot": "9c144bbbf255aafb0340f10c49bff5be54ea77d206bf6634faa0173d875e633a",
+      "action": "loop_enable",
+      "target_id": "f705ba00",
+      "review": "0440a46c6ee754f373a429a5de3afc1dc00dfe22c56b29bb97162fc8aee7db82",
+      "action_id": "b9000ecd-aff9-48d8-b914-15d79ce0da3b",
+      "receipt": "c818e46eda140b18cf5fd9485e1c862a907c4ce3dc2226e9addc6f8d4f886ef9",
+      "verified": true,
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "f705ba00",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "6b812566-5551-4a28-b60f-b28c2b98344d",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "store_revision": "1bbca113bd69b0ba57d1e0ec3e2e4bca6e8734a7b4540276fe492174877b2b09"
+    }
+  },
+  "loops_loop_enable_on": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+      "agent_id": "8133ebc3-dc66-4e86-92eb-49d726372544",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "1bf0c75a99561723a7c17b6dbef9810f8fa8b6527282d99afe00e1660c1f1e5e",
+      "captured_at": 1793565109.5540545,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 1
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "443064edaeb5d22ab75e74d4958ce91049c34c5e15cf10a96128df5b10bae09f"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "443064edaeb5d22ab75e74d4958ce91049c34c5e15cf10a96128df5b10bae09f"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "a358899451a9a7c690ab6c7b7e3ac1a6658d019641991170bffe89917379d18d"
+    },
+    "target": {
+      "kind": "loop",
+      "effective_tool_profile": "interactive",
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "35c47f05",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "revision": "ea8523ff482c24caa1dcdba3e4596c93b7e77252ad2447d74f948bc7b9119c8c"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+      "agent_id": "8133ebc3-dc66-4e86-92eb-49d726372544",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "1bf0c75a99561723a7c17b6dbef9810f8fa8b6527282d99afe00e1660c1f1e5e",
+      "snapshot": "a358899451a9a7c690ab6c7b7e3ac1a6658d019641991170bffe89917379d18d",
+      "action": "loop_enable",
+      "target_id": "35c47f05",
+      "target_revision": "ea8523ff482c24caa1dcdba3e4596c93b7e77252ad2447d74f948bc7b9119c8c",
+      "draft": {
+        "enabled": true
+      },
+      "review": "082108664cb87d010dc0aef5360e34a0feb92730e3f473dc8d261b123f15ec63",
+      "action_id": "2e88c717-038a-4e2e-a86c-2e2d23806e5b",
+      "scope": "data_root",
+      "before": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "35c47f05",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "after": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "35c47f05",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "rearm_minutes": 15,
+      "consequence": "Save this job configuration only. An enabled job may run on a later normal scheduler tick; this save starts no work.",
+      "raw_revision": "ae9e71e8e60d8ee926448830a67ad24dc447333430224afcb74751d9aa65dc8e"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+      "agent_id": "8133ebc3-dc66-4e86-92eb-49d726372544",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "1bf0c75a99561723a7c17b6dbef9810f8fa8b6527282d99afe00e1660c1f1e5e",
+      "snapshot": "a358899451a9a7c690ab6c7b7e3ac1a6658d019641991170bffe89917379d18d",
+      "action": "loop_enable",
+      "target_id": "35c47f05",
+      "review": "082108664cb87d010dc0aef5360e34a0feb92730e3f473dc8d261b123f15ec63",
+      "action_id": "2e88c717-038a-4e2e-a86c-2e2d23806e5b",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "35c47f05",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "store_revision": "f5baf39c173258314f0b9382aa2bc2f8646b690e5f3829767a47cba8e2eb0091",
+      "receipt": "9f49794029f7e1bf1849ec37b5f649a8fa1955814f3b70de29308cf06dc51895"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+      "agent_id": "8133ebc3-dc66-4e86-92eb-49d726372544",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "1bf0c75a99561723a7c17b6dbef9810f8fa8b6527282d99afe00e1660c1f1e5e",
+      "snapshot": "a358899451a9a7c690ab6c7b7e3ac1a6658d019641991170bffe89917379d18d",
+      "action": "loop_enable",
+      "target_id": "35c47f05",
+      "review": "082108664cb87d010dc0aef5360e34a0feb92730e3f473dc8d261b123f15ec63",
+      "action_id": "2e88c717-038a-4e2e-a86c-2e2d23806e5b",
+      "receipt": "9f49794029f7e1bf1849ec37b5f649a8fa1955814f3b70de29308cf06dc51895",
+      "verified": true,
+      "row": {
+        "prompt": "Selected loop",
+        "schedule": "@every 15m",
+        "id": "35c47f05",
+        "enabled": true,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:49",
+        "label": "",
+        "tool_profile": "interactive",
+        "kind": "loop",
+        "owner_convo_id": "61b79db3-0aee-4bb8-bcd1-2a77c67f7e8a",
+        "interval_minutes": 15,
+        "next_run_at": "2026-11-01T15:46:49"
+      },
+      "store_revision": "f5baf39c173258314f0b9382aa2bc2f8646b690e5f3829767a47cba8e2eb0091"
+    }
+  },
+  "registered_routes": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "fae52b8a-f4ab-4f05-972b-a624c23906fd",
+      "agent_id": "ea30942a-4c0a-4afb-b336-9e5be91d3b32",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d54a186fe7cc96e5737a10739e77b98b028a561c278ee0f72410b7ac1e393879",
+      "captured_at": 1793565115.7197237,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "snapshot": "77c4ea1190e1f3d321338e427c5b8c1c45597759222eed8f98eb84dd5eb6e077"
+    },
+    "review": {
+      "kind": "work_control_review",
+      "version": 1,
+      "session_id": "fae52b8a-f4ab-4f05-972b-a624c23906fd",
+      "agent_id": "ea30942a-4c0a-4afb-b336-9e5be91d3b32",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d54a186fe7cc96e5737a10739e77b98b028a561c278ee0f72410b7ac1e393879",
+      "snapshot": "77c4ea1190e1f3d321338e427c5b8c1c45597759222eed8f98eb84dd5eb6e077",
+      "action": "job_create",
+      "target_id": "f12a98bf",
+      "target_revision": null,
+      "draft": {
+        "kind": "cron",
+        "prompt": "Route fixture",
+        "schedule": "0 9 * * *",
+        "enabled": false
+      },
+      "review": "d7cb5162fd8762a14715a4cea40fc52c62037e23f7d2221ec26625f981e356a7",
+      "action_id": "e376adc1-2811-448f-959f-d46af90a859e",
+      "scope": "data_root",
+      "before": null,
+      "after": {
+        "prompt": "Route fixture",
+        "schedule": "0 9 * * *",
+        "id": "f12a98bf",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:55",
+        "label": "",
+        "tool_profile": "strict",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "rearm_minutes": null,
+      "consequence": "Save this job configuration only. An enabled job may run on a later normal scheduler tick; this save starts no work.",
+      "raw_revision": "absent"
+    },
+    "result": {
+      "kind": "work_control_result",
+      "version": 1,
+      "session_id": "fae52b8a-f4ab-4f05-972b-a624c23906fd",
+      "agent_id": "ea30942a-4c0a-4afb-b336-9e5be91d3b32",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d54a186fe7cc96e5737a10739e77b98b028a561c278ee0f72410b7ac1e393879",
+      "snapshot": "77c4ea1190e1f3d321338e427c5b8c1c45597759222eed8f98eb84dd5eb6e077",
+      "action": "job_create",
+      "target_id": "f12a98bf",
+      "review": "d7cb5162fd8762a14715a4cea40fc52c62037e23f7d2221ec26625f981e356a7",
+      "action_id": "e376adc1-2811-448f-959f-d46af90a859e",
+      "status": "applied",
+      "mutated": true,
+      "close_required": false,
+      "row": {
+        "prompt": "Route fixture",
+        "schedule": "0 9 * * *",
+        "id": "f12a98bf",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:55",
+        "label": "",
+        "tool_profile": "strict",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "store_revision": "be7074a9dee4a742ace079f6ed824f027843074824c7a6e60eb83f5a52d29543",
+      "receipt": "c1f370d1b4c84b8ce663bd71f847209e8270aa5e7a67579cf06d2bc4c922a0b0"
+    },
+    "readback": {
+      "kind": "work_control_readback",
+      "version": 1,
+      "session_id": "fae52b8a-f4ab-4f05-972b-a624c23906fd",
+      "agent_id": "ea30942a-4c0a-4afb-b336-9e5be91d3b32",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "d54a186fe7cc96e5737a10739e77b98b028a561c278ee0f72410b7ac1e393879",
+      "snapshot": "77c4ea1190e1f3d321338e427c5b8c1c45597759222eed8f98eb84dd5eb6e077",
+      "action": "job_create",
+      "target_id": "f12a98bf",
+      "review": "d7cb5162fd8762a14715a4cea40fc52c62037e23f7d2221ec26625f981e356a7",
+      "action_id": "e376adc1-2811-448f-959f-d46af90a859e",
+      "receipt": "c1f370d1b4c84b8ce663bd71f847209e8270aa5e7a67579cf06d2bc4c922a0b0",
+      "verified": true,
+      "row": {
+        "prompt": "Route fixture",
+        "schedule": "0 9 * * *",
+        "id": "f12a98bf",
+        "enabled": false,
+        "new_conversation": false,
+        "last_fired_slot": null,
+        "run_count": 0,
+        "created": "2026-11-01T15:31:55",
+        "label": "",
+        "tool_profile": "strict",
+        "kind": "cron",
+        "owner_convo_id": "",
+        "interval_minutes": 0,
+        "next_run_at": null
+      },
+      "store_revision": "be7074a9dee4a742ace079f6ed824f027843074824c7a6e60eb83f5a52d29543"
+    }
+  }
+}

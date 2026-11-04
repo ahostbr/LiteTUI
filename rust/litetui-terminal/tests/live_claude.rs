@@ -67,7 +67,11 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
             }
             Ok(Observation::History(_)) => panic!("Unrequested restored history"),
             Ok(
-                Observation::Compact(_)
+                Observation::ScheduledProposal(_)
+                | Observation::ScheduledHeld(_)
+                | Observation::ScheduledLocalNotSent { .. }
+                | Observation::ScheduledConversationChanged(_)
+                | Observation::Compact(_)
                 | Observation::CompactSettled(_)
                 | Observation::Controls(_)
                 | Observation::Queue(_)

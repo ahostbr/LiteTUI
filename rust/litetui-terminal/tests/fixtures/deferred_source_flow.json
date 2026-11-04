@@ -1,0 +1,576 @@
+{
+  "pending": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "5aa24ff0-0247-4224-970a-d4774b5c0cd7",
+      "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "8c7338385a91071bf5e49fe92e7ca3841cee4dc1b6307e9bd95f3de1d5cd7eef",
+      "captured_at": 1793797911.5108426,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "deferred_job": {
+        "record": {
+          "epoch": {
+            "identity": {
+              "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+              "backend": "old",
+              "model": "old-model",
+              "session_id": "00000000-0000-0000-0000-000000000009"
+            },
+            "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "provider": "codex"
+          },
+          "generation": 1,
+          "invocation_id": "00000000-0000-0000-0000-000000000003",
+          "job_id": "job-a",
+          "job_sha256": "1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa",
+          "job_snapshot": "{\"id\":\"job-a\",\"prompt\":\"Retained prompt\"}",
+          "kind": "cron",
+          "payload": {
+            "content": "Retained prompt",
+            "source": "scheduled",
+            "tool_profile": "strict"
+          },
+          "reason": "Prior invocation retained",
+          "requested_profile": "strict",
+          "shutdown": {
+            "admission_closed": true,
+            "admission_ids": [],
+            "callback_settled": true,
+            "closing_sequence": 7,
+            "effects_verified": false,
+            "final_sequence": 8,
+            "inputs": [
+              {
+                "disposition": "reconciled",
+                "input_id": "00000000-0000-0000-0000-00000000000b"
+              }
+            ],
+            "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ledger_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "process_settled": true,
+            "producer_ids": [
+              "00000000-0000-0000-0000-00000000000a"
+            ],
+            "version": 1,
+            "worker_settled": true
+          },
+          "source": "scheduled",
+          "state": "held",
+          "target": {
+            "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+            "session_id": "5aa24ff0-0247-4224-970a-d4774b5c0cd7"
+          }
+        },
+        "journal_sha256": "6a9124e580cd33bdf35015107419109be61d50a8383b36a20ecdeea9e5def630",
+        "document_state": "pending",
+        "input_id": null,
+        "discard": {
+          "eligible": true,
+          "reason": null
+        }
+      },
+      "snapshot": "42b8bd2ec4bfd3bd9cfe37a0f1c81b581690423b68ceba05bb2ec9107134c0e9"
+    },
+    "review": {
+      "kind": "work_deferred_review",
+      "version": 1,
+      "deferred_version": 1,
+      "identity": {
+        "session_id": "5aa24ff0-0247-4224-970a-d4774b5c0cd7",
+        "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+        "backend": "custom",
+        "model": "old-model"
+      },
+      "instance": "8c7338385a91071bf5e49fe92e7ca3841cee4dc1b6307e9bd95f3de1d5cd7eef",
+      "snapshot": "42b8bd2ec4bfd3bd9cfe37a0f1c81b581690423b68ceba05bb2ec9107134c0e9",
+      "review": "0257eb9563d18b7bf4e043fa96561fe8c2758806724d6f848104c0dadaebc00a",
+      "invocation_id": "00000000-0000-0000-0000-000000000003",
+      "journal_sha256": "6a9124e580cd33bdf35015107419109be61d50a8383b36a20ecdeea9e5def630",
+      "record": {
+        "epoch": {
+          "identity": {
+            "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+            "backend": "old",
+            "model": "old-model",
+            "session_id": "00000000-0000-0000-0000-000000000009"
+          },
+          "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "provider": "codex"
+        },
+        "generation": 1,
+        "invocation_id": "00000000-0000-0000-0000-000000000003",
+        "job_id": "job-a",
+        "job_sha256": "1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa",
+        "job_snapshot": "{\"id\":\"job-a\",\"prompt\":\"Retained prompt\"}",
+        "kind": "cron",
+        "payload": {
+          "content": "Retained prompt",
+          "source": "scheduled",
+          "tool_profile": "strict"
+        },
+        "reason": "Prior invocation retained",
+        "requested_profile": "strict",
+        "shutdown": {
+          "admission_closed": true,
+          "admission_ids": [],
+          "callback_settled": true,
+          "closing_sequence": 7,
+          "effects_verified": false,
+          "final_sequence": 8,
+          "inputs": [
+            {
+              "disposition": "reconciled",
+              "input_id": "00000000-0000-0000-0000-00000000000b"
+            }
+          ],
+          "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ledger_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "process_settled": true,
+          "producer_ids": [
+            "00000000-0000-0000-0000-00000000000a"
+          ],
+          "version": 1,
+          "worker_settled": true
+        },
+        "source": "scheduled",
+        "state": "held",
+        "target": {
+          "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+          "session_id": "5aa24ff0-0247-4224-970a-d4774b5c0cd7"
+        }
+      },
+      "document_state": "pending",
+      "input_id": null,
+      "action": "discard",
+      "no_replay": true
+    },
+    "result": {
+      "kind": "work_deferred_result",
+      "version": 1,
+      "deferred_version": 1,
+      "identity": {
+        "session_id": "5aa24ff0-0247-4224-970a-d4774b5c0cd7",
+        "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+        "backend": "custom",
+        "model": "old-model"
+      },
+      "instance": "8c7338385a91071bf5e49fe92e7ca3841cee4dc1b6307e9bd95f3de1d5cd7eef",
+      "operation_id": "discard-exact",
+      "review": "0257eb9563d18b7bf4e043fa96561fe8c2758806724d6f848104c0dadaebc00a",
+      "invocation_id": "00000000-0000-0000-0000-000000000003",
+      "status": "discarded",
+      "before_sha256": "6a9124e580cd33bdf35015107419109be61d50a8383b36a20ecdeea9e5def630",
+      "after_sha256": "5b1d4d0f7b37668f2f410c13865cea2923983b7a8873440d732dd734dff4a4c3",
+      "close_required": false,
+      "reason": null
+    },
+    "readback": {
+      "kind": "work_deferred_readback",
+      "version": 1,
+      "deferred_version": 1,
+      "identity": {
+        "session_id": "5aa24ff0-0247-4224-970a-d4774b5c0cd7",
+        "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+        "backend": "custom",
+        "model": "old-model"
+      },
+      "instance": "8c7338385a91071bf5e49fe92e7ca3841cee4dc1b6307e9bd95f3de1d5cd7eef",
+      "operation_id": "discard-exact",
+      "review": "0257eb9563d18b7bf4e043fa96561fe8c2758806724d6f848104c0dadaebc00a",
+      "invocation_id": "00000000-0000-0000-0000-000000000003",
+      "after_sha256": "5b1d4d0f7b37668f2f410c13865cea2923983b7a8873440d732dd734dff4a4c3",
+      "verified": true,
+      "effects_undone": false,
+      "no_replay": true
+    },
+    "after_snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "5aa24ff0-0247-4224-970a-d4774b5c0cd7",
+      "agent_id": "1cb634c6-14cb-43d9-b687-4c52b11c8e00",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "8c7338385a91071bf5e49fe92e7ca3841cee4dc1b6307e9bd95f3de1d5cd7eef",
+      "captured_at": 1793797911.6692498,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "deferred_job": null,
+      "snapshot": "3843747398c2c2e472fa3ef5137df4cd826bd0547725d408c1a98dc51a75954a"
+    },
+    "before_journal": "{\"input_id\":null,\"record\":{\"epoch\":{\"identity\":{\"agent_id\":\"1cb634c6-14cb-43d9-b687-4c52b11c8e00\",\"backend\":\"old\",\"model\":\"old-model\",\"session_id\":\"00000000-0000-0000-0000-000000000009\"},\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider\":\"codex\"},\"generation\":1,\"invocation_id\":\"00000000-0000-0000-0000-000000000003\",\"job_id\":\"job-a\",\"job_sha256\":\"1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa\",\"job_snapshot\":\"{\\\"id\\\":\\\"job-a\\\",\\\"prompt\\\":\\\"Retained prompt\\\"}\",\"kind\":\"cron\",\"payload\":{\"content\":\"Retained prompt\",\"source\":\"scheduled\",\"tool_profile\":\"strict\"},\"reason\":\"Prior invocation retained\",\"requested_profile\":\"strict\",\"shutdown\":{\"admission_closed\":true,\"admission_ids\":[],\"callback_settled\":true,\"closing_sequence\":7,\"effects_verified\":false,\"final_sequence\":8,\"inputs\":[{\"disposition\":\"reconciled\",\"input_id\":\"00000000-0000-0000-0000-00000000000b\"}],\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ledger_sha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"process_settled\":true,\"producer_ids\":[\"00000000-0000-0000-0000-00000000000a\"],\"version\":1,\"worker_settled\":true},\"source\":\"scheduled\",\"state\":\"held\",\"target\":{\"agent_id\":\"1cb634c6-14cb-43d9-b687-4c52b11c8e00\",\"session_id\":\"5aa24ff0-0247-4224-970a-d4774b5c0cd7\"}},\"state\":\"pending\",\"version\":1}",
+    "after_journal": "{\"input_id\":null,\"record\":{\"epoch\":{\"identity\":{\"agent_id\":\"1cb634c6-14cb-43d9-b687-4c52b11c8e00\",\"backend\":\"old\",\"model\":\"old-model\",\"session_id\":\"00000000-0000-0000-0000-000000000009\"},\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider\":\"codex\"},\"generation\":1,\"invocation_id\":\"00000000-0000-0000-0000-000000000003\",\"job_id\":\"job-a\",\"job_sha256\":\"1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa\",\"job_snapshot\":\"{\\\"id\\\":\\\"job-a\\\",\\\"prompt\\\":\\\"Retained prompt\\\"}\",\"kind\":\"cron\",\"payload\":{\"content\":\"Retained prompt\",\"source\":\"scheduled\",\"tool_profile\":\"strict\"},\"reason\":\"Prior invocation retained\",\"requested_profile\":\"strict\",\"shutdown\":{\"admission_closed\":true,\"admission_ids\":[],\"callback_settled\":true,\"closing_sequence\":7,\"effects_verified\":false,\"final_sequence\":8,\"inputs\":[{\"disposition\":\"reconciled\",\"input_id\":\"00000000-0000-0000-0000-00000000000b\"}],\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ledger_sha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"process_settled\":true,\"producer_ids\":[\"00000000-0000-0000-0000-00000000000a\"],\"version\":1,\"worker_settled\":true},\"source\":\"scheduled\",\"state\":\"held\",\"target\":{\"agent_id\":\"1cb634c6-14cb-43d9-b687-4c52b11c8e00\",\"session_id\":\"5aa24ff0-0247-4224-970a-d4774b5c0cd7\"}},\"retirement\":{\"effects_undone\":false,\"identity\":{\"agent_id\":\"1cb634c6-14cb-43d9-b687-4c52b11c8e00\",\"backend\":\"custom\",\"model\":\"old-model\",\"session_id\":\"5aa24ff0-0247-4224-970a-d4774b5c0cd7\"},\"no_replay\":true,\"operation_id\":\"discard-exact\",\"previous_sha256\":\"6a9124e580cd33bdf35015107419109be61d50a8383b36a20ecdeea9e5def630\",\"previous_state\":\"pending\",\"reason\":\"user_discarded\",\"review\":\"0257eb9563d18b7bf4e043fa96561fe8c2758806724d6f848104c0dadaebc00a\"},\"state\":\"discarded\",\"version\":2}"
+  },
+  "uncertain": {
+    "snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "a0a3a672-d1be-4222-a75d-3f2a483dc46d",
+      "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "aded9d5dbea64914324701c0a42999c104e1b461ae8b5bb1e437049e4202f3cf",
+      "captured_at": 1793797912.12309,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "deferred_job": {
+        "record": {
+          "epoch": {
+            "identity": {
+              "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+              "backend": "old",
+              "model": "old-model",
+              "session_id": "00000000-0000-0000-0000-000000000009"
+            },
+            "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "provider": "codex"
+          },
+          "generation": 1,
+          "invocation_id": "00000000-0000-0000-0000-000000000003",
+          "job_id": "job-a",
+          "job_sha256": "1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa",
+          "job_snapshot": "{\"id\":\"job-a\",\"prompt\":\"Retained prompt\"}",
+          "kind": "cron",
+          "payload": {
+            "content": "Retained prompt",
+            "source": "scheduled",
+            "tool_profile": "strict"
+          },
+          "reason": "Prior invocation retained",
+          "requested_profile": "strict",
+          "shutdown": {
+            "admission_closed": true,
+            "admission_ids": [],
+            "callback_settled": true,
+            "closing_sequence": 7,
+            "effects_verified": false,
+            "final_sequence": 8,
+            "inputs": [
+              {
+                "disposition": "reconciled",
+                "input_id": "00000000-0000-0000-0000-00000000000b"
+              }
+            ],
+            "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ledger_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "process_settled": true,
+            "producer_ids": [
+              "00000000-0000-0000-0000-00000000000a"
+            ],
+            "version": 1,
+            "worker_settled": true
+          },
+          "source": "scheduled",
+          "state": "held",
+          "target": {
+            "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+            "session_id": "a0a3a672-d1be-4222-a75d-3f2a483dc46d"
+          }
+        },
+        "journal_sha256": "37a3a3898a41a5cb8c539dc7302e2399cdfe1ae51d516a9a8bc468e1e5802669",
+        "document_state": "uncertain",
+        "input_id": "00000000-0000-0000-0000-000000000045",
+        "discard": {
+          "eligible": true,
+          "reason": null
+        }
+      },
+      "snapshot": "1d62269131ccd599808638932db89d85d8537356574c79a648e61990a80bd48b"
+    },
+    "review": {
+      "kind": "work_deferred_review",
+      "version": 1,
+      "deferred_version": 1,
+      "identity": {
+        "session_id": "a0a3a672-d1be-4222-a75d-3f2a483dc46d",
+        "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+        "backend": "custom",
+        "model": "old-model"
+      },
+      "instance": "aded9d5dbea64914324701c0a42999c104e1b461ae8b5bb1e437049e4202f3cf",
+      "snapshot": "1d62269131ccd599808638932db89d85d8537356574c79a648e61990a80bd48b",
+      "review": "0f7f89508bd05fcf063d619b5a3bf441c41ce1504c4123936f134a2f64ef5f7b",
+      "invocation_id": "00000000-0000-0000-0000-000000000003",
+      "journal_sha256": "37a3a3898a41a5cb8c539dc7302e2399cdfe1ae51d516a9a8bc468e1e5802669",
+      "record": {
+        "epoch": {
+          "identity": {
+            "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+            "backend": "old",
+            "model": "old-model",
+            "session_id": "00000000-0000-0000-0000-000000000009"
+          },
+          "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "provider": "codex"
+        },
+        "generation": 1,
+        "invocation_id": "00000000-0000-0000-0000-000000000003",
+        "job_id": "job-a",
+        "job_sha256": "1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa",
+        "job_snapshot": "{\"id\":\"job-a\",\"prompt\":\"Retained prompt\"}",
+        "kind": "cron",
+        "payload": {
+          "content": "Retained prompt",
+          "source": "scheduled",
+          "tool_profile": "strict"
+        },
+        "reason": "Prior invocation retained",
+        "requested_profile": "strict",
+        "shutdown": {
+          "admission_closed": true,
+          "admission_ids": [],
+          "callback_settled": true,
+          "closing_sequence": 7,
+          "effects_verified": false,
+          "final_sequence": 8,
+          "inputs": [
+            {
+              "disposition": "reconciled",
+              "input_id": "00000000-0000-0000-0000-00000000000b"
+            }
+          ],
+          "instance": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ledger_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "process_settled": true,
+          "producer_ids": [
+            "00000000-0000-0000-0000-00000000000a"
+          ],
+          "version": 1,
+          "worker_settled": true
+        },
+        "source": "scheduled",
+        "state": "held",
+        "target": {
+          "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+          "session_id": "a0a3a672-d1be-4222-a75d-3f2a483dc46d"
+        }
+      },
+      "document_state": "uncertain",
+      "input_id": "00000000-0000-0000-0000-000000000045",
+      "action": "discard",
+      "no_replay": true
+    },
+    "result": {
+      "kind": "work_deferred_result",
+      "version": 1,
+      "deferred_version": 1,
+      "identity": {
+        "session_id": "a0a3a672-d1be-4222-a75d-3f2a483dc46d",
+        "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+        "backend": "custom",
+        "model": "old-model"
+      },
+      "instance": "aded9d5dbea64914324701c0a42999c104e1b461ae8b5bb1e437049e4202f3cf",
+      "operation_id": "discard-exact",
+      "review": "0f7f89508bd05fcf063d619b5a3bf441c41ce1504c4123936f134a2f64ef5f7b",
+      "invocation_id": "00000000-0000-0000-0000-000000000003",
+      "status": "discarded",
+      "before_sha256": "37a3a3898a41a5cb8c539dc7302e2399cdfe1ae51d516a9a8bc468e1e5802669",
+      "after_sha256": "a28d27955cdb36996580a9e3696779d7eedaad59df1214992fc8439d0f8090ac",
+      "close_required": false,
+      "reason": null
+    },
+    "readback": {
+      "kind": "work_deferred_readback",
+      "version": 1,
+      "deferred_version": 1,
+      "identity": {
+        "session_id": "a0a3a672-d1be-4222-a75d-3f2a483dc46d",
+        "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+        "backend": "custom",
+        "model": "old-model"
+      },
+      "instance": "aded9d5dbea64914324701c0a42999c104e1b461ae8b5bb1e437049e4202f3cf",
+      "operation_id": "discard-exact",
+      "review": "0f7f89508bd05fcf063d619b5a3bf441c41ce1504c4123936f134a2f64ef5f7b",
+      "invocation_id": "00000000-0000-0000-0000-000000000003",
+      "after_sha256": "a28d27955cdb36996580a9e3696779d7eedaad59df1214992fc8439d0f8090ac",
+      "verified": true,
+      "effects_undone": false,
+      "no_replay": true
+    },
+    "after_snapshot": {
+      "kind": "work_snapshot",
+      "version": 1,
+      "session_id": "a0a3a672-d1be-4222-a75d-3f2a483dc46d",
+      "agent_id": "2b47cdf1-f262-4c09-aaef-60b530be5f5d",
+      "backend": "custom",
+      "model": "old-model",
+      "instance": "aded9d5dbea64914324701c0a42999c104e1b461ae8b5bb1e437049e4202f3cf",
+      "captured_at": 1793797912.299016,
+      "busy": false,
+      "calendar_month": "2026-11",
+      "schedules_paused": false,
+      "quitting": false,
+      "scheduler_notice": null,
+      "counts": {
+        "tasks": 0,
+        "provider_tasks": 0,
+        "jobs": 0,
+        "loops": 0
+      },
+      "sources": {
+        "tasks": {
+          "available": true,
+          "reason": null,
+          "revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "provider_tasks": {
+          "available": false,
+          "reason": "This provider has no canonical native task inventory exposed here.",
+          "revision": null
+        },
+        "jobs": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        },
+        "loops": {
+          "available": true,
+          "reason": null,
+          "revision": "absent"
+        }
+      },
+      "goal": {
+        "status": "absent",
+        "revision": "absent",
+        "value": null,
+        "reason": null
+      },
+      "pause": {
+        "allowed": true,
+        "reason": null
+      },
+      "deferred_job": null,
+      "snapshot": "fb4ebdf31683014563dd24288e2ee61a774d3619c7e08548ad6fbc502091d3e0"
+    },
+    "before_journal": "{\"input_id\":\"00000000-0000-0000-0000-000000000045\",\"record\":{\"epoch\":{\"identity\":{\"agent_id\":\"2b47cdf1-f262-4c09-aaef-60b530be5f5d\",\"backend\":\"old\",\"model\":\"old-model\",\"session_id\":\"00000000-0000-0000-0000-000000000009\"},\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider\":\"codex\"},\"generation\":1,\"invocation_id\":\"00000000-0000-0000-0000-000000000003\",\"job_id\":\"job-a\",\"job_sha256\":\"1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa\",\"job_snapshot\":\"{\\\"id\\\":\\\"job-a\\\",\\\"prompt\\\":\\\"Retained prompt\\\"}\",\"kind\":\"cron\",\"payload\":{\"content\":\"Retained prompt\",\"source\":\"scheduled\",\"tool_profile\":\"strict\"},\"reason\":\"Prior invocation retained\",\"requested_profile\":\"strict\",\"shutdown\":{\"admission_closed\":true,\"admission_ids\":[],\"callback_settled\":true,\"closing_sequence\":7,\"effects_verified\":false,\"final_sequence\":8,\"inputs\":[{\"disposition\":\"reconciled\",\"input_id\":\"00000000-0000-0000-0000-00000000000b\"}],\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ledger_sha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"process_settled\":true,\"producer_ids\":[\"00000000-0000-0000-0000-00000000000a\"],\"version\":1,\"worker_settled\":true},\"source\":\"scheduled\",\"state\":\"held\",\"target\":{\"agent_id\":\"2b47cdf1-f262-4c09-aaef-60b530be5f5d\",\"session_id\":\"a0a3a672-d1be-4222-a75d-3f2a483dc46d\"}},\"state\":\"uncertain\",\"version\":1}",
+    "after_journal": "{\"input_id\":\"00000000-0000-0000-0000-000000000045\",\"record\":{\"epoch\":{\"identity\":{\"agent_id\":\"2b47cdf1-f262-4c09-aaef-60b530be5f5d\",\"backend\":\"old\",\"model\":\"old-model\",\"session_id\":\"00000000-0000-0000-0000-000000000009\"},\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider\":\"codex\"},\"generation\":1,\"invocation_id\":\"00000000-0000-0000-0000-000000000003\",\"job_id\":\"job-a\",\"job_sha256\":\"1e9c9766cd0a9913fc448bd59f91f171f10dbfa07f05a36da4552d99bc021afa\",\"job_snapshot\":\"{\\\"id\\\":\\\"job-a\\\",\\\"prompt\\\":\\\"Retained prompt\\\"}\",\"kind\":\"cron\",\"payload\":{\"content\":\"Retained prompt\",\"source\":\"scheduled\",\"tool_profile\":\"strict\"},\"reason\":\"Prior invocation retained\",\"requested_profile\":\"strict\",\"shutdown\":{\"admission_closed\":true,\"admission_ids\":[],\"callback_settled\":true,\"closing_sequence\":7,\"effects_verified\":false,\"final_sequence\":8,\"inputs\":[{\"disposition\":\"reconciled\",\"input_id\":\"00000000-0000-0000-0000-00000000000b\"}],\"instance\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ledger_sha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"process_settled\":true,\"producer_ids\":[\"00000000-0000-0000-0000-00000000000a\"],\"version\":1,\"worker_settled\":true},\"source\":\"scheduled\",\"state\":\"held\",\"target\":{\"agent_id\":\"2b47cdf1-f262-4c09-aaef-60b530be5f5d\",\"session_id\":\"a0a3a672-d1be-4222-a75d-3f2a483dc46d\"}},\"retirement\":{\"effects_undone\":false,\"identity\":{\"agent_id\":\"2b47cdf1-f262-4c09-aaef-60b530be5f5d\",\"backend\":\"custom\",\"model\":\"old-model\",\"session_id\":\"a0a3a672-d1be-4222-a75d-3f2a483dc46d\"},\"no_replay\":true,\"operation_id\":\"discard-exact\",\"previous_sha256\":\"37a3a3898a41a5cb8c539dc7302e2399cdfe1ae51d516a9a8bc468e1e5802669\",\"previous_state\":\"uncertain\",\"reason\":\"user_discarded\",\"review\":\"0f7f89508bd05fcf063d619b5a3bf441c41ce1504c4123936f134a2f64ef5f7b\"},\"state\":\"discarded\",\"version\":2}"
+  }
+}

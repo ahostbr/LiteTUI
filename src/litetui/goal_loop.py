@@ -83,8 +83,15 @@ def save_goal(convo_dir: Path, state: GoalState) -> None:
     """Atomically replace the small derived goal state beside its transcript."""
     convo_dir = Path(convo_dir)
     convo_dir.mkdir(parents=True, exist_ok=True)
+    from litetui.shared_state import coordinated_write
+
+    with coordinated_write(_goal_path(convo_dir)):
+        _replace_goal(convo_dir, asdict(state))
+
+
+def _replace_goal(convo_dir: Path, document: dict) -> None:
     path = _goal_path(convo_dir)
-    payload = json.dumps(asdict(state), indent=2, ensure_ascii=False)
+    payload = json.dumps(document, indent=2, ensure_ascii=False)
     fd, tmp = tempfile.mkstemp(dir=str(convo_dir), prefix=".goal-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
@@ -528,3 +535,24 @@ def loop_command(app: Any, arg: str) -> None:
         f"/loop added {job.id} · every {minutes}m\n  {job.prompt}\n"
         f"  {seat_authority.schedule_note(app, level)}"
     )
+
+
+def reviewed_control(convo_dir: Path, action: str, expected: dict, reader, *, guard, committed=None):
+    """Typed pause/clear with exact raw CAS; never starts or cancels a worker."""
+    from litetui.shared_state import coordinated_write
+
+    if action not in ("goal_pause", "goal_clear"):
+        raise ValueError("Unsupported durable goal action")
+    path = _goal_path(convo_dir)
+    with coordinated_write(path):
+        guard()
+        current, _revision = reader(path)
+        if current is None or background_input.encoded(current) != background_input.encoded(expected):
+            raise ValueError("Selected raw goal changed after review")
+        if action == "goal_clear":
+            path.unlink()
+        else:
+            _replace_goal(convo_dir, {**current, "status":"paused"})
+        if committed is not None:
+            committed()
+        return reader(path)

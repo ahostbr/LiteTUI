@@ -90,6 +90,9 @@ pub struct Row {
     pub stop_reason: Option<String>,
 }
 pub struct Chat {
+    schedule_proposal: Option<String>,
+    schedule_reserved: bool,
+    schedule_prompt_held: bool,
     pub backend: String,
     pub model: String,
     pub rows: Vec<Row>,
@@ -149,6 +152,9 @@ pub struct Chat {
 impl Chat {
     pub fn new(backend: String, model: String) -> Self {
         Self {
+            schedule_proposal: None,
+            schedule_reserved: false,
+            schedule_prompt_held: false,
             backend,
             model,
             rows: Vec::new(),
@@ -205,6 +211,43 @@ impl Chat {
             retained_bytes: 0,
             retained_units: 0,
         }
+    }
+    pub fn decide_schedule(&mut self, external_idle: bool) -> Option<(String, bool)> {
+        let id = self.schedule_proposal.take()?;
+        let idle = external_idle
+            && self.ready
+            && !self.schedule_prompt_held
+            && !self.busy
+            && !self.closed
+            && !self.quitting
+            && self.pending.is_none()
+            && !self.queue_pending
+            && !self.rewrite_pending
+            && !self.compact_active
+            && self.work_uncertain.is_empty()
+            && self.work_admissions.is_empty()
+            && self.approvals.is_empty()
+            && self.questions.is_empty()
+            && !self.stop_confirm
+            && !self.controls.owns_input()
+            && !self.queue.owns_input()
+            && !self.engine.owns_input()
+            && !self.engine.pending()
+            && !self.commands.owns_input()
+            && !self.themes.owns_input()
+            && !self.saved_history.owns_input()
+            && !self.work.owns_input()
+            && !self.settings.owns_input()
+            && !self.backend_controls.owns_input()
+            && !self.browser.owns_input()
+            && !self.rewrite.owns_input()
+            && !self.compact.owns_input();
+        self.schedule_reserved = idle;
+        if idle {
+            self.ready = false;
+            self.notice = "Scheduled job is preparing its new conversation; draft kept.".into();
+        }
+        Some((id, idle))
     }
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
         self.reserve_row(prompt, false)
@@ -960,6 +1003,83 @@ impl Chat {
             Observation::Browser(update) => {
                 self.browser.observe(update)?;
                 self.notice = self.browser.notice.clone();
+            }
+            Observation::ScheduledProposal(id) => {
+                if self.schedule_proposal.is_some() || self.schedule_reserved {
+                    return Err(io::Error::other("Repeated scheduled frontend proposal"));
+                }
+                self.schedule_proposal = Some(id);
+            }
+            Observation::ScheduledLocalNotSent { prompt, reason } => {
+                let index = self.rows.len().checked_sub(1).ok_or_else(|| {
+                    io::Error::other("Scheduled refusal has no forwarded local prompt")
+                })?;
+                let row = &self.rows[index];
+                if !self.busy
+                    || self.closed
+                    || self.schedule_reserved
+                    || self.schedule_prompt_held
+                    || self.pending.is_some()
+                    || self.submission_id.is_some()
+                    || self.queue_pending
+                    || self.rewrite_pending
+                    || self.compact_active
+                    || self.forwarded_row.is_some()
+                    || !self.work_admissions.is_empty()
+                    || !self.work_uncertain.is_empty()
+                    || self.operation_rows.values().any(|owned| *owned == index)
+                    || row.source_owned
+                    || row.source.is_some()
+                    || !row.inputs.is_empty()
+                    || row.committed.is_some()
+                    || self.stops_sent != 0
+                    || !(row.state == ReplyState::Sending
+                        || row.state == ReplyState::Cancelling && self.stop_requests > 0)
+                    || row.prompt != prompt
+                {
+                    return Err(io::Error::other(
+                        "Scheduled refusal changed its exact unsubmitted local prompt",
+                    ));
+                }
+                self.settle(crate::live::TerminalOutcome::Refused(reason))?;
+                // Proposal and rejection can drain in one UI batch. Keep this
+                // firing declined until its exact Held readback, even though
+                // the unsent local row is no longer busy. Never replay it.
+                self.schedule_prompt_held = true;
+                self.ready = false;
+            }
+            Observation::ScheduledHeld(reason) => {
+                if (self.schedule_reserved || self.schedule_prompt_held)
+                    && !self.quitting
+                    && !self.closed
+                {
+                    self.ready = true;
+                }
+                self.schedule_reserved = false;
+                self.schedule_prompt_held = false;
+                self.schedule_proposal = None;
+                self.notice = reason;
+            }
+            Observation::ScheduledConversationChanged(changed) => {
+                if !self.schedule_reserved
+                    || self.schedule_prompt_held
+                    || self.busy
+                    || self.queue_pending
+                    || self.pending.is_some()
+                {
+                    return Err(io::Error::other(
+                        "Scheduled conversation changed without an idle frontend reservation",
+                    ));
+                }
+                self.schedule_reserved = false;
+                self.ready = true;
+                self.install_conversation(changed.snapshot, changed.history, changed.queue);
+                self.browser = crate::conversation_browser::View::default();
+                self.work.finish();
+                self.settings.finish();
+                self.commands.finish();
+                self.backend_controls.finish();
+                self.notice = "Scheduled conversation verified; waiting for the captured job input. Composer kept.".into();
             }
             Observation::ConversationChanged(changed) => {
                 if !self.ready || self.busy || self.queue_pending || self.pending.is_some() {
