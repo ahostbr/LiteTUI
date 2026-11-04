@@ -110,6 +110,29 @@ def artifacts_dir() -> Path:
     return litesuite_llm_dir() / "ninfer-models"
 
 
+def extra_artifact_roots() -> list[Path]:
+    """`ninferArtifactRoots` in `~/.litesuite/llm/config.json` (T0839): more folders to
+    scan for top-level `*.ninfer`. LiteSuite reads the same key the same way. Anything
+    that is not a list of non-empty strings is ignored; a missing folder is skipped
+    by the scan, not here."""
+    try:
+        body = json.loads(_config_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no file / bad JSON: no extra roots
+        return []
+    roots = body.get("ninferArtifactRoots") if isinstance(body, dict) else None
+    if not isinstance(roots, list):
+        return []
+    return [Path(r.strip()) for r in roots if isinstance(r, str) and r.strip()]
+
+
+def _same_path_key(path: Path) -> str:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    return os.path.normcase(str(resolved))
+
+
 def list_ninfer_artifacts() -> list[Path]:
     """Every `.ninfer` on disk, sorted. THE MODEL LIST FOR THIS BACKEND.
 
@@ -120,11 +143,112 @@ def list_ninfer_artifacts() -> list[Path]:
     T860 nothing in the TUI could ask it: `/model` and `/load` both list server
     models, and the only way to choose was typing a path into /settings.
 
+    T0839: the default folder PLUS `ninferArtifactRoots` (config.json). Deduped by
+    resolved path; a missing folder is ignored. Ryan's DeepSeek artifact lives on G:
+    and the picker showed only the two in the default folder.
+
     Extracted so the picker and `ninfer_artifact` below cannot disagree about
     where artifacts live.
     """
-    root = artifacts_dir()
-    return sorted(root.glob("*.ninfer")) if root.is_dir() else []
+    seen: set[str] = set()
+    found: list[Path] = []
+    for root in [artifacts_dir(), *extra_artifact_roots()]:
+        if not root.is_dir():
+            continue
+        for path in root.glob("*.ninfer"):
+            key = _same_path_key(path)
+            if key not in seen:
+                seen.add(key)
+                found.append(path)
+    return sorted(found)
+
+
+def in_default_artifacts_dir(path: Path) -> bool:
+    return _same_path_key(path.parent) == _same_path_key(artifacts_dir())
+
+
+# ── launch recipes: `<artifact>.launch.json` (T0839) ────────────────────────
+
+RECIPE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class LaunchRecipe:
+    path: Path
+    executable: Path
+    model_id: str | None
+    max_context: int | None
+    args: tuple[str, ...]
+
+
+def recipe_path(artifact: Path) -> Path:
+    return artifact.with_name(artifact.name + ".launch.json")
+
+
+def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
+    """The artifact's launch recipe, or None when it has no sidecar.
+
+    🔴 A SIDECAR THAT EXISTS IS ALWAYS OBEYED OR REFUSED, NEVER SKIPPED. One that does
+    not parse (or fails the checks below) raises BackendError naming the file: falling
+    back to the computed flags would start a different engine than the one the recipe
+    describes (the DeepSeek recipe REPLACES the app's tuning; its flags are measured)."""
+    sidecar = recipe_path(artifact)
+    if not sidecar.is_file():
+        return None
+
+    def bad(why: str) -> BackendError:
+        return BackendError(f"launch recipe {sidecar} is unusable: {why} — fix or delete it; nothing was started.")
+
+    try:
+        body = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise bad(f"cannot read it as JSON ({exc})") from exc
+    if not isinstance(body, dict):
+        raise bad("the top level is not an object")
+    if body.get("version") != RECIPE_VERSION:
+        raise bad(f"version is {body.get('version')!r}, this build reads {RECIPE_VERSION}")
+    exe = body.get("executable")
+    if not isinstance(exe, str) or not exe.strip():
+        raise bad("`executable` is missing")
+    args = body.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise bad("`args` must be a list of strings")
+    model_id = body.get("modelId")
+    if model_id is not None and (not isinstance(model_id, str) or not model_id.strip()):
+        raise bad("`modelId` must be a non-empty string")
+    max_context = body.get("maxContext")
+    if max_context is not None and (not isinstance(max_context, int) or isinstance(max_context, bool) or max_context <= 0):
+        raise bad("`maxContext` must be a positive integer")
+    return LaunchRecipe(
+        path=sidecar, executable=Path(exe.strip()),
+        model_id=model_id.strip() if model_id else None, max_context=max_context, args=tuple(args),
+    )
+
+
+def build_recipe_args(
+    artifact: Path, port: int, model_id: str, recipe: LaunchRecipe, *,
+    host: str = "127.0.0.1", user_max_context: int | None = None,
+) -> list[str]:
+    """The recipe argv, and NOTHING else: no kv-dtype, preserve-thinking, spec, vision,
+    concurrency or host-kv from settings. Context: the user's `ninfer_max_context` when it
+    is not the app default (the default is always present, so equal-to-default means
+    "never chose one"), else the recipe's, else the app default."""
+    chosen = (isinstance(user_max_context, int) and not isinstance(user_max_context, bool)
+              and user_max_context > 0 and user_max_context != NINFER_DEFAULT_MAX_CONTEXT)
+    ctx = user_max_context if chosen else (recipe.max_context or NINFER_DEFAULT_MAX_CONTEXT)
+    return [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id,
+            "--max-context", str(ctx), *recipe.args]
+
+
+def effective_executable(settings) -> Path:
+    """The binary the next start will run: the chosen artifact's recipe executable when it
+    has a valid sidecar, else the setting / default. Never raises (a status line calls it)."""
+    try:
+        art = ninfer_artifact(settings)
+        recipe = read_launch_recipe(art) if art is not None else None
+    except BackendError:
+        recipe = None
+    return recipe.executable if recipe else ninfer_executable(settings)
 
 
 def ninfer_artifact(settings) -> Path | None:
@@ -530,12 +654,22 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     if reason:
         _log_event(f"REFUSED: {reason}")
         raise BackendError(reason)
-    exe = ninfer_executable(settings)
+    # T0839: the artifact's launch recipe (if any) names its own executable, so it is read
+    # before the executable check. A recipe that is present and unusable refuses here.
+    artifact = ninfer_artifact(settings)
+    try:
+        recipe = read_launch_recipe(artifact) if artifact is not None and artifact.is_file() else None
+    except BackendError as exc:
+        _log_event(f"REFUSED: {exc}")
+        raise
+    exe = recipe.executable if recipe else ninfer_executable(settings)
     if not exe.is_file():
-        msg = f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable."
+        if recipe:
+            msg = f"launch recipe {recipe.path} names {exe}, which does not exist — fix the recipe; nothing was started."
+        else:
+            msg = f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable."
         _log_event(f"REFUSED: {msg}")
         raise BackendError(msg)
-    artifact = ninfer_artifact(settings)
     if artifact is None or not artifact.is_file():
         msg = "no NInfer artifact chosen — set ninfer_artifact to a .ninfer file (LiteSuite's Model Hub pulls one)."
         _log_event(f"REFUSED: {msg} (ninfer_artifact={getattr(settings, 'ninfer_artifact', None)!r})")
@@ -545,23 +679,30 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     # running MoE advertise itself as qwen3.8-27b in every picker. The file's own name is
     # the honest label when the header says nothing.
     model_id = artifact_model_id(directory, fallback=artifact.stem)
+    if recipe and recipe.model_id:
+        model_id = recipe.model_id   # the id a client sees (/model, conversations)
     port = free_port()
     host = f"http://127.0.0.1:{port}"
     ctx = getattr(settings, "ninfer_max_context", None)
     conc = getattr(settings, "ninfer_max_concurrency", None)
-    args = build_ninfer_args(
-        artifact, port, model_id,
-        max_context=ctx if isinstance(ctx, int) else None,
-        max_concurrency=conc if isinstance(conc, int) else None,
-        components=artifact_components(directory),
-        kv_dtype=getattr(settings, "ninfer_kv_dtype", None) or NINFER_DEFAULT_KV_DTYPE,
-        kv_capacity=getattr(settings, "ninfer_kv_capacity", None),
-        host_kv_mib=getattr(settings, "ninfer_host_kv_mib", None),
-    )
+    if recipe:
+        args = build_recipe_args(artifact, port, model_id, recipe,
+                                 user_max_context=ctx if isinstance(ctx, int) else None)
+    else:
+        args = build_ninfer_args(
+            artifact, port, model_id,
+            max_context=ctx if isinstance(ctx, int) else None,
+            max_concurrency=conc if isinstance(conc, int) else None,
+            components=artifact_components(directory),
+            kv_dtype=getattr(settings, "ninfer_kv_dtype", None) or NINFER_DEFAULT_KV_DTYPE,
+            kv_capacity=getattr(settings, "ninfer_kv_capacity", None),
+            host_kv_mib=getattr(settings, "ninfer_host_kv_mib", None),
+        )
     lp = log_path()
     lp.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(lp, "a", encoding="utf-8", errors="replace")  # noqa: SIM115 - the process writes here for its whole life
-    log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')} ---\n{exe} {' '.join(args)}\n")
+    note = f" (launch recipe {recipe.path.name})" if recipe else ""
+    log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')}{note} ---\n{exe} {' '.join(args)}\n")
     log_file.flush()
     # 14:1x 2026-09-17: the log is APPENDED across spawns, so a marker from an earlier run
     # must not count — only bytes written after this spawn's header are this engine's.
