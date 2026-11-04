@@ -316,7 +316,7 @@ def main() -> None:
         # running and the child attaches to it) and ends with the child's exit code.
         import subprocess
         try:
-            code = subprocess.call(relaunch)
+            code = subprocess.call(relaunch, env=getattr(app, '_relaunch_env', None))
         except (OSError, TypeError, ValueError) as exc:
             # This app is already gone, so the terminal is all there is to say it on.
             print(f"litetui: could not continue this window as the new agent: {exc}", file=sys.stderr)
