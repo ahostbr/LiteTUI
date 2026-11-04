@@ -230,12 +230,15 @@ def build_recipe_args(
     host: str = "127.0.0.1", user_max_context: int | None = None,
 ) -> list[str]:
     """The recipe argv, and NOTHING else: no kv-dtype, preserve-thinking, spec, vision,
-    concurrency or host-kv from settings. Context: the user's `ninfer_max_context` when it
-    is not the app default (the default is always present, so equal-to-default means
-    "never chose one"), else the recipe's, else the app default."""
-    chosen = (isinstance(user_max_context, int) and not isinstance(user_max_context, bool)
-              and user_max_context > 0 and user_max_context != NINFER_DEFAULT_MAX_CONTEXT)
-    ctx = user_max_context if chosen else (recipe.max_context or NINFER_DEFAULT_MAX_CONTEXT)
+    concurrency or host-kv from settings. Context precedence (Sentinel, T0839): the recipe's
+    `maxContext`, else the user's `ninfer_max_context`, else the app default. The setting is
+    global across artifacts; the recipe is per-artifact and more specific."""
+    if recipe.max_context:
+        ctx = recipe.max_context
+    elif isinstance(user_max_context, int) and not isinstance(user_max_context, bool) and user_max_context > 0:
+        ctx = user_max_context
+    else:
+        ctx = NINFER_DEFAULT_MAX_CONTEXT
     return [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id,
             "--max-context", str(ctx), *recipe.args]
 

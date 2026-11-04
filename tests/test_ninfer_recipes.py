@@ -173,12 +173,12 @@ def test_a_sidecar_gives_exactly_the_recipe_argv_and_nothing_from_settings(tmp_p
     assert "--spec dspark" in log and "DeepSeek.ninfer.launch.json" in log
 
 
-def test_a_user_chosen_context_beats_the_recipe(tmp_path):
+def test_the_recipes_context_beats_the_global_setting(tmp_path):
     s, art, exe = _setup(tmp_path)
     _recipe(art, exe)
-    s.ninfer_max_context = 65536
+    s.ninfer_max_context = 150000          # Ryan's global value, set for Qwen
     _, cmd = _start(s, tmp_path)
-    assert cmd[cmd.index("--max-context") + 1] == "65536"
+    assert cmd[cmd.index("--max-context") + 1] == "131072"
 
 
 def test_recipe_without_modelid_or_maxcontext_uses_the_artifacts_id_and_the_default(tmp_path):
@@ -193,7 +193,10 @@ def test_recipe_without_modelid_or_maxcontext_uses_the_artifacts_id_and_the_defa
     eng.recipe_path(art).write_text(json.dumps(body), encoding="utf-8")
     owned, cmd = _start(s, tmp_path)
     assert cmd[cmd.index("--model-id") + 1] == "own-id" == owned.model_id
-    assert cmd[cmd.index("--max-context") + 1] == "32768"
+    assert cmd[cmd.index("--max-context") + 1] == "32768"   # no recipe maxContext: the setting (here 32768)
+    s.ninfer_max_context = 150000
+    _, cmd = _start(s, tmp_path)
+    assert cmd[cmd.index("--max-context") + 1] == "150000"
 
 
 @pytest.mark.parametrize("content", [
