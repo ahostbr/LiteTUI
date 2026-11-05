@@ -389,7 +389,12 @@ impl Picker {
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, waiting: bool) {
         if let Some(thumbnail) = &self.thumbnail {
-            thumbnail.draw(frame, area, theme);
+            thumbnail.draw(
+                frame,
+                area,
+                theme,
+                " Image preview · Esc returns to review ",
+            );
             self.visible = false;
             return;
         }

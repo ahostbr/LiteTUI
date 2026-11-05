@@ -11,7 +11,7 @@ use ratatui::{
 use serde_json::Value;
 use std::io;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Thumbnail {
     width: usize,
     height: usize,
@@ -55,6 +55,11 @@ impl Thumbnail {
         {
             return Err(bad());
         }
+        Self::pixels(value)
+    }
+
+    pub(crate) fn pixels(value: &Value) -> io::Result<Self> {
+        let bad = || io::Error::other("Invalid bounded thumbnail pixels");
         let width = value["width"]
             .as_u64()
             .filter(|w| (1..=64).contains(w))
@@ -110,7 +115,7 @@ impl Thumbnail {
         shades[(brightness * (shades.len() as u32 - 1)).div_ceil(255) as usize]
     }
 
-    pub(super) fn draw(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub(crate) fn draw(&self, frame: &mut Frame, area: Rect, theme: &Theme, title: &str) {
         let width = area.width.min(78);
         let height = area.height.min(28);
         let rect = Rect::new(
@@ -120,7 +125,7 @@ impl Thumbnail {
             height,
         );
         let block = Block::bordered()
-            .title(" Image preview · Esc returns to review ")
+            .title(title)
             .style(Style::default().fg(theme.title).bg(theme.panel));
         let inner = block.inner(rect);
         frame.render_widget(Clear, rect);

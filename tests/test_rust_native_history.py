@@ -388,3 +388,56 @@ async def test_tracked_context_worker_cannot_be_promoted_to_execution_reader(swi
         app._native_history_open_capture = None
         app._native_history_open_workers = []
         app._native_history_open_roles = None
+
+
+async def test_image_preview_requires_materialized_owner_exact_block_and_embedded_bytes(switch_app, tmp_path):
+    import io
+
+    from PIL import Image
+
+    app = switch_app
+    def url(color):
+        with io.BytesIO() as out:
+            Image.new("RGBA", (120, 60), color).save(out, format="PNG")
+            return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode("ascii")
+    path = tmp_path / "external.png"
+    path.write_bytes(base64.b64decode(url("red").partition(",")[2]))
+    cases = [url("#ff0000"), url("#00ff00"), "https://example.invalid/remote.png", path.as_uri(),
+             str(path), "data:image/svg+xml;base64,PHN2Zz4=", "data:image/png;base64,malformed!"]
+    message = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": u}} for u in cases]}
+    save_history(app, [message])
+    command = common(app)
+    before = disk(app)
+    snapshot = native_history.snapshot(app, command)
+    rows = read_page(app, command, snapshot)["fragments"]
+    def select(row):
+        return {**command, "id": "preview", "type": "gui.history.native_image", "snapshot": snapshot["snapshot"],
+                **{k: row[k] for k in ("block_id", "block_index", "message_index", "message_sha256")}}
+    red, green = [native_history.image(app, select(r)) for r in rows[:2]]
+    assert (red["width"], red["height"]) == (64, 32)
+    assert red["message_sha256"] == green["message_sha256"] and red["block_id"] != green["block_id"]
+    assert base64.b64decode(red["rgba"]) == bytes([255, 0, 0, 255]) * (64 * 32)
+    assert base64.b64decode(green["rgba"]) == bytes([0, 255, 0, 255]) * (64 * 32)
+    for row in rows[2:]:
+        with pytest.raises(ValueError, match="image"):
+            native_history.image(app, select(row))
+    for overrides in ({"block_id": rows[1]["block_id"]}, {"message_sha256": "0" * 64}, {"agent_id": "foreign"},
+                      {"session_id": str(uuid.uuid4())}, {"path": str(path)}, {"url": "file:///never"}):
+        with pytest.raises(ValueError):
+            native_history.image(app, {**select(rows[0]), **overrides})
+    assert disk(app) == before
+    target = str(uuid.uuid4())
+    directory = app._agent_session.conversation_directory(target)
+    directory.mkdir()
+    records = [{"type": "meta", "id": target}, {"type": "msg", "message": message}]
+    (directory / "convo.jsonl").write_text("\n".join(json.dumps(row) for row in records) + "\n", encoding="utf8")
+    sibling = common(app, scope="preview", session_id=target, catalog_snapshot=conversation_page._catalog(app, app.convo_id)[4])
+    saved = native_history.snapshot(app, sibling)
+    block = read_page(app, sibling, saved)["fragments"][1]
+    with pytest.raises(ValueError, match="changed"):
+        native_history.image(app, {**select(block), **sibling})
+    other = native_history.image(app, {**select(block), **sibling, "snapshot": saved["snapshot"]})
+    assert other["rgba"] == green["rgba"] and other["session_id"] == target and other["from_session_id"] == app.convo_id
+    save_history(app, [{"role": "user", "content": "replaced"}])
+    with pytest.raises(ValueError, match="changed"):
+        native_history.image(app, select(rows[0]))

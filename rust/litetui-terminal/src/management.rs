@@ -384,8 +384,9 @@ struct ConversationPending {
     queue: Option<crate::restored_queue::Snapshot>,
     mutation: Option<CommandId>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum HistoryPhase {
+    Image(crate::history::ImageSelection),
     Locate,
     Snapshot,
     Page,
@@ -4336,6 +4337,40 @@ impl Management {
                 }
                 self.history_refresh_command(&key.target, &active, anchor)
             }
+            Intent::Image {
+                snapshot, selected, ..
+            } => {
+                if !self.operations.iter().any(|op| op == crate::history::IMAGE) {
+                    return Err(fail("The source does not support saved image preview"));
+                }
+                let descriptor = self
+                    .history_snapshot
+                    .as_ref()
+                    .filter(|s| {
+                        admitted
+                            && s.token == snapshot
+                            && s.materialized
+                            && Self::history_target_matches(&s.identity, &key.target, &active)
+                    })
+                    .ok_or_else(|| fail("Refresh saved history before opening the image"))?
+                    .clone();
+                if !self.history_page.as_ref().is_some_and(|page| {
+                    page.fragments
+                        .iter()
+                        .any(|f| f.image().as_ref() == Some(&selected))
+                }) {
+                    return Err(fail("Select an embedded image in the current history page"));
+                }
+                let command = selected.command(&descriptor);
+                (
+                    HistoryPhase::Image(selected),
+                    descriptor.identity.clone(),
+                    Some(descriptor),
+                    PageRequest::Anchor(Anchor::Head),
+                    None,
+                    command,
+                )
+            }
             Intent::Page {
                 snapshot, position, ..
             } => {
@@ -4492,6 +4527,17 @@ impl Management {
                 pending.descriptor = Some(descriptor);
                 pending.phase = HistoryPhase::Page;
                 command
+            }
+            HistoryPhase::Image(selected) => {
+                let snapshot = pending
+                    .descriptor
+                    .ok_or_else(|| fail("Saved image lacks its descriptor"))?;
+                let thumbnail = selected.parse(result, &snapshot)?;
+                return Ok(Step::SavedHistory(Update::Image {
+                    key: pending.key,
+                    selected,
+                    thumbnail,
+                }));
             }
             HistoryPhase::Page => {
                 let descriptor = pending

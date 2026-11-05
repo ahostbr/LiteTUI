@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashSet, io};
 
 pub const SNAPSHOT: &str = "gui.history.native_snapshot";
+pub const IMAGE: &str = "gui.history.native_image";
 pub const PAGE: &str = "gui.history.native_page";
 pub const OPEN: &str = "gui.conversations.native_open";
 pub const OPERATIONS: [&str; 3] = [SNAPSHOT, PAGE, OPEN];
@@ -506,7 +507,76 @@ pub struct Fragment {
     pub total: u64,
     pub text: String,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageSelection {
+    pub block: u64,
+    pub block_id: String,
+    pub message: u64,
+    pub message_hash: String,
+}
+impl ImageSelection {
+    pub fn command(&self, snapshot: &Snapshot) -> Value {
+        let mut v = snapshot.identity.command(IMAGE);
+        v["snapshot"] = json!(snapshot.token);
+        v["block_index"] = json!(self.block);
+        v["block_id"] = json!(self.block_id);
+        v["message_index"] = json!(self.message);
+        v["message_sha256"] = json!(self.message_hash);
+        v
+    }
+    pub fn parse(&self, v: &Value, snapshot: &Snapshot) -> io::Result<crate::image::Thumbnail> {
+        crate::work_lifecycle::keys(
+            v,
+            &[
+                "kind",
+                "version",
+                "from_session_id",
+                "session_id",
+                "agent_id",
+                "backend",
+                "model",
+                "scope",
+                "catalog_snapshot",
+                "snapshot",
+                "block_index",
+                "block_id",
+                "message_index",
+                "message_sha256",
+                "width",
+                "height",
+                "rgba",
+            ],
+        )?;
+        snapshot.identity.verify(v)?;
+        if !snapshot.materialized
+            || v["kind"] != "history_image"
+            || v["version"].as_u64() != Some(1)
+            || v["snapshot"] != snapshot.token
+            || v["block_id"] != self.block_id
+            || v["block_index"].as_u64() != Some(self.block)
+            || v["message_sha256"] != self.message_hash
+            || v["message_index"].as_u64() != Some(self.message)
+        {
+            return Err(fail(
+                "Saved image belongs to another history block or snapshot",
+            ));
+        }
+        crate::image::Thumbnail::pixels(v)
+    }
+}
 impl Fragment {
+    pub fn embedded_image(&self) -> bool {
+        self.kind == Kind::Attachment
+            && self.metadata.attachment_kind.as_deref() == Some("embedded")
+    }
+    pub fn image(&self) -> Option<ImageSelection> {
+        self.embedded_image().then(|| ImageSelection {
+            block: self.block_index,
+            block_id: self.block_id.clone(),
+            message: self.message_index,
+            message_hash: self.message_sha256.clone(),
+        })
+    }
     fn parse(value: &Value, counts: &Counts) -> io::Result<Self> {
         let part = &value["part"];
         exact_keys(part, &["utf8_start", "utf8_end", "utf8_total", "sha256"])?;

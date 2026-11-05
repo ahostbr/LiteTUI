@@ -1,7 +1,7 @@
 //! Exclusive inert Saved History inspector. It never merges into live turn rows.
 use crate::{
     conversation_rewrite::{Action as RewriteAction, Selection as RewriteSelection},
-    history::{Anchor, Fragment, Kind, Page, PageRequest, Snapshot},
+    history::{Anchor, Fragment, ImageSelection, Kind, Page, PageRequest, Snapshot},
     theme::Theme,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
@@ -30,6 +30,11 @@ pub struct ReadKey {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
+    Image {
+        key: ReadKey,
+        snapshot: String,
+        selected: ImageSelection,
+    },
     Inspect {
         key: ReadKey,
         revision: u64,
@@ -48,12 +53,20 @@ pub enum Intent {
 impl Intent {
     pub fn key(&self) -> &ReadKey {
         match self {
-            Self::Inspect { key, .. } | Self::Refresh { key, .. } | Self::Page { key, .. } => key,
+            Self::Image { key, .. }
+            | Self::Inspect { key, .. }
+            | Self::Refresh { key, .. }
+            | Self::Page { key, .. } => key,
         }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
+    Image {
+        key: ReadKey,
+        selected: ImageSelection,
+        thumbnail: crate::image::Thumbnail,
+    },
     Loaded {
         key: ReadKey,
         snapshot: Box<Snapshot>,
@@ -71,7 +84,10 @@ pub enum Update {
 impl Update {
     pub fn key(&self) -> &ReadKey {
         match self {
-            Self::Loaded { key, .. } | Self::Page { key, .. } | Self::Rejected { key, .. } => key,
+            Self::Image { key, .. }
+            | Self::Loaded { key, .. }
+            | Self::Page { key, .. }
+            | Self::Rejected { key, .. } => key,
         }
     }
 }
@@ -114,6 +130,8 @@ pub struct View {
     pending: Option<ReadKey>,
     loaded_key: Option<ReadKey>,
     selected_user: Option<(u64, String)>,
+    selected_image: Option<ImageSelection>,
+    thumbnail: Option<crate::image::Thumbnail>,
     rewrite: Option<(RewriteAction, RewriteSelection)>,
     compact: Option<crate::conversation_compact::Selection>,
     stale: bool,
@@ -164,6 +182,8 @@ impl View {
         self.notice = "Inspecting saved history; the current conversation stays unchanged.".into();
     }
     fn select_target(&mut self, target: Target) {
+        self.selected_image = None;
+        self.thumbnail = None;
         if self.target != target {
             self.snapshot = None;
             self.page = None;
@@ -204,6 +224,8 @@ impl View {
         verify_loaded(&snapshot, &page)?;
         verify_target(&Target::Current, &snapshot)?;
         self.target = Target::Current;
+        self.selected_image = None;
+        self.thumbnail = None;
         self.pending = None;
         self.loaded_key = None;
         self.selected_user = None;
@@ -368,6 +390,8 @@ impl View {
         self.pressed = None;
     }
     pub fn close(&mut self) {
+        self.selected_image = None;
+        self.thumbnail = None;
         self.open = false;
         self.rewrite = None;
         self.compact = None;
@@ -386,6 +410,8 @@ impl View {
     }
     /// An admitted turn invalidates historical navigation but does not erase local outcomes.
     pub fn invalidate(&mut self) {
+        self.selected_image = None;
+        self.thumbnail = None;
         self.stale = true;
         self.rewrite = None;
         self.compact = None;
@@ -426,7 +452,7 @@ impl View {
                 verify_loaded(snapshot, page)?;
                 verify_target(&self.target, snapshot)?;
             }
-            Update::Rejected { .. } => {}
+            Update::Image { .. } | Update::Rejected { .. } => {}
         }
         self.waiting = false;
         self.pending = None;
@@ -463,7 +489,21 @@ impl View {
                 self.anchor = None;
                 self.notice = "Saved display only; no historical action is active.".into();
             }
+            Update::Image {
+                selected,
+                thumbnail,
+                key,
+            } => {
+                if !self.stale {
+                    self.loaded_key = Some(key);
+                }
+                if !self.stale && self.selected_image.as_ref() == Some(&selected) {
+                    self.thumbnail = Some(thumbnail);
+                }
+            }
             Update::Rejected { reason, .. } => {
+                self.selected_image = None;
+                self.thumbnail = None;
                 self.stale = true;
                 self.edge = Edge::Keep;
                 self.notice = format!("{reason} · F5 refresh; previous page kept.");
@@ -526,6 +566,49 @@ impl View {
             self.anchor = None;
         }
     }
+    fn images(&self) -> Vec<&Fragment> {
+        let mut images: Vec<_> = self
+            .page
+            .iter()
+            .flat_map(|p| p.fragments.iter().filter(|f| f.embedded_image()))
+            .collect();
+        images.dedup_by_key(|f| f.block_index);
+        images
+    }
+    fn open_image(&mut self, offset: isize) {
+        let Some(snapshot) = self
+            .snapshot
+            .as_ref()
+            .filter(|s| s.materialized && !self.stale)
+            .map(|s| s.token.clone())
+        else {
+            return;
+        };
+        let images = self.images();
+        if images.is_empty() {
+            self.notice = "This page has no embedded images.".into();
+            return;
+        }
+        let at = self
+            .selected_image
+            .as_ref()
+            .and_then(|v| images.iter().position(|i| i.block_id == v.block_id));
+        let index = at.map_or(0, |i| {
+            (i as isize + offset).rem_euclid(images.len() as isize) as usize
+        });
+        if at == Some(index) {
+            return;
+        }
+        let selected = images[index].image().expect("selected an embedded image");
+        let Some(key) = self.begin_read() else { return };
+        self.selected_image = Some(selected.clone());
+        self.thumbnail = None;
+        self.intent = Some(Intent::Image {
+            key,
+            snapshot,
+            selected,
+        });
+    }
     pub fn key(&mut self, event: KeyEvent) {
         if event.kind == KeyEventKind::Release {
             return;
@@ -538,13 +621,29 @@ impl View {
             return;
         }
         if event.code == KeyCode::Esc && event.kind == KeyEventKind::Press {
+            if self.selected_image.take().is_some() {
+                self.thumbnail = None;
+                self.hide();
+                return;
+            }
             self.close();
             return;
         }
         if !self.open || !self.visible || self.waiting {
             return;
         }
+        if self.selected_image.is_some() {
+            if event.kind == KeyEventKind::Press {
+                match event.code {
+                    KeyCode::Left => self.open_image(-1),
+                    KeyCode::Right => self.open_image(1),
+                    _ => {}
+                }
+            }
+            return;
+        }
         match event.code {
+            KeyCode::Char('i') if event.kind == KeyEventKind::Press => self.open_image(0),
             KeyCode::Tab if event.kind == KeyEventKind::Press => self.choose_user(false),
             KeyCode::BackTab if event.kind == KeyEventKind::Press => self.choose_user(true),
             KeyCode::Char('c') if event.kind == KeyEventKind::Press => self.request_compact(),
@@ -571,6 +670,9 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.selected_image.is_some() {
+            return;
+        }
         if !self.open || !self.visible || self.waiting {
             return;
         }
@@ -616,6 +718,21 @@ impl View {
         if self.geometry != Some(area) {
             self.hide();
             self.geometry = Some(area);
+        }
+        if let (Some(selected), Some(thumbnail)) = (&self.selected_image, &self.thumbnail) {
+            self.visible = true;
+            let images = self.images();
+            let index = images
+                .iter()
+                .position(|v| v.block_id == selected.block_id)
+                .unwrap_or(0)
+                + 1;
+            let title = format!(
+                " Saved image {index}/{} · ← → images · Esc returns to history ",
+                images.len()
+            );
+            thumbnail.draw(frame, area, theme, &title);
+            return;
         }
         let width = area.width.min(110);
         let height = area.height.min(42);
@@ -675,6 +792,17 @@ impl View {
             "Loading · Esc cancels this view"
         } else if self.stale {
             "Snapshot changed · F5 refresh before paging"
+        } else if self.snapshot.as_ref().is_some_and(|s| s.materialized)
+            && self
+                .page
+                .as_ref()
+                .is_some_and(|p| p.fragments.iter().any(Fragment::embedded_image))
+        {
+            if self.rewrite_reason().is_none() {
+                "I image · Tab user · E edit · R retry · C compact"
+            } else {
+                "I previews saved images"
+            }
         } else if self.rewrite_reason().is_none() {
             "Tab selects a user message · E edit · R retry · C compact"
         } else {

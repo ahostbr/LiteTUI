@@ -43,7 +43,7 @@ OPERATIONS = (
     "conversations.native_rewrite_apply", "conversations.native_rewrite_settled",
     "conversations.native_compact_snapshot", "conversations.native_compact_validate",
     "conversations.native_compact_apply", "conversations.native_compact_settled",
-    "history.native_snapshot", "history.native_page", "conversations.native_open",
+    "history.native_snapshot", "history.native_page", "history.native_image", "conversations.native_open",
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
     "hooks.native_list", "hooks.native_review", "hooks.native_apply", "hooks.native_readback",
     "hooks.native_test_review", "hooks.native_test_run",
@@ -564,6 +564,9 @@ def dispatch(app, cmd):
         return getattr(native_work_execution, operation.removeprefix("work.native_execution_"))(app, cmd)
     if operation.startswith("work.native_execution_"):
         raise ValueError("Explicit execution requires asynchronous dispatch")
+    if operation == "history.native_image":
+        from litetui import native_history
+        return native_history.image(app, cmd)
     if operation in {"history.native_snapshot", "history.native_page"}:
         from litetui import native_history
         return native_history.snapshot(app, cmd) if operation.endswith("snapshot") else native_history.page(app, cmd)

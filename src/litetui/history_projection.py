@@ -87,6 +87,8 @@ class Block:
     content: str
     block_sha256: str
     block_id: str
+    # Source-local index into the original message content. Never projected on the wire.
+    content_index: int | None = None
 
     def fields(self) -> dict[str, Any]:
         return {"block_index": self.index, "block_id": self.block_id,
@@ -119,7 +121,7 @@ class _Builder:
         self.message_hashes = [digest(encoded(message)) for message in messages]
 
     def add(self, index: int, kind: str, body: Any, *, label: str = "", state: str | None = None,
-            meta: dict[str, Any] | None = None) -> None:
+            meta: dict[str, Any] | None = None, content_index: int | None = None) -> None:
         if kind not in KINDS or state is not None and state not in STATES:
             raise ValueError("Invalid historical display block")
         if len(self.blocks) >= MAX_COUNT:
@@ -141,7 +143,7 @@ class _Builder:
         self.hash.update(header)
         self.blocks.append(Block(len(self.blocks), index, self.message_hashes[index], kind, role,
                                  label, state, encoded(values["metadata"], 8192), content,
-                                 values["block_sha256"], ident))
+                                 values["block_sha256"], ident, content_index))
 
     def answer(self, index: int, body: str, *, meta: dict[str, Any] | None = None,
                state: str | None = "complete") -> None:
@@ -165,7 +167,7 @@ class _Builder:
         if not isinstance(content, list):
             self.add(index, "notice", "Unsupported saved content representation; retained in source context.", label="Saved content")
             return
-        for item in content:
+        for content_index, item in enumerate(content):
             if not isinstance(item, dict):
                 self.add(index, "notice", "Unsupported saved content block; retained in source context.", label="Saved content block")
             elif item.get("type") in ("text", "input_text") and isinstance(item.get("text"), str):
@@ -176,7 +178,7 @@ class _Builder:
                 attachment = ("embedded" if isinstance(url, str) and url.startswith("data:") else
                               "remote" if isinstance(url, str) and url.startswith(("https://", "http://")) else "unknown")
                 self.add(index, "attachment", "Saved image attachment; bytes are not loaded in this view.",
-                         label="Image attachment", meta=metadata(attachment_kind=attachment))
+                         label="Image attachment", meta=metadata(attachment_kind=attachment), content_index=content_index)
             else:
                 self.add(index, "notice", "Unsupported saved content block; retained in source context.", label="Saved content block")
 

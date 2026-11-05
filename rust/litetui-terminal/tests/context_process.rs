@@ -1063,3 +1063,106 @@ fn reviewed_hook_test_uses_canonical_authority_private_bounded_output_and_timeou
     assert!(!wire.iter().any(|f| f["type"] == "tool_approval_requested"));
     assert_eq!(report["shutdown"]["ok"], true);
 }
+
+#[test]
+#[ignore = "real Interactive owned history with two private embedded images and no external image access"]
+fn f6_saved_images_project_exact_sibling_pixels_refuse_stale_and_preserve_draft() {
+    fn load(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+        while let Some(intent) = app.live.as_mut().unwrap().saved_history.take_intent() {
+            runtime.history(intent)?;
+            observe(runtime, app, |e| matches!(e, Observation::SavedHistory(_)))?;
+        }
+        Ok(())
+    }
+    fn press(runtime: &mut Interactive, app: &mut Demo, code: KeyCode) -> io::Result<String> {
+        draw(app);
+        app.live
+            .as_mut()
+            .unwrap()
+            .saved_history
+            .key(KeyEvent::new(code, KeyModifiers::NONE));
+        load(runtime, app)?;
+        Ok(draw(app))
+    }
+    fn pixel(app: &mut Demo) -> (String, ratatui::style::Color) {
+        let mut terminal = Terminal::new(TestBackend::new(106, 32)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+        let cell = &terminal.backend().buffer()[(53, 16)];
+        (cell.symbol().to_owned(), cell.fg)
+    }
+    let (runtime, data) = launch("saved_image_runtime.py");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        app.insert_text("keep saved image draft");
+        app.open_history();
+        load(runtime, &mut app)?;
+        let page = draw(&mut app);
+        assert!(
+            page.contains("I image") || page.contains("I previews saved images"),
+            "{page}"
+        );
+        assert!(!page.contains("SYNTHETIC_") && !page.contains("data:image"));
+        let data_path = json_file(&data.join("saved-image-input.json"));
+        let path = PathBuf::from(data_path["path"].as_str().unwrap()).canonicalize()?;
+        assert!(path.starts_with(data.canonicalize()?));
+        let before = fs::read(&path)?;
+        let first = press(runtime, &mut app, KeyCode::Char('i'))?;
+        assert!(first.contains("Saved image 1/2"), "{first}");
+        let red = pixel(&mut app);
+        let second = press(runtime, &mut app, KeyCode::Right)?;
+        assert!(second.contains("Saved image 2/2"), "{second}");
+        let green = pixel(&mut app);
+        assert_ne!(red, green);
+        if red.0 == "▀" {
+            assert_eq!(red.1, ratatui::style::Color::Rgb(255, 0, 0));
+            assert_eq!(green.1, ratatui::style::Color::Rgb(0, 255, 0));
+        }
+        assert!(press(runtime, &mut app, KeyCode::Left)?.contains("Saved image 1/2"));
+        let returned = press(runtime, &mut app, KeyCode::Esc)?;
+        assert!(
+            returned.contains("Saved History") && !returned.contains("Saved image 1/2"),
+            "{returned}"
+        );
+        assert_eq!(fs::read(&path)?, before);
+        let mut changed = before.clone();
+        changed.extend_from_slice(b"\n{\"type\":\"rename\",\"name\":\"changed externally\"}\n");
+        fs::write(&path, &changed)?;
+        let stale = press(runtime, &mut app, KeyCode::Char('i'))?;
+        assert!(
+            app.live.as_ref().unwrap().saved_history.is_stale(),
+            "{stale}"
+        );
+        assert!(!stale.contains("Saved image 1/2"));
+        press(runtime, &mut app, KeyCode::F(5))?;
+        assert!(press(runtime, &mut app, KeyCode::Char('i'))?.contains("Saved image 1/2"));
+        press(runtime, &mut app, KeyCode::Esc)?;
+        press(runtime, &mut app, KeyCode::Esc)?;
+        assert_eq!(app.composer.text(), "keep saved image draft");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        assert_eq!(fs::read(&path)?, changed);
+        Ok(())
+    });
+    result.unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let wire = report["wire"].as_array().unwrap();
+    let previews = wire
+        .iter()
+        .filter(|e| e["result"]["kind"] == "history_image")
+        .map(|e| &e["result"])
+        .collect::<Vec<_>>();
+    assert_eq!(previews.len(), 4);
+    use base64::Engine as _;
+    let rgba = |v: &Value| {
+        base64::engine::general_purpose::STANDARD
+            .decode(v["rgba"].as_str().unwrap())
+            .unwrap()
+    };
+    assert_eq!(rgba(previews[0]), [255u8, 0, 0, 255].repeat(64 * 32));
+    assert_eq!(rgba(previews[1]), [0u8, 255, 0, 255].repeat(64 * 32));
+    assert_eq!(previews[0]["message_sha256"], previews[1]["message_sha256"]);
+    assert_ne!(previews[0]["block_id"], previews[1]["block_id"]);
+    assert_ne!(previews[0]["snapshot"], previews[3]["snapshot"]);
+    assert_eq!(report["requests"].as_array().unwrap().len(), 0);
+    assert_eq!(report["shutdown"]["ok"], true);
+}

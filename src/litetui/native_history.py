@@ -313,6 +313,55 @@ def page(app: Any, cmd: dict[str, Any]) -> dict[str, Any]:
     return _wire(cmd, result)
 
 
+def image(app: Any, cmd: dict[str, Any]) -> dict[str, Any]:
+    """Preview only the embedded bytes of the identified saved display block."""
+    from PIL import Image, UnidentifiedImageError
+
+    from litetui import native_image
+    from litetui.conversation_export import image_url
+
+    keys = {"type", "id", "version", *COMMON, "snapshot", "block_index", "block_id", "message_index", "message_sha256"}
+    if set(cmd) != keys or cmd["type"] != "gui.history.native_image":
+        raise ValueError("Unexpected fields in saved image request.")
+    expected = _token(cmd["snapshot"])
+    descriptor, capture, index = _collect(app, cmd)
+    if descriptor["snapshot"] != expected or not descriptor["materialized"]:
+        raise ValueError("Saved image snapshot changed. Refresh history.")
+    number = cmd["block_index"]
+    if type(number) is not int or not 0 <= number < len(index.view.blocks) or type(cmd["message_index"]) is not int:
+        raise ValueError("Invalid saved image selection.")
+    block = index.view.blocks[number]
+    if (block.kind != "attachment" or block.content_index is None or block.block_id != cmd["block_id"]
+            or block.message_index != cmd["message_index"] or block.message_sha256 != cmd["message_sha256"]):
+        raise ValueError("Image selection does not match the saved message and block.")
+    content = capture.messages[block.message_index]["content"][block.content_index]
+    if not isinstance(content, dict) or content.get("type") not in ("image_url", "input_image"):
+        raise ValueError("The saved content is not an image attachment.")
+    url = image_url(content)
+    formats = {"data:image/png;base64": "PNG", "data:image/jpeg;base64": "JPEG", "data:image/webp;base64": "WEBP"}
+    if not isinstance(url, str) or not url.startswith("data:image/"):
+        raise ValueError("Only saved embedded image data can be previewed.")
+    prefix, separator, encoded = url.partition(",")
+    if prefix not in formats or not separator or not 0 < len(encoded) <= 4 * ((native_image.MAX_FILE + 2) // 3):
+        raise ValueError("Unsupported or oversized saved image.")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        if len(raw) > native_image.MAX_FILE:
+            raise ValueError
+        with Image.open(io.BytesIO(raw), formats=[formats[prefix]]) as source:
+            if source.width * source.height > native_image.MAX_PIXELS or getattr(source, "is_animated", False):
+                raise ValueError
+            pixels = native_image.thumbnail(source)
+    except (ValueError, OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+        raise ValueError("Cannot preview this saved image as a bounded still PNG, JPEG or WebP.") from exc
+    # The decoder can release the GIL. Recheck the same owned proof after work.
+    if _collect(app, cmd)[0]["snapshot"] != expected:
+        raise ValueError("Saved image changed during inspection.")
+    return _wire(cmd, {"kind": "history_image", "version": VERSION, **{k: descriptor[k] for k in COMMON},
+                       **{k: cmd[k] for k in ("snapshot", "block_index", "block_id", "message_index", "message_sha256")},
+                       **pixels})
+
+
 def _current_command(app: Any) -> dict[str, Any]:
     return {"version": VERSION, "from_session_id": app.convo_id, "session_id": app.convo_id,
             "agent_id": app._agent_session.authority.agent_id, "backend": app.backend.name,

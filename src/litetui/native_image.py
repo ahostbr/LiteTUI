@@ -193,13 +193,19 @@ def preview(app, cmd):
     with Image.open(io.BytesIO(png), formats=["PNG"]) as source:
         if source.size != (review["sent_width"], review["sent_height"]):
             raise ValueError("Retained image dimensions differ from the review")
-        source.thumbnail((64, 40), Image.Resampling.LANCZOS)
-        rgba = source.convert("RGBA").tobytes()
-        width, height = source.size
+        pixels = thumbnail(source)
     bridge.check()
     return {"kind": "image_preview", "version": 1, **binding, "token": review["token"],
-            "png_sha256": review["png_sha256"], "width": width, "height": height,
-            "rgba": base64.b64encode(rgba).decode("ascii")}
+            "png_sha256": review["png_sha256"], **pixels}
+
+
+def thumbnail(source):
+    """Produce the same bounded raster for an open, validated still image."""
+    from PIL import Image
+
+    source.thumbnail((64, 40), Image.Resampling.LANCZOS)
+    return {"width": source.width, "height": source.height,
+            "rgba": base64.b64encode(source.convert("RGBA").tobytes()).decode("ascii")}
 
 
 def consume(app, cmd):
