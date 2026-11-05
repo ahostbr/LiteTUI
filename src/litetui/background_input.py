@@ -434,7 +434,7 @@ def register_producer(app, kind, object_id, *, owner_instance, owner_created=Non
     if value is None or not value.active:
         return None
     value.check()
-    if kind not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake", "user_queue"} or type(generation) is not int or generation < 1:
+    if kind not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake", "user_queue", "user_interrupt"} or type(generation) is not int or generation < 1:
         raise ValueError("Invalid Work producer kind or generation")
     if reservation is None:
         reservation = reserve(app)
@@ -443,7 +443,7 @@ def register_producer(app, kind, object_id, *, owner_instance, owner_created=Non
     from litetui import conversation_action as action
     attempt = action._attempt(app) if action._authorized(app) else None
     origin = action.event_origin(app) if attempt is not None else current_origin(app)
-    if kind == "user_queue":
+    if kind in {"user_queue", "user_interrupt"}:
         owned = value.executions.get(getattr(queue_parent, "execution_id", None))
         if (attempt is not None or queue_parent is None or owned is None or owned[0].is_finished
                 or owned[1] != queue_parent or owner_instance != value.instance):
@@ -653,6 +653,8 @@ def _begin(app, entry, in_turn):
         raise ValueError("Work input changed before admission")
     if not app._pending_input or app._pending_input[0] is not entry.item:
         raise ValueError("Only the oldest exact queued Work input may be claimed")
+    if in_turn and entry.producer.ref["kind"] == "user_interrupt":
+        raise ValueError("Interrupting text requires a fresh turn after the interrupted worker retires")
     if in_turn and current_origin(app) is None:
         raise ValueError("Safe-boundary Work admission lacks its exact execution")
     entry.claim_task = _task()
@@ -1297,7 +1299,7 @@ def validate_document(document):
         canonical_id(p["producer_session_id"])
         if p["producer_id"] in producers or p["producer_session_id"] != owner["session_id"]:
             raise ValueError("Duplicate or foreign Work producer")
-        if p["kind"] not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake", "user_queue"} or row["phase"] not in {"registered", "running", "stop_requested", "retired"}:
+        if p["kind"] not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake", "user_queue", "user_interrupt"} or row["phase"] not in {"registered", "running", "stop_requested", "retired"}:
             raise ValueError("Malformed Work producer state")
         for key in ("object_id", "owner_instance"):
             text(p[key])
@@ -1309,7 +1311,7 @@ def validate_document(document):
                 canonical_id(p[key])
         if p["causal_operation_id"] is not None:
             text(p["causal_operation_id"])
-        if p["kind"] == "user_queue":
+        if p["kind"] in {"user_queue", "user_interrupt"}:
             canonical_id(p["object_id"])
             _hash(p["owner_instance"])
             if (p["generation"] != 1 or p["owner_created"] is not None or p["causal_action_id"] is not None
@@ -1345,7 +1347,7 @@ def validate_document(document):
         revisions.add(i["queue_revision"])
         validate_payload(payload)
         producer = producers[i["producer_id"]]
-        if producer["kind"] == "user_queue" and (
+        if producer["kind"] in {"user_queue", "user_interrupt"} and (
                 epoch["provider"] != "host" or epoch["instance"] != producer["owner_instance"]
                 or set(payload) != {"content", "text", "source", "tool_profile"} or payload["source"] != "rpc"
                 or type(payload["content"]) is not str or payload["text"] != payload["content"]):
@@ -1391,6 +1393,10 @@ def validate_document(document):
         if origin["session_id"] != owner["session_id"] or origin["operation_id"] != a["operation_id"]:
             raise ValueError("Foreign Work admission origin")
         canonical_id(origin["execution_id"])
+        if producer["kind"] == "user_interrupt" and (a["mode"] != "new_turn"
+                or a["operation_id"] == producer["causal_operation_id"]
+                or origin["execution_id"] == producer["causal_execution_id"]):
+            raise ValueError("Interrupt delivery did not begin a fresh turn")
         if origin["hook_id"] is not None:
             canonical_id(origin["hook_id"])
         text(origin["source"])
@@ -1803,7 +1809,7 @@ async def _run_job(app, job, manual=False):
         release(app, reservation)
 
 
-def queue_user_input(app, parent, review, payload):
+def queue_user_input(app, parent, review, payload, *, interrupt=False):
     """Capture one reviewed reply under the actual GUI worker and canonical FIFO."""
     from textual.worker import get_current_worker
 
@@ -1812,7 +1818,7 @@ def queue_user_input(app, parent, review, payload):
     app._materialise_convo()
     reservation = reserve(app)
     try:
-        producer = register_producer(app, "user_queue", review, owner_instance=value.instance,
+        producer = register_producer(app, "user_interrupt" if interrupt else "user_queue", review, owner_instance=value.instance,
                                      reservation=reservation, queue_parent=parent)
         bind_producer_worker(app, producer, worker)
         producer.asyncio_task = _task()
@@ -1822,8 +1828,16 @@ def queue_user_input(app, parent, review, payload):
             entry = enqueue(app, producer, item)
             if entry.state != "queued" or _read(value.path) != value.raw:
                 raise ValueError("Queued composer input lacks an exact persisted ledger record")
-            item["bubble"] = app._user_bubble(payload["content"], False, queued=True)
-            app._pending_input.append(item)
+            item["bubble"] = app._user_bubble(payload["content"], False, queued=not interrupt)
+            if interrupt:
+                # These consecutive synchronous steps mirror the host send chord. Signal the
+                # soft stop only after exact durable capture, before yielding to any other task.
+                app._pending_input.insert(0, item)
+                app._stop_requested = True
+                from litetui import native_runtime_controls
+                native_runtime_controls.signal_stop(app)
+            else:
+                app._pending_input.append(item)
             return producer.ref, entry.ref
         finally:
             _PRODUCER.reset(token)

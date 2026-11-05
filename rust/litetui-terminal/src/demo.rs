@@ -181,12 +181,11 @@ impl Demo {
         };
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
-        if let Some(draft) = chat.work.midturn.queued.take() {
-            if self.composer.text() == draft.text {
-                self.composer.push_history(&draft.text);
-                self.composer.clear();
-            }
-            chat.notice = "Message queued in the current conversation.".into();
+        if let Some(draft) = chat.work.midturn.queued.take()
+            && self.composer.text() == draft.text
+        {
+            self.composer.push_history(&draft.text);
+            self.composer.clear();
         }
         if let Some(text) = restore_caption {
             self.composer.insert(&text);

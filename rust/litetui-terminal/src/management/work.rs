@@ -69,6 +69,17 @@ impl Management {
         self.work.hook_review = None;
         self.work.hook_test = None;
     }
+    fn extended_midturn(&self) -> bool {
+        [crate::midturn::SEND_REVIEW, crate::midturn::SEND_APPLY]
+            .iter()
+            .all(|op| self.operations.iter().any(|v| v == op))
+    }
+    pub(crate) fn interrupt_apply_pending(&self) -> bool {
+        self.work
+            .pending
+            .as_ref()
+            .is_some_and(|p| matches!(&p.request, view::Request::Midturn(r) if r.interrupts()))
+    }
     pub fn work_pending(&self) -> bool {
         self.work.pending.is_some() || self.execution_review_pending()
     }
@@ -146,7 +157,13 @@ impl Management {
             view::Request::DeferredValidate => deferred::VALIDATE,
             view::Request::DeferredApply(_) => deferred::DISCARD,
             view::Request::Image(request) => request.operation(),
-            view::Request::Midturn(r) => r.operation(),
+            view::Request::Midturn(r) => {
+                if self.extended_midturn() {
+                    r.send_operation()
+                } else {
+                    r.operation()
+                }
+            }
             view::Request::Context(r) => r.operation(),
             view::Request::Plugin(request) => {
                 if !crate::plugin_reload::OPERATIONS
@@ -662,6 +679,14 @@ impl Management {
                 )?;
                 match &reply {
                     crate::midturn::Reply::Review(r) => {
+                        if let Some(ids) = &r.prior_inputs {
+                            if !self.extended_midturn() {
+                                return Err(fail("Source did not negotiate reviewed interruption"));
+                            }
+                            self.execution_ledger()
+                                .ok_or_else(|| fail("Interrupt lost its Work ledger"))?
+                                .verify_interrupt_order(ids)?;
+                        }
                         self.work.queue_review = Some(r.as_ref().clone())
                     }
                     crate::midturn::Reply::Queued(r) => self

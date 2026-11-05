@@ -2535,6 +2535,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     && turn.questions.settled()
                                     && turn.approvals.settled()
                                     && turn.aborts.settled()
+                                    && turn.stop_requests == 0
                                     && turn.command_id == r.draft().operation
                             }
                             crate::work_view::Request::ManualReview { .. }
@@ -2870,7 +2871,12 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Input::Abort { prompt_id } => {
-                        if let Some(value) = turn.abort(&prompt_id)? {
+                        if management.interrupt_apply_pending() {
+                            frontend.observe(Observation::Information(
+                                "Waiting for the reviewed interrupt receipt before another Stop"
+                                    .into(),
+                            ))?;
+                        } else if let Some(value) = turn.abort(&prompt_id)? {
                             owned
                                 .stdin
                                 .as_ref()
@@ -3362,6 +3368,13 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Step::Work(update) => {
+                        if update.interrupted().is_some_and(|id| id == turn.command_id)
+                            && turn.terminal.is_none()
+                            && !turn.settled
+                        {
+                            turn.stop_requests = turn.stop_requests.max(1);
+                            turn.stop_acknowledged = true;
+                        }
                         check_deadline(work_deadline)?;
                         work_deadline = None;
                         if !turn.closing {

@@ -209,6 +209,7 @@ impl Origin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProducerKind {
     UserQueue,
+    UserInterrupt,
     HostTask,
     Inbox,
     ChildResult,
@@ -233,6 +234,11 @@ pub struct Producer {
     pub execution: Option<String>,
 }
 impl Producer {
+    fn fresh_interrupt(&self, admission: &Admission) -> bool {
+        admission.mode == Mode::NewTurn
+            && self.execution.as_ref() != Some(&admission.origin.execution)
+            && self.operation.as_ref() != Some(&admission.operation)
+    }
     pub(crate) fn parse(v: &Value) -> io::Result<Self> {
         keys(
             v,
@@ -251,6 +257,7 @@ impl Producer {
         )?;
         let kind = match text(v, "kind", 32)?.as_str() {
             "user_queue" => ProducerKind::UserQueue,
+            "user_interrupt" => ProducerKind::UserInterrupt,
             "host_task" => ProducerKind::HostTask,
             "inbox" => ProducerKind::Inbox,
             "child_result" => ProducerKind::ChildResult,
@@ -270,7 +277,7 @@ impl Producer {
         {
             return Err(bad("Incomplete Work causal binding"));
         }
-        if kind == ProducerKind::UserQueue {
+        if matches!(kind, ProducerKind::UserQueue | ProducerKind::UserInterrupt) {
             uuid(v, "object_id")?;
             hash(v, "owner_instance")?;
             if action.is_some()
@@ -893,12 +900,21 @@ impl Capture {
             } else {
                 Some(Admission::parse(&r["admission"])?)
             };
-            if producer.kind == ProducerKind::UserQueue
-                && (epoch.provider != Provider::Host
-                    || producer.owner != epoch.instance
-                    || input.source != "rpc")
+            if matches!(
+                producer.kind,
+                ProducerKind::UserQueue | ProducerKind::UserInterrupt
+            ) && (epoch.provider != Provider::Host
+                || producer.owner != epoch.instance
+                || input.source != "rpc")
             {
                 return Err(bad("Recovered composer input lost its captured host epoch"));
+            }
+            if producer.kind == ProducerKind::UserInterrupt
+                && admission
+                    .as_ref()
+                    .is_some_and(|a| !producer.fresh_interrupt(a))
+            {
+                return Err(bad("Recovered interrupt did not begin a fresh turn"));
             }
             let committed = producer.kind == ProducerKind::ChildResult;
             if committed
@@ -1239,6 +1255,25 @@ impl Ledger {
     }
     pub fn capture(&self) -> &Capture {
         &self.capture
+    }
+    pub(crate) fn verify_interrupt_order(&self, ids: &[String]) -> io::Result<()> {
+        let mut pending: Vec<_> = self
+            .inputs
+            .values()
+            .filter(|i| {
+                !i.recovered
+                    && i.epoch_instance == self.capture.instance
+                    && i.state == InputState::Queued
+            })
+            .collect();
+        pending.sort_unstable_by_key(|i| i.input.revision);
+        if self.failed
+            || pending.len() != ids.len()
+            || !pending.iter().zip(ids).all(|(i, id)| &i.input.id == id)
+        {
+            return Err(bad("Interrupt review differs from the current Work queue"));
+        }
+        Ok(())
     }
     pub(crate) fn verify_user_queue(&self, queued: &crate::midturn::Receipt) -> io::Result<()> {
         let p = self.producers.get(&queued.producer.id);
@@ -1702,8 +1737,10 @@ impl Ledger {
     }
     fn producer_event(&mut self, e: &Value) -> io::Result<Effect> {
         let p = Producer::parse(&e["producer"])?;
-        if p.kind == ProducerKind::UserQueue
-            && (self.capture.provider != Provider::Host || p.owner != self.capture.instance)
+        if matches!(
+            p.kind,
+            ProducerKind::UserQueue | ProducerKind::UserInterrupt
+        ) && (self.capture.provider != Provider::Host || p.owner != self.capture.instance)
         {
             return Err(bad(
                 "Queued composer input belongs to a different host epoch",
@@ -1919,6 +1956,11 @@ impl Ledger {
             .expect("input producer")
             .producer;
         let committed = matches!(payload.delivery, Delivery::CommittedHistory(_));
+        if p.kind == ProducerKind::UserInterrupt && !p.fresh_interrupt(&a) {
+            return Err(bad(
+                "Interrupting text requires a fresh turn after its foreground worker",
+            ));
+        }
         if committed != (p.kind == ProducerKind::ChildResult)
             || committed
                 && (a.mode != Mode::NewTurn

@@ -219,7 +219,29 @@ async def serve(app):
 
     async def management(owner, command):
         operation = command['type']
-        if operation == 'gui.prompt.native_queue_apply' and case == 'midturn-normal':
+        if operation == 'gui.prompt.native_send_review' and case == 'midturn-interrupt-priority' and command['chord'] == 'alternate':
+            try:
+                await actual_gui(owner, {**command, 'type': 'gui.prompt.native_queue_review', 'id': str(uuid.uuid4())})
+            except ValueError as exc:
+                report['legacy_queue_refusal'] = str(exc)
+            else:
+                raise AssertionError('The older queue-only route allowed interruption')
+            review = await actual_gui(owner, command)
+            pending = owner._pending_input.pop(0)
+            try:
+                # Change only the disposable queue between review and apply. The captured
+                # foreground is still running. A different ordered set must require a new review.
+                try:
+                    await actual_gui(owner, {**command, 'type': 'gui.prompt.native_send_apply',
+                                            'id': str(uuid.uuid4()), 'review': review['review']})
+                except ValueError as exc:
+                    report['changed_order_refusal'] = str(exc)
+                else:
+                    raise AssertionError('An interrupt survived a changed pending queue')
+                assert not owner._stop_requested
+            finally:
+                owner._pending_input.insert(0, pending)
+        if operation in {'gui.prompt.native_queue_apply', 'gui.prompt.native_send_apply'} and case == 'midturn-normal':
             result = await actual_gui(owner, command)
             for label, updates in (
                 ('replay', {}),
@@ -314,7 +336,7 @@ async def serve(app):
             questions=list(getattr(app, '_rpc_pending_asks', {})), approvals=list(getattr(app, '_approval_waiters', {})),
             authorities=list(getattr(app, '_approval_authority_records', {})))
         if bridge is not None:
-            if case == 'midturn-quit' and bridge.closing:
+            if case in {'midturn-quit', 'midturn-interrupt-quit'} and bridge.closing:
                 reopened = background_input.Bridge(app)
                 report['queue_recovered'] = reopened.recovered
                 assert reopened.raw == bridge.raw and not reopened.active and not reopened.executions

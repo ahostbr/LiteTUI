@@ -4,7 +4,9 @@
 
 ## Queue text during a running reply
 
-During a host-managed reply, enter a plain text draft of up to 16 KiB and press Enter to review it. If your “Enter interrupts mid-turn” setting is on, press Ctrl+Shift+Enter (Ctrl+J in Windows terminals) to queue instead. Read each page of the review and press Enter to confirm, or Escape to keep editing. LiteTUI clears the draft after the source confirms it in the Work ledger. It sends the text after the next safe tool round or as the next turn. Closing before delivery retains the item in F1 Work for recovery. The interrupt chord, image attachments and provider-managed Codex and Claude turns stay unavailable for this action. Escape from the composer opens the separate Stop confirmation.
+During a host-managed reply, enter a plain text draft of up to 16 KiB. Enter queues it at the next safe tool boundary or as the next turn. Ctrl+Shift+Enter (Ctrl+J in Windows terminals) interrupts the current reply and sends the draft first in a fresh turn. “Enter interrupts mid-turn” swaps the two keys. Both actions open a review. Read each page, then press Enter to confirm a queue or I to confirm an interrupt. Escape keeps the draft.
+
+Interruption keeps partial output and earlier tool effects. The review shows how many queued messages the draft will precede. LiteTUI clears the composer after the source confirms the exact text in the Work ledger. Closing before delivery retains the input in F1 Work. An older source can offer queueing alone. Provider-managed Codex and Claude turns and attachments require their own delivery contracts and currently decline both mid-turn actions.
 
 ## Attach an image to a live prompt
 

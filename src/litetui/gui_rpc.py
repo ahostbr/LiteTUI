@@ -35,7 +35,7 @@ def current_operation(app):
 
 
 OPERATIONS = (
-    "hello", "state", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "settings.get", "settings.validate", "settings.apply",
+    "hello", "state", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
     "conversations.native_snapshot", "conversations.native_validate", "conversations.native_apply",
@@ -683,7 +683,7 @@ def dispatch(app, cmd):
         if action == "resolve":
             return restored_input.resolve(app, cmd)
         raise ValueError("Continuation requires asynchronous dispatch")
-    if operation in {"prompt.native_queue_review", "prompt.native_queue_apply"}:
+    if operation in {"prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply"}:
         from litetui import native_midturn
         return native_midturn.dispatch(app, cmd)
     if domain == "prompt":

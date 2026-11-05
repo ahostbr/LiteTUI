@@ -733,6 +733,10 @@ impl Chat {
             || self.busy && self.stop_requests > 0
     }
     pub fn open_stop(&mut self) {
+        if self.work.interrupt_apply_pending() {
+            self.notice = "Waiting for the reviewed interrupt receipt before another Stop.".into();
+            return;
+        }
         if !self.closed
             && !self.quitting
             && (self.launch.as_ref().is_some_and(|p| !p.stop_requested)
@@ -1341,6 +1345,17 @@ impl Chat {
                 self.notice = self.themes.notice.clone();
             }
             Observation::Work(update) => {
+                if self.busy
+                    && self.work.pending_generation() == Some(update.generation)
+                    && update
+                        .interrupted()
+                        .is_some_and(|id| self.submission_id.as_deref() == Some(id))
+                {
+                    self.stop_requests = self.stop_requests.max(1);
+                    self.stops_sent = self.stops_sent.max(1);
+                    let index = self.current_row_index()?;
+                    self.rows[index].state = ReplyState::Cancelling;
+                }
                 if self.work.manual_decision_pending()
                     && self.work.pending_generation() == Some(update.generation)
                     && matches!(update.data, crate::work_view::Data::Rejected(_))

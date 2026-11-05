@@ -16,6 +16,8 @@ use std::io;
 
 pub const REVIEW: &str = "gui.prompt.native_queue_review";
 pub const APPLY: &str = "gui.prompt.native_queue_apply";
+pub const SEND_REVIEW: &str = "gui.prompt.native_send_review";
+pub const SEND_APPLY: &str = "gui.prompt.native_send_apply";
 pub const MAX_TEXT: usize = 16384;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draft {
@@ -36,6 +38,7 @@ pub struct Review {
     pub generation: u64,
     pub id: String,
     pub payload_hash: String,
+    pub prior_inputs: Option<Vec<String>>,
     wire: Value,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +57,16 @@ pub enum Reply {
     Review(Box<Review>),
     Queued(Box<Receipt>),
 }
+impl Reply {
+    pub(crate) fn interrupted(&self) -> Option<&str> {
+        match self {
+            Self::Queued(r) if r.producer.kind == ProducerKind::UserInterrupt => {
+                Some(&r.draft.operation)
+            }
+            _ => None,
+        }
+    }
+}
 fn bad() -> io::Error {
     io::Error::other("Queued input differs from the reviewed foreground turn, text or policy")
 }
@@ -63,6 +76,15 @@ impl Request {
             Self::Review(_) => REVIEW,
             Self::Apply(_) => APPLY,
         }
+    }
+    pub fn send_operation(&self) -> &'static str {
+        match self {
+            Self::Review(_) => SEND_REVIEW,
+            Self::Apply(_) => SEND_APPLY,
+        }
+    }
+    pub fn interrupts(&self) -> bool {
+        matches!(self,Self::Apply(r) if r.prior_inputs.is_some())
     }
     pub fn draft(&self) -> &Draft {
         match self {
@@ -126,8 +148,32 @@ impl Request {
         }
         expected["review"] = json!(review_id);
         expected["kind"] = json!("midturn_review");
-        expected["behavior"] = json!("queue");
-        expected["enter_interrupts"] = json!(draft.alternate);
+        let prior_inputs = match v["behavior"].as_str() {
+            Some("queue") => None,
+            Some("interrupt") => {
+                let prior = v["prior_inputs"]
+                    .as_array()
+                    .filter(|items| items.len() <= 256)
+                    .ok_or_else(bad)?;
+                let mut ids = Vec::with_capacity(prior.len());
+                for id in prior {
+                    let id = crate::work_lifecycle::uuid(&json!({"id":id}), "id")?;
+                    if ids.contains(&id) {
+                        return Err(bad());
+                    }
+                    ids.push(id);
+                }
+                expected["prior_inputs"] = json!(ids);
+                Some(ids)
+            }
+            _ => return Err(bad()),
+        };
+        expected["behavior"] = json!(if prior_inputs.is_some() {
+            "interrupt"
+        } else {
+            "queue"
+        });
+        expected["enter_interrupts"] = json!(draft.alternate != prior_inputs.is_some());
         expected["profile"] = json!(profile.as_str());
         expected["policy_epoch"] = json!(generation);
         expected["payload_sha256"] = json!(payload_hash);
@@ -139,6 +185,7 @@ impl Request {
                 generation,
                 id: review_id,
                 payload_hash,
+                prior_inputs,
                 wire: expected,
             }))),
             Self::Apply(r) if r.wire == expected => {
@@ -149,7 +196,12 @@ impl Request {
                 expected["producer"] = v["producer"].clone();
                 expected["input"] = v["input"].clone();
                 if expected != *v
-                    || producer.kind != ProducerKind::UserQueue
+                    || producer.kind
+                        != if r.prior_inputs.is_some() {
+                            ProducerKind::UserInterrupt
+                        } else {
+                            ProducerKind::UserQueue
+                        }
                     || producer.object != r.id
                     || producer.owner != instance
                     || producer.session != identity.session
@@ -226,7 +278,13 @@ impl View {
                 self.page = (self.page + 1).min(self.pages.saturating_sub(1))
             }
             KeyCode::PageUp | KeyCode::Left => self.page = self.page.saturating_sub(1),
-            KeyCode::Enter if !self.seen.is_empty() && self.seen.iter().all(|v| *v) => {
+            KeyCode::Enter | KeyCode::Char('i' | 'I')
+                if !self.seen.is_empty()
+                    && self.seen.iter().all(|v| *v)
+                    && self.review.as_ref().is_some_and(|r| {
+                        r.prior_inputs.is_some() == matches!(key.code, KeyCode::Char('i' | 'I'))
+                    }) =>
+            {
                 return self.review.clone().map(|r| Request::Apply(Box::new(r)));
             }
             _ => {}
@@ -241,8 +299,16 @@ impl View {
             return;
         }
         let content = if let Some(r) = &self.review {
+            let effect = if let Some(prior) = &r.prior_inputs {
+                format!(
+                    "Interrupt the current reply. Keep its partial output and earlier tool effects. Send this draft first after the worker stops, ahead of {} queued message(s).",
+                    prior.len()
+                )
+            } else {
+                "Queue this message at the next safe boundary of the running reply, or as the next turn.".into()
+            };
             format!(
-                "Queue this message at the next safe boundary of the running reply, or as the next turn.\nTool profile: {}\n\n{}",
+                "{effect}\nTool profile: {}\n\n{}",
                 r.profile.as_str(),
                 crate::live::terminal_text(&r.draft.text)
             )
@@ -261,16 +327,34 @@ impl View {
         self.seen[self.page] = true;
         let footer = if waiting {
             "Waiting for source confirmation".to_owned()
-        } else if self.review.is_some() {
+        } else if let Some(r) = &self.review {
+            let confirm = if r.prior_inputs.is_some() {
+                "I interrupt and send next"
+            } else {
+                "Enter queue"
+            };
             format!(
-                "PgUp/PgDn  {}/{}   Enter queue   Esc cancel",
+                "PgUp/PgDn  {}/{}   {confirm}   Esc cancel",
                 self.page + 1,
                 self.pages
             )
         } else {
             "Esc return to draft".into()
         };
-        f.render_widget(Block::bordered().title(" Queue composer message "), area);
+        f.render_widget(
+            Block::bordered().title(
+                if self
+                    .review
+                    .as_ref()
+                    .is_some_and(|r| r.prior_inputs.is_some())
+                {
+                    " Interrupt reply "
+                } else {
+                    " Queue composer message "
+                },
+            ),
+            area,
+        );
         f.render_widget(
             Paragraph::new(
                 lines
@@ -351,6 +435,16 @@ mod tests {
             forged[key] = value;
             assert!(parse(&forged).is_err(), "{key}");
         }
+        let mut interrupt = good.clone();
+        interrupt["behavior"] = json!("interrupt");
+        interrupt["enter_interrupts"] = json!(false);
+        interrupt["prior_inputs"] = json!([HOOK]);
+        assert!(parse(&interrupt).is_ok());
+        for prior in [Value::Null, json!(["invalid"]), json!([HOOK, HOOK])] {
+            let mut changed = interrupt.clone();
+            changed["prior_inputs"] = prior;
+            assert!(parse(&changed).is_err());
+        }
         let mut view = View::default();
         view.begin();
         view.reply(parse(&good).unwrap());
@@ -381,5 +475,17 @@ mod tests {
         assert!(matches!(view.key(enter, false), Some(Request::Apply(_))));
         paint(&mut view, 41);
         assert!(view.key(enter, false).is_none());
+        view.begin();
+        view.reply(parse(&interrupt).unwrap());
+        paint(&mut view, 42);
+        for _ in 1..view.pages {
+            view.key(down, false);
+            paint(&mut view, 42);
+        }
+        assert!(view.key(enter, false).is_none());
+        let confirmed = view
+            .key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), false)
+            .unwrap();
+        assert!(confirmed.interrupts());
     }
 }

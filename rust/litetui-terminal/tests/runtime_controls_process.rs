@@ -56,7 +56,7 @@ os.environ['RUST_RUNTIME_CONTROLS_CASE']={}
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 p=Path(os.environ['LITETUI_DATA_ROOT'])/'settings.json'
 s=json.loads(p.read_text(encoding='utf-8'))
-s.update(enter_interrupts=os.environ['RUST_RUNTIME_CONTROLS_CASE']=='midturn-swapped',user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False,tool_auto_background_s=0,custom_context_length=1000000)
+s.update(enter_interrupts=os.environ['RUST_RUNTIME_CONTROLS_CASE'] in ('midturn-swapped','midturn-interrupt-swapped'),user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False,tool_auto_background_s=0,custom_context_length=1000000)
 p.write_text(json.dumps(s),encoding='utf-8')
 runpy.run_path({},run_name='__main__')
 "#,quote(&source.to_string_lossy()),quote(case),quote(&fixture.to_string_lossy()))).unwrap();
@@ -966,7 +966,7 @@ fn identity_change(case: &str) {
 
 #[test]
 #[ignore = "actual captured host stream and queued user-input ledger"]
-fn midturn_queues_source_bound_draft_and_refuses_the_interrupt_chord() {
+fn midturn_queues_source_bound_draft_and_preserves_an_unconfirmed_interrupt() {
     for case in [
         "midturn-normal",
         "midturn-swapped",
@@ -1118,4 +1118,163 @@ fn midturn_queues_source_bound_draft_and_refuses_the_interrupt_chord() {
         }
         assert_eq!(r["denied"], json!([]));
     }
+}
+
+#[test]
+#[ignore = "actual source-owned soft interrupt and queued successor"]
+fn midturn_interrupt_preserves_order_worker_and_draft() {
+    for case in [
+        "midturn-interrupt-priority",
+        "midturn-interrupt-swapped",
+        "midturn-interrupt-stop",
+        "midturn-interrupt-quit",
+        "host-midturn-interrupt-tool",
+    ] {
+        let (runtime, root) = launch(case);
+        let older = "Earlier queued text";
+        let urgent = "  Please follow this instead • 雪  ";
+        let swapped = case == "midturn-interrupt-swapped";
+        let tool = case == "host-midturn-interrupt-tool";
+        let result=runtime.with_cleanup(|runtime|{
+            let mut app=Demo::live("custom".into(),"switch-old".into());
+            wait(runtime,&mut app,|e|matches!(e,Observation::Ready))?;
+            let chat=app.live.as_mut().unwrap();
+            chat.submit("Original foreground request")?;
+            runtime.submit(chat.take_submission().unwrap())?;
+            stage(runtime,&mut app,&root,if tool{"old-tool-running"}else{"stream-active"})?;
+            if case=="midturn-interrupt-priority"{
+                app.insert_text(older);
+                app.submit_chord(swapped);
+                dispatch_midturn(runtime,&mut app)?;
+                assert!(draw(&mut app).contains("next safe boundary"));
+                app.live.as_mut().unwrap().work.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE));
+                dispatch_midturn(runtime,&mut app)?;
+                assert_eq!(app.composer.text(),"");
+            }
+            app.insert_text(urgent);
+            app.composer.move_cursor(Motion::WordLeft,true);
+            app.submit_chord(!swapped);
+            dispatch_midturn(runtime,&mut app)?;
+            let screen=draw(&mut app);
+            let expected_prior=if case=="midturn-interrupt-priority"{1}else{0};
+            assert!(screen.contains("Interrupt the current reply") && screen.contains(&format!("ahead of {expected_prior} queued")),"{screen}");
+            let chat=app.live.as_mut().unwrap();
+            chat.work.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE));
+            assert!(chat.work.take_intent().is_none());
+            if case=="midturn-interrupt-stop" {
+                app.open_stop();
+                let chat=app.live.as_mut().unwrap();
+                chat.request_stop()?;
+                let abort=chat.take_abort().unwrap();
+                runtime.abort(abort)?;
+                while app.live.as_ref().unwrap().busy {app.observe_live(next(runtime)?)?;}
+                let _=draw(&mut app);
+                app.live.as_mut().unwrap().work.key(KeyEvent::new(KeyCode::Char('i'),KeyModifiers::NONE));
+                dispatch_midturn(runtime,&mut app)?;
+                assert_eq!(app.composer.text(),urgent);
+                return runtime.quit()
+            }
+            chat.work.key(KeyEvent::new(KeyCode::Char('i'),KeyModifiers::NONE));
+            assert_eq!(app.composer.text(),urgent);
+            dispatch_midturn(runtime,&mut app)?;
+            assert_eq!(app.composer.text(),"");
+            let chat=app.live.as_mut().unwrap();
+            assert!(chat.cancelling() && chat.take_abort().is_none());
+            assert!(chat.notice.contains("Interrupt accepted"));
+            if case=="midturn-interrupt-quit" {return runtime.quit()}
+            fs::write(root.join(if tool{"release-tool"}else{"release-stream"}),b"observe the cooperative soft stop")?;
+            let mut stopped=false;
+            let mut settled=0;
+            for _ in 0..200 {
+                let e=next(runtime)?;
+                stopped|=matches!(&e,Observation::Cancelled(_));
+                if matches!(&e,Observation::WorkExecution(update) if matches!(update.as_ref(),litetui_terminal::live::WorkExecution::Settled{..})){settled+=1;}
+                app.observe_live(e)?;
+                if stopped && settled==expected_prior+1 && !app.live.as_ref().unwrap().busy{return runtime.quit()}
+            }
+            Err(io::Error::other("Missing interrupt cancellation or successor settlement"))
+        });
+        assert!(result.is_ok(), "{case} {} {result:?}", root.display());
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        let requests = r["requests"].as_array().unwrap();
+        let inputs = r["work"]["inputs"].as_array().unwrap();
+        assert_eq!(r["denied"], json!([]));
+        if case == "midturn-interrupt-stop" {
+            assert!(inputs.is_empty());
+            assert_eq!(requests.len(), 1);
+            continue;
+        }
+        let urgent_input = inputs
+            .iter()
+            .find(|v| v["payload"]["text"] == urgent)
+            .unwrap();
+        if case == "midturn-interrupt-quit" {
+            assert_eq!(requests.len(), 1);
+            assert_eq!(urgent_input["state"], "held");
+            assert_eq!(
+                r["queue_recovered"][0]["producer"]["kind"],
+                "user_interrupt"
+            );
+            assert_eq!(r["queue_recovered"][0]["input"], urgent_input["ref"]);
+            continue;
+        }
+        assert_eq!(urgent_input["state"], "settled");
+        assert_eq!(urgent_input["admission"]["mode"], "new_turn");
+        assert_eq!(
+            requests.len(),
+            if case == "midturn-interrupt-priority" {
+                3
+            } else {
+                2
+            }
+        );
+        let messages = requests[1]["messages"].as_array().unwrap();
+        assert_eq!(messages.last().unwrap()["content"], urgent);
+        assert!(!messages.iter().any(|m| m["content"] == older));
+        if tool {
+            let calls: Vec<_> = messages
+                .iter()
+                .filter_map(|m| m["tool_calls"].as_array())
+                .flatten()
+                .map(|call| call["id"].clone())
+                .collect();
+            let paired: Vec<_> = messages
+                .iter()
+                .filter(|m| m["role"] == "tool")
+                .map(|m| m["tool_call_id"].clone())
+                .collect();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls, paired);
+        }
+        if requests.len() == 3 {
+            assert!(
+                r["legacy_queue_refusal"]
+                    .as_str()
+                    .unwrap()
+                    .contains("would interrupt")
+            );
+            assert!(
+                r["changed_order_refusal"]
+                    .as_str()
+                    .unwrap()
+                    .contains("stale or consumed")
+            );
+            let next = requests[2]["messages"].as_array().unwrap();
+            assert_eq!(next.last().unwrap()["content"], older);
+            assert_eq!(next.iter().filter(|m| m["content"] == urgent).count(), 1);
+        }
+    }
+}
+fn dispatch_midturn(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+    let intent = app
+        .live
+        .as_mut()
+        .unwrap()
+        .work
+        .take_intent()
+        .ok_or_else(|| io::Error::other(format!("Missing mid-turn intent: {}", app.notice)))?;
+    runtime.work(intent)?;
+    wait(runtime, app, |e| matches!(e, Observation::Work(_)))
 }

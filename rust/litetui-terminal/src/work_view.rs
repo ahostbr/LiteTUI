@@ -103,6 +103,14 @@ pub struct Update {
     pub generation: u64,
     pub data: Data,
 }
+impl Update {
+    pub(crate) fn interrupted(&self) -> Option<&str> {
+        match &self.data {
+            Data::Midturn(reply) => reply.interrupted(),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone)]
 enum Review {
     Manual(Box<crate::scheduled_transition::ManualReview>),
@@ -208,6 +216,9 @@ impl View {
     }
     pub fn context_open(&self) -> bool {
         self.context.is_open()
+    }
+    pub fn interrupt_apply_pending(&self) -> bool {
+        self.waiting && matches!(&self.pending,Some(Request::Midturn(r)) if r.interrupts())
     }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
@@ -393,10 +404,16 @@ impl View {
         self.scroll = 0;
         match update.data {
             Data::Midturn(reply) => {
+                let interrupted = reply.interrupted().is_some();
                 self.midturn.reply(*reply);
                 self.open = self.midturn.open;
                 if !self.open {
-                    self.notice = "Message queued in the current conversation.".into();
+                    self.notice = if interrupted {
+                        "Interrupt accepted. Your message will run when the current worker stops."
+                    } else {
+                        "Message queued in the current conversation."
+                    }
+                    .into();
                 }
             }
             Data::Rejected(reason) if matches!(pending, Request::Midturn(_)) => {

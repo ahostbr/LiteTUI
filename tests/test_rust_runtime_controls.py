@@ -233,8 +233,8 @@ async def test_native_provider_refuses_host_composer_queue_without_staging(armed
     monkeypatch.setattr(bridge, "provider", work.provider(app))
     assert bridge.provider == provider
     before = bridge.raw
-    for operation in (native_midturn.REVIEW, native_midturn.APPLY):
-        command_fields = {"review": work.ident()} if operation == native_midturn.APPLY else {}
+    for operation in (native_midturn.REVIEW, native_midturn.APPLY, native_midturn.SEND_REVIEW, native_midturn.SEND_APPLY):
+        command_fields = {"review": work.ident()} if operation in (native_midturn.APPLY,native_midturn.SEND_APPLY) else {}
         with pytest.raises(ValueError, match="captured host-managed stream"):
             native_midturn.dispatch(app, command(app, type=operation, work_instance=bridge.instance,
                 origin={}, chord="enter", text="Unsent", profile="strict", policy_epoch=1, **command_fields))

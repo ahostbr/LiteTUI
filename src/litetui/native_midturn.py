@@ -9,13 +9,34 @@ from litetui.textfmt import midturn_action
 
 REVIEW = "gui.prompt.native_queue_review"
 APPLY = "gui.prompt.native_queue_apply"
+SEND_REVIEW = "gui.prompt.native_send_review"
+SEND_APPLY = "gui.prompt.native_send_apply"
 MAX_TEXT = 16384
 
 
+def interrupt_queue(app, bridge):
+    if len(app._pending_input) > work.LIMITS["inputs"]:
+        raise ValueError("Interrupt queue exceeds the Work input limit")
+    prior = []
+    for item in app._pending_input:
+        entry = work.entry_for(app, item)
+        if (entry is None or entry.recovered or entry.state != "queued" or entry.claim_task is not None
+                or entry.epoch["instance"] != bridge.instance):
+            raise ValueError("Interrupt cannot change the order of held or unowned input")
+        if entry.ref["input_id"] in prior:
+            raise ValueError("Interrupt queue contains the same input twice")
+        prior.append(entry.ref["input_id"])
+    return prior
+
+
 def dispatch(app, cmd):
-    apply = cmd["type"] == APPLY
+    operation = cmd["type"]
+    if operation not in (REVIEW, APPLY, SEND_REVIEW, SEND_APPLY):
+        raise ValueError("Unknown mid-turn operation")
+    extended = operation in (SEND_REVIEW, SEND_APPLY)
+    apply = operation in (APPLY, SEND_APPLY)
     fields = ("origin", "chord", "text", "profile", "policy_epoch") + (("review",) if apply else ())
-    bridge, binding = read_binding(app, cmd, APPLY if apply else REVIEW, *fields)
+    bridge, binding = read_binding(app, cmd, operation, *fields)
     pending = bridge.user_queue_review
     bridge.user_queue_review = None
     if not controls.enabled(app) or bridge.provider != "host":
@@ -45,7 +66,8 @@ def dispatch(app, cmd):
     swapped = app.settings.enter_interrupts
     if type(swapped) is not bool:
         raise ValueError("The effective Enter behavior is unavailable")
-    if midturn_action(swapped, chord == "alternate") != "queue":
+    behavior = midturn_action(swapped, chord == "alternate")
+    if behavior == "interrupt" and not extended:
         raise ValueError("This key would interrupt the turn. Use the other send key to queue, or stop the turn explicitly.")
     profile = seat_authority.seat_profile(app)
     epoch = state.generation + 1
@@ -54,14 +76,16 @@ def dispatch(app, cmd):
     payload = {"content": message, "text": message, "source": "rpc", "tool_profile": profile}
     work.validate_payload(payload)
     value = {"version": 1, **binding, "origin": origin.envelope_fields(), "chord": chord, "text": message,
-             "behavior": "queue", "enter_interrupts": swapped, "profile": profile,
+             "behavior": behavior, "enter_interrupts": swapped, "profile": profile,
              "policy_epoch": epoch, "payload_sha256": work.digest(work.encoded(payload))}
+    if behavior == "interrupt":
+        value["prior_inputs"] = interrupt_queue(app, bridge)
     if not apply:
         value.update(kind="midturn_review", review=work.ident())
-        bridge.user_queue_review = (worker, work.encoded(value))
+        bridge.user_queue_review = (worker, work.encoded([extended, value]))
         return value
     value.update(kind="midturn_review", review=cmd["review"])
-    if pending != (worker, work.encoded(value)):
+    if pending != (worker, work.encoded([extended, value])):
         raise ValueError("The queue review is stale or consumed")
-    producer, entry = work.queue_user_input(app, origin, value["review"], payload)
+    producer, entry = work.queue_user_input(app, origin, value["review"], payload, interrupt=behavior == "interrupt")
     return {**value, "kind": "midturn_queued", "operation_id": cmd["id"], "producer": producer, "input": entry}
