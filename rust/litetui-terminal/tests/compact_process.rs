@@ -26,8 +26,23 @@ fn runtime_source() -> PathBuf {
         .canonicalize()
         .unwrap()
 }
-fn backend(_case: &str) -> &'static str {
-    "custom"
+fn backend(case: &str) -> &'static str {
+    if case.starts_with("codex-native") {
+        "codex"
+    } else if case.starts_with("claude-segment") {
+        "claude"
+    } else {
+        "custom"
+    }
+}
+fn model(case: &str) -> &'static str {
+    if case.starts_with("codex-native") {
+        "gpt-6.1-sol"
+    } else if case.starts_with("claude-segment") {
+        "claude-fixture"
+    } else {
+        "switch-old"
+    }
 }
 fn tools_on(case: &str) -> bool {
     matches!(case, "tools-on" | "tool-then-empty" | "tool-cap")
@@ -75,7 +90,7 @@ p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
 "#,quote(&actual.to_string_lossy()),quote(&format!("compact-{case}")),quote(case),if case=="wake"||case.ends_with("-wake"){"True"}else{"False"},if case=="clear-screen"{"True"}else{"False"},quote(&fixtures.join("history_compact_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
-    let args = vec![
+    let mut args = vec![
         "--python".into(),
         std::env::var("LITETUI_AUTHORITY_PYTHON").expect("controlled dependency Python"),
         "--source".into(),
@@ -83,9 +98,9 @@ runpy.run_path({}, run_name='__main__')
         "--data-root".into(),
         root.to_string_lossy().into_owned(),
         "--backend".into(),
-        "custom".into(),
+        backend(case).into(),
         "--model".into(),
-        "switch-old".into(),
+        model(case).into(),
         "--tool-profile".into(),
         "strict".into(),
         "--tools".into(),
@@ -100,11 +115,20 @@ runpy.run_path({}, run_name='__main__')
         "default".into(),
         "--timeout".into(),
         "90".into(),
-        "--base-url".into(),
-        "http://127.0.0.1:45120/v1".into(),
-        "--server-mode".into(),
-        "connect".into(),
     ];
+    let launch_fields: &[&str] = if backend(case) == "codex" {
+        &["--codex-engine", "native"]
+    } else if backend(case) == "claude" {
+        &[]
+    } else {
+        &[
+            "--base-url",
+            "http://127.0.0.1:45120/v1",
+            "--server-mode",
+            "connect",
+        ]
+    };
+    args.extend(launch_fields.iter().map(|field| (*field).to_owned()));
     (Interactive::start(Options::parse(&args).unwrap()), root)
 }
 fn next(runtime: &mut Interactive) -> io::Result<Observation> {
@@ -177,7 +201,7 @@ fn editor(app: &Demo) -> (String, String, String) {
     )
 }
 fn start(runtime: &mut Interactive, case: &str) -> io::Result<Demo> {
-    let mut app = Demo::live(backend(case).into(), "switch-old".into());
+    let mut app = Demo::live(backend(case).into(), model(case).into());
     app.insert_text("KEEP α 雪 THE COMPOSER DRAFT");
     app.composer.move_cursor(Motion::WordLeft, true);
     wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
@@ -368,7 +392,17 @@ fn report(root: &Path) -> Value {
     );
     assert_eq!(r["denied"], json!([]));
     assert_eq!(r["provider_requests"], json!([]));
-    assert_eq!(r["provider_calls"], json!([]));
+    if r["snapshot"]["backend"] == "codex" {
+        assert!(
+            r["provider_calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|call| matches!(call["method"].as_str(), Some("account/read" | "model/list")))
+        );
+    } else {
+        assert_eq!(r["provider_calls"], json!([]));
+    }
     assert_eq!(r["durable"], r["live"]);
     assert_eq!(r["archive_prefix_preserved"], true);
     for field in ["worker_settlement", "compact_workers"] {
@@ -489,6 +523,77 @@ fn f6_compact_preserves_hint_draft_and_real_zero_or_wake_streams() {
         }
     }
 }
+#[test]
+#[ignore = "controlled actual-source compaction; dependency Python required"]
+fn f6_codex_compact_verifies_native_thread_and_preserves_saved_transcript() {
+    let case = "codex-native";
+    let (runtime, root) = launch(case);
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = start(runtime, case)?;
+        let draft = editor(&app);
+        select(runtime, &mut app)?;
+        surface(&mut app);
+        assert!(draw(&mut app).contains("Compact Codex context"));
+        assert!(!app.live.as_ref().unwrap().compact.accepts_paste());
+        validate(runtime, &mut app, None)?;
+        assert!(draw(&mut app).contains("Confirm Codex context compaction"));
+        let request = apply(runtime, &mut app)?;
+        settle(runtime, &mut app, &request)?;
+        assert_eq!(editor(&app), draft);
+        runtime.quit()
+    });
+    assert!(result.is_ok(), "{result:?}; artifacts {}", root.display());
+    let r = report(&root);
+    assert_eq!(r["settled"]["history_changed"], false);
+    assert_eq!(
+        r["settled"]["witness"]["native_compaction"],
+        json!({"thread_id":"history-native-thread",
+        "turn_id":"native-compact-turn","item_id":"native-compact-item"})
+    );
+    assert_eq!(r["records_before"], r["records_after"]);
+    assert_eq!(r["baseline_live"], r["live"]);
+    assert_eq!(
+        r["compaction_rpc"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|call| call["method"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "thread/read",
+            "thread/compact/start",
+            "thread/read",
+            "thread/turns/list"
+        ]
+    );
+}
+
+#[test]
+#[ignore = "controlled actual-source compaction; dependency Python required"]
+fn f6_claude_compaction_retires_old_session_and_publishes_the_saved_seed() {
+    let case = "claude-segment";
+    let (runtime, root) = launch(case);
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = start(runtime, case)?;
+        let draft = editor(&app);
+        select(runtime, &mut app)?;
+        validate(runtime, &mut app, Some(HINT))?;
+        assert!(draw(&mut app).contains("Confirm Claude compaction"));
+        let request = apply(runtime, &mut app)?;
+        settle(runtime, &mut app, &request)?;
+        assert_eq!(editor(&app), draft);
+        runtime.quit()
+    });
+    assert!(result.is_ok(), "{result:?}; artifacts {}", root.display());
+    let r = report(&root);
+    let proof = &r["settled"]["witness"]["claude_compaction"];
+    assert_eq!(r["settled"]["witness"]["publication_verified"], true);
+    assert_eq!(proof["result_id"], r["claude_result"]);
+    assert_eq!(proof["old_segment"], r["old_ledger"]["selected_segment"]);
+    assert_eq!(proof["new_segment"], r["final_ledger"]["selected_segment"]);
+    assert_eq!(r["claude_summary_prompts"].as_array().unwrap().len(), 1);
+}
+
 #[test]
 #[ignore = "controlled actual-source compaction; dependency Python required"]
 fn f6_compact_cancel_review_has_no_provider_or_history_effects() {

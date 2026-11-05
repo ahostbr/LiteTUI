@@ -10,12 +10,14 @@ from typing import Any
 
 from litetui import (
     backend_catalog,
+    claude_compaction_evidence,
     compaction_preferences,
     conversation_transition,
     native_history,
 )
 from litetui import conversation_action as action
 from litetui import history_projection as projection
+from litetui.codex_compaction_evidence import Binding, VerifiedCompaction
 from litetui.conversation import ConversationRepository
 
 VERSION = 1
@@ -34,6 +36,18 @@ class CompactOutcome:
     reason: str | None = None
     publication_attempted: bool = False
     publication_verified: bool = False
+    native: VerifiedCompaction | None = None
+    claude: claude_compaction_evidence.SegmentReceipt | None = None
+
+
+@dataclass(frozen=True)
+class ClaudeReview(action.Review):
+    binding: claude_compaction_evidence.Binding | None
+
+
+@dataclass(frozen=True)
+class CodexReview(action.Review):
+    binding: Binding | None
 
 
 @dataclass
@@ -63,6 +77,8 @@ def _config(app):
         compaction_preferences.checked(source, value[key])
     if type(value["tools_enabled"]) is not bool:
         raise ValueError("Compaction effects must be booleans")
+    if app.backend.name == "codex" and hasattr(app.backend, "app_server"):
+        value.update(tools_enabled=False, wake_after_compact=False, clear_screen_after_compact=False)
     return value
 
 
@@ -84,8 +100,16 @@ def _plan(app, messages, config):
 
 
 def _eligibility(app):
-    if hasattr(app.backend, "app_server") or getattr(app.backend, "owns_native_turns", False):
-        return "This provider owns native context; host-history compaction is unavailable"
+    if hasattr(app.backend, "app_server"):
+        try:
+            Binding.capture(app)
+        except ValueError as exc:
+            return str(exc)
+    if getattr(app.backend, "owns_native_turns", False):
+        try:
+            claude_compaction_evidence.Binding.capture(app)
+        except ValueError as exc:
+            return str(exc)
     if getattr(app, "_owner_memory_dir", None) is not None:
         return "Reviewed manual compaction does not yet support owner-mode handoff"
     if app.store.pending or not app.store.owned:
@@ -110,18 +134,42 @@ def _snapshot(app, cmd):
         raise ValueError("Compaction history changed; inspect again")
     action._prefix(app, captured.messages)
     config = _config(app)
+    codex = app.backend.name == "codex" and hasattr(app.backend, "app_server")
+    claude = app.backend.name == "claude" and getattr(app.backend, "owns_native_turns", False)
+    binding = None
+    if claude:
+        try:
+            binding = claude_compaction_evidence.Binding.capture(app)
+        except ValueError:
+            pass  # Show the specific eligibility reason below.
+        plan = binding.plan(len(captured.messages)) if binding else {"kind": "claude", "messages": len(captured.messages),
+                "segment": None, "native_session": None, "ledger_before": None, "prompt_sha256": None}
+    elif codex:
+        try:
+            binding = Binding.capture(app)
+        except ValueError:
+            pass  # _eligibility supplies the reason for a read-only snapshot.
+        plan = {"kind": "codex", "thread_id": binding.thread_id if binding else None,
+                "messages": len(captured.messages)}
+    else:
+        plan = _plan(app, captured.messages, config)
     hooks, registry = conversation_transition._hooks(app), conversation_transition._registry(app)
     reason = "Current transcript is read-only" if not captured.writable else _eligibility(app)
     value = {"kind": "conversation_compact_snapshot", **action._identity(app),
              **{key: cmd[key] for key in SELECTION}, "eligible": reason is None, "reason": reason,
-             "plan": _plan(app, captured.messages, config), "config": config}
+             "plan": plan, "config": config}
     value["snapshot"] = backend_catalog.fingerprint(app, backend_catalog._context(app, app.convo_id), {
         "compact": value, "hooks": asdict(hooks), "registry": registry,
-        "objects": [id(item) for item in action._objects(app)]})
+        "objects": [id(item) for item in action._objects(app)],
+        **({"codex": [id(binding.transport), id(binding.server), id(binding.process), id(binding.session),
+                       binding.generation]} if codex and binding else {}),
+        **({"claude": [id(binding.ledger), id(binding.session), id(binding.owner), binding.generation]}
+           if claude and binding else {})})
     profile = getattr(app, "_active_tool_profile", None)
-    review = action.Review(b"", action._objects(app), action._protected(app), action._files(app), hooks, registry,
+    review_type = ClaudeReview if claude else CodexReview if codex else action.Review
+    review = review_type(b"", action._objects(app), action._protected(app), action._files(app), hooks, registry,
                            captured.messages_bytes, captured.raw or b"", app.conversation,
-                           profile, profile, action._receipts(app))
+                           profile, profile, action._receipts(app), **({"binding": binding} if codex or claude else {}))
     action._stable(app, review, original=True)
     return value, review
 
@@ -137,13 +185,21 @@ def validate(app, cmd):
     hint = cmd.get("hint")
     if not isinstance(hint, str) or len(hint.encode("utf-8")) > action.MAX_TEXT or "\0" in hint:
         raise ValueError("Compaction hint must be at most 65536 UTF-8 bytes without NUL")
+    native = isinstance(captured, CodexReview)
+    if native and hint:
+        raise ValueError("Codex native compaction does not accept guidance")
+    if isinstance(captured, ClaudeReview):
+        from litetui.claude_compact import request
+        prompt = request(hint)
+    else:
+        prompt = _prompt() + ("\n\n" + hint if hint else "")
     config = current["config"]
     value = {"kind": "conversation_compact_review", **{key: current[key] for key in
              (*COMMON, *SELECTION, "snapshot", "plan", "config")},
              "review": secrets.token_hex(32), "action_id": str(uuid.uuid4()), "action": "compact",
              "root_execution_id": str(uuid.uuid4()), "hint": hint,
              "hint_sha256": projection.digest(hint.encode("utf-8")),
-             "request_prompt_sha256": projection.digest((_prompt() + ("\n\n" + hint if hint else "")).encode("utf-8")),
+             "request_prompt_sha256": None if native else projection.digest(prompt.encode("utf-8")),
              "effects": {"provider_execution": True, "provider_rewind": False,
                          **{key: config[key] for key in ("tools_enabled", "wake_after_compact", "clear_screen_after_compact")}}}
     app._conversation_compact_review = replace(captured, wire=projection.encoded(value))
@@ -174,7 +230,19 @@ async def apply(app, cmd):
             action._stable(app, review, original=True)
             if reason := _eligibility(app):
                 raise ValueError(reason)
-            if _config(app) != wire["config"] or _plan(app, app.conversation, wire["config"]) != wire["plan"]:
+            if isinstance(review, ClaudeReview):
+                if review.binding is None:
+                    raise ValueError("Reviewed Claude session unavailable")
+                review.binding.check(app)
+                plan = review.binding.plan(len(app.conversation))
+            elif isinstance(review, CodexReview):
+                if review.binding is None:
+                    raise ValueError("Reviewed Codex binding is unavailable")
+                review.binding.check(app)
+                plan = {"kind": "codex", "messages": len(app.conversation), "thread_id": review.binding.thread_id}
+            else:
+                plan = _plan(app, app.conversation, wire["config"])
+            if _config(app) != wire["config"] or plan != wire["plan"]:
                 raise ValueError("Compaction plan or configuration changed")
             # Manual maintenance cannot consume a stale automatic/handoff flag.
             if getattr(app, "_interrupted_compact_resume", None) is not None or getattr(app, "_compact_is_auto", False):
@@ -201,6 +269,52 @@ async def apply(app, cmd):
         if failed:
             app._conversation_rewrite_error = action.CLOSE_REQUIRED
     return _receipt(app, cmd, attempt)
+
+
+def is_reviewed_claude(app):
+    return action._authorized(app) and isinstance(action._required_attempt(app).review, ClaudeReview)
+
+
+async def reviewed_claude(app, hint):
+    from litetui.claude_compact import compact
+
+    attempt = action._required_attempt(app)
+    binding = attempt.review.binding
+    if (not is_reviewed_claude(app) or attempt.kind != "compact" or not attempt.root_started
+            or attempt.mutated or binding is None):
+        raise ValueError("Claude compaction lost the reviewed execution owner")
+    binding.check(app)
+    progress = claude_compaction_evidence.Progress(binding)
+    attempt.mutated = True
+    try:
+        receipt = await compact(app, hint, reviewed=progress)
+        if not isinstance(receipt, claude_compaction_evidence.SegmentReceipt):
+            raise TypeError("The reviewed SDK result or publication is unverified")
+        binding.verify_final(app, receipt)
+    except Exception as exc:
+        attempt.reason = f"Claude compaction stopped during {progress.stage}. Close and inspect the conversation."
+        raise ValueError(attempt.reason) from exc
+    return CompactOutcome("compacted", "compacted", publication_attempted=True, publication_verified=True, claude=receipt)
+
+
+def is_reviewed_codex(app):
+    return action._authorized(app) and isinstance(action._required_attempt(app).review, CodexReview)
+
+
+async def reviewed_codex(app):
+    """Only the captured maintenance worker may dispatch native compaction."""
+    attempt = action._required_attempt(app)
+    review = attempt.review
+    if (not action._authorized(app) or not isinstance(review, CodexReview) or review.binding is None
+            or attempt.kind != "compact" or attempt.mutated or not attempt.root_started):
+        raise ValueError("Codex compaction lost the reviewed execution owner")
+    review.binding.check(app)
+    attempt.mutated = True  # Dispatch or cancellation can leave the remote result uncertain.
+    receipt = await review.binding.transport.compact(expected_thread=review.binding.thread_id, binding=review.binding)
+    review.binding.check(app)
+    if not isinstance(receipt, VerifiedCompaction) or receipt.thread_id != review.binding.thread_id:
+        raise ValueError("Codex compaction lacks verified native history")
+    return CompactOutcome("compacted", "compacted", native=receipt)
 
 
 def begin_publication(app, rebuilt):
@@ -234,6 +348,8 @@ def write_publication_record(app, record):
     if not captured.writable or captured.meta.get("id") != app.convo_id:
         raise ValueError("Compaction transcript changed its writable owned identity")
     raw = captured.raw or b""
+    if isinstance(attempt.review, ClaudeReview) and raw != attempt.review.raw:
+        raise ValueError("The reviewed Claude transcript changed before publication")
     payload = ConversationRepository.record_bytes(record, separator=bool(raw and not raw.endswith(b"\n")))
     if len(raw) + len(payload) > native_history.MAX_TRANSCRIPT:
         raise ValueError("Compaction append exceeds the 8 MiB transcript budget")
@@ -242,6 +358,8 @@ def write_publication_record(app, record):
     app.store.write_record(record)
     if app.store.persist_error:
         raise OSError(app.store.persist_error)
+    if isinstance(attempt.review, ClaudeReview) and native_history.capture_file(app.convo_path).raw != raw + payload:
+        raise OSError("Claude transcript did not append the exact reviewed truncation record")
     return True
 
 
@@ -271,8 +389,31 @@ def capture_root_result(app, attempt: action.Attempt, result):
     publication = attempt.publication
     attempted = bool(isinstance(publication, Publication) and publication.attempted)
     verified = bool(isinstance(publication, Publication) and publication.verified)
+    native = isinstance(attempt.review, CodexReview)
+    if native:
+        binding = attempt.review.binding
+        if binding is None:
+            raise ValueError("Reviewed Codex thread disappeared")
+        binding.check(app)
+        if (result.outcome == "compacted"
+                and (not attempt.mutated or not isinstance(result.native, VerifiedCompaction)
+                     or result.native.thread_id != binding.thread_id)
+                or result.outcome != "compacted" and (attempt.mutated or result.outcome != "cancelled")):
+            raise ValueError("Codex compaction lacks an exact native outcome")
+        action._stable(app, attempt.review, original=True, admitted=True)
+    elif result.native is not None:
+        raise ValueError("Host compaction returned an unexpected provider witness")
+    if isinstance(attempt.review, ClaudeReview):
+        if result.outcome == "cancelled" and not attempt.mutated:
+            attempt.review.binding.check(app)
+        elif result.outcome == "compacted" and isinstance(result.claude, claude_compaction_evidence.SegmentReceipt):
+            attempt.review.binding.verify_final(app, result.claude)
+        else:
+            raise ValueError("Claude compaction lacks SDK, segment and local publication proof")
+    elif result.claude is not None:
+        raise ValueError("Unexpected Claude segment witness")
     if (result.publication_attempted != attempted or result.publication_verified != verified
-            or (result.outcome == "compacted") != (attempted and verified) or attempted and not verified):
+            or (result.outcome == "compacted" and not native) != (attempted and verified) or attempted and not verified):
         raise ValueError("Compaction root cannot prove its publication outcome")
     action._stable(app, attempt.review, admitted=True)
     with action.readback(app):
@@ -293,7 +434,12 @@ async def settled(app, cmd):
             or cmd.get("operation_id") != attempt.operation or attempt.outcome == "failed"):
         raise ValueError("Unknown or failed compaction settlement")
     if attempt.drain is not None:
-        await asyncio.shield(attempt.drain)
+        try:
+            await asyncio.shield(attempt.drain)
+        except Exception:
+            if isinstance(attempt.review, ClaudeReview) and attempt.reason:
+                raise ValueError(attempt.reason) from None
+            raise
     await action._join_workers(attempt)
     with action._scope(app, attempt, "settled"):
         refused = attempt.outcome == "refused"
@@ -314,6 +460,20 @@ async def settled(app, cmd):
                 raise ValueError("Compaction root has no completed invocation witness")
             outcome = attempt.root_outcome
             root_history = json.loads(attempt.root_history)
+        if isinstance(attempt.review, CodexReview) and not refused:
+            attempt.review.binding.check(app)
+            action._stable(app, attempt.review, original=True, admitted=True)
+            if (root_history != descriptor or descriptor["snapshot"] != wire["history_snapshot"]
+                    or descriptor["context_sha256"] != wire["context_sha256"]):
+                raise ValueError("Codex compaction changed the stored transcript")
+        if isinstance(attempt.review, ClaudeReview) and not refused:
+            if outcome.claude:
+                attempt.review.binding.verify_final(app, outcome.claude)
+                if root_history != descriptor:
+                    raise ValueError("Published Claude transcript changed before settlement")
+            else:
+                attempt.review.binding.check(app)
+                action._stable(app, attempt.review, original=True, admitted=True)
         result = {"kind": "conversation_compact_settled", **{key: wire[key] for key in IDENTITY},
                   "operation_id": attempt.operation, "status": attempt.outcome, "worker_settled": True,
                   "close_required": False, "outcome": outcome.outcome, "reason_code": outcome.reason_code,
@@ -325,6 +485,10 @@ async def settled(app, cmd):
                               "publication_verified": outcome.publication_verified},
                   "execution": {"segments": len(attempt.segments or ()),
                                 "last_execution_id": attempt.segments[-1] if attempt.segments else None}}
+        if isinstance(attempt.review, ClaudeReview):
+            result["witness"]["claude_compaction"] = asdict(outcome.claude) if outcome.claude else None
+        if isinstance(attempt.review, CodexReview):
+            result["witness"]["native_compaction"] = asdict(outcome.native) if outcome.native else None
         native_history._wire(cmd, result)
         attempt.pending = False
         return result

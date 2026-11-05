@@ -365,6 +365,14 @@ impl Management {
                     reason: text(&frame, "error", 4096)?.into(),
                 }));
             }
+            if let Stage::Settled { attempt, .. } = &stage
+                && matches!(attempt.prepared.review.before.plan, r::Plan::Claude(_))
+            {
+                let reason = text(&frame, "error", 4096)?;
+                if reason.starts_with("Claude compaction stopped during ") {
+                    return Err(fail(&crate::live::terminal_text(reason)));
+                }
+            }
             return Err(fail(
                 "Compaction settlement/readback failed; reopen to inspect saved effects",
             ));

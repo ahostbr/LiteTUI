@@ -26,7 +26,10 @@ def launch(tmp_path, case):
     data.mkdir()
     tools = case in {"tools-on", "tool-then-empty", "tool-cap"} or "question" in case or "approval" in case
     wake = case == "wake" or case.endswith("-wake")
-    settings = {"backend": "custom", "default_model": "switch-old", "backend_chosen": True,
+    native = case.startswith("codex-native")
+    claude = case.startswith("claude-segment")
+    backend, model = ("claude", "claude-fixture") if claude else ("codex", "gpt-6.1-sol") if native else ("custom", "switch-old")
+    settings = {"backend": backend, "default_model": model, "backend_chosen": True, "codex_native_engine": native,
         "thinking_level": "default", "user_name_asked": True, "tools_enabled": tools,
         "mcp_enabled": False, "skills_enabled": False, "footer_task_manager": False,
         "tts_enabled": False, "sidecar_enabled": False, "tool_policy_profile": "strict",
@@ -45,9 +48,10 @@ def launch(tmp_path, case):
     environment.pop("LITETUI_MAX_TOKENS", None)
     python = os.environ.get("LITETUI_TEST_RUNTIME_PYTHON", sys.executable)
     argv = [python, "-B", str(FIXTURE), "--rpc", "--hold-restored-input", "--history-projection-version", "1",
-        "--backend", "custom", "--model", "switch-old", "--tool-profile", "strict", "--thinking-level", "default",
-        "--mcp-servers", "none", "--server-mode", "connect", "--server-timeout", "5",
-        "--base-url", "http://127.0.0.1:45120/v1"]
+        "--backend", backend, "--model", model, "--tool-profile", "strict", "--thinking-level", "default",
+        "--mcp-servers", "none"]
+    argv.extend([] if claude else ["--codex-engine", "native"] if native else [
+        "--server-mode", "connect", "--server-timeout", "5", "--base-url", "http://127.0.0.1:45120/v1"])
     output, errors = tmp_path / "events.jsonl", tmp_path / "stderr.txt"
     with output.open("wb") as stdout, errors.open("wb") as stderr:
         process = subprocess.Popen(argv, cwd=tmp_path, env=environment, stdout=stdout, stderr=stderr,
@@ -77,7 +81,11 @@ def launch(tmp_path, case):
     assert process.returncode == 0, f"Actual runtime failed; evidence: {tmp_path}\n" + errors.read_text(encoding="utf-8")[-8000:]
     report = json.loads((data / "history-fresh-report.json").read_text(encoding="utf-8"))
     assert Path(report["source_app"]).resolve() == source / "src/litetui/app.py"
-    assert report["denied"] == report["provider_requests"] == report["provider_calls"] == []
+    assert report["denied"] == report["provider_requests"] == []
+    if native:
+        assert all(call["method"] in {"account/read", "model/list"} for call in report["provider_calls"])
+    else:
+        assert report["provider_calls"] == []
     assert isinstance(report["sdk_requests"], list)
     assert all(w["finished"] for w in report["worker_settlement"] + report["compact_workers"])
     assert all(s["closed"] for s in report["streams"])
@@ -90,6 +98,68 @@ def launch(tmp_path, case):
         assert not any(c["type"] in {"gui.conversations.compact", "gui.conversations.edit",
             "gui.conversations.retry", "prompt", "run_command"} for c in report["commands"])
     return report
+
+
+@pytest.mark.parametrize("case", ["codex-native", "codex-native-drift", "codex-native-uncertain"])
+def test_reviewed_codex_compaction_requires_persisted_native_identity(tmp_path, case):
+    report = launch(tmp_path, case)
+    assert report["records_before"] == report["records_after"]
+    assert report["live"] == report["baseline_live"]
+    assert report["review"]["hint"] == "" and report["review"]["request_prompt_sha256"] is None
+    if case == "codex-native-drift":
+        assert report["apply"]["status"] == "refused" and not report.get("compaction_rpc")
+        assert report["settled"]["witness"]["native_compaction"] is None
+        return
+    assert report["apply"]["status"] == "accepted"
+    assert [call["method"] for call in report["compaction_rpc"]] == [
+        "thread/read", "thread/compact/start", "thread/read", "thread/turns/list"]
+    if case == "codex-native-uncertain":
+        assert not report["settled_response"]["ok"] and "settled" not in report
+        return
+    assert report["settled"]["witness"]["native_compaction"] == {
+        "thread_id": "history-native-thread", "turn_id": "native-compact-turn", "item_id": "native-compact-item"}
+    assert not report["settled"]["witness"]["publication_attempted"]
+    assert not report["settled"]["history_changed"]
+
+
+@pytest.mark.parametrize("case", ["claude-segment", "claude-segment-foreign", "claude-segment-close",
+    "claude-segment-ledger", "claude-segment-transcript", "claude-segment-wake", "claude-segment-tools",
+    "claude-segment-drift"])
+def test_claude_segment_and_transcript_publications_have_independent_evidence(tmp_path, case):
+    report = launch(tmp_path, case)
+    old, final = report["old_ledger"], report["final_ledger"]
+    if case.endswith(("-wake", "-tools")):
+        assert not report["snapshot"]["eligible"] and not report.get("claude_summary_prompts")
+        return
+    if case == "claude-segment-drift":
+        assert report["apply"]["status"] == "refused" and not report.get("claude_summary_prompts")
+        assert report["settled"]["witness"]["claude_compaction"] is None and final == old
+        return
+    assert len(report["claude_summary_prompts"]) == 1
+    assert report["review"]["request_prompt_sha256"] == hashlib.sha256(report["claude_summary_prompts"][0].encode()).hexdigest()
+    assert report["apply"]["status"] == "accepted"
+    if case != "claude-segment":
+        assert not report["settled_response"]["ok"] and "settled" not in report
+        assert report["records_before"] == report["records_after"]
+        stage = {"claude-segment-foreign": "SDK summary request", "claude-segment-close": "SDK session retirement",
+                 "claude-segment-ledger": "replacement segment selection",
+                 "claude-segment-transcript": "transcript publication after verified segment selection"}[case]
+        assert report["settled_response"]["error"] == f"Claude compaction stopped during {stage}. Close and inspect the conversation."
+        if case == "claude-segment-transcript":
+            assert final["selected_segment"] != old["selected_segment"]
+            assert final["segments"][final["selected_segment"]]["seed"] == SUMMARY
+        else:
+            assert final == old
+        return
+    witness = report["settled"]["witness"]["claude_compaction"]
+    assert witness["result_id"] == report["claude_result"] and witness["native_session"] == report["claude_session"]
+    assert witness["old_segment"] == old["selected_segment"] and witness["new_segment"] == final["selected_segment"]
+    assert witness["ledger_before"] == digest(old) and witness["ledger_after"] == digest(final)
+    selected = final["segments"][witness["new_segment"]]
+    assert selected["seed"] == SUMMARY and selected["session_id"] is None
+    assert witness["seed_sha256"] == hashlib.sha256(SUMMARY.encode()).hexdigest()
+    assert report["settled"]["witness"]["publication_verified"]
+    assert report["live"][-2]["content"].endswith("\n\n" + SUMMARY)
 
 
 def root_events(report):

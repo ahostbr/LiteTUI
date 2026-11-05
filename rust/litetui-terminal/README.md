@@ -40,7 +40,7 @@ Python validates a fresh catalog snapshot and provides a bounded read-only previ
 
 Inspection preserves the active conversation, complete provider context, settings, held input and composer draft. F5 finds the exact saved UUID in a fresh catalog before rereading its history; deletion or revision drift keeps the previous page visibly stale until a successful explicit refresh. Escape returns to the same browser selection after any in-flight read settles. The underlying catalog is unchanged and may need its own R refresh before Open. Inspection never executes hooks, connects a provider or authorizes Open. F6 always targets the current conversation.
 
-The current browser lists only the owned agent, 50 entries per page, up to 10,000 directory entries. Catalogue reads retain their 8 MiB per-transcript and 32 MiB per-page limits, with 256 KiB catalogue responses. Read-only, incompatible-policy and unsupported-history rows show their reason and cannot open. Version-1 history uses the bounded descriptor/page contract above; the old message-count limits apply only to the legacy protocol. F8 New and Rename use separate guarded reviews. Current host-history edit/retry and reviewed manual compaction are available through F6 as described below. Provider-native compaction and rewind remain parity work.
+The current browser lists only the owned agent, 50 entries per page, up to 10,000 directory entries. Catalogue reads retain their 8 MiB per-transcript and 32 MiB per-page limits, with 256 KiB catalogue responses. Read-only, incompatible-policy and unsupported-history rows show their reason and cannot open. Version-1 history uses the bounded descriptor/page contract above; the old message-count limits apply only to the legacy protocol. F8 New and Rename use separate guarded reviews. Current host-history edit/retry and reviewed manual compaction are available through F6 as described below. F6 also supports reviewed compaction of a connected Codex thread or an eligible Claude segment. Provider-native rewind remains separate.
 
 **Saved-row inspection verification (2026-10-31):** 580 ordinary Rust tests, 111 focused catalog tests, 17 controlled source cases and 18 native inspection scenarios pass. The relocated clean-dependency package passes all 17 source cases and 12 selected native scenarios; all 346 files remain unchanged. Formatting, type checks, Clippy and build pass. These checks do not establish actual-provider or terminal-host acceptance.
 
@@ -60,7 +60,11 @@ The review shows tool execution, possible durable file writes, wake, screen-clea
 
 The action first runs maintenance, with no invented user prompt. If enabled, a real wake follows. Approvals and questions remain available, and Stop applies until the action settles. Source and native readback distinguish compacted, no change, cancelled and failed outcomes before another prompt is allowed. Only successful compaction applies the reviewed clear-screen setting; retained older scrollback is marked separately from current context. Quit joins owned work without claiming the interrupted effects succeeded.
 
-This slice supports current owned writable host-managed history. Provider-native context and owner-mode handoff remain unavailable. Its latest validation status is in `../../docs/Plans/rust-tui-port/master.md`; real-provider and terminal-host acceptance remain separate.
+With Codex, F6 → C reviews compaction of the current connected, idle native thread. After confirmation, LiteTUI verifies the completed compaction item by rereading Codex history. The visible local transcript stays available.
+
+With Claude, F6 → C reviews a summary of the active SDK session. This path requires a session opened with tools off, wake after compaction disabled and no waiting continuation. Review the guidance and the effect on the next session. LiteTUI verifies the completed summary, closes the old session, publishes the replacement segment and rereads the saved transcript. A partial publication reports the last verified step.
+
+Owner-mode handoff and authenticated provider acceptance remain open. See `../../docs/Plans/rust-tui-port/master.md` for validation results.
 
 ## Review compaction preferences
 

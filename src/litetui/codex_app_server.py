@@ -17,6 +17,7 @@ from pathlib import Path
 
 from litetui import native_runtime_controls as controls
 from litetui import paths, sanitize, tool_context
+from litetui.codex_compaction_evidence import CompactionEvents, VerifiedCompaction
 from litetui.codex_runtime import RuntimeActivity
 from litetui.codex_workspace import workspace
 from litetui.event_origin import EventOrigin
@@ -328,15 +329,20 @@ class AppServerTransport:
                 return 0
             return await reconcile(self.app, thread)
 
-    async def compact(self, *, timeout=120):
+    async def compact(self, *, timeout=120, expected_thread=None, binding=None) -> VerifiedCompaction | None:
+        """With a reviewed thread, require independent native history confirmation."""
         try:
-            await asyncio.wait_for(self._compact(), timeout)
+            return await asyncio.wait_for(self._compact(expected_thread, binding), timeout)
         except TimeoutError as exc:
             raise ProviderError(
                 'Codex compaction timed out; the local transcript was preserved. Reconnect before retrying.'
             ) from exc
 
-    async def _compact(self):
+    async def _compact(self, expected_thread=None, binding=None):
+        if binding is not None:
+            binding.check(self.app)
+            if binding.transport is not self or binding.thread_id != expected_thread:
+                raise ProviderError("The reviewed Codex transport or thread changed.")
         async with self.lock:
             reference = next(
                 (
@@ -348,10 +354,17 @@ class AppServerTransport:
             )
             if not reference:
                 raise ProviderError("Start a Codex conversation before compacting it.")
-            if isinstance(self.server, AppServer) and self.server.native_bridge is None:
-                from litetui.codex_hook_bridge import NativeHookBridge
-                await NativeHookBridge(self.app).install(self.server)
-            await self.server.start()
+            if expected_thread is not None and expected_thread != reference:
+                raise ProviderError("The selected Codex thread changed before compaction.")
+            witness = CompactionEvents(reference) if expected_thread is not None else None
+            if witness is not None:
+                if self.thread_id != reference or self.process is None or self.process is not self.server.process:
+                    raise ProviderError("The reviewed Codex thread is no longer connected.")
+            else:
+                if isinstance(self.server, AppServer) and self.server.native_bridge is None:
+                    from litetui.codex_hook_bridge import NativeHookBridge
+                    await NativeHookBridge(self.app).install(self.server)
+                await self.server.start()
             if self.thread_id != reference or self.process is not self.server.process:
                 opened = await self.server.request("thread/resume", {"threadId": reference})
                 if opened.get("thread", {}).get("id") != reference:
@@ -371,9 +384,21 @@ class AppServerTransport:
                 for event in queued:
                     self.server.events.put_nowait(event)
                 raise ProviderError('Codex has pending server requests; resolve them before compacting.')
+            process = self.server.process
+            if witness is not None:
+                activity = getattr(self.server, "runtime_activity", None)
+                revision = getattr(activity, "revision", None)
+                await witness.idle_thread(self.server)
+                if binding is not None:
+                    binding.check(self.app, locked=True)
+                if getattr(activity, "revision", None) != revision:
+                    raise ProviderError("Codex activity changed during compaction preflight.")
+                if self.server.process is not process or self.thread_id != reference:
+                    raise ProviderError("The reviewed Codex thread changed during preflight.")
             await self.server.request("thread/compact/start", {"threadId": reference})
             finished = False
             compaction_turn = None
+            verified = None
             from litetui.codex_usage import NativeUsage
 
             compact_usage = NativeUsage()
@@ -401,7 +426,7 @@ class AppServerTransport:
                     thread_id=reference,
                     automatic_compaction=False,
                 )
-                if hasattr(self.app, "_rpc_emit")
+                if witness is None and hasattr(self.app, "_rpc_emit")
                 else None
             )
             interrupted = False
@@ -428,12 +453,18 @@ class AppServerTransport:
                     if isinstance(event, Exception):
                         raise event
                     if "id" in event and "method" in event:
+                        if witness is not None:
+                            await self.server.send({"id": event["id"], "error": {"code": -32601,
+                                "message": "Host callbacks are unavailable in this compaction."}})
+                            raise ProviderError("Codex requested an unexpected host callback during compaction.")
                         if not questions.dispatch(event):
                             await self._server_request(event)
                         continue
                     payload = event.get("params", {})
                     if payload.get("threadId") != reference:
                         continue
+                    if witness is not None:
+                        witness.observe(event.get("method"), payload)
                     if event.get("method") == "thread/tokenUsage/updated":
                         usage = compact_usage.update(payload.get("tokenUsage") or {})
                         if usage is not None and hasattr(self.app, "_record_native_usage"):
@@ -468,6 +499,12 @@ class AppServerTransport:
                                 "Codex compaction did not complete; the local transcript was preserved."
                             )
                         self.turn_id = payload["turn"]["id"]
+                        if witness is not None:
+                            if self.server.process is not process or self.thread_id != reference:
+                                raise ProviderError("Codex process or thread changed before compaction readback.")
+                            verified = await witness.readback(self.server, completed_turn)
+                            if self.server.process is not process or self.thread_id != reference:
+                                raise ProviderError("Codex process or thread changed during compaction readback.")
                         if ui:
                             ui.turn_id = self.turn_id
                             await ui.item(
@@ -477,7 +514,7 @@ class AppServerTransport:
                                 },
                                 True,
                             )
-                        return
+                        return verified
             finally:
                 from litetui.backend_session import cleanup_steps
                 turn_id, self.turn_id = self.turn_id, None
@@ -492,6 +529,8 @@ class AppServerTransport:
                 session = getattr(self.server, 'session', None)
                 if session is not None:
                     session.cleanup_errors.extend(errors)
+                if verified is not None and errors:
+                    raise ProviderError("Codex compaction cleanup did not finish.")
 
     async def _server_request(self, message, *, interrupt_on_stop=True):
         method = message["method"]

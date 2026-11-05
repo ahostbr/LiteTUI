@@ -90,7 +90,7 @@ fn selection_only_accepts_fresh_current_owned_coordinates() {
 }
 #[test]
 fn plan_counts_and_config_are_independently_bound_without_clamping() {
-    assert_eq!(snapshot().plan.head_messages, 4);
+    assert!(matches!(snapshot().plan, Plan::Host(plan) if plan.head_messages == 4));
     for path in [
         "/plan/messages",
         "/plan/system_messages",
@@ -191,6 +191,128 @@ fn zero_stream_success_requires_exact_publication_and_independent_root_context()
         );
     }
 }
+#[test]
+fn codex_compaction_binds_native_identity_without_host_writes_or_wakes() {
+    let mut selected = selection();
+    selected.identity.backend = "codex".into();
+    let mut snapshot = snapshot_value();
+    snapshot["backend"] = json!("codex");
+    snapshot["plan"] = json!({"kind": "codex", "thread_id": "codex-thread", "messages": 7});
+    snapshot["config"]["tools_enabled"] = json!(false);
+    snapshot["config"]["clear_screen_after_compact"] = json!(false);
+    let before = Snapshot::parse(&snapshot, &selected).unwrap();
+    let mut review = review_value("");
+    review["backend"] = json!("codex");
+    review["plan"] = snapshot["plan"].clone();
+    review["config"] = snapshot["config"].clone();
+    review["request_prompt_sha256"] = Value::Null;
+    review["effects"]["tools_enabled"] = json!(false);
+    review["effects"]["clear_screen_after_compact"] = json!(false);
+    let proof = Review::parse(&review, before.clone(), "").unwrap();
+    let mut hinted = review.clone();
+    hinted["request_prompt_sha256"] = json!(sha(""));
+    assert!(Review::parse(&hinted, before, "").is_err());
+    let mut admission = admission_value("accepted");
+    admission["backend"] = json!("codex");
+    let admitted = Admission::parse(&admission, &proof, "op").unwrap();
+    let mut result = settled_value();
+    result["backend"] = json!("codex");
+    result["history_changed"] = json!(false);
+    for path in ["history", "root_history"] {
+        result[path]["backend"] = json!("codex");
+        result[path]["snapshot"] = json!(selected.history_snapshot);
+        result[path]["context_sha256"] = json!(selected.context_sha256);
+    }
+    result["witness"] = json!({"root_started":true, "input_context_sha256":selected.context_sha256,
+        "root_context_sha256":selected.context_sha256, "publication_attempted":false,
+        "publication_verified":false, "native_compaction":{"thread_id":"codex-thread","turn_id":"native-turn","item_id":"native-item"}});
+    let verified = Settlement::parse(&result, &admitted, &proof, "op").unwrap();
+    assert_eq!(verified.native_compaction.unwrap().item_id, "native-item");
+    for (pointer, value) in [
+        ("/witness/native_compaction", Value::Null),
+        ("/witness/native_compaction/thread_id", json!("foreign")),
+        (
+            "/witness/native_compaction/item_id",
+            json!("compact:native-turn"),
+        ),
+        ("/witness/publication_attempted", json!(true)),
+        ("/root_history/snapshot", json!("0".repeat(64))),
+        ("/execution/segments", json!(1)),
+    ] {
+        let mut bad = result.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            Settlement::parse(&bad, &admitted, &proof, "op").is_err(),
+            "{pointer}"
+        );
+    }
+}
+
+#[test]
+fn claude_settlement_binds_two_segments_the_sdk_result_and_local_publication() {
+    let mut selected = selection();
+    selected.identity.backend = "claude".into();
+    let mut snap = snapshot_value();
+    snap["backend"] = json!("claude");
+    snap["config"]["tools_enabled"] = json!(false);
+    snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary")});
+    let before = Snapshot::parse(&snap, &selected).unwrap();
+    let mut review = review_value("");
+    review["backend"] = json!("claude");
+    review["config"] = snap["config"].clone();
+    review["plan"] = snap["plan"].clone();
+    review["request_prompt_sha256"] = snap["plan"]["prompt_sha256"].clone();
+    review["effects"]["tools_enabled"] = json!(false);
+    let proof = Review::parse(&review, before, "").unwrap();
+    let mut admitted = admission_value("accepted");
+    admitted["backend"] = json!("claude");
+    let admitted = Admission::parse(&admitted, &proof, "op").unwrap();
+    let mut result = settled_value();
+    result["backend"] = json!("claude");
+    for key in ["history", "root_history"] {
+        result[key]["backend"] = json!("claude");
+    }
+    result["witness"]["claude_compaction"] = json!({"old_segment":"a".repeat(32),"native_session":SESSION,
+        "result_id":AGENT,"new_segment":"b".repeat(32),"seed_sha256":"2".repeat(64),
+        "ledger_before":"1".repeat(64),"ledger_after":"3".repeat(64)});
+    assert_eq!(
+        Settlement::parse(&result, &admitted, &proof, "op")
+            .unwrap()
+            .claude_receipt
+            .unwrap()
+            .result_id,
+        AGENT
+    );
+    for (pointer, value) in [
+        ("/witness/claude_compaction", Value::Null),
+        (
+            "/witness/claude_compaction/new_segment",
+            json!("a".repeat(32)),
+        ),
+        (
+            "/witness/claude_compaction/old_segment",
+            json!("c".repeat(32)),
+        ),
+        ("/witness/claude_compaction/native_session", json!(ROOT)),
+        ("/witness/claude_compaction/result_id", json!("synthetic")),
+        (
+            "/witness/claude_compaction/ledger_after",
+            json!("1".repeat(64)),
+        ),
+        ("/witness/claude_compaction/seed_sha256", json!("bad")),
+        ("/witness/publication_verified", json!(false)),
+        ("/root_history/snapshot", json!("0".repeat(64))),
+    ] {
+        let mut bad = result.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            Settlement::parse(&bad, &admitted, &proof, "op").is_err(),
+            "{pointer}"
+        );
+    }
+}
+
 #[test]
 fn coherent_refusal_drift_is_bound_to_refusal_descriptor_not_old_context() {
     let admission = Admission::parse(&admission_value("refused"), &review(), "op").unwrap();

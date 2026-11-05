@@ -10497,6 +10497,8 @@ class LiteTUI(App):
         if getattr(self.backend, "owns_native_turns", False):
             # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.
+            if conversation_compact.is_reviewed_claude(self):
+                return await conversation_compact.reviewed_claude(self, extra)
             from litetui.claude_compact import compact
             auto = getattr(self, "_compact_is_auto", False)
             self._compact_is_auto = False
@@ -10513,6 +10515,8 @@ class LiteTUI(App):
                 proceed, owner_failure = await self._owner_codex_step_one()
                 if not proceed:
                     return None
+            if conversation_compact.is_reviewed_codex(self):
+                return await conversation_compact.reviewed_codex(self)
             self._system("Codex is compacting its context…")
             try:
                 await model_transport.for_app(self).compact()

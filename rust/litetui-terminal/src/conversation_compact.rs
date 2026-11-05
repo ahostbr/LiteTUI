@@ -233,7 +233,7 @@ impl Config {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Plan {
+pub struct HostPlan {
     pub messages: u64,
     pub system_messages: u64,
     pub head_messages: u64,
@@ -243,7 +243,7 @@ pub struct Plan {
     pub prompt_sha256: String,
     pub config_sha256: String,
 }
-impl Plan {
+impl HostPlan {
     fn parse(v: &Value, config: &Value, selection: &Selection) -> io::Result<Self> {
         keys(
             v,
@@ -282,6 +282,130 @@ impl Plan {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudePlan {
+    pub segment: String,
+    pub session: String,
+    pub ledger: String,
+    pub prompt: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Plan {
+    Host(Box<HostPlan>),
+    Codex { thread_id: Option<String> },
+    Claude(Option<ClaudePlan>),
+}
+
+fn native_id(v: &Value, key: &str) -> io::Result<String> {
+    let id = text(v, key, 256, false)?;
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    {
+        return Err(fail("Invalid Codex native identity"));
+    }
+    Ok(id)
+}
+
+fn segment_id(v: &Value, key: &str) -> io::Result<String> {
+    let value = text(v, key, 32, false)?;
+    if value.len() != 32
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(fail("Invalid Claude segment identity"));
+    }
+    Ok(value)
+}
+
+fn sdk_uuid(v: &Value, key: &str) -> io::Result<String> {
+    let value = text(v, key, 36, false)?;
+    if value.len() != 36
+        || !value.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+            }
+        })
+    {
+        return Err(fail("Invalid Claude SDK UUID"));
+    }
+    Ok(value)
+}
+
+impl Plan {
+    fn parse(v: &Value, config: &Value, selection: &Selection, eligible: bool) -> io::Result<Self> {
+        if v.get("kind").is_none() {
+            if eligible && selection.identity.backend == "claude" {
+                return Err(fail("Claude requires a provider segment plan"));
+            }
+            return Ok(Self::Host(Box::new(HostPlan::parse(v, config, selection)?)));
+        }
+        if v["kind"] == "claude" {
+            keys(
+                v,
+                &[
+                    "kind",
+                    "messages",
+                    "segment",
+                    "native_session",
+                    "ledger_before",
+                    "prompt_sha256",
+                ],
+            )?;
+            if selection.identity.backend != "claude"
+                || number(v, "messages")? != selection.messages
+                || eligible
+                    && (config["tools_enabled"] != false || config["wake_after_compact"] != false)
+            {
+                return Err(fail("Invalid Claude segment plan"));
+            }
+            let fields = [
+                "segment",
+                "native_session",
+                "ledger_before",
+                "prompt_sha256",
+            ];
+            if !eligible && fields.iter().all(|field| v[*field].is_null()) {
+                return Ok(Self::Claude(None));
+            }
+            return Ok(Self::Claude(Some(ClaudePlan {
+                segment: segment_id(v, "segment")?,
+                session: sdk_uuid(v, "native_session")?,
+                ledger: token(v, "ledger_before")?,
+                prompt: token(v, "prompt_sha256")?,
+            })));
+        }
+        keys(v, &["kind", "messages", "thread_id"])?;
+        if v["kind"] != "codex"
+            || selection.identity.backend != "codex"
+            || number(v, "messages")? != selection.messages
+            || [
+                "tools_enabled",
+                "wake_after_compact",
+                "clear_screen_after_compact",
+            ]
+            .iter()
+            .any(|key| config[*key] != false)
+        {
+            return Err(fail("Invalid native Codex compaction plan"));
+        }
+        let thread_id = if v["thread_id"].is_null() && !eligible {
+            None
+        } else {
+            Some(native_id(v, "thread_id")?)
+        };
+        Ok(Self::Codex { thread_id })
+    }
+
+    fn native(&self) -> bool {
+        matches!(self, Self::Codex { .. })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub selection: Selection,
     pub token: String,
@@ -305,7 +429,7 @@ impl Snapshot {
             eligible,
             reason,
             config: Config::parse(&v["config"])?,
-            plan: Plan::parse(&v["plan"], &v["config"], selection)?,
+            plan: Plan::parse(&v["plan"], &v["config"], selection, eligible)?,
         })
     }
     pub fn request(&self, hint: &str) -> Value {
@@ -323,7 +447,7 @@ pub struct Review {
     pub root_execution_id: String,
     pub hint: String,
     pub hint_sha256: String,
-    pub request_prompt_sha256: String,
+    pub request_prompt_sha256: Option<String>,
     wire: Value,
 }
 impl Review {
@@ -338,7 +462,8 @@ impl Review {
             || v["action"] != "compact"
             || hint != expected_hint
             || Config::parse(&v["config"])? != before.config
-            || Plan::parse(&v["plan"], &v["config"], &before.selection)? != before.plan
+            || Plan::parse(&v["plan"], &v["config"], &before.selection, before.eligible)?
+                != before.plan
         {
             return Err(fail(
                 "Compaction review changed the selected plan, configuration or hint",
@@ -367,10 +492,30 @@ impl Review {
             ));
         }
         let hint_sha256 = token(v, "hint_sha256")?;
-        let request_prompt_sha256 = token(v, "request_prompt_sha256")?;
-        if hint_sha256 != digest(&hint)
-            || hint.is_empty() && request_prompt_sha256 != before.plan.prompt_sha256
-        {
+        let request_prompt_sha256 = match &before.plan {
+            Plan::Claude(None) => return Err(fail("Claude review lacks an active session")),
+            Plan::Claude(Some(plan)) => {
+                let hash = token(v, "request_prompt_sha256")?;
+                if hint.is_empty() && hash != plan.prompt {
+                    return Err(fail("Claude summary prompt changed"));
+                }
+                Some(hash)
+            }
+            Plan::Host(plan) => {
+                let hash = token(v, "request_prompt_sha256")?;
+                if hint.is_empty() && hash != plan.prompt_sha256 {
+                    return Err(fail("Compaction prompt fingerprint changed"));
+                }
+                Some(hash)
+            }
+            Plan::Codex { .. } => {
+                if !hint.is_empty() || v.get("request_prompt_sha256") != Some(&Value::Null) {
+                    return Err(fail("Native Codex compaction cannot accept a host prompt"));
+                }
+                None
+            }
+        };
+        if hint_sha256 != digest(&hint) {
             return Err(fail("Compaction hint fingerprint changed"));
         }
         Ok(Self {
@@ -507,7 +652,24 @@ impl Outcome {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeReceipt {
+    pub result_id: String,
+    pub new_segment: String,
+    pub seed_sha256: String,
+    pub ledger_after: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeCompaction {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settlement {
+    pub native_compaction: Option<NativeCompaction>,
+    pub claude_receipt: Option<ClaudeReceipt>,
     pub outcome: Outcome,
     pub reason: Option<String>,
     pub reason_code: String,
@@ -520,6 +682,18 @@ pub struct Settlement {
 impl Settlement {
     /// Keep a bounded source explanation; otherwise describe its validated code.
     pub fn explanation(&self) -> Option<String> {
+        if let Some(receipt) = &self.claude_receipt {
+            return Some(format!(
+                "Claude summary saved in segment {}.",
+                receipt.new_segment
+            ));
+        }
+        if let Some(receipt) = &self.native_compaction {
+            return Some(format!(
+                "Codex confirmed turn {} in its thread history.",
+                receipt.turn_id
+            ));
+        }
         self.reason.clone().or_else(|| {
             let message = match self.reason_code.as_str() {
                 "too_short" => "Too few messages to compact.",
@@ -568,16 +742,81 @@ impl Settlement {
             ));
         }
         let w = &v["witness"];
-        keys(
-            w,
-            &[
-                "root_started",
-                "input_context_sha256",
-                "root_context_sha256",
-                "publication_attempted",
-                "publication_verified",
-            ],
-        )?;
+        let native = review.before.plan.native();
+        let mut fields = vec![
+            "root_started",
+            "input_context_sha256",
+            "root_context_sha256",
+            "publication_attempted",
+            "publication_verified",
+        ];
+        if native {
+            fields.push("native_compaction");
+        }
+        if matches!(review.before.plan, Plan::Claude(_)) {
+            fields.push("claude_compaction");
+        }
+        keys(w, &fields)?;
+        let mut native_compaction = None;
+        if let Plan::Codex { thread_id } = &review.before.plan {
+            let evidence = &w["native_compaction"];
+            if outcome == Outcome::Compacted {
+                keys(evidence, &["thread_id", "turn_id", "item_id"])?;
+                let observed = native_id(evidence, "thread_id")?;
+                if thread_id.as_ref() != Some(&observed) {
+                    return Err(fail("Codex compaction settled another native thread"));
+                }
+                native_compaction = Some(NativeCompaction {
+                    thread_id: observed,
+                    turn_id: native_id(evidence, "turn_id")?,
+                    item_id: native_id(evidence, "item_id")?,
+                });
+            } else if !evidence.is_null() {
+                return Err(fail("Uncompleted Codex compaction claims a native outcome"));
+            }
+        }
+        let mut claude_receipt = None;
+        if let Plan::Claude(Some(plan)) = &review.before.plan {
+            let receipt = &w["claude_compaction"];
+            if outcome == Outcome::Compacted {
+                keys(
+                    receipt,
+                    &[
+                        "old_segment",
+                        "native_session",
+                        "result_id",
+                        "new_segment",
+                        "seed_sha256",
+                        "ledger_before",
+                        "ledger_after",
+                    ],
+                )?;
+                let new_segment = segment_id(receipt, "new_segment")?;
+                let ledger_after = token(receipt, "ledger_after")?;
+                if receipt["old_segment"] != plan.segment
+                    || receipt["native_session"] != plan.session
+                    || receipt["ledger_before"] != plan.ledger
+                    || new_segment == plan.segment
+                    || ledger_after == plan.ledger
+                    || history.token == review.before.selection.history_snapshot
+                    || history.counts.non_system != 2
+                {
+                    return Err(fail(
+                        "Claude ledger or compacted transcript contradicts its reviewed segment",
+                    ));
+                }
+                claude_receipt = Some(ClaudeReceipt {
+                    result_id: sdk_uuid(receipt, "result_id")?,
+                    new_segment,
+                    seed_sha256: token(receipt, "seed_sha256")?,
+                    ledger_after,
+                });
+            } else if !receipt.is_null() {
+                return Err(fail(
+                    "Uncompleted Claude compaction claims a replacement segment",
+                ));
+            }
+        }
         let started = boolean(w, "root_started")?;
         let attempted = boolean(w, "publication_attempted")?;
         let verified = boolean(w, "publication_verified")?;
@@ -613,9 +852,19 @@ impl Settlement {
                 }
             };
             if !started
+                || matches!(review.before.plan, Plan::Claude(_))
+                    && (!matches!(outcome, Outcome::Compacted | Outcome::Cancelled)
+                        || root != history
+                        || outcome == Outcome::Cancelled
+                            && history.token != review.before.selection.history_snapshot)
                 || root_context != root.context_sha256
                 || !valid
-                || attempted != (outcome == Outcome::Compacted)
+                || attempted != (outcome == Outcome::Compacted && !native)
+                || native
+                    && (!matches!(outcome, Outcome::Compacted | Outcome::Cancelled)
+                        || history_changed
+                        || root != history
+                        || history.token != review.before.selection.history_snapshot)
                 || verified != attempted
             {
                 return Err(fail(
@@ -645,6 +894,8 @@ impl Settlement {
             Some(uuid(execution, "last_execution_id")?)
         };
         Ok(Self {
+            native_compaction,
+            claude_receipt,
             outcome,
             reason,
             reason_code,
@@ -897,8 +1148,15 @@ impl View {
         match update {
             Update::Snapshot { snapshot, .. } => {
                 self.notice = snapshot.reason.clone().unwrap_or_else(|| {
-                    "Optional guidance below. Enter reviews the exact compaction plan.".into()
+                    if snapshot.plan.native() {
+                        "Enter to review compaction of this Codex thread.".into()
+                    } else {
+                        "Optional guidance below. Enter reviews the exact compaction plan.".into()
+                    }
                 });
+                if snapshot.plan.native() {
+                    self.draft = Draft::default();
+                }
                 self.snapshot = Some(*snapshot);
                 self.review = None;
             }
@@ -921,7 +1179,10 @@ impl View {
             && self.visible
             && !self.waiting
             && self.review.is_none()
-            && self.snapshot.as_ref().is_some_and(|s| s.eligible)
+            && self
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.eligible && !s.plan.native())
     }
     pub fn accepts_paste(&self) -> bool {
         self.editing()
@@ -1075,39 +1336,75 @@ impl View {
         let display = crate::live::terminal_text;
         let mut caret_line = None;
         let details = if let Some(review) = &self.review {
-            let p = &review.before.plan;
-            let c = &review.before.config;
-            format!(
-                "Confirm manual compaction once\nSession: {}\nBackend: {} · model: {}\nSummarise {} older messages; retain {} recent messages at complete tool boundaries.\nOriginal transcript records stay on disk. A provider request may run; a smaller result is not guaranteed.\nTools enabled: {}. Completed tool writes or approval audits may remain after Stop or failure.\nWake after success: {}. Clear older displayed rows: {}.\nCompaction budget: {} tokens · {} tool rounds · thinking {}.\nPost-compaction token counts are estimates until a later provider request.\nBackground and automatically promoted tools refuse before starting.\nYour composer draft stays unchanged.\n\nExact optional guidance:\n{}",
-                review.before.selection.identity.session,
-                display(&review.before.selection.identity.backend),
-                display(&review.before.selection.identity.model),
-                p.head_messages,
-                p.tail_messages,
-                c.tools_enabled,
-                c.wake_after_compact,
-                c.clear_screen_after_compact,
-                c.max_tokens,
-                c.max_tool_iters,
-                c.thinking_level,
-                display(&review.hint)
-            )
+            match &review.before.plan {
+                Plan::Codex { thread_id } => format!(
+                    "Confirm Codex context compaction\nSession {}\nModel {}\nThread {}\n\nCodex will compact this thread on the provider. The visible conversation stays on disk. This operation can run inference and cannot be undone here.",
+                    display(&review.before.selection.identity.session),
+                    display(&review.before.selection.identity.model),
+                    display(thread_id.as_deref().unwrap_or_default())
+                ),
+                Plan::Claude(Some(plan)) => format!(
+                    "Confirm Claude compaction\nSession {}\nModel {}\n\nClaude will summarize this session and close it. The summary will seed a new segment and replace the saved context. Your next message starts a new SDK session with an empty cache and full input pricing.\nClear previous displayed rows: {}\n\nGuidance\n{}",
+                    display(&plan.session),
+                    display(&review.before.selection.identity.model),
+                    review.before.config.clear_screen_after_compact,
+                    display(&review.hint)
+                ),
+                Plan::Claude(None) => display(&self.notice),
+                Plan::Host(p) => {
+                    let c = &review.before.config;
+                    format!(
+                        "Confirm manual compaction once\nSession: {}\nBackend: {} · model: {}\nSummarise {} older messages; retain {} recent messages at complete tool boundaries.\nOriginal transcript records stay on disk. A provider request may run; a smaller result is not guaranteed.\nTools enabled: {}. Completed tool writes or approval audits may remain after Stop or failure.\nWake after success: {}. Clear older displayed rows: {}.\nCompaction budget: {} tokens · {} tool rounds · thinking {}.\nPost-compaction token counts are estimates until a later provider request.\nBackground and automatically promoted tools refuse before starting.\nYour composer draft stays unchanged.\n\nExact optional guidance:\n{}",
+                        review.before.selection.identity.session,
+                        display(&review.before.selection.identity.backend),
+                        display(&review.before.selection.identity.model),
+                        p.head_messages,
+                        p.tail_messages,
+                        c.tools_enabled,
+                        c.wake_after_compact,
+                        c.clear_screen_after_compact,
+                        c.max_tokens,
+                        c.max_tool_iters,
+                        c.thinking_level,
+                        display(&review.hint)
+                    )
+                }
+            }
         } else if let Some(snapshot) = &self.snapshot {
-            let header = format!(
-                "Current saved history: {} messages · {} older / {} recent\n{}\n\nOptional compaction guidance:\n",
-                snapshot.plan.messages,
-                snapshot.plan.head_messages,
-                snapshot.plan.tail_messages,
-                display(&self.notice)
-            );
-            let cursor = self.draft.cursor();
-            let before = display(&self.draft.text()[..cursor]);
-            caret_line = Some(
-                crate::ui::wrap(&(header.clone() + &before), body.width as usize)
-                    .len()
-                    .saturating_sub(1),
-            );
-            format!("{header}{before}▏{}", display(&self.draft.text()[cursor..]))
+            match &snapshot.plan {
+                Plan::Codex { thread_id } => format!(
+                    "Compact Codex context\nThread {}\nSaved messages {}\n\n{}",
+                    thread_id.as_deref().unwrap_or("unavailable"),
+                    snapshot.selection.messages,
+                    display(&self.notice)
+                ),
+                plan => {
+                    let header = match plan {
+                        Plan::Claude(Some(plan)) => format!(
+                            "Compact Claude session {}\n{}\n\nOptional compaction guidance:\n",
+                            plan.session,
+                            display(&self.notice)
+                        ),
+                        Plan::Claude(None) => display(&self.notice),
+                        Plan::Codex { .. } => unreachable!(),
+                        Plan::Host(plan) => format!(
+                            "Current saved history: {} messages · {} older / {} recent\n{}\n\nOptional compaction guidance:\n",
+                            plan.messages,
+                            plan.head_messages,
+                            plan.tail_messages,
+                            display(&self.notice)
+                        ),
+                    };
+                    let cursor = self.draft.cursor();
+                    let before = display(&self.draft.text()[..cursor]);
+                    caret_line = Some(
+                        crate::ui::wrap(&(header.clone() + &before), body.width as usize)
+                            .len()
+                            .saturating_sub(1),
+                    );
+                    format!("{header}{before}▏{}", display(&self.draft.text()[cursor..]))
+                }
+            }
         } else {
             display(&self.notice)
         };
@@ -1134,6 +1431,8 @@ impl View {
             "Waiting · Esc hides pending control"
         } else if self.review.is_some() {
             "PgUp/PgDn review · Enter compact · Esc back"
+        } else if self.snapshot.as_ref().is_some_and(|s| s.plan.native()) {
+            "Enter review · Esc close"
         } else {
             "Enter review · Shift+Enter line · Esc close"
         };

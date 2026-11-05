@@ -100,6 +100,17 @@ def seed(app):
         app.settings.compact_keep_recent = 0
     app._prompt_store_identity = None if CASE == "no-system" else store_identity.capture(app)
     app._store_injected = None if CASE == "no-system" else True
+    if CASE.startswith("codex-native"):
+        from litetui.model_transport import for_app
+
+        transport = for_app(app)
+        server = transport.server
+        assert server.process is not None and server.initialized
+        server.session.ready(server.session.begin())
+        transport.thread_id = "history-native-thread"
+        transport.process = server.process
+        app.conversation[-1]["provider_metadata"] = {
+            "provider": "codex", "app_server_thread_id": transport.thread_id, "app_server_turn_id": "history-native-turn"}
     app._materialise_convo()
     app.store.record_snapshot(app.conversation, store_identity=app._prompt_store_identity, store_injected=app._store_injected)
     assert not app.store.persist_error
@@ -130,6 +141,74 @@ def seed(app):
         before=stable(app), transcript_path=str(app.convo_path), records_before=records(app),
         archive_before=owned_transcript(app).read_bytes().hex(), artifact=str(artifact),
         write_args=write_args)
+
+
+async def seed_claude(app):
+    from litetui.claude_events import ClaudeEventStream
+    from litetui.claude_session import ClaudeSession
+    from litetui.claude_tools import ClaudeTools
+    from litetui.claude_turn import launch_workspace, ledger_for
+
+    native = "12345678-1111-4111-8111-123456789abc"
+    terminal = "22345678-1111-4111-8111-123456789abc"
+
+    class Client:
+        def __init__(self, _options):
+            self.frames = asyncio.Queue()
+
+        async def connect(self):
+            pass
+
+        async def get_server_info(self):
+            return {}
+
+        async def set_model(self, model):
+            assert model == app.model_id
+
+        async def query(self, prompt):
+            bootstrap = prompt == "fixture initial turn"
+            if not bootstrap:
+                history.report.setdefault("claude_summary_prompts", []).append(prompt)
+                assert history.explicit
+            session_id = terminal if CASE == "claude-segment-foreign" and not bootstrap else native
+            await self.frames.put(ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+                num_turns=1, session_id=session_id, uuid=native if bootstrap else terminal,
+                terminal_reason="completed", result="Hello" if bootstrap else SUMMARY))
+
+        async def receive_messages(self):
+            while True:
+                yield await self.frames.get()
+
+        async def disconnect(self):
+            if CASE == "claude-segment-close":
+                raise RuntimeError("controlled SDK close failure")
+
+    ledger = ledger_for(app)
+    segment = ledger.select_segment(launch_workspace(app))
+    session = ClaudeSession(NS(tools=[], mcp_servers={}, strict_mcp_config=True, effort=None,
+                               cwd=segment["workspace"]), client_factory=Client)
+    app.backend.session, app.backend.segment_id = session, segment["id"]
+    await session.start()
+    await session.query("fixture-bootstrap", "fixture initial turn")
+    async for _ in session.events():
+        pass
+    ledger.bind_session(segment["id"], session.session_id)
+    app.backend._claude_tools = ClaudeTools(app, app.backend, segment["id"], workspace=segment["workspace"])
+    app.backend._claude_events = ClaudeEventStream(session_id=native)
+    history.report.update(old_ledger=ledger.document, claude_session=native, claude_result=terminal)
+    if CASE == "claude-segment-ledger":
+        original = ledger._save
+
+        def fail_save():
+            if ledger.selected["id"] != segment["id"]:
+                raise OSError("controlled new segment write failure")
+            return original()
+
+        ledger._save = fail_save
+    elif CASE == "claude-segment-wake":
+        app.settings.wake_after_compact = True
+    elif CASE == "claude-segment-tools":
+        app.tools_enabled = True
 
 
 def mark(stage, **extra):
@@ -312,6 +391,9 @@ async def serve(app):
             tool_futures=tool_state(), approval_pending=list(getattr(app, "_approval_waiters", {})),
             approval_authorities=list(getattr(app, "_approval_authority_records", {})),
             artifact_exists=Path(history.report["artifact"]).exists())
+        if CASE.startswith("claude-segment"):
+            from litetui import restored_claude
+            history.report["final_ledger"] = restored_claude._read(app.store).document
         if history.report["artifact_exists"]:
             history.report["artifact_text"] = Path(history.report["artifact"]).read_text(encoding="utf-8")
 
@@ -441,6 +523,8 @@ async def serve(app):
     def faulty_write(record):
         if history.explicit:
             history.report.setdefault("owned_write_attempts", []).append(record.get("type"))
+        if CASE == "claude-segment-transcript" and record.get("type") == "truncate":
+            return None
         fault = CASE.removeprefix("persist-")
         eligible = record.get("type") == ("edit" if fault in {"system-edit", "receipts"} else "truncate")
         if not CASE.startswith("persist-") or not eligible:
@@ -504,7 +588,7 @@ async def serve(app):
         if not snapshot["eligible"]:
             history.report["refused_at"] = "eligibility"
             return
-        hint = "" if CASE == "empty-hint" else " " if CASE == "whitespace-hint" else HINT
+        hint = "" if CASE == "empty-hint" or CASE.startswith("codex-native") else " " if CASE == "whitespace-hint" else HINT
         if CASE == "hint-boundary":
             hint = "é" * 32768
         elif CASE == "hint-over-limit":
@@ -521,6 +605,10 @@ async def serve(app):
         payload = {k: copy.deepcopy(v) for k, v in review.items() if k != "kind"}
         if CASE == "stale-settings":
             app.settings.compact_max_tokens += 1
+        elif CASE == "claude-segment-drift":
+            app.backend.session.lifecycle.generation += 1
+        elif CASE == "codex-native-drift":
+            app.backend.app_server.session.ready(app.backend.app_server.session.begin())
         elif CASE == "stale-history":
             app._append({"role": "assistant", "content": "Coherent change after the review"})
         elif CASE == "stale-policy":
@@ -583,6 +671,8 @@ async def serve(app):
                 await asyncio.wait_for(history.boundary.ready.wait(), 15)
                 await history.settle(app)
                 seed(app)
+                if CASE.startswith("claude-segment"):
+                    await seed_claude(app)
                 seeded = True
                 if CASE in {"readonly", "late-readonly"}:
                     readonly = owned_transcript(app)
@@ -622,13 +712,44 @@ async def serve(app):
             if readonly is not None:
                 assert readonly.is_relative_to(history.root.resolve()) and readonly.name == "convo.jsonl"
                 readonly.chmod(stat.S_IREAD | stat.S_IWRITE)
-            await app.client.close()
+            if app.client is not None:
+                await app.client.close()
             history.report["compact_workers"] = [{"name": w.name, "group": w.group, "finished": w.is_finished} for w in workers]
             history.report["streams"] = [{"kind": s.kind, "closed": s.closed} for s in streams]
             if reader is not None:
                 await asyncio.to_thread(reader.join, 2)
                 assert not reader.is_alive()
 
+
+if CASE.startswith("codex-native"):
+    history.case = CASE
+    os.environ["CODEX_HOME"] = str(history.root / "isolated-codex")
+    native_request = history.codex_request
+
+    async def codex_request(server, method, params):
+        if method in {"account/read", "model/list"}:
+            return await native_request(server, method, params)
+        assert history.explicit and params["threadId"] == "history-native-thread"
+        history.report.setdefault("compaction_rpc", []).append({"method": method, "params": dict(params)})
+        turn = "native-compact-turn"
+        item = {"type": "contextCompaction", "id": "native-compact-item"}
+        if method == "thread/compact/start":
+            for event, fields in (("turn/started", {"turn": {"id": turn}}),
+                                  ("item/started", {"turnId": turn, "item": item}),
+                                  ("item/completed", {"turnId": turn, "item": item}),
+                                  ("turn/completed", {"turn": {"id": turn, "status": "completed"}})):
+                server.events.put_nowait({"method": event, "params": {"threadId": params["threadId"], **fields}})
+            return {}
+        if method == "thread/read":
+            assert params["includeTurns"] is False
+            return {"thread": {"id": params["threadId"], "status": {"type": "idle"}, "historyMode": "paginated"}}
+        if method == "thread/turns/list":
+            assert params["itemsView"] == "full" and params["sortDirection"] == "desc" and params["limit"] == 1
+            items = [] if CASE == "codex-native-uncertain" else [item]
+            return {"data": [{"id": turn, "itemsView": "full", "status": "completed", "items": items}]}
+        raise AssertionError(method)
+
+    history.codex_request = codex_request
 
 history.completions = completions
 history.serve = serve
@@ -647,4 +768,13 @@ if __name__ == "__main__":
             "litetui.plugins.convo", "litetui.plugins.self_compact", "litetui.plugins.ask_user_question"), disabled=disabled)
 
     with patch.object(plugins, "register_plugins", controlled_register):
-        history.main()
+        if CASE.startswith("claude-segment"):
+            from claude_agent_sdk.types import ResultMessage
+            from litetui.claude_backend import ClaudeBackend
+            async def metadata(backend):
+                backend.models = {"claude-fixture": {"value": "claude-fixture"}}
+                return "ok"
+            with patch.object(ClaudeBackend, "ensure_running", metadata):
+                history.main()
+        else:
+            history.main()

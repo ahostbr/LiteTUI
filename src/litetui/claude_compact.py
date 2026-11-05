@@ -76,7 +76,7 @@ def request(extra: str = "", owner_dir=None) -> str:
             + (f"\n\n{extra}" if extra else ""))
 
 
-async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None) -> None:
+async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None, reviewed=None):
     """Summarise with Claude, then continue in a fresh session seeded with it."""
     # Consume once even on refusal/failure. Maintenance must not arm a later
     # unrelated /compact to resurrect this task.
@@ -114,7 +114,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                         if resume is not None and resume[4] is not None else None)
         return any(entry["id"] != transferable for entry in ledger.pending(segment["id"]))
 
-    if not auto:
+    if not auto and reviewed is None:
         # The same gate as a model or effort switch (claude_cache.confirm_cold).
         clock = claude_cache.clock_for(app, segment["id"])
         live = backend.session is not None and backend.segment_id == segment["id"]
@@ -153,6 +153,10 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
             app._system(f"Claude cleanup: {cleanup_failure}")
         card.set_status(f"asking {app.model_id} for the summary")
         session, bridge, normalizer = await session_for(app, backend, segment, effort_for(app))
+        if reviewed is not None:
+            reviewed.binding.check(app)
+            if session is not reviewed.binding.session:
+                raise ValueError("Claude changed the SDK session before dispatch")
         if session.session_id and not segment.get("session_id"):
             segment = ledger.bind_session(segment["id"], session.session_id)
         async def turn(text: str) -> None:
@@ -166,6 +170,8 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                     bridge.stop()
                     await session.interrupt()
                 for event in normalizer.push(message):
+                    if reviewed is not None and event.kind in {"tool_use", "tool_result", "compaction"}:
+                        raise ValueError("Unexpected work in the reviewed tools-off Claude summary")
                     if event.kind in {"text_delta", "message"}:
                         card.thinking_done()
                         key = event.message_id or "current"
@@ -200,6 +206,8 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                     elif event.kind == "error":
                         failure = event.detail or "Claude reported an error"
                     elif event.kind == "result":
+                        if reviewed is not None:
+                            reviewed.terminal(message, event)
                         terminal = True
                         if event.is_error:
                             failure = event.detail or event.text or failure or "Claude compaction turn failed"
@@ -240,6 +248,8 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     card.record_round({"round": 1, "model_s": time.perf_counter() - started,
                        "first_chunk_s": None, "tools_s": 0.0, "usage": None})
     if failure or not summary:
+        if reviewed is not None:
+            raise ValueError("Claude summary was interrupted or unverified")
         app._autocompact_failed_at = app.ctx_used
         card.fail("failed — conversation unchanged")
         app._system(f"Compact failed — the Claude session is unchanged. {failure or 'No summary produced.'}")
@@ -249,9 +259,13 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
 
     # The summary exists: end this session and seed the next one with it.
     seed = summary + (f"\n\n[Agent's pre-compaction handoff]\n{handoff}" if handoff else "")
+    if reviewed is not None:
+        reviewed.before_close(app, seed)
     try:
         await backend.close()
-    except Exception as exc:  # noqa: BLE001 - reported; the new segment still owns the summary
+    except Exception as exc:
+        if reviewed is not None:
+            raise
         app._system(f"Claude cleanup after compaction: {exc}")
     selected = ledger.selected
     if (app.backend is not backend or app.convo_id != conversation_id
@@ -268,7 +282,10 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         app._emit_compaction("failed", tokens_before=tokens_before,
                              tokens_before_exact=tokens_before is not None)
         return
+    if reviewed is not None:
+        reviewed.before_select(app)
     next_segment = ledger.select_segment(segment.get("workspace") or launch_workspace(app), new=True, seed=seed)
+    receipt = reviewed.selected(app, next_segment) if reviewed is not None else None
     held_input = None
     if resume is not None and resume[4] is not None:
         # Proven unsent (preflight), never a delivered/RPC replay. Persist the
@@ -286,6 +303,11 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     ]
     system = app.conversation[:1] if app.conversation and app.conversation[0].get("role") == "system" else []
     rebuilt = system + pair
+    if reviewed is not None:
+        from litetui import conversation_compact
+        publication = conversation_compact.begin_publication(app, rebuilt)
+        if publication is None:
+            raise ValueError("Claude transcript publication lost its owner")
     tokens_after = (app._msg_chars(rebuilt) + 3) // 4
     app._truncate(len(app.conversation), pair, "compact", measurements={
         "model": app.model_id, "auto": auto, "backend": "claude",
@@ -300,6 +322,9 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         "store_files": writes,
     })
     app.conversation = rebuilt
+    if reviewed is not None:
+        conversation_compact.verify_publication(app, publication)
+        reviewed.stage = "cleanup after verified segment and transcript publication"
     app._emit_compaction("compacted", tokens_before=tokens_before, tokens_after=tokens_after,
                          tokens_before_exact=tokens_before is not None, tokens_after_exact=False,
                          messages_dropped=before_count - len(system),
@@ -342,6 +367,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                     app._submit_text(text, alt_chord=False, source="compact")
 
         app.call_after_refresh(continue_once)
+    return receipt
 
 
 def native_compaction(app, event) -> None:

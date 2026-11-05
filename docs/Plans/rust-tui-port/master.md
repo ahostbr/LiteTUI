@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Compact current Codex and Claude sessions from F6 - 2026-11-04
+
+Codex compaction requires an idle native thread that agrees with the saved conversation. F6 verifies the completed turn and compaction item against provider history and preserves the local transcript. Claude compaction requires an idle tools-off SDK session, wake disabled and no pending continuation. Its review covers the summary, SDK retirement, new segment seed and saved transcript. If publication stops between the segment write and transcript write, F6 reports the verified stage and closes the action.
+
+All 11 native-provider subprocess cases passed with the pinned Claude SDK 0.2.159. The registered Rust F6 entry points also passed against the relocated runtime with controlled providers. A separate run used the installed Codex 0.164.0 app-server, an isolated home and a loopback fixture model. Its independently read native turn/item matched the receipt. Authenticated provider sessions remain a separate acceptance step.
+
 ## Manual Run in a new conversation - 2026-11-04
 
 In F1 Work, R on a saved New-conversation job or loop opens a review of the exact prompt, tool profile, source and destination, and run count. Confirmation verifies the stored job before stamping the acceptance time. A loop computes its next fire from that time. The single invocation starts after the new conversation becomes active and the saved result is read back. Escape and stale selections preserve the original conversation and draft.
