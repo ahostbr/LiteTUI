@@ -10,6 +10,7 @@ from unittest.mock import patch
 shared = runpy.run_path(os.environ["RUST_CONTEXT_COMMON_FIXTURE"])
 root = Path(os.environ["LITETUI_DATA_ROOT"])
 secret = "PRIVATE_MCP_SENTINEL"
+typed = "TYPED_MCP_SENTINEL"
 attempts = []
 
 
@@ -19,7 +20,7 @@ def forbidden(*_args, **_kwargs):
 
 
 async def serve(app):
-    from litetui import gui_rpc
+    from litetui import gui_rpc, mcp_client
 
     primary = {"mcpServers": {"primary": {"command": secret, "args": [secret]}}}
     secondary = {
@@ -50,11 +51,23 @@ async def serve(app):
                 "reconcile",
                 "stop_all",
                 "describe",
+                "add",
+                "remove",
+                "_connect_locked",
                 "_build",
             ):
                 guards.enter_context(patch.object(owner.mcp, name, forbidden))
+            # Declaring or removing a server never starts one: no stdio spawn, no HTTP post.
+            guards.enter_context(patch.object(mcp_client.ttyguard, "popen", forbidden))
+            for cls, name in (
+                (mcp_client.MCPServer, "start"),
+                (mcp_client.HTTPMCPServer, "start"),
+                (mcp_client.HTTPMCPServer, "_post"),
+            ):
+                guards.enter_context(patch.object(cls, name, forbidden))
             answer = actual(owner, command)
-            assert secret not in json.dumps(answer)
+            text = json.dumps(answer)
+            assert secret not in text and typed not in text
             return answer
 
     try:

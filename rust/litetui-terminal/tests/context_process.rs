@@ -530,6 +530,159 @@ fn shared_mcp_declaration_requires_review_and_fresh_disk_readback() {
     );
 }
 
+fn settings_text(runtime: &mut Interactive, app: &mut Demo, text: &str) -> io::Result<()> {
+    for c in text.chars() {
+        settings_key(runtime, app, KeyCode::Char(c))?;
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "compiled Settings MCP add/remove review; dependency Python required"]
+fn shared_mcp_declaration_add_and_remove_are_reviewed_written_and_read_back() {
+    const TYPED: &str = "TYPED_MCP_SENTINEL";
+    let (runtime, data) = launch("mcp_declaration_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Keep this composer draft.");
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            let list = settings_key(runtime, &mut app, KeyCode::Char('m'))?;
+            assert!(
+                list.contains("A add") && list.contains("X remove"),
+                "{list}"
+            );
+            let dot = data.join(".mcp.json");
+            let before = json_file(&dot);
+
+            // Add: form, masked value, source review, back to the form, save, reread.
+            let form = settings_key(runtime, &mut app, KeyCode::Char('a'))?;
+            assert!(form.contains("never connects or starts a server"), "{form}");
+            settings_text(runtime, &mut app, "added")?;
+            settings_key(runtime, &mut app, KeyCode::Tab)?;
+            settings_key(runtime, &mut app, KeyCode::Tab)?;
+            settings_text(runtime, &mut app, "npx")?;
+            settings_key(runtime, &mut app, KeyCode::Tab)?;
+            settings_text(runtime, &mut app, "-y pkg")?;
+            settings_key(runtime, &mut app, KeyCode::Tab)?;
+            settings_text(runtime, &mut app, &format!("TOKEN={TYPED}"))?;
+            let typed = settings_key(runtime, &mut app, KeyCode::Tab)?;
+            assert!(
+                typed.contains("TOKEN=••••") && !typed.contains(TYPED),
+                "{typed}"
+            );
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            for needle in [
+                "Add \"added\" to .mcp.json?",
+                "target: npx",
+                "environment names: TOKEN",
+                "does not connect or start any server",
+            ] {
+                assert!(review.contains(needle), "{needle}\n{review}");
+            }
+            assert!(!review.contains(TYPED), "{review}");
+            assert_eq!(json_file(&dot), before);
+            let back = settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert!(
+                back.contains("TOKEN=••••") && !back.contains(TYPED),
+                "{back}"
+            );
+            assert_eq!(json_file(&dot), before);
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                saved.contains("Declaration added and verified on disk.")
+                    && saved.contains("added")
+                    && !saved.contains(TYPED),
+                "{saved}"
+            );
+            let doc = json_file(&dot);
+            assert_eq!(
+                doc["mcpServers"]["added"],
+                json!({"command":"npx","args":["-y","pkg"],"env":{"TOKEN":TYPED}})
+            );
+            assert_eq!(
+                doc["mcpServers"]["offline"],
+                before["mcpServers"]["offline"]
+            );
+            assert_eq!(doc["shared-extra"], before["shared-extra"]);
+
+            // The shadowing file's declaration cannot be removed; the source says why.
+            settings_key(runtime, &mut app, KeyCode::Up)?;
+            settings_key(runtime, &mut app, KeyCode::Up)?;
+            let refused = settings_key(runtime, &mut app, KeyCode::Char('x'))?;
+            assert!(
+                refused.contains("declared in mcp.json, which /mcp does not write"),
+                "{refused}"
+            );
+            assert_eq!(json_file(&dot), doc);
+
+            // Remove: select the new entry, review, save, reread.
+            settings_key(runtime, &mut app, KeyCode::Down)?;
+            settings_key(runtime, &mut app, KeyCode::Down)?;
+            let review = settings_key(runtime, &mut app, KeyCode::Char('x'))?;
+            assert!(
+                review.contains("Remove \"added\" from .mcp.json?")
+                    && review.contains("does not connect, start or stop any server"),
+                "{review}"
+            );
+            assert_eq!(json_file(&dot), doc);
+            let gone = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                gone.contains("Declaration removed and verified on disk.")
+                    && !gone.contains("added   "),
+                "{gone}"
+            );
+            assert_eq!(json_file(&dot), before);
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Keep this composer draft.");
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("{}: {error}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"].as_array().unwrap();
+    let kinds = commands
+        .iter()
+        .filter_map(|c| c["type"].as_str())
+        .filter(|s| s.starts_with("gui.mcp."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            "gui.mcp.native_config_list",
+            "gui.mcp.native_config_add_review",
+            "gui.mcp.native_config_add_review",
+            "gui.mcp.native_config_apply",
+            "gui.mcp.native_config_readback",
+            "gui.mcp.native_config_remove_review",
+            "gui.mcp.native_config_remove_review",
+            "gui.mcp.native_config_apply",
+            "gui.mcp.native_config_readback"
+        ]
+    );
+    // The typed value crossed the wire only inside the two add reviews.
+    let carrying = commands
+        .iter()
+        .filter(|c| c.to_string().contains(TYPED))
+        .map(|c| c["type"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        carrying,
+        [
+            "gui.mcp.native_config_add_review",
+            "gui.mcp.native_config_add_review"
+        ]
+    );
+    assert!(report["requests"].as_array().unwrap().is_empty());
+    assert_eq!(
+        json_file(&data.join("mcp-declaration-guards.json")),
+        json!([])
+    );
+}
+
 #[test]
 #[ignore = "compiled Settings Runtime status, controlled source/cache; requires LITETUI_AUTHORITY_PYTHON"]
 fn runtime_status_uses_only_bounded_cached_sanitized_facts_on_open_and_refresh() {

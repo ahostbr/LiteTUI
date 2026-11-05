@@ -10,6 +10,7 @@ import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from litetui import gui_rpc, mcp_client, native_context
 from litetui.agent_store import _unlinked
@@ -18,8 +19,12 @@ from litetui.shared_state import coordinated_write
 
 PREFIX = "gui.mcp.native_config_"
 FILES = mcp_client.MCP_CONFIG_NAMES
+WRITE_FILE = mcp_client.WRITE_CONFIG_NAME  # the only file the source writer edits
 MAX_ROWS = 64
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,96}")
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,95}")
+HEADER_NAME = re.compile(r"[A-Za-z0-9-]{1,96}")
+MAX_COMMAND, MAX_URL, MAX_ARGS, MAX_ARG, MAX_PAIRS, MAX_VALUE = 1024, 2048, 64, 1024, 32, 4096
 
 
 @dataclass
@@ -34,6 +39,9 @@ class Review:
     before: tuple
     after: tuple
     apply_id: str | None = None
+    change: str = "toggle"
+    transport: str = ""
+    entry: dict | None = None
 
 
 def _pairs(values):
@@ -137,6 +145,7 @@ def _rows(files):
                     "has_env": bool(entry.get("env")),
                     "has_headers": bool(entry.get("headers")),
                     "shadowed": name in earlier,
+                    "removable": index == 1 and canonical and name not in earlier,
                     "editable": index == 1
                     and canonical
                     and name not in earlier
@@ -147,6 +156,170 @@ def _rows(files):
             )
         earlier.update(block)
     return rows, hidden
+
+
+def _text(value, limit, label):
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > limit
+        or value != value.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError(
+            f"{label} must be 1-{limit} printable characters without surrounding spaces"
+        )
+    return value
+
+
+def _pairs_of(value, pattern, label):
+    if type(value) is not dict or len(value) > MAX_PAIRS:
+        raise ValueError(f"{label} must be an object of at most {MAX_PAIRS} entries")
+    for key, item in value.items():
+        if not pattern.fullmatch(key):
+            raise ValueError(f"{label} contains an invalid name")
+        if (
+            type(item) is not str
+            or not item
+            or len(item) > MAX_VALUE
+            or any(ord(char) < 32 or ord(char) == 127 for char in item)
+        ):
+            raise ValueError(f"{label} values must be 1-{MAX_VALUE} printable characters")
+    return dict(value)
+
+
+def _spec(spec):
+    """Strictly parse the reviewed declaration form into (name, entry) with the source's rules."""
+    if type(spec) is not dict or spec.get("transport") not in {"stdio", "http"}:
+        raise ValueError("MCP declaration requires a stdio or http transport")
+    stdio = spec["transport"] == "stdio"
+    keys = (
+        {"transport", "name", "command", "args", "env"}
+        if stdio
+        else {"transport", "name", "url", "headers"}
+    )
+    if set(spec) != keys:
+        raise ValueError("MCP declaration contains unexpected fields")
+    name = spec["name"]
+    if type(name) is not str or not SAFE_NAME.fullmatch(name):
+        raise ValueError("A server name needs 1-96 letters, digits, underscore, dot or hyphen")
+    if stdio:
+        args = spec["args"]
+        if type(args) is not list or len(args) > MAX_ARGS:
+            raise ValueError(f"Arguments must be a list of at most {MAX_ARGS} items")
+        entry = {
+            "command": _text(spec["command"], MAX_COMMAND, "Command"),
+            "args": [_text(arg, MAX_ARG, "Argument") for arg in args],
+        }
+        env = _pairs_of(spec["env"], ENV_NAME, "Environment")
+        if env:
+            entry["env"] = env
+    else:
+        url = _text(spec["url"], MAX_URL, "URL")
+        try:
+            parsed = urlsplit(url)
+            valid = parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+            parsed.port  # noqa: B018 - raises ValueError for an invalid port
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("A URL must be an absolute http:// or https:// address")
+        entry = {"type": "http", "url": url}
+        headers = _pairs_of(spec["headers"], HEADER_NAME, "Headers")
+        if headers:
+            entry["headers"] = headers
+    reason = mcp_client.validate_entry(entry)
+    if reason:
+        raise ValueError(f"Cannot add {name!r}: {reason}")
+    return name, entry
+
+
+def _names(values):
+    if not isinstance(values, dict):
+        return [], 0
+    safe = [key for key in values if SAFE_NAME.fullmatch(key)][:MAX_PAIRS]
+    return safe, len(values) - len(safe)
+
+
+def _redact(config):
+    """Names and a target only: values, arguments, paths and query strings never leave the source."""
+    from litetui.native_mcp_lifecycle import _redacted
+
+    entry = config if isinstance(config, dict) else {}
+    transport, target = "unknown", ""
+    strings = {key: entry[key] for key in ("command", "url") if isinstance(entry.get(key), str)}
+    if strings.get("command") or strings.get("url"):
+        transport, target = _redacted(strings)
+    args = entry.get("args")
+    env, hidden_env = _names(entry.get("env"))
+    headers, hidden_headers = _names(entry.get("headers"))
+    return {
+        "transport": transport,
+        "target": target,
+        "args": len(args) if isinstance(args, list) else 0,
+        "env": env,
+        "headers": headers,
+        "omitted": hidden_env + hidden_headers,
+    }
+
+
+def _sized(doc):
+    data = (json.dumps(doc, indent=2) + "\n").encode("utf-8")
+    if len(data) > native_context.MAX_DOCUMENT:
+        raise ValueError("Edited MCP declaration exceeds 256 KiB")
+    return data
+
+
+def _review_add(manager, root, bridge, row_count, cmd, before):
+    name, entry = _spec(cmd["spec"])
+    if name in _doc(before[0])[1]:
+        raise ValueError(
+            f"{FILES[0]} already declares {name!r} and wins on precedence; "
+            f"a write to {WRITE_FILE} would never be read"
+        )
+    doc = _doc(before[1])[0]
+    if "servers" in doc:
+        raise ValueError(
+            f"{WRITE_FILE} uses a legacy `servers` block; /mcp writes only `mcpServers`"
+        )
+    block = doc.setdefault("mcpServers", {})
+    if name in block:
+        raise ValueError(f"{name!r} is already declared in {WRITE_FILE}")
+    if row_count >= MAX_ROWS:
+        raise ValueError("Shared MCP declarations are at the 64-row inspection limit")
+    block[name] = entry
+    redacted = _redact(entry)
+    return Review(
+        manager, root, bridge.instance, secrets.token_hex(32), name, False, False,
+        before, (before[0], _sized(doc)), change="add", transport=redacted["transport"],
+        entry=redacted,
+    )
+
+
+def _review_remove(manager, root, bridge, rows, cmd, before):
+    name = cmd["name"]
+    if type(name) is not str or not SAFE_NAME.fullmatch(name):
+        raise ValueError("Choose a visible MCP declaration to remove")
+    mine = next((r for r in rows if r["file"] == WRITE_FILE and r["name"] == name), None)
+    primary = any(r["file"] == FILES[0] and r["name"] == name for r in rows)
+    if mine is None or mine["shadowed"] or not mine["removable"]:
+        if primary:
+            raise ValueError(f"{name!r} is declared in {FILES[0]}, which /mcp does not write")
+        raise ValueError(f"no server named {name!r} in {WRITE_FILE}")
+    doc, block, _ = _doc(before[1])
+    redacted = _redact(block.pop(name))
+    return Review(
+        manager, root, bridge.instance, secrets.token_hex(32), name, False, False,
+        before, (before[0], _sized(doc)), change="remove", transport=mine["transport"],
+        entry=redacted,
+    )
+
+
+_KINDS = {
+    "toggle": ("mcp_config_review", "mcp_config_applied", "mcp_config_saved"),
+    "add": ("mcp_config_add_review", "mcp_config_add_applied", "mcp_config_add_saved"),
+    "remove": ("mcp_config_remove_review", "mcp_config_remove_applied", "mcp_config_remove_saved"),
+}
 
 
 def _idle(app, manager):
@@ -192,7 +365,23 @@ def _snapshot(binding, files):
     }
 
 
-def _receipt(binding, review, kind):
+def _receipt(binding, review, phase):
+    kind = _KINDS[review.change][phase]
+    if review.change != "toggle":
+        return {
+            "version": 1,
+            **binding,
+            "scope": "shared",
+            "kind": kind,
+            "token": review.token,
+            "name": review.name,
+            "file": WRITE_FILE,
+            "transport": review.transport,
+            "entry": review.entry,
+            "before": _revision(review.before),
+            "after": _revision(review.after),
+            "apply_id": review.apply_id,
+        }
     return {
         "version": 1,
         **binding,
@@ -221,19 +410,30 @@ def _dispatch(app, cmd):
     fields = {
         "list": (),
         "review": ("revision", "name", "disabled"),
+        "add_review": ("revision", "spec"),
+        "remove_review": ("revision", "name"),
         "apply": ("token",),
         "readback": ("token", "apply_id"),
     }
     op = cmd["type"].removeprefix(PREFIX)
     bridge, binding = native_context.read_binding(app, cmd, PREFIX + op, *fields[op])
     manager, root = _root(app)
-    if op in {"list", "review"}:
+    if op in {"list", "review", "add_review", "remove_review"}:
         app._native_mcp_config_review = None
         before = _files(root)
         snapshot = _snapshot(binding, before)
         if op == "list":
             return snapshot
         _idle(app, manager)
+        if op != "review":
+            if snapshot["revision"] != cmd["revision"]:
+                raise ValueError("Shared MCP declarations changed. Refresh and review again")
+            if op == "add_review":
+                review = _review_add(manager, root, bridge, len(snapshot["rows"]), cmd, before)
+            else:
+                review = _review_remove(manager, root, bridge, snapshot["rows"], cmd, before)
+            app._native_mcp_config_review = review
+            return _receipt(binding, review, 0)
         target = next(
             (
                 row
@@ -269,7 +469,7 @@ def _dispatch(app, cmd):
             (before[0], data),
         )
         app._native_mcp_config_review = review
-        return _receipt(binding, review, "mcp_config_review")
+        return _receipt(binding, review, 0)
 
     review = getattr(app, "_native_mcp_config_review", None)
     if (
@@ -313,7 +513,7 @@ def _dispatch(app, cmd):
             manager._release_claim()
         review.apply_id = cmd["id"]
         app._native_mcp_config_review = review
-        return _receipt(binding, review, "mcp_config_applied")
+        return _receipt(binding, review, 1)
     if (
         review.apply_id is None
         or cmd["apply_id"] != review.apply_id
@@ -322,9 +522,16 @@ def _dispatch(app, cmd):
         raise ValueError(
             "Shared MCP declarations changed after apply. Refresh to inspect them."
         )
-    result = _receipt(binding, review, "mcp_config_saved")
+    result = _receipt(binding, review, 2)
     result["config"] = _snapshot(binding, _files(root))
     if result["config"]["revision"] != result["after"]:
         raise ValueError("Shared MCP declarations changed during readback")
+    if review.change != "toggle":
+        present = any(
+            row["file"] == WRITE_FILE and row["name"] == review.name
+            for row in result["config"]["rows"]
+        )
+        if present != (review.change == "add"):
+            raise ValueError("Shared MCP declarations changed during readback")
     app._native_mcp_config_review = None
     return result
