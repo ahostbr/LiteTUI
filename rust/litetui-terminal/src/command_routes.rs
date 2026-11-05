@@ -69,6 +69,20 @@ impl Demo {
             chat.settings.open_model_preferences();
         }
     }
+    /// Alt+S: the one-key route to the scroll-lock (`autoscroll`) device preference. It opens the
+    /// same reviewed F10 U control on that field; nothing is changed until it is reviewed and
+    /// confirmed there, and, like F10, it waits for idle work.
+    pub fn open_autoscroll_preference(&mut self) {
+        self.open_settings();
+        if let Some(chat) = self.live.as_mut()
+            && chat.settings.open
+        {
+            chat.settings.open_presentation("autoscroll");
+            self.notice =
+                "Scroll lock: Left/Right changes Follow new replies, Enter reviews it before saving."
+                    .into();
+        }
+    }
     pub(crate) fn open_help(&mut self, keys_first: bool) {
         if self.has_live_input() || self.live.is_none() {
             return;

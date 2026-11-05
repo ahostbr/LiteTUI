@@ -277,6 +277,15 @@ impl View {
         self.waiting = true;
         self.intent = Some(Intent::Mcp(Box::new(crate::mcp_config::Request::List)));
     }
+    /// The `U` interface preferences, with the cursor on `field`; review and apply are unchanged.
+    pub(crate) fn open_presentation(&mut self, field: &str) {
+        self.hide();
+        self.presentation.open_field(field);
+        self.waiting = true;
+        self.intent = Some(Intent::Presentation(Box::new(
+            crate::presentation_preferences::Request::List,
+        )));
+    }
     pub(crate) fn open_model_preferences(&mut self) {
         self.hide();
         self.model_preferences.open();

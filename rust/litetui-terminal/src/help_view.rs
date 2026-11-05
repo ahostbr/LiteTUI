@@ -56,6 +56,18 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("PgUp / PgDn", "scroll the transcript"),
     (
+        "Alt+Up / Alt+Down",
+        "scroll the transcript by one line (Up / Down keep prompt history)",
+    ),
+    (
+        "Alt+S",
+        "scroll lock: opens the reviewed Follow new replies setting (F10 U) when idle",
+    ),
+    (
+        "click a card title",
+        "fold or unfold a prompt or answer; a folded answer's Speak and an image line open Saved History",
+    ),
+    (
         "Ctrl+Home / Ctrl+End",
         "jump to the top / bottom of the transcript",
     ),
@@ -254,6 +266,17 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("Ctrl+Q: quit and close the owned runtime"))
         );
+    }
+    #[test]
+    fn transcript_navigation_keys_are_listed() {
+        let mut view = View::default();
+        view.open(None, true);
+        for key in ["Alt+Up / Alt+Down", "Alt+S", "click a card title"] {
+            assert!(
+                view.lines.iter().any(|l| l.trim_start().starts_with(key)),
+                "{key}"
+            );
+        }
     }
     #[test]
     fn scrolls_within_bounds_and_only_escape_closes() {

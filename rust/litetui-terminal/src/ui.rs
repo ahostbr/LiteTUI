@@ -205,24 +205,9 @@ fn assistant_card(
     footer: &str,
     width: usize,
 ) {
-    let narrow = width < 78;
-    let left = if narrow { 0 } else { 2 };
-    let right = if narrow { 0 } else { 8 };
-    let outer_width = width.saturating_sub(left + right).max(12);
+    let (left, outer_width) = card_geometry(width);
     let inner_width = outer_width.saturating_sub(6);
-    let title = clip_label(title, outer_width.saturating_sub(5));
-    lines.push(Line::from(vec![
-        Span::styled(" ".repeat(left), style(t.foreground, t.background)),
-        Span::styled("╭─ ", style(t.assistant_border, t.surface)),
-        Span::styled(title.clone(), style(t.title, t.surface)),
-        Span::styled(
-            format!(
-                "{}╮",
-                "─".repeat(outer_width.saturating_sub(rendered_width(&title) + 4))
-            ),
-            style(t.assistant_border, t.surface),
-        ),
-    ]));
+    lines.push(card_top(t, title, left, outer_width));
     let outer_row = |inside: Vec<Span<'static>>| {
         let mut row = vec![
             Span::styled(" ".repeat(left), style(t.foreground, t.background)),
@@ -284,14 +269,51 @@ fn assistant_card(
             style(t.title, t.surface),
         )]));
     }
-    lines.push(Line::styled(
+    lines.push(card_bottom(t, left, outer_width));
+    lines.push(Line::raw(""));
+}
+/// Left margin and outer width of an assistant card at a transcript width.
+fn card_geometry(width: usize) -> (usize, usize) {
+    let narrow = width < 78;
+    let left = if narrow { 0 } else { 2 };
+    let right = if narrow { 0 } else { 8 };
+    (left, width.saturating_sub(left + right).max(12))
+}
+fn card_top(
+    t: &crate::theme::Theme,
+    title: &str,
+    left: usize,
+    outer_width: usize,
+) -> Line<'static> {
+    let title = clip_label(title, outer_width.saturating_sub(5));
+    Line::from(vec![
+        Span::styled(" ".repeat(left), style(t.foreground, t.background)),
+        Span::styled("╭─ ", style(t.assistant_border, t.surface)),
+        Span::styled(title.clone(), style(t.title, t.surface)),
+        Span::styled(
+            format!(
+                "{}╮",
+                "─".repeat(outer_width.saturating_sub(rendered_width(&title) + 4))
+            ),
+            style(t.assistant_border, t.surface),
+        ),
+    ])
+}
+fn card_bottom(t: &crate::theme::Theme, left: usize, outer_width: usize) -> Line<'static> {
+    Line::styled(
         format!(
             "{}╰{}╯",
             " ".repeat(left),
             "─".repeat(outer_width.saturating_sub(2))
         ),
         style(t.assistant_border, t.surface),
-    ));
+    )
+}
+/// A folded assistant card is its border and title row only (source: collapsed `AssistantMessage`).
+fn folded_card(t: &crate::theme::Theme, lines: &mut Vec<Line<'static>>, title: &str, width: usize) {
+    let (left, outer_width) = card_geometry(width);
+    lines.push(card_top(t, title, left, outer_width));
+    lines.push(card_bottom(t, left, outer_width));
     lines.push(Line::raw(""));
 }
 
@@ -593,7 +615,19 @@ fn native_tool(
     lines.push(Line::raw(""));
 }
 
-type ThinkingHeaders = Vec<(usize, crate::compact_display::ThinkingHit)>;
+type Headers = Vec<crate::compact_display::Header>;
+/// One foldable transcript element (a prompt or an assistant card) and where its lines end.
+struct FoldSpan {
+    row: usize,
+    target: crate::compact_display::Target,
+    end: usize,
+}
+struct Transcript {
+    lines: Vec<Line<'static>>,
+    selected: (usize, usize),
+    headers: Headers,
+    folds: Vec<FoldSpan>,
+}
 /// The settled line below a turn's last card (source `format_turn_stop_line`).
 fn stop_line(
     row: &crate::live_chat::Row,
@@ -607,8 +641,10 @@ fn stop_line(
     };
     row.timing.line(ending, presentation)
 }
-fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), ThinkingHeaders) {
-    let mut headers = Vec::new();
+fn transcript(app: &Demo, width: usize) -> Transcript {
+    use crate::compact_display::{Header, HeaderHit, Target};
+    let mut headers: Headers = Vec::new();
+    let mut folds = Vec::new();
     let t = app.palette();
     let presentation = app.presentation();
     if let Some(chat) = &app.live {
@@ -711,28 +747,65 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                     );
                 }
             } else {
-                for text in wrap(
-                    &format!(
-                        "{}: {}",
-                        if row.source_owned { "Source" } else { "You" },
-                        display_safe(&row.prompt)
-                    ),
-                    width.saturating_sub(4),
-                ) {
+                let label = if row.source_owned { "Source" } else { "You" };
+                headers.push(Header {
+                    line: lines.len(),
+                    span: None,
+                    hit: HeaderHit {
+                        row: row_index,
+                        target: Target::Prompt,
+                    },
+                });
+                if row.prompt_fold.folded {
                     lines.push(Line::styled(
-                        format!("  {text}"),
+                        clip_label(
+                            &format!(
+                                "▸ {label} · {}",
+                                crate::compact_display::summary(&row.prompt, 80)
+                            ),
+                            width.saturating_sub(2),
+                        ),
                         style(t.foreground, t.background),
                     ));
+                } else {
+                    for (n, text) in wrap(
+                        &format!("{label}: {}", display_safe(&row.prompt)),
+                        width.saturating_sub(4),
+                    )
+                    .into_iter()
+                    .enumerate()
+                    {
+                        lines.push(Line::styled(
+                            format!("{}{text}", if n == 0 { "▾ " } else { "  " }),
+                            style(t.foreground, t.background),
+                        ));
+                    }
                 }
-            }
-            if let Some(name) = &row.image_name {
-                tool_body(
-                    t,
-                    &mut lines,
-                    &format!("[Image: {}]", display_safe(name)),
-                    t.tool_text,
-                    width,
-                );
+                if let Some(name) = row.image_name.as_ref().filter(|_| !row.prompt_fold.folded) {
+                    headers.push(Header {
+                        line: lines.len(),
+                        span: None,
+                        hit: HeaderHit {
+                            row: row_index,
+                            target: Target::Image,
+                        },
+                    });
+                    tool_body(
+                        t,
+                        &mut lines,
+                        &format!(
+                            "[Image: {}] · click opens Saved History",
+                            display_safe(name)
+                        ),
+                        t.tool_text,
+                        width,
+                    );
+                }
+                folds.push(FoldSpan {
+                    row: row_index,
+                    target: Target::Prompt,
+                    end: lines.len(),
+                });
             }
             if let Some(source) = &row.source {
                 work_source(t, &mut lines, source, width);
@@ -802,23 +875,76 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                     }
                     crate::live_chat::Item::Card(index) => {
                         let card = &row.cards[index];
+                        let card_hit = HeaderHit {
+                            row: row_index,
+                            target: Target::Card(index),
+                        };
+                        if card.fold.folded {
+                            // Speak is offered once the turn has settled with an answer; it
+                            // only opens the reviewed saved history.
+                            let speak = row.state == crate::live_chat::ReplyState::Complete
+                                && !card.answer.is_empty();
+                            let preview = crate::compact_display::summary(&card.answer, 80);
+                            let title = format!(
+                                "▸ {}Assistant · {}{}",
+                                if speak { "♫ Speak · " } else { "" },
+                                display_safe(&chat.model),
+                                if preview.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" · {preview}")
+                                }
+                            );
+                            let (left, outer) = card_geometry(width);
+                            if speak {
+                                let from = left + 5;
+                                let to = (from + rendered_width("♫ Speak"))
+                                    .min(left + 3 + outer.saturating_sub(5));
+                                headers.push(Header {
+                                    line: lines.len(),
+                                    span: Some((from as u16, to as u16)),
+                                    hit: HeaderHit {
+                                        row: row_index,
+                                        target: Target::Speak,
+                                    },
+                                });
+                            }
+                            headers.push(Header {
+                                line: lines.len(),
+                                span: None,
+                                hit: card_hit,
+                            });
+                            folded_card(t, &mut lines, &title, width);
+                            folds.push(FoldSpan {
+                                row: row_index,
+                                target: Target::Card(index),
+                                end: lines.len(),
+                            });
+                            continue;
+                        }
                         let expanded = card
                             .reasoning_expanded
                             .unwrap_or(!app.compact_display.active());
                         let thinking = presentation.show_thinking && !card.reasoning.is_empty();
+                        headers.push(Header {
+                            line: lines.len(),
+                            span: None,
+                            hit: card_hit,
+                        });
                         if thinking {
-                            headers.push((
-                                lines.len() + if expanded { 3 } else { 2 },
-                                crate::compact_display::ThinkingHit {
+                            headers.push(Header {
+                                line: lines.len() + if expanded { 3 } else { 2 },
+                                span: None,
+                                hit: HeaderHit {
                                     row: row_index,
-                                    card: index,
+                                    target: Target::Reasoning(index),
                                 },
-                            ));
+                            });
                         }
                         assistant_card(
                             t,
                             &mut lines,
-                            &format!("Assistant · {}", display_safe(&chat.model)),
+                            &format!("▾ Assistant · {}", display_safe(&chat.model)),
                             &if !thinking {
                                 Vec::new()
                             } else if expanded {
@@ -844,6 +970,11 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                             },
                             width,
                         );
+                        folds.push(FoldSpan {
+                            row: row_index,
+                            target: Target::Card(index),
+                            end: lines.len(),
+                        });
                     }
                 }
             }
@@ -868,7 +999,12 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                 lines.push(Line::raw(""));
             }
         }
-        return (lines, selected, headers);
+        return Transcript {
+            lines,
+            selected,
+            headers,
+            folds,
+        };
     }
     let mut lines = vec![
         Line::styled(
@@ -935,7 +1071,46 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
         }
         lines.push(Line::raw(""));
     }
-    (lines, selected_range, headers)
+    Transcript {
+        lines,
+        selected: selected_range,
+        headers,
+        folds,
+    }
+}
+
+/// Fold settled prompts and cards whose lines all end at or above `top`. The newest foldable is
+/// never folded, and each card folds at most once (`Fold::autofold`). True when anything folded.
+fn fold_off_screen(app: &mut Demo, folds: &[FoldSpan], top: usize) -> bool {
+    use crate::{compact_display::Target, live_chat::ReplyState};
+    let Some(chat) = app.live.as_mut() else {
+        return false;
+    };
+    let mut folded = false;
+    for span in folds.split_last().map_or(&[][..], |(_, older)| older) {
+        if span.end > top {
+            continue;
+        }
+        let Some(row) = chat.rows.get_mut(span.row) else {
+            continue;
+        };
+        let settled = !matches!(
+            row.state,
+            ReplyState::Sending
+                | ReplyState::Streaming
+                | ReplyState::Cancelling
+                | ReplyState::Maintenance
+                | ReplyState::AwaitingRetirement
+        );
+        folded |= match span.target {
+            Target::Prompt => row.prompt_fold.autofold(),
+            Target::Card(index) => {
+                settled && row.cards.get_mut(index).is_some_and(|c| c.fold.autofold())
+            }
+            _ => false,
+        };
+    }
+    folded
 }
 
 pub fn draw(frame: &mut Frame, app: &mut Demo) {
@@ -1081,8 +1256,23 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         body.width.saturating_sub(2),
         body.height.saturating_sub(picker_height),
     );
-    let (lines, selected, headers) = transcript(app, viewport.width as usize);
+    let mut view = transcript(app, viewport.width as usize);
     let height = viewport.height as usize;
+    // Source `_autocollapse_offscreen`: while the follow lock holds, fold settled cards that end
+    // above the line the view is about to settle on, in the same frame as the move.
+    if presentation.autoscroll
+        && app.scroll >= view.lines.len().saturating_sub(height)
+        && fold_off_screen(app, &view.folds, view.lines.len().saturating_sub(height))
+    {
+        app.transcript_selection.clear();
+        view = transcript(app, viewport.width as usize);
+    }
+    let Transcript {
+        lines,
+        selected,
+        headers,
+        ..
+    } = view;
     app.max_scroll = lines.len().saturating_sub(height);
     let size = (viewport.width, viewport.height);
     let resized = app.transcript_viewport.replace(size) != Some(size);

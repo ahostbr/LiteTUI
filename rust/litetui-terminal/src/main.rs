@@ -666,6 +666,26 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         KeyCode::Right => app
             .composer
             .move_cursor(Motion::Right, key.modifiers.contains(KeyModifiers::SHIFT)),
+        // Textual scrolls the focused transcript by a line with Up/Down; here those keys belong to
+        // prompt history, so the line step is Alt+Up / Alt+Down and scroll lock is Alt+S.
+        KeyCode::Up | KeyCode::Down
+            if app.live.is_some()
+                && key.kind != KeyEventKind::Release
+                && key.modifiers == KeyModifiers::ALT =>
+        {
+            if key.code == KeyCode::Up {
+                app.scroll_up(1)
+            } else {
+                app.scroll_down(1)
+            }
+        }
+        KeyCode::Char('s')
+            if app.live.is_some()
+                && key.kind == KeyEventKind::Press
+                && key.modifiers == KeyModifiers::ALT =>
+        {
+            app.open_autoscroll_preference();
+        }
         KeyCode::Up => {
             app.composer.history_previous();
         }
@@ -1077,14 +1097,8 @@ fn terminal_mouse(app: &mut Demo, event: MouseEvent, shown: &ratatui::buffer::Bu
         && !app.viewport_too_small
         && !app.completion.is_open()
         && let Some(hit) = app.compact_display.click(event)
-        && let Some(card) = app
-            .live
-            .as_mut()
-            .and_then(|c| c.rows.get_mut(hit.row))
-            .and_then(|r| r.cards.get_mut(hit.card))
+        && app.activate_header(hit)
     {
-        card.toggle_reasoning(app.compact_display.active());
-        app.transcript_selection.clear();
         return;
     }
     if !app.has_live_input()
@@ -5664,6 +5678,267 @@ mod live_keyboard_navigation_tests {
         assert!(app.live.as_ref().unwrap().work.owns_input());
         assert_eq!(app.composer.selected_text(), selection);
         assert_eq!(app.composer.text(), "draft stays");
+    }
+}
+
+#[cfg(test)]
+mod card_fold_tests {
+    use super::*;
+    use litetui_terminal::live::Observation;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn ready() -> Demo {
+        let mut app = Demo::live("custom".into(), "m".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app
+    }
+    fn turn(app: &mut Demo, prompt: &str, answer: &str) {
+        app.live.as_mut().unwrap().submit(prompt).unwrap();
+        app.observe_live(Observation::Text(answer.into())).unwrap();
+        app.observe_live(Observation::Complete).unwrap();
+    }
+    fn screen(app: &mut Demo, width: u16, height: u16) -> (Vec<String>, Terminal<TestBackend>) {
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|frame| ui::draw(frame, app)).unwrap();
+        let lines = term
+            .backend()
+            .buffer()
+            .content
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect();
+        (lines, term)
+    }
+    fn text(app: &mut Demo, width: u16, height: u16) -> String {
+        screen(app, width, height).0.join("\n")
+    }
+    fn click(app: &mut Demo, width: u16, height: u16, needle: &str, column: u16) {
+        let (lines, term) = screen(app, width, height);
+        let row = lines
+            .iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} not drawn:\n{}", lines.join("\n")))
+            as u16;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            terminal_mouse(
+                app,
+                MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                },
+                term.backend().buffer(),
+            );
+        }
+    }
+    fn alt(app: &mut Demo, code: KeyCode) {
+        KeyRouter::default().handle(app, KeyEvent::new(code, KeyModifiers::ALT));
+    }
+    fn autoscroll(app: &mut Demo, on: bool) {
+        let effective = serde_json::json!({ "autoscroll": on });
+        app.live.as_mut().unwrap().runtime_state.set_presentation(
+            litetui_terminal::presentation::Presentation::from_effective(
+                effective.as_object().unwrap(),
+            )
+            .unwrap(),
+        );
+    }
+    fn folded(app: &Demo) -> Vec<(bool, bool)> {
+        app.live
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| (row.prompt_fold.folded, row.cards[0].fold.folded))
+            .collect()
+    }
+    const ANSWER: &str = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu \
+        nu xi omicron pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon";
+    fn many_turns(app: &mut Demo, count: usize) {
+        for n in 0..count {
+            turn(app, &format!("question {n}"), ANSWER);
+            text(app, 100, 24);
+        }
+    }
+
+    #[test]
+    fn clicking_a_prompt_or_card_title_folds_and_unfolds_it() {
+        let mut app = ready();
+        turn(&mut app, "question text", "answer body words");
+        let open = text(&mut app, 100, 30);
+        assert!(open.contains("▾ You: question text"), "{open}");
+        assert!(open.contains("▾ Assistant · m"), "{open}");
+        click(&mut app, 100, 30, "▾ You: question text", 8);
+        let prompt = text(&mut app, 100, 30);
+        assert!(prompt.contains("▸ You · question text"), "{prompt}");
+        assert!(!prompt.contains("You: question text"), "{prompt}");
+        assert!(prompt.contains("answer body words"));
+        click(&mut app, 100, 30, "▾ Assistant · m", 30);
+        let card = text(&mut app, 100, 30);
+        assert!(card.contains("▸ ♫ Speak · Assistant · m · answer body words"));
+        assert!(!card.contains("Completed · stop"), "{card}");
+        assert_eq!(folded(&app), [(true, true)]);
+        click(&mut app, 100, 30, "▸ You · question text", 8);
+        click(&mut app, 100, 30, "▸ ♫ Speak · Assistant", 60);
+        assert_eq!(folded(&app), [(false, false)]);
+        let again = text(&mut app, 100, 30);
+        assert!(again.contains("▾ You: question text") && again.contains("Completed · stop"));
+    }
+
+    #[test]
+    fn a_click_that_moves_between_press_and_release_folds_nothing() {
+        let mut app = ready();
+        turn(&mut app, "question text", "answer body words");
+        let (lines, term) = screen(&mut app, 100, 30);
+        let row = lines
+            .iter()
+            .position(|l| l.contains("▾ You: question text"))
+            .unwrap() as u16;
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), 4),
+            (MouseEventKind::Up(MouseButton::Left), 9),
+        ] {
+            let event = MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            };
+            terminal_mouse(&mut app, event, term.backend().buffer());
+        }
+        assert_eq!(folded(&app), [(false, false)]);
+    }
+
+    #[test]
+    fn folded_speak_and_image_hits_only_open_saved_history() {
+        let mut app = ready();
+        turn(&mut app, "see this", "spoken answer");
+        app.live.as_mut().unwrap().rows[0].image_name = Some("shot.png".into());
+        click(&mut app, 100, 30, "▾ Assistant · m", 30);
+        let folded_title = text(&mut app, 100, 30);
+        assert!(folded_title.contains("▸ ♫ Speak · Assistant · m"));
+        // Outside the label a click still unfolds, so Speak is a narrow target.
+        click(&mut app, 100, 30, "▸ ♫ Speak", 60);
+        assert_eq!(folded(&app), [(false, false)]);
+        click(&mut app, 100, 30, "▾ Assistant · m", 30);
+        assert!(!app.live.as_ref().unwrap().saved_history.is_open());
+        click(&mut app, 100, 30, "▸ ♫ Speak", 9);
+        assert_eq!(folded(&app), [(false, true)]);
+        assert!(app.live.as_ref().unwrap().saved_history.is_open());
+        assert!(app.notice.contains("Nothing was played"), "{}", app.notice);
+        app.live.as_mut().unwrap().saved_history.close();
+        click(&mut app, 100, 30, "[Image: shot.png]", 6);
+        assert!(app.live.as_ref().unwrap().saved_history.is_open());
+        assert!(app.notice.contains("Nothing was fetched"), "{}", app.notice);
+    }
+
+    #[test]
+    fn a_streaming_card_has_no_speak_label_and_a_folded_prompt_hides_its_image() {
+        let mut app = ready();
+        app.live.as_mut().unwrap().submit("question").unwrap();
+        app.observe_live(Observation::Text("partial".into()))
+            .unwrap();
+        app.live.as_mut().unwrap().rows[0].cards[0].fold.toggle();
+        assert!(!text(&mut app, 100, 30).contains("Speak"));
+        app.live.as_mut().unwrap().rows[0].image_name = Some("a.png".into());
+        assert!(text(&mut app, 100, 30).contains("[Image: a.png]"));
+        click(&mut app, 100, 30, "▾ You: question", 5);
+        assert!(!text(&mut app, 100, 30).contains("a.png"));
+    }
+
+    #[test]
+    fn settled_cards_fold_once_as_they_scroll_off_under_the_follow_lock() {
+        let mut app = ready();
+        many_turns(&mut app, 5);
+        let state = folded(&app);
+        assert!(
+            state[0].0 && state[0].1 && state[1].0 && state[1].1,
+            "{state:?}"
+        );
+        // The newest answer is the one being read.
+        assert!(!state[4].1, "{state:?}");
+        assert!(text(&mut app, 100, 24).contains("▾ Assistant · m"));
+        // A card the reader reopened is not folded again.
+        let hit = litetui_terminal::compact_display::HeaderHit {
+            row: 0,
+            target: litetui_terminal::compact_display::Target::Card(0),
+        };
+        assert!(app.activate_header(hit));
+        many_turns(&mut app, 2);
+        assert_eq!(folded(&app)[0], (true, false));
+    }
+
+    #[test]
+    fn a_reader_who_scrolled_up_or_unlocked_follow_never_has_cards_folded() {
+        let mut app = ready();
+        many_turns(&mut app, 2);
+        let before = folded(&app);
+        app.scroll = 0;
+        many_turns(&mut app, 4);
+        let after = folded(&app);
+        assert_eq!(after[..2], before[..], "{after:?}");
+        assert!(after[2..].iter().all(|&(p, c)| !p && !c), "{after:?}");
+        let mut unlocked = ready();
+        autoscroll(&mut unlocked, false);
+        many_turns(&mut unlocked, 6);
+        assert!(folded(&unlocked).iter().all(|&(p, c)| !p && !c));
+    }
+
+    #[test]
+    fn an_unsettled_turn_is_never_auto_folded() {
+        let mut app = ready();
+        many_turns(&mut app, 1);
+        app.live.as_mut().unwrap().submit("still going").unwrap();
+        app.observe_live(Observation::Text(ANSWER.into())).unwrap();
+        for _ in 0..3 {
+            text(&mut app, 100, 12);
+        }
+        let state = folded(&app);
+        assert_eq!(state[1], (false, false), "{state:?}");
+    }
+
+    #[test]
+    fn alt_up_down_step_the_transcript_by_a_line_and_leave_prompt_history_alone() {
+        let mut app = ready();
+        many_turns(&mut app, 3);
+        app.composer.push_history("older prompt");
+        assert!(app.max_scroll > 3);
+        app.scroll = 2;
+        alt(&mut app, KeyCode::Down);
+        assert_eq!(app.scroll, 3);
+        alt(&mut app, KeyCode::Up);
+        alt(&mut app, KeyCode::Up);
+        assert_eq!(app.scroll, 1);
+        assert_eq!(app.composer.text(), "");
+        KeyRouter::default().handle(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "older prompt");
+        assert_eq!(app.scroll, 1);
+    }
+
+    #[test]
+    fn alt_s_opens_the_reviewed_scroll_lock_preference_and_changes_nothing() {
+        let mut app = ready();
+        app.insert_text("draft stays");
+        alt(&mut app, KeyCode::Char('s'));
+        let chat = app.live.as_mut().unwrap();
+        assert!(chat.settings.open && chat.settings.waiting);
+        let intent = chat.settings.take_intent().unwrap();
+        assert!(matches!(
+            intent,
+            litetui_terminal::settings_view::Intent::Presentation(_)
+        ));
+        assert_eq!(app.composer.text(), "draft stays");
+        assert!(app.presentation().autoscroll);
+        // Busy work refuses it the same way F10 does.
+        let mut busy = ready();
+        busy.live.as_mut().unwrap().submit("q").unwrap();
+        alt(&mut busy, KeyCode::Char('s'));
+        assert!(!busy.live.as_ref().unwrap().settings.open);
+        assert!(busy.notice.contains("Finish current work"));
     }
 }
 

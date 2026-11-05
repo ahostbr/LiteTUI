@@ -384,6 +384,11 @@ impl View {
             ..Self::default()
         }
     }
+    /// Open with the cursor on one named field (the `Alt+S` scroll-lock shortcut).
+    pub fn open_field(&mut self, key: &str) {
+        self.open();
+        self.selected = FIELDS.iter().position(|k| *k == key).unwrap_or(0);
+    }
     pub fn hide(&mut self) {
         self.visible = false;
     }

@@ -45,6 +45,28 @@ pub enum ReplyState {
     MaintenanceSettled,
     AwaitingRetirement,
 }
+/// Fold latch of a user prompt or an assistant card (source `set_collapsed` / `autocollapse`).
+/// A click toggles `folded`; the automatic fold happens once per card (`latched`), so a card the
+/// reader reopened is never folded away again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fold {
+    pub folded: bool,
+    latched: bool,
+}
+impl Fold {
+    pub fn toggle(&mut self) {
+        self.folded = !self.folded;
+    }
+    /// True when this call is what folded the card.
+    pub fn autofold(&mut self) -> bool {
+        if self.latched || self.folded {
+            return false;
+        }
+        self.latched = true;
+        self.folded = true;
+        true
+    }
+}
 #[derive(Default)]
 pub struct Card {
     pub answer: String,
@@ -52,6 +74,7 @@ pub struct Card {
     answer_units: usize,
     reasoning_units: usize,
     pub(crate) reasoning_expanded: Option<bool>,
+    pub fold: Fold,
 }
 impl Card {
     pub fn toggle_reasoning(&mut self, compact: bool) {
@@ -109,6 +132,7 @@ pub struct Row {
     pub inputs: Vec<WorkInput>,
     pub committed: Option<CommittedWork>,
     pub prompt: String,
+    pub prompt_fold: Fold,
     pub cards: Vec<Card>,
     pub tools: Vec<Tool>,
     pub(crate) tool_view: ToolView,
@@ -494,6 +518,7 @@ impl Chat {
             inputs: Vec::new(),
             committed: None,
             prompt: prompt.into(),
+            prompt_fold: Fold::default(),
             cards: vec![Card::default()],
             tools: Vec::new(),
             tool_view: ToolView::new(&self.backend),
@@ -557,6 +582,7 @@ impl Chat {
             inputs: Vec::new(),
             committed: None,
             prompt: entry.content.clone(),
+            prompt_fold: Fold::default(),
             cards: Vec::new(),
             tools: Vec::new(),
             tool_view: ToolView::new(&self.backend),
@@ -1747,6 +1773,7 @@ impl Chat {
             inputs: Vec::new(),
             committed,
             prompt,
+            prompt_fold: Fold::default(),
             cards: vec![Card::default()],
             tools: Vec::new(),
             tool_view: ToolView::new(&self.backend),
@@ -2174,6 +2201,7 @@ impl Chat {
             inputs: Vec::new(),
             committed: None,
             prompt: prompt.into(),
+            prompt_fold: Fold::default(),
             cards: vec![Card::default()],
             tools: Vec::new(),
             tool_view: ToolView::new(&self.backend),
