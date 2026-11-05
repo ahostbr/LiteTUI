@@ -458,9 +458,15 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         KeyCode::Char('o')
             if app.live.is_some()
                 && key.kind == KeyEventKind::Press
-                && key.modifiers == KeyModifiers::CONTROL =>
+                && (key.modifiers == KeyModifiers::CONTROL
+                    || key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT)) =>
         {
             app.open_image();
+            if key.modifiers == KeyModifiers::CONTROL
+                && let Some(chat) = app.live.as_mut()
+            {
+                chat.work.read_clipboard_image();
+            }
         }
         KeyCode::Char('t' | 'p')
             if app.live.is_some()
@@ -812,9 +818,12 @@ fn handle_key(
                     );
                 }
                 Ok(_) => {
-                    app.notice =
+                    app.notice = if app.live.is_some() {
+                        "No text in clipboard. Ctrl+O reviews a clipboard image."
+                    } else {
                         "No text in clipboard; image paste is not implemented in this preview."
-                            .into()
+                    }
+                    .into()
                 }
                 Err(error) => app.notice = error,
             }
@@ -1622,7 +1631,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: F1 Work | F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: Ctrl+O clipboard image (F2 chooses file) | Ctrl+Shift+O image file | Ctrl+L new conversation | F1 Work (I opens context) | F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings (I opens runtime status) | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -4977,12 +4986,42 @@ mod execution_keys_tests {
 #[cfg(test)]
 mod live_keyboard_navigation_tests {
     #[test]
+    fn ctrl_o_reads_once_only_from_the_live_composer() {
+        let mut app = Demo::live("custom".into(), "model".into());
+        app.live.as_mut().unwrap().ready = true;
+        app.insert_text("draft");
+        let mut router = KeyRouter::default();
+        press(&mut app, &mut router, 'o');
+        let first = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        assert!(matches!(
+            first.request,
+            litetui_terminal::work_view::Request::Image(
+                litetui_terminal::image::Request::Clipboard(None)
+            )
+        ));
+        press(&mut app, &mut router, 'o');
+        assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+        let mut other = Demo::live("custom".into(), "model".into());
+        other.live.as_mut().unwrap().ready = true;
+        other.open_work();
+        press(&mut other, &mut router, 'o');
+        assert!(!other.live.as_ref().unwrap().work.image.open);
+        assert_eq!(app.composer.text(), "draft");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+    }
+    #[test]
     fn image_shortcut_keeps_draft_and_repeats_out_of_composer() {
         let mut app = Demo::live("custom".into(), "model".into());
         app.live.as_mut().unwrap().ready = true;
         app.insert_text("keep these words");
         let mut router = KeyRouter::default();
-        press(&mut app, &mut router, 'o');
+        router.handle(
+            &mut app,
+            KeyEvent::new(
+                KeyCode::Char('o'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+        );
         assert!(draw(&mut app, 100, 30).contains("Local image file"));
         paste(&mut app, "C:\\chosen.png");
         router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

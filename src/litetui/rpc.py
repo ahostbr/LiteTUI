@@ -216,8 +216,9 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             from litetui import native_image
             try:
                 attachment = native_image.consume(app, cmd)
-            except ValueError as exc:
-                _respond(cmd_id, ok=True, result={"turn": "image_refused", "reason": str(exc)})
+            except (ValueError, OSError) as exc:
+                _respond(cmd_id, ok=True, result={"turn": "image_refused", "reason": str(exc),
+                                                 "retained": native_image.retained(app, cmd["native_image"])})
                 return
         app._gui_next_operation_id = cmd_id
         try:

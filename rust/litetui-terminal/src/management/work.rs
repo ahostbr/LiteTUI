@@ -118,7 +118,7 @@ impl Management {
             view::Request::ControlApply(_) => controls::APPLY,
             view::Request::DeferredValidate => deferred::VALIDATE,
             view::Request::DeferredApply(_) => deferred::DISCARD,
-            view::Request::Image(_) => crate::image::OPERATION,
+            view::Request::Image(request) => request.operation(),
             view::Request::Context(_) => crate::context::OPERATION,
             view::Request::ContextEdit(request) => {
                 if crate::context_edit::OPERATIONS

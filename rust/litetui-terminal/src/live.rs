@@ -284,6 +284,11 @@ pub enum Observation {
     ApprovalStopped(String),
     Cancelled(String),
     Refused(String),
+    ImageRefused {
+        reason: String,
+        review: crate::image::Review,
+        prompt: String,
+    },
     Failed(String),
     Complete,
 }
@@ -343,7 +348,8 @@ pub struct Turn {
     policy: Option<crate::tool_mode::Expected>,
     runtime_policy: Option<crate::runtime_controls::Policy>,
     ordinary_runtime_prompt: bool,
-    image_prompt: bool,
+    image_prompt: Option<(crate::image::Review, String)>,
+    image_retained: bool,
     aborts: crate::cancellation::Ledger,
     stop_requests: usize,
     stop_acknowledged: bool,
@@ -554,7 +560,8 @@ impl Turn {
     fn reset_operation(&mut self, operation: String) -> io::Result<()> {
         self.work.reserve_operation(&operation)?;
         self.command_id = operation;
-        self.image_prompt = false;
+        self.image_prompt = None;
+        self.image_retained = false;
         self.ordinary_runtime_prompt = false;
         self.continued_input = None;
         self.rewrite_input = None;
@@ -1036,6 +1043,17 @@ impl Turn {
             .expect("terminal outcome before settlement")
         {
             TerminalOutcome::Complete => Observation::Complete,
+            TerminalOutcome::Refused(reason) if self.image_retained => {
+                let (review, prompt) = self
+                    .image_prompt
+                    .as_ref()
+                    .expect("retained submitted image");
+                Observation::ImageRefused {
+                    reason: reason.clone(),
+                    review: review.clone(),
+                    prompt: prompt.clone(),
+                }
+            }
             TerminalOutcome::Refused(reason) => Observation::Refused(reason.clone()),
             TerminalOutcome::Failed(reason) => Observation::Failed(reason.clone()),
             TerminalOutcome::Cancelled(reason) => Observation::Cancelled(reason.clone()),
@@ -1262,13 +1280,20 @@ impl Turn {
                     }
                     return Ok(Observation::Approval(event));
                 }
-                if self.image_prompt
+                if self.image_prompt.is_some()
                     && event["id"] == self.command_id
                     && self.sent
                     && !self.acknowledged
                     && event["ok"] == true
                     && event["result"]["turn"] == "image_refused"
                 {
+                    let retained = &event["result"]["retained"];
+                    if !retained.is_null() {
+                        if retained != self.image_prompt.as_ref().expect("image").0.wire() {
+                            return Err(fail("Source retained a different image"));
+                        }
+                        self.image_retained = true;
+                    }
                     if self.started || self.terminal.is_some() {
                         return Err(fail("Image refused after execution started"));
                     }
@@ -1409,7 +1434,10 @@ impl Turn {
                 })
             }
             "submit_refused"
-                if self.image_prompt && self.sent && !self.started && self.terminal.is_none() =>
+                if self.image_prompt.is_some()
+                    && self.sent
+                    && !self.started
+                    && self.terminal.is_none() =>
             {
                 let reason = event["detail"]
                     .as_str()
@@ -2711,7 +2739,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     ));
                                 }
                                 value["native_image"] = image.wire().clone();
-                                turn.image_prompt = true;
+                                turn.image_prompt = Some((image, prompt.clone()));
                             }
                             let id = value["id"].as_str().expect("reserved ID").to_owned();
                             management.prompt(&id)?;
@@ -3684,7 +3712,7 @@ impl Frontend for OneShot {
                     terminal_text(&reason)
                 )));
             }
-            Observation::Refused(reason) => {
+            Observation::ImageRefused { reason, .. } | Observation::Refused(reason) => {
                 return Err(io::Error::other(format!(
                     "Input not started: {}",
                     terminal_text(&reason)
@@ -4081,6 +4109,7 @@ fn publish_event(
                 | Observation::Complete
                 | Observation::ApprovalStopped(_)
                 | Observation::Cancelled(_)
+                | Observation::ImageRefused { .. }
                 | Observation::Refused(_)
                 | Observation::Failed(_)
                 | Observation::ApprovalSettled { .. }

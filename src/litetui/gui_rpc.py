@@ -52,7 +52,7 @@ OPERATIONS = (
     "jobs.list", "jobs.create", "jobs.update", "jobs.delete", "jobs.pause", "jobs.resume", "jobs.run",
     "tasks.list", "tasks.kill", "tasks.tail", "goals.get", "goals.create", "goals.pause", "goals.resume", "goals.clear",
     "calendar.list", "diagnostics.get", "host_tools.register", "host_tools.unregister", "host_tools.result",
-    "images.attach", "images.clear", "images.native_prepare", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
+    "images.attach", "images.clear", "images.native_prepare", "images.native_clipboard", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
     "context.native_page", "inspection.native_status",
     "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback",
@@ -863,6 +863,9 @@ def dispatch(app, cmd):
         return {"running": glassbox.SERVER.running, "recording": glassbox._ENABLED,
                 "url": f"http://127.0.0.1:{glassbox.SERVER.port}/events" if glassbox.SERVER.running else None,
                 "recording_path": str(glassbox._RECORDER.path)}
+    if operation == "images.native_clipboard":
+        from litetui import native_image
+        return native_image.clipboard(app, cmd)
     if operation == "images.native_prepare":
         from litetui import native_image
         return native_image.prepare(app, cmd)

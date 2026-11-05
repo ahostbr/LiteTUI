@@ -93,14 +93,19 @@ def load_skills(app):
 def load_image_file(app, path: Path | io.BytesIO) -> str | None:
     try:
         from PIL import Image as PILImage
-        img = PILImage.open(path)
-        if max(img.size) > MAX_IMAGE_DIM:
-            img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM), PILImage.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format='PNG')
-        return base64.b64encode(buf.getvalue()).decode()
+        with PILImage.open(path) as image:
+            return encode_image(image)
     except Exception:
         return None
+
+def encode_image(img) -> str:
+    from PIL import Image as PILImage
+
+    if max(img.size) > MAX_IMAGE_DIM:
+        img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM), PILImage.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return base64.b64encode(buf.getvalue()).decode()
 
 #: Marks an already-injected project index inside the system message; detected
 #: by marker (not a flag) for the same reason as STORE_HEADER: /resume.

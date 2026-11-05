@@ -164,6 +164,11 @@ impl View {
             self.notice="A newer scheduled proposal replaced this review. Refresh Work before running a job.".into();
         }
     }
+    pub fn read_clipboard_image(&mut self) {
+        if self.image.open && !self.waiting {
+            self.request(Request::Image(self.image.clipboard_request()));
+        }
+    }
     pub fn open_image(&mut self) {
         if !self.owns_input() {
             self.open = true;
@@ -339,10 +344,15 @@ impl View {
                 self.context.edit_rejected(&reason)
             }
             Data::Image(value) => {
-                self.image.result(value);
+                let Request::Image(request) = &pending else {
+                    unreachable!()
+                };
+                self.image.result(request, value);
                 self.open = self.image.open;
                 self.notice = if self.open {
                     "Review the inspected image."
+                } else if self.image.attached.is_some() {
+                    "Image attached. Draft kept."
                 } else {
                     "Image cleared. Draft kept."
                 }

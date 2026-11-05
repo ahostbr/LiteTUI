@@ -1585,6 +1585,12 @@ impl Chat {
             Observation::Cancelled(reason) => {
                 self.settle(crate::live::TerminalOutcome::Cancelled(reason))?
             }
+            Observation::ImageRefused { reason, review, .. } => {
+                self.settle(crate::live::TerminalOutcome::Refused(reason))?;
+                self.work.image.attached = Some(review);
+                self.notice
+                    .push_str(" The source retained this image for your draft.");
+            }
             Observation::Refused(reason) => {
                 self.settle(crate::live::TerminalOutcome::Refused(reason))?
             }

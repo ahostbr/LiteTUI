@@ -16,16 +16,47 @@ pub const OPERATION: &str = "gui.images.native_prepare";
 pub enum Request {
     File(String),
     Clear(String),
+    Clipboard(Option<String>),
+    ReplaceFile {
+        path: String,
+        previous: String,
+    },
+    Commit {
+        review: Review,
+        previous: Option<String>,
+    },
 }
 
 impl Request {
+    pub fn operation(&self) -> &'static str {
+        match self {
+            Self::File(_) | Self::Clear(_) => OPERATION,
+            _ => "gui.images.native_clipboard",
+        }
+    }
     pub fn command(&self, identity: &Identity, instance: &str) -> Value {
         let mut cmd = identity.request();
-        cmd["type"] = json!(OPERATION);
+        cmd["type"] = json!(self.operation());
         cmd["work_instance"] = json!(instance);
         let (path, clear) = match self {
             Self::File(path) => (Some(path), None),
             Self::Clear(token) => (None, Some(token)),
+            other => {
+                let (path, previous, select) = match other {
+                    Self::Clipboard(prior) => (None, prior.as_deref(), None),
+                    Self::ReplaceFile { path, previous } => {
+                        (Some(path), Some(previous.as_str()), None)
+                    }
+                    Self::Commit { review, previous } => {
+                        (None, previous.as_deref(), Some(review.token()))
+                    }
+                    _ => unreachable!(),
+                };
+                cmd["path"] = json!(path);
+                cmd["previous"] = json!(previous);
+                cmd["select"] = json!(select);
+                return cmd;
+            }
         };
         cmd["path"] = json!(path);
         cmd["clear"] = json!(clear);
@@ -66,7 +97,23 @@ pub fn parse(
         "work_instance",
         "token",
     ];
-    if matches!(request, Request::File(_)) {
+    if let Request::Commit { review, .. } = request {
+        return if value == review.wire()
+            && value["session_id"] == identity.session
+            && value["agent_id"] == identity.agent
+            && value["backend"] == identity.backend
+            && value["model"] == identity.model
+            && value["work_instance"] == instance
+        {
+            Ok(Some(review.clone()))
+        } else {
+            Err(bad())
+        };
+    }
+    if matches!(request, Request::Clipboard(_)) {
+        fields.extend(["clipboard_sequence", "clipboard_format"]);
+    }
+    if !matches!(request, Request::Clear(_)) {
         fields.extend([
             "delivery",
             "name",
@@ -103,14 +150,44 @@ pub fn parse(
         Request::Clear(token) if value["kind"] == "image_cleared" && value["token"] == *token => {
             Ok(None)
         }
-        Request::File(path) => {
+        Request::File(_) | Request::Clipboard(_) | Request::ReplaceFile { .. } => {
+            let valid_source = match request {
+                Request::File(path) | Request::ReplaceFile { path, .. } => {
+                    value["name"].as_str() == Path::new(path).file_name().and_then(|v| v.to_str())
+                        && matches!(value["format"].as_str(), Some("JPEG" | "PNG" | "WEBP"))
+                }
+                Request::Clipboard(_) => {
+                    let name = value["name"].as_str().unwrap_or("");
+                    value["clipboard_sequence"]
+                        .as_u64()
+                        .is_some_and(|n| (1..=u64::from(u32::MAX)).contains(&n))
+                        && match value["clipboard_format"].as_str() {
+                            Some("PNG") => name == "Clipboard image" && value["format"] == "PNG",
+                            Some("DIB" | "DIBV5") => {
+                                name == "Clipboard image" && value["format"] == "DIB"
+                            }
+                            Some("FILES") => {
+                                !name.is_empty()
+                                    && name.len() <= 1024
+                                    && !name
+                                        .chars()
+                                        .any(|c| c == '/' || c == '\\' || c.is_control())
+                                    && matches!(
+                                        value["format"].as_str(),
+                                        Some("JPEG" | "PNG" | "WEBP" | "GIF" | "BMP")
+                                    )
+                            }
+                            _ => false,
+                        }
+                }
+                _ => false,
+            };
             let pixels = value["width"]
                 .as_u64()
                 .zip(value["height"].as_u64())
                 .and_then(|(w, h)| w.checked_mul(h));
             if value["kind"] != "image_review"
-                || value["name"].as_str() != Path::new(path).file_name().and_then(|v| v.to_str())
-                || !matches!(value["format"].as_str(), Some("JPEG" | "PNG" | "WEBP"))
+                || !valid_source
                 || !pixels.is_some_and(|n| (1..=16_000_000).contains(&n))
                 || !["sent_width", "sent_height"]
                     .iter()
@@ -139,6 +216,7 @@ pub struct Picker {
     pub open: bool,
     pub attached: Option<Review>,
     candidate: Option<Review>,
+    file_mode: bool,
     path: String,
     pub notice: String,
     visible: bool,
@@ -148,6 +226,7 @@ impl Picker {
     pub fn open(&mut self) {
         self.open = true;
         self.path.clear();
+        self.file_mode = self.attached.is_none();
         self.candidate = None;
         self.notice.clear();
         self.visible = false;
@@ -161,17 +240,35 @@ impl Picker {
         self.path.clear();
         self.visible = false;
     }
-    pub fn result(&mut self, result: Option<Review>) {
-        if result.is_none() {
-            self.attached = None;
-            self.close();
-        } else if self.open {
-            self.candidate = result;
+    pub fn clipboard_request(&self) -> Request {
+        Request::Clipboard(self.attached.as_ref().map(|r| r.token().into()))
+    }
+    pub fn result(&mut self, request: &Request, result: Option<Review>) {
+        match request {
+            Request::Clear(token) => {
+                let cleared_attached = self.attached.as_ref().is_some_and(|r| r.token() == token);
+                if cleared_attached {
+                    self.attached = None;
+                }
+                self.candidate = None;
+                if !self.file_mode || cleared_attached {
+                    self.close();
+                }
+            }
+            Request::Commit { .. } => {
+                self.attached = result;
+                self.close();
+            }
+            _ if self.open => {
+                self.candidate = result;
+                self.file_mode = false;
+            }
+            _ => {}
         }
         self.notice.clear();
     }
     pub fn editing(&self) -> bool {
-        self.open && self.visible && self.attached.is_none() && self.candidate.is_none()
+        self.open && self.visible && self.candidate.is_none() && self.file_mode
     }
     pub fn paste(&mut self, text: &str) {
         if !self.editing() {
@@ -192,6 +289,7 @@ impl Picker {
             return None;
         }
         if event.code == KeyCode::Esc {
+            self.file_mode = false;
             let cancel = self
                 .candidate
                 .as_ref()
@@ -204,23 +302,51 @@ impl Picker {
         if !self.visible {
             return None;
         }
-        if let Some(r) = self.attached.as_ref() {
-            match event.code {
-                KeyCode::Delete => return Some(Request::Clear(r.token().into())),
-                KeyCode::Enter => self.close(),
-                _ => {}
-            }
-        } else if self.candidate.is_some() {
+        if event.code == KeyCode::F(2) {
+            self.file_mode = true;
+            self.path.clear();
+            self.notice.clear();
+            return self
+                .candidate
+                .as_ref()
+                .map(|r| Request::Clear(r.token().into()));
+        }
+        if let Some(candidate) = &self.candidate {
             if event.code == KeyCode::Enter {
+                let previous = self.attached.as_ref().map(|r| r.token().into());
+                if candidate.wire().get("clipboard_sequence").is_some() || previous.is_some() {
+                    return Some(Request::Commit {
+                        review: candidate.clone(),
+                        previous,
+                    });
+                }
                 self.attached = self.candidate.take();
                 self.close();
+            }
+        } else if !self.file_mode && self.attached.is_some() {
+            match event.code {
+                KeyCode::Delete => {
+                    return self
+                        .attached
+                        .as_ref()
+                        .map(|r| Request::Clear(r.token().into()));
+                }
+                KeyCode::Enter => self.close(),
+                _ => {}
             }
         } else {
             match event.code {
                 KeyCode::Enter => {
-                    let p = self.path.trim().trim_matches('"');
-                    if !p.is_empty() {
-                        return Some(Request::File(p.into()));
+                    let path = self.path.trim().trim_matches('"');
+                    if !path.is_empty() {
+                        return Some(if let Some(old) = &self.attached {
+                            Request::ReplaceFile {
+                                path: path.into(),
+                                previous: old.token().into(),
+                            }
+                        } else {
+                            Request::File(path.into())
+                        });
                     }
                     self.notice = "Enter an absolute image path first.".into();
                 }
@@ -249,27 +375,45 @@ impl Picker {
             .style(style);
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
-        let mut body = if let Some(review) = self.candidate.as_ref().or(self.attached.as_ref()) {
+        let mut body = if let Some(review) = self
+            .candidate
+            .as_ref()
+            .or_else(|| self.attached.as_ref().filter(|_| !self.file_mode))
+        {
             let v = review.wire();
             let effect = if v["delivery"] == "file" {
                 "Claude receives a conversation-owned file path and needs its read tool."
             } else {
                 "The provider receives PNG image content. Vision support depends on the model."
             };
+            let clip = v["clipboard_sequence"]
+                .as_u64()
+                .map(|seq| {
+                    format!(
+                        " · Clipboard {} #{}",
+                        v["clipboard_format"].as_str().unwrap_or(""),
+                        seq
+                    )
+                })
+                .unwrap_or_default();
             format!(
-                "{}\n{} · {} × {} source pixels\nSending {} × {} · {} PNG bytes\n{}\n\n{}",
+                "{}{}\n{} · {} × {} source pixels\nSending {} × {} · {} PNG bytes\nSHA-256 {}\n{}\n\n{}",
                 terminal_text(review.name()),
+                clip,
                 v["format"].as_str().unwrap_or(""),
                 v["width"],
                 v["height"],
                 v["sent_width"],
                 v["sent_height"],
                 v["png_bytes"],
+                v["png_sha256"].as_str().expect("validated image digest"),
                 effect,
-                if self.attached.is_some() {
-                    "Delete clears the attachment · Enter or Esc returns to the draft."
+                if self.candidate.is_some() && self.attached.is_some() {
+                    "Enter replaces the previous image · Esc keeps it · F2 chooses a file."
+                } else if self.attached.is_some() {
+                    "Delete clears the attachment · F2 chooses a file · Esc returns to the draft."
                 } else {
-                    "Enter attaches to this draft · Esc discards. With an empty draft, Send asks: Describe this image."
+                    "Enter attaches to this draft · Esc discards · F2 chooses a file. Empty Send asks: Describe this image."
                 }
             )
         } else {

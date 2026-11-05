@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Clipboard image review and Work commands - 2026-11-04
+
+Ctrl+O reviews a Windows clipboard image. F2 selects a file from inside the review. Ctrl+Shift+O opens file selection directly. Confirming a replacement swaps the attached image only after source readback. Esc retains the previous image. If a caption is refused before submission, the composer restores the exact caption and attachment only when the source confirms it still holds the reviewed bytes.
+
+The checkout passed 965 Rust tests, strict all-target Clippy and 42 source tests. Six reader/image groups and seven command groups passed with the relocated runtime. A hidden Windows pseudoconsole run captured 17 screens, including selecting DIB A, declining PNG B and returning to the prior caption. The clipboard supplied private, controlled handles throughout. The launcher verified all 366 payload files afterward.
+
 ## Local image files in the native composer - 2026-11-04
 
 Ctrl+O opens image selection. The review shows the source and transmitted dimensions, size, digest, and delivery mode. Enter attaches the reviewed bytes to the current composer. Delete clears them. An ordinary submission can include text or use the image-only prompt. The source checks the actual remaining history budget before inline delivery. Claude uses a conversation-owned file with tools enabled.

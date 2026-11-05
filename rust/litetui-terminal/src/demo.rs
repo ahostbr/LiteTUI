@@ -165,8 +165,20 @@ impl Demo {
                 chat.runtime_controls.hide();
             }
         }
+        let restore_caption = match &observation {
+            crate::live::Observation::ImageRefused { prompt, .. }
+                if self.composer.text().is_empty() =>
+            {
+                Some(prompt.clone())
+            }
+            _ => None,
+        };
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
+        if let Some(text) = restore_caption {
+            self.composer.insert(&text);
+        }
+
         self.notice = chat.notice.clone();
         self.footer_fields = if chat.ready {
             chat.runtime_state.footer_fields()

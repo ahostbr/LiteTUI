@@ -34,9 +34,7 @@ def delivery(app):
     return "inline"
 
 
-def read_image(app, raw):
-    from PIL import Image, UnidentifiedImageError
-
+def read_image(app, raw, *, formats=None):
     if not isinstance(raw, str) or not raw or len(raw) > 2048 or any(ord(c) < 32 for c in raw):
         raise ValueError("Enter a local absolute image file path (up to 2048 characters).")
     path = Path(raw)
@@ -57,21 +55,27 @@ def read_image(app, raw):
         data = stream.read(MAX_FILE + 1)
     if not 0 < len(data) <= MAX_FILE:
         raise ValueError("Image file changed or exceeds 8 MiB.")
+    return decode_image(Path(raw).name, data, formats or ["PNG", "JPEG", "WEBP"])
+
+
+def decode_image(name, data, formats):
+    from PIL import Image, UnidentifiedImageError
+
     try:
-        with Image.open(io.BytesIO(data), formats=["PNG", "JPEG", "WEBP"]) as image:
+        with Image.open(io.BytesIO(data), formats=formats) as image:
             width, height = image.size
             if width * height > MAX_PIXELS:
                 raise ValueError("Image exceeds 16 million pixels.")
             if getattr(image, "is_animated", False):
                 raise ValueError("Choose a still image.")
             fmt = image.format
-        encoded = appsvc.load_image_file(app, io.BytesIO(data))
+            encoded = appsvc.encode_image(image)
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise ValueError("Could not read a still PNG, JPEG, or WebP image.") from exc
     if not encoded:
         raise ValueError("Could not decode this image.")
     png = base64.b64decode(encoded, validate=True)
-    return ({"name": Path(raw).name, "format": fmt, "width": width, "height": height,
+    return ({"name": name, "format": fmt, "width": width, "height": height,
              "sent_width": int.from_bytes(png[16:20], "big"), "sent_height": int.from_bytes(png[20:24], "big"),
              "png_bytes": len(png), "png_sha256": hashlib.sha256(png).hexdigest()}, encoded)
 
@@ -101,8 +105,13 @@ def prepare(app, cmd):
     current = getattr(bridge, "composer_image", None)
     if cmd["path"] is None:
         if current is None or current[0]["token"] != cmd["clear"]:
-            raise ValueError("This attachment no longer belongs to the current composer.")
-        bridge.composer_image = None
+            candidate = getattr(bridge, "clipboard_candidate", None)
+            if candidate is None or candidate[0]["token"] != cmd["clear"]:
+                raise ValueError("This attachment no longer belongs to the current composer.")
+            bridge.clipboard_candidate = None
+        else:
+            bridge.composer_image = None
+            bridge.clipboard_candidate = None
         return {"version": 1, "kind": "image_cleared", **binding, "token": cmd["clear"]}
     if cmd["clear"] is not None:
         raise ValueError("Choose one image action.")
@@ -113,21 +122,64 @@ def prepare(app, cmd):
     bridge.check()
     review = {"version": 1, "kind": "image_review", **binding, "token": secrets.token_hex(32),
               "delivery": mode, **details}
+    bridge.clipboard_candidate = None
     bridge.composer_image = (review, encoded)
     return review
+
+
+def clipboard(app, cmd):
+    from litetui import native_clipboard
+
+    bridge, binding = native_context.read_binding(app, cmd, "gui.images.native_clipboard", "previous", "select", "path")
+    if not native_runtime_controls.enabled(app) or bridge.closing:
+        raise ValueError("Image paste requires an active owned runtime.")
+    prior = getattr(bridge, "composer_image", None)
+    if cmd["previous"] != (prior[0]["token"] if prior else None):
+        raise ValueError("The previous attachment changed. Reopen the composer picker.")
+    if cmd["select"] is not None:
+        candidate = getattr(bridge, "clipboard_candidate", None)
+        if (cmd["path"] is not None or candidate is None or cmd["select"] != candidate[0]["token"]
+                or delivery(app) != candidate[0]["delivery"]):
+            raise ValueError("This reviewed clipboard image changed. Read the clipboard again.")
+        bridge.composer_image = candidate
+        bridge.clipboard_candidate = None
+        return candidate[0]
+    mode = delivery(app)
+    details, encoded = native_clipboard.read(app) if cmd["path"] is None else read_image(app, cmd["path"])
+    if mode == "inline":
+        check_inline_budget(app, encoded, "Describe this image.")
+    bridge.check()
+    review = {"version": 1, "kind": "image_review", **binding, "token": secrets.token_hex(32),
+              "delivery": mode, **details}
+    bridge.clipboard_candidate = (review, encoded)
+    return review
+
+
+def retained(app, received):
+    """Prove the exact submitted review is still owned after a pre-admission refusal."""
+    bridge = background_input.bridge(app)
+    entry = getattr(bridge, "composer_image", None)
+    if (not entry or bridge.closing or not native_runtime_controls.enabled(app)
+            or background_input.encoded(received) != background_input.encoded(entry[0])
+            or bridge.instance != entry[0]["work_instance"]
+            or any(entry[0][key] != value for key, value in bridge.identity.items())):
+        return None
+    try:
+        bridge.check()
+    except (OSError, ValueError):
+        return None
+    return entry[0]
 
 
 def consume(app, cmd):
     bridge = background_input.bridge(app)
     entry = getattr(bridge, "composer_image", None)
-    if (not native_runtime_controls.enabled(app) or not entry or bridge.closing
-            or background_input.encoded(cmd["native_image"]) != background_input.encoded(entry[0])
-            or delivery(app) != entry[0]["delivery"]
-            or any(entry[0][key] != value for key, value in bridge.identity.items())
-            or bridge.instance != entry[0]["work_instance"] or getattr(app, "pending_image", None)):
+    if (retained(app, cmd["native_image"]) is None or delivery(app) != entry[0]["delivery"]
+            or getattr(app, "pending_image", None)):
         raise ValueError("The selected image or conversation changed. Select the image again.")
     bridge.check()
     if entry[0]["delivery"] == "inline":
         check_inline_budget(app, entry[1], cmd["message"])
     bridge.composer_image = None
+    bridge.clipboard_candidate = None
     return entry[1]

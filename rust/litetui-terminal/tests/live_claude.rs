@@ -139,6 +139,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
             }
             Ok(
                 Observation::Cancelled(reason)
+                | Observation::ImageRefused { reason, .. }
                 | Observation::Refused(reason)
                 | Observation::Failed(reason)
                 | Observation::ApprovalStopped(reason),

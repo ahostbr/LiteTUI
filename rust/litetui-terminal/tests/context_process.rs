@@ -680,3 +680,153 @@ fn image_selection_clear_and_explicit_submission_use_the_reviewed_pixels() {
         1
     );
 }
+
+#[test]
+#[ignore = "owned Interactive source with private clipboard allocations; no desktop clipboard access"]
+fn clipboard_review_replace_clear_and_file_choice_use_the_captured_version() {
+    fn review(runtime: &mut Interactive, app: &mut Demo) -> io::Result<String> {
+        app.open_image();
+        app.live.as_mut().unwrap().work.read_clipboard_image();
+        drain(runtime, app)?;
+        Ok(draw(app))
+    }
+    let (runtime, data) = launch("clipboard_runtime.py");
+    let mut final_digest = String::new();
+    let result=runtime.with_cleanup(|runtime| {
+        let mut app=Demo::live("custom".into(),"switch-old".into());
+        observe(runtime,&mut app,|e|matches!(e,Observation::Ready))?;
+        app.insert_text("Which pixels did I choose?");
+        let screen=review(runtime,&mut app)?;
+        assert!(screen.contains("Clipboard DIB #201") && screen.contains("F2 chooses a file"),"{screen}");
+        key(runtime,&mut app,KeyCode::Enter)?;
+        let held=|app:&Demo|app.live.as_ref().unwrap().work.image.attached.as_ref().unwrap().wire().clone();
+        let first=held(&app);
+        // A valid PNG is already offered. F2 cancels it and allows a manual replacement instead.
+        assert!(review(runtime,&mut app)?.contains("Clipboard PNG #202"));
+        assert!(key(runtime,&mut app,KeyCode::F(2))?.contains("Local image file"));
+        app.live.as_mut().unwrap().work.paste(data.join("selected image.png").to_str().unwrap());
+        assert!(key(runtime,&mut app,KeyCode::Enter)?.contains("Enter replaces"));
+        key(runtime,&mut app,KeyCode::Esc)?;
+        assert_eq!(held(&app),first);
+        assert!(review(runtime,&mut app)?.contains("Clipboard FILES #203"));
+        key(runtime,&mut app,KeyCode::Enter)?;
+        assert_ne!(held(&app)["token"],first["token"]);
+        app.open_image();
+        key(runtime,&mut app,KeyCode::Delete)?;
+        assert!(app.live.as_ref().unwrap().work.image.attached.is_none());
+        // Empty/unsupported clipboard gives a clear message, still allows file entry, keeps the draft.
+        app.open_image();
+        let work=&mut app.live.as_mut().unwrap().work;
+        work.read_clipboard_image();
+        runtime.work(work.take_intent().unwrap())?;
+        loop {
+            let event=runtime.events.recv_timeout(Duration::from_secs(20)).map_err(io::Error::other)?;
+            let refused=matches!(&event,Observation::Work(update) if matches!(update.data,Data::Rejected(_)));
+            app.observe_live(event)?;
+            if refused{break;}
+        }
+        assert!(draw(&mut app).contains("No supported image"));
+        key(runtime,&mut app,KeyCode::Esc)?;
+        app.open_image();
+        draw(&mut app);
+        app.live.as_mut().unwrap().work.paste(data.join("selected image.png").to_str().unwrap());
+        key(runtime, &mut app, KeyCode::Enter)?;
+        key(runtime, &mut app, KeyCode::Enter)?;
+        let previous = held(&app);
+        assert!(review(runtime,&mut app)?.contains("Clipboard DIBV5 #205"));
+        key(runtime,&mut app,KeyCode::Enter)?;
+        assert_ne!(previous["png_sha256"], held(&app)["png_sha256"]);
+        final_digest=held(&app)["png_sha256"].as_str().unwrap().to_owned();
+        assert_eq!(app.composer.text(),"Which pixels did I choose?");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        app.submit();
+        let (text,image)=app.live.as_mut().unwrap().take_image_submission().unwrap();
+        runtime.submit_image(text,image)?;
+        observe(runtime,&mut app,|e|matches!(e,Observation::Complete))?;
+        Ok(())
+    });
+    result.unwrap();
+    let saved = json_file(&data.join("image-resume-reader.json"));
+    assert_eq!(saved["digest"], final_digest);
+    assert_eq!(saved["text"], "Which pixels did I choose?");
+    assert_eq!(saved["pending_image"], false);
+    let ownership = json_file(&data.join("clipboard-ownership.json"));
+    assert_eq!(ownership.as_array().unwrap().len(), 5);
+    for (i, entry) in ownership.as_array().unwrap().iter().enumerate() {
+        let events = entry.as_array().unwrap();
+        assert_eq!(events.first().unwrap(), "open");
+        assert_eq!(events.last().unwrap(), "close");
+        assert_eq!(events.contains(&json!("unlock")), i != 3);
+    }
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["type"] == "prompt")
+            .count(),
+        1
+    );
+}
+
+#[test]
+#[ignore = "owned source refusal/recovery with private clipboard images; no desktop clipboard access"]
+fn clipboard_declining_b_keeps_a_across_refused_caption_then_submits_a_once() {
+    let (runtime, data) = launch("clipboard_decline_runtime.py");
+    let mut digest = String::new();
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        let long = "This long caption exceeds the source window and must remain editable after the source has refused it.".repeat(2);
+        app.insert_text(&long);
+        app.open_image();
+        app.live.as_mut().unwrap().work.read_clipboard_image();
+        drain(runtime, &mut app)?;
+        key(runtime, &mut app, KeyCode::Enter)?;
+        let first = app.live.as_ref().unwrap().work.image.attached.as_ref().unwrap().wire().clone();
+        digest = first["png_sha256"].as_str().unwrap().into();
+        app.open_image();
+        app.live.as_mut().unwrap().work.read_clipboard_image();
+        drain(runtime, &mut app)?;
+        assert!(draw(&mut app).contains("Clipboard PNG #202"));
+        key(runtime, &mut app, KeyCode::Esc)?;
+        assert_eq!(app.live.as_ref().unwrap().work.image.attached.as_ref().unwrap().wire(), &first);
+        app.submit();
+        let (prompt, image) = app.live.as_mut().unwrap().take_image_submission().unwrap();
+        runtime.submit_image(prompt, image)?;
+        observe(runtime, &mut app, |e| matches!(e, Observation::ImageRefused { .. }))?;
+        assert_eq!(app.composer.text(), long);
+        assert_eq!(app.live.as_ref().unwrap().work.image.attached.as_ref().unwrap().wire(), &first);
+        app.composer.clear();
+        app.insert_text("Inspect retained A.");
+        app.submit();
+        let (prompt, image) = app.live.as_mut().unwrap().take_image_submission().unwrap();
+        runtime.submit_image(prompt, image)?;
+        observe(runtime, &mut app, |e| matches!(e, Observation::Complete))?;
+        Ok(())
+    });
+    result.unwrap();
+    let saved = json_file(&data.join("image-resume-reader.json"));
+    assert_eq!(saved["digest"], digest);
+    assert_eq!(saved["text"], "Inspect retained A.");
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"].as_array().unwrap().len(), 1);
+    let refused = report["wire"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["result"]["turn"] == "image_refused")
+        .unwrap();
+    assert_eq!(refused["result"]["retained"]["png_sha256"], digest);
+    assert_eq!(
+        report["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["type"] == "prompt")
+            .count(),
+        2
+    );
+}
