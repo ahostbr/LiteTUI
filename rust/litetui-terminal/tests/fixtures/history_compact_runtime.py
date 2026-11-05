@@ -163,12 +163,17 @@ CLAUDE_WAKE_SESSION = "32345678-1111-4111-8111-123456789abc"
 CLAUDE_WAKE_RESULT = "42345678-1111-4111-8111-123456789abc"
 # The summary turn (STEP 1) writes the store file, or the wake turn does; both through the native tool.
 CLAUDE_SUMMARY_TOOL = CASE in {"claude-segment-tools", "claude-segment-approval", "claude-segment-approval-denied",
-                               "claude-segment-stop-approval"}
+                               "claude-segment-stop-approval", "claude-segment-unattended-store",
+                               "claude-segment-unattended-approval"}
 CLAUDE_WAKE_TOOL = CASE == "claude-segment-wake-approval"
 # The summary turn calls a bridged HOST tool (the litetui MCP server) instead of a native Write.
 CLAUDE_HOST = CASE in {"claude-segment-host", "claude-segment-host-approval", "claude-segment-host-approval-denied",
                        "claude-segment-host-stop-approval", "claude-segment-host-changed"}
-CLAUDE_TOOLS = CLAUDE_SUMMARY_TOOL or CLAUDE_WAKE_TOOL or CLAUDE_HOST
+# An UNREVIEWED compaction (what autocompaction starts) under the native Work frontend: no review and no Work
+# execution own it, so its summary turn is unattended (claude_tools.UNATTENDED_*). The stop case's CLI is running a
+# long tool: nothing arrives until Stop interrupts it.
+CLAUDE_UNATTENDED = CASE.startswith("claude-segment-unattended")
+CLAUDE_TOOLS = CLAUDE_SUMMARY_TOOL or CLAUDE_WAKE_TOOL or CLAUDE_HOST or CLAUDE_UNATTENDED
 # convo_search with refresh=true needs a human confirmation under the strict profile; a plain query does not.
 HOST_ARGS = {"refresh": True} if "approval" in CASE else {"query": "controlled host lookup"}
 HOST_RESULT = "CONTROLLED HOST RESULT 雪"
@@ -249,6 +254,13 @@ def claude_client():
                 await self.frames.put(ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
                     num_turns=1, session_id=session_id, uuid=result_id, terminal_reason="completed", result=result))
 
+        async def interrupt(self):
+            """The CLI's answer to Stop: the running turn ends with an error result."""
+            history.report["claude_interrupted"] = True
+            await self.frames.put(ResultMessage(subtype="error_during_execution", duration_ms=1, duration_api_ms=1,
+                is_error=True, num_turns=1, session_id=self.session_id, uuid=CLAUDE_TERMINAL,
+                terminal_reason="aborted_streaming", result="interrupted"))
+
         async def query(self, prompt):
             from litetui.app import WAKE_AFTER_COMPACT
 
@@ -268,13 +280,17 @@ def claude_client():
                         "content": [{"type": "text", "text": WAKE_ANSWER}]}})
             else:
                 history.report.setdefault("claude_summary_prompts", []).append(prompt)
-                assert history.explicit
+                assert history.explicit or CLAUDE_UNATTENDED  # an unreviewed compaction has no apply command
                 session_id = CLAUDE_TERMINAL if CASE == "claude-segment-foreign" else CLAUDE_NATIVE
                 result_id, result = CLAUDE_TERMINAL, SUMMARY
                 if CLAUDE_SUMMARY_TOOL:
                     await self.tool(session_id, "Write", args, "toolu_store_write")
                 if CLAUDE_HOST:
                     self.turn = asyncio.create_task(self.host_turn(session_id, result_id, result))
+                    return
+                if CASE == "claude-segment-unattended-stop":
+                    self.session_id = session_id
+                    history.report["summary_in_flight"] = True
                     return
             await self.frames.put(ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
                 num_turns=1, session_id=session_id, uuid=result_id, terminal_reason="completed", result=result))
@@ -323,6 +339,9 @@ async def seed_claude(app):
     app.backend._claude_tools = bridge
     app.backend._claude_events = ClaudeEventStream(session_id=native)
     history.report.update(old_ledger=ledger.document, claude_session=native, claude_result=terminal)
+    if CASE == "claude-segment-unattended-store":
+        # The summary turn's STEP 1 target: one of the agent's own store files (tool_policy SELF_STORE).
+        history.report["artifact"] = str(Path(app._agent_session.memory_root) / "handoff.md")
     if CASE == "claude-segment-ledger":
         original = ledger._save
 
@@ -490,6 +509,7 @@ async def serve(app):
     original_write = app.store.write_record
     original_ready = app._ensure_chat_ready
     original_clear = app._clear_screen
+    original_system = app._system
     original_command = ttyguard.run
 
     def attempt():
@@ -557,6 +577,11 @@ async def serve(app):
             history.report.setdefault("line_ending_lookups", []).append({"argv": argv, "cwd": str(artifact.parent)})
             return NS(returncode=1, stdout="", stderr="Controlled disposable non-repository workspace")
         return original_command(argv, *args, **kwargs)
+
+    def system(text, *args, **kwargs):
+        if seeded:
+            history.report.setdefault("system_messages", []).append(str(text))
+        return original_system(text, *args, **kwargs)
 
     def clear_screen(*args, **kwargs):
         if seeded:
@@ -695,9 +720,31 @@ async def serve(app):
             await stream_release.wait()
         return await original_ready(*args, **kwargs)
 
+    async def unattended(common):
+        """An autocompaction under the native Work frontend: the frontend's own Work negotiation, then a compaction
+        nobody reviewed, started the way _maybe_autocompact starts it."""
+        from litetui import native_runtime_controls as controls
+
+        capture = (await call("gui.work.native_capture", **common, runtime_controls_version=1))["result"]
+        await call("gui.work.native_activate", **common, instance=capture["instance"],
+            activation_token=capture["activation_token"], runtime_controls_version=1)
+        assert controls.enabled(app)
+        history.report["work_runtime_controls"] = True
+        app._compact_is_auto = True
+        app._compact()
+        if CASE.endswith("-stop"):
+            await until(lambda: history.report.get("summary_in_flight"))
+            history.report["stop_response"] = await call("abort")
+        await until(lambda: next((r for r in history.boundary.records
+            if r.get("type") == "compaction" and r.get("reason")), None), 40)
+        await history.settle(app)
+
     async def self_driver():
         common = {"version": 1, "session_id": app.convo_id,
             "agent_id": app._agent_session.authority.agent_id, "backend": app.backend.name, "model": app.model_id}
+        if CLAUDE_UNATTENDED:
+            await unattended(common)
+            return
         descriptor = (await call(history.SNAPSHOT, **history.common(app)))["result"]
         selection = {"history_snapshot": descriptor["snapshot"], "context_sha256": descriptor["context_sha256"]}
         if CASE.startswith("legacy-"):
@@ -804,7 +851,8 @@ async def serve(app):
         for owner, name, callback in ((app, "exit", exit_app), (app.store, "release", release),
             (LiteTUI, "run_worker", launched), (rpc, "_dispatch", dispatch), (rpc, "rpc_emit", emit),
             (ask_user_question, "run", question), (app.store, "write_record", faulty_write),
-            (app, "_ensure_chat_ready", ready), (app, "_clear_screen", clear_screen), (ttyguard, "run", command)):
+            (app, "_ensure_chat_ready", ready), (app, "_clear_screen", clear_screen), (ttyguard, "run", command),
+            (app, "_system", system)):
             stack.enter_context(patch.object(owner, name, callback))
         for obj, name in ((socket, "create_connection"), (socket, "getaddrinfo"),
             (socket.socket, "connect"), (socket.socket, "connect_ex")):

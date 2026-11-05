@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "rust/litetui-terminal/tests/fixtures/history_compact_runtime.py"
 SUMMARY = "Controlled compacted continuity summary"
 WAKE_ANSWER = "Controlled answer after the genuine compaction wake"
+WRITE_CONTENT = "A real compaction tool wrote this disposable artifact.\n"
 
 
 def digest(value):
@@ -26,7 +27,8 @@ def launch(tmp_path, case):
     data = tmp_path / "data"
     data.mkdir()
     tools = case in {"tools-on", "tool-then-empty", "tool-cap"} or "question" in case or "approval" in case \
-        or case in {"claude-segment-tools", "claude-segment-host", "claude-segment-host-changed"}
+        or case in {"claude-segment-tools", "claude-segment-host", "claude-segment-host-changed"} \
+        or case.startswith("claude-segment-unattended")
     wake = case == "wake" or case.endswith("-wake") or case == "claude-segment-wake-approval"
     native = case.startswith("codex-native")
     claude = case.startswith("claude-segment")
@@ -311,6 +313,53 @@ def test_a_host_tool_whose_schema_changed_after_the_review_is_refused_and_runs_n
     (result,) = report["claude_host_results"]
     assert "compaction review" in result["text"] and HOST_RESULT not in result["text"]
     assert not report.get("host_runs"), "an undisclosed schema must never reach the tool door"
+
+
+def native_input_requests(report):
+    return [r for r in report["wire_events"] if r.get("type") == "gui.event"
+            and r["event"].get("type") in {"tool_approval_requested", "user_input_requested"}]
+
+
+def unattended_compaction(report):
+    """What an unreviewed (auto) Claude compaction under the native Work frontend did, as the frontend would see it."""
+    assert report["work_runtime_controls"], "the native frontend's Work negotiation did not activate"
+    assert not native_input_requests(report), "the native frontend cannot host an approval for an unreviewed compaction"
+    (done,) = [r for r in report["wire_events"] if r.get("type") == "compaction"]
+    return done
+
+
+def test_an_unreviewed_claude_compaction_writes_its_own_store_without_an_approval(tmp_path):
+    report = launch(tmp_path, "claude-segment-unattended-store")
+    assert unattended_compaction(report)["reason"] == "compacted"
+    (verdict,) = report["claude_tool_verdicts"]
+    assert verdict["permissionDecision"] == "allow", verdict
+    assert report["artifact"].endswith("handoff.md") and report["artifact_text"] == WRITE_CONTENT
+    old, final = report["old_ledger"], report["final_ledger"]
+    assert final["selected_segment"] != old["selected_segment"]
+    assert final["segments"][final["selected_segment"]]["seed"] == SUMMARY
+
+
+def test_an_unreviewed_claude_compaction_refuses_a_tool_that_needs_approval_and_runs_nothing(tmp_path):
+    from litetui.claude_tools import UNATTENDED_APPROVAL
+
+    report = launch(tmp_path, "claude-segment-unattended-approval")
+    assert unattended_compaction(report)["reason"] == "compacted"
+    (verdict,) = report["claude_tool_verdicts"]
+    assert verdict["permissionDecision"] == "deny"
+    assert UNATTENDED_APPROVAL in verdict["permissionDecisionReason"]
+    assert not report["artifact_exists"], "the refused write must not have executed"
+    assert not report.get("host_runs")
+    old, final = report["old_ledger"], report["final_ledger"]
+    assert final["segments"][final["selected_segment"]]["seed"] == SUMMARY and final != old
+
+
+def test_stop_during_an_unreviewed_claude_summary_turn_ends_it_and_replaces_nothing(tmp_path):
+    report = launch(tmp_path, "claude-segment-unattended-stop")
+    assert report["stop_response"]["result"]["stopped"] and report["claude_interrupted"]
+    assert unattended_compaction(report)["reason"] == "failed"
+    assert report["final_ledger"] == report["old_ledger"], "A stopped compaction must not select a replacement segment"
+    assert report["live"] == report["baseline_live"]
+    assert not report.get("claude_tool_verdicts") and not report["artifact_exists"]
 
 
 def root_events(report):
