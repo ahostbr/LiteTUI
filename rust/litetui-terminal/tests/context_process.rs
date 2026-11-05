@@ -78,7 +78,11 @@ runpy.run_path({}, run_name='__main__')
         "--data-root".into(),
         data.to_string_lossy().into_owned(),
         "--backend".into(),
-        "custom".into(),
+        if fixture_file == "model_preferences_full_runtime.py" {
+            "llamacpp".into()
+        } else {
+            "custom".into()
+        },
         "--model".into(),
         "switch-old".into(),
         "--tool-profile".into(),
@@ -96,6 +100,11 @@ runpy.run_path({}, run_name='__main__')
         "--base-url".into(),
         "http://127.0.0.1:45120/v1".into(),
     ];
+    let mut args = args.to_vec();
+    if fixture_file == "model_preferences_full_runtime.py" {
+        let index = args.iter().position(|s| s == "--thinking-level").unwrap();
+        args.drain(index..index + 2);
+    }
     (Interactive::start(Options::parse(&args).unwrap()), data)
 }
 
@@ -1589,7 +1598,7 @@ fn model_preferences_review_reread_and_reach_the_normal_request_consumer() {
                 review.contains("Save Temperature for switch-old?"),
                 "{review}"
             );
-            assert!(review.contains("Requested next request: 0.35"), "{review}");
+            assert!(review.contains("Requested preference: 0.35"), "{review}");
             settings_key(runtime, &mut app, KeyCode::Esc)?;
             settings_key(runtime, &mut app, KeyCode::Char('e'))?;
             for c in "0.35".chars() {
@@ -1598,7 +1607,7 @@ fn model_preferences_review_reread_and_reach_the_normal_request_consumer() {
             settings_key(runtime, &mut app, KeyCode::Enter)?;
             let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
             assert!(
-                saved.contains("Saved and verified for the next request."),
+                saved.contains("Saved and verified. Inference: next request."),
                 "{saved}"
             );
             settings_key(runtime, &mut app, KeyCode::Down)?;
@@ -2658,4 +2667,190 @@ fn mcp_runtime_lost_publication_holds_generation_and_joins_quit() {
         assert_eq!(transport["reader_retired"], true);
         eprintln!("MCP lost {phase} publication evidence: {}", data.display());
     }
+}
+
+#[test]
+#[ignore = "all model preference types through an actual registered child with controlled llama boundaries"]
+fn full_model_preferences_keyboard_preserves_draft_pending_load_and_actual_request() {
+    let (runtime, data) = launch("model_preferences_full_runtime.py");
+    let values = [
+        ("temperature", "0.42"),
+        ("top_p", "0.81"),
+        ("max_tokens", "423"),
+        ("top_k", "41"),
+        ("min_p", "0.06"),
+        ("repeat_penalty", "1.12"),
+        ("presence_penalty", "-0.4"),
+        ("frequency_penalty", "0.25"),
+        ("stop", "END,STOP"),
+        ("reasoning_effort", "off"),
+        ("enable_thinking", "false"),
+        (
+            "json_schema",
+            r#"{"type":"object","properties":{"ok":{"type":"boolean"}}}"#,
+        ),
+        ("ctx", "4096"),
+        ("ngl", "-1"),
+        ("threads", "8"),
+        ("batch", "512"),
+        ("ubatch", "128"),
+        ("parallel", "2"),
+        ("flash_attn", "auto"),
+        ("cache_k", "q8_0"),
+        ("cache_v", "f16"),
+        ("kv_offload", "false"),
+        ("kv_unified", "true"),
+        ("mlock", "false"),
+        ("mmap", "true"),
+        ("context_shift", "false"),
+        ("seed", "-1"),
+        ("rope_base", "10000"),
+        ("rope_scale", "1.5"),
+        ("spec_type", "none"),
+        ("draft_model", "later-draft.gguf"),
+        ("draft_max", "4"),
+        ("draft_min", "0"),
+        ("draft_p_min", "0.4"),
+        ("mmproj", "none"),
+        ("chat_template_file", "template.jinja"),
+    ];
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("llamacpp".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve exact model preference draft \u{96ea}.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selected = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('p'))?;
+            for (index, (field, text)) in values.iter().enumerate() {
+                if *field == "reasoning_effort" {
+                    let view = settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+                    assert!(view.contains("execution-authority"), "{view}");
+                    settings_key(runtime, &mut app, KeyCode::Down)?;
+                    continue;
+                }
+                settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+                for c in text.chars() {
+                    settings_key(runtime, &mut app, KeyCode::Char(c))?;
+                }
+                let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(review.contains("Enter save"), "{field}: {review}");
+                if index >= 12 {
+                    assert!(
+                        review.contains("Running settings remain unchanged"),
+                        "{field}: {review}"
+                    );
+                }
+                let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(saved.contains("Saved and verified."), "{field}: {saved}");
+                if index + 1 < values.len() {
+                    settings_key(runtime, &mut app, KeyCode::Down)?;
+                }
+            }
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(
+                app.composer.text(),
+                "Preserve exact model preference draft \u{96ea}."
+            );
+            assert_eq!(app.composer.before_cursor(), selected);
+            app.submit();
+            runtime.submit(
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .take_submission()
+                    .expect("explicit turn"),
+            )?;
+            observe(runtime, &mut app, |e| matches!(e, Observation::Complete))?;
+            Ok(())
+        })
+        .unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"].as_array().unwrap();
+    let reviews = commands
+        .iter()
+        .filter(|c| c["type"] == "gui.models.native_preferences_review")
+        .collect::<Vec<_>>();
+    assert_eq!(reviews.len(), 35);
+    for (review, (field, _)) in reviews.iter().zip(
+        values
+            .into_iter()
+            .filter(|(field, _)| *field != "reasoning_effort"),
+    ) {
+        assert_eq!(review["field"], field);
+    }
+    let reads = report["wire"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| {
+            (row["result"]["kind"] == "model_preferences_saved")
+                .then_some(&row["result"]["preferences"])
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 35);
+    let final_state = reads.last().unwrap();
+    assert_eq!(
+        final_state["raw"]["load"]["active"],
+        json!({"future-load":{"keep":true}})
+    );
+    assert_eq!(final_state["raw"]["load"]["saved"]["ctx"], 4096);
+    assert_eq!(final_state["raw"]["load"]["saved"]["mmproj"], "none");
+    assert_eq!(final_state["reported_loaded"], true);
+    assert_eq!(final_state["context_length"], 8192);
+    let requests = report["requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request["temperature"], json!(0.42));
+    assert_eq!(request["max_tokens"], 423);
+    assert_eq!(request["stop"], json!(["END", "STOP"]));
+    assert_eq!(request["extra_body"]["top_k"], 41);
+    assert_eq!(request["extra_body"]["reasoning_effort"], Value::Null);
+    assert_eq!(
+        request["extra_body"]["chat_template_kwargs"]["enable_thinking"],
+        false
+    );
+    assert_eq!(
+        request["response_format"]["json_schema"]["schema"]["type"],
+        "object"
+    );
+    assert_eq!(
+        report["initial_documents"]["global"],
+        report["final_documents"]["global"]
+    );
+    assert_eq!(
+        report["initial_documents"]["agent"],
+        report["final_documents"]["agent"]
+    );
+    let document: Value = serde_json::from_str(
+        report["final_documents"]["conversation"]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        document["execution"]["llama_load_settings"]["unselected"]["ctx"],
+        8192
+    );
+    assert_eq!(
+        document["execution"]["model_infer_overrides"]["unselected"]["top_k"],
+        99
+    );
+    assert_eq!(report["reader_retired"], true);
+    assert!(
+        report["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["finished"] == true)
+    );
+    assert!(report["denied"].as_array().unwrap().is_empty());
+    assert_eq!(
+        report["shutdown"]["result"]["work_shutdown"]["worker_settled"],
+        true
+    );
+    eprintln!("Full model preferences child evidence: {}", data.display());
 }

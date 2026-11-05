@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Full current-model preferences - November 5, 2026
+
+F10 current-model preferences now cover every inference and load field of the source `/modelcfg` panel (vocabulary derived from `model_switch._INFER_FIELDS`/`_LOAD_FIELDS` plus thinking and JSON schema, gated per backend and llama.cpp configured flags), not only temperature, Top P and max tokens. Edits keep the conversation-scoped review/save/readback path; load-time fields report that they apply at the next load. A model-preference publication now holds admission until its exact saved readback. Built by the Codex seat in an isolated preview and integrated by 3-way merge onto 1a058670 (three additive conflict hunks with the MCP lane).
+
+Verification: 1,031 ordinary Rust tests passed with 212 ignored; fmt and strict Clippy pass. context_process child scenarios 26/26 (95.88 s, including the new keyboard walk over all preference types with a controlled llama boundary, preserved draft, pending load and the actual next request) and runtime_controls_process 14/14. 207 Python tests passed (model preferences/lifecycle/controls, MCP lifecycle, background input, runtime controls, tool selection); new and changed files are Ruff-clean. No model was loaded.
+
 ## Reviewed MCP runtime lifecycle - November 5, 2026
 
 F10 can now enable, disable and reload MCP for the current host conversation, and connect, disconnect or reconnect one reviewed server declaration (`gui.mcp.native_lifecycle_{snapshot,review,apply,readback}`, negotiated as `mcp_lifecycle_version:1` alongside runtime controls; launch adds `--mcp-lifecycle-version 1`). Startup and Work capture still require MCP off with no live transports; only a later published lifecycle generation may carry `mcp_enabled:true`. Enable saves only the conversation preference and opens no server; Disable saves false only after every owned transport's cleanup is proven, and a failed cleanup stays retained for retry. Tools and Authority are never widened; Codex stays refused by its canonical gate and Claude's model inventory stays fixed. Targets show only an executable basename or scheme/host/port.

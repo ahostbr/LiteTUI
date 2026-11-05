@@ -2673,6 +2673,9 @@ def prepare_publication(app, cmd, result):
         from litetui import native_model_lifecycle
         ticket = native_model_lifecycle.prepare_publication(app, cmd, result)
     if ticket is None:
+        from litetui import native_model_preferences
+        ticket = native_model_preferences.prepare_publication(app, cmd, result)
+    if ticket is None:
         from litetui import native_playback
         ticket = native_playback.prepare_publication(app, cmd, result)
     if ticket is None:
@@ -2695,6 +2698,7 @@ def finish_publication(app, ticket):
         native_dictation,
         native_mcp_lifecycle,
         native_model_lifecycle,
+        native_model_preferences,
         native_playback,
     )
     if isinstance(ticket, native_mcp_lifecycle.Publication):
@@ -2704,6 +2708,8 @@ def finish_publication(app, ticket):
         native_dictation.finish_publication(app, ticket)
     elif isinstance(ticket, native_model_lifecycle.Publication):
         native_model_lifecycle.finish_publication(app, ticket)
+    elif isinstance(ticket, native_model_preferences.Publication):
+        native_model_preferences.finish_publication(app, ticket)
     elif isinstance(ticket, native_playback.Publication):
         native_playback.finish_publication(app, ticket)
     elif isinstance(ticket, native_runtime_controls.Publication):

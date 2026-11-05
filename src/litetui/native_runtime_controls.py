@@ -346,6 +346,8 @@ def mutation_hold(app):
     from litetui import native_mcp_lifecycle
     if native_mcp_lifecycle.blocking(app):
         return "A reviewed MCP operation owns admission until its independent readback"
+    if getattr(app, "_native_model_preferences_hold", False):
+        return "Model preferences own admission until their exact saved readback publication"
     if getattr(app, "_native_claude_queue_publication", None) is not None:
         return "Native queued input owns its exact confirmation publication"
     if getattr(app, "_native_model_lifecycle_hold", False):
@@ -1148,6 +1150,9 @@ def operation_allowed(app, cmd):
             raise ValueError("Use the reviewed runtime control for this setting")
     if why := mutation_hold(app):
         if native_mcp_lifecycle.readback_allowed(app, cmd):
+            return
+        from litetui import native_model_preferences
+        if native_model_preferences.readback_allowed(app, cmd):
             return
         from litetui import native_model_lifecycle
         if native_model_lifecycle.readback_allowed(app, cmd):
