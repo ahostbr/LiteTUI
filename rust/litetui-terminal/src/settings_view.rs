@@ -384,7 +384,10 @@ impl View {
         self.snapshot = None;
     }
     pub fn accepts_paste(&self) -> bool {
-        self.mcp.accepts_paste() || self.editor.editing() || self.compaction.accepts_paste() || self.connection.accepts_paste()
+        self.mcp.accepts_paste()
+            || self.editor.editing()
+            || self.compaction.accepts_paste()
+            || self.connection.accepts_paste()
     }
     pub fn paste(&mut self, text: &str) {
         if self.mcp.open {
