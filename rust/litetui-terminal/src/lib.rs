@@ -79,6 +79,7 @@ pub mod image;
 pub mod inspection;
 pub mod mcp_config;
 pub mod transcript_selection;
+pub mod voice_preferences;
 
 pub mod work_lifecycle;
 

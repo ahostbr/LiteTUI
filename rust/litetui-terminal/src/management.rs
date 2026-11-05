@@ -401,12 +401,67 @@ struct SavedHistoryPending {
     position: crate::history::PageRequest,
     prior: Option<crate::history::Page>,
 }
+enum PreferencesRequest {
+    Mcp(Box<crate::mcp_config::Request>),
+    Voice(Box<crate::voice_preferences::Request>),
+}
+enum PreferencesReply {
+    Mcp(Box<crate::mcp_config::Update>),
+    Voice(Box<crate::voice_preferences::Update>),
+    Next(PreferencesRequest),
+}
+impl PreferencesRequest {
+    fn operations(&self) -> &[&str] {
+        match self {
+            Self::Mcp(_) => &crate::mcp_config::OPERATIONS,
+            Self::Voice(_) => &crate::voice_preferences::OPERATIONS,
+        }
+    }
+    fn is_apply(&self) -> bool {
+        match self {
+            Self::Mcp(r) => matches!(**r, crate::mcp_config::Request::Apply(_, _)),
+            Self::Voice(r) => matches!(**r, crate::voice_preferences::Request::Apply(_)),
+        }
+    }
+    fn command(&self, id: &crate::work_protocol::Identity, instance: &str) -> io::Result<Value> {
+        match self {
+            Self::Mcp(r) => r.command(id, instance),
+            Self::Voice(r) => r.command(id, instance),
+        }
+    }
+    fn rejected(&self) -> fn(String) -> crate::settings_view::Update {
+        match self {
+            Self::Mcp(_) => |reason| crate::settings_view::Update::Mcp(Err(reason)),
+            Self::Voice(_) => |reason| crate::settings_view::Update::Voice(Err(reason)),
+        }
+    }
+    fn response(
+        self,
+        v: &Value,
+        id: &crate::work_protocol::Identity,
+        instance: &str,
+        command_id: &str,
+    ) -> io::Result<PreferencesReply> {
+        Ok(match self {
+            Self::Mcp(r) => match r.response(v, id, instance, command_id)? {
+                crate::mcp_config::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::Mcp(Box::new(next)))
+                }
+                crate::mcp_config::Reply::Update(update) => PreferencesReply::Mcp(Box::new(update)),
+            },
+            Self::Voice(r) => match r.response(v, id, instance, command_id)? {
+                crate::voice_preferences::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::Voice(Box::new(next)))
+                }
+                crate::voice_preferences::Reply::Update(update) => {
+                    PreferencesReply::Voice(Box::new(update))
+                }
+            },
+        })
+    }
+}
 enum SettingsRead {
-    Mcp(
-        crate::work_protocol::Identity,
-        String,
-        Box<crate::mcp_config::Request>,
-    ),
+    Preferences(crate::work_protocol::Identity, String, PreferencesRequest),
     Values,
     RuntimeStatus {
         identity: crate::work_protocol::Identity,
@@ -2790,22 +2845,27 @@ impl Management {
                 "Runtime omitted owned settings authority; update Python source",
             ));
         }
-        let (mut command, read) = if let crate::settings_view::Intent::Mcp(request) = intent {
-            if crate::mcp_config::OPERATIONS
+        let (request, runtime_status) = match intent {
+            crate::settings_view::Intent::Mcp(r) => (Some(PreferencesRequest::Mcp(r)), false),
+            crate::settings_view::Intent::Voice(r) => (Some(PreferencesRequest::Voice(r)), false),
+            crate::settings_view::Intent::RuntimeStatus => (None, true),
+            _ => (None, false),
+        };
+        let (mut command, read) = if let Some(request) = request {
+            if request
+                .operations()
                 .iter()
                 .any(|name| !self.operations.iter().any(|op| op == name))
             {
-                return Err(fail(
-                    "The runtime does not support reviewed MCP declarations",
-                ));
+                return Err(fail("Update the runtime to use these settings controls"));
             }
             let identity = self.work_identity()?;
             let instance = self.context_instance()?.to_owned();
             (
                 request.command(&identity, &instance)?,
-                SettingsRead::Mcp(identity, instance, request),
+                SettingsRead::Preferences(identity, instance, request),
             )
-        } else if matches!(intent, crate::settings_view::Intent::RuntimeStatus) {
+        } else if runtime_status {
             if !self
                 .operations
                 .iter()
@@ -2825,9 +2885,12 @@ impl Management {
                 SettingsRead::Values,
             )
         };
-        let id = if matches!(&read, SettingsRead::Mcp(_,_,request) if matches!(**request, crate::mcp_config::Request::Apply(_, _))) {
+        let id = if matches!(&read, SettingsRead::Preferences(_,_,request) if request.is_apply()) {
             self.wire.register_request()
-        } else { self.wire.register_read() }.map_err(|_| fail("Cannot reserve settings request"))?;
+        } else {
+            self.wire.register_read()
+        }
+        .map_err(|_| fail("Cannot reserve settings request"))?;
         command["id"] = id.to_value();
         self.settings = Some((id, read));
         Ok(command)
@@ -2835,11 +2898,12 @@ impl Management {
     fn settings_response(&mut self, frame: Value) -> io::Result<Step> {
         let (_, read) = self.settings.take().expect("matched settings read");
         self.ensure_drained()?;
-        if let SettingsRead::Mcp(identity, instance, request) = read {
+        if let SettingsRead::Preferences(identity, instance, request) = read {
+            let reject = request.rejected();
             let result = if frame["ok"] != true {
                 Err(text(&frame, "error", 4096)?.to_string())
             } else if identity != self.work_identity()? || instance != self.context_instance()? {
-                Err("MCP declaration owner changed. Refresh to inspect it.".into())
+                Err("Settings owner changed. Refresh to inspect it.".into())
             } else {
                 request
                     .response(
@@ -2851,22 +2915,24 @@ impl Management {
                     .map_err(|error| error.to_string())
             };
             let update = match result {
-                Ok(crate::mcp_config::Reply::Next(next)) => {
+                Ok(PreferencesReply::Next(next)) => {
                     let mut value = next.command(&identity, &instance)?;
                     let id = self
                         .wire
                         .register_read()
-                        .map_err(|_| fail("Cannot reserve MCP declaration readback"))?;
+                        .map_err(|_| fail("Cannot reserve settings readback"))?;
                     value["id"] = id.to_value();
-                    self.settings =
-                        Some((id, SettingsRead::Mcp(identity, instance, Box::new(next))));
+                    self.settings = Some((id, SettingsRead::Preferences(identity, instance, next)));
                     return Ok(Step::Write(value));
                 }
-                Ok(crate::mcp_config::Reply::Update(update)) => Ok(Box::new(update)),
-                Err(reason) => Err(reason),
+                Ok(PreferencesReply::Mcp(update)) => crate::settings_view::Update::Mcp(Ok(update)),
+                Ok(PreferencesReply::Voice(update)) => {
+                    crate::settings_view::Update::Voice(Ok(update))
+                }
+                Err(reason) => reject(reason),
             };
             return Ok(Step::Settings {
-                update: crate::settings_view::Update::Mcp(update),
+                update,
                 policy: None,
             });
         }

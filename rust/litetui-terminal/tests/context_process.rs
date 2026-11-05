@@ -346,6 +346,92 @@ fn settings_key(runtime: &mut Interactive, app: &mut Demo, key: KeyCode) -> io::
 }
 
 #[test]
+#[ignore = "compiled Settings Voice preferences against registered source RPC"]
+fn voice_preferences_review_and_reread_device_values_without_audio() {
+    let (runtime, data) = launch("voice_preferences_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve the draft and selection.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selected = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            let opened = settings_key(runtime, &mut app, KeyCode::Char('v'))?;
+            assert!(
+                opened.contains("Voice preferences on this device")
+                    && opened.contains("Microphone:"),
+                "{opened}"
+            );
+            let path = data.join("settings.json");
+            let mut expected = json_file(&path);
+            for (index, (name, value, label)) in [
+                ("stt_model", json!("small.en"), "Dictation model"),
+                ("tts_engine", json!("edge"), "Fallback speech engine"),
+                (
+                    "tts_litesuite_first",
+                    json!(false),
+                    "Prefer LiteSuite speech",
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if index > 0 {
+                    settings_key(runtime, &mut app, KeyCode::Down)?;
+                }
+                settings_key(runtime, &mut app, KeyCode::Right)?;
+                let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(review.contains(&format!("Save {label}?")), "{review}");
+                assert_eq!(json_file(&path), expected);
+                if index == 0 {
+                    settings_key(runtime, &mut app, KeyCode::Esc)?;
+                    assert_eq!(json_file(&path), expected);
+                    settings_key(runtime, &mut app, KeyCode::Right)?;
+                    settings_key(runtime, &mut app, KeyCode::Enter)?;
+                }
+                let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(saved.contains("Saved and verified on disk."), "{saved}");
+                expected[name] = value;
+                assert_eq!(json_file(&path), expected);
+            }
+            settings_key(runtime, &mut app, KeyCode::F(5))?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Preserve the draft and selection.");
+            assert_eq!(app.composer.before_cursor(), selected);
+            Ok(())
+        })
+        .unwrap_or_else(|err| panic!("{}: {err}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["type"].as_str()?.strip_prefix("gui.voice.native_"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        [
+            "preferences",
+            "review",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "preferences"
+        ]
+    );
+    assert_eq!(json_file(&data.join("voice-guards.json")), json!([]));
+}
+
+#[test]
 #[ignore = "compiled Settings MCP declaration review; dependency Python required"]
 fn shared_mcp_declaration_requires_review_and_fresh_disk_readback() {
     let (runtime, data) = launch("mcp_declaration_runtime.py");

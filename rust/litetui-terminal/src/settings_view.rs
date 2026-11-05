@@ -34,6 +34,7 @@ pub struct Snapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     Mcp(Box<crate::mcp_config::Request>),
+    Voice(Box<crate::voice_preferences::Request>),
     RuntimeStatus,
     Read,
     Editor(crate::settings_editor::Intent),
@@ -42,6 +43,7 @@ pub enum Intent {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
     Mcp(Result<Box<crate::mcp_config::Update>, String>),
+    Voice(Result<Box<crate::voice_preferences::Update>, String>),
     RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
     Rejected(String),
@@ -197,6 +199,7 @@ fn display(value: &str) -> String {
 pub struct View {
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
+    voice: crate::voice_preferences::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
     pub open: bool,
@@ -228,7 +231,7 @@ impl View {
         self.runtime_status.is_open()
     }
     pub fn subpanel_open(&self) -> bool {
-        self.runtime_status_open() || self.mcp.open
+        self.runtime_status_open() || self.mcp.open || self.voice.open
     }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting || self.editor.owns_input() || self.compaction.owns_input()
@@ -242,6 +245,7 @@ impl View {
     }
     pub fn hide(&mut self) {
         self.mcp.hide();
+        self.voice.hide();
         self.runtime_status.hide();
         self.editor.hide();
         self.compaction.hide();
@@ -252,6 +256,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.mcp = Default::default();
+        self.voice = Default::default();
         self.runtime_status.close();
         self.editor.close();
         self.compaction.close();
@@ -313,6 +318,7 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
+            Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::RuntimeStatus(status) => {
                 if self.runtime_status.is_open() {
@@ -356,6 +362,13 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.voice.open {
+            if let Some(request) = self.voice.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Voice(Box::new(request)));
+            }
+            return;
+        }
         if self.mcp.open {
             if let Some(request) = self.mcp.key(key) {
                 self.waiting = true;
@@ -396,6 +409,14 @@ impl View {
             KeyCode::End => self.select(usize::MAX),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(4),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(4).min(self.max_scroll),
+            KeyCode::Char('v') if key.kind == KeyEventKind::Press => {
+                self.voice.open();
+                self.waiting = true;
+                self.intent = Some(Intent::Voice(Box::new(
+                    crate::voice_preferences::Request::List,
+                )));
+                self.hide();
+            }
             KeyCode::Char('m') if key.kind == KeyEventKind::Press => {
                 self.mcp.open();
                 self.waiting = true;
@@ -429,7 +450,7 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.mcp.open {
+        if self.mcp.open || self.voice.open {
             return;
         }
         if self.runtime_status.is_open() {
@@ -484,6 +505,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.voice.open {
+            self.voice.draw(frame, area, theme);
+            return;
+        }
         if self.mcp.open {
             self.mcp.draw(frame, area, theme);
             return;
@@ -649,7 +674,7 @@ impl View {
         );
         frame.render_widget(
             Paragraph::new(
-                "M MCP declarations · I status · E edit · C compaction · R refresh · Esc close",
+                "V voice · M MCP declarations · I status · E edit · C compaction · R refresh · Esc close",
             ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );

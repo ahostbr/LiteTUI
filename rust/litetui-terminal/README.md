@@ -92,6 +92,8 @@ To edit `memory.md`, `soul.md` or `handoff.md`, select the document in Context a
 
 In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, and cached MCP server information. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
 
+Press **V** in F10 to inspect voice and dictation preferences. Use the arrows to choose an editable value and Enter to review the change. After saving, the panel rereads the preference. Opening the panel leaves audio devices idle.
+
 Press M in F10 to inspect MCP server declarations in the shared LiteTUI data folder. Use the arrows to select a declaration. E reviews enabling or disabling an editable entry in `.mcp.json`. Enter saves the reviewed change and rereads the file. A matching `mcp.json` entry takes precedence. The setting takes effect at a later explicit MCP startup.
 
 In F6 Saved History, press I to preview embedded still images on the loaded page. Left and Right switch images. Escape returns to the same history page. The source reads pixels from the selected saved message. External image links stay unopened.

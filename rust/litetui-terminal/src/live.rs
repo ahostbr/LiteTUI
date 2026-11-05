@@ -2514,6 +2514,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         execution_stop_deadline = Some(Instant::now() + Duration::from_secs(20));
                     }
                     Input::Settings(intent) => {
+                        let voice = matches!(intent, crate::settings_view::Intent::Voice(_));
                         let mcp = matches!(intent, crate::settings_view::Intent::Mcp(_));
                         let runtime_status =
                             matches!(intent, crate::settings_view::Intent::RuntimeStatus);
@@ -2543,7 +2544,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => frontend.observe(Observation::Settings(if mcp {
+                            Err(error) => frontend.observe(Observation::Settings(if voice {
+                                crate::settings_view::Update::Voice(Err(error.to_string()))
+                            } else if mcp {
                                 crate::settings_view::Update::Mcp(Err(error.to_string()))
                             } else if runtime_status {
                                 crate::settings_view::Update::RuntimeStatus(Err(error.to_string()))
