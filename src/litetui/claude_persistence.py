@@ -148,7 +148,7 @@ class ClaudeLedger:
     # ---- writes ----------------------------------------------------------
 
     def select_segment(self, workspace: str, new: bool = False,
-                       seed: str | None = None) -> dict[str, Any]:
+                       seed: str | None = None, *, segment_id: str | None = None) -> dict[str, Any]:
         """Resume the selected segment for `workspace`, or start a fresh one.
 
         A DIFFERENT WORKSPACE GETS A DIFFERENT SEGMENT, even with `new=False`.
@@ -161,10 +161,13 @@ class ClaudeLedger:
         every resume. Saved with the segment, so it survives a restart.
         """
         current = self._data["segments"].get(self._data["selected_segment"] or "")
+        if segment_id is not None and (not new or not isinstance(segment_id, str)
+                or not re.fullmatch(r"[0-9a-f]{32}", segment_id) or segment_id in self._data["segments"]):
+            raise LedgerError("Reviewed Claude segment identity is invalid or already used")
         if not new and current is not None and current["workspace"] == workspace:
             return deepcopy(current)
         segment: dict[str, Any] = {
-            "id": uuid.uuid4().hex,
+            "id": segment_id or uuid.uuid4().hex,
             "session_id": None,
             "workspace": workspace,
             "created_at": time.time(),
@@ -273,6 +276,7 @@ class ClaudeLedger:
         profile: str,
         source: str,
         operation_id: str | None = None,
+        *, delivery_id: str | None = None,
     ) -> dict[str, Any]:
         """Durably record an accepted input BEFORE anything is sent.
 
@@ -292,9 +296,14 @@ class ClaudeLedger:
                             f"segment {owner['id']}; a pending entry cannot "
                             f"move to segment {segment_id}"
                         )
+                    if delivery_id is not None and existing["id"] != delivery_id:
+                        raise LedgerError("The operation belongs to another Claude delivery")
                     return deepcopy(existing)
+        if delivery_id is not None and (not isinstance(delivery_id, str) or not re.fullmatch(r"[0-9a-f]{32}", delivery_id)
+                or self._find_entry(delivery_id)):
+            raise LedgerError("Reviewed Claude delivery identity is invalid or already used")
         entry: dict[str, Any] = {
-            "id": uuid.uuid4().hex,
+            "id": delivery_id or uuid.uuid4().hex,
             "segment_id": segment_id,
             "state": PREPARED,
             "content": content,

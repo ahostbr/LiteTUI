@@ -13,6 +13,7 @@ from dataclasses import asdict, replace
 
 from litetui import (
     backend_catalog,
+    claude_rewind,
     codex_rewind,
     conversation_transition,
     hook_host,
@@ -128,10 +129,14 @@ def _eligibility(app, message, prefix):
             if thread != codex_rewind.Binding.capture(app).thread_id:
                 raise ValueError("The saved row belongs to another native thread")
         elif getattr(app.backend, "owns_native_turns", False):
-            raise ValueError("This provider owns native context; verified rewind is not implemented")
+            if app.backend.name != "claude" or not message.get("claude_delivery"):
+                raise ValueError("This saved user row lacks a verifiable native Claude delivery")
+            claude_rewind.Binding.capture(app, rewrite=True)
         if app.store.pending or not app.store.owned:
             raise ValueError("Edit/Retry requires an already materialized owned conversation")
         allowed = {"role", "content", "provider_metadata", "codex_delivery"} if native else {"role", "content"}
+        if getattr(app.backend, "owns_native_turns", False):
+            allowed.add("claude_delivery")
         if not set(message) <= allowed:
             raise ValueError("Edit/Retry currently supports plain user text without delivery or provider metadata")
         if reason := conversation_transition._eligibility(app):
@@ -223,7 +228,10 @@ def validate(app, cmd, *, rewind=None):
     if action == "retry" and "text" in cmd:
         raise ValueError("Retry cannot override the original user text")
     text = _text(app, cmd.get("text") if action == "edit" else current["original_text"])
-    messages = json.loads(captured.history)[:current["message_index"]] + [{"role": "user", "content": text}]
+    saved = json.loads(captured.history)
+    fork = claude_rewind.Fork.review(app, saved, current["message_index"]) if getattr(app.backend, "owns_native_turns", False) else None
+    candidate = fork.candidate(text) if fork else {"role": "user", "content": text}
+    messages = saved[:current["message_index"]] + [candidate]
     value = {"kind": "conversation_rewrite_review", **{key: current[key] for key in (*COMMON, *SELECTION, "snapshot",
         "prefix_messages", "prefix_context_sha256", "discarded_messages")},
         "review": secrets.token_hex(32), "action_id": str(uuid.uuid4()), "action": action, "text": text,
@@ -237,6 +245,10 @@ def validate(app, cmd, *, rewind=None):
         value["effects"]["provider_rewind"] = True
         value["native_rewind"] = rewind.plan
         review = codex_rewind.Review(**{**vars(captured), "wire": projection.encoded(value)}, rewind=rewind)
+    elif fork is not None:
+        value["effects"]["provider_fork"] = True
+        value["native_fork"] = fork.plan
+        review = claude_rewind.Review(**{**vars(captured), "wire": projection.encoded(value)}, fork=fork)
     else:
         review = replace(captured, wire=projection.encoded(value))
     _snapshot_record(app, review, messages)
@@ -272,6 +284,8 @@ async def apply(app, cmd):
     app._conversation_rewrite_review = None
     wire = json.loads(review.wire)
     fields = (*REVIEW_FIELDS, "effects", "native_rewind") if isinstance(review, codex_rewind.Review) else REVIEW_FIELDS
+    if isinstance(review, claude_rewind.Review):
+        fields = (*REVIEW_FIELDS, "effects", "native_fork")
     if not _echo(cmd, wire, fields):
         raise ValueError("Apply must exactly echo its reviewed Edit/Retry action")
     attempt = Attempt(review, operation, _task())
@@ -295,7 +309,8 @@ async def apply(app, cmd):
 
             def persist(message):
                 _stable(app, review, original=True, admitted=True)
-                if message != {"role": "user", "content": wire["text"]}:
+                expected = review.fork.candidate(wire["text"]) if isinstance(review, claude_rewind.Review) else {"role": "user", "content": wire["text"]}
+                if message != expected:
                     raise ValueError("Admission changed the reviewed user message")
                 messages = json.loads(review.history)[:wire["message_index"]] + [message]
                 if projection.digest(projection.encoded(messages)) != wire["prepared_context_sha256"]:
@@ -318,18 +333,21 @@ async def apply(app, cmd):
 
             item = {"content": wire["text"], "text": wire["text"], "source": "rpc",
                     "operation_id": operation, "tool_profile": review.profile}
-            async def revert():
-                await review.rewind.revert(app, attempt)
-                before_accept()
+            async def prepare_provider():
+                if isinstance(review, claude_rewind.Review):
+                    await review.fork.prepare(app, attempt, item, before_accept)
+                else:
+                    await review.rewind.revert(app, attempt)
+                    before_accept()
 
             accepted = await hook_host.admit_prompt_origin(app, item, on_refused=reasons.append,
                 before_accept=before_accept, persist_user=persist, allow_prompt=False,
-                **({"before_persist": revert} if isinstance(review, codex_rewind.Review) else {}))
+                **({"before_persist": prepare_provider} if isinstance(review, (codex_rewind.Review, claude_rewind.Review)) else {}))
             if getattr(app, "_conversation_transition_cleanup_error", None):
                 raise RuntimeError("Prompt hook cleanup is unproven")
             if accepted is None:
                 if attempt.mutated:
-                    raise RuntimeError("Codex rewind was dispatched but the replacement was refused. Reopen to inspect native history.")
+                    raise RuntimeError("Provider history preparation ran but the replacement was refused. Reopen to inspect native history.")
                 attempt.reason = reasons[-1] if reasons else "Prompt was not admitted"
                 _refusal_checkpoint(app, attempt)
                 return _receipt(app, cmd, attempt, "refused", attempt.reason)
@@ -348,6 +366,8 @@ async def apply(app, cmd):
             return _receipt(app, cmd, attempt, "accepted")
     except BaseException as exc:  # noqa: BLE001 - partial persistence is never rollback
         reason = (str(exc) or type(exc).__name__).encode("utf-8")[:4096].decode("utf-8", "ignore")
+        if attempt.mutated and isinstance(review, claude_rewind.Review):
+            reason = f"Claude Edit/Retry stopped while {review.fork.stage}: {reason}".encode("utf-8")[:4096].decode("utf-8", "ignore")
         failed = attempt.mutated or bool(getattr(app, "_conversation_transition_cleanup_error", None))
         if not failed:
             try:
@@ -409,6 +429,17 @@ async def settled(app, cmd):
                     raise
             else:
                 result["native_rewind"] = None
+        if isinstance(attempt.review, claude_rewind.Review):
+            result["native_fork"] = None
+            if attempt.outcome == "accepted":
+                try:
+                    if len(attempt.segments or ()) != 1:
+                        raise ValueError("Claude Edit/Retry requires one native replacement execution")
+                    result["native_fork"] = attempt.review.fork.settled(app,attempt,captured.messages,wire["message_index"])
+                except Exception:
+                    attempt.outcome = "failed"
+                    app._conversation_rewrite_error = CLOSE_REQUIRED
+                    raise
         native_history._wire(cmd, result)
         attempt.pending = False
         return result

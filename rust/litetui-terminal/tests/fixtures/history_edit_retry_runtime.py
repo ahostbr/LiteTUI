@@ -23,6 +23,10 @@ assert spec and spec.loader
 history: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(history)
 case = os.environ.get("RUST_REWRITE_CASE", "edit")
+if case.startswith("claude-"):
+    spec = importlib.util.spec_from_file_location("_claude_fork_fixture", Path(__file__).with_name("claude_fork_fixture.py"))
+    claude_fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(claude_fixture)
 driver = os.environ.get("RUST_REWRITE_DRIVER", "self")
 SNAPSHOT = "gui.conversations.native_rewrite_snapshot"
 VALIDATE = "gui.conversations.native_rewrite_validate"
@@ -117,6 +121,8 @@ def seed(app):
         {"role": "user", "content": "DISCARDED LATER USER"},
         {"role": "assistant", "content": "DISCARDED FINAL ANSWER"},
     ]
+    if case.startswith("claude-"):
+        claude_fixture.seed(app,case,history.root)
     if case.startswith("codex-"):
         seed_codex(app)
     if case == "orphan-tool":
@@ -505,8 +511,8 @@ async def serve(app):
         if receipt.get("turn") == "accepted":
             await until(lambda: any(row.get("type") == "turn_end" for row in history.boundary.records), 20)
         if receipt.get("turn") in {"accepted", "refused"}:
-            settled = await call(SETTLED, check=case != "codex-settled-drift", **common, action_id=receipt["action_id"], operation_id=response["id"])
-            if case == "codex-settled-drift":
+            settled = await call(SETTLED, check=case not in {"codex-settled-drift","claude-settled-drift"}, **common, action_id=receipt["action_id"], operation_id=response["id"])
+            if case in {"codex-settled-drift","claude-settled-drift"}:
                 assert not settled["ok"]
                 history.report["settlement_error"] = settled["error"]
                 return
@@ -543,7 +549,7 @@ async def serve(app):
             history.report["refused_at"] = "eligibility"
             assert snapshot["actions"]["edit"]["reason"]
             return
-        action = "retry" if case in {"retry", "codex-retry"} else "edit"
+        action = "retry" if case in {"retry", "codex-retry", "claude-retry"} else "edit"
         text = (TARGET if action == "retry" else "  雪🛰️e\u0301\r\nExact trailing spaces  " if case == "unicode"
                 else "x" * 65536 if case == "text-boundary" else "x" * 65537 if case == "text-over-limit"
                 else "/new" if case == "slash" else "missing.png" if case == "image-path"
@@ -560,11 +566,17 @@ async def serve(app):
         history.report["review"] = review
         assert review["text"] == text
         expected = [*history.report["prefix"], {"role": "user", "content": text}]
+        if "native_fork" in review:
+            ids=review["native_fork"]["fork"]
+            expected[-1]["claude_delivery"]={"id":ids["delivery"],"segment_id":ids["new_segment"],"state":"prepared"}
         assert review["prepared_context_sha256"] == history.sha(history.canonical(expected))
         history.report["candidate"] = expected
         payload = {key: value for key, value in review.items() if key not in {"kind", "effects"}}
-        if "native_rewind" in review:
+        if "native_rewind" in review or "native_fork" in review:
             payload["effects"] = review["effects"]
+        if case == "claude-drift":
+            with Path(claude_fixture.report["path"]).open("ab") as out:
+                out.write(b'{"type":"custom-title"}\n')
         if case == "codex-drift":
             native_turns[-1]["items"][-1]["text"] = "Native history changed"
         if case == "stale-history":
@@ -687,7 +699,7 @@ async def serve(app):
             blocked = await call(history.SNAPSHOT, check=False, **history.common(app))
             history.report["blocked_after_failure"] = blocked
             assert not blocked["ok"]
-        if case in {"replayed-apply", "codex-edit", "codex-retry", "codex-partial", "codex-settled-drift"}:
+        if case in {"replayed-apply", "codex-edit", "codex-retry", "codex-partial", "codex-settled-drift","claude-edit","claude-retry","claude-partial","claude-settled-drift"}:
             before = stable(app)
             replay = await call(APPLY, check=False, **payload)
             history.report["replay"] = replay
@@ -712,6 +724,9 @@ async def serve(app):
                 await asyncio.wait_for(history.boundary.ready.wait(), 15)
                 await history.settle(app)
                 seed(app)
+                if case.startswith("claude-"):
+                    await claude_fixture.start(app)
+                    history.report["claude_fork"] = claude_fixture.report
                 history.report["sdk_calls"] = []
                 history.report["all_sdk_requests"] = []
                 seeded = True
@@ -828,6 +843,11 @@ if case in AFTERCARE or QUESTION:
             "litetui.plugins.self_compact", "litetui.plugins.convo")
             + (("litetui.plugins.ask_user_question",) if QUESTION else ()), disabled=disabled)
     with patch.object(plugins, "register_plugins", controlled_register):
+        history.main()
+elif case.startswith("claude-"):
+    import claude_agent_sdk
+    from litetui.claude_backend import ClaudeBackend
+    with patch.object(ClaudeBackend,"ensure_running",claude_fixture.metadata), patch.object(claude_agent_sdk,"ClaudeSDKClient",claude_fixture.Client):
         history.main()
 else:
     history.main()

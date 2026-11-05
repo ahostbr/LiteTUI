@@ -220,11 +220,13 @@ impl Management {
             prepared.review.action_id.clone(),
             operation.into(),
         );
-        chain.rewind_thread = prepared
-            .review
-            .native_rewind
-            .as_ref()
-            .map(|plan| plan.thread_id.clone());
+        if let Some(plan) = &prepared.review.native_rewind {
+            if plan.fork() {
+                chain.fork_source = Some(plan.thread_id.clone());
+            } else {
+                chain.rewind_thread = Some(plan.thread_id.clone());
+            }
+        }
         self.rewrite_chain = Some(chain);
         self.rewrite_attempt = Some(Attempt {
             prepared,
@@ -377,11 +379,21 @@ impl Management {
                 text,
             } => {
                 let review = r::Review::parse(value, before.snapshot, action, &text)?;
-                if review.native_rewind.is_some()
-                    != self.runtime_policy().is_some_and(|policy| {
-                        policy.binding.provider == crate::work_lifecycle::Provider::Codex
-                    })
-                {
+                use crate::work_lifecycle::Provider;
+                let reviewed = review
+                    .native_rewind
+                    .as_ref()
+                    .map_or(Provider::Host, |plan| {
+                        if plan.fork() {
+                            Provider::Claude
+                        } else {
+                            Provider::Codex
+                        }
+                    });
+                let active = self
+                    .runtime_policy()
+                    .map_or(Provider::Host, |p| p.binding.provider);
+                if reviewed != active {
                     return Err(fail(
                         "Rewrite review changed the active native provider route",
                     ));
@@ -408,7 +420,8 @@ impl Management {
                     .rewrite_chain
                     .as_ref()
                     .ok_or_else(|| fail("Missing rewrite execution chain"))?;
-                if settled.native_turn != chain.rewind_turn
+                if settled.fork_result != chain.fork_result
+                    || settled.native_turn != chain.rewind_turn
                     || settled.execution_segments != chain.segments
                     || settled.last_execution_id != chain.last_execution
                     || !chain.ended

@@ -57,14 +57,14 @@ class Binding:
     before: dict
 
     @classmethod
-    def capture(cls, app):
+    def capture(cls, app, *, rewrite=False):
         backend = app.backend
         if backend.name != "claude" or not getattr(backend, "owns_native_turns", False):
             raise ValueError("This backend does not own a Claude session")
-        if app.settings.wake_after_compact:
+        if not rewrite and app.settings.wake_after_compact:
             raise ValueError("Turn off Wake after compacting before reviewing a Claude compaction")
         if getattr(app, "_claude_compact_resume", None) is not None:
-            raise ValueError("Finish the pending Claude input or continuation before compacting")
+            raise ValueError("Finish the pending Claude input or continuation before using this history action")
         ledger = getattr(app, "_claude_ledger", None)
         session = backend.session
         if (ledger is None or getattr(app, "_claude_ledger_path", None) != app.convo_dir
@@ -73,7 +73,7 @@ class Binding:
             raise ValueError("Submit a turn on this Claude conversation to establish its live SDK session")
         if (app.tools_enabled or session.options.tools != [] or session.options.mcp_servers != {}
                 or not session.options.strict_mcp_config):
-            raise ValueError("Claude F6 compaction requires a session opened with tools off")
+            raise ValueError("Claude F6 history actions require a session opened with tools off")
         before = _document(app, ledger)
         selected = ledger.selected
         if (not selected or selected["id"] != backend.segment_id or selected["workspace"] != launch_workspace(app)
@@ -83,7 +83,7 @@ class Binding:
                 or session.lifecycle.active_turn is not None or session.lifecycle.failure or session.lifecycle.cleanup_errors
                 or session.effort != effort_for(app) or not session._events.empty() or not session._commands.empty()
                 or any(ledger.pending(key) for key in before["segments"])):
-            raise ValueError("Claude compaction requires the current idle SDK session and its saved segment")
+            raise ValueError("Claude history actions require the current idle SDK session and its saved segment")
         return cls(ledger, session, session._owner, session.lifecycle.generation, selected["id"],
                    session.session_id, selected["workspace"], before)
 
@@ -92,8 +92,8 @@ class Binding:
         return {"kind": "claude", "messages": count, "segment": self.segment, "native_session": self.native_session,
                 "ledger_before": _digest(self.before), "prompt_sha256": hashlib.sha256(request().encode()).hexdigest()}
 
-    def check(self, app):
-        other = Binding.capture(app)
+    def check(self, app, *, rewrite=False):
+        other = Binding.capture(app, rewrite=rewrite)
         if (self.ledger is not other.ledger or self.session is not other.session or self.owner is not other.owner
                 or self.generation != other.generation or self.before != other.before):
             raise ValueError("The reviewed Claude session, lifecycle or segment changed")

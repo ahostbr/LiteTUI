@@ -35,6 +35,9 @@ def launch(tmp_path, case):
             autocompact_enabled=case != "self-compact", autocompact_at_percent=80, wake_after_compact=True)
     if question:
         settings.update(backend=backend, tools_enabled=True)
+    if case.startswith("claude-"):
+        backend="claude"
+        settings.update(backend="claude",default_model="claude-fixture")
     if case.startswith("codex-"):
         backend = "codex"
         settings.update(backend="codex", default_model="gpt-6.1-sol", codex_engine="native", thinking_level="high")
@@ -50,6 +53,8 @@ def launch(tmp_path, case):
             "--backend", backend, "--model", "switch-old", "--tool-profile", "strict", "--thinking-level", "default",
             "--mcp-servers", "none", "--server-mode", "connect", "--server-timeout", "5",
             "--base-url", "http://127.0.0.1:45120/v1"]
+    if backend=="claude":
+        argv = argv[:argv.index("--backend")] + ["--backend","claude","--model","claude-fixture","--tool-profile","strict","--thinking-level","default","--mcp-servers","none"]
     if backend == "codex":
         argv = argv[:argv.index("--backend")] + ["--backend", "codex", "--model", "gpt-6.1-sol", "--codex-engine", "native",
             "--tool-profile", "strict", "--thinking-level", "high", "--mcp-servers", "none"]
@@ -132,6 +137,38 @@ def test_codex_rewind_native_readbacks_and_non_replay(tmp_path, case):
         assert report["durable"][5]["provider_metadata"]["app_server_user_item_id"] == "replacement-user"
         assert len(report["durable"]) == 7
         assert not report["replay"]["ok"] or report["replay"]["result"]["turn"] != "accepted"
+
+
+@pytest.mark.parametrize("case", ["claude-edit","claude-retry","claude-forged","claude-drift","claude-partial","claude-settled-drift"])
+def test_claude_fork_restores_real_prefix_and_settles_one_replacement(tmp_path, case):
+    report = launch(tmp_path,case)
+    native=report["claude_fork"]
+    if case=="claude-forged":
+        assert report["refused_at"]=="validate" and not native.get("queries")
+        return
+    if case=="claude-drift":
+        assert report["apply"]["turn"]=="refused" and not native.get("queries")
+        return
+    if case=="claude-partial":
+        assert report["apply"]["turn"]=="failed" and report["apply"]["close_required"]
+        assert "selecting the new segment" in report["apply"]["reason"]
+        assert report["original"]==report["durable"] and not native.get("queries")
+        original=Path(native["path"])
+        assert original.read_bytes().hex()==native["original"]
+        assert len(list(original.parent.glob("*.jsonl")))==2
+        assert not report["replay"]["ok"]
+        return
+    if case=="claude-settled-drift":
+        assert report["apply"]["turn"]=="accepted" and "matching" in report["settlement_error"]
+        assert len(native["queries"])==1 and not report["replay"]["ok"]
+        return
+    assert report["apply"]["turn"]=="accepted"
+    proof=report["settled"]["native_fork"]
+    assert Path(native["path"]).read_bytes().hex()==native["original"]
+    assert len(native["queries"])==1 and native["queries"][0]["session"]==proof["session_id"]
+    assert proof["result_id"]==native["result"]
+    assert report["durable"][5]["claude_delivery"]["segment_id"]==report["review"]["native_fork"]["fork"]["new_segment"]
+    assert not report["replay"]["ok"]
 
 
 def assert_unchanged(report, before="before"):

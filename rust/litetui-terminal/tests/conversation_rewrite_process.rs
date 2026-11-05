@@ -33,6 +33,8 @@ fn runtime_source() -> PathBuf {
 fn backend(case: &str) -> &'static str {
     if case.starts_with("codex-") {
         "codex"
+    } else if case.starts_with("claude-") {
+        "claude"
     } else if case == "self-compact" || case.contains("question-") {
         "lmstudio"
     } else {
@@ -42,6 +44,8 @@ fn backend(case: &str) -> &'static str {
 fn model(case: &str) -> &'static str {
     if backend(case) == "codex" {
         "gpt-6.1-sol"
+    } else if backend(case) == "claude" {
+        "claude-fixture"
     } else {
         "switch-old"
     }
@@ -129,6 +133,8 @@ runpy.run_path({}, run_name='__main__')
     ];
     let route: &[&str] = if backend(case) == "codex" {
         &["--codex-engine", "native"]
+    } else if backend(case) == "claude" {
+        &[]
     } else {
         &[
             "--base-url",
@@ -690,6 +696,67 @@ fn f6_codex_rewind_discards_the_reviewed_suffix_and_verifies_one_native_replacem
         assert_eq!(
             evidence["durable"][5]["provider_metadata"]["app_server_user_item_id"],
             "replacement-user"
+        );
+    }
+}
+
+#[test]
+#[ignore = "real offline SDK fork and controlled Claude client; dependency Python required"]
+fn f6_claude_fork_preserves_original_and_sends_one_reviewed_replacement() {
+    for case in ["claude-edit", "claude-retry"] {
+        let (runtime, root) = launch(case);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = start(runtime, case)?;
+                let draft = editor(&app);
+                let retry = case == "claude-retry";
+                select(
+                    runtime,
+                    &mut app,
+                    if retry {
+                        r::Action::Retry
+                    } else {
+                        r::Action::Edit
+                    },
+                )?;
+                validate(
+                    runtime,
+                    &mut app,
+                    if retry { None } else { Some(REPLACEMENT) },
+                )?;
+                assert_eq!(
+                    app.live
+                        .as_ref()
+                        .unwrap()
+                        .rewrite
+                        .review()
+                        .unwrap()
+                        .request()["native_fork"]["retained_turns"],
+                    1
+                );
+                let shown = draw(&mut app);
+                assert!(
+                    shown.contains("Claude will fork") && shown.contains("full input price"),
+                    "{shown}"
+                );
+                let key = apply(runtime, &mut app)?;
+                settle(runtime, &mut app, &key)?;
+                assert_eq!(editor(&app), draft);
+                runtime.quit()
+            })
+            .unwrap();
+        let record = report(&root, case);
+        assert_eq!(
+            record["claude_fork"]["queries"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            record["durable"][5]["content"],
+            if case == "claude-retry" {
+                ORIGINAL
+            } else {
+                REPLACEMENT
+            }
         );
     }
 }

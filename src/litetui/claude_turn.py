@@ -440,6 +440,13 @@ async def _cache_ok(app, backend, segment):
     )
     if cold is None:
         return True
+    from litetui import claude_rewind
+    fork = claude_rewind.active(app)
+    if (cold[0] == "resume" and fork is not None and claude_rewind.action._authorized(app)
+            and fork.sdk_owner is None and segment["id"] == fork.plan["fork"]["new_segment"]
+            and segment["session_id"] == fork.new_session):
+        # The reviewed fork explicitly disclosed the cost of an uncached resume.
+        return True
     approved = getattr(app, "_claude_cache_preapproved", None)
     if cold[0] == "effort" and approved == ("effort", effort_for(app) or "default"):
         # Already confirmed in the sidecar for exactly this change: once.
@@ -551,13 +558,14 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
         return
     started = time.monotonic()
     app._active_turn_started_at = started
-    app._stop_requested = False
+    from litetui import conversation_action
+    app._stop_requested = conversation_action.stopped(app)
     app._stop_reason = None
     app._stop_cause = None
     app._turn_stop_line_settled = False
     app._turn_abandoned = False
     app.tps = None
-    emit({"type": "turn_start", "model": app.model_id, "provider": "claude"})
+    emit({"type": "turn_start", "model": app.model_id, "provider": "claude", **conversation_action.segment(app, origin)})
     widget = app._assistant_bubble()
     app._active_turn_widget = widget
     app._elapsed.start(widget.body, started_at=started)
@@ -623,6 +631,12 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
                 app._claude_compact_resume = (backend, app.convo_id, segment["id"], item, item["content"])
             return
         notice = getattr(app, "_store_notice_text", None) if not ledger.store_notice_delivered else None
+        from litetui import claude_rewind
+        fork = claude_rewind.active(app)
+        if fork is not None:
+            if notice:
+                raise ValueError("The Claude fork acquired an unreviewed store notice before dispatch")
+            fork.before_query(app,origin,session,item)
         ledger.update_delivery(entry_id, "submitted", **({"store_notice": notice} if notice else {}))
         submitted = True
         if controls.enabled(app):
@@ -853,6 +867,10 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
                         if app._stop_requested or interrupted_for_compact else "stop")
                     if reason == "approval":  # T1049-B2: the host reads why (Dijkstra 79e113ce (3))
                         failure = app._stop_reason
+                    if fork is not None:
+                        fork.result(app, session, message, event)
+                        emit({"type":"native_event","provider":"claude","kind":"notice", "detail":"Claude fork replacement completed",
+                              "data":{"reviewed_fork":{"session_id":fork.new_session,"result_id":fork.terminal}}})
                     ledger.update_delivery(entry_id, "terminal", stop_reason=reason)
                     if event.is_error:
                         failure = event.detail or event.text or failure or "Claude turn failed"

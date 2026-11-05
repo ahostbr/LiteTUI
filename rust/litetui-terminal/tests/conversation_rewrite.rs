@@ -170,6 +170,59 @@ fn codex_review_and_receipt_require_the_exact_suffix_thread_and_fresh_user_item(
         );
     }
 }
+#[test]
+fn claude_fork_requires_native_checkpoint_distinct_segment_and_observed_result() {
+    let mut before = snapshot();
+    before.selection.identity.backend = "claude".into();
+    let mut value = review_value(&before, Action::Edit, "replacement");
+    value["effects"]["provider_fork"] = json!(true);
+    value["native_fork"] = json!({"thread_id":SESSION,"before_sha256":"a".repeat(64),"prefix_sha256":"b".repeat(64),"retained_turns":1,
+        "fork":{"old_segment":"1".repeat(32),"new_segment":"2".repeat(32),"delivery":"3".repeat(32),"checkpoint":"99345678-1234-4123-8123-123456789abc","ledger_before":"c".repeat(64)},
+        "suffix":[{"turn_id":AGENT,"user_item_id":ACTION_ID,"text":"original user","items":[{"id":ACTION_ID,"kind":"userMessage","details":""},
+            {"id":AGENT,"kind":"agentMessage","details":"former reply"}]}]});
+    let parse = |wire: &Value| Review::parse(wire, before.clone(), Action::Edit, "replacement");
+    for (path, bad) in [
+        ("/native_fork/fork/checkpoint", json!("unknown")),
+        ("/native_fork/fork/new_segment", json!("1".repeat(32))),
+        ("/native_fork/retained_turns", json!(0)),
+        ("/native_fork/suffix/0/items/1/kind", json!("tool")),
+        ("/effects/provider_rewind", json!(true)),
+    ] {
+        let mut changed = value.clone();
+        *changed.pointer_mut(path).unwrap() = bad;
+        assert!(parse(&changed).is_err(), "{path}");
+    }
+    let review = parse(&value).unwrap();
+    assert_eq!(review.request()["native_fork"], value["native_fork"]);
+    let admission = Admission::parse(
+        &admission_value(&review, AdmissionOutcome::Accepted),
+        &review,
+        OP,
+    )
+    .unwrap();
+    let mut settled = settled_value(&review, &admission);
+    settled["history"]["backend"] = json!("claude");
+    let new = "55345678-1234-4123-8123-123456789abc";
+    let result = "66345678-1234-4123-8123-123456789abc";
+    settled["native_fork"] = json!({"thread_id":SESSION,"session_id":new,"result_id":result,"prefix_sha256":"b".repeat(64),
+        "history_sha256":"d".repeat(64),"ledger_after":"e".repeat(64),"turn_id":"77345678-1234-4123-8123-123456789abc",
+        "user_item_id":"88345678-1234-4123-8123-123456789abc"});
+    let parsed = Settlement::parse(&settled, &admission, &review, OP).unwrap();
+    assert_eq!(parsed.fork_result, Some((new.into(), result.into())));
+    for (key, bad) in [
+        ("session_id", json!(SESSION)),
+        ("ledger_after", json!("c".repeat(64))),
+        ("result_id", json!("bad")),
+    ] {
+        let mut changed = settled.clone();
+        changed["native_fork"][key] = bad;
+        assert!(
+            Settlement::parse(&changed, &admission, &review, OP).is_err(),
+            "{key}"
+        );
+    }
+}
+
 fn draw(view: &mut View, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal

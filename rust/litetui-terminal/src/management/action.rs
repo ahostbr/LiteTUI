@@ -17,6 +17,8 @@ pub(super) struct Chain {
     wake_allowed: bool,
     pub(super) rewind_thread: Option<String>,
     pub(super) rewind_turn: Option<String>,
+    pub(super) fork_source: Option<String>,
+    pub(super) fork_result: Option<(String, String)>,
     pub(super) action: String,
     pub(super) operation: String,
     pub(super) segments: u64,
@@ -40,6 +42,8 @@ impl Chain {
             wake_allowed: false,
             rewind_thread: None,
             rewind_turn: None,
+            fork_source: None,
+            fork_result: None,
             segments: 0,
             last_execution: None,
             ended: true,
@@ -273,6 +277,29 @@ impl Chain {
                 ));
             }
             chain.rewind_turn = Some(turn.to_owned());
+        }
+        if let Some(result) = event["data"].get("reviewed_fork") {
+            let session = text(result, "session_id", 36)?;
+            let terminal = text(result, "result_id", 36)?;
+            crate::resume::conversation_id(session)?;
+            crate::resume::conversation_id(terminal)?;
+            if chain
+                .fork_source
+                .as_deref()
+                .is_none_or(|source| source == session)
+                || kind != "native_event"
+                || event["provider"] != "claude"
+                || event["kind"] != "notice"
+                || chain.ended
+                || chain.segments != 1
+                || chain.last_execution.as_deref() != Some(execution.as_str())
+                || chain.fork_result.is_some()
+            {
+                return Err(fail(
+                    "Claude fork result repeated or changed its native session or worker",
+                ));
+            }
+            chain.fork_result = Some((session.to_owned(), terminal.to_owned()));
         }
         let closure = match kind {
             "user_input_requested" => Some("user_input_resolved"),

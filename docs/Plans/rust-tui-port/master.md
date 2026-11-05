@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## F6 Edit and Retry for Claude conversations - 2026-11-04
+
+F6 can fork a completed tools-off text conversation at the assistant checkpoint immediately before the selected user message. The source verifies the original transcript, the retained message IDs in the fork, and one replacement turn. The first user message needs a new conversation because it has no preceding checkpoint. Anthropic prompt caching starts cold on the fork.
+
+Thirteen native-history source cases passed with the pinned Claude SDK. The relocated package passed both the Claude fork and Codex rewind process groups. The integrated checkout passed 970 ordinary Rust tests, strict all-target Clippy and the formatting check. The inference fixture was controlled.
+
 ## F12 configuration for NInfer and Strata - 2026-11-04
 
 C in the engine inspector opens configuration, including when an engine is offline. A reviewed save persists one field for the current conversation and rereads it. Host fields apply on reconnect. The other fields apply on restart. Management-only startup now waits for a verified prompt-ready engine before activating Work. Quit on a fresh attached engine verifies the absence of a Work ledger and leaves the conversation unmaterialized.

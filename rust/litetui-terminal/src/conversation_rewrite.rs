@@ -269,7 +269,7 @@ fn native_id(v: &Value, key: &str) -> io::Result<String> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
     {
-        return Err(fail("Invalid native Codex identity"));
+        return Err(fail("Invalid native history identity"));
     }
     Ok(id)
 }
@@ -281,30 +281,67 @@ fn keys(v: &Value, expected: &[&str]) -> bool {
 }
 
 impl NativePlan {
-    fn parse(v: &Value, before: &Snapshot) -> io::Result<Self> {
+    pub fn fork(&self) -> bool {
+        self.wire.get("fork").is_some()
+    }
+    fn operation(&self) -> &'static str {
+        if self.fork() {
+            "native_fork"
+        } else {
+            "native_rewind"
+        }
+    }
+    fn parse(v: &Value, before: &Snapshot, fork: bool) -> io::Result<Self> {
+        let mut fields = vec![
+            "thread_id",
+            "before_sha256",
+            "prefix_sha256",
+            "retained_turns",
+            "suffix",
+        ];
+        if fork {
+            fields.push("fork");
+            let plan = &v["fork"];
+            if !keys(
+                plan,
+                &[
+                    "old_segment",
+                    "new_segment",
+                    "delivery",
+                    "checkpoint",
+                    "ledger_before",
+                ],
+            ) || ["old_segment", "new_segment", "delivery"].iter().any(|k| {
+                !plan[k].as_str().is_some_and(|id| {
+                    id.len() == 32
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+            }) || plan["old_segment"] == plan["new_segment"]
+                || plan["delivery"] == plan["new_segment"]
+            {
+                return Err(fail("Malformed Claude fork or delivery identity"));
+            }
+            crate::resume::conversation_id(&native_id(plan, "checkpoint")?)?;
+            crate::resume::conversation_id(&native_id(v, "thread_id")?)?;
+            token(plan, "ledger_before")?;
+        }
         let suffix = v["suffix"]
             .as_array()
-            .ok_or_else(|| fail("Missing Codex rewind suffix"))?;
+            .ok_or_else(|| fail("Missing native history suffix"))?;
         let retained = number(v, "retained_turns")?;
-        if before.selection.identity.backend != "codex"
+        if before.selection.identity.backend != if fork { "claude" } else { "codex" }
             || serde_json::to_vec(v)?.len() > TEXT_BYTES
-            || !keys(
-                v,
-                &[
-                    "thread_id",
-                    "before_sha256",
-                    "prefix_sha256",
-                    "retained_turns",
-                    "suffix",
-                ],
-            )
+            || !keys(v, &fields)
+            || fork && retained == 0
             || suffix.is_empty()
             || retained + suffix.len() as u64 > 32
             || retained > before.selection.message_index
             || suffix[0]["text"] != before.original_text
             || token(v, "before_sha256")? == token(v, "prefix_sha256")?
         {
-            return Err(fail("Invalid Codex rewind thread or discarded suffix"));
+            return Err(fail("Invalid native session or excluded suffix"));
         }
         let mut turns = std::collections::HashSet::new();
         let mut items = std::collections::HashSet::new();
@@ -314,12 +351,32 @@ impl NativePlan {
             if !keys(turn, &["turn_id", "user_item_id", "text", "items"])
                 || !turns.insert(native_id(turn, "turn_id")?)
             {
-                return Err(fail("Repeated or malformed Codex turn in rewind review"));
+                return Err(fail("Repeated or malformed native turn in history review"));
+            }
+            if fork {
+                let records = turn["items"]
+                    .as_array()
+                    .ok_or_else(|| fail("Missing Claude fork messages"))?;
+                if records.len() != 2
+                    || records[0]["kind"] != "userMessage"
+                    || records[1]["kind"] != "agentMessage"
+                    || records[1]["id"] != turn["turn_id"]
+                    || records[0]["id"] == records[1]["id"]
+                    || records.iter().any(|item| {
+                        item["id"]
+                            .as_str()
+                            .is_none_or(|id| crate::resume::conversation_id(id).is_err())
+                    })
+                {
+                    return Err(fail(
+                        "Claude fork review changed the native user and assistant pair",
+                    ));
+                }
             }
             let mut users = 0;
             for item in turn["items"]
                 .as_array()
-                .ok_or_else(|| fail("Missing Codex rewind items"))?
+                .ok_or_else(|| fail("Missing native history items"))?
             {
                 let item_id = native_id(item, "id")?;
                 let kind = native_id(item, "kind")?;
@@ -328,18 +385,29 @@ impl NativePlan {
                     || !items.insert(item_id.clone())
                     || items.len() > 256
                 {
-                    return Err(fail("Repeated or excessive Codex rewind items"));
+                    return Err(fail("Repeated or excessive native history items"));
                 }
                 if kind == "userMessage" {
                     if item_id != id || !details.is_empty() || content.is_empty() {
-                        return Err(fail("Codex review changed the selected native user item"));
+                        return Err(fail("History review changed the selected native user item"));
                     }
                     users += 1;
                 }
             }
             if users != 1 {
-                return Err(fail("Codex rewind requires one native user item per turn"));
+                return Err(fail(
+                    "History review requires one native user item per turn",
+                ));
             }
+        }
+        if fork
+            && v["fork"]["checkpoint"]
+                .as_str()
+                .is_some_and(|id| items.contains(id) || turns.contains(id))
+        {
+            return Err(fail(
+                "Claude fork checkpoint was included among excluded messages",
+            ));
         }
         Ok(Self {
             thread_id: native_id(v, "thread_id")?,
@@ -348,10 +416,17 @@ impl NativePlan {
     }
     fn description(&self) -> String {
         let display = crate::live::terminal_text;
-        let mut out = format!(
-            "Codex will rewind thread {} to {} retained turns. Prior commands and file changes stay in effect. Resending may run tools again.\nDiscarded native turns and items:\n",
-            self.thread_id, self.wire["retained_turns"]
-        );
+        let mut out = if self.fork() {
+            format!(
+                "Claude will fork session {} at checkpoint {}, preserving its first {} turns. The original session stays on disk. The new session may read the full prefix at full input price. Existing file changes stay in effect.\nTurns excluded from the fork:\n",
+                self.thread_id, self.wire["fork"]["checkpoint"], self.wire["retained_turns"]
+            )
+        } else {
+            format!(
+                "Codex will rewind thread {} to {} retained turns. Prior commands and file changes stay in effect. Resending may run tools again.\nDiscarded native turns and items:\n",
+                self.thread_id, self.wire["retained_turns"]
+            )
+        };
         for turn in self.wire["suffix"].as_array().expect("verified turns") {
             out.push_str(&format!(
                 "Turn {} · {}\n",
@@ -372,16 +447,28 @@ impl NativePlan {
     fn receipt(&self, v: &Value) -> io::Result<String> {
         let turn = native_id(v, "turn_id")?;
         let user = native_id(v, "user_item_id")?;
-        if !keys(
-            v,
-            &[
-                "thread_id",
-                "turn_id",
-                "user_item_id",
-                "prefix_sha256",
-                "history_sha256",
-            ],
-        ) || v["thread_id"] != self.thread_id
+        let mut fields = vec![
+            "thread_id",
+            "turn_id",
+            "user_item_id",
+            "prefix_sha256",
+            "history_sha256",
+        ];
+        if self.fork() {
+            fields.extend(["session_id", "result_id", "ledger_after"]);
+            for key in ["turn_id", "user_item_id", "session_id", "result_id"] {
+                crate::resume::conversation_id(&native_id(v, key)?)?;
+            }
+            if v["session_id"] == self.thread_id
+                || token(v, "ledger_after")? == self.wire["fork"]["ledger_before"]
+            {
+                return Err(fail(
+                    "Claude fork requires a distinct native session and durable ledger publication",
+                ));
+            }
+        }
+        if !keys(v, &fields)
+            || v["thread_id"] != self.thread_id
             || v["prefix_sha256"] != self.wire["prefix_sha256"]
             || token(v, "history_sha256")? == self.wire["before_sha256"]
             || self.wire["suffix"].as_array().unwrap().iter().any(|old| {
@@ -394,7 +481,7 @@ impl NativePlan {
             })
         {
             return Err(fail(
-                "Codex replacement receipt changed thread, prefix or reused native identities",
+                "Replacement receipt changed the native session, prefix or message identities",
             ));
         }
         Ok(turn)
@@ -428,9 +515,16 @@ impl Review {
         let text_sha256 = token(v, "text_sha256")?;
         let prepared_messages = number(v, "prepared_messages")?;
         let prompt_hooks = boolean(&v["effects"], "prompt_hooks")?;
+        let fork = v.get("native_fork").is_some();
+        if fork && v.get("native_rewind").is_some()
+            || v["effects"].get("provider_fork").is_some_and(|x| x != true)
+            || (v["effects"].get("provider_fork").is_some() != fork)
+        {
+            return Err(fail("Contradictory native fork actions"));
+        }
         let native_rewind = v
-            .get("native_rewind")
-            .map(|plan| NativePlan::parse(plan, &before).map(Box::new))
+            .get(if fork { "native_fork" } else { "native_rewind" })
+            .map(|plan| NativePlan::parse(plan, &before, fork).map(Box::new))
             .transpose()?;
         if !before.eligibility(action).eligible
             || v["snapshot"] != before.token
@@ -443,7 +537,7 @@ impl Review {
             || number(v, "prefix_messages")? != before.selection.message_index
             || number(v, "discarded_messages")? != before.discarded_messages
             || !boolean(&v["effects"], "provider_execution")?
-            || boolean(&v["effects"], "provider_rewind")? != native_rewind.is_some()
+            || boolean(&v["effects"], "provider_rewind")? != (native_rewind.is_some() && !fork)
         {
             return Err(fail(
                 "Rewrite review changed text, selection, prefix or effects",
@@ -476,8 +570,11 @@ impl Review {
         v["prefix_messages"] = json!(self.before.selection.message_index);
         v["discarded_messages"] = json!(self.before.discarded_messages);
         if let Some(plan) = &self.native_rewind {
-            v["native_rewind"] = plan.wire.clone();
-            v["effects"] = json!({"prompt_hooks":self.prompt_hooks,"provider_execution":true,"provider_rewind":true});
+            v[plan.operation()] = plan.wire.clone();
+            v["effects"] = json!({"prompt_hooks":self.prompt_hooks,"provider_execution":true,"provider_rewind":!plan.fork()});
+            if plan.fork() {
+                v["effects"]["provider_fork"] = json!(true);
+            }
         }
         v
     }
@@ -612,6 +709,7 @@ pub struct Settlement {
     pub execution_segments: u64,
     pub last_execution_id: Option<String>,
     pub native_turn: Option<String>,
+    pub fork_result: Option<(String, String)>,
 }
 impl Settlement {
     pub fn parse(
@@ -661,20 +759,39 @@ impl Settlement {
             }
             Some(uuid(execution, "last_execution_id")?)
         };
+        if v.get("native_rewind").is_some() && v.get("native_fork").is_some() {
+            return Err(fail("Unexpected second native provider history receipt"));
+        }
+        let mut fork_result = None;
         let native_turn = match (&review.native_rewind, admission.outcome) {
             (Some(plan), AdmissionOutcome::Accepted) if execution_segments == 1 => {
-                Some(plan.receipt(&v["native_rewind"])?)
+                let record = &v[plan.operation()];
+                let turn = plan.receipt(record)?;
+                if plan.fork() {
+                    fork_result = Some((
+                        native_id(record, "session_id")?,
+                        native_id(record, "result_id")?,
+                    ));
+                    None
+                } else {
+                    Some(turn)
+                }
             }
-            (Some(_), AdmissionOutcome::Refused)
-                if v.get("native_rewind") == Some(&Value::Null) =>
+            (Some(plan), AdmissionOutcome::Refused)
+                if v.get(plan.operation()) == Some(&Value::Null) =>
             {
                 None
             }
-            (None, _) if v.get("native_rewind").is_none() => None,
-            _ => return Err(fail("Missing or unexpected native Codex rewind receipt")),
+            (None, _) if v.get("native_rewind").is_none() && v.get("native_fork").is_none() => None,
+            _ => {
+                return Err(fail(
+                    "Missing or unexpected native history replacement receipt",
+                ));
+            }
         };
         Ok(Self {
             native_turn,
+            fork_result,
             outcome: admission.outcome,
             history,
             execution_segments,
