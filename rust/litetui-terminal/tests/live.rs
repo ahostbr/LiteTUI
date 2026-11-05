@@ -27,6 +27,51 @@ fn started() -> Turn {
     started_with_id().0
 }
 #[test]
+fn only_a_matching_pre_start_refusal_displays_its_bounded_reason() {
+    fn refused(id_matches: bool, reason: serde_json::Value) -> String {
+        let mut turn = Turn::default();
+        accept(&mut turn, ready()).unwrap();
+        let prompt = turn.submit("Hello").unwrap();
+        let id = if id_matches {
+            prompt["id"].clone()
+        } else {
+            json!("foreign")
+        };
+        accept(
+            &mut turn,
+            json!({"type":"response", "id":id, "ok":false, "error":reason}),
+        )
+        .unwrap_err()
+        .to_string()
+    }
+    assert_eq!(
+        refused(true, json!("Work closed\nretry\t\u{1b}")),
+        "Runtime refused the prompt: Work closed retry \\u{1b}"
+    );
+    assert_eq!(
+        refused(false, json!("foreign detail")),
+        "Unexpected prompt response"
+    );
+    assert_eq!(
+        refused(true, json!("x".repeat(513))),
+        "Runtime refused the prompt"
+    );
+    assert_eq!(
+        refused(true, json!({"reason":"unexpected"})),
+        "Runtime refused the prompt"
+    );
+
+    let (mut turn, id) = started_with_id();
+    let error = accept(
+        &mut turn,
+        json!({"type":"response","id":id,"ok":false,"error":"late detail"}),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "Unexpected prompt response");
+}
+
+#[test]
 fn real_native_shapes_stream_and_complete_but_ack_does_not_complete() {
     let mut turn = started();
     assert_eq!(

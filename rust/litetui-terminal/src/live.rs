@@ -1480,13 +1480,21 @@ impl Turn {
                         });
                     }
                 }
-                if event["id"] != self.command_id
-                    || !self.sent
-                    || self.acknowledged
-                    || event["ok"] != true
-                    || event["result"]["turn"] != "accepted"
-                {
-                    return Err(fail("Unexpected/refused prompt response"));
+                if event["id"] != self.command_id || !self.sent || self.acknowledged {
+                    return Err(fail("Unexpected prompt response"));
+                }
+                if event["ok"] == false && !self.started && self.terminal.is_none() {
+                    let reason = event["error"].as_str().map(str::trim)
+                        .filter(|text| !text.is_empty() && text.len() <= 512);
+                    return Err(match reason {
+                        Some(text) => io::Error::other(format!(
+                            "Runtime refused the prompt: {}", terminal_text(text).replace(['\n', '\t'], " ")
+                        )),
+                        None => fail("Runtime refused the prompt"),
+                    });
+                }
+                if event["ok"] != true || event["result"]["turn"] != "accepted" {
+                    return Err(fail("Invalid prompt acknowledgement"));
                 }
                 self.acknowledged = true;
                 Ok(if self.can_settle() {
