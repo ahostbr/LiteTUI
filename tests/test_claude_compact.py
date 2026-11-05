@@ -83,6 +83,9 @@ class Session:
 
     async def events(self):
         for batch in self._events:
+            if callable(batch):
+                await batch()  # something the SDK does between frames, e.g. run a hook
+                batch = []
             yield batch
 
 
@@ -310,3 +313,114 @@ def test_a_compaction_claude_does_on_its_own_uses_the_same_card(monkeypatch):
     claude_compact.native_compaction(app, event)
     assert Card.made[0].auto and "950,000" in Card.made[0].finished
     assert emitted == [("compacted", {"tokens_before": 950_000, "tokens_before_exact": True})]
+
+
+def _store_write_then_summary():
+    write = {"file_path": "C:/convos/c1/handoff.md", "content": "in flight"}
+    return [[ClaudeEvent(kind="tool_use", tool_id="t1", tool_name="Write", complete=True, tool_input=write)],
+            [ClaudeEvent(kind="tool_result", tool_id="t1", tool_name="Write", tool_result="ok", is_error=False)],
+            *summary_events()]
+
+
+def _spy_bridge(app):
+    calls = []
+    bridge = app.backend._claude_tools
+    bridge.bind_turn = lambda origin, unattended=False: calls.append(("bind", origin, unattended)) or "turn"
+    bridge.completed = lambda turn, tool_id: calls.append(("completed", turn, tool_id))
+    bridge.finish_turn = lambda turn: calls.append(("finish", turn))
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_under_the_work_frontend_an_unreviewed_summary_turn_owns_its_tool_callbacks(tmp_path, monkeypatch):
+    """Autocompaction under Work: the STEP 1 writes were denied as unowned because nothing bound the turn."""
+    from litetui import native_runtime_controls as controls
+
+    monkeypatch.setattr(controls, "enabled", lambda app: True)
+    app, _ = app_for(tmp_path, _store_write_then_summary(), monkeypatch=monkeypatch)
+    calls = _spy_bridge(app)
+    await claude_compact.compact(app, "", auto=True)
+    assert calls == [("bind", None, True), ("completed", "turn", "t1"), ("finish", "turn")]
+    assert app.emitted[-1][0] == "compacted"
+
+
+@pytest.mark.asyncio
+async def test_under_work_the_real_bridge_allows_the_store_write_and_refuses_what_needs_a_human(tmp_path, monkeypatch):
+    """The hook of an unreviewed Work summary turn, end to end through compact(): the STEP 1 write the profile
+    allows is let through, a Bash call that would need an approval is refused in words with no prompt."""
+    from contextlib import asynccontextmanager
+
+    from litetui import claude_tools
+    from litetui.textfmt import tool_denied
+
+    ticket = SimpleNamespace(tools_enabled=True, disabled=frozenset(), profile="strict",
+                             state=SimpleNamespace(closing=False))
+
+    @asynccontextmanager
+    async def authorization(app, *, origin=None, **kwargs):
+        assert origin is None
+        yield ticket
+
+    monkeypatch.setattr(claude_tools.controls, "enabled", lambda app: True)
+    monkeypatch.setattr(claude_tools.controls, "authorization", authorization)
+    monkeypatch.setattr(claude_tools.controls, "_state", lambda app: SimpleNamespace(closing=False))
+    monkeypatch.setattr(claude_tools.controls, "retain_authorization", lambda app: SimpleNamespace(close=lambda: None))
+    from litetui import native_runtime_controls as controls
+    monkeypatch.setattr(controls, "enabled", lambda app: True)
+
+    asked = []
+
+    async def authorize(name, args, policy, *, profile=None, workspace=None, allow_prompt=True,
+                        stop_on_denial=True, prompt_refusal=None):
+        asked.append((name, allow_prompt))
+        if name in ("Write", "Edit"):
+            return None  # SELF_STORE: allowed, never asked
+        assert not allow_prompt, "an approval for an unreviewed compaction has no execution to be attributed to"
+        return tool_denied("profile", name=name, reason=prompt_refusal), False
+
+    app, _ = app_for(tmp_path, [], monkeypatch=monkeypatch)
+    app.tools_enabled, app._stop_requested, app._active_tool_profile = True, False, "strict"
+    app.settings.tools_disabled = []
+    app._authorize_action = authorize
+    bridge = claude_tools.ClaudeTools(app, app.backend, app.backend.segment_id)
+    app.backend._claude_tools = bridge
+    verdicts = []
+
+    def hook(name, args, tool_id):
+        async def run():
+            out = await bridge.pre_tool({"tool_name": name, "tool_input": args}, tool_id, None)
+            verdicts.append(out["hookSpecificOutput"])
+        return run
+
+    write = {"file_path": str(tmp_path / "handoff.md"), "content": "in flight"}
+    app.backend.session._events = [hook("Write", write, "t1"), hook("Bash", {"command": "git status"}, "t2"),
+                                   *summary_events()]
+    await claude_compact.compact(app, "", auto=True)
+    assert [v["permissionDecision"] for v in verdicts] == ["allow", "deny"], verdicts
+    assert "unattended" in verdicts[1]["permissionDecisionReason"].lower()
+    assert asked == [("Write", False), ("Bash", False)]
+    assert app.emitted[-1][0] == "compacted", app.notices
+    assert bridge._turn is None and not bridge._unattended, "the bound turn ended with the summary"
+
+
+@pytest.mark.asyncio
+async def test_without_the_work_frontend_the_summary_turn_binds_nothing(tmp_path, monkeypatch):
+    from litetui import native_runtime_controls as controls
+
+    monkeypatch.setattr(controls, "enabled", lambda app: False)
+    app, _ = app_for(tmp_path, _store_write_then_summary(), monkeypatch=monkeypatch)
+    calls = _spy_bridge(app)
+    await claude_compact.compact(app, "", auto=True)
+    assert calls == [] and app.emitted[-1][0] == "compacted"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_unreviewed_summary_still_ends_the_bound_turn(tmp_path, monkeypatch):
+    from litetui import native_runtime_controls as controls
+
+    monkeypatch.setattr(controls, "enabled", lambda app: True)
+    events = [[ClaudeEvent(kind="result", is_error=True, detail="overloaded", data={})]]
+    app, _ = app_for(tmp_path, events, monkeypatch=monkeypatch)
+    calls = _spy_bridge(app)
+    await claude_compact.compact(app, "", auto=True)
+    assert calls == [("bind", None, True), ("finish", "turn")] and app.emitted[-1][0] == "failed"

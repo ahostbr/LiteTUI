@@ -37,6 +37,7 @@ import uuid
 from rich.text import Text
 
 from litetui import claude_cache, owner_mode
+from litetui import native_runtime_controls as controls
 from litetui.claude_backend import COMPACT_MARKER
 from litetui.claude_tools import HostRequest
 from litetui.claude_turn import (
@@ -170,6 +171,11 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 if reviewed.binding.host_tools:
                     # The disclosed host tools run on THIS worker (see _turn_events), nowhere else.
                     host_lane = bridge.bind_host_lane(tool_turn, reviewed.binding.host_tools)
+            elif reviewed is None and controls.enabled(app):
+                # The native Work frontend, a compaction nobody reviewed (autocompaction, a threshold pause):
+                # its callbacks need an owned turn like any Work turn, but there is no execution to attribute
+                # an approval to, so the bridge refuses those in words instead (claude_tools.UNATTENDED_*).
+                tool_turn = bridge.bind_turn(None, unattended=True)
 
                 async def watch_stop():
                     # A tool approval can block the stream with nothing arriving to notice Stop.
@@ -206,8 +212,8 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 for event in normalizer.push(message):
                     if reviewed is not None and event.kind in {"tool_use", "tool_result", "compaction"}:
                         reviewed.tool(event)  # refuses tool work the review did not disclose
-                        if event.kind == "tool_result" and tool_turn is not None:
-                            bridge.completed(tool_turn, event.tool_id)
+                    if event.kind == "tool_result" and tool_turn is not None:
+                        bridge.completed(tool_turn, event.tool_id)
                     if event.kind in {"text_delta", "message"}:
                         card.thinking_done()
                         key = event.message_id or "current"

@@ -28,6 +28,17 @@ def spec_digest(spec):
                                      allow_nan=False, default=str).encode("utf-8")).hexdigest()
 
 
+#: What an unreviewed Claude compaction under the native Work frontend tells Claude when it asks for
+#: something the frontend cannot host. The Rust frontend only accepts an approval or a question from
+#: an active chat turn or a reviewed action's execution; this summary turn is neither, so raising one
+#: would be an out-of-order event for it. The conversation's own store files (STEP 1) need no approval.
+UNATTENDED_APPROVAL = ("This unattended compaction was not started from a reviewed action, so the native frontend "
+                       "cannot show an approval for it. Only the conversation's own store files can be written here.")
+UNATTENDED_QUESTION = "Questions cannot be asked during an unattended compaction; write the summary with what you have."
+UNATTENDED_HOST = ("[denied] Host tools are unavailable during an unattended compaction, which has no reviewed "
+                   "action to attribute them to; use the native tools.")
+
+
 def _host_result(text, *, error=True):
     # The SDK's tool wrapper reads `is_error` (mcp's own field is `isError`); a refusal must reach Claude as one.
     return {"content": [{"type": "text", "text": text}], "isError": error, "is_error": error}
@@ -139,11 +150,15 @@ class ClaudeTools:
         #: name -> spec digest of the host tools this session's SDK server bridges (fixed at open).
         self.host_tools = {}
         self._lane = None
+        self._unattended = False
 
-    def bind_turn(self, origin):
+    def bind_turn(self, origin, *, unattended=False):
+        """Own one turn's callbacks. `unattended`: an unreviewed compaction under the Work frontend, whose
+        approvals and questions the frontend cannot host (see UNATTENDED_APPROVAL), so they refuse in words."""
         if self._turn is not None:
             raise ValueError("Claude tool bridge already belongs to a turn")
         self._turn = (self.backend.session, origin)
+        self._unattended = unattended
         return self._turn
 
     def bind_host_lane(self, turn, disclosed):
@@ -178,6 +193,7 @@ class ClaudeTools:
                 self.completed(turn, tool_id)
             self._observed.clear()
             self._turn = None
+            self._unattended = False
 
     def _owns_turn(self, turn):
         return (turn is not None and self._turn is turn and self.backend.session is turn[0]
@@ -252,6 +268,8 @@ class ClaudeTools:
             reason = "Claude tool call cancelled, stale, or tools are off"
         elif not isinstance(args, dict):
             reason = "Invalid tool arguments"
+        elif self._unattended and name == "AskUserQuestion":
+            reason = UNATTENDED_QUESTION
         elif plain in (ticket.disabled if ticket else self.app.settings.tools_disabled or ()):
             # The user switched this tool off. `_execute_tool` enforces the same
             # list, but only host calls reach it — a native tool never does, and
@@ -295,10 +313,12 @@ class ClaudeTools:
         is fail to reply.
         """
         decision_s, _ = _deadlines(self.app)
+        # An unattended compaction's approval would be an event the frontend cannot place: refuse it in words.
+        refusal_only = {"allow_prompt": False, "prompt_refusal": UNATTENDED_APPROVAL} if self._unattended else {}
         decision = self.app._authorize_action(
             name, args, policy,
             profile=ticket.profile if ticket else self.app._active_tool_profile,
-            workspace=self.workspace, stop_on_denial=False,
+            workspace=self.workspace, stop_on_denial=False, **refusal_only,
         )
         task = asyncio.ensure_future(controls.child_call(self.app, decision))
         self._decisions.add(task)
@@ -336,6 +356,8 @@ class ClaudeTools:
         from claude_agent_sdk import PermissionResultDeny
         if controls.enabled(self.app):
             turn = self._turn
+            if self._unattended:
+                return PermissionResultDeny(message=UNATTENDED_QUESTION)
             if name != "AskUserQuestion" or not self._owns_turn(turn) or controls._state(self.app).closing:
                 return PermissionResultDeny(message="Unapproved or expired native request")
             tool_id = getattr(context, "tool_use_id", None)
@@ -426,6 +448,8 @@ class ClaudeTools:
             # A host tool runs through the app's own tool door, which only a captured worker may
             # enter during a reviewed action; the SDK's task is not that worker.
             return await self._reviewed_host_call(name, spec, args)
+        if self._unattended:
+            return _host_result(UNATTENDED_HOST)
         turn = self._turn
         guarded = controls.enabled(self.app)
         try:

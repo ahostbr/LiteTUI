@@ -3208,7 +3208,7 @@ class LiteTUI(App):
         return bool(answer)
 
     @native_runtime_controls.tool_authorization
-    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False, prewrite=None):
+    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False, prewrite=None, prompt_refusal=None):
         """Shared policy and approval door for tools and hook processes."""
         # T1085: FIRST, before evaluate, the floor, the relay and the modal. Only
         # Owner's own seat may directly write a data root's jobs.json; ownership is
@@ -3250,7 +3250,7 @@ class LiteTUI(App):
             return tool_denied("profile", name=name, reason=decision.reason), False
         if decision.action == tool_policy.CONFIRM:
             if not allow_prompt:
-                return tool_denied("profile", name=name, reason="approval unavailable during shutdown"), False
+                return tool_denied("profile", name=name, reason=prompt_refusal or "approval unavailable during shutdown"), False
             # A non-owner seat routes any CONFIRM here independently of profile.
             # T1049-B routes by seat_authority.confirm_route. The ONE turn source read
             # here is `_hook_source` (Dijkstra D1).
