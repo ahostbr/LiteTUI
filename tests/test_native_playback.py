@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 
 import pytest
 from test_rust_native_history import common, save_history
@@ -15,6 +16,7 @@ from litetui import native_playback as playback
 
 app, armed, switch_app = _app, _armed, _switch_app
 pytestmark = pytest.mark.asyncio
+REAL_POPEN = subprocess.Popen  # the fixture forbids the module attribute during each test
 
 
 def review_command(runtime):
@@ -244,3 +246,57 @@ async def test_playback_refuses_unpublished_sibling_mutations(armed, monkeypatch
         controls._state(runtime).attempt = None
     runtime._native_model_lifecycle_hold = False
     runtime._backend_transition_error = None
+
+
+def pin_directory(runtime, seconds):
+    """Give the playback a real private directory and a process that pins it as its cwd.
+
+    The holder is outside any job object, so the owner cannot join it: only the lock is
+    simulated (a drained job has been seen pinning its cwd for up to 450 ms)."""
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    owned = runtime._native_playback
+    owned.temporary = tempfile.TemporaryDirectory(prefix="speech-", dir=runtime._agent_session.store.data_root)
+    owned.directory = Path(owned.temporary.name)
+    return owned, REAL_POPEN([sys.executable, "-c", f"import time;time.sleep({seconds})"], cwd=owned.directory)
+
+
+async def test_close_outlasts_a_late_release_of_the_helper_directory(armed):
+    import time
+
+    runtime, _ = armed
+    runtime.settings.tts_enabled = True
+    command = review_command(runtime)
+    review = await playback.dispatch(runtime, command)
+    owned, holder = pin_directory(runtime, 1.2)
+    started = time.monotonic()
+    try:
+        close_command = follow(command, review, "close")
+        closed = await playback.dispatch(runtime, close_command)
+        work.finish_publication(runtime, work.prepare_publication(runtime, close_command, closed))
+        assert closed["status"] == "closed" and not owned.directory.exists()
+        assert time.monotonic() - started >= 0.5, "the lock was released before close began"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+async def test_close_still_fails_when_the_helper_directory_is_never_released(armed, monkeypatch):
+    runtime, _ = armed
+    runtime.settings.tts_enabled = True
+    command = review_command(runtime)
+    review = await playback.dispatch(runtime, command)
+    owned, holder = pin_directory(runtime, 30)
+    monkeypatch.setattr(playback, "DIRECTORY_RELEASE_WAIT_S", 0.3)
+    try:
+        with pytest.raises(OSError):
+            await playback.dispatch(runtime, follow(command, review, "close"))
+        assert owned.directory.exists() and owned.temporary is not None
+    finally:
+        holder.kill()
+        holder.wait()
+        owned.temporary.cleanup()
+        owned.temporary = None
+        runtime._native_playback = None

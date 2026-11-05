@@ -2284,6 +2284,12 @@ fn selected_response_playback_reviews_exact_text_and_preserves_remote_ownership(
             );
             assert_eq!(parameters["timeout"], 10);
             if matches!(case, "playback-stop" | "playback-quit") {
+                // The fixture pinned the helper directory past close/shutdown: the
+                // source had to outlast a late directory release, not race it.
+                assert_eq!(
+                    report["playback_pinned"], report["playback_directories"][0],
+                    "{case} directory pin"
+                );
                 std::thread::sleep(Duration::from_millis(8100));
                 assert!(
                     !root.join("speech-completed").exists(),

@@ -32,6 +32,7 @@ PREFIX = 'gui.runtime.native_'
 streams: list[Any] = []
 workers: list[Any] = []
 helpers: list[Any] = []
+holders: list[Any] = []
 release_tool = threading.Event()
 release_publication = asyncio.Event()
 report: dict[str, Any] = {'case': case, 'commands': [], 'wire': [], 'requests': [], 'summaries': [],
@@ -228,9 +229,20 @@ async def serve(app):
     actual_exit, actual_release, actual_worker = app.exit, ConversationRepository.release, LiteTUI.run_worker
     actual_authorize, actual_execute_tool, actual_hook_dispatch = app._authorize_action, app._execute_tool, hook_host.dispatch
 
+    def pin_playback_directory(seconds):
+        # A drained job can still pin its working directory for a moment (measured up to
+        # 450 ms idle). Make that window deterministic: a process outside the owned job
+        # holds the helper directory as its cwd, so only the lock is simulated.
+        playback = getattr(app, '_native_playback', None)
+        assert playback is not None and playback.directory is not None
+        holders.append(real_popen([sys.executable, '-c', f'import time;time.sleep({seconds})'], cwd=playback.directory))
+        report['playback_pinned'] = str(playback.directory)
+
     async def management(owner, command):
         operation = command['type']
         if operation == 'gui.voice.native_playback':
+            if case == 'playback-stop' and command['action'] == 'close':
+                pin_playback_directory(1.5)
             result = await actual_gui(owner, command)
             report.setdefault('playback', []).append(copy.deepcopy(result))
             if command['action'] in ('start','close'):
@@ -314,6 +326,8 @@ async def serve(app):
     def dispatch(owner, command):
         report['commands'].append(copy.deepcopy(command))
         record('command', command=command)
+        if case == 'playback-quit' and command['type'] == 'shutdown':
+            pin_playback_directory(1.5)
         value = actual_dispatch(owner, command)
         if command['type'] in {'abort', 'shutdown'}:
             mark('command-'+command['type'], operation=command.get('id'))
@@ -496,6 +510,8 @@ async def serve(app):
             release_tool.set()
             release_publication.set()
             (root/'release-stream').touch()
+            for holder in holders:
+                holder.kill()
             if helpers:
                 await asyncio.gather(*helpers, return_exceptions=True)
             await app.client.close()

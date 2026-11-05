@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from litetui import ttyguard, voice_backend
 OPERATION = "gui.voice.native_playback"
 SELECTION = ("snapshot", "block_index", "block_id", "message_index", "message_sha256")
 MAX_TEXT = 16384
+DIRECTORY_RELEASE_WAIT_S = 10.0
 
 
 @dataclass
@@ -155,6 +157,24 @@ async def _run(playback):
         playback.status = "uncertain" if playback.preferences["litesuite_first"] else "failed"
 
 
+async def _remove_directory(temporary):
+    """Remove the private helper directory once its job has drained.
+
+    The job can report no active process while Windows still pins the helper's working
+    directory (measured up to ~450 ms on an idle machine, longer under load). That sharing
+    violation is transient, so only it is retried, and only for DIRECTORY_RELEASE_WAIT_S;
+    a lock that never lifts, or any other error, still fails the close or shutdown."""
+    deadline = time.monotonic() + DIRECTORY_RELEASE_WAIT_S
+    while True:
+        try:
+            temporary.cleanup()
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+        await asyncio.sleep(0.025)
+
+
 async def retire(app, *, closing=False):
     playback = getattr(app, "_native_playback", None)
     if playback is None:
@@ -168,7 +188,7 @@ async def retire(app, *, closing=False):
     if playback.unsettled:
         raise RuntimeError("Local playback descendant retirement is unproven")
     if playback.temporary is not None:
-        playback.temporary.cleanup()
+        await _remove_directory(playback.temporary)
         playback.temporary = None
     if closing:
         bridge = work.bridge(app)

@@ -1321,6 +1321,21 @@ impl Turn {
                     })
                 })
             }
+            // A failed or refused joined shutdown is the source's own verdict on Quit, not a
+            // stray prompt acknowledgement; say what the source said.
+            "response" if self.closing && event["id"] == SHUTDOWN_ID => {
+                let reason = event["error"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty() && text.len() <= 512);
+                Err(io::Error::other(match reason {
+                    Some(text) => format!(
+                        "Runtime shutdown failed: {}",
+                        terminal_text(text).replace(['\n', '\t'], " ")
+                    ),
+                    None => "Runtime shutdown was not acknowledged".to_owned(),
+                }))
+            }
             "response" => {
                 if let Some(update) = self.work_local_response(event)? {
                     return Ok(update);
@@ -4479,5 +4494,29 @@ mod scheduled_shutdown_tests {
         turn.conversation_shutdown = Some(scheduled.clone());
         turn.retire_scheduled_refusal(Some(&scheduled));
         assert_eq!(turn.conversation_shutdown, Some(completed));
+    }
+}
+
+#[cfg(test)]
+mod shutdown_refusal_tests {
+    use super::*;
+    #[test]
+    fn a_failed_shutdown_is_reported_as_the_source_refusal_not_as_a_prompt_response() {
+        let mut turn = Turn::default();
+        turn.accept(&json!({"type":"ready","protocol_version":1,"launch_status":"ready","backend":"claude","model":"fixture"}),"claude","fixture").unwrap();
+        turn.begin_close();
+        let error = turn
+            .accept(
+                &json!({"type":"response","id":SHUTDOWN_ID,"ok":false,"error":"[WinError 32] directory in use"}),
+                "claude",
+                "fixture",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("shutdown") && error.contains("directory in use"),
+            "{error}"
+        );
+        assert!(!error.contains("prompt"), "{error}");
     }
 }
