@@ -357,7 +357,7 @@ async def serve(app):
                         if command["type"].startswith("gui."):
                             try:
                                 result = await management(command)
-                                rpc._respond(command.get("id"), ok=True, result=result)
+                                rpc.publish_management_result(app, command, result)
                             except Exception as exc:  # noqa: BLE001 - real RPC response boundary
                                 rpc._respond(command.get("id"), ok=False, error=str(exc))
                         else:
