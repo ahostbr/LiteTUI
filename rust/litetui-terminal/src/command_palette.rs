@@ -61,6 +61,7 @@ pub enum Action {
     SkillPrepare,
     ConversationNew,
     ConversationRename,
+    SystemPrompt,
     Work(crate::work_view::Destination),
     Themes,
 }
@@ -91,6 +92,7 @@ impl Action {
             Some("skill_prepare") => Some(Self::SkillPrepare),
             Some("conversation_new") => Some(Self::ConversationNew),
             Some("conversation_rename") => Some(Self::ConversationRename),
+            Some("system_prompt") => Some(Self::SystemPrompt),
             Some("themes") => Some(Self::Themes),
             Some("plugins") => Some(Self::Work(Destination::Plugins)),
             Some("work_tasks") => Some(Self::Work(Destination::Tasks)),
@@ -237,6 +239,7 @@ impl Catalog {
                         Some(
                             Action::SkillPrepare
                                 | Action::ConversationRename
+                                | Action::SystemPrompt
                                 | Action::Glassbox
                                 | Action::Engine
                                 | Action::Plan
@@ -423,6 +426,11 @@ impl Route {
             && (arguments.len() > 4096 || arguments.contains('\0'))
         {
             return Err(fail("Rename prefill exceeds source title bounds"));
+        }
+        if action == Action::SystemPrompt
+            && (arguments.len() > crate::context::MAX_DOCUMENT_BYTES || arguments.contains('\0'))
+        {
+            return Err(fail("System prompt prefill exceeds the editor bounds"));
         }
         Ok(Self {
             row: id,

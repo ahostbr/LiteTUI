@@ -24,6 +24,7 @@ _ROUTES = {
     ("model-switch", "/unload"): "model_unload",
     ("model-switch", "/engine"): "engine",
     ("convo", "/compact"): "conversation_compact",
+    ("convo", "/system"): "system_prompt",
     ("settings-ui", "/hooks"): "hooks",
     ("reload-plugins", "/reload-plugins"): "plugin_reload",
     ("scheduler", "/job"): "work_new_job",
@@ -95,7 +96,7 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "native_action": action,
         "accepts_arguments": (action in {
             "skill_prepare", "conversation_rename", "glassbox", "conversation_compact",
-            "model_load", "model_unload", "engine", "plugin_reload", "plan",
+            "model_load", "model_unload", "engine", "plugin_reload", "plan", "system_prompt",
         } or kind == "command" and action in _WORK_INSPECTION),
         "unavailable_reason": "" if action else "This contribution has no native action adapter yet.",
     }
@@ -265,6 +266,10 @@ def resolve(app, cmd):
             raise ValueError("Compaction guidance cannot contain NUL")
         if arguments and app.backend.name == "codex" and hasattr(app.backend, "app_server"):
             raise ValueError("Codex native compaction does not accept guidance; command arguments were kept")
+    if action == "system_prompt":
+        from litetui import native_system_prompt
+
+        native_system_prompt.validate_argument(arguments)
     if action in {"model_load", "model_unload"} and arguments.strip() not in {"", current["model"]}:
         raise ValueError("This lifecycle control reviews the current model only; select the requested model with /model first")
     if action == "engine" and arguments.strip().lower() not in {"", "status", "start", "stop"}:

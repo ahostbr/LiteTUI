@@ -268,6 +268,7 @@ fn memory_review_requires_all_rendered_lines_after_resize_and_fresh_visible_pres
         document: Document::Memory,
         revision: Some(digest("original")),
         text: "original".into(),
+        system: None,
     };
     view.edit_reply(Reply::Opened(base.clone()));
     draw(&mut view, 80, 20);
@@ -329,6 +330,7 @@ fn memory_parser_checks_full_identity_revision_bytes_and_readback_correlation() 
         document: Document::Memory,
         revision: None,
         text: String::new(),
+        system: None,
     };
     let draft = "🌱\r\n";
     let review = Review {
@@ -374,7 +376,7 @@ fn memory_parser_checks_full_identity_revision_bytes_and_readback_correlation() 
             .command(&id, INSTANCE)
             .is_err()
     );
-    for doc in [Document::System, Document::Hooks] {
+    for doc in [Document::Hooks, Document::Plugins, Document::Topics] {
         assert!(Edit::Open(doc, None).command(&id, INSTANCE).is_err());
     }
 }

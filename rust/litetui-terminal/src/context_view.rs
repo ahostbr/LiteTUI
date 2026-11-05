@@ -24,6 +24,8 @@ pub struct View {
     topic_selected: usize,
     topic_name: Option<crate::prepared_skill::BoundedDraft<512>>,
     reloading_draft: bool,
+    // `/system <text>`: open the system prompt editor with this prefill once the page is read.
+    system_prefill: Option<String>,
     open: bool,
     document: Document,
     pending: Option<Request>,
@@ -127,6 +129,29 @@ impl View {
     pub fn reload(&mut self) -> Request {
         self.select(self.document.clone())
     }
+    /// Read the system prompt, then open its editor (prefilled when `/system` carried text).
+    pub fn open_system_editor(&mut self, prefill: &str) -> Request {
+        self.system_prefill = Some(prefill.to_owned());
+        self.open_document(Document::System)
+    }
+    pub fn continue_system_editor(&mut self) -> Option<crate::context_edit::Request> {
+        self.system_prefill.as_ref()?;
+        if self.editor.is_none()
+            && self.document == Document::System
+            && let Some(page) = self
+                .page
+                .as_ref()
+                .filter(|p| matches!(p.status, Status::Page | Status::Empty | Status::Missing))
+        {
+            return Some(crate::context_edit::Request::Open(
+                Document::System,
+                page.revision.clone(),
+            ));
+        }
+        self.system_prefill = None;
+        self.notice = "The system prompt cannot be edited right now.".into();
+        None
+    }
     pub fn edit_reply(&mut self, reply: crate::context_edit::Reply) {
         use crate::context_edit::Reply;
         if !self.open {
@@ -138,6 +163,15 @@ impl View {
                     && let Some(editor) = self.editor.as_mut()
                 {
                     editor.rebase(base);
+                } else if let Some(prefill) = self.system_prefill.take().filter(|s| !s.is_empty()) {
+                    // A prefill the editor refuses (over its bound) opens the current text instead.
+                    match crate::context_edit_view::Editor::with_draft(base.clone(), &prefill) {
+                        Ok(editor) => self.editor = Some(editor),
+                        Err(reason) => {
+                            self.editor = Some(crate::context_edit_view::Editor::new(base));
+                            self.notice = reason;
+                        }
+                    }
                 } else {
                     self.editor = Some(crate::context_edit_view::Editor::new(base));
                 }
@@ -158,6 +192,7 @@ impl View {
     }
     pub fn edit_rejected(&mut self, reason: &str) {
         self.reloading_draft = false;
+        self.system_prefill = None;
         if let Some(editor) = self.editor.as_mut() {
             editor.reject(reason);
         } else {
@@ -219,6 +254,7 @@ impl View {
 
     pub fn reject(&mut self, reason: &str) {
         if self.open {
+            self.system_prefill = None;
             self.page = None;
             self.topic_index.clear();
             self.topics = None;

@@ -70,6 +70,7 @@ OPERATIONS = (
     "context.native_topic_page", "context.native_topic_edit", "context.native_topic_review",
     "context.native_topic_apply", "context.native_topic_readback",
     "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback",
+    "context.native_system_edit", "context.native_system_review", "context.native_system_apply", "context.native_system_readback",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
     "runtime.native_snapshot", "runtime.native_validate", "runtime.native_apply", "runtime.native_readback", "runtime.native_tool_list",
@@ -577,6 +578,10 @@ def dispatch(app, cmd):
                      "context.native_topic_readback", "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback"}:
         from litetui import native_context_edit
         return native_context_edit.dispatch(app, cmd)
+    if operation in {"context.native_system_edit", "context.native_system_review",
+                     "context.native_system_apply", "context.native_system_readback"}:
+        from litetui import native_system_prompt
+        return native_system_prompt.dispatch(app, cmd)
     if operation in {"plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback"}:
         from litetui import native_plugin_reload
         return native_plugin_reload.dispatch(app, cmd)

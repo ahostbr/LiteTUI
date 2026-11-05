@@ -286,6 +286,14 @@ impl Demo {
                     crate::conversation_actions::Action::Rename,
                     &route_arguments,
                 )?,
+                Action::SystemPrompt => {
+                    self.show_work(None);
+                    if let Some(chat) = self.live.as_mut()
+                        && chat.work.open
+                    {
+                        chat.work.open_system_prompt(&route_arguments);
+                    }
+                }
                 Action::Quit => self.command_quit = true,
                 Action::Skills | Action::SkillPrepare => {}
             }

@@ -154,6 +154,7 @@ pub struct View {
     context_after_snapshot: Option<crate::context::Document>,
     command_after_snapshot: Option<Destination>,
     plugin_after_snapshot: Option<String>,
+    system_after_snapshot: Option<String>,
     hooks: crate::hook_toggle_view::View,
     plugin_reload: crate::plugin_reload::View,
     pub image: crate::image::Picker,
@@ -270,6 +271,12 @@ impl View {
             self.plugin_after_snapshot = Some(target.to_owned());
         }
     }
+    /// `/system [text]`: after the fresh Work snapshot, read the prompt and open its editor.
+    pub(crate) fn open_system_prompt(&mut self, prefill: &str) {
+        if self.open && matches!(self.pending, Some(Request::Snapshot)) && self.intent.is_some() {
+            self.system_after_snapshot = Some(prefill.to_owned());
+        }
+    }
     pub fn open(&mut self) {
         if self.waiting {
             return;
@@ -289,6 +296,7 @@ impl View {
         self.context_after_snapshot = None;
         self.command_after_snapshot = None;
         self.plugin_after_snapshot = None;
+        self.system_after_snapshot = None;
         self.image.close();
         self.midturn.open = false;
         self.chat_pause.open = false;
@@ -343,6 +351,7 @@ impl View {
         self.context_after_snapshot = None;
         self.command_after_snapshot = None;
         self.plugin_after_snapshot = None;
+        self.system_after_snapshot = None;
         self.hooks.close();
         self.plugin_reload.close();
         self.context.close();
@@ -521,6 +530,8 @@ impl View {
                         self.request(Request::Context(request));
                     } else if let Some(request) = self.context.continue_draft_reload() {
                         self.request(Request::ContextEdit(Box::new(request)));
+                    } else if let Some(request) = self.context.continue_system_editor() {
+                        self.request(Request::ContextEdit(Box::new(request)));
                     }
                 }
             }
@@ -612,6 +623,9 @@ impl View {
                     if let Some(target) = self.plugin_after_snapshot.take() {
                         let request = self.plugin_reload.open_target(&target);
                         self.request(Request::Plugin(Box::new(request)));
+                    } else if let Some(prefill) = self.system_after_snapshot.take() {
+                        let request = self.context.open_system_editor(&prefill);
+                        self.request(Request::Context(request));
                     } else if let Some(destination) = self.command_after_snapshot.take() {
                         match destination {
                             Destination::Hooks => {

@@ -41,14 +41,31 @@ impl Editor {
     pub(super) fn new(base: Base) -> Self {
         let mut draft = BoundedDraft::default();
         draft.set(&base.text).expect("bounded source document");
+        let notice = match base.system.as_ref().map(|f| f.stored.as_str()) {
+            Some("session_only") => {
+                "Not in a conversation file yet; saved with the first message.".to_owned()
+            }
+            Some("diverged") => {
+                "The transcript differs from the live prompt; applying rewrites it.".to_owned()
+            }
+            _ => String::new(),
+        };
         Self {
             base,
             draft,
             mode: Mode::Edit,
-            notice: String::new(),
+            notice,
             scroll: 0,
             layout: None,
         }
+    }
+    /// A `/system <text>` draft: the source base stays the comparison, the text is only a prefill.
+    pub(super) fn with_draft(base: Base, text: &str) -> Result<Self, String> {
+        let mut editor = Self::new(base);
+        editor.draft.set(text).map_err(|e| e.to_string())?;
+        editor.notice =
+            "Prefilled from /system. Nothing is saved until you review and apply.".into();
+        Ok(editor)
     }
     pub(super) fn invalidate_layout(&mut self) {
         self.layout = None;
@@ -86,8 +103,17 @@ impl Editor {
         self.notice = "Current file reloaded. Draft kept for a new review.".into();
     }
     pub(super) fn saved(&mut self, base: Base) {
+        let notice = match base.system.as_ref().map(|f| f.stored.as_str()) {
+            Some("session_only") => {
+                "Applied to this session and read back. It is written to the conversation file with the first message."
+            }
+            Some(_) => {
+                "Saved to the transcript and verified on disk. Takes effect as described in the review."
+            }
+            None => "Saved and verified on disk.",
+        };
         *self = Self::new(base);
-        self.notice = "Saved and verified on disk.".into();
+        self.notice = notice.into();
     }
     pub(super) fn key(&mut self, key: KeyEvent) -> Action {
         if key.kind == KeyEventKind::Release {
@@ -186,6 +212,8 @@ impl Editor {
                 };
                 let path = if let crate::context::Document::Topic(name) = &r.base.document {
                     format!("{}\n\n", ui::display_safe(name))
+                } else if let Some(facts) = &r.base.system {
+                    format!("Takes effect: {}\n\n", ui::display_safe(&facts.effect))
                 } else {
                     String::new()
                 };
@@ -248,13 +276,18 @@ impl Editor {
         }
         let (title, help) = match &self.mode {
             Mode::Discard => (
-                "Discard this memory draft?".to_owned(),
+                if self.base.system.is_some() {
+                    "Discard this system prompt draft?"
+                } else {
+                    "Discard this memory draft?"
+                }
+                .to_owned(),
                 "Enter discard · Esc keep editing",
             ),
             Mode::Review(r) => (
                 format!(
                     "Review {}  ·  {} → {} bytes  ·  lines {}–{} of {}",
-                    ui::display_safe(r.base.document.key()),
+                    ui::display_safe(r.base.document.label()),
                     r.base.text.len(),
                     r.draft.len(),
                     self.scroll + 1,
@@ -270,7 +303,7 @@ impl Editor {
             Mode::Edit => (
                 format!(
                     "Edit {}  ·  {} bytes",
-                    ui::display_safe(self.base.document.key()),
+                    ui::display_safe(self.base.document.label()),
                     self.draft.text().len()
                 ),
                 "F6 review · F5 reload base, keep draft · Esc return · ← → move · Home / End",
