@@ -170,6 +170,16 @@ impl View {
             self.notice="A newer scheduled proposal replaced this review. Refresh Work before running a job.".into();
         }
     }
+    pub fn clear_attached_image(&mut self) {
+        if self.image.open
+            && !self.waiting
+            && let Some(review) = &self.image.attached
+        {
+            self.request(Request::Image(crate::image::Request::Clear(
+                review.token().into(),
+            )));
+        }
+    }
     pub fn read_clipboard_image(&mut self) {
         if self.image.open && !self.waiting {
             self.request(Request::Image(self.image.clipboard_request()));

@@ -869,6 +869,14 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     {
         pending.invalidate_hits();
     }
+    let selectable = !(app.viewport_too_small
+        || app.approval_open
+        || app.themes_open
+        || app.has_live_input()
+        || app.completion.is_open());
+    if !selectable {
+        app.transcript_selection.hide();
+    }
     if app.viewport_too_small {
         if let Some(chat) = app.live.as_mut() {
             chat.runtime_controls.hide();
@@ -965,6 +973,10 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         .style(style(t.foreground, t.background)),
         viewport,
     );
+    if selectable {
+        app.transcript_selection
+            .draw(frame.buffer_mut(), viewport, app.scroll);
+    }
     if picker_height >= 3 {
         let picker_area = Rect::new(
             areas[2].x + 2,
@@ -1029,7 +1041,10 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             app.live
                 .as_ref()
                 .and_then(|c| c.work.image.attached.as_ref())
-                .map(|r| format!("[Image: {} · Ctrl+O] ", display_safe(r.name())))
+                .map(|r| format!(
+                    "[Image: {} · Ctrl+O review · Ctrl+X clear] ",
+                    display_safe(r.name())
+                ))
                 .unwrap_or_default(),
             display_safe(&app.notice),
             app.scroll,

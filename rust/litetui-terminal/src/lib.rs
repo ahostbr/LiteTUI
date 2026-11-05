@@ -76,6 +76,7 @@ pub mod hook_toggle;
 pub mod hook_toggle_view;
 pub mod image;
 pub mod inspection;
+pub mod transcript_selection;
 
 pub mod work_lifecycle;
 

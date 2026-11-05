@@ -454,7 +454,30 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 }
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
+    if key.code == KeyCode::Esc
+        && key.modifiers.is_empty()
+        && key.kind == KeyEventKind::Press
+        && app.transcript_selection.clear()
+    {
+        return false;
+    }
     match key.code {
+        KeyCode::Char('x')
+            if key.kind == KeyEventKind::Press && key.modifiers == KeyModifiers::CONTROL =>
+        {
+            if app
+                .live
+                .as_ref()
+                .is_some_and(|chat| chat.work.image.attached.is_some())
+            {
+                app.open_image();
+                app.live
+                    .as_mut()
+                    .expect("live attachment")
+                    .work
+                    .clear_attached_image();
+            }
+        }
         KeyCode::Char('o')
             if app.live.is_some()
                 && key.kind == KeyEventKind::Press
@@ -807,18 +830,30 @@ fn handle_key(
         let copy = code == Some('c') && (control || event.modifiers == KeyModifiers::SUPER);
         let blocked =
             app.approval_open || app.has_live_input() || app.themes_open || app.viewport_too_small;
-        if copy {
-            if !blocked {
-                app.footer.leave();
+        let screen_copy =
+            code == Some('c') && event.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        if copy || screen_copy {
+            if blocked || event.kind != KeyEventKind::Press {
+                return false;
             }
-            if blocked || app.composer.selected_text().is_empty() {
-                app.notice = "Press Ctrl+Q to quit; Ctrl+C copies selected input.".into();
-            } else {
-                app.notice = match clipboard.copy_text(app.composer.selected_text()) {
+            app.footer.leave();
+            let composer = app.composer.selected_text();
+            let selected =
+                if app.transcript_selection.active() && (screen_copy || composer.is_empty()) {
+                    app.transcript_selection.text()
+                } else {
+                    (!composer.is_empty()).then(|| composer.to_owned())
+                };
+            app.notice = match selected {
+                Some(text) => match clipboard.copy_text(&text) {
                     Ok(()) => "Copy sequence sent; terminal clipboard support is required.".into(),
                     Err(error) => error,
-                };
-            }
+                },
+                None => {
+                    "Press Ctrl+Q to quit. Drag transcript text or select composer text to copy."
+                        .into()
+                }
+            };
             return false;
         }
         if control && code == Some('v') {
@@ -978,6 +1013,19 @@ fn paste(app: &mut Demo, text: &str) {
     } else {
         app.paste_text(text);
     }
+}
+
+fn terminal_mouse(app: &mut Demo, event: MouseEvent, shown: &ratatui::buffer::Buffer) {
+    if !app.has_live_input()
+        && !app.approval_open
+        && !app.themes_open
+        && !app.viewport_too_small
+        && !app.completion.is_open()
+        && app.transcript_selection.mouse(event, shown)
+    {
+        return;
+    }
+    mouse(app, event);
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
@@ -1173,14 +1221,15 @@ fn run() -> io::Result<()> {
     let mut input = KeyRouter::default();
     let mut clipboard = litetui_terminal::clipboard::SystemClipboard::new(1024 * 1024);
     loop {
-        terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        let shown = terminal.draw(|frame| ui::draw(frame, &mut app))?;
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(event) if handle_key(&mut app, &mut input, event, &mut clipboard) => {
                     break;
                 }
                 Event::Paste(text) => paste(&mut app, &text),
-                Event::Mouse(event) => mouse(&mut app, event),
+                Event::Mouse(event) => terminal_mouse(&mut app, event, shown.buffer),
+                Event::FocusLost | Event::Resize(..) => app.transcript_selection.hide(),
 
                 _ => {}
             }
@@ -1324,7 +1373,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                     result
                 };
             }
-            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+            let shown = terminal.draw(|frame| ui::draw(frame, &mut app))?;
             if event::poll(Duration::from_millis(50))? {
                 let quit = match event::read()? {
                     Event::Key(event) => handle_key(&mut app, &mut input, event, &mut clipboard),
@@ -1333,10 +1382,11 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                         false
                     }
                     Event::Mouse(event) => {
-                        mouse(&mut app, event);
+                        terminal_mouse(&mut app, event, shown.buffer);
                         false
                     }
                     Event::FocusLost | Event::Resize(..) => {
+                        app.transcript_selection.hide();
                         app.live.as_mut().expect("live").runtime_controls.hide();
                         app.live.as_mut().expect("live").engine.invalidate();
                         app.live.as_mut().expect("live").commands.hide();
@@ -1965,6 +2015,67 @@ mod tests {
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
             &mut clipboard
         ));
+    }
+
+    #[test]
+    fn dragging_rendered_transcript_copies_whole_graphemes_and_respects_modal_ownership() {
+        let mut app = Demo::default();
+        app.turns.push("selected 雪e\u{301}!".into());
+        app.scroll = usize::MAX;
+        app.insert_text("keep this draft");
+        app.composer.select_all();
+        let mut term = Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+        let frame = term.draw(|f| ui::draw(f, &mut app)).unwrap();
+        let at = (0..40)
+            .find_map(|y| {
+                (0..100)
+                    .find(|&x| frame.buffer[(x, y)].symbol() == "雪")
+                    .map(|x| (x, y))
+            })
+            .unwrap();
+        let event = |kind, offset| MouseEvent {
+            kind,
+            column: at.0 + offset,
+            row: at.1,
+            modifiers: KeyModifiers::NONE,
+        };
+        terminal_mouse(
+            &mut app,
+            event(MouseEventKind::Down(MouseButton::Left), 2),
+            frame.buffer,
+        );
+        terminal_mouse(
+            &mut app,
+            event(MouseEventKind::Drag(MouseButton::Left), 1),
+            frame.buffer,
+        );
+        terminal_mouse(
+            &mut app,
+            event(MouseEventKind::Up(MouseButton::Left), 1),
+            frame.buffer,
+        );
+        let frame = term.draw(|f| ui::draw(f, &mut app)).unwrap();
+        assert!(
+            frame.buffer[at]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        let mut input = KeyRouter::default();
+        let mut clipboard = TestClipboard::default();
+        let copy = KeyEvent::new(
+            KeyCode::Char('C'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        handle_key(&mut app, &mut input, copy, &mut clipboard);
+        assert_eq!(clipboard.copied, ["雪e\u{301}"]);
+        assert_eq!(app.composer.selected_text(), "keep this draft");
+        app.turns[0] = "selected 違e\u{301}!".into();
+        term.draw(|f| ui::draw(f, &mut app)).unwrap();
+        assert!(!app.transcript_selection.active());
+        app.approval_open = true;
+        term.draw(|f| ui::draw(f, &mut app)).unwrap();
+        handle_key(&mut app, &mut input, copy, &mut clipboard);
+        assert_eq!(clipboard.copied.len(), 1);
     }
 
     #[test]

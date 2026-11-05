@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Copy visible transcript text and clear the current composer image - 2026-11-04
+
+Drag across visible transcript rows and press Ctrl+Shift+C to copy. Ctrl+C prefers selected composer text and otherwise copies the transcript selection. Selection uses displayed graphemes, including wide and combining characters. A change to the selected cells, scrolling, resizing or opening a modal invalidates it. Ctrl+X requests a source-checked clear of the attached image and leaves the draft available.
+
+In a private two-process Windows console, the packaged program accepted native mouse records and emitted the exact selected text in its OSC52 sequence. The private host intercepted the sequence. A separate packaged session showed the color preview, cleared the exact attached token once via Ctrl+X, and retained the caption. The ordinary Rust suite and the ten packaged Context groups are recorded below.
+
 ## F1 nested memory topics and F6 saved embedded images - 2026-11-04
 
 In F1 Context, Topics lists the active agent’s nested Markdown memory files. Creating or editing one requires a separate review. An external edit makes the review stale, and reloading keeps the proposed text. F6 can also preview an embedded image from a saved conversation using the exact history snapshot and attachment position, including two images in the same message.

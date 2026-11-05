@@ -84,7 +84,7 @@ impl Review {
     pub fn name(&self) -> &str {
         self.0["name"].as_str().expect("parsed name")
     }
-    fn token(&self) -> &str {
+    pub(crate) fn token(&self) -> &str {
         self.0["token"].as_str().expect("parsed token")
     }
 }
@@ -302,13 +302,13 @@ impl Picker {
             return None;
         }
         if self.thumbnail.is_some() {
-            if matches!(event.code, KeyCode::Esc | KeyCode::Char('v')) {
+            if matches!(event.code, KeyCode::Esc | KeyCode::Char('v' | 'V')) {
                 self.thumbnail = None;
                 self.hide();
             }
             return None;
         }
-        if event.code == KeyCode::Char('v') && self.visible && !self.editing() {
+        if matches!(event.code, KeyCode::Char('v' | 'V')) && self.visible && !self.editing() {
             return self
                 .candidate
                 .as_ref()
