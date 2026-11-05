@@ -722,6 +722,26 @@ _NOT_OURS = {
 }
 
 
+def _backend_attributes(source):
+    import ast
+
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute) and (
+            isinstance(node.value, ast.Name) and node.value.id == "backend"
+            or isinstance(node.value, ast.Attribute) and node.value.attr == "backend"
+        ):
+            yield node.attr, node.lineno
+
+
+def test_backend_surface_scan_reads_python_accesses_including_f_strings():
+    sample = """verb = 'backend.set'
+# The docs mention backend.missing, too.
+result = self.backend.request_overrides(model)
+summary = f'{backend.name}'
+"""
+    assert set(_backend_attributes(sample)) == {("request_overrides", 3), ("name", 4)}
+
+
 def test_every_unguarded_backend_call_is_implemented():
     """🔴 THE ARM FOR THE WHOLE CLASS, NOT FOR ONE MISSING METHOD.
 
@@ -759,7 +779,6 @@ def test_every_unguarded_backend_call_is_implemented():
         backend missing that method degrades to the snapshot instead of
         crashing the dialog. A specific arm below pins the method itself.
     """
-    import re
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "src" / "litetui"
@@ -776,9 +795,8 @@ def test_every_unguarded_backend_call_is_implemented():
         path = root / rel
         if not path.exists():
             continue
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for m in re.finditer(r"\bbackend\.([A-Za-z_]\w*)", line):
-                called.setdefault(m.group(1), f"{rel}:{n}")
+        for name, line in _backend_attributes(path.read_text(encoding="utf-8")):
+            called.setdefault(name, f"{rel}:{line}")
 
     missing = {a: where for a, where in called.items()
                if a not in _NOT_OURS and not hasattr(NInferBackend, a)}
