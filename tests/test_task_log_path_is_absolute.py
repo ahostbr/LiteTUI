@@ -22,6 +22,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import tasks as tasks_mod
@@ -100,6 +102,53 @@ def test_CONTROL_a_log_that_cannot_be_written_says_so_instead_of_a_path(tmp_path
 
     assert "could not be written" in text
     assert "output/tasks" not in text
+
+
+@pytest.mark.parametrize("promoted_after", [None, 30])
+@pytest.mark.parametrize("result, ok", [
+    ("HEAD\n" + "x" * 6000 + "\nTAIL", True), ("", True), ("[exit 1] failed", False),
+], ids=["long", "empty", "failed"])
+def test_advertised_log_is_readable_before_and_after_finish(tmp_path, promoted_after, result, ok):
+    """T0848: read the advertised path immediately, with no sleeps or worker."""
+    from litetui.plugins.core_tools import tool_read
+
+    task = _task()
+    advertised = _advertised(tasks_mod.start_text(task, tmp_path, promoted_after))
+    running = tool_read({"path": advertised})
+    assert not running.startswith("[error]"), running
+    assert task.id in running and "running" in running
+    assert "output is written here when it finishes" in running
+    assert task.state == tasks_mod.RUNNING and task.log == ""
+
+    # Re-announcing a task must not truncate its notice or its final result.
+    tasks_mod.start_text(task, tmp_path, promoted_after)
+    assert tool_read({"path": advertised}) == running
+    wake = tasks_mod.finish(task, result, ok, tmp_path)
+    assert Path(advertised).read_text(encoding="utf-8") == result
+    assert tool_read({"path": advertised}).replace("\r\n", "\n") == result
+    assert f"full output: {advertised}" in wake
+    assert wake.endswith(tasks_mod.excerpt(result).rstrip())
+    tasks_mod.start_text(task, tmp_path, promoted_after)
+    assert Path(advertised).read_text(encoding="utf-8") == result
+
+
+def test_start_does_not_advertise_a_log_it_cannot_create(tmp_path):
+    (tmp_path / "output").write_text("not a directory", encoding="utf-8")
+    task = _task()
+
+    text = tasks_mod.start_text(task, tmp_path)
+
+    assert "log could not be created" in text
+    assert "[inbox from task]" in text
+    assert ".log" not in text
+    assert task.state == tasks_mod.RUNNING
+
+
+def test_genuinely_missing_file_still_errors(tmp_path):
+    from litetui.plugins.core_tools import tool_read
+
+    missing = tmp_path / "missing.txt"
+    assert tool_read({"path": str(missing)}) == f"[error] file not found: {missing}"
 
 
 def _advertised(text: str) -> str:
