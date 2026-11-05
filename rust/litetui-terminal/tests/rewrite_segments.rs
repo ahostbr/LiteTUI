@@ -61,6 +61,7 @@ fn review() -> r::Review {
         prepared_context_sha256: "1".repeat(64),
         prepared_messages: 2,
         prompt_hooks: false,
+        native_rewind: None,
     }
 }
 fn ready() -> (Turn, String) {

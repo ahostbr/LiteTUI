@@ -13,6 +13,7 @@ from dataclasses import asdict, replace
 
 from litetui import (
     backend_catalog,
+    codex_rewind,
     conversation_transition,
     hook_host,
     native_history,
@@ -119,11 +120,19 @@ def _text(app, value):
 
 def _eligibility(app, message, prefix):
     try:
-        if hasattr(app.backend, "app_server") or getattr(app.backend, "owns_native_turns", False):
+        native = hasattr(app.backend, "app_server")
+        if native:
+            if app.backend.name != "codex":
+                raise ValueError("This provider does not support native Codex rewind")
+            thread, *_ = codex_rewind.row_link(message)
+            if thread != codex_rewind.Binding.capture(app).thread_id:
+                raise ValueError("The saved row belongs to another native thread")
+        elif getattr(app.backend, "owns_native_turns", False):
             raise ValueError("This provider owns native context; verified rewind is not implemented")
         if app.store.pending or not app.store.owned:
             raise ValueError("Edit/Retry requires an already materialized owned conversation")
-        if set(message) != {"role", "content"}:
+        allowed = {"role", "content", "provider_metadata", "codex_delivery"} if native else {"role", "content"}
+        if not set(message) <= allowed:
             raise ValueError("Edit/Retry currently supports plain user text without delivery or provider metadata")
         if reason := conversation_transition._eligibility(app):
             raise ValueError(reason)
@@ -194,7 +203,17 @@ def snapshot(app, cmd):
     return native_history._wire(cmd, _snapshot(app, cmd)[0])
 
 
-def validate(app, cmd):
+async def validate_codex(app, cmd):
+    current, capture = _snapshot(app, cmd)
+    chosen = current["actions"].get(cmd.get("action"), {})
+    if current["snapshot"] != cmd.get("snapshot") or not chosen.get("eligible"):
+        raise ValueError(chosen.get("reason") or "Codex rewrite selection changed")
+    rewind = await codex_rewind.Rewind.review(app, json.loads(capture.history), current["message_index"])
+    _stable(app, capture, original=True)
+    return validate(app, cmd, rewind=rewind)
+
+
+def validate(app, cmd, *, rewind=None):
     current, captured = _snapshot(app, cmd)
     if cmd.get("snapshot") != current["snapshot"]:
         raise ValueError("Rewrite selection is stale; inspect again")
@@ -212,7 +231,14 @@ def validate(app, cmd):
         "prepared_context_sha256": projection.digest(projection.encoded(messages)), "prepared_messages": len(messages),
         "effects": {"prompt_hooks": bool(conversation_transition._matching(captured.hooks, "prompt_before", "rpc")),
                     "provider_execution": True, "provider_rewind": False}}
-    review = replace(captured, wire=projection.encoded(value))
+    if hasattr(app.backend, "app_server"):
+        if rewind is None:
+            raise ValueError("Codex rewrites require native history inspection")
+        value["effects"]["provider_rewind"] = True
+        value["native_rewind"] = rewind.plan
+        review = codex_rewind.Review(**{**vars(captured), "wire": projection.encoded(value)}, rewind=rewind)
+    else:
+        review = replace(captured, wire=projection.encoded(value))
     _snapshot_record(app, review, messages)
     app._conversation_rewrite_review = review
     return native_history._wire(cmd, value)
@@ -245,7 +271,8 @@ async def apply(app, cmd):
         raise ValueError("No unconsumed Edit/Retry review; inspect again")  # noqa: TRY004 - protocol refusal
     app._conversation_rewrite_review = None
     wire = json.loads(review.wire)
-    if not _echo(cmd, wire, REVIEW_FIELDS):
+    fields = (*REVIEW_FIELDS, "effects", "native_rewind") if isinstance(review, codex_rewind.Review) else REVIEW_FIELDS
+    if not _echo(cmd, wire, fields):
         raise ValueError("Apply must exactly echo its reviewed Edit/Retry action")
     attempt = Attempt(review, operation, _task())
     register_attempt(app, attempt)
@@ -291,11 +318,18 @@ async def apply(app, cmd):
 
             item = {"content": wire["text"], "text": wire["text"], "source": "rpc",
                     "operation_id": operation, "tool_profile": review.profile}
+            async def revert():
+                await review.rewind.revert(app, attempt)
+                before_accept()
+
             accepted = await hook_host.admit_prompt_origin(app, item, on_refused=reasons.append,
-                before_accept=before_accept, persist_user=persist, allow_prompt=False)
+                before_accept=before_accept, persist_user=persist, allow_prompt=False,
+                **({"before_persist": revert} if isinstance(review, codex_rewind.Review) else {}))
             if getattr(app, "_conversation_transition_cleanup_error", None):
                 raise RuntimeError("Prompt hook cleanup is unproven")
             if accepted is None:
+                if attempt.mutated:
+                    raise RuntimeError("Codex rewind was dispatched but the replacement was refused. Reopen to inspect native history.")
                 attempt.reason = reasons[-1] if reasons else "Prompt was not admitted"
                 _refusal_checkpoint(app, attempt)
                 return _receipt(app, cmd, attempt, "refused", attempt.reason)
@@ -359,6 +393,22 @@ async def settled(app, cmd):
             "mutated": attempt.mutated, "close_required": False, "history": descriptor,
             "execution": {"segments": len(attempt.segments or ()),
                           "last_execution_id": attempt.segments[-1] if attempt.segments else None}}
+        if isinstance(attempt.review, codex_rewind.Review):
+            rewind = attempt.review.rewind
+            if attempt.outcome == "accepted":
+                if len(attempt.segments or ()) != 1:
+                    raise ValueError("Verified Codex rewrites require exactly one replacement execution")
+                try:
+                    result["native_rewind"] = await rewind.settlement(app, captured.messages, wire["message_index"], wire["text"])
+                    _stable(app, attempt.review, admitted=True)
+                    if native_history.capture_file(app.convo_path).raw != captured.raw:
+                        raise ValueError("Saved history changed during Codex replacement verification")
+                except (Exception, asyncio.CancelledError):
+                    attempt.outcome = "failed"
+                    app._conversation_rewrite_error = CLOSE_REQUIRED
+                    raise
+            else:
+                result["native_rewind"] = None
         native_history._wire(cmd, result)
         attempt.pending = False
         return result

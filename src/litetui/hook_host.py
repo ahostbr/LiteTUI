@@ -308,7 +308,7 @@ async def admit_prompt(app, item) -> bool:
 
 
 async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
-                              persist_user=None, allow_prompt=True) -> EventOrigin | None:
+                              persist_user=None, allow_prompt=True, before_persist=None) -> EventOrigin | None:
     if refuse_engine_admission(app, item, on_refused=on_refused):
         return None
     # Capture input metadata before the first suspension, not from mutable app
@@ -334,6 +334,10 @@ async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
     if before_accept is not None:
         before_accept()
     if result.allowed and not app._stop_requested:
+        if before_persist is not None:
+            await before_persist()
+            if app._stop_requested:
+                raise ValueError("Stop received after provider preparation. No replacement turn was sent.")
         accepted = accept_prompt_origin(app, item, origin=origin, on_refused=on_refused,
                                         persist_user=persist_user)
         if accepted is None:

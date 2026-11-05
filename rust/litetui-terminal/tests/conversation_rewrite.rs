@@ -119,6 +119,57 @@ fn settled_value(review: &Review, admission: &Admission) -> Value {
     v["history"] = history_value(admission.outcome == AdmissionOutcome::Refused);
     v
 }
+#[test]
+fn codex_review_and_receipt_require_the_exact_suffix_thread_and_fresh_user_item() {
+    let mut before = snapshot();
+    before.selection.identity.backend = "codex".into();
+    let mut review = review_value(&before, Action::Retry, &before.original_text);
+    review["effects"]["provider_rewind"] = json!(true);
+    review["native_rewind"] = json!({"thread_id":"thread","before_sha256":"a".repeat(64),"prefix_sha256":"b".repeat(64),"retained_turns":1,
+        "suffix":[{"turn_id":"dropped","user_item_id":"old-user","text":before.original_text,
+            "items":[{"id":"old-user","kind":"userMessage","details":""},{"id":"tool","kind":"commandExecution","details":"touch example"}]}]});
+    let parse =
+        |wire: &Value| Review::parse(wire, before.clone(), Action::Retry, &before.original_text);
+    for (pointer, value) in [
+        ("/native_rewind/suffix/0/user_item_id", json!("other")),
+        ("/native_rewind/suffix/0/text", json!("changed")),
+        ("/native_rewind/suffix/0/items/1/id", json!("old-user")),
+        ("/effects/provider_rewind", json!(false)),
+        ("/native_rewind/retained_turns", json!(100)),
+    ] {
+        let mut bad = review.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(parse(&bad).is_err(), "{pointer}");
+    }
+    let r = parse(&review).unwrap();
+    assert_eq!(r.request()["native_rewind"], review["native_rewind"]);
+    let admission =
+        Admission::parse(&admission_value(&r, AdmissionOutcome::Accepted), &r, OP).unwrap();
+    let mut settled = settled_value(&r, &admission);
+    settled["history"]["backend"] = json!("codex");
+    settled["native_rewind"] = json!({"thread_id":"thread","prefix_sha256":"b".repeat(64),
+        "history_sha256":"c".repeat(64),"turn_id":"replacement","user_item_id":"new-user"});
+    assert_eq!(
+        Settlement::parse(&settled, &admission, &r, OP)
+            .unwrap()
+            .native_turn
+            .as_deref(),
+        Some("replacement")
+    );
+    for (key, bad) in [
+        ("thread_id", "foreign"),
+        ("user_item_id", "tool"),
+        ("turn_id", "dropped"),
+        ("prefix_sha256", "bad"),
+    ] {
+        let mut changed = settled.clone();
+        changed["native_rewind"][key] = json!(bad);
+        assert!(
+            Settlement::parse(&changed, &admission, &r, OP).is_err(),
+            "{key}"
+        );
+    }
+}
 fn draw(view: &mut View, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal

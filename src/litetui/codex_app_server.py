@@ -729,15 +729,21 @@ class AppServerTransport:
             )
 
     async def _stream(self, kwargs, *, origin: EventOrigin | None = None):
+        from litetui import codex_rewind
+
+        rewind = codex_rewind.claim(self.app, origin, self)
         async with self.lock:
+            if rewind is not None:
+                rewind.connected(self.app)
             if isinstance(self.server, AppServer):
                 self.server.execution_workspace = workspace(self.app)
                 self.server.mcp_servers = getattr(self.app, "_mcp_servers", None)
-            if isinstance(self.server, AppServer) and self.server.native_bridge is None:
-                from litetui.codex_hook_bridge import NativeHookBridge
+            if rewind is None:
+                if isinstance(self.server, AppServer) and self.server.native_bridge is None:
+                    from litetui.codex_hook_bridge import NativeHookBridge
 
-                await NativeHookBridge(self.app).install(self.server)
-            await self.server.start()
+                    await NativeHookBridge(self.app).install(self.server)
+                await self.server.start()
             if self.process is not self.server.process:
                 self.thread_id = None
                 self.process = self.server.process
@@ -754,7 +760,8 @@ class AppServerTransport:
                 reconcile_messages,
             )
 
-            await reconcile_messages(self.app, self.server, messages)
+            if rewind is None:
+                await reconcile_messages(self.app, self.server, messages)
             instructions = "\n\n".join(
                 str(m.get("content", "")) for m in messages if m["role"] == "system"
             )
@@ -775,6 +782,12 @@ class AppServerTransport:
                     if "tool_inventory" in metadata:
                         registered_inventory = metadata["tool_inventory"]
                     previous_usage = (metadata.get("native_usage") or {}).get("total")
+            if rewind is not None:
+                rewind.connected(self.app)
+                reference, boundary = rewind.binding.thread_id, len(messages) - 1
+                registered_inventory = getattr(self, "registered_inventory", None)
+                if boundary < 0 or messages[boundary] != self.app.conversation[-1] or messages[boundary].get("role") != "user":
+                    raise ProviderError("Codex replacement is not the exact admitted user message.")
             if reference != self.thread_id or not reference:
                 if reference:
                     opened = await self.server.request(
@@ -854,6 +867,8 @@ class AppServerTransport:
             if deliveries:
                 params["clientUserMessageId"] = deliveries[0]["codex_delivery"]["id"]
                 message_state(self.app, deliveries[0], "sending")
+            if rewind is not None:
+                await rewind.verify_prefix(self.app)
             try:
                 started = await self.server.request("turn/start", params)
             except RejectedRequest as error:
@@ -863,6 +878,8 @@ class AppServerTransport:
             for message in deliveries:
                 message_state(self.app, message, "accepted")
             self.turn_id = started["turn"]["id"]
+            if rewind is not None:
+                rewind.replacement_turn = self.turn_id
             if self.app is not None and hasattr(self.app, "_rpc_emit"):
                 event = {
                     "type": "native_turn_started", "eventVersion": 1,
@@ -1015,6 +1032,8 @@ class AppServerTransport:
                             yield _chunk(usage=usage, metadata=metadata)
                     elif method in ("item/started", "item/completed"):
                         item = payload.get("item", {})
+                        if method == "item/completed" and item.get("type") == "userMessage":
+                            codex_rewind.save_user_item(self.app, record_index, metadata, input_items, self.turn_id, payload)
                         if (method == "item/completed" and item.get("type") == "agentMessage"
                                 and item.get("questions") and item.get("delivery") == "async"):
                             if item.get("id") not in streamed_message_ids and item.get("text"):

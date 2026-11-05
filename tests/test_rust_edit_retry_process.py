@@ -35,6 +35,9 @@ def launch(tmp_path, case):
             autocompact_enabled=case != "self-compact", autocompact_at_percent=80, wake_after_compact=True)
     if question:
         settings.update(backend=backend, tools_enabled=True)
+    if case.startswith("codex-"):
+        backend = "codex"
+        settings.update(backend="codex", default_model="gpt-6.1-sol", codex_engine="native", thinking_level="high")
     (data / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     source = Path(os.environ.get("LITETUI_TEST_RUNTIME_SOURCE", str(ROOT))).resolve()
     environment = dict(os.environ, RUST_HISTORY_SOURCE=str(source), RUST_HISTORY_CASE=("lmstudio-rewrite-" if backend == "lmstudio" else "rewrite-") + case,
@@ -47,6 +50,9 @@ def launch(tmp_path, case):
             "--backend", backend, "--model", "switch-old", "--tool-profile", "strict", "--thinking-level", "default",
             "--mcp-servers", "none", "--server-mode", "connect", "--server-timeout", "5",
             "--base-url", "http://127.0.0.1:45120/v1"]
+    if backend == "codex":
+        argv = argv[:argv.index("--backend")] + ["--backend", "codex", "--model", "gpt-6.1-sol", "--codex-engine", "native",
+            "--tool-profile", "strict", "--thinking-level", "high", "--mcp-servers", "none"]
     output, errors = tmp_path / "events.jsonl", tmp_path / "stderr.txt"
     with output.open("wb") as stdout, errors.open("wb") as stderr:
         process = subprocess.Popen(argv, cwd=tmp_path, env=environment, stdout=stdout, stderr=stderr,
@@ -76,7 +82,9 @@ def launch(tmp_path, case):
         assert marker == {"stage": "question-compaction" if aftercare else "question-stream",
             "ask_id": report["question_request"]["event"]["id"],
             "execution_id": report["question_request"]["execution_id"]}
-    if backend == "lmstudio":
+    if backend == "codex":
+        assert all(row["method"] in {"model/list", "account/read"} for row in report["provider_calls"])
+    elif backend == "lmstudio":
         assert report["provider_calls"] and all(row["method"] == "models/read" for row in report["provider_calls"])
     else:
         assert report["provider_calls"] == []
@@ -90,6 +98,40 @@ def launch(tmp_path, case):
     forbidden = {"gui.conversations.edit", "gui.conversations.retry", "gui.conversations.native_open", "prompt"}
     assert not any(command["type"] in forbidden for command in report["commands"])
     return report
+
+
+@pytest.mark.parametrize("case", ["codex-edit", "codex-retry", "codex-partial", "codex-drift", "codex-forged", "codex-legacy", "codex-settled-drift"])
+def test_codex_rewind_native_readbacks_and_non_replay(tmp_path, case):
+    report = launch(tmp_path, case)
+    calls = [row["method"] for row in report.get("rewind_rpc", [])]
+    if case == "codex-legacy":
+        assert report["refused_at"] == "eligibility"
+        assert "predates" in report["snapshot"]["actions"]["edit"]["reason"]
+        assert not calls
+    elif case == "codex-forged":
+        assert report["refused_at"] == "validate" and "thread/revert" not in calls
+    elif case == "codex-drift":
+        assert report["apply"]["turn"] == "refused" and "thread/revert" not in calls
+    elif case == "codex-settled-drift":
+        assert report["apply"]["turn"] == "accepted" and "disagrees" in report["settlement_error"]
+        assert calls.count("thread/revert") == calls.count("turn/start") == 1
+        assert report["durable"][5]["provider_metadata"]["app_server_user_item_id"] == "replacement-user"
+        assert not report["replay"]["ok"]
+    elif case == "codex-partial":
+        assert report["apply"]["turn"] == "failed" and report["apply"]["close_required"]
+        assert report["original"] == report["durable"]
+        assert calls.count("thread/revert") == 1 and "turn/start" not in calls
+        assert not report["replay"]["ok"] or report["replay"]["result"]["turn"] != "accepted"
+    else:
+        assert calls.count("thread/revert") == calls.count("turn/start") == 1
+        assert "thread/turns/list" in calls[calls.index("thread/revert")+1:calls.index("turn/start")]
+        assert calls[-1] == "thread/turns/list"
+        assert report["review"]["native_rewind"]["suffix"][0]["items"][1]["kind"] == "fileChange"
+        receipt = report["settled"]["native_rewind"]
+        assert receipt["turn_id"] == "replacement-turn" and receipt["user_item_id"] == "replacement-user"
+        assert report["durable"][5]["provider_metadata"]["app_server_user_item_id"] == "replacement-user"
+        assert len(report["durable"]) == 7
+        assert not report["replay"]["ok"] or report["replay"]["result"]["turn"] != "accepted"
 
 
 def assert_unchanged(report, before="before"):

@@ -117,6 +117,8 @@ def seed(app):
         {"role": "user", "content": "DISCARDED LATER USER"},
         {"role": "assistant", "content": "DISCARDED FINAL ANSWER"},
     ]
+    if case.startswith("codex-"):
+        seed_codex(app)
     if case == "orphan-tool":
         app.conversation[3]["tool_call_id"] = "unmatched-tool"
     elif case == "missing-tool-id":
@@ -503,7 +505,11 @@ async def serve(app):
         if receipt.get("turn") == "accepted":
             await until(lambda: any(row.get("type") == "turn_end" for row in history.boundary.records), 20)
         if receipt.get("turn") in {"accepted", "refused"}:
-            settled = await call(SETTLED, **common, action_id=receipt["action_id"], operation_id=response["id"])
+            settled = await call(SETTLED, check=case != "codex-settled-drift", **common, action_id=receipt["action_id"], operation_id=response["id"])
+            if case == "codex-settled-drift":
+                assert not settled["ok"]
+                history.report["settlement_error"] = settled["error"]
+                return
             history.report["settled"] = settled["result"]
             fresh = (await call(history.SNAPSHOT, **history.common(app)))["result"]
             assert fresh == settled["result"]["history"]
@@ -537,7 +543,7 @@ async def serve(app):
             history.report["refused_at"] = "eligibility"
             assert snapshot["actions"]["edit"]["reason"]
             return
-        action = "retry" if case == "retry" else "edit"
+        action = "retry" if case in {"retry", "codex-retry"} else "edit"
         text = (TARGET if action == "retry" else "  雪🛰️e\u0301\r\nExact trailing spaces  " if case == "unicode"
                 else "x" * 65536 if case == "text-boundary" else "x" * 65537 if case == "text-over-limit"
                 else "/new" if case == "slash" else "missing.png" if case == "image-path"
@@ -557,6 +563,10 @@ async def serve(app):
         assert review["prepared_context_sha256"] == history.sha(history.canonical(expected))
         history.report["candidate"] = expected
         payload = {key: value for key, value in review.items() if key not in {"kind", "effects"}}
+        if "native_rewind" in review:
+            payload["effects"] = review["effects"]
+        if case == "codex-drift":
+            native_turns[-1]["items"][-1]["text"] = "Native history changed"
         if case == "stale-history":
             app._append({"role": "assistant", "content": "External canonical history change"})
         elif case == "stale-settings":
@@ -677,7 +687,7 @@ async def serve(app):
             blocked = await call(history.SNAPSHOT, check=False, **history.common(app))
             history.report["blocked_after_failure"] = blocked
             assert not blocked["ok"]
-        if case == "replayed-apply":
+        if case in {"replayed-apply", "codex-edit", "codex-retry", "codex-partial", "codex-settled-drift"}:
             before = stable(app)
             replay = await call(APPLY, check=False, **payload)
             history.report["replay"] = replay
@@ -737,6 +747,74 @@ async def serve(app):
             if reader is not None:
                 await asyncio.to_thread(reader.join, 2)
                 assert not reader.is_alive()
+
+
+def seed_codex(app):
+    from litetui.model_transport import for_app
+
+    transport = for_app(app)
+    server = transport.server
+    server.session.ready(server.session.begin())
+    transport.thread_id = NATIVE_THREAD
+    transport.process = server.process
+    for i, message in enumerate(m for m in app.conversation if m["role"] == "user"):
+        turn, user = f"turn-{i}", f"native-user-{i}"
+        message["provider_metadata"] = {"provider": "codex", "app_server_thread_id": NATIVE_THREAD,
+            "app_server_turn_id": turn, "app_server_user_item_id": user}
+        items = [{"id": user, "type": "userMessage", "content": [{"type": "text", "text": message["content"], "text_elements": []}]}]
+        if i == 1:
+            items.append({"id": "native-file", "type": "fileChange", "changes": [{"path": "reviewed.txt", "kind": "update"}]})
+        items.append({"id": f"answer-{i}", "type": "agentMessage", "text": "Saved native answer"})
+        native_turns.append({"id": turn, "status": "completed", "itemsView": "full", "items": items})
+    del app.conversation[1]["provider_metadata"]["app_server_user_item_id"]  # Retained legacy row.
+    if case == "codex-legacy":
+        del app.conversation[TARGET_INDEX]["provider_metadata"]["app_server_user_item_id"]
+    if case == "codex-forged":
+        app.conversation[TARGET_INDEX]["provider_metadata"]["app_server_user_item_id"] = "unrelated-native-user"
+
+
+if case.startswith("codex-"):
+    history.case = case
+    os.environ["CODEX_HOME"] = str(history.root / "isolated-codex")
+    native_startup = history.codex_request
+    native_turns = []
+    NATIVE_THREAD = "reviewed-native-thread"
+
+    async def native_request(server, method, params):
+        if method in {"account/read", "model/list"}:
+            return await native_startup(server, method, params)
+        assert params["threadId"] == NATIVE_THREAD
+        history.report.setdefault("rewind_rpc", []).append({"method": method, "params": copy.deepcopy(params)})
+        meta = {"id": NATIVE_THREAD, "historyMode": "paginated", "status": {"type": "idle"}, "turns": []}
+        if method == "thread/read":
+            assert params["includeTurns"] is False
+            return {"thread": meta}
+        if method == "thread/turns/list":
+            assert params == {"threadId": NATIVE_THREAD, "itemsView": "full", "sortDirection": "asc", "limit": 32}
+            return {"data": copy.deepcopy(native_turns), "nextCursor": None}
+        if method == "thread/revert":
+            assert params == {"threadId": NATIVE_THREAD, "beforeTurnId": "turn-1"}
+            del native_turns[1:]
+            if case == "codex-partial":
+                raise OSError("Controlled disconnect after provider applied rewind")
+            return {"thread": meta}
+        assert method == "turn/start" and len(native_turns) == 1, method
+        assert params["input"] == [{"type":"text", "text": TARGET if case == "codex-retry" else REPLACEMENT, "text_elements":[]}]
+        turn_id = "replacement-turn"
+        user = {"id": "replacement-user", "type": "userMessage", "content": copy.deepcopy(params["input"])}
+        answer = {"id": "replacement-assistant", "type": "agentMessage", "text": "Controlled native replacement"}
+        turn = {"id": turn_id, "itemsView": "full", "status": "completed", "items": [user, answer]}
+        native_turns.append(copy.deepcopy(turn))
+        if case == "codex-settled-drift":
+            native_turns[-1]["items"][0]["id"] = "contradictory-user"
+        for event, fields in [
+            ("item/completed", {"item":user}), ("item/agentMessage/delta", {"itemId":answer["id"], "delta":answer["text"]}),
+            ("item/completed", {"item":answer}), ("turn/completed", {"turn":turn})
+        ]:
+            server.events.put_nowait({"method":event, "params":{"threadId":NATIVE_THREAD,"turnId":turn_id,**fields}})
+        return {"turn":{"id":turn_id,"status":"inProgress"}}
+
+    history.codex_request = native_request
 
 
 history.boundary.Stream = ControlledStream

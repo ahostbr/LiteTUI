@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Edit or retry a native Codex turn from F6 - 2026-11-04
+
+F6 ties the selected saved user message to its actual Codex thread, turn and user item. The review lists the turns that will be removed, including recorded command and file actions. After confirmation, the source checks the full native history again, reverts at the selected turn and verifies the retained prefix before starting one replacement. A failure after the provider changes the thread reports partial completion and requires fresh inspection. Existing filesystem effects persist.
+
+The integrated checkout passed 966 Rust tests, full-crate formatting, strict Clippy and 30 focused Codex source cases. The relocated runtime passed the F6 Edit/Retry process (both actions) and all eight compaction process groups. Its launcher verified all 367 payload files afterward. The controlled provider cases include disconnect after revert, stale native history and ineligible historical rows.
+
 ## Clipboard image review and Work commands - 2026-11-04
 
 Ctrl+O reviews a Windows clipboard image. F2 selects a file from inside the review. Ctrl+Shift+O opens file selection directly. Confirming a replacement swaps the attached image only after source readback. Esc retains the previous image. If a caption is refused before submission, the composer restores the exact caption and attachment only when the source confirms it still holds the reviewed bytes.

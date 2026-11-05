@@ -993,6 +993,8 @@ async def _async_dispatch(app, cmd):
     if operation.startswith("gui.conversations.native_rewrite_"):
         from litetui import conversation_rewrite
         action = operation.removeprefix("gui.conversations.native_rewrite_")
+        if action == "validate" and hasattr(app.backend, "app_server"):
+            return await conversation_rewrite.validate_codex(app, cmd)
         if action in {"snapshot", "validate"}:
             return getattr(conversation_rewrite, action)(app, cmd)
         if action in {"apply", "settled"}:

@@ -31,10 +31,19 @@ fn runtime_source() -> PathBuf {
         .unwrap()
 }
 fn backend(case: &str) -> &'static str {
-    if case == "self-compact" || case.contains("question-") {
+    if case.starts_with("codex-") {
+        "codex"
+    } else if case == "self-compact" || case.contains("question-") {
         "lmstudio"
     } else {
         "custom"
+    }
+}
+fn model(case: &str) -> &'static str {
+    if backend(case) == "codex" {
+        "gpt-6.1-sol"
+    } else {
+        "switch-old"
     }
 }
 fn aftercare(case: &str) -> bool {
@@ -87,7 +96,7 @@ runpy.run_path({}, run_name='__main__')
 "#,quote(&actual.to_string_lossy()),quote(&format!("{}rewrite-{case}",if backend(case)=="lmstudio"{"lmstudio-"}else{""})),quote(case),
         if aftercare(case){"True"}else{"False"},if case=="self-compact"{"False"}else{"True"},quote(&fixtures.join("history_edit_retry_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
-    let args = vec![
+    let mut args = vec![
         "--python".into(),
         std::env::var("LITETUI_AUTHORITY_PYTHON").expect("controlled dependency Python"),
         "--source".into(),
@@ -97,7 +106,7 @@ runpy.run_path({}, run_name='__main__')
         "--backend".into(),
         backend(case).into(),
         "--model".into(),
-        "switch-old".into(),
+        model(case).into(),
         "--tool-profile".into(),
         "strict".into(),
         "--tools".into(),
@@ -109,14 +118,26 @@ runpy.run_path({}, run_name='__main__')
         "--workspace".into(),
         workspace.to_string_lossy().into_owned(),
         "--thinking-level".into(),
-        "default".into(),
+        if backend(case) == "codex" {
+            "high"
+        } else {
+            "default"
+        }
+        .into(),
         "--timeout".into(),
         "90".into(),
-        "--base-url".into(),
-        "http://127.0.0.1:45120/v1".into(),
-        "--server-mode".into(),
-        "connect".into(),
     ];
+    let route: &[&str] = if backend(case) == "codex" {
+        &["--codex-engine", "native"]
+    } else {
+        &[
+            "--base-url",
+            "http://127.0.0.1:45120/v1",
+            "--server-mode",
+            "connect",
+        ]
+    };
+    args.extend(route.iter().map(|arg| (*arg).to_owned()));
     (Interactive::start(Options::parse(&args).unwrap()), root)
 }
 fn next(runtime: &mut Interactive) -> io::Result<Observation> {
@@ -189,7 +210,7 @@ fn editor(app: &Demo) -> (String, String, String) {
     )
 }
 fn start(runtime: &mut Interactive, case: &str) -> io::Result<Demo> {
-    let mut app = Demo::live(backend(case).into(), "switch-old".into());
+    let mut app = Demo::live(backend(case).into(), model(case).into());
     app.insert_text("KEEP α 雪 THE COMPOSER DRAFT");
     app.composer.move_cursor(Motion::WordLeft, true);
     wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
@@ -390,7 +411,13 @@ fn report(root: &Path, case: &str) -> Value {
     assert_eq!(report["denied"], json!([]));
     assert_eq!(report["provider_requests"], json!([]));
     let providers = report["provider_calls"].as_array().unwrap();
-    if backend(case) == "lmstudio" {
+    if backend(case) == "codex" {
+        assert!(
+            providers
+                .iter()
+                .all(|p| matches!(p["method"].as_str(), Some("model/list" | "account/read")))
+        );
+    } else if backend(case) == "lmstudio" {
         assert!(!providers.is_empty());
         assert!(providers.iter().all(|p| p["method"] == "models/read"));
     } else {
@@ -607,6 +634,66 @@ fn assert_chain(report: &Value, segments: usize) {
         json!({"segments":segments,"last_execution_id":previous})
     );
 }
+#[test]
+#[ignore = "controlled Codex transport and actual source runtime; dependency Python required"]
+fn f6_codex_rewind_discards_the_reviewed_suffix_and_verifies_one_native_replacement() {
+    for case in ["codex-edit", "codex-retry"] {
+        let (runtime, root) = launch(case);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = start(runtime, case)?;
+                let draft = editor(&app);
+                let retry = case == "codex-retry";
+                select(
+                    runtime,
+                    &mut app,
+                    if retry {
+                        r::Action::Retry
+                    } else {
+                        r::Action::Edit
+                    },
+                )?;
+                validate(
+                    runtime,
+                    &mut app,
+                    if retry { None } else { Some(REPLACEMENT) },
+                )?;
+                let plan = app
+                    .live
+                    .as_ref()
+                    .unwrap()
+                    .rewrite
+                    .review()
+                    .unwrap()
+                    .request();
+                assert_eq!(plan["native_rewind"]["retained_turns"], 1);
+                let rendered = draw(&mut app);
+                assert!(
+                    rendered.contains("file changes") && rendered.contains("Resending"),
+                    "{rendered}"
+                );
+                assert!(rendered.contains("reviewed.txt"));
+                let req = apply(runtime, &mut app)?;
+                settle(runtime, &mut app, &req)?;
+                assert_eq!(editor(&app), draft);
+                runtime.quit()
+            })
+            .unwrap();
+        let evidence = report(&root, case);
+        let calls = evidence["rewind_rpc"].as_array().unwrap();
+        for method in ["turn/start", "thread/revert"] {
+            assert_eq!(
+                calls.iter().filter(|row| row["method"] == method).count(),
+                1
+            );
+        }
+        assert_eq!(
+            evidence["durable"][5]["provider_metadata"]["app_server_user_item_id"],
+            "replacement-user"
+        );
+    }
+}
+
 #[test]
 #[ignore = "controlled actual source rewrite; dependency Python required"]
 fn f6_reviewed_edit_retry_and_compaction_keep_exact_context_and_draft() {

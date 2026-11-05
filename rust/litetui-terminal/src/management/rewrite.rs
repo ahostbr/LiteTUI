@@ -215,11 +215,17 @@ impl Management {
         self.rewrite_generation = prepared.key.generation;
         self.rewrite_cache = None;
         self.rewrite_review = None;
-        self.rewrite_chain = Some(Chain::new(
+        let mut chain = Chain::new(
             super::action::Kind::Rewrite,
             prepared.review.action_id.clone(),
             operation.into(),
-        ));
+        );
+        chain.rewind_thread = prepared
+            .review
+            .native_rewind
+            .as_ref()
+            .map(|plan| plan.thread_id.clone());
+        self.rewrite_chain = Some(chain);
         self.rewrite_attempt = Some(Attempt {
             prepared,
             operation: operation.into(),
@@ -371,6 +377,15 @@ impl Management {
                 text,
             } => {
                 let review = r::Review::parse(value, before.snapshot, action, &text)?;
+                if review.native_rewind.is_some()
+                    != self.runtime_policy().is_some_and(|policy| {
+                        policy.binding.provider == crate::work_lifecycle::Provider::Codex
+                    })
+                {
+                    return Err(fail(
+                        "Rewrite review changed the active native provider route",
+                    ));
+                }
                 self.rewrite_review = Some(Prepared {
                     key: key.clone(),
                     review: review.clone(),
@@ -393,7 +408,8 @@ impl Management {
                     .rewrite_chain
                     .as_ref()
                     .ok_or_else(|| fail("Missing rewrite execution chain"))?;
-                if settled.execution_segments != chain.segments
+                if settled.native_turn != chain.rewind_turn
+                    || settled.execution_segments != chain.segments
                     || settled.last_execution_id != chain.last_execution
                     || !chain.ended
                     || !chain.maintenance.is_empty()

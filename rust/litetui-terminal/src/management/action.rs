@@ -15,6 +15,8 @@ pub(super) struct Chain {
     root_bound: bool,
     root_origin: Option<Origin>,
     wake_allowed: bool,
+    pub(super) rewind_thread: Option<String>,
+    pub(super) rewind_turn: Option<String>,
     pub(super) action: String,
     pub(super) operation: String,
     pub(super) segments: u64,
@@ -36,6 +38,8 @@ impl Chain {
             root_bound: false,
             root_origin: None,
             wake_allowed: false,
+            rewind_thread: None,
+            rewind_turn: None,
             segments: 0,
             last_execution: None,
             ended: true,
@@ -251,6 +255,24 @@ impl Chain {
             } else if chain.ended && kind != "compaction" {
                 return Err(fail("Rewrite stream content after its terminal boundary"));
             }
+        }
+        if kind == "native_turn_started"
+            && let Some(thread) = &chain.rewind_thread
+        {
+            let turn = text(event, "turnId", 128)?;
+            if event["provider"] != "codex"
+                || event["eventVersion"] != 1
+                || event["threadId"] != *thread
+                || chain.segments != 1
+                || chain.ended
+                || chain.last_execution.as_deref() != Some(execution.as_str())
+                || chain.rewind_turn.is_some()
+            {
+                return Err(fail(
+                    "Codex replacement emitted an unrelated or repeated native turn",
+                ));
+            }
+            chain.rewind_turn = Some(turn.to_owned());
         }
         let closure = match kind {
             "user_input_requested" => Some("user_input_resolved"),

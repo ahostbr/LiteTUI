@@ -258,6 +258,150 @@ impl Snapshot {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativePlan {
+    pub thread_id: String,
+    wire: Value,
+}
+
+fn native_id(v: &Value, key: &str) -> io::Result<String> {
+    let id = text(v, key, 128, false)?;
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    {
+        return Err(fail("Invalid native Codex identity"));
+    }
+    Ok(id)
+}
+
+fn keys(v: &Value, expected: &[&str]) -> bool {
+    v.as_object().is_some_and(|obj| {
+        obj.len() == expected.len() && expected.iter().all(|k| obj.contains_key(*k))
+    })
+}
+
+impl NativePlan {
+    fn parse(v: &Value, before: &Snapshot) -> io::Result<Self> {
+        let suffix = v["suffix"]
+            .as_array()
+            .ok_or_else(|| fail("Missing Codex rewind suffix"))?;
+        let retained = number(v, "retained_turns")?;
+        if before.selection.identity.backend != "codex"
+            || serde_json::to_vec(v)?.len() > TEXT_BYTES
+            || !keys(
+                v,
+                &[
+                    "thread_id",
+                    "before_sha256",
+                    "prefix_sha256",
+                    "retained_turns",
+                    "suffix",
+                ],
+            )
+            || suffix.is_empty()
+            || retained + suffix.len() as u64 > 32
+            || retained > before.selection.message_index
+            || suffix[0]["text"] != before.original_text
+            || token(v, "before_sha256")? == token(v, "prefix_sha256")?
+        {
+            return Err(fail("Invalid Codex rewind thread or discarded suffix"));
+        }
+        let mut turns = std::collections::HashSet::new();
+        let mut items = std::collections::HashSet::new();
+        for turn in suffix {
+            let id = native_id(turn, "user_item_id")?;
+            let content = text(turn, "text", TEXT_BYTES, true)?;
+            if !keys(turn, &["turn_id", "user_item_id", "text", "items"])
+                || !turns.insert(native_id(turn, "turn_id")?)
+            {
+                return Err(fail("Repeated or malformed Codex turn in rewind review"));
+            }
+            let mut users = 0;
+            for item in turn["items"]
+                .as_array()
+                .ok_or_else(|| fail("Missing Codex rewind items"))?
+            {
+                let item_id = native_id(item, "id")?;
+                let kind = native_id(item, "kind")?;
+                let details = text(item, "details", TEXT_BYTES, true)?;
+                if !keys(item, &["id", "kind", "details"])
+                    || !items.insert(item_id.clone())
+                    || items.len() > 256
+                {
+                    return Err(fail("Repeated or excessive Codex rewind items"));
+                }
+                if kind == "userMessage" {
+                    if item_id != id || !details.is_empty() || content.is_empty() {
+                        return Err(fail("Codex review changed the selected native user item"));
+                    }
+                    users += 1;
+                }
+            }
+            if users != 1 {
+                return Err(fail("Codex rewind requires one native user item per turn"));
+            }
+        }
+        Ok(Self {
+            thread_id: native_id(v, "thread_id")?,
+            wire: v.clone(),
+        })
+    }
+    fn description(&self) -> String {
+        let display = crate::live::terminal_text;
+        let mut out = format!(
+            "Codex will rewind thread {} to {} retained turns. Prior commands and file changes stay in effect. Resending may run tools again.\nDiscarded native turns and items:\n",
+            self.thread_id, self.wire["retained_turns"]
+        );
+        for turn in self.wire["suffix"].as_array().expect("verified turns") {
+            out.push_str(&format!(
+                "Turn {} · {}\n",
+                turn["turn_id"].as_str().unwrap(),
+                display(turn["text"].as_str().unwrap())
+            ));
+            for item in turn["items"].as_array().expect("verified items") {
+                out.push_str(&format!(
+                    "  {} {} {}\n",
+                    item["kind"].as_str().unwrap(),
+                    item["id"].as_str().unwrap(),
+                    display(item["details"].as_str().unwrap())
+                ));
+            }
+        }
+        out
+    }
+    fn receipt(&self, v: &Value) -> io::Result<String> {
+        let turn = native_id(v, "turn_id")?;
+        let user = native_id(v, "user_item_id")?;
+        if !keys(
+            v,
+            &[
+                "thread_id",
+                "turn_id",
+                "user_item_id",
+                "prefix_sha256",
+                "history_sha256",
+            ],
+        ) || v["thread_id"] != self.thread_id
+            || v["prefix_sha256"] != self.wire["prefix_sha256"]
+            || token(v, "history_sha256")? == self.wire["before_sha256"]
+            || self.wire["suffix"].as_array().unwrap().iter().any(|old| {
+                old["turn_id"] == turn
+                    || old["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|i| i["id"] == user)
+            })
+        {
+            return Err(fail(
+                "Codex replacement receipt changed thread, prefix or reused native identities",
+            ));
+        }
+        Ok(turn)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Review {
     pub before: Snapshot,
     pub action: Action,
@@ -268,6 +412,7 @@ pub struct Review {
     pub prepared_context_sha256: String,
     pub prepared_messages: u64,
     pub prompt_hooks: bool,
+    pub native_rewind: Option<Box<NativePlan>>,
 }
 impl Review {
     pub fn parse(
@@ -283,6 +428,10 @@ impl Review {
         let text_sha256 = token(v, "text_sha256")?;
         let prepared_messages = number(v, "prepared_messages")?;
         let prompt_hooks = boolean(&v["effects"], "prompt_hooks")?;
+        let native_rewind = v
+            .get("native_rewind")
+            .map(|plan| NativePlan::parse(plan, &before).map(Box::new))
+            .transpose()?;
         if !before.eligibility(action).eligible
             || v["snapshot"] != before.token
             || v["action"] != action.as_str()
@@ -294,7 +443,7 @@ impl Review {
             || number(v, "prefix_messages")? != before.selection.message_index
             || number(v, "discarded_messages")? != before.discarded_messages
             || !boolean(&v["effects"], "provider_execution")?
-            || boolean(&v["effects"], "provider_rewind")?
+            || boolean(&v["effects"], "provider_rewind")? != native_rewind.is_some()
         {
             return Err(fail(
                 "Rewrite review changed text, selection, prefix or effects",
@@ -310,6 +459,7 @@ impl Review {
             prepared_context_sha256: token(v, "prepared_context_sha256")?,
             prepared_messages,
             prompt_hooks,
+            native_rewind,
         })
     }
     pub fn request(&self) -> Value {
@@ -325,6 +475,10 @@ impl Review {
         v["prefix_context_sha256"] = json!(self.before.prefix_context_sha256);
         v["prefix_messages"] = json!(self.before.selection.message_index);
         v["discarded_messages"] = json!(self.before.discarded_messages);
+        if let Some(plan) = &self.native_rewind {
+            v["native_rewind"] = plan.wire.clone();
+            v["effects"] = json!({"prompt_hooks":self.prompt_hooks,"provider_execution":true,"provider_rewind":true});
+        }
         v
     }
     pub fn verify_receipt(&self, v: &Value, operation: &str) -> io::Result<()> {
@@ -457,6 +611,7 @@ pub struct Settlement {
     pub history: history::Snapshot,
     pub execution_segments: u64,
     pub last_execution_id: Option<String>,
+    pub native_turn: Option<String>,
 }
 impl Settlement {
     pub fn parse(
@@ -506,7 +661,20 @@ impl Settlement {
             }
             Some(uuid(execution, "last_execution_id")?)
         };
+        let native_turn = match (&review.native_rewind, admission.outcome) {
+            (Some(plan), AdmissionOutcome::Accepted) if execution_segments == 1 => {
+                Some(plan.receipt(&v["native_rewind"])?)
+            }
+            (Some(_), AdmissionOutcome::Refused)
+                if v.get("native_rewind") == Some(&Value::Null) =>
+            {
+                None
+            }
+            (None, _) if v.get("native_rewind").is_none() => None,
+            _ => return Err(fail("Missing or unexpected native Codex rewind receipt")),
+        };
         Ok(Self {
+            native_turn,
             outcome: admission.outcome,
             history,
             execution_segments,
@@ -979,7 +1147,7 @@ impl View {
         let mut caret_line = None;
         let details = if let Some(review) = &self.review {
             format!(
-                "Confirm {} and send once\nSession: {}\nBackend: {} · model: {}\nReplace user message {} and discard {} later messages from model context.\nOriginal transcript records stay on disk. Earlier tool effects are not undone.\nRun prompt hooks: {}\n{}A new provider turn will execute. Provider history is not rewound.\nTools requested in the background, or configured to auto-promote to the background, will refuse before starting.\nYour composer draft stays unchanged.\n\nExact message to send:\n{}",
+                "Confirm {} and send once\nSession: {}\nBackend: {} · model: {}\nReplace user message {} and discard {} later messages from model context.\nOriginal transcript records stay on disk. Earlier tool effects are not undone.\nRun prompt hooks: {}\n{}A new provider turn will execute. {}\nTools requested in the background, or configured to auto-promote to the background, will refuse before starting.\nYour composer draft stays unchanged.\n\nExact message to send:\n{}",
                 review.action.as_str(),
                 review.before.selection.identity.session,
                 display(&review.before.selection.identity.backend),
@@ -992,6 +1160,10 @@ impl View {
                 } else {
                     ""
                 },
+                review.native_rewind.as_ref().map_or_else(
+                    || "Provider history is not rewound.".to_owned(),
+                    |plan| plan.description()
+                ),
                 display(&review.text)
             )
         } else if let Some(snapshot) = &self.snapshot {
