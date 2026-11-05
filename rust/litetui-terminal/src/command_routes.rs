@@ -60,6 +60,15 @@ impl Demo {
             chat.settings.open_mcp(!verb.trim().is_empty());
         }
     }
+    /// `/modelcfg` opens the reviewed current-model preferences editor, as F10 `P` does.
+    pub(crate) fn open_model_preferences(&mut self) {
+        self.open_settings();
+        if let Some(chat) = self.live.as_mut()
+            && chat.settings.open
+        {
+            chat.settings.open_model_preferences();
+        }
+    }
     pub(crate) fn open_help(&mut self, keys_first: bool) {
         if self.has_live_input() || self.live.is_none() {
             return;

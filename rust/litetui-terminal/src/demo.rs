@@ -290,6 +290,7 @@ impl Demo {
                 Action::ConversationResume => self.open_resume(&route_arguments),
                 Action::Claude => self.open_claude(&route_arguments)?,
                 Action::Mcp => self.open_mcp(&route_arguments),
+                Action::ModelPreferences => self.open_model_preferences(),
                 Action::Help => self.open_help(false),
                 Action::Keys => self.open_help(true),
                 Action::ClearScreen => self.clear_screen(),

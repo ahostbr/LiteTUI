@@ -277,6 +277,14 @@ impl View {
         self.waiting = true;
         self.intent = Some(Intent::Mcp(Box::new(crate::mcp_config::Request::List)));
     }
+    pub(crate) fn open_model_preferences(&mut self) {
+        self.hide();
+        self.model_preferences.open();
+        self.waiting = true;
+        self.intent = Some(Intent::ModelPreferences(Box::new(
+            crate::model_preferences::Request::List,
+        )));
+    }
     /// `/claude status` shows the read-only runtime inspector, as `I` does.
     pub(crate) fn open_runtime_status(&mut self) {
         self.hide();

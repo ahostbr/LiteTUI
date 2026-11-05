@@ -32,6 +32,7 @@ _ROUTES = {
     ("misc", "/think"): "thinking",
     ("misc", "/tools"): "tool_list",
     ("subagent", "/subagent-set"): "agent_prefs_override",
+    ("model-switch", "/modelcfg"): "model_preferences",
     ("subagent", "/subagent-global"): "agent_prefs_global",
     ("misc", "/quit"): "quit",
     ("misc", "/pause"): "chat_pause",
@@ -64,9 +65,6 @@ _UNAVAILABLE = {
     ("monitor", "/monitor"): "Browser monitor is a desktop overlay that is not available in the terminal frontend.",
     ("sidecar-preview", "/sidecar"): "Native sidecar preview is a desktop overlay that is not available in the terminal frontend.",
     ("mark", "/mark"): "Mark the screen is a desktop overlay that is not available in the terminal frontend.",
-    ("model-switch", "/modelcfg"): "Model configuration has no native control in this frontend yet.",
-    ("subagent", "/subagent-set"): "Subagent routing has no reviewed native control yet.",
-    ("subagent", "/subagent-global"): "Subagent routing has no reviewed native control yet.",
 }
 _NO_ARGUMENTS = {
     "tool_list": "/tools takes no arguments; choose tools in the reviewed tool list.",

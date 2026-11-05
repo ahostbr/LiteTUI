@@ -77,6 +77,7 @@ pub enum Action {
     Help,
     Keys,
     Mcp,
+    ModelPreferences,
     ClearScreen,
 }
 impl Action {
@@ -119,6 +120,7 @@ impl Action {
             Some("help") => Some(Self::Help),
             Some("keys") => Some(Self::Keys),
             Some("mcp") => Some(Self::Mcp),
+            Some("model_preferences") => Some(Self::ModelPreferences),
             Some("clear_screen") => Some(Self::ClearScreen),
             Some("plugins") => Some(Self::Work(Destination::Plugins)),
             Some("work_tasks") => Some(Self::Work(Destination::Tasks)),

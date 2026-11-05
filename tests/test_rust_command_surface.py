@@ -533,9 +533,8 @@ async def test_every_unrouted_registered_command_states_its_own_reason(command_a
     app = command_app
     rows = [row for row in read(app)["entries"] if row["native_action"] is None]
     reasons = {row["tokens"][0]: row["unavailable_reason"] for row in rows}
-    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/monitor", "/sidecar", "/mark",
-                            "/modelcfg", "/system", "/subagent-set", "/subagent-global"}
-    assert len(set(reasons.values())) >= 8
+    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/monitor", "/sidecar", "/mark"}
+    assert len(set(reasons.values())) == len(reasons)
     for token in ("/screenshot", "/maximize", "/test-sidebar"):
         assert "Textual" in reasons[token]
     for token in ("/monitor", "/sidecar", "/mark"):
