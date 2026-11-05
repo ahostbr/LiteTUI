@@ -414,6 +414,19 @@ class ClaudeSession:
                 self.lifecycle.finish_turn(self.lifecycle.active_turn)
                 return
 
+    def deliver(self, item) -> bool:
+        """Queue a host-side item BEHIND the provider messages already waiting, for the turn's consumer.
+
+        A bridged host tool is invoked by the SDK on its own task, but a reviewed action only admits
+        its captured worker, which is the one consuming `events()`. Delivering the call through the
+        same queue hands it to that consumer in order, so it never runs anywhere else. Only while a
+        turn is open: nothing is queued for a session that is idle or gone.
+        """
+        if self._owner is None or self._owner.done() or self.lifecycle.active_turn is None:
+            return False
+        self._events.put_nowait(item)
+        return True
+
     async def interrupt(self, timeout=15):
         try:
             async with asyncio.timeout(timeout):

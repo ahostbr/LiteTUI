@@ -161,7 +161,7 @@ def _snapshot(app, cmd):
             pass  # Show the specific eligibility reason below.
         plan = binding.plan(len(captured.messages)) if binding else {"kind": "claude", "messages": len(captured.messages),
                 "segment": None, "native_session": None, "ledger_before": None, "prompt_sha256": None,
-                "tools_sha256": None}
+                "tools_sha256": None, "host_tools": []}
     elif codex:
         try:
             binding = Binding.capture(app)

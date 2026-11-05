@@ -13,7 +13,7 @@ from litetui import restored_claude
 from litetui.backend_session import SessionState
 from litetui.claude_persistence import path_for
 from litetui.claude_session import ClaudeSession
-from litetui.claude_tools import NATIVE_TOOLS
+from litetui.claude_tools import HOST_TOOLS, NATIVE_TOOLS
 from litetui.claude_turn import effort_for, launch_workspace
 
 #: A reviewed summary may use the native tools, but its receipt must stay bounded and honest:
@@ -55,8 +55,11 @@ class SegmentReceipt:
     store_files: tuple[str, ...] = ()
 
 
-def _tool_options(app, options, *, rewrite):
-    """The tool facts a review binds: what the session offers and whether LiteTUI lets it run."""
+def _tool_options(app, options, *, rewrite, host=None):
+    """The tool facts a review binds: what the session offers and whether LiteTUI lets it run.
+
+    `host` is the bridge's name -> spec digest of the host tools its SDK server exposes. A session
+    that exposes none binds exactly what it did before host tools were disclosed (no extra key)."""
     tools, servers = getattr(options, "tools", None), getattr(options, "mcp_servers", None)
     if (not isinstance(tools, list) or not all(isinstance(name, str) for name in tools)
             or not isinstance(servers, dict) or getattr(options, "strict_mcp_config", None) is not True):
@@ -68,8 +71,16 @@ def _tool_options(app, options, *, rewrite):
             raise ValueError("Claude F6 history actions require a session opened with tools off")
     elif not set(tools) <= set(NATIVE_TOOLS) or set(servers) - {"litetui"}:
         raise ValueError("Claude's session offers tools LiteTUI cannot attribute to a reviewed compaction")
-    return {"tools_enabled": bool(app.tools_enabled), "tools": sorted(tools), "mcp": sorted(servers),
-            "strict_mcp_config": True, "permission_mode": getattr(options, "permission_mode", None)}
+    snapshot = {"tools_enabled": bool(app.tools_enabled), "tools": sorted(tools), "mcp": sorted(servers),
+                "strict_mcp_config": True, "permission_mode": getattr(options, "permission_mode", None)}
+    if host is not None:
+        if (not isinstance(host, dict) or not set(host) <= HOST_TOOLS
+                or not all(isinstance(value, str) and len(value) == 64 for value in host.values())
+                or bool(host) != ("litetui" in servers)):
+            raise ValueError("Claude's host tool bridge does not match the session's declared MCP servers")
+        if host:
+            snapshot["host_tools"] = [[name, host[name]] for name in sorted(host)]
+    return snapshot
 
 
 @dataclass(frozen=True, eq=False)
@@ -90,6 +101,11 @@ class Binding:
         """Whether the reviewed summary may legitimately make tool calls."""
         return bool(self.tools["tools_enabled"] and (self.tools["tools"] or self.tools["mcp"]))
 
+    @property
+    def host_tools(self):
+        """name -> spec digest of the host tools the review disclosed (empty: none are bridged)."""
+        return {name: digest for name, digest in self.tools.get("host_tools", ())}
+
     @classmethod
     def capture(cls, app, *, rewrite=False):
         backend = app.backend
@@ -103,7 +119,9 @@ class Binding:
                 or ledger.dir != app.convo_dir or ledger.file != path_for(app.convo_dir)
                 or not isinstance(session, ClaudeSession) or session._owner is None or session._owner.done()):
             raise ValueError("Submit a turn on this Claude conversation to establish its live SDK session")
-        tools = _tool_options(app, session.options, rewrite=rewrite)
+        bridge = getattr(backend, "_claude_tools", None)
+        tools = _tool_options(app, session.options, rewrite=rewrite,
+                              host=dict(getattr(bridge, "host_tools", None) or {}))
         before = _document(app, ledger)
         selected = ledger.selected
         if (not selected or selected["id"] != backend.segment_id or selected["workspace"] != launch_workspace(app)
@@ -121,7 +139,7 @@ class Binding:
         from litetui.claude_compact import request
         return {"kind": "claude", "messages": count, "segment": self.segment, "native_session": self.native_session,
                 "ledger_before": _digest(self.before), "prompt_sha256": hashlib.sha256(request().encode()).hexdigest(),
-                "tools_sha256": _digest(self.tools)}
+                "tools_sha256": _digest(self.tools), "host_tools": sorted(self.host_tools)}
 
     def check(self, app, *, rewrite=False):
         other = Binding.capture(app, rewrite=rewrite)

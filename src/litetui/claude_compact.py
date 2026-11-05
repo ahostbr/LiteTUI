@@ -38,6 +38,7 @@ from rich.text import Text
 
 from litetui import claude_cache, owner_mode
 from litetui.claude_backend import COMPACT_MARKER
+from litetui.claude_tools import HostRequest
 from litetui.claude_turn import (
     effort_for,
     launch_workspace,
@@ -162,10 +163,13 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
             segment = ledger.bind_session(segment["id"], session.session_id)
         async def turn(text: str) -> None:
             """One query and its events; sets `summary` / `failure`. A retry reuses it."""
-            tool_turn = monitor = None
+            tool_turn = monitor = host_lane = None
             if reviewed is not None and reviewed.binding.tool_work:
                 # The callbacks of a tools-on reviewed summary belong to this root execution.
                 tool_turn = bridge.bind_turn(reviewed.origin)
+                if reviewed.binding.host_tools:
+                    # The disclosed host tools run on THIS worker (see _turn_events), nowhere else.
+                    host_lane = bridge.bind_host_lane(tool_turn, reviewed.binding.host_tools)
 
                 async def watch_stop():
                     # A tool approval can block the stream with nothing arriving to notice Stop.
@@ -177,7 +181,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                         await asyncio.sleep(0.05)
                 monitor = asyncio.create_task(watch_stop(), name="claude-compact-stop")
             try:
-                await _turn_events(text, tool_turn)
+                await _turn_events(text, tool_turn, host_lane)
             finally:
                 if monitor is not None:
                     monitor.cancel()
@@ -185,12 +189,17 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 if tool_turn is not None:
                     bridge.finish_turn(tool_turn)
 
-        async def _turn_events(text: str, tool_turn) -> None:
+        async def _turn_events(text: str, tool_turn, host_lane) -> None:
             nonlocal summary, failure
             await session.query(f"compact-{uuid.uuid4().hex}", text)
             texts = {}
             terminal = False
             async for message in session.events():
+                if isinstance(message, HostRequest):
+                    # A disclosed host tool the SDK parked on this turn's lane: run it here, on the
+                    # reviewed worker. Only that lane can deliver one, so the lane exists.
+                    await bridge.serve_host_call(host_lane, message)
+                    continue
                 if app._stop_requested:
                     bridge.stop()
                     await session.interrupt()

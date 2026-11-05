@@ -256,7 +256,7 @@ fn claude_settlement_binds_two_segments_the_sdk_result_and_local_publication() {
     snap["backend"] = json!("claude");
     snap["config"]["tools_enabled"] = json!(false);
     snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
-        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"tools_sha256":"7".repeat(64)});
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"tools_sha256":"7".repeat(64),"host_tools":[]});
     let before = Snapshot::parse(&snap, &selected).unwrap();
     let mut review = review_value("");
     review["backend"] = json!("claude");
@@ -321,7 +321,7 @@ fn claude_with_effects(tools: bool, wake: bool) -> (Review, Admission, Value) {
     snap["config"]["tools_enabled"] = json!(tools);
     snap["config"]["wake_after_compact"] = json!(wake);
     snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
-        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"tools_sha256":"7".repeat(64)});
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"tools_sha256":"7".repeat(64),"host_tools":[]});
     let before =
         Snapshot::parse(&snap, &selected).expect("tools and wake are reviewable for Claude");
     let mut review = review_value("");
@@ -416,6 +416,64 @@ fn claude_wake_settles_only_when_the_history_grew_past_the_published_root() {
     let (off_proof, off_admitted, off) = claude_with_effects(false, false);
     assert!(Settlement::parse(&grown(off), &off_admitted, &off_proof, "op").is_err());
 }
+fn claude_snapshot_with(tools: bool, host_tools: Value) -> Value {
+    let mut snap = snapshot_value();
+    snap["backend"] = json!("claude");
+    snap["config"]["tools_enabled"] = json!(tools);
+    snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"tools_sha256":"7".repeat(64),
+        "host_tools":host_tools});
+    snap
+}
+#[test]
+fn claude_plan_discloses_host_tools_only_as_a_short_sorted_unique_list_of_names_with_tools_on() {
+    let mut selected = selection();
+    selected.identity.backend = "claude".into();
+    let parsed = Snapshot::parse(
+        &claude_snapshot_with(true, json!(["convo_search", "view_image"])),
+        &selected,
+    )
+    .expect("a disclosed host tool list is reviewable");
+    match parsed.plan {
+        Plan::Claude(Some(plan)) => assert_eq!(plan.host_tools, ["convo_search", "view_image"]),
+        other => panic!("{other:?}"),
+    }
+    let sixteen: Vec<String> = (b'a'..b'a' + 16)
+        .map(|c| format!("tool_{}", c as char))
+        .collect();
+    assert!(Snapshot::parse(&claude_snapshot_with(true, json!(sixteen)), &selected).is_ok());
+    let seventeen: Vec<String> = (b'a'..b'a' + 17)
+        .map(|c| format!("tool_{}", c as char))
+        .collect();
+    for (tools, bad) in [
+        (true, json!(["view_image", "convo_search"])),
+        (true, json!(["convo_search", "convo_search"])),
+        (true, json!(["Convo_Search"])),
+        (true, json!(["convo search"])),
+        (true, json!([""])),
+        (true, json!(["a".repeat(33)])),
+        (true, json!([7])),
+        (true, json!("convo_search")),
+        (true, json!(seventeen)),
+        (false, json!(["convo_search"])),
+    ] {
+        assert!(
+            Snapshot::parse(&claude_snapshot_with(tools, bad.clone()), &selected).is_err(),
+            "{tools} {bad}"
+        );
+    }
+}
+#[test]
+fn claude_plan_without_a_host_tool_list_or_with_an_extra_field_is_refused() {
+    let mut selected = selection();
+    selected.identity.backend = "claude".into();
+    let mut snap = claude_snapshot_with(true, json!([]));
+    snap["plan"].as_object_mut().unwrap().remove("host_tools");
+    assert!(Snapshot::parse(&snap, &selected).is_err());
+    let mut snap = claude_snapshot_with(true, json!([]));
+    snap["plan"]["host_tool"] = json!([]);
+    assert!(Snapshot::parse(&snap, &selected).is_err());
+}
 #[test]
 fn claude_plan_requires_the_tool_fingerprint() {
     let mut selected = selection();
@@ -423,7 +481,7 @@ fn claude_plan_requires_the_tool_fingerprint() {
     let mut snap = snapshot_value();
     snap["backend"] = json!("claude");
     snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
-        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary")});
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"host_tools":[]});
     assert!(Snapshot::parse(&snap, &selected).is_err());
     snap["plan"]["tools_sha256"] = json!("not-a-hash");
     assert!(Snapshot::parse(&snap, &selected).is_err());

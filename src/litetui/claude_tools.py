@@ -7,14 +7,67 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from litetui import native_runtime_controls as controls
 from litetui import paths, tool_policy
 
 NATIVE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "AskUserQuestion", "TodoWrite"]
 HOST_TOOLS = frozenset({"chrome", "pccontrol", "studio", "listen", "harness", "convo_search", "skill", "view_image", "subagent", "small_task"})
+
+
+def spec_digest(spec):
+    """What a host tool IS to the model: its name, description and argument schema."""
+    body = {key: spec.get(key) for key in ("name", "description", "parameters")} if isinstance(spec, dict) else None
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                                     allow_nan=False, default=str).encode("utf-8")).hexdigest()
+
+
+def _host_result(text, *, error=True):
+    # The SDK's tool wrapper reads `is_error` (mcp's own field is `isError`); a refusal must reach Claude as one.
+    return {"content": [{"type": "text", "text": text}], "isError": error, "is_error": error}
+
+
+@dataclass(eq=False)
+class HostRequest:
+    """One bridged host call, parked until the reviewed worker (the only task admitted) runs it."""
+    name: str
+    args: Any
+    spec: dict
+    future: asyncio.Future
+
+
+class HostLane:
+    """The hand-off from the SDK's tool task to the reviewed worker that owns one bound turn.
+
+    The SDK invokes a bridged host tool on a task of its own. During a reviewed action only the
+    captured worker may enter the app's tool door, so the call is queued through the session's event
+    stream and the worker runs it in order. `disclosed` is the name -> spec digest the review bound;
+    nothing outside it runs, and every request is settled when the turn ends."""
+
+    def __init__(self, turn, session, disclosed):
+        self.turn, self.session, self.disclosed = turn, session, dict(disclosed)
+        self.pending = set()
+        self.closed = False
+
+    def submit(self, request):
+        if self.closed or not self.session.deliver(request):
+            return False
+        self.pending.add(request)
+        return True
+
+    def close(self):
+        self.closed = True
+        for request in list(self.pending):
+            if not request.future.done():
+                request.future.set_result(_host_result("[denied] The reviewed compaction turn ended before this "
+                                                       "host tool ran; nothing was executed."))
+        self.pending.clear()
 
 
 def _deadlines(app=None):
@@ -83,12 +136,22 @@ class ClaudeTools:
         self._observed = {}
         self._deciding = set()
         self._pending = {}
+        #: name -> spec digest of the host tools this session's SDK server bridges (fixed at open).
+        self.host_tools = {}
+        self._lane = None
 
     def bind_turn(self, origin):
         if self._turn is not None:
             raise ValueError("Claude tool bridge already belongs to a turn")
         self._turn = (self.backend.session, origin)
         return self._turn
+
+    def bind_host_lane(self, turn, disclosed):
+        """Let the worker consuming `turn`'s events run the host tools the review disclosed."""
+        if self._turn is not turn or self._lane is not None:
+            raise ValueError("Claude host lane needs the bound turn, once")
+        self._lane = HostLane(turn, self.backend.session, disclosed)
+        return self._lane
 
     def observed(self, turn, tool_id, name, args):
         if (self._turn is turn and isinstance(tool_id, str) and tool_id and isinstance(args, dict)
@@ -108,6 +171,9 @@ class ClaudeTools:
 
     def finish_turn(self, turn):
         if turn is not None and self._turn is turn:
+            if self._lane is not None and self._lane.turn is turn:
+                self._lane.close()
+                self._lane = None
             for tool_id in list(self._pending):
                 self.completed(turn, tool_id)
             self._observed.clear()
@@ -341,6 +407,9 @@ class ClaudeTools:
             tools.append(tool(name, spec.get("description", name), spec.get("parameters", {"type": "object"}))(invoke))
         disabled = frozenset(self.app.settings.tools_disabled or ())
         _, hook_s = _deadlines(self.app)
+        # What this session bridges is fixed here, and it is what a compaction review discloses.
+        self.host_tools = {name: spec_digest(inventory[name]) for name in sorted(HOST_TOOLS & inventory.keys())
+                           } if tools and self.app.tools_enabled else {}
         return {
             "tools": [n for n in NATIVE_TOOLS if n not in disabled] if self.app.tools_enabled else [],
             "permission_mode": "default",
@@ -355,9 +424,8 @@ class ClaudeTools:
         from litetui import conversation_action
         if conversation_action.compact_pending(self.app):
             # A host tool runs through the app's own tool door, which only a captured worker may
-            # enter during a reviewed action. Say so before any approval prompt, not after it.
-            return {"content": [{"type": "text", "text": "[denied] Host tools are unavailable while a reviewed "
-                                 "compaction is running; use the native tools."}], "isError": True}
+            # enter during a reviewed action; the SDK's task is not that worker.
+            return await self._reviewed_host_call(name, spec, args)
         turn = self._turn
         guarded = controls.enabled(self.app)
         try:
@@ -369,6 +437,64 @@ class ClaudeTools:
                 return await self._host_call(name, args, spec, ticket)
         except controls.AuthorizationClosed as exc:
             return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+
+    async def _reviewed_host_call(self, name, spec, args):
+        """The SDK's side of a host call during a reviewed compaction: authorize nothing, run nothing.
+
+        It checks the call against what the review disclosed, parks it on the turn's lane and waits;
+        the reviewed worker runs it (`serve_host_call`) under its own execution. A call outside the
+        summary turn, outside the disclosed inventory or after the turn ended executes nothing."""
+        lane, turn = self._lane, self._turn
+        if lane is None or lane.turn is not turn or not self._owns_turn(turn):
+            return _host_result("[denied] Host tools run only inside the reviewed compaction's summary turn; "
+                                "use the native tools.")
+        if lane.disclosed.get(name) != spec_digest(spec):
+            return _host_result(f"[denied] Host tool {name} was not part of the compaction review; "
+                                "use the native tools.")
+        async with self._host_lock:
+            request = HostRequest(name, args, spec, asyncio.get_running_loop().create_future())
+            if not lane.submit(request):
+                return _host_result("[denied] The reviewed compaction turn is not accepting host tools.")
+            return await request.future
+
+    async def serve_host_call(self, lane, request):
+        """Run one parked host call on the CALLING task, which must be the reviewed worker.
+
+        The worker's own execution admits the tool, so the existing door (`_execute_tool`) attributes
+        its approvals to the root compaction execution and registers the tool future for the action's
+        join and Stop. Whatever happens, the SDK waiting on `request.future` is answered."""
+        lane.pending.discard(request)
+        future = request.future
+        if future.done():
+            return  # the SDK gave up before the worker reached it
+        try:
+            result = await self._serve(lane, request)
+        except asyncio.CancelledError:
+            if not future.done():
+                future.set_result(_host_result("[denied] Host tool cancelled with the compaction; "
+                                               "it may not have completed."))
+            raise
+        except Exception as exc:  # noqa: BLE001 - a failed host tool is a tool result, not a failed compaction
+            result = _host_result(f"[error] Host tool failed: {type(exc).__name__}")
+        if not future.done():
+            future.set_result(result)
+
+    async def _serve(self, lane, request):
+        turn, name = lane.turn, request.name
+        # Disclosure again at the door: the schema the model was shown is the one the review bound.
+        live = {s["function"]["name"]: s["function"] for s in self.app._all_tools() if s.get("type") == "function"}
+        if (lane.disclosed.get(name) != spec_digest(request.spec) or name not in live
+                or spec_digest(live[name]) != lane.disclosed[name]):
+            return _host_result(f"[denied] Host tool {name} changed since the compaction review; "
+                                "use the native tools.")
+        guarded = controls.enabled(self.app)
+        try:
+            async with controls.authorization(self.app) as ticket:
+                if (guarded and (ticket is None or ticket.state.closing)) or not self._owns_turn(turn):
+                    raise controls.AuthorizationClosed("Claude host callback expired")
+                return await self._host_call(name, request.args, request.spec, ticket)
+        except controls.AuthorizationClosed as exc:
+            return _host_result(str(exc))
 
     async def _host_call(self, name, args, spec, ticket):
         # Optional transitive dependency of the claude extra; it ships no stubs

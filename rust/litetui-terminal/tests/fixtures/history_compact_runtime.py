@@ -159,7 +159,13 @@ CLAUDE_WAKE_RESULT = "42345678-1111-4111-8111-123456789abc"
 CLAUDE_SUMMARY_TOOL = CASE in {"claude-segment-tools", "claude-segment-approval", "claude-segment-approval-denied",
                                "claude-segment-stop-approval"}
 CLAUDE_WAKE_TOOL = CASE == "claude-segment-wake-approval"
-CLAUDE_TOOLS = CLAUDE_SUMMARY_TOOL or CLAUDE_WAKE_TOOL
+# The summary turn calls a bridged HOST tool (the litetui MCP server) instead of a native Write.
+CLAUDE_HOST = CASE in {"claude-segment-host", "claude-segment-host-approval", "claude-segment-host-approval-denied",
+                       "claude-segment-host-stop-approval", "claude-segment-host-changed"}
+CLAUDE_TOOLS = CLAUDE_SUMMARY_TOOL or CLAUDE_WAKE_TOOL or CLAUDE_HOST
+# convo_search with refresh=true needs a human confirmation under the strict profile; a plain query does not.
+HOST_ARGS = {"refresh": True} if "approval" in CASE else {"query": "controlled host lookup"}
+HOST_RESULT = "CONTROLLED HOST RESULT 雪"
 CLAUDE_WAKE = CASE in {"claude-segment-wake", "claude-segment-wake-approval"}
 
 
@@ -199,6 +205,44 @@ def claude_client():
                 "type": "tool_result", "tool_use_id": tool_id, "is_error": not allowed,
                 "content": "wrote the store file" if allowed else verdict.get("permissionDecisionReason", "denied")}]}})
 
+        async def host(self, session_id, name, args, tool_id):
+            """Assistant tool_use of a bridged host tool, the CLI's hook, then the SDK's own MCP call."""
+            from mcp.types import CallToolRequestParams
+
+            full = "mcp__litetui__" + name
+            await self.frames.put({"type": "assistant", "uuid": CLAUDE_TERMINAL, "session_id": session_id,
+                "message": {"id": "msg-" + tool_id, "model": "claude-fixture", "usage": None, "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "id": tool_id, "name": full, "input": args}]}})
+            matcher = self.options.hooks["PreToolUse"][0]
+            verdict = (await matcher.hooks[0]({"tool_name": full, "tool_input": args}, tool_id, None))["hookSpecificOutput"]
+            history.report.setdefault("claude_tool_verdicts", []).append(verdict)
+            if CASE == "claude-segment-host-changed":
+                # The live schema drifts after the review bound it: the call must not run.
+                history.boundary.app_instance.plugins._tool_by_name[name].spec["function"]["description"] += " (changed)"
+            if verdict["permissionDecision"] == "allow":
+                server = self.options.mcp_servers["litetui"]["instance"]
+                entry = server.get_request_handler("tools/call")
+                result = await entry.handler(None, CallToolRequestParams(name=name, arguments=args))
+                text = "".join(part.text for part in result.content)
+                failed = bool(getattr(result, "is_error", getattr(result, "isError", False)))
+            else:
+                text, failed = verdict.get("permissionDecisionReason", "denied"), True
+            history.report.setdefault("claude_host_results", []).append({"name": name, "text": text})
+            await self.frames.put({"type": "user", "uuid": CLAUDE_TERMINAL, "message": {"content": [{
+                "type": "tool_result", "tool_use_id": tool_id, "is_error": failed, "content": text}]}})
+
+        async def host_turn(self, session_id, result_id, result):
+            """The streaming part of a host-tool turn: the SDK calls its MCP tool while events flow, never
+            inside query(), so the reviewed worker is already consuming them when the call arrives."""
+            try:
+                await self.host(session_id, "convo_search", HOST_ARGS, "toolu_host_lookup")
+            except BaseException as exc:  # a hung fixture hides the real failure
+                history.report["host_turn_error"] = f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                await self.frames.put(ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+                    num_turns=1, session_id=session_id, uuid=result_id, terminal_reason="completed", result=result))
+
         async def query(self, prompt):
             from litetui.app import WAKE_AFTER_COMPACT
 
@@ -223,6 +267,9 @@ def claude_client():
                 result_id, result = CLAUDE_TERMINAL, SUMMARY
                 if CLAUDE_SUMMARY_TOOL:
                     await self.tool(session_id, "Write", args, "toolu_store_write")
+                if CLAUDE_HOST:
+                    self.turn = asyncio.create_task(self.host_turn(session_id, result_id, result))
+                    return
             await self.frames.put(ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
                 num_turns=1, session_id=session_id, uuid=result_id, terminal_reason="completed", result=result))
 
@@ -698,10 +745,11 @@ async def serve(app):
         task = asyncio.create_task(call(APPLY, check=False, **payload))
         if CASE.startswith(("stop-", "quit-", "eof-")) or CASE in {"question", "question-wake", "approval", "approval-wake", "approval-denied",
                 "claude-segment-approval", "claude-segment-wake-approval", "claude-segment-approval-denied",
-                "claude-segment-stop-approval"}:
+                "claude-segment-stop-approval", "claude-segment-host-approval", "claude-segment-host-approval-denied",
+                "claude-segment-host-stop-approval"}:
             await until(lambda: history.report.get("input_request") if "question" in CASE or "approval" in CASE
                 else history.report.get("stages"))
-            if CASE.startswith("stop-") or CASE == "claude-segment-stop-approval":
+            if CASE.startswith("stop-") or CASE in {"claude-segment-stop-approval", "claude-segment-host-stop-approval"}:
                 history.report["stop_response"] = await call("abort")
             elif CASE.startswith(("quit-", "eof-")):
                 await shutdown(eof=CASE.startswith("eof-"))
@@ -852,7 +900,8 @@ if __name__ == "__main__":
     def controlled_register(app, registry, order=None, disabled=frozenset()):
         assert order is None
         return original_register(app, registry, order=("litetui.plugins.core_tools",
-            "litetui.plugins.convo", "litetui.plugins.self_compact", "litetui.plugins.ask_user_question"), disabled=disabled)
+            "litetui.plugins.convo", "litetui.plugins.self_compact", "litetui.plugins.ask_user_question",
+            *(("litetui.plugins.convo_search",) if CLAUDE_HOST else ())), disabled=disabled)
 
     with patch.object(plugins, "register_plugins", controlled_register):
         if CASE.startswith("owner-verified"):
@@ -862,10 +911,23 @@ if __name__ == "__main__":
             with helper.configure(history):
                 history.main()
         elif CASE.startswith("claude-segment"):
+            import threading
+
             import claude_agent_sdk
 
-            from litetui import claude_compaction_evidence
+            from litetui import claude_compaction_evidence, conversation_rewrite
             from litetui.claude_backend import ClaudeBackend
+            from litetui.plugins import convo_search
+
+            def host_lookup(args):
+                # The bridged host tool's body: it runs in the tool door's worker thread, and the origin it
+                # sees is the one the reviewed action attributes to it.
+                origin = conversation_rewrite.event_origin(history.boundary.app_instance)
+                history.report.setdefault("host_runs", []).append({"args": dict(args),
+                    "origin": asdict(origin) if origin is not None else None,
+                    "thread": threading.current_thread().name})
+                return HOST_RESULT
+
             async def metadata(backend):
                 backend.models = {"claude-fixture": {"value": "claude-fixture"}}
                 return "ok"
@@ -879,6 +941,7 @@ if __name__ == "__main__":
             # The wake opens a NEW session through the real backend: its SDK client is the controlled one.
             with (patch.object(ClaudeBackend, "ensure_running", metadata),
                   patch.object(claude_agent_sdk, "ClaudeSDKClient", claude_client()),
+                  patch.object(convo_search, "_run", host_lookup),
                   patch.object(claude_compaction_evidence.Binding, "verify_final", counted)):
                 history.main()
         else:

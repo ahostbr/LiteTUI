@@ -26,7 +26,7 @@ def launch(tmp_path, case):
     data = tmp_path / "data"
     data.mkdir()
     tools = case in {"tools-on", "tool-then-empty", "tool-cap"} or "question" in case or "approval" in case \
-        or case == "claude-segment-tools"
+        or case in {"claude-segment-tools", "claude-segment-host", "claude-segment-host-changed"}
     wake = case == "wake" or case.endswith("-wake") or case == "claude-segment-wake-approval"
     native = case.startswith("codex-native")
     claude = case.startswith("claude-segment")
@@ -234,6 +234,78 @@ def test_stop_during_a_claude_tool_approval_retires_the_hook_and_changes_nothing
     assert report["final_ledger"] == report["old_ledger"], "A stopped compaction must not select a replacement segment"
     assert not report["artifact_exists"]
     assert_input_scope(report, cancelled=False)
+
+
+HOST_RESULT = "CONTROLLED HOST RESULT 雪"
+
+
+def host_summary(report, *, calls=1):
+    """The common proof of a compaction whose summary turn called a bridged host tool."""
+    assert report["snapshot"]["eligible"] and report["snapshot"]["plan"]["host_tools"] == ["convo_search"]
+    assert report["apply"]["status"] == "accepted"
+    result = report["settled"]
+    assert result["outcome"] == "compacted" and result["worker_settled"] is True
+    witness = result["witness"]["claude_compaction"]
+    assert witness["tool_calls"] == calls and witness["store_files"] == [], "a host lookup is a tool call, not a store file"
+    assert not report["artifact_exists"]
+    return witness
+
+
+def test_a_bridged_host_tool_runs_in_the_reviewed_summary_turn_under_the_root_execution(tmp_path):
+    report = launch(tmp_path, "claude-segment-host")
+    host_summary(report)
+    assert report["claude_host_results"] == [{"name": "convo_search", "text": HOST_RESULT}]
+    (run,) = report["host_runs"]
+    assert run["args"] == {"query": "controlled host lookup"}
+    root = report["review"]["root_execution_id"]
+    assert run["origin"]["execution_id"] == root and run["origin"]["operation_id"] == report["apply"]["operation_id"]
+    assert run["origin"]["source"] == "rpc" and run["origin"]["session_id"] == report["before"]["identity"]["session_id"]
+    # The door registered the tool future with the action, and the settlement joined it.
+    (future,) = report["tool_futures"]
+    assert future["origin"] == run["origin"] and future["done"] and future["producer_done"] and future["callback_retired"]
+    assert not [r for r in report["wire_events"] if r.get("type") == "gui.event"
+                and r["event"].get("type") == "tool_approval_requested"]
+
+
+def test_a_host_tool_approval_of_the_summary_turn_is_attributed_to_the_root_execution(tmp_path):
+    report = launch(tmp_path, "claude-segment-host-approval")
+    host_summary(report)
+    assert report["input_request"]["event"]["tool"] == "convo_search"
+    assert_input_scope(report)
+    assert report["approval_response"]["result"]["allow"] is True
+    (run,) = report["host_runs"]
+    assert run["origin"]["execution_id"] == report["review"]["root_execution_id"] == report["input_request"]["execution_id"]
+    assert report["claude_host_results"] == [{"name": "convo_search", "text": HOST_RESULT}]
+    closed = [r for r in report["wire_events"] if r.get("type") == "gui.event"
+              and r["event"].get("type") == "tool_approval_closed"]
+    assert len(closed) == 1 and closed[0]["execution_id"] == report["input_request"]["execution_id"]
+
+
+def test_denying_a_host_tool_stops_the_compaction_as_it_stops_any_turn_and_runs_nothing(tmp_path):
+    # The host door's own ruling (app._authorize_action: DENY STOPS THE TURN), unchanged by the bridge.
+    report = launch(tmp_path, "claude-segment-host-approval-denied")
+    assert report["approval_response"]["result"]["allow"] is False
+    assert report["settled_response"]["ok"] is False and "settled" not in report
+    assert report["final_ledger"] == report["old_ledger"], "A stopped compaction must not select a replacement segment"
+    assert not report.get("host_runs") and not report["artifact_exists"]
+    assert_input_scope(report)
+
+
+def test_stop_during_a_host_tool_approval_runs_nothing_and_changes_nothing(tmp_path):
+    report = launch(tmp_path, "claude-segment-host-stop-approval")
+    assert report["stop_response"]["result"]["stopped"]
+    assert report["settled_response"]["ok"] is False and "settled" not in report
+    assert report["final_ledger"] == report["old_ledger"], "A stopped compaction must not select a replacement segment"
+    assert not report.get("host_runs") and not report["artifact_exists"]
+    assert_input_scope(report, cancelled=False)
+
+
+def test_a_host_tool_whose_schema_changed_after_the_review_is_refused_and_runs_nothing(tmp_path):
+    report = launch(tmp_path, "claude-segment-host-changed")
+    host_summary(report)
+    (result,) = report["claude_host_results"]
+    assert "compaction review" in result["text"] and HOST_RESULT not in result["text"]
+    assert not report.get("host_runs"), "an undisclosed schema must never reach the tool door"
 
 
 def root_events(report):

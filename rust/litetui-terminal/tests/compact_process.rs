@@ -47,7 +47,12 @@ fn model(case: &str) -> &'static str {
 fn tools_on(case: &str) -> bool {
     matches!(
         case,
-        "tools-on" | "tool-then-empty" | "tool-cap" | "claude-segment-tools"
+        "tools-on"
+            | "tool-then-empty"
+            | "tool-cap"
+            | "claude-segment-tools"
+            | "claude-segment-host"
+            | "claude-segment-host-changed"
     ) || case.starts_with("owner-verified")
         || case.contains("question")
         || case.contains("approval")
@@ -695,6 +700,93 @@ fn f6_claude_compaction_with_tools_wake_and_approvals_is_reviewed_receipted_and_
             usize::from(summary_tool),
             "{case}"
         );
+    }
+}
+
+#[test]
+#[ignore = "controlled actual-source compaction; dependency Python required"]
+fn f6_claude_compaction_discloses_and_runs_host_tools_in_the_summary_turn() {
+    for case in [
+        "claude-segment-host",
+        "claude-segment-host-approval",
+        "claude-segment-host-changed",
+        "claude-segment-host-stop-approval",
+    ] {
+        let stop = case.contains("stop");
+        let (runtime, root) = launch(case);
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = start(runtime, case)?;
+            let draft = editor(&app);
+            select(runtime, &mut app)?;
+            validate(runtime, &mut app, Some(HINT))?;
+            let review = draw(&mut app);
+            assert!(review.contains("Confirm Claude compaction"));
+            assert!(review.contains("Tools enabled: yes"));
+            // The review names the host tool the summary turn may run, not just "host tools".
+            assert!(
+                review.contains("convo_search")
+                    && review.contains("these host MCP tools may also run"),
+                "{case}: {review}"
+            );
+            assert!(!review.contains("host MCP tools are unavailable"), "{case}");
+            let request = apply(runtime, &mut app)?;
+            if case.contains("approval") {
+                stage(runtime, &mut app, &root, "approval")?;
+                assert!(app.has_live_approval());
+                draw(&mut app);
+                if stop {
+                    app.live.as_mut().unwrap().request_stop()?;
+                    runtime.abort(
+                        app.live
+                            .as_mut()
+                            .unwrap()
+                            .take_abort()
+                            .expect("exact action Stop"),
+                    )?;
+                } else {
+                    let approvals = &mut app.live.as_mut().unwrap().approvals;
+                    let id = approvals.current().unwrap().request.id.clone();
+                    approvals.choose(true);
+                    let decision = approvals
+                        .take_decision()
+                        .expect("visible approval decision");
+                    assert_eq!(decision.id, id);
+                    runtime.approve(decision)?;
+                }
+            }
+            settle(runtime, &mut app, &request)?;
+            assert_eq!(editor(&app), draft);
+            runtime.quit()
+        });
+        assert!(
+            result.is_ok(),
+            "{case}: {result:?}; artifacts {}",
+            root.display()
+        );
+        let r = report(&root);
+        assert!(!r["artifact_exists"].as_bool().unwrap(), "{case}");
+        let ran = r["host_runs"].as_array().map_or(0, Vec::len);
+        if stop {
+            assert_eq!(ran, 0, "{case}: a stopped compaction runs no host tool");
+            assert_eq!(r["final_ledger"], r["old_ledger"], "{case}");
+            continue;
+        }
+        assert_eq!(r["settled"]["outcome"], "compacted", "{case}");
+        let proof = &r["settled"]["witness"]["claude_compaction"];
+        assert_eq!(proof["tool_calls"], 1, "{case}");
+        assert_eq!(proof["store_files"].as_array().unwrap().len(), 0, "{case}");
+        // A schema that drifted after the review must never reach the tool door.
+        assert_eq!(
+            ran,
+            usize::from(case != "claude-segment-host-changed"),
+            "{case}"
+        );
+        if ran == 1 {
+            assert_eq!(
+                r["host_runs"][0]["origin"]["execution_id"], r["review"]["root_execution_id"],
+                "{case}: the host tool runs under the reviewed root execution"
+            );
+        }
     }
 }
 

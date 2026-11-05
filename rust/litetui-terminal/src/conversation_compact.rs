@@ -339,6 +339,8 @@ pub struct ClaudePlan {
     pub prompt: String,
     /// Fingerprint of the tool inventory the session offers, bound by the review.
     pub tools: String,
+    /// Host (litetui MCP) tools the review discloses, by name; their schemas are inside `tools`.
+    pub host_tools: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -369,6 +371,29 @@ fn segment_id(v: &Value, key: &str) -> io::Result<String> {
         return Err(fail("Invalid Claude segment identity"));
     }
     Ok(value)
+}
+
+/// Names of the host tools a Claude review discloses: few, sorted, unique, plain identifiers.
+fn host_tool_names(v: &Value, key: &str) -> io::Result<Vec<String>> {
+    let names = v[key]
+        .as_array()
+        .filter(|names| names.len() <= 16)
+        .ok_or_else(|| fail("Invalid Claude host tool list"))?
+        .iter()
+        .map(|name| {
+            name.as_str()
+                .filter(|name| {
+                    (1..=32).contains(&name.len())
+                        && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                })
+                .map(str::to_owned)
+                .ok_or_else(|| fail("Invalid Claude host tool name"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if names.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(fail("Claude host tools must be sorted and unique"));
+    }
+    Ok(names)
 }
 
 fn sdk_uuid(v: &Value, key: &str) -> io::Result<String> {
@@ -406,12 +431,17 @@ impl Plan {
                     "ledger_before",
                     "prompt_sha256",
                     "tools_sha256",
+                    "host_tools",
                 ],
             )?;
             if selection.identity.backend != "claude"
                 || number(v, "messages")? != selection.messages
             {
                 return Err(fail("Invalid Claude segment plan"));
+            }
+            let host_tools = host_tool_names(v, "host_tools")?;
+            if !host_tools.is_empty() && config["tools_enabled"] != true {
+                return Err(fail("Claude host tools need the review's tools enabled"));
             }
             let fields = [
                 "segment",
@@ -421,6 +451,9 @@ impl Plan {
                 "tools_sha256",
             ];
             if !eligible && fields.iter().all(|field| v[*field].is_null()) {
+                if !host_tools.is_empty() {
+                    return Err(fail("An ineligible Claude plan cannot disclose host tools"));
+                }
                 return Ok(Self::Claude(None));
             }
             return Ok(Self::Claude(Some(ClaudePlan {
@@ -429,6 +462,7 @@ impl Plan {
                 ledger: token(v, "ledger_before")?,
                 prompt: token(v, "prompt_sha256")?,
                 tools: token(v, "tools_sha256")?,
+                host_tools,
             })));
         }
         keys(v, &["kind", "messages", "thread_id"])?;
@@ -1499,10 +1533,20 @@ impl View {
                 ),
                 Plan::Claude(Some(plan)) => {
                     let c = &review.before.config;
-                    let tools = if c.tools_enabled {
-                        "Tools enabled: yes. While summarizing, Claude may use its native tools (it is asked to write the memory store files with Write/Edit). Each tool call is approved under the current tool profile in this session; host MCP tools are unavailable. Completed writes and approval audits remain after Stop or failure."
+                    let host = if plan.host_tools.is_empty() {
+                        "host MCP tools are unavailable".to_owned()
                     } else {
-                        "Tools enabled: no. The summary turn cannot use tools."
+                        format!(
+                            "these host MCP tools may also run, exactly as disclosed by this review: {} (denying one stops the compaction and replaces nothing)",
+                            display(&plan.host_tools.join(", "))
+                        )
+                    };
+                    let tools = if c.tools_enabled {
+                        format!(
+                            "Tools enabled: yes. While summarizing, Claude may use its native tools (it is asked to write the memory store files with Write/Edit). Each tool call is approved under the current tool profile in this session; {host}. Completed writes and approval audits remain after Stop or failure."
+                        )
+                    } else {
+                        "Tools enabled: no. The summary turn cannot use tools.".to_owned()
                     };
                     let wake = if c.wake_after_compact {
                         "Wake after success: yes. Once the new segment is saved and verified, one ordinary turn starts in the new session with the wake prompt (no replay of earlier input)."
