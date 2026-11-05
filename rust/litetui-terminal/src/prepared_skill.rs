@@ -124,7 +124,9 @@ impl<const LIMIT: usize> BoundedDraft<LIMIT> {
     }
     pub fn set(&mut self, text: &str) -> io::Result<()> {
         if text.len() > LIMIT {
-            return Err(fail("Document exceeds the editor limit; draft kept unchanged"));
+            return Err(fail(
+                "Document exceeds the editor limit; draft kept unchanged",
+            ));
         }
         self.text = text.into();
         self.cursor = self.text.len();
@@ -132,7 +134,9 @@ impl<const LIMIT: usize> BoundedDraft<LIMIT> {
     }
     pub fn insert(&mut self, text: &str) -> io::Result<()> {
         if self.text.len().saturating_add(text.len()) > LIMIT {
-            return Err(fail("Document exceeds the editor limit; draft kept unchanged"));
+            return Err(fail(
+                "Document exceeds the editor limit; draft kept unchanged",
+            ));
         }
         self.text.insert_str(self.cursor, text);
         self.cursor += text.len();

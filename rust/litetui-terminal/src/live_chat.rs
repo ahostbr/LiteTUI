@@ -952,7 +952,8 @@ impl Chat {
                     == crate::conversation_compact::Outcome::Compacted
                     && matches!(
                         changed.review.before.plan,
-                        crate::conversation_compact::Plan::Host(_) | crate::conversation_compact::Plan::Claude(_)
+                        crate::conversation_compact::Plan::Host(_)
+                            | crate::conversation_compact::Plan::Claude(_)
                     )
                 {
                     self.prior_context_rows = start;
