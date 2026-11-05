@@ -59,8 +59,8 @@ _PALETTE_ROUTES = {("settings-ui", "Theme"): "themes", ("scheduler", "Scheduled 
 # Commands that stay unrouted say why, per exact (owner, first token). A third
 # party registering the same token never inherits these reasons.
 _UNAVAILABLE = {
-    ("misc", "/screenshot"): "Screenshot is a Textual window action; the terminal frontend has no window to capture.",
-    ("misc", "/maximize"): "Maximize is a Textual panel action; the terminal frontend draws one fixed layout.",
+    ("misc", "/screenshot"): "Screenshot saves an image of the Textual window and the terminal frontend has no capture path of its own; use your terminal's screenshot, or Ctrl+Shift+C to copy transcript text.",
+    ("misc", "/maximize"): "Maximize enlarges the focused Textual panel; the terminal frontend has no panel focus and the transcript already takes every free row. Ctrl+G toggles the compact view; Alt+Up and Alt+Down scroll.",
     ("misc", "/test-sidebar"): "Test sidebar is a Textual-only dialog spike with no terminal equivalent.",
     ("monitor", "/monitor"): "Browser monitor is a desktop overlay that is not available in the terminal frontend.",
     ("sidecar-preview", "/sidecar"): "Native sidecar preview is a desktop overlay that is not available in the terminal frontend.",

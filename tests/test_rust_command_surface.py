@@ -537,6 +537,9 @@ async def test_every_unrouted_registered_command_states_its_own_reason(command_a
     assert len(set(reasons.values())) == len(reasons)
     for token in ("/screenshot", "/maximize", "/test-sidebar"):
         assert "Textual" in reasons[token]
+    # The two window actions name the terminal-native keys that replace them.
+    assert "Ctrl+Shift+C" in reasons["/screenshot"]
+    assert "Alt+Up" in reasons["/maximize"] and "Ctrl+G" in reasons["/maximize"]
     for token in ("/monitor", "/sidecar", "/mark"):
         assert "desktop overlay" in reasons[token]
     assert "no native action adapter" not in "".join(reasons.values())
