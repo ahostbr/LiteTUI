@@ -160,7 +160,8 @@ def _snapshot(app, cmd):
         except ValueError:
             pass  # Show the specific eligibility reason below.
         plan = binding.plan(len(captured.messages)) if binding else {"kind": "claude", "messages": len(captured.messages),
-                "segment": None, "native_session": None, "ledger_before": None, "prompt_sha256": None}
+                "segment": None, "native_session": None, "ledger_before": None, "prompt_sha256": None,
+                "tools_sha256": None}
     elif codex:
         try:
             binding = Binding.capture(app)
@@ -323,7 +324,10 @@ async def reviewed_claude(app, hint):
             or attempt.mutated or binding is None):
         raise ValueError("Claude compaction lost the reviewed execution owner")
     binding.check(app)
-    progress = claude_compaction_evidence.Progress(binding)
+    origin = action.event_origin(app)
+    if origin is None or origin.execution_id != json.loads(attempt.review.wire)["root_execution_id"]:
+        raise ValueError("Claude compaction lost its exact root execution identity")
+    progress = claude_compaction_evidence.Progress(binding, origin)
     attempt.mutated = True
     try:
         receipt = await compact(app, hint, reviewed=progress)
@@ -389,7 +393,8 @@ def write_publication_record(app, record):
     if not captured.writable or captured.meta.get("id") != app.convo_id:
         raise ValueError("Compaction transcript changed its writable owned identity")
     raw = captured.raw or b""
-    if isinstance(attempt.review, ClaudeReview) and raw != attempt.review.raw:
+    if (isinstance(attempt.review, ClaudeReview) and raw != attempt.review.raw
+            and not (attempt.review.binding.tool_work and action.audit_raw_only(raw, attempt.review.raw))):
         raise ValueError("The reviewed Claude transcript changed before publication")
     payload = ConversationRepository.record_bytes(record, separator=bool(raw and not raw.endswith(b"\n")))
     if len(raw) + len(payload) > native_history.MAX_TRANSCRIPT:
@@ -512,7 +517,15 @@ async def settled(app, cmd):
                     or descriptor["context_sha256"] != wire["context_sha256"]):
                 raise ValueError("Codex compaction changed the stored transcript")
         if isinstance(attempt.review, ClaudeReview) and not refused:
-            if outcome.claude:
+            if outcome.claude and attempt.segments:
+                # A reviewed wake ran after the strict root verification: its replacement session
+                # and delivery are expected, and the transcript must only have GROWN past the root.
+                attempt.review.binding.verify_woken(app, outcome.claude)
+                publication = attempt.publication
+                if (not isinstance(publication, Publication) or not publication.verified
+                        or not captured.messages_bytes.startswith(publication.expected[:-1] + b",")):
+                    raise ValueError("The Claude wake did not extend the verified published transcript")
+            elif outcome.claude:
                 attempt.review.binding.verify_final(app, outcome.claude)
                 if root_history != descriptor:
                     raise ValueError("Published Claude transcript changed before settlement")

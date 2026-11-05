@@ -77,6 +77,10 @@ pub fn validate_hint(value: &str) -> io::Result<()> {
 }
 
 pub const TEXT_BYTES: usize = 65536;
+/// The source's own caps on a reviewed Claude summary's tool work (claude_compaction_evidence).
+const CLAUDE_TOOL_CALLS: u64 = 64;
+const CLAUDE_STORE_FILES: usize = 32;
+const CLAUDE_PATH_BYTES: usize = 4096 * 4;
 /// A fresh current-history descriptor, never execution authority by itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Selection {
@@ -333,6 +337,8 @@ pub struct ClaudePlan {
     pub session: String,
     pub ledger: String,
     pub prompt: String,
+    /// Fingerprint of the tool inventory the session offers, bound by the review.
+    pub tools: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -399,12 +405,11 @@ impl Plan {
                     "native_session",
                     "ledger_before",
                     "prompt_sha256",
+                    "tools_sha256",
                 ],
             )?;
             if selection.identity.backend != "claude"
                 || number(v, "messages")? != selection.messages
-                || eligible
-                    && (config["tools_enabled"] != false || config["wake_after_compact"] != false)
             {
                 return Err(fail("Invalid Claude segment plan"));
             }
@@ -413,6 +418,7 @@ impl Plan {
                 "native_session",
                 "ledger_before",
                 "prompt_sha256",
+                "tools_sha256",
             ];
             if !eligible && fields.iter().all(|field| v[*field].is_null()) {
                 return Ok(Self::Claude(None));
@@ -422,6 +428,7 @@ impl Plan {
                 session: sdk_uuid(v, "native_session")?,
                 ledger: token(v, "ledger_before")?,
                 prompt: token(v, "prompt_sha256")?,
+                tools: token(v, "tools_sha256")?,
             })));
         }
         keys(v, &["kind", "messages", "thread_id"])?;
@@ -703,6 +710,10 @@ pub struct ClaudeReceipt {
     pub new_segment: String,
     pub seed_sha256: String,
     pub ledger_after: String,
+    /// Distinct tool calls the summary turn made (0 when tools were off).
+    pub tool_calls: u64,
+    /// Store files whose Write/Edit came back without an error.
+    pub store_files: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -733,10 +744,30 @@ impl Settlement {
             return Some(format!("Owner handoff verified at Git commit {commit}."));
         }
         if let Some(receipt) = &self.claude_receipt {
-            return Some(format!(
-                "Claude summary saved in segment {}.",
-                receipt.new_segment
-            ));
+            let mut text = format!("Claude summary saved in segment {}.", receipt.new_segment);
+            if receipt.tool_calls > 0 {
+                text.push_str(&format!(
+                    " The summary made {} tool call(s)",
+                    receipt.tool_calls
+                ));
+                if receipt.store_files.is_empty() {
+                    text.push_str(" and wrote no store file.");
+                } else {
+                    text.push_str(&format!(
+                        " and wrote {}.",
+                        receipt
+                            .store_files
+                            .iter()
+                            .map(|path| crate::live::terminal_text(path))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+            if self.execution_segments > 0 {
+                text.push_str(" A wake turn followed.");
+            }
+            return Some(text);
         }
         if let Some(receipt) = &self.native_compaction {
             return Some(format!(
@@ -858,6 +889,26 @@ impl Settlement {
                 return Err(fail("Uncompleted Codex compaction claims a native outcome"));
             }
         }
+        let execution = &v["execution"];
+        keys(execution, &["segments", "last_execution_id"])?;
+        let execution_segments = execution["segments"]
+            .as_u64()
+            .filter(|n| *n <= 100)
+            .ok_or_else(|| fail("Invalid compaction stream count"))?;
+        let last_execution_id = if execution_segments == 0 {
+            if execution.get("last_execution_id") != Some(&Value::Null) {
+                return Err(fail("Zero-stream compaction invented a terminal execution"));
+            }
+            None
+        } else {
+            if admission.status == AdmissionStatus::Refused
+                || outcome != Outcome::Compacted
+                || !review.before.config.wake_after_compact
+            {
+                return Err(fail("Unpublished compaction cannot wake a turn"));
+            }
+            Some(uuid(execution, "last_execution_id")?)
+        };
         let mut claude_receipt = None;
         if let Plan::Claude(Some(plan)) = &review.before.plan {
             let receipt = &w["claude_compaction"];
@@ -872,6 +923,8 @@ impl Settlement {
                         "seed_sha256",
                         "ledger_before",
                         "ledger_after",
+                        "tool_calls",
+                        "store_files",
                     ],
                 )?;
                 let new_segment = segment_id(receipt, "new_segment")?;
@@ -882,17 +935,44 @@ impl Settlement {
                     || new_segment == plan.segment
                     || ledger_after == plan.ledger
                     || history.token == review.before.selection.history_snapshot
-                    || history.counts.non_system != 2
                 {
                     return Err(fail(
                         "Claude ledger or compacted transcript contradicts its reviewed segment",
                     ));
                 }
+                let tool_calls = receipt["tool_calls"]
+                    .as_u64()
+                    .filter(|n| *n <= CLAUDE_TOOL_CALLS)
+                    .ok_or_else(|| fail("Invalid Claude tool-call count"))?;
+                let files = receipt["store_files"]
+                    .as_array()
+                    .filter(|files| files.len() <= CLAUDE_STORE_FILES)
+                    .ok_or_else(|| fail("Invalid Claude store file list"))?;
+                // Every named file is a completed write, so none can exist without a tool call, and a
+                // review that disclosed tools off cannot have made any call at all.
+                if files.len() as u64 > tool_calls
+                    || (tool_calls > 0 && !review.before.config.tools_enabled)
+                {
+                    return Err(fail(
+                        "Claude receipt names tool work the review did not allow",
+                    ));
+                }
+                let store_files = files
+                    .iter()
+                    .map(|file| {
+                        file.as_str()
+                            .filter(|path| !path.is_empty() && path.len() <= CLAUDE_PATH_BYTES)
+                            .map(str::to_owned)
+                            .ok_or_else(|| fail("Invalid Claude store file path"))
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
                 claude_receipt = Some(ClaudeReceipt {
                     result_id: sdk_uuid(receipt, "result_id")?,
                     new_segment,
                     seed_sha256: token(receipt, "seed_sha256")?,
                     ledger_after,
+                    tool_calls,
+                    store_files,
                 });
             } else if !receipt.is_null() {
                 return Err(fail(
@@ -937,7 +1017,13 @@ impl Settlement {
             if !started
                 || matches!(review.before.plan, Plan::Claude(_))
                     && (!matches!(outcome, Outcome::Compacted | Outcome::Cancelled)
-                        || root != history
+                        // Without a wake the settled history IS the root's publication. A reviewed wake
+                        // appends its own user and assistant rows, so the history must have grown past it.
+                        || (execution_segments == 0 && root != history)
+                        || (execution_segments > 0
+                            && (root == history || history.counts.messages <= root.counts.messages))
+                        // The root's publication is exactly the summary pair.
+                        || (outcome == Outcome::Compacted && root.counts.non_system != 2)
                         || outcome == Outcome::Cancelled
                             && history.token != review.before.selection.history_snapshot)
                 || root_context != root.context_sha256
@@ -955,26 +1041,6 @@ impl Settlement {
                 ));
             }
             Some(root)
-        };
-        let execution = &v["execution"];
-        keys(execution, &["segments", "last_execution_id"])?;
-        let execution_segments = execution["segments"]
-            .as_u64()
-            .filter(|n| *n <= 100)
-            .ok_or_else(|| fail("Invalid compaction stream count"))?;
-        let last_execution_id = if execution_segments == 0 {
-            if execution.get("last_execution_id") != Some(&Value::Null) {
-                return Err(fail("Zero-stream compaction invented a terminal execution"));
-            }
-            None
-        } else {
-            if admission.status == AdmissionStatus::Refused
-                || outcome != Outcome::Compacted
-                || !review.before.config.wake_after_compact
-            {
-                return Err(fail("Unpublished compaction cannot wake a turn"));
-            }
-            Some(uuid(execution, "last_execution_id")?)
         };
         Ok(Self {
             native_compaction,
@@ -1431,13 +1497,26 @@ impl View {
                     display(&review.before.selection.identity.model),
                     display(thread_id.as_deref().unwrap_or_default())
                 ),
-                Plan::Claude(Some(plan)) => format!(
-                    "Confirm Claude compaction\nSession {}\nModel {}\n\nClaude will summarize this session and close it. The summary will seed a new segment and replace the saved context. Your next message starts a new SDK session with an empty cache and full input pricing.\nClear previous displayed rows: {}\n\nGuidance\n{}",
-                    display(&plan.session),
-                    display(&review.before.selection.identity.model),
-                    review.before.config.clear_screen_after_compact,
-                    display(&review.hint)
-                ),
+                Plan::Claude(Some(plan)) => {
+                    let c = &review.before.config;
+                    let tools = if c.tools_enabled {
+                        "Tools enabled: yes. While summarizing, Claude may use its native tools (it is asked to write the memory store files with Write/Edit). Each tool call is approved under the current tool profile in this session; host MCP tools are unavailable. Completed writes and approval audits remain after Stop or failure."
+                    } else {
+                        "Tools enabled: no. The summary turn cannot use tools."
+                    };
+                    let wake = if c.wake_after_compact {
+                        "Wake after success: yes. Once the new segment is saved and verified, one ordinary turn starts in the new session with the wake prompt (no replay of earlier input)."
+                    } else {
+                        "Wake after success: no."
+                    };
+                    format!(
+                        "Confirm Claude compaction\nSession {}\nModel {}\n\nClaude will summarize this session and close it. The summary will seed a new segment and replace the saved context. Your next message starts a new SDK session with an empty cache and full input pricing.\n{tools}\n{wake}\nClear previous displayed rows: {}\n\nGuidance\n{}",
+                        display(&plan.session),
+                        display(&review.before.selection.identity.model),
+                        c.clear_screen_after_compact,
+                        display(&review.hint)
+                    )
+                }
                 Plan::Claude(None) => display(&self.notice),
                 Plan::Host(p) => {
                     let c = &review.before.config;

@@ -29,6 +29,7 @@ same card.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -161,6 +162,30 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
             segment = ledger.bind_session(segment["id"], session.session_id)
         async def turn(text: str) -> None:
             """One query and its events; sets `summary` / `failure`. A retry reuses it."""
+            tool_turn = monitor = None
+            if reviewed is not None and reviewed.binding.tool_work:
+                # The callbacks of a tools-on reviewed summary belong to this root execution.
+                tool_turn = bridge.bind_turn(reviewed.origin)
+
+                async def watch_stop():
+                    # A tool approval can block the stream with nothing arriving to notice Stop.
+                    while True:
+                        if app._stop_requested:
+                            bridge.stop()
+                            await session.interrupt()
+                            return
+                        await asyncio.sleep(0.05)
+                monitor = asyncio.create_task(watch_stop(), name="claude-compact-stop")
+            try:
+                await _turn_events(text, tool_turn)
+            finally:
+                if monitor is not None:
+                    monitor.cancel()
+                    await asyncio.gather(monitor, return_exceptions=True)
+                if tool_turn is not None:
+                    bridge.finish_turn(tool_turn)
+
+        async def _turn_events(text: str, tool_turn) -> None:
             nonlocal summary, failure
             await session.query(f"compact-{uuid.uuid4().hex}", text)
             texts = {}
@@ -171,7 +196,9 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                     await session.interrupt()
                 for event in normalizer.push(message):
                     if reviewed is not None and event.kind in {"tool_use", "tool_result", "compaction"}:
-                        raise ValueError("Unexpected work in the reviewed tools-off Claude summary")
+                        reviewed.tool(event)  # refuses tool work the review did not disclose
+                        if event.kind == "tool_result" and tool_turn is not None:
+                            bridge.completed(tool_turn, event.tool_id)
                     if event.kind in {"text_delta", "message"}:
                         card.thinking_done()
                         key = event.message_id or "current"
@@ -321,7 +348,9 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         "duration_s": time.perf_counter() - started, "summary_chars": len(summary),
         "store_files": writes,
     })
-    app.conversation = rebuilt
+    # In place: the native MCP lifecycle (and every reviewed action) holds this list by identity, and
+    # rebinding it made every tool authorization after the compaction (the wake's) refuse as a lost owner.
+    app.conversation[:] = rebuilt
     if reviewed is not None:
         conversation_compact.verify_publication(app, publication)
         reviewed.stage = "cleanup after verified segment and transcript publication"
@@ -345,16 +374,19 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     if app.settings.clear_screen_after_compact:
         app._clear_screen(note="Compacted into a summary; the next message starts a fresh Claude session "
                                "carrying it. The full transcript is still on disk in this conversation's file.")
-    if resume is not None or app.settings.wake_after_compact or handoff is not None:
+    wake = reviewed.binding.wake if reviewed is not None else app.settings.wake_after_compact
+    if resume is not None or wake or handoff is not None:
         # Admission, never replay: delivered tools may already have effects.
         # Bind this one-shot callback to the fresh segment and original input.
+        from litetui import background_input
         from litetui.app import WAKE_AFTER_COMPACT
         item = resume[3] if resume is not None else active_input
         continuation = (backend, conversation_id, next_segment["id"], item, None)
         text = resume[4] if resume is not None and resume[4] is not None else WAKE_AFTER_COMPACT
         fired = False
 
-        def continue_once():
+        def _wake_after_compact():
+            # Named like the host's wake: a reviewed Stop retires callbacks by that name.
             nonlocal fired
             if fired:
                 return
@@ -363,10 +395,19 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 if held_input is not None:
                     app._pending_input.append(held_input)
                     app._flush_pending_input()
+                elif reviewed is not None and background_input.enabled(app):
+                    app._wake_after_compact()  # the canonical wake, under an owned Work producer
                 else:
                     app._submit_text(text, alt_chord=False, source="compact")
 
-        app.call_after_refresh(continue_once)
+        if reviewed is not None:
+            # Queued on the reviewed action: it fires only after this root worker has retired and its
+            # result (including the strict segment verification) was captured, and the stream it
+            # starts is a continuation the action's drain and settlement both join.
+            from litetui import conversation_action
+            conversation_action.after_refresh(app, _wake_after_compact)
+        else:
+            app.call_after_refresh(_wake_after_compact)
     return receipt
 
 

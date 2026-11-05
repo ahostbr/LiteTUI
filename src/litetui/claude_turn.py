@@ -639,7 +639,8 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
             fork.before_query(app,origin,session,item)
         ledger.update_delivery(entry_id, "submitted", **({"store_notice": notice} if notice else {}))
         submitted = True
-        if controls.enabled(app):
+        if controls.enabled(app) or conversation_action.compact_pending(app):
+            # A reviewed compaction's wake stream binds too, so its approvals carry its origin.
             tool_turn = bridge.bind_turn(origin)
         await _query_with_store_notice(session, ledger, entry_id, item["content"], notice)
         clock = claude_cache.clock_for(app, segment["id"])

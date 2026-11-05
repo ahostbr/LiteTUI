@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "rust/litetui-terminal/tests/fixtures/history_compact_runtime.py"
 SUMMARY = "Controlled compacted continuity summary"
+WAKE_ANSWER = "Controlled answer after the genuine compaction wake"
 
 
 def digest(value):
@@ -24,8 +25,9 @@ def digest(value):
 def launch(tmp_path, case):
     data = tmp_path / "data"
     data.mkdir()
-    tools = case in {"tools-on", "tool-then-empty", "tool-cap"} or "question" in case or "approval" in case
-    wake = case == "wake" or case.endswith("-wake")
+    tools = case in {"tools-on", "tool-then-empty", "tool-cap"} or "question" in case or "approval" in case \
+        or case == "claude-segment-tools"
+    wake = case == "wake" or case.endswith("-wake") or case == "claude-segment-wake-approval"
     native = case.startswith("codex-native")
     claude = case.startswith("claude-segment")
     backend, model = ("claude", "claude-fixture") if claude else ("codex", "gpt-6.1-sol") if native else ("custom", "switch-old")
@@ -123,14 +125,10 @@ def test_reviewed_codex_compaction_requires_persisted_native_identity(tmp_path, 
 
 
 @pytest.mark.parametrize("case", ["claude-segment", "claude-segment-foreign", "claude-segment-close",
-    "claude-segment-ledger", "claude-segment-transcript", "claude-segment-wake", "claude-segment-tools",
-    "claude-segment-drift"])
+    "claude-segment-ledger", "claude-segment-transcript", "claude-segment-drift"])
 def test_claude_segment_and_transcript_publications_have_independent_evidence(tmp_path, case):
     report = launch(tmp_path, case)
     old, final = report["old_ledger"], report["final_ledger"]
-    if case.endswith(("-wake", "-tools")):
-        assert not report["snapshot"]["eligible"] and not report.get("claude_summary_prompts")
-        return
     if case == "claude-segment-drift":
         assert report["apply"]["status"] == "refused" and not report.get("claude_summary_prompts")
         assert report["settled"]["witness"]["claude_compaction"] is None and final == old
@@ -160,6 +158,82 @@ def test_claude_segment_and_transcript_publications_have_independent_evidence(tm
     assert witness["seed_sha256"] == hashlib.sha256(SUMMARY.encode()).hexdigest()
     assert report["settled"]["witness"]["publication_verified"]
     assert report["live"][-2]["content"].endswith("\n\n" + SUMMARY)
+
+
+@pytest.mark.parametrize("case", ["claude-segment-wake", "claude-segment-tools", "claude-segment-approval",
+    "claude-segment-wake-approval"])
+def test_claude_compaction_with_tools_and_wake_is_reviewed_attributed_and_receipted(tmp_path, case):
+    report = launch(tmp_path, case)
+    tools = case != "claude-segment-wake"
+    wake = "wake" in case
+    snapshot = report["snapshot"]
+    assert snapshot["eligible"] and snapshot["plan"]["tools_sha256"]
+    assert report["review"]["effects"]["tools_enabled"] is tools
+    assert report["review"]["effects"]["wake_after_compact"] is wake
+    assert report["apply"]["status"] == "accepted"
+    result = report["settled"]
+    assert result["outcome"] == "compacted" and result["worker_settled"] is True
+    witness = result["witness"]["claude_compaction"]
+    old, final = report["old_ledger"], report["final_ledger"]
+    assert witness["old_segment"] == old["selected_segment"] and witness["ledger_before"] == digest(old)
+    # The receipt names the replacement segment as it was BEFORE any wake ran.
+    assert witness["new_segment"] == final["selected_segment"] != old["selected_segment"]
+    assert final["segments"][witness["new_segment"]]["seed"] == SUMMARY
+    assert witness["seed_sha256"] == hashlib.sha256(SUMMARY.encode()).hexdigest()
+    summary_tool = case in {"claude-segment-tools", "claude-segment-approval"}
+    assert witness["tool_calls"] == (1 if summary_tool else 0)
+    assert witness["store_files"] == ([report["artifact"]] if summary_tool else [])
+    assert report["artifact_exists"] is (case != "claude-segment-wake")
+    if case != "claude-segment-wake":
+        assert report["artifact_text"] == "A real compaction tool wrote this disposable artifact.\n"
+        assert all(v["permissionDecision"] == "allow" for v in report["claude_tool_verdicts"])
+    if "approval" in case:
+        assert_input_scope(report)
+        approved = report["approval_response"]["result"]["approved"]
+        assert approved == report["input_request"]["event"]["id"]
+        assert report["input_request"]["event"]["tool"] == "Write"
+        closed = [r for r in report["wire_events"] if r.get("type") == "gui.event"
+                  and r["event"].get("type") == "tool_approval_closed"]
+        assert len(closed) == 1 and closed[0]["execution_id"] == report["input_request"]["execution_id"]
+    elif case == "claude-segment-tools":
+        assert not [r for r in report["wire_events"] if r.get("type") == "gui.event"
+                    and r["event"].get("type") == "tool_approval_requested"]
+    if wake:
+        assert result["execution"]["segments"] == 1 and result["execution"]["last_execution_id"]
+        assert report["claude_wake_prompts"] and len(report["claude_wake_prompts"]) == 1
+        # The strict verification of the replacement segment ran BEFORE the wake submitted.
+        assert report["claude_verifications_before_wake"] >= 1
+        assert result["witness"]["publication_verified"]
+        live = report["live"]
+        assert live[-4]["content"].endswith("\n\n" + SUMMARY) and live[-1]["content"] == WAKE_ANSWER
+        assert final["segments"][witness["new_segment"]]["session_id"] is not None
+        starts = [r for r in report["wire_events"] if r.get("type") == "gui.event"
+                  and r["event"].get("type") == "turn_start" and r["event"].get("compact_segment")]
+        assert len(starts) == 1 and starts[0]["execution_id"] == result["execution"]["last_execution_id"]
+    else:
+        assert result["execution"] == {"segments": 0, "last_execution_id": None}
+        assert not report.get("claude_wake_prompts")
+        assert final["segments"][witness["new_segment"]]["session_id"] is None
+
+
+def test_claude_denied_tool_approval_is_receipted_as_no_store_file(tmp_path):
+    report = launch(tmp_path, "claude-segment-approval-denied")
+    assert report["settled"]["outcome"] == "compacted"
+    witness = report["settled"]["witness"]["claude_compaction"]
+    assert witness["tool_calls"] == 1 and witness["store_files"] == []
+    assert report["claude_tool_verdicts"][0]["permissionDecision"] == "deny"
+    assert report["approval_response"]["result"]["allow"] is False
+    assert not report["artifact_exists"]
+    assert_input_scope(report)
+
+
+def test_stop_during_a_claude_tool_approval_retires_the_hook_and_changes_nothing(tmp_path):
+    report = launch(tmp_path, "claude-segment-stop-approval")
+    assert report["stop_response"]["result"]["stopped"]
+    assert report["settled_response"]["ok"] is False and "settled" not in report
+    assert report["final_ledger"] == report["old_ledger"], "A stopped compaction must not select a replacement segment"
+    assert not report["artifact_exists"]
+    assert_input_scope(report, cancelled=False)
 
 
 def root_events(report):

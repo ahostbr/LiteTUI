@@ -45,8 +45,10 @@ fn model(case: &str) -> &'static str {
     }
 }
 fn tools_on(case: &str) -> bool {
-    matches!(case, "tools-on" | "tool-then-empty" | "tool-cap")
-        || case.starts_with("owner-verified")
+    matches!(
+        case,
+        "tools-on" | "tool-then-empty" | "tool-cap" | "claude-segment-tools"
+    ) || case.starts_with("owner-verified")
         || case.contains("question")
         || case.contains("approval")
 }
@@ -94,7 +96,7 @@ s.update(user_name_asked=True, skills_enabled=False, footer_task_manager=False, 
 if '--convo' not in __import__('sys').argv:
     p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
-"#,quote(&actual.to_string_lossy()),quote(&format!("compact-{case}")),quote(case),if case=="wake"||case.ends_with("-wake"){"True"}else{"False"},if case=="clear-screen"{"True"}else{"False"},quote(&fixtures.join("history_compact_runtime.py").to_string_lossy()))).unwrap();
+"#,quote(&actual.to_string_lossy()),quote(&format!("compact-{case}")),quote(case),if case=="wake"||case.ends_with("-wake")||case=="claude-segment-wake-approval"{"True"}else{"False"},if case=="clear-screen"{"True"}else{"False"},quote(&fixtures.join("history_compact_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
     let mut args = vec![
         "--python".into(),
@@ -606,6 +608,94 @@ fn f6_claude_compaction_retires_old_session_and_publishes_the_saved_seed() {
     assert_eq!(proof["old_segment"], r["old_ledger"]["selected_segment"]);
     assert_eq!(proof["new_segment"], r["final_ledger"]["selected_segment"]);
     assert_eq!(r["claude_summary_prompts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+#[ignore = "controlled actual-source compaction; dependency Python required"]
+fn f6_claude_compaction_with_tools_wake_and_approvals_is_reviewed_receipted_and_attributed() {
+    for case in [
+        "claude-segment-wake",
+        "claude-segment-tools",
+        "claude-segment-approval",
+        "claude-segment-wake-approval",
+    ] {
+        let tools = case != "claude-segment-wake";
+        let wake = case.contains("wake");
+        let (runtime, root) = launch(case);
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = start(runtime, case)?;
+            let draft = editor(&app);
+            select(runtime, &mut app)?;
+            validate(runtime, &mut app, Some(HINT))?;
+            let review = draw(&mut app);
+            assert!(review.contains("Confirm Claude compaction"));
+            assert!(review.contains(if tools {
+                "Tools enabled: yes"
+            } else {
+                "Tools enabled: no"
+            }));
+            assert!(review.contains(if wake {
+                "Wake after success: yes"
+            } else {
+                "Wake after success: no"
+            }));
+            let request = apply(runtime, &mut app)?;
+            if case.contains("approval") {
+                stage(runtime, &mut app, &root, "approval")?;
+                assert!(app.has_live_approval());
+                draw(&mut app);
+                let approvals = &mut app.live.as_mut().unwrap().approvals;
+                let id = approvals.current().unwrap().request.id.clone();
+                approvals.choose(true);
+                let decision = approvals
+                    .take_decision()
+                    .expect("visible approval decision");
+                assert_eq!(decision.id, id);
+                runtime.approve(decision)?;
+            }
+            settle(runtime, &mut app, &request)?;
+            assert_eq!(editor(&app), draft);
+            let completed = app
+                .live
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .filter(|row| row.state == litetui_terminal::live_chat::ReplyState::Complete)
+                .count();
+            assert_eq!(completed, usize::from(wake), "{case}: completed wake rows");
+            runtime.quit()
+        });
+        assert!(
+            result.is_ok(),
+            "{case}: {result:?}; artifacts {}",
+            root.display()
+        );
+        let r = report(&root);
+        assert_eq!(r["settled"]["outcome"], "compacted", "{case}");
+        assert_eq!(
+            r["settled"]["execution"]["segments"],
+            u64::from(wake),
+            "{case}"
+        );
+        let proof = &r["settled"]["witness"]["claude_compaction"];
+        assert_eq!(
+            proof["new_segment"], r["final_ledger"]["selected_segment"],
+            "{case}"
+        );
+        let summary_tool = matches!(case, "claude-segment-tools" | "claude-segment-approval");
+        assert_eq!(proof["tool_calls"], u64::from(summary_tool), "{case}");
+        assert_eq!(
+            r["artifact_exists"],
+            case != "claude-segment-wake",
+            "{case}"
+        );
+        assert_eq!(
+            proof["store_files"].as_array().unwrap().len(),
+            usize::from(summary_tool),
+            "{case}"
+        );
+    }
 }
 
 #[test]

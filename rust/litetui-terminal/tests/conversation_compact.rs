@@ -256,7 +256,7 @@ fn claude_settlement_binds_two_segments_the_sdk_result_and_local_publication() {
     snap["backend"] = json!("claude");
     snap["config"]["tools_enabled"] = json!(false);
     snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
-        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary")});
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"tools_sha256":"7".repeat(64)});
     let before = Snapshot::parse(&snap, &selected).unwrap();
     let mut review = review_value("");
     review["backend"] = json!("claude");
@@ -275,7 +275,7 @@ fn claude_settlement_binds_two_segments_the_sdk_result_and_local_publication() {
     }
     result["witness"]["claude_compaction"] = json!({"old_segment":"a".repeat(32),"native_session":SESSION,
         "result_id":AGENT,"new_segment":"b".repeat(32),"seed_sha256":"2".repeat(64),
-        "ledger_before":"1".repeat(64),"ledger_after":"3".repeat(64)});
+        "ledger_before":"1".repeat(64),"ledger_after":"3".repeat(64),"tool_calls":0,"store_files":[]});
     assert_eq!(
         Settlement::parse(&result, &admitted, &proof, "op")
             .unwrap()
@@ -313,6 +313,121 @@ fn claude_settlement_binds_two_segments_the_sdk_result_and_local_publication() {
     }
 }
 
+fn claude_with_effects(tools: bool, wake: bool) -> (Review, Admission, Value) {
+    let mut selected = selection();
+    selected.identity.backend = "claude".into();
+    let mut snap = snapshot_value();
+    snap["backend"] = json!("claude");
+    snap["config"]["tools_enabled"] = json!(tools);
+    snap["config"]["wake_after_compact"] = json!(wake);
+    snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary"),"tools_sha256":"7".repeat(64)});
+    let before =
+        Snapshot::parse(&snap, &selected).expect("tools and wake are reviewable for Claude");
+    let mut review = review_value("");
+    review["backend"] = json!("claude");
+    review["config"] = snap["config"].clone();
+    review["plan"] = snap["plan"].clone();
+    review["request_prompt_sha256"] = snap["plan"]["prompt_sha256"].clone();
+    review["effects"]["tools_enabled"] = json!(tools);
+    review["effects"]["wake_after_compact"] = json!(wake);
+    let proof = Review::parse(&review, before, "").unwrap();
+    let mut admitted = admission_value("accepted");
+    admitted["backend"] = json!("claude");
+    let admitted = Admission::parse(&admitted, &proof, "op").unwrap();
+    let mut result = settled_value();
+    result["backend"] = json!("claude");
+    for key in ["history", "root_history"] {
+        result[key]["backend"] = json!("claude");
+    }
+    result["witness"]["claude_compaction"] = json!({"old_segment":"a".repeat(32),"native_session":SESSION,
+        "result_id":AGENT,"new_segment":"b".repeat(32),"seed_sha256":"2".repeat(64),
+        "ledger_before":"1".repeat(64),"ledger_after":"3".repeat(64),"tool_calls":0,"store_files":[]});
+    (proof, admitted, result)
+}
+fn grown(mut result: Value) -> Value {
+    // The wake appended its own user and assistant rows after the root's summary pair.
+    result["history"] = history(&"8".repeat(64));
+    result["history"]["backend"] = json!("claude");
+    result["history"]["counts"] = json!({"messages":5,"system":1,"non_system":4,"blocks":4});
+    result["execution"] = json!({"segments":1,"last_execution_id":ACTION});
+    result
+}
+#[test]
+fn claude_review_binds_tools_and_wake_and_the_receipt_names_the_tool_work() {
+    let (proof, admitted, mut result) = claude_with_effects(true, false);
+    result["witness"]["claude_compaction"]["tool_calls"] = json!(2);
+    result["witness"]["claude_compaction"]["store_files"] = json!(["C:/store/memory.md"]);
+    let settled = Settlement::parse(&result, &admitted, &proof, "op").unwrap();
+    let receipt = settled.claude_receipt.clone().unwrap();
+    assert_eq!(
+        (receipt.tool_calls, receipt.store_files.clone()),
+        (2, vec!["C:/store/memory.md".to_owned()])
+    );
+    let text = settled.explanation().unwrap();
+    assert!(
+        text.contains("2 tool call(s)") && text.contains("memory.md"),
+        "{text}"
+    );
+    for (pointer, value) in [
+        ("/witness/claude_compaction/tool_calls", json!(65)),
+        ("/witness/claude_compaction/tool_calls", json!("2")),
+        (
+            "/witness/claude_compaction/store_files",
+            json!(["a", "b", "c"]),
+        ),
+        ("/witness/claude_compaction/store_files", json!([""])),
+        ("/witness/claude_compaction/store_files", json!([7])),
+        ("/witness/claude_compaction/store_files", Value::Null),
+    ] {
+        let mut bad = result.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            Settlement::parse(&bad, &admitted, &proof, "op").is_err(),
+            "{pointer}"
+        );
+    }
+    // A review that disclosed tools off cannot settle with tool work.
+    let (off_proof, off_admitted, mut off) = claude_with_effects(false, false);
+    off["witness"]["claude_compaction"]["tool_calls"] = json!(1);
+    assert!(Settlement::parse(&off, &off_admitted, &off_proof, "op").is_err());
+}
+#[test]
+fn claude_wake_settles_only_when_the_history_grew_past_the_published_root() {
+    let (proof, admitted, result) = claude_with_effects(false, true);
+    let woken = grown(result.clone());
+    let settled = Settlement::parse(&woken, &admitted, &proof, "op").unwrap();
+    assert_eq!(settled.execution_segments, 1);
+    assert!(settled.explanation().unwrap().contains("wake turn"));
+    // The root's own publication must still be exactly the summary pair.
+    let mut wrong_root = woken.clone();
+    wrong_root["root_history"]["counts"] =
+        json!({"messages":4,"system":1,"non_system":3,"blocks":3});
+    assert!(Settlement::parse(&wrong_root, &admitted, &proof, "op").is_err());
+    // A wake that left the history exactly at the root is a wake that never persisted.
+    let mut same = woken.clone();
+    same["history"] = same["root_history"].clone();
+    assert!(Settlement::parse(&same, &admitted, &proof, "op").is_err());
+    // Without a wake the settled history must still equal the root's.
+    let mut drift = result.clone();
+    drift["history"] = woken["history"].clone();
+    assert!(Settlement::parse(&drift, &admitted, &proof, "op").is_err());
+    // A wake the review did not allow is never admitted.
+    let (off_proof, off_admitted, off) = claude_with_effects(false, false);
+    assert!(Settlement::parse(&grown(off), &off_admitted, &off_proof, "op").is_err());
+}
+#[test]
+fn claude_plan_requires_the_tool_fingerprint() {
+    let mut selected = selection();
+    selected.identity.backend = "claude".into();
+    let mut snap = snapshot_value();
+    snap["backend"] = json!("claude");
+    snap["plan"] = json!({"kind":"claude","messages":7,"segment":"a".repeat(32),"native_session":SESSION,
+        "ledger_before":"1".repeat(64),"prompt_sha256":sha("Claude summary")});
+    assert!(Snapshot::parse(&snap, &selected).is_err());
+    snap["plan"]["tools_sha256"] = json!("not-a-hash");
+    assert!(Snapshot::parse(&snap, &selected).is_err());
+}
 #[test]
 fn coherent_refusal_drift_is_bound_to_refusal_descriptor_not_old_context() {
     let admission = Admission::parse(&admission_value("refused"), &review(), "op").unwrap();

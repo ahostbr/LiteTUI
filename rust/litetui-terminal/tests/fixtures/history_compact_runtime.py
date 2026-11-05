@@ -151,17 +151,25 @@ def seed(app):
         write_args=write_args)
 
 
-async def seed_claude(app):
-    from litetui.claude_events import ClaudeEventStream
-    from litetui.claude_session import ClaudeSession
-    from litetui.claude_tools import ClaudeTools
-    from litetui.claude_turn import launch_workspace, ledger_for
+CLAUDE_NATIVE = "12345678-1111-4111-8111-123456789abc"
+CLAUDE_TERMINAL = "22345678-1111-4111-8111-123456789abc"
+CLAUDE_WAKE_SESSION = "32345678-1111-4111-8111-123456789abc"
+CLAUDE_WAKE_RESULT = "42345678-1111-4111-8111-123456789abc"
+# The summary turn (STEP 1) writes the store file, or the wake turn does; both through the native tool.
+CLAUDE_SUMMARY_TOOL = CASE in {"claude-segment-tools", "claude-segment-approval", "claude-segment-approval-denied",
+                               "claude-segment-stop-approval"}
+CLAUDE_WAKE_TOOL = CASE == "claude-segment-wake-approval"
+CLAUDE_TOOLS = CLAUDE_SUMMARY_TOOL or CLAUDE_WAKE_TOOL
+CLAUDE_WAKE = CASE in {"claude-segment-wake", "claude-segment-wake-approval"}
 
-    native = "12345678-1111-4111-8111-123456789abc"
-    terminal = "22345678-1111-4111-8111-123456789abc"
+
+def claude_client():
+    """The controlled SDK client: scripted frames, and the PreToolUse hook the SDK would run."""
+    from claude_agent_sdk.types import ResultMessage
 
     class Client:
-        def __init__(self, _options):
+        def __init__(self, options):
+            self.options = options
             self.frames = asyncio.Queue()
 
         async def connect(self):
@@ -170,18 +178,53 @@ async def seed_claude(app):
         async def get_server_info(self):
             return {}
 
+        async def get_context_usage(self):
+            return {"maxTokens": 200000, "totalTokens": 10}
+
         async def set_model(self, model):
-            assert model == app.model_id
+            assert model == history.boundary.app_instance.model_id
+
+        async def tool(self, session_id, name, args, tool_id):
+            """Assistant tool_use, then the real hook (on THIS owner task, as the SDK does), then the CLI's effect."""
+            await self.frames.put({"type": "assistant", "uuid": CLAUDE_TERMINAL, "session_id": session_id,
+                "message": {"id": "msg-" + tool_id, "model": "claude-fixture", "usage": None, "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": args}]}})
+            matcher = self.options.hooks["PreToolUse"][0]
+            verdict = (await matcher.hooks[0]({"tool_name": name, "tool_input": args}, tool_id, None))["hookSpecificOutput"]
+            allowed = verdict["permissionDecision"] == "allow"
+            if allowed:
+                Path(args["file_path"]).write_text(args["content"], encoding="utf-8")
+            history.report.setdefault("claude_tool_verdicts", []).append(verdict)
+            await self.frames.put({"type": "user", "uuid": CLAUDE_TERMINAL, "message": {"content": [{
+                "type": "tool_result", "tool_use_id": tool_id, "is_error": not allowed,
+                "content": "wrote the store file" if allowed else verdict.get("permissionDecisionReason", "denied")}]}})
 
         async def query(self, prompt):
+            from litetui.app import WAKE_AFTER_COMPACT
+
             bootstrap = prompt == "fixture initial turn"
-            if not bootstrap:
+            wake = prompt == WAKE_AFTER_COMPACT
+            args = {"file_path": history.report["artifact"], "content": WRITE_CONTENT}
+            if bootstrap:
+                session_id, result_id, result = CLAUDE_NATIVE, CLAUDE_NATIVE, "Hello"
+            elif wake:
+                history.report.setdefault("claude_wake_prompts", []).append(prompt)
+                history.report["claude_verifications_before_wake"] = history.report.get("claude_verifications", 0)
+                session_id, result_id, result = CLAUDE_WAKE_SESSION, CLAUDE_WAKE_RESULT, WAKE_ANSWER
+                if CLAUDE_WAKE_TOOL:
+                    await self.tool(session_id, "Write", args, "toolu_wake_write")
+                await self.frames.put({"type": "assistant", "uuid": CLAUDE_WAKE_RESULT, "session_id": session_id,
+                    "message": {"id": "msg-wake-text", "model": "claude-fixture", "usage": None, "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": WAKE_ANSWER}]}})
+            else:
                 history.report.setdefault("claude_summary_prompts", []).append(prompt)
                 assert history.explicit
-            session_id = terminal if CASE == "claude-segment-foreign" and not bootstrap else native
+                session_id = CLAUDE_TERMINAL if CASE == "claude-segment-foreign" else CLAUDE_NATIVE
+                result_id, result = CLAUDE_TERMINAL, SUMMARY
+                if CLAUDE_SUMMARY_TOOL:
+                    await self.tool(session_id, "Write", args, "toolu_store_write")
             await self.frames.put(ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
-                num_turns=1, session_id=session_id, uuid=native if bootstrap else terminal,
-                terminal_reason="completed", result="Hello" if bootstrap else SUMMARY))
+                num_turns=1, session_id=session_id, uuid=result_id, terminal_reason="completed", result=result))
 
         async def receive_messages(self):
             while True:
@@ -191,17 +234,40 @@ async def seed_claude(app):
             if CASE == "claude-segment-close":
                 raise RuntimeError("controlled SDK close failure")
 
+    return Client
+
+
+async def seed_claude(app):
+    from litetui import tool_policy
+    from litetui.claude_events import ClaudeEventStream
+    from litetui.claude_session import ClaudeSession
+    from litetui.claude_tools import ClaudeTools
+    from litetui.claude_turn import launch_workspace, ledger_for
+
+    native, terminal = CLAUDE_NATIVE, CLAUDE_TERMINAL
+    Client = claude_client()
+    app.tools_enabled = CLAUDE_TOOLS
     ledger = ledger_for(app)
     segment = ledger.select_segment(launch_workspace(app))
-    session = ClaudeSession(NS(tools=[], mcp_servers={}, strict_mcp_config=True, effort=None,
-                               cwd=segment["workspace"]), client_factory=Client)
+    bridge = ClaudeTools(app, app.backend, segment["id"], workspace=segment["workspace"])
+    if CLAUDE_TOOLS:
+        # The options a tools-on session really opens with: native tool names, hooks, permission mode.
+        options = NS(effort=None, cwd=segment["workspace"], strict_mcp_config=True, **bridge.sdk_options())
+        if CASE == "claude-segment-tools":
+            # A standing allow rule, so the native Write needs no prompt (the other cases prompt over RPC).
+            write = {"file_path": history.report["artifact"], "content": WRITE_CONTENT, "path": history.report["artifact"]}
+            app.settings.tool_always_allow = [tool_policy.rule_key(
+                "Write", tool_policy.WRITE_POLICY.classify(write, Path(segment["workspace"])))]
+    else:
+        options = NS(tools=[], mcp_servers={}, strict_mcp_config=True, effort=None, cwd=segment["workspace"])
+    session = ClaudeSession(options, client_factory=Client)
     app.backend.session, app.backend.segment_id = session, segment["id"]
     await session.start()
     await session.query("fixture-bootstrap", "fixture initial turn")
     async for _ in session.events():
         pass
     ledger.bind_session(segment["id"], session.session_id)
-    app.backend._claude_tools = ClaudeTools(app, app.backend, segment["id"], workspace=segment["workspace"])
+    app.backend._claude_tools = bridge
     app.backend._claude_events = ClaudeEventStream(session_id=native)
     history.report.update(old_ledger=ledger.document, claude_session=native, claude_result=terminal)
     if CASE == "claude-segment-ledger":
@@ -213,10 +279,8 @@ async def seed_claude(app):
             return original()
 
         ledger._save = fail_save
-    elif CASE == "claude-segment-wake":
+    if CLAUDE_WAKE:
         app.settings.wake_after_compact = True
-    elif CASE == "claude-segment-tools":
-        app.tools_enabled = True
 
 
 def mark(stage, **extra):
@@ -632,10 +696,12 @@ async def serve(app):
         elif CASE == "bool-version":
             payload["version"] = True
         task = asyncio.create_task(call(APPLY, check=False, **payload))
-        if CASE.startswith(("stop-", "quit-", "eof-")) or CASE in {"question", "question-wake", "approval", "approval-wake", "approval-denied"}:
+        if CASE.startswith(("stop-", "quit-", "eof-")) or CASE in {"question", "question-wake", "approval", "approval-wake", "approval-denied",
+                "claude-segment-approval", "claude-segment-wake-approval", "claude-segment-approval-denied",
+                "claude-segment-stop-approval"}:
             await until(lambda: history.report.get("input_request") if "question" in CASE or "approval" in CASE
                 else history.report.get("stages"))
-            if CASE.startswith("stop-"):
+            if CASE.startswith("stop-") or CASE == "claude-segment-stop-approval":
                 history.report["stop_response"] = await call("abort")
             elif CASE.startswith(("quit-", "eof-")):
                 await shutdown(eof=CASE.startswith("eof-"))
@@ -649,7 +715,7 @@ async def serve(app):
                         action="submit", answers=[{"selected": [0], "note": QUESTION_NOTE}])
                 else:
                     history.report["approval_response"] = await call("approve", approval_id=request["id"],
-                        allow=CASE != "approval-denied", remember=False)
+                        allow=not CASE.endswith("approval-denied"), remember=False)
         response = await task
         history.report["apply_response"] = response
         if not response["ok"]:
@@ -796,12 +862,24 @@ if __name__ == "__main__":
             with helper.configure(history):
                 history.main()
         elif CASE.startswith("claude-segment"):
-            from claude_agent_sdk.types import ResultMessage
+            import claude_agent_sdk
+
+            from litetui import claude_compaction_evidence
             from litetui.claude_backend import ClaudeBackend
             async def metadata(backend):
                 backend.models = {"claude-fixture": {"value": "claude-fixture"}}
                 return "ok"
-            with patch.object(ClaudeBackend, "ensure_running", metadata):
+            verify_final = claude_compaction_evidence.Binding.verify_final
+
+            def counted(self, app, receipt):
+                result = verify_final(self, app, receipt)
+                history.report["claude_verifications"] = history.report.get("claude_verifications", 0) + 1
+                return result
+
+            # The wake opens a NEW session through the real backend: its SDK client is the controlled one.
+            with (patch.object(ClaudeBackend, "ensure_running", metadata),
+                  patch.object(claude_agent_sdk, "ClaudeSDKClient", claude_client()),
+                  patch.object(claude_compaction_evidence.Binding, "verify_final", counted)):
                 history.main()
         else:
             history.main()

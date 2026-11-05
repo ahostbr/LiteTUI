@@ -141,7 +141,17 @@ class ClaudeTools:
         for task in list(self._decisions):
             task.cancel()
 
+    def _action_origin(self):
+        """The execution a bound turn belongs to, for a reviewed compaction's event attribution."""
+        return self._turn[1] if self._turn is not None else None
+
     async def pre_tool(self, data, tool_id, context):
+        from litetui import conversation_action
+        # The SDK calls this on its own task; the scope attributes the approval it may raise.
+        with conversation_action.claude_event_scope(self.app, self._action_origin()):
+            return await self._pre_tool(data, tool_id, context)
+
+    async def _pre_tool(self, data, tool_id, context):
         name, args = data.get("tool_name", ""), data.get("tool_input", {})
         guarded, turn = controls.enabled(self.app), self._turn
         origin = None
@@ -252,6 +262,11 @@ class ClaudeTools:
         return refusal[0] if refusal else None
 
     async def can_use_tool(self, name, arguments, context):
+        from litetui import conversation_action
+        with conversation_action.claude_event_scope(self.app, self._action_origin()):
+            return await self._can_use_tool(name, arguments, context)
+
+    async def _can_use_tool(self, name, arguments, context):
         from claude_agent_sdk import PermissionResultDeny
         if controls.enabled(self.app):
             turn = self._turn
@@ -337,6 +352,12 @@ class ClaudeTools:
         }
 
     async def host_call(self, name, args, spec):
+        from litetui import conversation_action
+        if conversation_action.compact_pending(self.app):
+            # A host tool runs through the app's own tool door, which only a captured worker may
+            # enter during a reviewed action. Say so before any approval prompt, not after it.
+            return {"content": [{"type": "text", "text": "[denied] Host tools are unavailable while a reviewed "
+                                 "compaction is running; use the native tools."}], "isError": True}
         turn = self._turn
         guarded = controls.enabled(self.app)
         try:

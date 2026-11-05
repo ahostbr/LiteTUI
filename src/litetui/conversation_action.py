@@ -43,6 +43,7 @@ _INLINE: ContextVar[Any] = ContextVar("conversation_rewrite_inline", default=Non
 _EVENT_SCOPE: ContextVar[Any] = ContextVar("conversation_rewrite_events", default=None)
 _THREAD_EVENT: ContextVar[Any] = ContextVar("conversation_rewrite_thread_events", default=None)
 _READBACK: ContextVar[Any] = ContextVar("conversation_action_readback", default=None)
+_CLAUDE_EVENT: ContextVar[Any] = ContextVar("conversation_action_claude_event", default=None)
 
 
 @dataclass(frozen=True)
@@ -223,6 +224,11 @@ def event_origin(app):
         attempt = _attempt(app)
         if attempt is None:
             return None
+        claude = _CLAUDE_EVENT.get()
+        if claude is not None and claude[0] is app and claude[1] is attempt and attempt.pending:
+            # Liveness was proved when the callback began; a request it already opened must still be
+            # closed under the same origin even after its worker retired (the host expects exactly that).
+            return claude[2]
         thread = _THREAD_EVENT.get()
         if (thread is not None and thread.app is app and thread.attempt is attempt
                 and attempt.pending and thread.thread_id == threading.get_ident()
@@ -248,6 +254,44 @@ def event_origin(app):
         return EventOrigin(session_id=app.convo_id, operation_id=attempt.operation, source="rpc",
                            execution_id=attempt.segments[-1] if attempt.segments else None)
     return None
+
+
+def _claude_execution_live(attempt, origin):
+    """Only the root compaction while its worker runs, or the newest wake stream, may speak."""
+    root = attempt.execution
+    if root is not None and origin.execution_id == root.origin.execution_id:
+        return not root.worker.is_finished
+    return bool(attempt.segments) and attempt.segments[-1] == origin.execution_id
+
+
+@contextmanager
+def claude_event_scope(app, origin):
+    """Attribute one native Claude callback (a hook, a permission request, a question) to the
+    reviewed compaction execution that owns its bound turn.
+
+    The SDK runs these callbacks on its own tasks, so no ambient scope reaches them and their
+    approval / question events would carry no execution identity, which the host's compaction
+    chain rejects. Context variables DO flow into the child tasks and threads the callback starts
+    for its decision, which is why a variable (not a task identity) carries this. Granting
+    attribution never grants execution admission: `_authorized` is unchanged for these callers.
+    """
+    attempt = _attempt(app)
+    if (origin is None or attempt is None or not attempt.pending or attempt.kind != "compact"
+            or origin.operation_id != attempt.operation or origin.session_id != app.convo_id
+            or origin.source != "rpc" or not origin.execution_id or not _claude_execution_live(attempt, origin)):
+        yield None
+        return
+    token = _CLAUDE_EVENT.set((app, attempt, origin))
+    try:
+        yield origin
+    finally:
+        _CLAUDE_EVENT.reset(token)
+
+
+def compact_pending(app):
+    """A reviewed compaction owns the conversation: callbacks of its turns need attribution."""
+    attempt = _attempt(app)
+    return attempt is not None and attempt.pending and attempt.kind == "compact"
 
 
 @contextmanager
@@ -766,7 +810,35 @@ def _prefix(app, messages):
         raise ValueError("Retained prefix is not a complete tool boundary")
 
 
-def _stable(app, review, *, original=False, admitted=False, decision_only=False):
+AUDIT_REASON = "Approval authority state updated"
+
+
+def audit_raw_only(raw, reviewed_raw):
+    """`raw` is the reviewed transcript plus only approval-authority audit edits appended after it."""
+    if not raw.startswith(reviewed_raw):
+        return False
+    for line in raw[len(reviewed_raw):].splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return False
+        if not isinstance(row, dict) or row.get("type") != "edit" or row.get("reason") != AUDIT_REASON:
+            return False
+    return True
+
+
+def audit_history_only(app, review):
+    """The reviewed history, except `approval_delivery` metadata the approvals this action raised wrote."""
+    def clean(messages):
+        return projection.encoded([{key: value for key, value in message.items() if key != "approval_delivery"}
+                                   for message in messages])
+    return (app.conversation is review.conversation and clean(app.conversation) == clean(json.loads(review.history))
+            and audit_raw_only(native_history.capture_file(app.convo_path).raw or b"", review.raw))
+
+
+def _stable(app, review, *, original=False, admitted=False, decision_only=False, audited=False):
     if getattr(app, "_conversation_transition_cleanup_error", None):
         raise ValueError("Rewrite hook subprocess cleanup is unproven")
     if any(current is not prior for current, prior in zip(_objects(app), review.objects, strict=True)):
@@ -788,8 +860,13 @@ def _stable(app, review, *, original=False, admitted=False, decision_only=False)
         app._validate_owned_identity()
     else:
         app._validate_owned_execution()
-    if original and (app.conversation is not review.conversation or projection.encoded(app.conversation) != review.history
-                     or native_history.capture_file(app.convo_path).raw != review.raw):
+    if original and audited:
+        # A tools-on Claude compaction raises approvals, and each one audits its decision onto the
+        # last user message. Nothing else may differ from what was reviewed.
+        if not audit_history_only(app, review):
+            raise ValueError("Rewrite history changed before publication")
+    elif original and (app.conversation is not review.conversation or projection.encoded(app.conversation) != review.history
+                       or native_history.capture_file(app.convo_path).raw != review.raw):
         raise ValueError("Rewrite history changed before publication")
 
 
