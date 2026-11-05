@@ -14,6 +14,7 @@ class _FakeApp(SimpleNamespace):
             _model_id=model_id,
             _cli_initial_model=cli_model,
             _cli_system_prompt=None,
+            _cli_convo_id=None,
             _first_prompt=None,
             available_models=[r.key for r in rows],
             model_rows={r.key: r for r in rows},

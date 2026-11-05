@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from litetui import app as app_mod
@@ -31,13 +33,19 @@ from litetui import llm_backend, rpc
 def _app(*, backend_name="lmstudio", model_id="qwen/a", loaded=("qwen/a",), rpc=True):
     a = app_mod.LiteTUI.__new__(app_mod.LiteTUI)
     a._rpc = rpc
+    a.store = SimpleNamespace(convo_id="fixture-session")
+    a._launch_options = None
+    a.ctx_max = 4096
+    a.tools_enabled = False
+    a.settings = SimpleNamespace(mcp_enabled=False)
     a.model_id = model_id
     a.available_models = ["qwen/a", "ektome-b"]
     a.model_rows = {
         key: llm_backend.ModelRow(key, None, "test", loaded=key in loaded)
         for key in a.available_models
     }
-    a.backend = SimpleNamespace(name=backend_name, loaded_models=lambda: list(loaded))
+    a.backend = SimpleNamespace(name=backend_name, loaded_models=lambda: list(loaded),
+                                base_url=lambda: "http://127.0.0.1:1/v1")
     a._active_tool_profile = "interactive"
     a.emitted: list[dict] = []
     a._rpc_emit = a.emitted.append
@@ -128,20 +136,14 @@ def test_model_note_is_ABSENT_when_nothing_was_substituted():
     assert "model_note" not in _ready(_app(model_id="qwen/a", loaded=("qwen/a",)))
 
 
-def test_a_backend_with_no_name_reports_None_rather_than_a_string():
-    """
-    ⚠️ A TEST DOUBLE IS A REAL CASE HERE. `make_backend` is stubbed in a dozen
-    suites and plugins predate the seam, so `backend` can be an object with no
-    `name` — or absent entirely. Reporting the string "None" would put the word
-    None in the user's pill; null lets the host render nothing.
-    """
+@pytest.mark.parametrize("backend", [SimpleNamespace(loaded_models=lambda: ["qwen/a"]), None])
+def test_missing_backend_has_no_catalogue_name_and_cannot_publish_ready(backend):
     a = _app()
-    a.backend = SimpleNamespace(loaded_models=lambda: ["qwen/a"])
-    assert _ready(a)["backend"] is None
-
-    b = _app()
-    b.backend = None
-    assert _ready(b)["backend"] is None
+    a.backend = backend
+    assert a._rpc_model_state()["backend"] is None
+    with pytest.raises(AttributeError):
+        _ready(a)
+    assert a.emitted == []
 
 
 # ── T647: what the child was ASKED for, beside what it is RUNNING as ─────────
@@ -201,24 +203,18 @@ def test_a_REQUESTED_profile_that_differs_from_the_active_one_is_visible():
 # ── T869 — the wait before `ready`, and what ends it ──────────────────────
 
 
-def _rounds(a, *, sleeps_then_models=None, monkeypatch=None) -> int:
-    """Run `_rpc_emit_ready` and count the poll rounds it actually slept.
-
-    ⭐ COUNTING ROUNDS, NOT SECONDS. A wall-clock assertion on a 10s loop is
-    a 10s test and a flaky one; the round count is the same fact measured
-    where it is exact.
-    """
+def _rounds(a, *, sleeps_then_models=None) -> int:
+    """Count simulated half-second connection periods without waiting ten seconds."""
     rounds = 0
-    real_sleep = app_mod.asyncio.sleep
 
-    async def counting_sleep(delay):
+    async def elapsed():
         nonlocal rounds
         rounds += 1
-        if sleeps_then_models is not None and rounds >= sleeps_then_models:
+        if rounds == sleeps_then_models:
             a.available_models = ["qwen/a"]
-        await real_sleep(0)
+        raise TimeoutError
 
-    monkeypatch.setattr(app_mod.asyncio, "sleep", counting_sleep)
+    a._connect_done = SimpleNamespace(wait=elapsed)
     _ready(a)
     return rounds
 
@@ -230,7 +226,7 @@ def _empty_app(**kw):
     return a
 
 
-def test_ready_does_not_wait_once_connect_has_finished_without_models(monkeypatch):
+def test_ready_does_not_wait_once_connect_has_finished_without_models():
     """🔴 THE DEFECT. Measured against a real `--rpc` child on 2026-09-17 with
     nothing loaded: `ready` at 11112ms, ~10s of it this poll running its full
     twenty rounds for a list `connect` had already finished not-finding. Every
@@ -239,10 +235,10 @@ def test_ready_does_not_wait_once_connect_has_finished_without_models(monkeypatc
     a = _empty_app()
     a._connect_settled = True
 
-    assert _rounds(a, monkeypatch=monkeypatch) == 0
+    assert _rounds(a) == 0
 
 
-def test_the_wait_SURVIVES_for_the_case_it_exists_for(monkeypatch):
+def test_the_wait_SURVIVES_for_the_case_it_exists_for():
     """CONTROL, and the reason the round count was not simply shortened.
 
     While `connect` is still running the list may yet arrive, and this loop is
@@ -252,16 +248,81 @@ def test_the_wait_SURVIVES_for_the_case_it_exists_for(monkeypatch):
     a = _empty_app()
     a._connect_settled = False
 
-    assert _rounds(a, monkeypatch=monkeypatch) == 20
+    assert _rounds(a) == 20
 
 
-def test_a_list_that_ARRIVES_mid_wait_still_ends_the_wait_immediately(monkeypatch):
+def test_a_list_that_ARRIVES_mid_wait_still_ends_the_wait_immediately():
     """The third case, so neither arm above can pass on "always break" or
     "never break": models appearing on round 3 must stop the poll at 3."""
     a = _empty_app()
     a._connect_settled = False
 
-    assert _rounds(a, sleeps_then_models=3, monkeypatch=monkeypatch) == 3
+    assert _rounds(a, sleeps_then_models=3) == 3
+
+
+@pytest.mark.parametrize("loaded", [[], ["qwen/a"]])
+def test_pending_ready_wakes_on_connection_completion(loaded):
+    async def scenario():
+        a = _empty_app()
+        entered = asyncio.Event()
+        connected = asyncio.Event()
+
+        async def wait_for_connection():
+            entered.set()
+            await connected.wait()
+
+        a._connect_done = SimpleNamespace(wait=wait_for_connection)
+        task = asyncio.create_task(app_mod.LiteTUI._rpc_emit_ready.__wrapped__(a))
+        await asyncio.wait_for(entered.wait(), 1)
+        assert not a.emitted
+        a.available_models = loaded
+        a._connect_settled = True
+        connected.set()
+        await task
+        assert len(a.emitted) == 1
+        assert [row["slug"] for row in a.emitted[0]["models"]] == loaded
+
+    asyncio.run(scenario())
+
+
+def test_startup_catalogue_wait_keeps_ten_second_budget(monkeypatch):
+    a = _empty_app()
+    a._connect_done = asyncio.Event()
+    timeouts = []
+
+    async def timeout(waiter, seconds):
+        timeouts.append(seconds)
+        waiter.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(app_mod.asyncio, "wait_for", timeout)
+    _ready(a)
+    assert timeouts == [0.5] * 20
+
+
+def test_cancelling_pending_ready_joins_the_connection_wait():
+    async def scenario():
+        a = _empty_app()
+        entered = asyncio.Event()
+        exited = asyncio.Event()
+
+        async def wait():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                exited.set()
+
+        a._connect_done = SimpleNamespace(wait=wait)
+        task = asyncio.create_task(app_mod.LiteTUI._rpc_emit_ready.__wrapped__(a))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert exited.is_set()
+        assert not a.emitted
+
+    asyncio.run(scenario())
 
 
 def test_ready_waits_for_cli_application_before_reporting_effective_state():
@@ -281,6 +342,7 @@ def test_ready_waits_for_cli_application_before_reporting_effective_state():
 
 def test_ready_reports_effective_thinking_and_kernel_identity():
     import os
+
     from litetui.task_supervisor import process_creation_identity
     a = _app(backend_name='codex')
     a._thinking_level = 'low'

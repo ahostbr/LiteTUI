@@ -208,6 +208,10 @@ async def test_actual_rpc_ready_reports_registration_or_substitution_blocked(own
     app.convo_id = CID
     app.backend = SimpleNamespace(name='codex', base_url=lambda: '')
     app.ctx_max = None
+    app.seat.current_spawner = lambda: None
+    app._launch_options = None
+    app.tools_enabled = False
+    app.settings = SimpleNamespace(mcp_enabled=False)
     app._rpc_model_state = lambda: {'model': app._model_id}
     events = []
     app._rpc_emit = events.append

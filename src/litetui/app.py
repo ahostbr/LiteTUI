@@ -343,6 +343,18 @@ TOOLS_DISABLED_PROMPT = (
 )
 
 
+async def _wait_for_startup_models(app: "LiteTUI") -> None:
+    # A catalogue can arrive before the connection finishes. Keep checking for
+    # that case, but let either successful or failed settlement wake the wait.
+    for _ in range(20):
+        if app.available_models or getattr(app, "_connect_settled", False):
+            return
+        try:
+            await asyncio.wait_for(app._connect_done.wait(), 0.5)
+        except TimeoutError:
+            continue
+
+
 # ── T137: plain-words error surface ────────────────────────────────
 # The user-facing line names WHAT seems wrong and WHAT to do, in one or two
 # sentences. No URLs, no WinError codes, no exception reprs — the raw detail
@@ -6007,24 +6019,8 @@ class LiteTUI(App):
 
     @work(exclusive=True, group="cli-args-ready")
     async def _rpc_emit_ready(self) -> None:
-        """Emit the ready event once the model list is available.
-
-        ⭐ T869 — THE POLL EXITS ON THE ANSWER BEING DECIDED, NOT ONLY ON THE
-        ANSWER BEING GOOD. Measured on 2026-09-17 with nothing loaded: a
-        `--rpc` child announced `ready` at 11112ms, of which ~10s was this
-        loop running its full twenty rounds for a list that connect had
-        already finished not-finding. Every headless child anyone spawns paid
-        that, and nothing in the output said a wait had happened.
-
-        ⬜ THE ROUND COUNT IS UNCHANGED ON PURPOSE. Shortening it would trade
-        one arbitrary number for another and break the case the wait exists
-        for — a list that IS still arriving. What was missing is the exit for
-        the case where it never will.
-        """
-        for _ in range(20):
-            if self.available_models or getattr(self, "_connect_settled", False):
-                break
-            await asyncio.sleep(0.5)
+        """Emit ready after the model catalogue and launch have settled."""
+        await _wait_for_startup_models(self)
         done = getattr(self, '_cli_args_done', None)
         if done is not None:
             try:
@@ -6176,10 +6172,7 @@ class LiteTUI(App):
             # Wait for connect to populate available_models (up to 10s) — or for
             # connect to have finished without any, which is the same T869 tax on
             # a second waiter: --model has nothing to apply against an empty list.
-            for _ in range(20):
-                if self.available_models or getattr(self, "_connect_settled", False):
-                    break
-                await asyncio.sleep(0.5)
+            await _wait_for_startup_models(self)
             if getattr(self, '_launch_options', None) is not None:
                 await asyncio.wait_for(self._connect_done.wait(), self._launch_options.timeout + 5)
             self._cli_launch_error = getattr(self, '_owned_launch_error', None)
