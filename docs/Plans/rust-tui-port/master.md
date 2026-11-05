@@ -1,5 +1,21 @@
 # LiteTUI Rust terminal port
 
+## Nine parallel parity lanes - November 5, 2026
+
+A read-only scout turned the open remaining-parity rows into 19 concrete source-vs-native gaps; nine Sonnet builder lanes then ran in isolated worktrees and were reviewed and cherry-picked onto this branch by the owner seat:
+
+- c616e3b6 F10 compaction: `autocompact_enabled` and `autocompact_at_percent` (1-99); saving never compacts.
+- ce5cef44 F10 MCP declarations: add and remove `.mcp.json` entries; env/header values masked, no server is started, shadowed entries refused.
+- fb63a39c F1 Context and `/system <text>`: reviewed system prompt edits through canonical store records and transcript readback, with per-backend timing (Claude sessions keep their opening prompt).
+- d821a65b F10 U: 19 interface preferences (footer facts/order, key hints, thinking, stop line/time, autoscroll, modal or sidebar dialogs), honoured by the renderer.
+- be7a8aef Routing: arguments for `/model`, `/think`, `/backend`, `/resume` preselect their reviewed controls; `/claude`, `/help`, `/keys`, `/mcp`, `/clear-screen` route natively; the six remaining Textual/desktop-only commands carry specific reasons. d8c45f54 routes `/modelcfg` to the model-preferences editor.
+- b4a881d9 F10 N: twelve connection/local-router fields; saving never reconnects, loads, probes or spawns; API keys by variable name only.
+- 5d7087f1 F10 A: 21 agent execution, subagent-route and identity fields plus `/subagent-set` and `/subagent-global`; the three tool-authority lists now go through runtime-control protection with widen/narrow review.
+- c29b477f F1 Hooks A: create, edit and delete project/global hooks through the source validator and canonical writer, plus separately reviewed repair; no hook runs.
+- 762e3649 Mid-turn queue/interrupt carries a reviewed composer image to host, Claude and Codex; the ledger keeps only the image identity and held input never replays.
+
+Each lane passed fmt, strict Clippy, the full ordinary Rust suite, its own controlled-child scenarios and its Python tests in its worktree; integrated-tree evidence is recorded below the lane list in the commit that records this section. Builds were later moved to one shared target directory and every finished lane's build output was removed (Ryan's rule: no stale build output between checkpoints).
+
 ## Full current-model preferences - November 5, 2026
 
 F10 current-model preferences now cover every inference and load field of the source `/modelcfg` panel (vocabulary derived from `model_switch._INFER_FIELDS`/`_LOAD_FIELDS` plus thinking and JSON schema, gated per backend and llama.cpp configured flags), not only temperature, Top P and max tokens. Edits keep the conversation-scoped review/save/readback path; load-time fields report that they apply at the next load. A model-preference publication now holds admission until its exact saved readback. Built by the Codex seat in an isolated preview and integrated by 3-way merge onto 1a058670 (three additive conflict hunks with the MCP lane).
