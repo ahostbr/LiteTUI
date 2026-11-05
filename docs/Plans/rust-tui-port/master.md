@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Reviewed agent memory edits - 2026-11-04
+
+F1 Work → I → E opens an editor for the current agent’s memory, soul or handoff document. The editor requires the displayed review, preserves the draft on a stale base, and independently rereads the published UTF-8 bytes. Creating an absent document refuses to overwrite a file that appears during publication. For an existing file, a program that bypasses the agent lease can still race the final reread and replace.
+
+The integrated provider and memory checkout passed 963 Rust tests, strict all-target Clippy and 145 source tests. Eight compaction and three reader/editor process tests passed against the relocated runtime, and its launcher verified all 364 payload files. The rebuilt executable also ran in a hidden Windows pseudoconsole. Real keyboard input opened the memory editor, reviewed and applied an edit, returned to the chat draft and exited. The independent readback digest matched the submitted text and the package files retained their hashes.
+
 ## Compact current Codex and Claude sessions from F6 - 2026-11-04
 
 Codex compaction requires an idle native thread that agrees with the saved conversation. F6 verifies the completed turn and compaction item against provider history and preserves the local transcript. Claude compaction requires an idle tools-off SDK session, wake disabled and no pending continuation. Its review covers the summary, SDK retirement, new segment seed and saved transcript. If publication stops between the segment write and transcript write, F6 reports the verified stage and closes the action.

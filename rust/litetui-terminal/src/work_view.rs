@@ -23,6 +23,7 @@ pub enum Request {
         accept: bool,
     },
     Context(crate::context::Request),
+    ContextEdit(Box<crate::context_edit::Request>),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
@@ -54,6 +55,7 @@ pub struct Intent {
 pub enum Data {
     ManualReview(Box<crate::scheduled_transition::ManualReview>),
     Context(Box<crate::context::Page>),
+    ContextEdit(Box<crate::context_edit::Reply>),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
         action: execution::Action,
@@ -283,6 +285,7 @@ impl View {
                 | (Request::DeferredValidate, Data::DeferredReview(_))
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
                 | (Request::Context(_), Data::Context(_))
+                | (Request::ContextEdit(_), Data::ContextEdit(_))
                 | (Request::Snapshot, Data::Snapshot(_))
                 | (Request::Page { .. }, Data::Page(_))
                 | (Request::Tail(_), Data::Tail(_))
@@ -302,14 +305,25 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::ContextEdit(reply) => self.context.edit_reply(*reply),
+            Data::Rejected(reason) if matches!(pending, Request::ContextEdit(_)) => {
+                self.context.edit_rejected(&reason)
+            }
             Data::Context(page) => {
                 if self.context.is_open() {
                     self.context.apply(*page);
+                    if let Some(request) = self.context.continue_draft_reload() {
+                        self.request(Request::ContextEdit(Box::new(request)));
+                    }
                 }
             }
             Data::Rejected(reason) if matches!(pending, Request::Context(_)) => {
                 if self.context.is_open() {
-                    self.context.reject(&reason);
+                    if self.context.editing() {
+                        self.context.edit_rejected(&reason);
+                    } else {
+                        self.context.reject(&reason);
+                    }
                 }
             }
             Data::ManualReview(review) => {
@@ -540,6 +554,9 @@ impl View {
         }
     }
     pub fn accepts_paste(&self) -> bool {
+        if self.context.editing() {
+            return !self.waiting && self.context.accepts_paste();
+        }
         self.open
             && self.visible
             && !self.waiting
@@ -550,6 +567,12 @@ impl View {
         self.notice = error;
     }
     pub fn paste(&mut self, text: &str) {
+        if self.context.editing() {
+            if !self.waiting {
+                self.context.paste(text);
+            }
+            return;
+        }
         if self.open
             && self.visible
             && !self.waiting
@@ -562,7 +585,22 @@ impl View {
     }
     pub fn key(&mut self, key: KeyEvent) {
         if self.context.is_open() {
-            if let Some(request) = self.context.key(key) {
+            let editing = self.context.editing();
+            if !self.waiting
+                && let Some(request) = self.context.reload_draft(key)
+            {
+                self.request(Request::Context(request));
+            } else if !self.waiting
+                && let Some(request) = self.context.edit_key(key)
+            {
+                self.request(Request::ContextEdit(Box::new(request)));
+            } else if editing && !self.context.editing() {
+                let request = self.context.reload();
+                self.request(Request::Context(request));
+            } else if !editing
+                && !matches!(self.pending, Some(Request::ContextEdit(_)))
+                && let Some(request) = self.context.key(key)
+            {
                 self.request(Request::Context(request));
             }
             return;
@@ -904,7 +942,10 @@ impl View {
     }
     pub fn mouse(&mut self, event: MouseEvent) {
         if self.context.is_open() {
-            if let Some(request) = self.context.mouse(event) {
+            if !self.context.editing()
+                && !self.waiting
+                && let Some(request) = self.context.mouse(event)
+            {
                 self.request(Request::Context(request));
             }
             return;

@@ -99,13 +99,18 @@ fn observe(
     let deadline = Instant::now() + Duration::from_secs(40);
     loop {
         if let Ok(event) = runtime.events.recv_timeout(Duration::from_millis(100)) {
-            if let Observation::Work(update) = &event
-                && let Data::Rejected(message) = &update.data
-            {
-                return Err(io::Error::other(message.clone()));
-            }
+            let rejected = match &event {
+                Observation::Work(update) => match &update.data {
+                    Data::Rejected(message) => Some(message.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
             let done = until(&event);
             app.observe_live(event)?;
+            if let Some(reason) = rejected {
+                return Err(io::Error::other(reason));
+            }
             if done {
                 return Ok(());
             }
@@ -474,5 +479,101 @@ fn runtime_status_uses_only_bounded_cached_sanitized_facts_on_open_and_refresh()
     eprintln!(
         "Controlled Runtime status process report: {}",
         data.display()
+    );
+}
+
+#[test]
+#[ignore = "real owned Python memory writer through compiled Interactive; requires LITETUI_AUTHORITY_PYTHON"]
+fn context_edits_keep_draft_through_stale_review_and_verify_exact_publication() {
+    let (runtime, data) = launch("context_runtime.py");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        let seed = json_file(&data.join("context-seed.json"));
+        let directory = PathBuf::from(seed["directory"].as_str().unwrap()).canonicalize()?;
+        assert!(directory.starts_with(data.canonicalize()?));
+        let target = directory.join("soul.md");
+        app.insert_text("Ordinary draft stays here");
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let composer = (
+            app.composer.text().to_owned(),
+            app.composer.before_cursor().to_owned(),
+            app.composer.selected_text().to_owned(),
+        );
+        app.open_work();
+        drain(runtime, &mut app)?;
+        for code in [
+            KeyCode::Char('i'),
+            KeyCode::Right,
+            KeyCode::Right,
+            KeyCode::Char('e'),
+        ] {
+            key(runtime, &mut app, code)?;
+        }
+        assert!(draw(&mut app).contains("Edit soul.md"));
+        let draft = "Two exact lines\r\n雪\n";
+        app.live.as_mut().unwrap().work.paste(draft);
+        assert!(key(runtime, &mut app, KeyCode::F(6))?.contains("Review soul.md"));
+        assert_eq!(fs::read(&target)?, b"");
+        assert!(key(runtime, &mut app, KeyCode::Esc)?.contains("Edit soul.md"));
+        assert!(key(runtime, &mut app, KeyCode::Esc)?.contains("Discard this memory draft?"));
+        assert!(key(runtime, &mut app, KeyCode::Esc)?.contains("Two exact lines"));
+        key(runtime, &mut app, KeyCode::F(6))?;
+        fs::write(&target, b"outside update")?;
+        assert!(
+            key(runtime, &mut app, KeyCode::F(6))
+                .unwrap_err()
+                .to_string()
+                .contains("changed since review")
+        );
+        assert!(draw(&mut app).contains("Draft kept."));
+        assert_eq!(fs::read(&target)?, b"outside update");
+        assert!(key(runtime, &mut app, KeyCode::F(5))?.contains("Current file reloaded"));
+        let review = key(runtime, &mut app, KeyCode::F(6))?;
+        assert!(review.contains("outside update") && review.contains("Two exact lines"));
+        assert!(key(runtime, &mut app, KeyCode::F(6))?.contains("Saved and verified"));
+        assert_eq!(fs::read(&target)?, draft.as_bytes());
+        key(runtime, &mut app, KeyCode::Esc)?;
+        let absent = key(runtime, &mut app, KeyCode::Right)?;
+        assert!(absent.contains("absent"));
+        key(runtime, &mut app, KeyCode::Char('e'))?;
+        assert!(!directory.join("handoff.md").exists());
+        assert!(key(runtime, &mut app, KeyCode::F(6))?.contains("(absent)"));
+        assert!(key(runtime, &mut app, KeyCode::F(6))?.contains("Saved and verified"));
+        assert_eq!(fs::read(directory.join("handoff.md"))?, b"");
+        for _ in 0..3 {
+            key(runtime, &mut app, KeyCode::Esc)?;
+        }
+        assert_eq!(
+            composer,
+            (
+                app.composer.text().to_owned(),
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned()
+            )
+        );
+        Ok(())
+    });
+    result.unwrap_or_else(|e| panic!("Context edit failed in {}: {e}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"].as_array().unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|v| v["type"] == "gui.context.native_apply")
+            .count(),
+        3
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|v| v["type"] == "gui.context.native_readback")
+            .count(),
+        2
+    );
+    assert!(!commands.iter().any(|v| v["type"] == "prompt"));
+    assert_eq!(
+        report["shutdown"]["result"]["work_shutdown"]["worker_settled"],
+        true
     );
 }

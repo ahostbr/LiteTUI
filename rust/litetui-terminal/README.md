@@ -78,6 +78,8 @@ A saved or partial result is shown only after independent source and runtime rea
 
 In **F1 Work**, press **I** to read the current system prompt or the active agent’s `memory.md`, `soul.md`, and `handoff.md`. The Hooks tab lists the effective project and global lifecycle hooks, their events and their enabled state. Project hooks take precedence when an ID appears in both scopes. Tab or Left/Right switches documents. Use `[` and `]` to load adjacent pages, the arrow keys to scroll, and F5 to refresh a changed document. The reader distinguishes missing and empty documents and accepts documents up to 256 KiB.
 
+To edit `memory.md`, `soul.md` or `handoff.md`, select the document in Context and press **E**. F6 opens a review. Read the whole review, then press F6 again to apply. If the file changes on disk, F5 loads the new base and keeps your draft for another review. Escape returns to editing or asks before discarding a draft. The editor distinguishes an absent file from an empty one and verifies the saved UTF-8 bytes.
+
 In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, and cached MCP server information. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
 
 ## Work inspection (in progress)

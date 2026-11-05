@@ -55,6 +55,7 @@ OPERATIONS = (
     "images.attach", "images.clear", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
     "context.native_page", "inspection.native_status",
+    "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
     "runtime.native_snapshot", "runtime.native_validate", "runtime.native_apply", "runtime.native_readback",
@@ -313,7 +314,7 @@ def _conversations(app, action, cmd):
     if action == "rename":
         title = str(cmd.get("title", "")).strip()
         if not title or len(title) > 200:
-            raise ValueError("title must contain 1–200 characters")
+            raise ValueError("title must contain 1â€“200 characters")
         app.store.write_record({"type": "rename", "name": title, "ts": time.time()})
     elif action in ("edit", "retry"):
         index = cmd.get("index")
@@ -447,7 +448,7 @@ def _owned_memory_path(session, name):
     return _unlinked(session.memory_root / name)
 
 
-def _owned_memory(app, session, action, cmd):
+def _owned_memory(app, session, action, cmd, *, before_publish=None, create_only=False):
     from litetui.agent_store import MEMORY_FILES, _unlinked
     _session_path(cmd.get("session_id") or app.convo_id, app)
     directory = session.memory_root
@@ -480,11 +481,21 @@ def _owned_memory(app, session, action, cmd):
     path = _owned_memory_path(session, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = _unlinked(path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp"))
-    with temporary.open('x', encoding='utf-8') as handle:
-        handle.write(text)
-    session.authority
-    _owned_memory_path(session, name)
-    _unlinked(temporary).replace(path)
+    handle = temporary.open('x', encoding='utf-8', newline='' if before_publish else None)
+    try:
+        with handle:
+            handle.write(text)
+        session.authority
+        _owned_memory_path(session, name)
+        if before_publish:
+            before_publish(temporary)
+        if create_only:
+            # Publish a missing document without displacing a concurrently created file.
+            os.link(_unlinked(temporary), path)
+        else:
+            _unlinked(temporary).replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return {"name": name, "text": text}
 
 
@@ -540,6 +551,9 @@ def dispatch(app, cmd):
     if operation == "inspection.native_status":
         from litetui import native_inspection
         return native_inspection.status(app, cmd)
+    if operation in {"context.native_edit", "context.native_review", "context.native_apply", "context.native_readback"}:
+        from litetui import native_context_edit
+        return native_context_edit.dispatch(app, cmd)
     if operation == "context.native_page":
         from litetui import native_context
         return native_context.page(app, cmd)

@@ -249,3 +249,132 @@ fn reader_escapes_terminal_controls_scrolls_and_ignores_hidden_input() {
     view.apply(parsed(&next, "late private text"));
     assert!(view.page().is_none() && !draw(&mut view, 70, 14).contains("late private text"));
 }
+
+#[test]
+fn memory_review_requires_all_rendered_lines_after_resize_and_fresh_visible_press() {
+    use litetui_terminal::context_edit::{Base, Reply, Request as Edit, Review};
+    let mut view = View::default();
+    let request = view.open();
+    view.apply(parsed(&request, "system"));
+    draw(&mut view, 80, 20);
+    let request = view.key(key(KeyCode::Right)).unwrap();
+    view.apply(parsed(&request, "original"));
+    draw(&mut view, 80, 20);
+    assert!(matches!(
+        view.edit_key(key(KeyCode::Char('e'))),
+        Some(Edit::Open(Document::Memory, _))
+    ));
+    let base = Base {
+        document: Document::Memory,
+        revision: Some(digest("original")),
+        text: "original".into(),
+    };
+    view.edit_reply(Reply::Opened(base.clone()));
+    draw(&mut view, 80, 20);
+    view.paste(&"\nline".repeat(54));
+    let Some(Edit::Review(_, draft)) = view.edit_key(key(KeyCode::F(6))) else {
+        panic!("expected review")
+    };
+    let mut review = Review {
+        base: base.clone(),
+        token: "a".repeat(64),
+        draft: draft.clone(),
+    };
+    review.draft.push('!');
+    view.edit_reply(Reply::Reviewed(review.clone()));
+    assert!(draw(&mut view, 80, 20).contains("Edit memory.md"));
+    review.draft = draft;
+    view.edit_reply(Reply::Reviewed(review));
+    draw(&mut view, 80, 20);
+    assert!(view.edit_key(key(KeyCode::F(6))).is_none());
+    view.edit_key(key(KeyCode::End));
+    draw(&mut view, 80, 20);
+    assert!(
+        view.edit_key(key(KeyCode::F(6))).is_none(),
+        "Skipping the middle never authorizes"
+    );
+    view.edit_key(key(KeyCode::Home));
+    for _ in 0..10 {
+        draw(&mut view, 80, 20);
+        view.edit_key(key(KeyCode::PageDown));
+    }
+    assert!(matches!(
+        view.edit_key(key(KeyCode::F(6))),
+        Some(Edit::Apply(_))
+    ));
+    draw(&mut view, 50, 15);
+    assert!(view.edit_key(key(KeyCode::F(6))).is_none());
+    for _ in 0..15 {
+        draw(&mut view, 50, 15);
+        view.edit_key(key(KeyCode::PageDown));
+    }
+    let repeat = KeyEvent::new_with_kind(KeyCode::F(6), KeyModifiers::NONE, KeyEventKind::Repeat);
+    assert!(view.edit_key(repeat).is_none());
+    view.hide();
+    assert!(view.edit_key(key(KeyCode::F(6))).is_none());
+    draw(&mut view, 20, 8);
+    assert!(view.edit_key(key(KeyCode::F(6))).is_none());
+    draw(&mut view, 50, 15);
+    assert!(
+        view.edit_key(key(KeyCode::F(6))).is_none(),
+        "Tiny layout invalidated previous review coverage"
+    );
+}
+
+#[test]
+fn memory_parser_checks_full_identity_revision_bytes_and_readback_correlation() {
+    use litetui_terminal::context_edit::{Base, Request as Edit, Review};
+    let id = identity();
+    let base = Base {
+        document: Document::Memory,
+        revision: None,
+        text: String::new(),
+    };
+    let draft = "🌱\r\n";
+    let review = Review {
+        base: base.clone(),
+        draft: draft.into(),
+        token: "f".repeat(64),
+    };
+    let req = Edit::Apply(review.clone());
+    let mut v = id.request();
+    for (k, val) in [
+        ("kind", json!("context_apply")),
+        ("work_instance", json!(INSTANCE)),
+        ("document", json!("memory.md")),
+        ("token", json!(review.token)),
+        ("revision", json!(digest(draft))),
+        ("bytes", json!(draft.len())),
+        ("apply_id", json!("c1")),
+    ] {
+        v[k] = val;
+    }
+    req.readback(&v, &id, INSTANCE, "c1").unwrap();
+    assert!(req.reply(&v, &id, INSTANCE, Some("c1")).is_err());
+    v["kind"] = json!("context_saved");
+    req.reply(&v, &id, INSTANCE, Some("c1")).unwrap();
+    for (k, val) in [
+        ("revision", json!(digest(""))),
+        ("apply_id", json!("c2")),
+        ("document", json!("handoff.md")),
+        ("work_instance", json!("foreign")),
+        ("backend", json!("foreign")),
+        ("bytes", json!(1)),
+        ("extra", Value::Null),
+    ] {
+        let mut changed = v.clone();
+        changed[k] = val;
+        assert!(
+            req.reply(&changed, &id, INSTANCE, Some("c1")).is_err(),
+            "{k}"
+        );
+    }
+    assert!(
+        Edit::Review(base, "🌱".repeat(65537))
+            .command(&id, INSTANCE)
+            .is_err()
+    );
+    for doc in [Document::System, Document::Hooks] {
+        assert!(Edit::Open(doc, None).command(&id, INSTANCE).is_err());
+    }
+}

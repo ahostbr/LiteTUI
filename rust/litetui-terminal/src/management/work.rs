@@ -17,6 +17,7 @@ pub(super) struct Control {
     deferred_review: Option<deferred::Review>,
     control_review: Option<controls::Review>,
     pub(super) manual_review: Option<crate::scheduled_transition::ManualReview>,
+    context_review: Option<crate::context_edit::Review>,
 }
 pub(super) struct Pending {
     pub id: CommandId,
@@ -27,6 +28,7 @@ pub(super) struct Pending {
     deferred_receipt: Option<deferred::ResultReceipt>,
     deferred_verified: bool,
     control_receipt: Option<controls::Receipt>,
+    context_apply_id: Option<String>,
 }
 impl Management {
     pub(super) fn invalidate_work_selection(&mut self) {
@@ -38,6 +40,7 @@ impl Management {
         self.work.stop_review = None;
         self.work.deferred_review = None;
         self.work.control_review = None;
+        self.work.context_review = None;
     }
     pub fn work_pending(&self) -> bool {
         self.work.pending.is_some() || self.execution_review_pending()
@@ -116,6 +119,15 @@ impl Management {
             view::Request::DeferredValidate => deferred::VALIDATE,
             view::Request::DeferredApply(_) => deferred::DISCARD,
             view::Request::Context(_) => crate::context::OPERATION,
+            view::Request::ContextEdit(request) => {
+                if crate::context_edit::OPERATIONS
+                    .iter()
+                    .any(|op| !self.operations.iter().any(|v| v == op))
+                {
+                    return Err(fail("Python source lacks reviewed memory editing"));
+                }
+                request.operation()
+            }
             view::Request::Snapshot => protocol::READ,
             view::Request::Page { .. } => protocol::PAGE,
             view::Request::Tail(_) => protocol::TAIL,
@@ -158,6 +170,7 @@ impl Management {
             self.work.stop_review = None;
             self.work.deferred_review = None;
             self.work.control_review = None;
+            self.work.context_review = None;
             identity.request()
         } else {
             let snapshot = self
@@ -213,6 +226,7 @@ impl Management {
             }
             view::Request::ControlValidate(edit) => {
                 self.work.control_review = None;
+                self.work.context_review = None;
                 if self.work.snapshot.as_ref() != Some(&edit.snapshot) {
                     return Err(fail("Work edit changed captured snapshot"));
                 }
@@ -281,6 +295,16 @@ impl Management {
                     ));
                 }
                 command = retained.request();
+            }
+            view::Request::ContextEdit(request) => {
+                if let crate::context_edit::Request::Apply(r) = request.as_ref() {
+                    if self.work.context_review.take().as_ref() != Some(r) {
+                        return Err(fail("Review the current memory draft again"));
+                    }
+                } else {
+                    self.work.context_review = None;
+                }
+                command = request.command(&identity, self.context_instance()?)?;
             }
             view::Request::Context(request) => {
                 command = request.command(&identity, self.context_instance()?);
@@ -373,7 +397,7 @@ impl Management {
             }
         }
         command["type"] = json!(op);
-        let id = if matches!(
+        let id = if matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
             &intent.request,
             view::Request::PauseApply(_)
                 | view::Request::StopApply(_)
@@ -395,6 +419,7 @@ impl Management {
             deferred_receipt: None,
             deferred_verified: false,
             control_receipt: None,
+            context_apply_id: None,
         });
         Ok(command)
     }
@@ -406,6 +431,7 @@ impl Management {
             self.work.stop_review = None;
             self.work.deferred_review = None;
             self.work.control_review = None;
+            self.work.context_review = None;
             if matches!(pending.request, view::Request::ControlApply(_)) {
                 return Err(fail(&format!(
                     "Durable Work save or readback failed; inspect saved state: {reason}"
@@ -477,6 +503,35 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
+                    view::Request::ContextEdit(request) => {
+                        let instance = self.context_instance()?;
+                        if matches!(request.as_ref(), crate::context_edit::Request::Apply(_))
+                            && pending.context_apply_id.is_none()
+                        {
+                            let apply_id = text(&frame, "id", 128)?.to_string();
+                            let mut command =
+                                request.readback(value, &snapshot.identity, instance, &apply_id)?;
+                            let id = self
+                                .wire
+                                .register_read()
+                                .map_err(|_| fail("Cannot reserve memory readback"))?;
+                            command["id"] = id.to_value();
+                            pending.id = id;
+                            pending.context_apply_id = Some(apply_id);
+                            self.work.pending = Some(pending);
+                            return Ok(Step::Write(command));
+                        }
+                        let reply = request.reply(
+                            value,
+                            &snapshot.identity,
+                            instance,
+                            pending.context_apply_id.as_deref(),
+                        )?;
+                        if let crate::context_edit::Reply::Reviewed(review) = &reply {
+                            self.work.context_review = Some(review.clone());
+                        }
+                        view::Data::ContextEdit(Box::new(reply))
+                    }
                     view::Request::Context(request) => match crate::context::Page::parse(
                         value,
                         &snapshot.identity,

@@ -17,6 +17,9 @@ use sha2::{Digest, Sha256};
 
 #[derive(Default)]
 pub struct View {
+    editor: Option<crate::context_edit_view::Editor>,
+    editor_visible: bool,
+    reloading_draft: bool,
     open: bool,
     document: Document,
     pending: Option<Request>,
@@ -33,6 +36,120 @@ pub struct View {
 }
 
 impl View {
+    pub fn editing(&self) -> bool {
+        self.editor.is_some()
+    }
+    pub fn accepts_paste(&self) -> bool {
+        self.editor_visible
+            && self
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.accepts_paste())
+    }
+    pub fn paste(&mut self, text: &str) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.paste(text);
+        }
+    }
+    pub fn edit_key(&mut self, key: KeyEvent) -> Option<crate::context_edit::Request> {
+        use crate::context_edit_view::Action;
+        if let Some(editor) = self.editor.as_mut() {
+            if !self.editor_visible {
+                return None;
+            }
+            match editor.key(key) {
+                Action::Request(r) => return Some(*r),
+                Action::Back => self.editor = None,
+                Action::Stay => {}
+            }
+        } else if self.body.is_some()
+            && self.pending.is_none()
+            && key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Char('e')
+            && key.modifiers.is_empty()
+            && crate::context_edit::editable(self.document)
+            && let Some(page) = self
+                .page
+                .as_ref()
+                .filter(|p| matches!(p.status, Status::Page | Status::Empty | Status::Missing))
+        {
+            return Some(crate::context_edit::Request::Open(
+                self.document,
+                page.revision.clone(),
+            ));
+        }
+        None
+    }
+    pub fn reload_draft(&mut self, key: KeyEvent) -> Option<Request> {
+        if self.accepts_paste()
+            && key.kind == KeyEventKind::Press
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::F(5)
+        {
+            self.reloading_draft = true;
+            Some(self.select(self.document))
+        } else {
+            None
+        }
+    }
+    pub fn continue_draft_reload(&mut self) -> Option<crate::context_edit::Request> {
+        if !self.reloading_draft {
+            return None;
+        }
+        if let Some(page) = self
+            .page
+            .as_ref()
+            .filter(|p| matches!(p.status, Status::Page | Status::Empty | Status::Missing))
+        {
+            return Some(crate::context_edit::Request::Open(
+                self.document,
+                page.revision.clone(),
+            ));
+        }
+        self.edit_rejected("The current file could not be reloaded.");
+        None
+    }
+    pub fn reload(&mut self) -> Request {
+        self.select(self.document)
+    }
+    pub fn edit_reply(&mut self, reply: crate::context_edit::Reply) {
+        use crate::context_edit::Reply;
+        if !self.open {
+            return;
+        }
+        match reply {
+            Reply::Opened(base) if base.document == self.document => {
+                if self.reloading_draft
+                    && let Some(editor) = self.editor.as_mut()
+                {
+                    editor.rebase(base);
+                } else {
+                    self.editor = Some(crate::context_edit_view::Editor::new(base));
+                }
+                self.reloading_draft = false;
+            }
+            Reply::Reviewed(review) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.reviewed(review);
+                }
+            }
+            Reply::Saved(base) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.saved(base);
+                }
+            }
+            _ => {}
+        }
+    }
+    pub fn edit_rejected(&mut self, reason: &str) {
+        self.reloading_draft = false;
+        if let Some(editor) = self.editor.as_mut() {
+            editor.reject(reason);
+        } else {
+            self.notice = reason.into();
+        }
+    }
+
     pub fn open(&mut self) -> Request {
         self.open = true;
         self.select(Document::System)
@@ -57,6 +174,7 @@ impl View {
 
     pub fn hide(&mut self) {
         self.body = None;
+        self.editor_visible = false;
         self.tabs.clear();
     }
 
@@ -255,6 +373,9 @@ impl View {
             height,
         );
         if width < 24 || height < 9 {
+            if let Some(editor) = self.editor.as_mut() {
+                editor.invalidate_layout();
+            }
             frame.render_widget(Clear, area);
             frame.render_widget(
                 Paragraph::new("Resize to read Context, or press Esc.")
@@ -270,6 +391,11 @@ impl View {
         frame.render_widget(Clear, rect);
         frame.render_widget(block, rect);
 
+        if let Some(editor) = self.editor.as_mut() {
+            editor.draw(frame, inner, theme);
+            self.editor_visible = true;
+            return;
+        }
         let mut x = inner.x;
         for doc in Document::ALL {
             let label = format!(" {} ", doc.label());
@@ -320,7 +446,9 @@ impl View {
             .join("\n");
         frame.render_widget(Paragraph::new(lines), body);
         self.body = Some(body);
-        let keys = if inner.width >= 48 {
+        let keys = if crate::context_edit::editable(self.document) && inner.width >= 48 {
+            "← → / Tab documents · [ ] pages · e edit\n↑ ↓ / PgUp PgDn scroll · F5 refresh · Esc returns to Work"
+        } else if inner.width >= 48 {
             "← → / Tab documents · [ ] pages · F5 refresh\n↑ ↓ / PgUp PgDn scroll · Esc returns to Work"
         } else {
             "← → docs · [ ] pages\n↑ ↓ scroll · F5 · Esc"

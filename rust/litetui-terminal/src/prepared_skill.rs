@@ -112,26 +112,27 @@ impl Prepared {
         })
     }
 }
+pub type Draft = BoundedDraft<MAX_BYTES>;
 #[derive(Default)]
-pub struct Draft {
+pub struct BoundedDraft<const LIMIT: usize> {
     text: String,
     cursor: usize,
 }
-impl Draft {
+impl<const LIMIT: usize> BoundedDraft<LIMIT> {
     pub fn text(&self) -> &str {
         &self.text
     }
     pub fn set(&mut self, text: &str) -> io::Result<()> {
-        if text.len() > MAX_BYTES {
-            return Err(fail("Arguments exceed 64 KiB; edit kept unchanged"));
+        if text.len() > LIMIT {
+            return Err(fail("Document exceeds the editor limit; draft kept unchanged"));
         }
         self.text = text.into();
         self.cursor = self.text.len();
         Ok(())
     }
     pub fn insert(&mut self, text: &str) -> io::Result<()> {
-        if self.text.len().saturating_add(text.len()) > MAX_BYTES {
-            return Err(fail("Arguments exceed 64 KiB; edit kept unchanged"));
+        if self.text.len().saturating_add(text.len()) > LIMIT {
+            return Err(fail("Document exceeds the editor limit; draft kept unchanged"));
         }
         self.text.insert_str(self.cursor, text);
         self.cursor += text.len();
