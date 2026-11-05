@@ -7,12 +7,14 @@ Five interleaved warm trials per frontend used a private 120×40 Windows pseudoc
 | Measurement | Textual | Release Rust + Python |
 | --- | ---: | ---: |
 | Launch to first visible cells | 2,215 ms | 85 ms |
-| Launch to visible editable draft | 2,308 ms | 3,210 ms |
+| Launch to a draft typed after the connected banner | 2,308 ms | 3,210 ms |
 | Enter to complete visible answer | 260 ms | 322 ms |
 | Idle private memory | 73.18 MiB | 81.00 MiB |
 | Idle working set | 88.93 MiB | 103.58 MiB |
 | Peak private memory | 74.61 MiB | 81.28 MiB |
 | Peak working set | 90.33 MiB | 104.21 MiB |
+
+A later direct-input check corrected the original interpretation of the drafting landmark. The first comparison waited for the connected banner before typing. Three fresh early-input pairs against the same frozen Rust release recorded Rust visible drafting at 114/102/113 ms and connection at 2728/2667/2670 ms. Textual visible drafting took 1932/1810/1867 ms. Every early Rust Enter was refused before provider execution, the exact draft survived the handshake, and the second explicit Enter produced the expected saved reply. Raw evidence and the controlling script are in `target/next-usable-startup/runs-iG4Tsx` and `target/next-usable-startup/early-draft.cjs`. These separate local drafting from runtime admission.
 
 Both paths wrote the same user message and answer and exited cleanly in all ten trials. Textual also requested a controlled card summary. Rust performed additional catalogue reads and retained its native frontend alongside the Python runtime and venv launcher. The sampler targeted 50 ms and observed a median interval of 52.1 ms (range 19–421 ms). Background host load varied. The run measured a warm startup and a controlled short turn. Physical terminal painting, live inference, sustained streaming and a numerical acceptance target remain open. The raw proof is `rust/litetui-terminal/target/next-process-baseline/runs-zdreMQ/performance-proof.json` (SHA-256 `b1d33dc61fbc9f196a65ee2bb1b9d5b16cd7723f49420b14e260d7458c384c6e`).
 
