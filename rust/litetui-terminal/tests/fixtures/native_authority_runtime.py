@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sys
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -30,7 +31,13 @@ async def main():
     import httpx
     from _owned_seat import owned_app, release_all
 
-    from litetui import background_input, gui_rpc, rpc, seat_authority
+    from litetui import (
+        background_input,
+        gui_rpc,
+        native_runtime_controls,
+        rpc,
+        seat_authority,
+    )
     from litetui.claude_tools import ClaudeTools
     from litetui.event_origin import EventOrigin
     from litetui.launch_options import LaunchOptions
@@ -65,7 +72,7 @@ async def main():
             app._stop_requested = False
             # The fixture task stands in for the provider worker. Stop semantics,
             # approval waiter release and authority cleanup remain source-owned.
-            app._chat_running = lambda: worker is not None and not worker.done()
+            app._chat_running = lambda: worker is not None and not worker.is_finished
             app._system = lambda *_: None
             app.store.stage(str(uuid4()))
             app.store.convo_dir.mkdir()
@@ -117,13 +124,19 @@ async def main():
                 args = {"file_path": str(target), "content": "controlled fixture"}
                 native({"type": "native_activity","provider": "claude","kind": "tool_use","id": call_id,
                           "name": "Write","complete": True,"input": args,"result": None,"is_error": None,"card_index": 0})
-                outcome = await bridge.pre_tool({"tool_name":"Write","tool_input":args},call_id,None)
-                allowed = outcome["hookSpecificOutput"]["permissionDecision"] == "allow"
-                if allowed:
-                    target.write_text("controlled fixture", encoding="utf-8")
-                native({"type": "native_activity","provider": "claude","kind": "tool_result","id": call_id,
-                          "name": "Write","complete": True,"input": None,"result": "written" if allowed else "denied",
-                          "is_error": not allowed,"card_index": 0})
+                turn_binding = bridge.bind_turn(origin)
+                bridge.observed(turn_binding, call_id, "Write", args)
+                try:
+                    outcome = await bridge.pre_tool({"tool_name":"Write","tool_input":args},call_id,None)
+                    allowed = outcome["hookSpecificOutput"]["permissionDecision"] == "allow"
+                    if allowed:
+                        target.write_text("controlled fixture", encoding="utf-8")
+                    native({"type": "native_activity", "provider": "claude", "kind": "tool_result", "id": call_id,
+                            "name": "Write", "complete": True, "input": None, "result": "written" if allowed else "denied",
+                            "is_error": not allowed, "card_index": 0})
+                    bridge.completed(turn_binding, call_id)
+                finally:
+                    bridge.finish_turn(turn_binding)
                 native({"type": "text_delta","text": "Controlled write allowed" if allowed else "Controlled write denied",
                           "card_index": 0})
                 native({"type": "turn_end","stopReason": "cancelled" if app._stop_requested else "stop","error": None})
@@ -141,26 +154,25 @@ async def main():
                     except Exception as exc:  # noqa: BLE001 - mirror the RPC command error boundary
                         rpc._respond(command["id"], ok=False, error=str(exc))
                     else:
-                        rpc._respond(command["id"], ok=True, result=result)
+                        rpc.publish_management_result(app, command, result)
                     continue
                 with (root / "commands.jsonl").open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(command) + "\n")
                 if command["type"] == "shutdown":
                     bridge.stop()
                     if worker is not None:
-                        await worker
-                    work_proof = await background_input.settle_before_shutdown(app)
-                    result = {"ok": True}
-                    if work_proof is not None:
-                        result["work_shutdown"] = work_proof
-                    emit({"type": "response","id": command["id"],"ok": True,"result": result})
+                        await worker.wait()
+                    rpc._dispatch(app, command)
+                    await asyncio.wait_for(app._conversation_rewrite_exit_task, 10)
                     break
                 if command["type"] in {"approve", "abort"}:
                     rpc._dispatch(app, command)
                     continue
-                assert command["type"] == "prompt" and command["tool_profile"] == "strict"
+                assert command["type"] == "prompt"
+                assert native_runtime_controls.enabled(app) and seat_authority.seat_profile(app) == "strict"
+                native_runtime_controls.operation_allowed(app, command)
                 if worker is not None:
-                    await worker
+                    await worker.wait()
                 turn += 1
                 app._stop_requested = False
                 app.conversation.append({"role":"user","content":command["message"]})
@@ -169,7 +181,11 @@ async def main():
                 origin = EventOrigin(session_id=app.convo_id, operation_id=command["id"],
                                      source="rpc").scheduled()
                 app._rpc_emit({"type": "turn_start","model": app.model_id}, origin=origin)
-                worker = asyncio.create_task(execute(f"controlled-{turn}", origin))
+                background_input.before_stream(app, origin)
+                runner = background_input.stream_runner(app, origin, partial(execute, f"controlled-{turn}", origin))
+                with app._context():
+                    worker = app.run_worker(runner, name="controlled Claude stream", group="chat", exit_on_error=False)
+                background_input.bind_stream(app, worker, origin)
             assert not getattr(app, "_approval_waiters", {}) and not getattr(app, "_approval_authority_records", {})
             if MODE.startswith("controls"):
                 from litetui.agent_ownership import SETTINGS_NAME
@@ -177,10 +193,10 @@ async def main():
                     str(app._agent_session._agent.directory / SETTINGS_NAME), encoding="utf-8")
             (root / "authority-store-path.txt").write_text(str(app.store.convo_path), encoding="utf-8")
         finally:
-            if worker is not None and not worker.done():
+            if worker is not None and not worker.is_finished:
                 worker.cancel()
                 try:
-                    await worker
+                    await worker.wait()
                 except asyncio.CancelledError:
                     pass
             try:

@@ -329,6 +329,15 @@ fn report(root: &Path, prompts: usize) -> Value {
         assert_eq!(request["model"], "switch-old");
     }
     let commands = report["commands"].as_array().unwrap();
+    let handshake = commands
+        .iter()
+        .filter_map(|cmd| cmd["type"].as_str())
+        .filter(|name| name.starts_with("gui.work."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        handshake,
+        ["gui.work.native_capture", "gui.work.native_activate"]
+    );
     for command in commands {
         assert!(
             matches!(
@@ -339,6 +348,8 @@ fn report(root: &Path, prompts: usize) -> Value {
                     | "gui.history.native_snapshot"
                     | "gui.history.native_page"
                     | "gui.themes.native_snapshot"
+                    | "gui.work.native_capture"
+                    | "gui.work.native_activate"
                     | "prompt"
                     | "shutdown"
             ),

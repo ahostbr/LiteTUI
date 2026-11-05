@@ -408,6 +408,17 @@ async def completions(resource, **request):
     return stream
 
 
+def route_work_handshake(app, command):
+    """Use the registered wire path so activation follows its flushed response."""
+    from litetui import rpc
+
+    if command["type"] not in ("gui.work.native_capture", "gui.work.native_activate"):
+        return False
+    commands.append(copy.deepcopy(command))
+    rpc._dispatch(app, command)
+    return True
+
+
 async def settle(app):
     from textual.worker import WorkerCancelled
 
@@ -536,7 +547,7 @@ async def serve(app):
             changed = json.loads(path.read_text(encoding="utf-8"))
             changed["hooks"][0]["argv"] = ["changed-after-preview"]
             path.write_text(json.dumps(changed), encoding="utf-8")
-        result = await asyncio.create_task(gui_rpc.async_dispatch(app, command))
+        result = await gui_rpc.async_dispatch(app, command)
         operation = command["type"]
         if operation == PAGE and driver == "rpc" and case == "cancel-page":
             await asyncio.sleep(0.3)
@@ -577,11 +588,17 @@ async def serve(app):
     async def respond_open(command):
         try:
             result = await management(command)
-            rpc._respond(command.get("id"), ok=True, result=result)
+            rpc.publish_management_result(app, command, result)
             return result
         except Exception as exc:
             rpc._respond(command.get("id"), ok=False, error=str(exc))
             raise
+
+    async def wait_for_shutdown():
+        joined = getattr(app, "_conversation_rewrite_exit_task", None)
+        if joined is None:
+            joined = app._conversation_shutdown_exit_task
+        await asyncio.wait_for(asyncio.shield(joined), 8)
 
     async def shutdown(eof=False):
         if eof:
@@ -590,7 +607,7 @@ async def serve(app):
             command = {"type": "shutdown", "id": "history-shutdown"}
             commands.append(command)
             rpc._dispatch(app, command)
-        await asyncio.wait_for(asyncio.shield(app._conversation_shutdown_exit_task), 8)
+        await wait_for_shutdown()
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(app.store, "release", release))
@@ -638,13 +655,15 @@ async def serve(app):
                 if driver == "rpc":
                     while line := await asyncio.to_thread(sys.stdin.readline):
                         command = json.loads(line)
+                        if route_work_handshake(app, command):
+                            continue
                         if case in shutdown_cases and command["type"] == OPEN:
                             pending_open = asyncio.create_task(respond_open(command))
                             continue
                         if command["type"].startswith("gui."):
                             try:
                                 result = await management(command)
-                                rpc._respond(command.get("id"), ok=True, result=result)
+                                rpc.publish_management_result(app, command, result)
                             except Exception as exc:  # noqa: BLE001 - actual RPC response boundary
                                 rpc._respond(command.get("id"), ok=False, error=str(exc))
                         else:
@@ -655,7 +674,7 @@ async def serve(app):
                             rpc._dispatch(app, command)
                             if command["type"] == "shutdown":
                                 if case in shutdown_cases:
-                                    await asyncio.wait_for(asyncio.shield(app._conversation_shutdown_exit_task), 8)
+                                    await wait_for_shutdown()
                                     assert pending_open is not None
                                     await pending_open
                                 break

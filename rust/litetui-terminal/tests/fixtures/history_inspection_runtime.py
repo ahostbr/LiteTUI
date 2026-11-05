@@ -208,6 +208,8 @@ async def serve(app):
                     locator_reads = 0
                     while line := await asyncio.to_thread(sys.stdin.readline):
                         command = json.loads(line)
+                        if history.route_work_handshake(app, command):
+                            continue
                         if command["type"].startswith("gui."):
                             located_read = command["type"] == CATALOG and "locate_session_id" in command
                             if located_read:
