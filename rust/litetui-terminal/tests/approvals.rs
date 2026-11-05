@@ -10,6 +10,28 @@ fn request(id: &str) -> Value {
 fn closed(id: &str) -> Value {
     json!({"type":"tool_approval_closed", "id":id, "outcome":"denied", "reason":"answered"})
 }
+#[test]
+fn prewrite_permission_requires_its_exact_host_ack_and_closure() {
+    let marker = json!({"session_id":"session","operation_id":"apply","action_id":"review","execution_id":"wait"});
+    let mut request = request("hook");
+    request["rewrite_prewrite"] = marker.clone();
+    let mut ledger = Ledger::default();
+    ledger.request(&request).unwrap();
+    let mut close = closed("hook");
+    close["rewrite_prewrite"] = marker.clone();
+    assert!(ledger.close(&close).is_err());
+    let cmd = ledger.decide(decision("hook", true)).unwrap().unwrap();
+    assert_eq!(cmd["rewrite_prewrite"], marker);
+    ledger.response(&response(&cmd, true)).unwrap();
+    assert!(ledger.close(&close).is_err());
+    close["outcome"] = json!("approved");
+    close["rewrite_prewrite"]["action_id"] = json!("other");
+    assert!(ledger.close(&close).is_err());
+    close["rewrite_prewrite"] = marker;
+    ledger.close(&close).unwrap();
+    assert!(ledger.settled());
+}
+
 fn decision(id: &str, allow: bool) -> Decision {
     Decision {
         id: id.into(),

@@ -1633,7 +1633,15 @@ impl Turn {
             }
             "tool_approval_requested"
                 if ((self.started && self.terminal.is_none())
-                    || self.rewrite_interactive(event))
+                    || self.rewrite_interactive(event)
+                    || !self.started && !self.acknowledged && self.rewrite_input.as_ref().is_some_and(|review| {
+                        review.prompt_hooks && event.get("rewrite_prewrite").is_some_and(|marker| {
+                            self.rewrite_origin(event).is_ok_and(|execution| {
+                                *marker == json!({"session_id":review.before.selection.identity.session,
+                                    "action_id":review.action_id,"operation_id":self.command_id,"execution_id":execution})
+                            })
+                        })
+                    }))
                     && !self.closing =>
             {
                 let event = self.approvals.request(event)?;

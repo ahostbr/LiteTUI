@@ -73,9 +73,12 @@ async def _invoke(app, hook, document, profile, *, allow_prompt, testing):
     # runner still executes the original argument array directly.
     args = {"command": json.dumps([hook.executable, *hook.argv]),
             "cwd": hook.cwd or str(workspace), "env": dict(hook.env)}
+    from litetui import rewrite_approval
+    prewrite = None if native_work_execution.pre_turn_hook(app) else rewrite_approval.capture(app, document)
     refusal = await app._authorize_action(
         hook.approval_name(workspace), args, tool_policy.SHELL_POLICY,
-        profile=profile, workspace=workspace, allow_prompt=allow_prompt, stop_on_denial=not testing,
+        profile=profile, workspace=workspace, allow_prompt=allow_prompt or prewrite is not None, stop_on_denial=not testing,
+        **({"prewrite": prewrite} if prewrite is not None else {}),
         hook_test=testing,  # T1049-B K1: the one caller a relay refusal must not stop
     )
     if refusal:

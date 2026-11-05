@@ -130,6 +130,9 @@ class Attempt:
     stopped: bool = False
     scheduled_callbacks: int = 0
     tool_calls: list[ToolCall] | None = None
+    prewrite_enabled: bool = False
+    prewrite_audit_error: bool = False
+    prewrite_approvals: list[Any] = field(default_factory=list)
     questions: dict[str, QuestionOrigin] = field(default_factory=dict)
     question_lock: Any = field(default_factory=threading.RLock)
 
@@ -763,7 +766,7 @@ def _prefix(app, messages):
         raise ValueError("Retained prefix is not a complete tool boundary")
 
 
-def _stable(app, review, *, original=False, admitted=False):
+def _stable(app, review, *, original=False, admitted=False, decision_only=False):
     if getattr(app, "_conversation_transition_cleanup_error", None):
         raise ValueError("Rewrite hook subprocess cleanup is unproven")
     if any(current is not prior for current, prior in zip(_objects(app), review.objects, strict=True)):
@@ -781,7 +784,10 @@ def _stable(app, review, *, original=False, admitted=False):
         raise ValueError("Rewrite acquired queued or uncertain input")
     if getattr(app, "_gui_quitting", False) or getattr(app, "_conversation_rewrite_closing", False):
         raise ValueError("Rewrite shutdown requested")
-    app._validate_owned_execution()
+    if decision_only:
+        app._validate_owned_identity()
+    else:
+        app._validate_owned_execution()
     if original and (app.conversation is not review.conversation or projection.encoded(app.conversation) != review.history
                      or native_history.capture_file(app.convo_path).raw != review.raw):
         raise ValueError("Rewrite history changed before publication")

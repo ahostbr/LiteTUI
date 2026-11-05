@@ -227,6 +227,7 @@ impl Management {
                 chain.rewind_thread = Some(plan.thread_id.clone());
             }
         }
+        chain.prewrite_allowed = prepared.review.prompt_hooks;
         self.rewrite_chain = Some(chain);
         self.rewrite_attempt = Some(Attempt {
             prepared,
@@ -427,6 +428,12 @@ impl Management {
                     || !chain.ended
                     || !chain.maintenance.is_empty()
                     || !chain.inputs.is_empty()
+                    || chain.prewrite_pending.is_some()
+                    || value
+                        .get("prewrite_approvals")
+                        .map_or(!chain.prewrite_decisions.is_empty(), |rows| {
+                            rows.as_array() != Some(&chain.prewrite_decisions)
+                        })
                 {
                     return Err(fail(
                         "Settled rewrite does not prove every observed execution retired",

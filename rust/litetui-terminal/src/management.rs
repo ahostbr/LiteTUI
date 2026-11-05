@@ -1428,6 +1428,7 @@ impl Management {
             return self.validate_rewrite_event(frame, event);
         }
         if matches!(kind, "rewrite_aftercare" | "compact_maintenance")
+            || event.get("rewrite_prewrite").is_some()
             || event.get("rewrite_segment").is_some()
             || event.get("compact_segment").is_some()
         {

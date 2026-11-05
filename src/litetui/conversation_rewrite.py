@@ -18,6 +18,7 @@ from litetui import (
     conversation_transition,
     hook_host,
     native_history,
+    rewrite_approval,
     seat_authority,
 )
 from litetui import history_projection as projection
@@ -288,7 +289,7 @@ async def apply(app, cmd):
         fields = (*REVIEW_FIELDS, "effects", "native_fork")
     if not _echo(cmd, wire, fields):
         raise ValueError("Apply must exactly echo its reviewed Edit/Retry action")
-    attempt = Attempt(review, operation, _task())
+    attempt = Attempt(review, operation, _task(), prewrite_enabled=cmd.get("prewrite_hook_approvals") is True)
     register_attempt(app, attempt)
     reasons: list[str] = []
     old_hook_snapshot = getattr(app, "_conversation_transition_hook_snapshot", None)
@@ -308,6 +309,7 @@ async def apply(app, cmd):
             reasons.clear()
 
             def persist(message):
+                rewrite_approval.verify_publication(app, attempt)
                 _stable(app, review, original=True, admitted=True)
                 expected = review.fork.candidate(wire["text"]) if isinstance(review, claude_rewind.Review) else {"role": "user", "content": wire["text"]}
                 if message != expected:
@@ -334,6 +336,7 @@ async def apply(app, cmd):
             item = {"content": wire["text"], "text": wire["text"], "source": "rpc",
                     "operation_id": operation, "tool_profile": review.profile}
             async def prepare_provider():
+                rewrite_approval.verify_publication(app, attempt)
                 if isinstance(review, claude_rewind.Review):
                     await review.fork.prepare(app, attempt, item, before_accept)
                 else:
@@ -368,7 +371,7 @@ async def apply(app, cmd):
         reason = (str(exc) or type(exc).__name__).encode("utf-8")[:4096].decode("utf-8", "ignore")
         if attempt.mutated and isinstance(review, claude_rewind.Review):
             reason = f"Claude Edit/Retry stopped while {review.fork.stage}: {reason}".encode("utf-8")[:4096].decode("utf-8", "ignore")
-        failed = attempt.mutated or bool(getattr(app, "_conversation_transition_cleanup_error", None))
+        failed = attempt.mutated or attempt.prewrite_audit_error or bool(getattr(app, "_conversation_transition_cleanup_error", None))
         if not failed:
             try:
                 with _scope(app, attempt, "admission"):
@@ -413,6 +416,13 @@ async def settled(app, cmd):
             "mutated": attempt.mutated, "close_required": False, "history": descriptor,
             "execution": {"segments": len(attempt.segments or ()),
                           "last_execution_id": attempt.segments[-1] if attempt.segments else None}}
+        if attempt.prewrite_approvals:
+            try:
+                result["prewrite_approvals"] = rewrite_approval.settled(app, attempt)
+            except (OSError, ValueError, RuntimeError):
+                attempt.outcome = "failed"
+                app._conversation_rewrite_error = CLOSE_REQUIRED
+                raise
         if isinstance(attempt.review, codex_rewind.Review):
             rewind = attempt.review.rewind
             if attempt.outcome == "accepted":

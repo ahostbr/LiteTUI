@@ -239,6 +239,36 @@ def test_prepublication_refusals_do_not_truncate_or_execute(tmp_path, case):
         assert report["hook_documents"] == report["interactive_events"] == []
 
 
+@pytest.mark.parametrize("case", ["allow", "deny", "cancel", "quit", "corrupt", "drift", "unbound", "timeout"])
+def test_prewrite_hook_requires_its_reviewed_one_shot_host_decision(tmp_path, case):
+    report = launch(tmp_path, "hooks-prewrite-" + case)
+    assert report["pending_original"] and report["before_decision_hook_count"] == 0
+    disk = dict(report["pending_disk"])
+    pending_paths = [key for key in disk if Path(key).name.startswith("rewrite-approval-")]
+    assert len(pending_paths) == 1 and pending_paths[0].endswith(".pending.json")
+    disk.pop(pending_paths[0])
+    assert disk == report["before_apply"]["disk"]
+    pending = report["pending_audit"]
+    assert pending["outcome"] == "pending" and pending["action_id"] == report["apply"]["action_id"]
+    assert len(report["interactive_events"]) == 1 and len(report["hook_documents"]) == int(case == "allow")
+    assert len(report["requests"]) == int(case == "allow")
+    if case == "allow":
+        assert report["apply"]["turn"] == "accepted" and report["settled"]["history"] == report["fresh"]
+    else:
+        assert not report["apply"]["mutated"] and report["original"] == report["durable"] == report["live"]
+    if case == "corrupt":
+        assert report["apply"]["close_required"]
+    elif case == "quit":
+        assert report["shutdown"]["hooks_settled"] and report["shutdown"]["admission_settled"]
+    else:
+        path = Path(report["transcript_path"]).parent
+        terminal = json.loads(next(path.glob("rewrite-approval-*.closed.json")).read_bytes())
+        assert terminal["outcome"] == {"allow": "approved", "deny": "denied", "cancel": "cancelled", "drift": "revoked", "unbound": "revoked", "timeout": "timeout"}[case]
+        assert {**terminal, "outcome": "pending"} == pending
+        assert report["settled"]["prewrite_approvals"] == [{"id": pending["approval_id"],
+            "execution_id": pending["execution_id"], "outcome": terminal["outcome"]}]
+
+
 @pytest.mark.parametrize("case", ["wrong-echo", "bool-version", "float-index", "superseded-review"])
 def test_changed_review_echo_is_a_protocol_refusal_without_effects(tmp_path, case):
     report = launch(tmp_path, case)

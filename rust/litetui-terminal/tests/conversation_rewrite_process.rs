@@ -473,6 +473,7 @@ fn report(root: &Path, case: &str) -> Value {
                     | "gui.conversations.native_rewrite_settled"
                     | "abort"
                     | "answer"
+                    | "approve"
                     | "shutdown"
             )
         )),
@@ -485,6 +486,9 @@ fn report(root: &Path, case: &str) -> Value {
         );
     }
     assert!(commands.iter().filter(|c| c["type"] == r::APPLY).count() <= 1);
+    if !case.starts_with("hooks-prewrite-") {
+        assert!(!commands.iter().any(|command| command["type"] == "approve"));
+    }
     if !case.contains("question-") {
         assert!(!commands.iter().any(|command| command["type"] == "answer"));
     }
@@ -696,6 +700,59 @@ fn f6_codex_rewind_discards_the_reviewed_suffix_and_verifies_one_native_replacem
         assert_eq!(
             evidence["durable"][5]["provider_metadata"]["app_server_user_item_id"],
             "replacement-user"
+        );
+    }
+}
+
+#[test]
+#[ignore = "controlled source hook and local provider response; dependency Python required"]
+fn f6_before_saving_hook_requires_one_owned_approval() {
+    for allow in [false, true] {
+        let case = if allow {
+            "hooks-prewrite-allow"
+        } else {
+            "hooks-prewrite-deny"
+        };
+        let (runtime, root) = launch(case);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = start(runtime, case)?;
+                let draft = editor(&app);
+                select(runtime, &mut app, r::Action::Edit)?;
+                validate(runtime, &mut app, Some(REPLACEMENT))?;
+                let request = apply(runtime, &mut app)?;
+                wait(runtime, &mut app, |event| {
+                    matches!(
+                        event,
+                        Observation::Approval(litetui_terminal::approvals::Event::Requested(_))
+                    )
+                })?;
+                assert!(app.has_live_approval());
+                assert!(draw(&mut app).contains("Before saving the reviewed edit/retry"));
+                let approvals = &mut app.live.as_mut().unwrap().approvals;
+                approvals.choose(allow);
+                runtime.approve(
+                    approvals
+                        .take_decision()
+                        .expect("visible prewrite hook approval"),
+                )?;
+                settle(runtime, &mut app, &request)?;
+                assert_eq!(editor(&app), draft);
+                runtime.quit()
+            })
+            .unwrap_or_else(|error| panic!("{case}: {error}; {}", root.display()));
+        let evidence = report(&root, case);
+        assert_eq!(
+            evidence["apply"]["turn"],
+            if allow { "accepted" } else { "refused" }
+        );
+        assert_eq!(
+            evidence["hook_documents"].as_array().unwrap().len(),
+            usize::from(allow)
+        );
+        assert_eq!(
+            evidence["requests"].as_array().unwrap().len(),
+            usize::from(allow)
         );
     }
 }

@@ -874,9 +874,9 @@ fn refusal_checkpoint_requires_owned_materialized_descriptor_and_nonrefusals_exp
 }
 
 #[test]
-fn review_explains_prewrite_hook_approval_refusal_without_disabling_turn_approvals() {
+fn review_explains_the_one_shot_prewrite_hook_decision() {
     let mut view = reviewed();
     let text = draw(&mut view, 140, 50);
-    assert!(text.contains("Hooks that need a new approval will refuse this edit/retry."));
-    assert!(text.contains("Approvals during the new turn remain available."));
+    assert!(text.contains("Hooks that need approval will ask before saving."));
+    assert!(text.contains("Each approval applies once to this edit/retry."));
 }

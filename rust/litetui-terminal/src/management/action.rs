@@ -15,6 +15,10 @@ pub(super) struct Chain {
     root_bound: bool,
     root_origin: Option<Origin>,
     wake_allowed: bool,
+    pub(super) prewrite_allowed: bool,
+    pub(super) prewrite_decisions: Vec<Value>,
+    prewrite_refused: bool,
+    pub(super) prewrite_pending: Option<(String, ExecutionId, Origin)>,
     pub(super) rewind_thread: Option<String>,
     pub(super) rewind_turn: Option<String>,
     pub(super) fork_source: Option<String>,
@@ -40,6 +44,10 @@ impl Chain {
             root_bound: false,
             root_origin: None,
             wake_allowed: false,
+            prewrite_allowed: false,
+            prewrite_decisions: Vec::new(),
+            prewrite_refused: false,
+            prewrite_pending: None,
             rewind_thread: None,
             rewind_turn: None,
             fork_source: None,
@@ -132,6 +140,46 @@ impl Chain {
                 "Execution metadata belongs to another reviewed action family",
             ));
         }
+        if let Some(marker) = event.get("rewrite_prewrite") {
+            let expected = json!({"session_id":origin.session,"operation_id":chain.operation,
+                "action_id":chain.action,"execution_id":execution.as_str()});
+            if compact
+                || !chain.prewrite_allowed
+                || chain.segments != 0
+                || marker != &expected
+                || crate::stream::required_uuid4(frame, "hook_id").is_err()
+            {
+                return Err(fail("Approval belongs to a different prewrite action"));
+            }
+            let request = (text(event, "id", 128)?.to_owned(), execution, origin);
+            match kind {
+                "tool_approval_requested"
+                    if chain.prewrite_pending.is_none()
+                        && !chain.prewrite_refused
+                        && chain.prewrite_decisions.len() < 32
+                        && executions.len() < 1000
+                        && executions.insert(request.1.as_str().to_owned()) =>
+                {
+                    chain.prewrite_pending = Some(request);
+                }
+                "tool_approval_closed" if chain.prewrite_pending.as_ref() == Some(&request) => {
+                    chain.prewrite_refused =
+                        event["outcome"] != "approved" || event["reason"] != "answered";
+                    chain
+                        .prewrite_decisions
+                        .push(json!({"id":request.0,"execution_id":request.1.as_str(),
+                        "outcome":event["outcome"]}));
+                    chain.prewrite_pending = None;
+                }
+                _ => return Err(fail("Unexpected or replayed prewrite approval")),
+            }
+            return Ok(());
+        }
+        if chain.prewrite_pending.is_some() {
+            return Err(fail(
+                "Execution arrived before the prewrite approval closed",
+            ));
+        }
         if kind == maintenance_kind {
             let id = crate::stream::required_uuid4(event, "aftercare_id")
                 .map_err(|_| fail("Invalid maintenance identity"))?;
@@ -198,6 +246,11 @@ impl Chain {
             return Ok(());
         }
         if kind == "turn_start" {
+            if chain.prewrite_refused {
+                return Err(fail(
+                    "Rewrite execution started after a prewrite approval refusal",
+                ));
+            }
             let segment = &event[segment_kind];
             let previous = chain
                 .last_execution

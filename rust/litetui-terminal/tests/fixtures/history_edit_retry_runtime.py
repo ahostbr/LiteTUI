@@ -105,6 +105,12 @@ def snapshot_records(app):
 def seed(app):
     global readonly_target
     from litetui import codex_steering, store_identity
+    if case.startswith("hooks-prewrite-"):
+        app._approval_host = True
+        if case == "hooks-prewrite-timeout":
+            os.environ["LITETUI_APPROVAL_TIMEOUT_S"] = "1.5"
+    elif case == "hooks-approval":
+        app._approval_host = True
     if case in AFTERCARE:
         assert "/compact" in app.plugins.commands
     app.conversation = [
@@ -202,7 +208,7 @@ def prepare_hooks():
     os.environ["LITETUI_HOOKS"] = "on"
     hook = Hook("rewrite-check", ("prompt_before",), "rewrite-fixture-hook", ("check",), mode="gate")
     (history.root / "hooks.json").write_text(json.dumps({"version": 1, "hooks": [hook.document()]}), encoding="utf-8")
-    if case != "hooks-approval":
+    if case != "hooks-approval" and not case.startswith("hooks-prewrite-"):
         path = history.root / "settings.json"
         settings = json.loads(path.read_text(encoding="utf-8"))
         workspace = Path.cwd().resolve()
@@ -596,6 +602,49 @@ async def serve(app):
             assert newer["review"] != review["review"] and newer["action_id"] != review["action_id"]
         history.report["before_apply"] = stable(app)
         history.report["baseline_live"] = copy.deepcopy(app.conversation)
+        if case.startswith("hooks-prewrite-"):
+            payload["prewrite_hook_approvals"] = True
+            task = asyncio.create_task(call(APPLY, check=False, **payload))
+            request = await until(lambda: next((row["event"] for row in history.boundary.records
+                if row.get("type") == "gui.event" and row["event"]["type"] == "tool_approval_requested"), None)
+                or (task.result() if task.done() else None), 20)
+            assert "rewrite_prewrite" in request, request
+            marker = request["rewrite_prewrite"]
+            ident = request["id"]
+            history.report["pending_original"] = app.conversation == history.report["original"]
+            history.report["pending_disk"] = stable(app)["disk"]
+            history.report["before_decision_hook_count"] = len(hook_documents)
+            pending = next(app.convo_dir.glob("rewrite-approval-*.pending.json"))
+            history.report["pending_audit"] = json.loads(pending.read_bytes())
+            kwargs = {"approval_id": ident, "allow": case != "hooks-prewrite-deny"}
+            for extra in ({}, {"rewrite_prewrite": {**marker, "action_id": "other"}},
+                          {"rewrite_prewrite": marker, "remember": True}):
+                assert not (await call("approve", check=False, **kwargs, **extra))["ok"]
+            if case == "hooks-prewrite-unbound":
+                # Another legacy shutdown path can resolve a registered future directly.
+                # A bare future result has no scoped durable decision.
+                from litetui import tool_approval
+                app._approval_waiters[ident].set_result(tool_approval.ONCE)
+            elif case == "hooks-prewrite-timeout":
+                pass  # The host leaves this request unanswered.
+            elif case == "hooks-prewrite-cancel":
+                assert (await call("abort"))["result"]["stopped"]
+            elif case == "hooks-prewrite-quit":
+                rpc._dispatch(app, {"type": "shutdown", "id": "rewrite-shutdown"})
+                await asyncio.wait_for(exited.wait(), 20)
+                history.report["shutdown"] = app._conversation_rewrite_shutdown_task.result()
+                history.report["apply"] = (await task)["result"]
+                return
+            else:
+                if case == "hooks-prewrite-corrupt":
+                    pending.write_bytes(b"{}")
+                if case == "hooks-prewrite-drift":
+                    app.settings.max_tokens_chat += 1
+                ack = await call("approve", check=False, **kwargs, rewrite_prewrite=marker)
+                assert ack["ok"] == (case not in {"hooks-prewrite-corrupt", "hooks-prewrite-drift"}), ack
+                assert not (await call("approve", check=False, **kwargs, rewrite_prewrite=marker))["ok"]
+            await finish_attempt(await task, common)
+            return
         if QUESTION:
             if case.startswith("eof-"):
                 reader_start()
@@ -707,6 +756,11 @@ async def serve(app):
             assert stable(app) == before
 
     with ExitStack() as stack:
+        if case == "hooks-approval":
+            # Work retains its reviewed host route. A second eligible decider
+            # makes the local-only prewrite confirmation unavailable.
+            from litetui import approval_relay
+            stack.enter_context(patch.object(approval_relay, "current_spawner", return_value="fixture-spawner"))
         stack.enter_context(patch.object(app, "exit", exit_app))
         stack.enter_context(patch.object(app.store, "release", release))
         stack.enter_context(patch.object(LiteTUI, "run_worker", launched))

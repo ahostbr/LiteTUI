@@ -119,8 +119,10 @@ impl Request {
 struct Record {
     id: String,
     closed: bool,
+    prewrite: Option<Value>,
     command: Option<(String, bool)>,
     acknowledged: bool,
+    accepted: bool,
 }
 #[derive(Default)]
 pub struct Ledger {
@@ -140,8 +142,10 @@ impl Ledger {
         self.records.push(Record {
             id: request.id.clone(),
             closed: false,
+            prewrite: event.get("rewrite_prewrite").cloned(),
             command: None,
             acknowledged: false,
+            accepted: false,
         });
         Ok(Event::Requested(request))
     }
@@ -177,6 +181,18 @@ impl Ledger {
             .iter_mut()
             .find(|r| r.id == id && !r.closed)
             .ok_or_else(|| fail("Unknown or already closed approval"))?;
+        if record.prewrite.as_ref() != event.get("rewrite_prewrite") {
+            return Err(fail("Approval closure changed its reviewed action"));
+        }
+        if record.prewrite.is_some()
+            && let Some(decision @ ("approved" | "denied")) = outcome.as_deref()
+            && (!record.accepted
+                || record.command.as_ref().map(|item| item.1) != Some(decision == "approved"))
+        {
+            return Err(fail(
+                "Prewrite approval closed without its accepted host decision",
+            ));
+        }
         record.closed = true;
         Ok(Event::Closed {
             id,
@@ -204,10 +220,12 @@ impl Ledger {
             command.push_str("-command");
         }
         record.command = Some((command.clone(), decision.allow));
-        Ok(Some(
-            json!({"type":"approve", "id":command, "approval_id":decision.id,
-                       "allow":decision.allow, "remember":false}),
-        ))
+        let mut value = json!({"type":"approve", "id":command, "approval_id":decision.id,
+                               "allow":decision.allow, "remember":false});
+        if let Some(marker) = &record.prewrite {
+            value["rewrite_prewrite"] = marker.clone();
+        }
+        Ok(Some(value))
     }
     pub fn response(&mut self, event: &Value) -> io::Result<Option<Event>> {
         let Some(record) = self
@@ -238,6 +256,7 @@ impl Ledger {
             _ => return Err(fail("Malformed approval command response")),
         };
         record.acknowledged = true;
+        record.accepted = accepted;
         Ok(Some(Event::Acknowledged {
             id: record.id.clone(),
             accepted,

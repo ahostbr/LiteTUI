@@ -312,7 +312,7 @@ def _approval_registry(app) -> dict:
     return reg
 
 
-def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False) -> bool:
+def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False, *, rewrite_prewrite=None) -> bool:
     """Answer a pending wire approval. False when the id is unknown or done.
 
     AN UNKNOWN ID IS AN ERROR AT THE CALLER, NOT A NO-OP HERE -- the same
@@ -321,6 +321,10 @@ def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False)
     believing it approved something that is still waiting, or worse, still
     waiting on something that already denied and ended the turn.
     """
+    from litetui import rewrite_approval
+    scoped = rewrite_approval.resolve(app, approval_id, rewrite_prewrite, allow, remember)
+    if scoped is not None:
+        return scoped
     fut = _approval_registry(app).get(approval_id)
     if fut is None or fut.done():
         return False

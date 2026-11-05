@@ -566,6 +566,7 @@ impl Review {
         v["text_sha256"] = json!(self.text_sha256);
         v["prepared_context_sha256"] = json!(self.prepared_context_sha256);
         v["prepared_messages"] = json!(self.prepared_messages);
+        v["prewrite_hook_approvals"] = json!(self.prompt_hooks);
         v["prefix_context_sha256"] = json!(self.before.prefix_context_sha256);
         v["prefix_messages"] = json!(self.before.selection.message_index);
         v["discarded_messages"] = json!(self.before.discarded_messages);
@@ -1273,7 +1274,7 @@ impl View {
                 review.before.discarded_messages,
                 review.prompt_hooks,
                 if review.prompt_hooks {
-                    "Hooks that need a new approval will refuse this edit/retry. Approvals during the new turn remain available.\n"
+                    "Hooks that need approval will ask before saving. Each approval applies once to this edit/retry. An unavailable decider will refuse the action.\n"
                 } else {
                     ""
                 },

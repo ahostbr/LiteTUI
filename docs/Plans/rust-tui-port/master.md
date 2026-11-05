@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Review sample hooks and prewrite approvals - 2026-11-04
+
+The F1 Hooks view can test an existing command with one reviewed sample event when normal command policy allows it. The receipt shows outcome, output sizes, truncation and whether the owned process exited. A timeout now waits on the original process handle after a verified termination. F6 Edit and Retry can ask for a one-time owned-terminal decision before publishing the replacement. The receipt records the exact request beside the conversation and is read back before settlement.
+
+The integrated checkout passed 975 ordinary Rust tests, strict Clippy, formatting, 37 hook tests and 19 history source cases. Five packaged process groups exercised sample execution, hook toggles, both prewrite decisions, and native Claude and Codex replacements. The launcher verified 374 payload files. Two older spawner test failures reproduced separately on the pre-change source.
+
 ## F12 second-instance confirmation and connect-only attachment - 2026-11-04
 
 Start identifies another local LiteTUI by process ID and creation time and asks for a separate confirmation. Reconnect (A) displays the exact loopback endpoint and requested model. Its metadata reads stay on that host and port and independently confirm the loaded model and client binding. Quit joins a pending metadata read.

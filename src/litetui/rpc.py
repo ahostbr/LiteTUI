@@ -320,6 +320,7 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         ok = approval_mod.resolve_over_rpc(
             app, approval_id, cmd["allow"],
             cmd.get("remember", False),
+            **({"rewrite_prewrite": cmd["rewrite_prewrite"]} if "rewrite_prewrite" in cmd else {}),
         )
         if ok:
             _respond(cmd_id, ok=True,

@@ -3184,7 +3184,7 @@ class LiteTUI(App):
         return bool(answer)
 
     @native_runtime_controls.tool_authorization
-    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False):
+    async def _authorize_action(self, name, args, policy, *, profile=None, workspace=None, allow_prompt=True, stop_on_denial=True, hook_test=False, prewrite=None):
         """Shared policy and approval door for tools and hook processes."""
         # T1085: FIRST, before evaluate, the floor, the relay and the modal. Only
         # Owner's own seat may directly write a data root's jobs.json; ownership is
@@ -3243,6 +3243,11 @@ class LiteTUI(App):
                 stood_in = False
             if stood_in:
                 return None
+            if prewrite is not None:
+                from litetui import rewrite_approval
+                if not rewrite_approval.route_allowed(self, route):
+                    self._stop_requested = True
+                    return tool_denied("profile", name=name, reason="Reviewed hook requires an eligible one-shot host decider"), False
             if route in ("spawner", "refuse"):
                 status = ("no_spawner" if route == "refuse" else
                           await approval_relay.ask_spawner(self, name, args, decision, source))
@@ -3284,9 +3289,10 @@ class LiteTUI(App):
             if self._rpc:
                 wait_token = self._begin_wait("host", "approval")
                 try:
-                    answer = await tool_approval.approve_over_rpc(
-                        self, name, args, decision
-                    )
+                    if prewrite is not None:
+                        answer = await rewrite_approval.ask(self, prewrite, route, name, args, decision)
+                    else:
+                        answer = await tool_approval.approve_over_rpc(self, name, args, decision)
                 finally:
                     self._end_wait(wait_token)
                 # None is NOT DENIED. See approve_over_rpc: one is a person
