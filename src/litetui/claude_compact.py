@@ -176,7 +176,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 # its callbacks need an owned turn like any Work turn, but there is no execution to attribute
                 # an approval to, so the bridge refuses those in words instead (claude_tools.UNATTENDED_*).
                 tool_turn = bridge.bind_turn(None, unattended=True)
-
+            if tool_turn is not None:
                 async def watch_stop():
                     # A tool approval can block the stream with nothing arriving to notice Stop.
                     while True:

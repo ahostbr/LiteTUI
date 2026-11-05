@@ -404,6 +404,50 @@ async def test_under_work_the_real_bridge_allows_the_store_write_and_refuses_wha
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reviewed_run", [True, False])
+async def test_stop_reaches_a_summary_turn_blocked_on_a_tool_approval(tmp_path, monkeypatch, reviewed_run):
+    """A tool approval can block the stream with nothing arriving to notice Stop; the watcher must interrupt.
+
+    A reviewed tools-on compaction and an unreviewed Work one both bind a tool turn, so both need it
+    (the watcher once sat inside only the unreviewed branch)."""
+    from litetui import native_runtime_controls as controls
+
+    monkeypatch.setattr(controls, "enabled", lambda app: not reviewed_run)
+    interrupted = asyncio.Event()
+
+    async def blocked_on_approval():
+        app._stop_requested = True  # the user pressed Stop while the approval is on screen
+        await asyncio.wait_for(interrupted.wait(), 2)  # nothing else will ever arrive
+
+    app, _ = app_for(tmp_path, [blocked_on_approval, *summary_events()], monkeypatch=monkeypatch)
+    session = app.backend.session
+
+    async def interrupt():
+        interrupted.set()
+    session.interrupt = interrupt
+    stopped = []
+    bridge = app.backend._claude_tools = SimpleNamespace(
+        cancelled=SimpleNamespace(clear=lambda: None), stop=lambda: stopped.append("stop"),
+        bind_turn=lambda origin, unattended=False: "turn", completed=lambda turn, tool_id: None,
+        finish_turn=lambda turn: stopped.append("finish"), bind_host_lane=lambda turn, disclosed: None)
+    before = ledger_for(app).selected["id"]
+    reviewed = None
+    if reviewed_run:
+        reviewed = SimpleNamespace(
+            binding=SimpleNamespace(tool_work=True, host_tools={}, session=session, check=lambda app: None),
+            origin=object(), tool=lambda event: None, terminal=lambda raw, event: None)
+    if reviewed_run:
+        with pytest.raises(ValueError):
+            await claude_compact.compact(app, "", reviewed=reviewed)
+    else:
+        await claude_compact.compact(app, "", auto=True)
+    assert interrupted.is_set(), "Stop never reached the blocked summary turn"
+    assert stopped[0] == "stop" and stopped[-1] == "finish" and bridge
+    assert ledger_for(app).selected["id"] == before and app.backend.closes == 0
+    assert not app.truncated, "a stopped compaction replaces nothing"
+
+
+@pytest.mark.asyncio
 async def test_without_the_work_frontend_the_summary_turn_binds_nothing(tmp_path, monkeypatch):
     from litetui import native_runtime_controls as controls
 
