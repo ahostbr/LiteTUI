@@ -157,6 +157,10 @@ pub struct Chat {
     pub compact: crate::conversation_compact::View,
     compact_active: bool,
     pub prior_context_rows: usize,
+    /// `/clear-screen`: rows before this index and the named saved-history
+    /// block are not drawn. History, provider state and the rows are untouched.
+    pub screen_cleared_rows: usize,
+    pub screen_cleared_history: Option<String>,
     rewrite_pending: bool,
     rewrite_old_cost: Option<(usize, usize)>,
     rewrite_start_row: Option<usize>,
@@ -224,6 +228,8 @@ impl Chat {
             compact: crate::conversation_compact::View::default(),
             compact_active: false,
             prior_context_rows: 0,
+            screen_cleared_rows: 0,
+            screen_cleared_history: None,
             rewrite_pending: false,
             rewrite_old_cost: None,
             rewrite_start_row: None,
@@ -818,6 +824,8 @@ impl Chat {
         self.forwarded_row = None;
         self.work_uncertain.clear();
         self.prior_context_rows = 0;
+        self.screen_cleared_rows = 0;
+        self.screen_cleared_history = None;
         self.recovered_inputs.clear();
         self.submission_id = None;
         self.stop_requests = 0;
@@ -995,6 +1003,7 @@ impl Chat {
                     self.rows.drain(..start);
                     self.rebase_operation_rows(start);
                     self.prior_context_rows = 0;
+                    self.screen_cleared_rows = self.screen_cleared_rows.saturating_sub(start);
                     self.recovered_inputs.clear();
                     let (bytes, units) = self
                         .rewrite_old_cost
@@ -1107,6 +1116,7 @@ impl Chat {
                     self.rows.drain(..start);
                     self.rebase_operation_rows(start);
                     self.prior_context_rows = 0;
+                    self.screen_cleared_rows = self.screen_cleared_rows.saturating_sub(start);
                     self.recovered_inputs.clear();
                     let (bytes, units) = self
                         .rewrite_old_cost
@@ -2443,6 +2453,30 @@ impl Chat {
             row.state = ReplyState::Streaming;
         }
         self.notice = "Native tool observation (not an approval or dispatch)".into();
+        Ok(())
+    }
+    /// `/clear-screen`: hide what is drawn so far. Like the source command it
+    /// never touches the conversation, saved history or provider state, so it
+    /// is refused while any turn or review could still address a hidden row.
+    pub fn clear_screen(&mut self) -> Result<(), &'static str> {
+        if !self.ready
+            || self.busy
+            || self.closed
+            || self.quitting
+            || self.pending.is_some()
+            || self.queue_pending
+            || self.rewrite_pending
+            || self.compact_active
+            || self.engine.pending()
+            || self.execution_pending()
+            || self.cancelling()
+            || !self.approvals.is_empty()
+            || !self.questions.is_empty()
+        {
+            return Err("Finish current work before clearing the screen. Nothing was cleared.");
+        }
+        self.screen_cleared_rows = self.rows.len();
+        self.screen_cleared_history = self.history.as_ref().map(|h| h.session.clone());
         Ok(())
     }
     pub fn begin_quit(&mut self) {

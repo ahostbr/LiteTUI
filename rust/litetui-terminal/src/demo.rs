@@ -45,6 +45,7 @@ pub struct Demo {
     pub themes_open: bool,
     pub theme_query: String,
     pub theme_cursor: usize,
+    pub help: crate::help_view::View,
 }
 
 impl Default for Demo {
@@ -61,6 +62,7 @@ impl Default for Demo {
             themes_open: false,
             theme_query: String::new(),
             theme_cursor: 0,
+            help: Default::default(),
             tools: vec![
                 Tool {
                     name: "grep",
@@ -167,6 +169,7 @@ impl Demo {
                 }
         ) {
             self.themes_open = false;
+            self.help.close();
             self.completion.dismiss();
             self.footer.leave();
             if let Some(chat) = self.live.as_mut() {
@@ -275,10 +278,20 @@ impl Demo {
                 }
                 Action::ChatPause => self.open_chat_pause(),
                 Action::Glassbox => self.open_glassbox(&route_arguments),
-                Action::Models => self.open_models(crate::model_controls::Kind::Model),
-                Action::Thinking => self.open_models(crate::model_controls::Kind::Thinking),
-                Action::Backend => self.open_backend(),
+                Action::Models => self
+                    .open_models_preselected(crate::model_controls::Kind::Model, &route_arguments),
+                Action::Thinking => self.open_models_preselected(
+                    crate::model_controls::Kind::Thinking,
+                    &route_arguments,
+                ),
+                Action::Backend => self.open_backend_preselected(&route_arguments),
                 Action::Conversations => self.open_browser(),
+                Action::ConversationResume => self.open_resume(&route_arguments),
+                Action::Claude => self.open_claude(&route_arguments)?,
+                Action::Mcp => self.open_mcp(&route_arguments),
+                Action::Help => self.open_help(false),
+                Action::Keys => self.open_help(true),
+                Action::ClearScreen => self.clear_screen(),
                 Action::Settings => self.open_settings(),
                 Action::Themes => self.open_themes(),
                 Action::ConversationNew => {
@@ -817,7 +830,8 @@ impl Demo {
         }
     }
     pub fn has_live_input(&self) -> bool {
-        self.has_live_runtime_controls()
+        self.help.open
+            || self.has_live_runtime_controls()
             || self.has_live_engine()
             || self.has_live_commands()
             || self.has_live_themes()

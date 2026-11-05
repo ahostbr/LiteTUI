@@ -111,7 +111,8 @@ async def test_alias_collapse_shadowing_distinct_orders_and_callback_only_rows(c
     assert settings["tokens"] == ["/settings", "/prefs"]
     assert {row["title"] for row in rows if row["kind"] == "skill"
             and row["completion_order"] is None} == {"prefs", "SETTINGS"}
-    assert all(row["accepts_arguments"] == (row["kind"] == "skill") for row in rows)
+    assert all(row["accepts_arguments"] == (row["kind"] == "skill" or row["native_action"] == "models")
+               for row in rows)
     for row in rows:
         if row["native_action"] is None:
             with pytest.raises(ValueError, match="adapter"):
@@ -421,3 +422,131 @@ async def test_control_adapters_require_exact_source_registry_owner(command_app,
     with pytest.raises(ValueError, match="no native action adapter"):
         command_surface.resolve(app, {"session_id": app.convo_id, "version": 1,
             "agent_id": catalog["agent_id"], "snapshot": catalog["snapshot"], "command": token})
+
+
+def raw_request(app, **extra):
+    catalog = read(app)
+    base = {k: v for k, v in selection(app, catalog).items() if k != "row_id"}
+    return {**base, **extra}
+
+
+@pytest.mark.asyncio
+async def test_argument_routes_only_preselect_and_refuse_what_the_control_cannot_honor(command_app):
+    from litetui.thinking_capabilities import thinking_capabilities
+
+    app = command_app
+    app.available_models = ["fixture-model", "second-model"]
+    levels = thinking_capabilities(app)["levels"]
+    backends = [name for name, _label in command_surface.llm_backend.visible_backends()]
+    prefix = app.convo_id[:8]
+    before = tree(app)
+    cases = [
+        ("/model 2", "models", "2"), ("/models second-model", "models", "second-model"),
+        ("/model", "models", ""), ("/think unset", "thinking", "unset"),
+        ("/thinking DEFAULT", "thinking", "DEFAULT"), (f"/backend {backends[-1].upper()}", "backend", backends[-1].upper()),
+        ("/backend", "backend", ""), (f"/resume {prefix}", "conversation_resume", prefix),
+        (f"/resume {app.convo_id}", "conversation_resume", app.convo_id), ("/resume", "conversation_resume", ""),
+        ("/convos", "conversations", ""),
+    ] + [(f"/think {level}", "thinking", level) for level in levels if level != "default"]
+    for command, action, arguments in cases:
+        route = command_surface.resolve(app, raw_request(app, command=command))
+        assert (route["native_action"], route["arguments"]) == (action, arguments), command
+    for command, reason in [
+        ("/model 0", "Use 1-2"), ("/model 3", "Use 1-2"), ("/model missing-model", "not found"),
+        ("/think extreme", "not offered"), ("/think very high", "not offered"),
+        ("/backend --default codex", "--default"), ("/backend nonsense", "must be one of"),
+        ("/backend codex claude", "must be one of"),
+        ("/resume 1", "numeric"), ("/resume NOT-HEX", "lowercase"), ("/resume ffffffff", "No conversation matches"),
+        ("/convos 1", "arguments"),
+        ("/tools list", "/tools takes no arguments"), ("/reconnect now", "/reconnect takes no arguments"),
+        ("/settings theme", "/settings takes no arguments"),
+    ]:
+        with pytest.raises(ValueError, match=reason):
+            command_surface.resolve(app, raw_request(app, command=command))
+    rows = {row["tokens"][0]: row for row in read(app)["entries"] if row["kind"] == "command"}
+    assert all(rows[token]["accepts_arguments"] for token in ("/model", "/think", "/backend", "/resume"))
+    assert not any(rows[token]["accepts_arguments"] for token in ("/tools", "/reconnect", "/settings", "/convos"))
+    assert tree(app) == before
+
+
+@pytest.mark.asyncio
+async def test_resume_argument_refuses_ambiguous_and_blocked_catalogs_without_choosing_one(command_app, monkeypatch):
+    from litetui import storage_catalog
+
+    app = command_app
+    first = SimpleNamespace(conversation_id="abcdef00-0000-4000-8000-000000000001")
+    second = SimpleNamespace(conversation_id="abcdef00-0000-4000-8000-000000000002")
+    monkeypatch.setattr(storage_catalog, "conversations", lambda *_a, **_k: [first, second])
+    with pytest.raises(ValueError, match="matches 2 conversations"):
+        command_surface.resolve(app, raw_request(app, command="/resume abcdef"))
+    assert command_surface.resolve(app, raw_request(app, command=f"/resume {first.conversation_id}"))[
+        "arguments"] == first.conversation_id
+    monkeypatch.setattr(storage_catalog, "conversations", lambda *_a, **_k: (_ for _ in ()).throw(OSError("denied")))
+    with pytest.raises(ValueError, match="Agent conversations blocked: denied"):
+        command_surface.resolve(app, raw_request(app, command="/resume abcdef"))
+
+
+@pytest.mark.asyncio
+async def test_claude_routes_require_the_claude_backend(command_app):
+    app = command_app
+    for command in ("/claude", "/claude resolve"):
+        with pytest.raises(ValueError, match="requires /backend claude"):
+            command_surface.resolve(app, raw_request(app, command=command))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_app", [("claude", False)], indirect=True)
+async def test_claude_routes_accept_only_known_verbs_on_the_claude_backend(command_app):
+    app = command_app
+    for command, arguments in (("/claude", ""), ("/claude STATUS", "STATUS"), ("/claude resolve", "resolve"),
+                               ("/claude continue", "continue"), ("/claude new", "new")):
+        route = command_surface.resolve(app, raw_request(app, command=command))
+        assert (route["native_action"], route["arguments"]) == ("claude", arguments)
+    with pytest.raises(ValueError, match="status | resolve | continue | new"):
+        command_surface.resolve(app, raw_request(app, command="/claude replay"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_app", [("custom", False)], indirect=True)
+async def test_help_keys_mcp_and_clear_screen_route_to_native_views_with_inspection_arguments_only(command_app):
+    app = command_app
+    before = tree(app)
+    for command, action, arguments in (
+            ("/help", "help", ""), ("/?", "help", ""), ("/keys", "keys", ""),
+            ("/mcp", "mcp", ""), ("/MCP List", "mcp", "List"), ("/mcp ls", "mcp", "ls"), ("/mcp status", "mcp", "status"),
+            ("/clear-screen", "clear_screen", ""), ("/cls", "clear_screen", ""), ("/clearscreen", "clear_screen", "")):
+        route = command_surface.resolve(app, raw_request(app, command=command))
+        assert (route["native_action"], route["arguments"]) == (action, arguments), command
+    for command, reason in (
+            ("/help me", "/help takes no arguments"), ("/keys all", "/keys takes no arguments"),
+            ("/cls now", "/clear-screen takes no arguments"),
+            ("/mcp add x y", "list only"), ("/mcp remove x", "list only"), ("/mcp reconnect x", "list only"),
+            ("/mcp reload", "list only")):
+        with pytest.raises(ValueError, match=reason):
+            command_surface.resolve(app, raw_request(app, command=command))
+    assert tree(app) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_app", [("custom", False)], indirect=True)
+async def test_every_unrouted_registered_command_states_its_own_reason(command_app):
+    app = command_app
+    rows = [row for row in read(app)["entries"] if row["native_action"] is None]
+    reasons = {row["tokens"][0]: row["unavailable_reason"] for row in rows}
+    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/monitor", "/sidecar", "/mark",
+                            "/modelcfg", "/system", "/subagent-set", "/subagent-global"}
+    assert len(set(reasons.values())) >= 8
+    for token in ("/screenshot", "/maximize", "/test-sidebar"):
+        assert "Textual" in reasons[token]
+    for token in ("/monitor", "/sidecar", "/mark"):
+        assert "desktop overlay" in reasons[token]
+    assert "no native action adapter" not in "".join(reasons.values())
+    for row in rows:
+        with pytest.raises(ValueError) as refusal:
+            command_surface.resolve(app, raw_request(app, command=row["tokens"][0]))
+        assert str(refusal.value) == row["unavailable_reason"]
+    # Only the exact reviewed owner inherits a reason; a lookalike gets the generic one.
+    registry = plugins.PluginRegistry()
+    registry.add_command("third-party", ("/screenshot",), forbidden)
+    app.plugins, app.skills = registry, []
+    assert "no native action adapter" in read(app)["entries"][0]["unavailable_reason"]

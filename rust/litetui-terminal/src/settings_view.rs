@@ -221,6 +221,7 @@ pub struct View {
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
     mcp_lifecycle: crate::mcp_lifecycle::View,
+    mcp_read_only: bool,
     model_preferences: crate::model_preferences::View,
     model_lifecycle: crate::model_lifecycle::View,
     voice: crate::voice_preferences::View,
@@ -261,6 +262,21 @@ impl View {
             Some(action) => crate::glassbox_controls::Request::Review(action.into()),
             None => crate::glassbox_controls::Request::Snapshot,
         })));
+    }
+    /// `/mcp` opens the same declarations panel as `M`; `list` keeps it inspection-only.
+    pub(crate) fn open_mcp(&mut self, read_only: bool) {
+        self.hide();
+        self.mcp.open();
+        self.mcp_read_only = read_only;
+        self.waiting = true;
+        self.intent = Some(Intent::Mcp(Box::new(crate::mcp_config::Request::List)));
+    }
+    /// `/claude status` shows the read-only runtime inspector, as `I` does.
+    pub(crate) fn open_runtime_status(&mut self) {
+        self.hide();
+        self.runtime_status.open();
+        self.waiting = true;
+        self.intent = Some(Intent::RuntimeStatus);
     }
     pub(crate) fn open_model_lifecycle(&mut self, action: Option<(&str, &str)>) {
         self.model_lifecycle.open();
@@ -317,6 +333,7 @@ impl View {
     pub fn close(&mut self) {
         self.glassbox = Default::default();
         self.mcp = Default::default();
+        self.mcp_read_only = false;
         self.mcp_lifecycle.close();
         self.model_preferences = Default::default();
         self.model_lifecycle = Default::default();
@@ -496,6 +513,15 @@ impl View {
             return;
         }
         if self.mcp.open {
+            // `/mcp list`: refresh, scroll and leave only; no review or runtime tab.
+            if self.mcp_read_only
+                && !matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Up | KeyCode::Down | KeyCode::F(5)
+                )
+            {
+                return;
+            }
             if key.kind == KeyEventKind::Press
                 && key.modifiers.is_empty()
                 && key.code == KeyCode::Tab
@@ -580,6 +606,7 @@ impl View {
             }
             KeyCode::Char('m') if key.kind == KeyEventKind::Press => {
                 self.mcp.open();
+                self.mcp_read_only = false;
                 self.waiting = true;
                 self.intent = Some(Intent::Mcp(Box::new(crate::mcp_config::Request::List)));
                 self.hide();

@@ -223,6 +223,7 @@ pub struct View {
     review_visible: bool,
     confirm_offset: usize,
     confirm_page: usize,
+    preselect: Option<String>,
 }
 impl Default for View {
     fn default() -> Self {
@@ -245,16 +246,25 @@ impl Default for View {
             review_visible: false,
             confirm_offset: 0,
             confirm_page: 1,
+            preselect: None,
         }
     }
 }
 impl View {
+    /// A command argument only moves the row cursor once the catalogue arrives.
+    /// The model is still typed, reviewed and confirmed in the normal flow.
+    pub fn preselect(&mut self, wanted: &str) {
+        if self.open && self.waiting && !wanted.trim().is_empty() {
+            self.preselect = Some(wanted.trim().to_ascii_lowercase());
+        }
+    }
     pub fn open(&mut self) {
         if self.waiting {
             return;
         }
         self.open = true;
         self.waiting = true;
+        self.preselect = None;
         self.catalog = None;
         self.intent = Some(Intent::Read);
         self.pending = None;
@@ -269,6 +279,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.preselect = None;
         self.hide();
         if self.intent.take().is_some() {
             self.waiting = false;
@@ -337,11 +348,27 @@ impl View {
         match update {
             Update::Catalog(catalog) => {
                 self.selected = catalog.entries.iter().position(|r| r.selected).unwrap_or(0);
+                self.notice = "Metadata only; choose a backend and enter an explicit model.".into();
+                if let Some(wanted) = self.preselect.take() {
+                    match catalog.entries.iter().position(|r| r.name == wanted) {
+                        Some(index) => {
+                            self.selected = index;
+                            self.notice = format!(
+                                "Command argument selected {wanted}. Press Enter to type a model; nothing is switched until you review and confirm."
+                            );
+                        }
+                        None => {
+                            self.notice = format!(
+                                "Command argument {wanted:?} is not in the backend catalogue. Nothing was selected."
+                            );
+                        }
+                    }
+                }
                 self.catalog = Some(catalog);
                 self.editing = false;
-                self.notice = "Metadata only; choose a backend and enter an explicit model.".into();
             }
             Update::Rejected(error) => {
+                self.preselect = None;
                 self.pending = None;
                 self.catalog = None;
                 self.editing = false;

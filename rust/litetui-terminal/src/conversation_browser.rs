@@ -289,13 +289,59 @@ pub struct View {
     preview_page: usize,
     preview_pages: usize,
     preview_seen: Vec<bool>,
+    preselect: Option<String>,
 }
 impl View {
+    /// A conversation id prefix from a command only moves the row cursor on the
+    /// first page. Opening still needs `o`, the history review and Enter.
+    pub fn preselect(&mut self, prefix: &str) {
+        if self.open && self.waiting && !prefix.trim().is_empty() {
+            self.preselect = Some(prefix.trim().to_owned());
+        }
+    }
+    fn apply_preselection(&mut self, page: &Page) {
+        let Some(prefix) = self.preselect.take() else {
+            return;
+        };
+        let hits: Vec<usize> = page
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.session.starts_with(&prefix))
+            .map(|(index, _)| index)
+            .collect();
+        self.notice = match hits.as_slice() {
+            [index] => {
+                self.selected = *index;
+                let row = &page.entries[*index];
+                format!(
+                    "Command argument selected {}. Nothing has been opened; {}",
+                    row.session,
+                    if row.current {
+                        "it is the current conversation.".to_owned()
+                    } else if row.can_open {
+                        "press O to review opening it.".to_owned()
+                    } else {
+                        row.reason.clone()
+                    }
+                )
+            }
+            [] => format!(
+                "Command argument {prefix:?} is not on this first page of {} conversations; use PgDn or choose a row. Nothing has been opened.",
+                page.total
+            ),
+            many => format!(
+                "Command argument {prefix:?} matches {} rows on this page; choose one. Nothing has been opened.",
+                many.len()
+            ),
+        };
+    }
     pub fn open(&mut self) {
         if self.waiting {
             return;
         }
         self.open = true;
+        self.preselect = None;
         self.inspection_pending = false;
         self.waiting = true;
         self.page = None;
@@ -343,6 +389,7 @@ impl View {
         Ok(())
     }
     pub fn close(&mut self) {
+        self.preselect = None;
         self.inspection_pending = false;
         self.actions.close();
         self.open = false;
@@ -426,6 +473,7 @@ impl View {
             Update::Page(page) => {
                 self.selected = page.entries.iter().position(|row| row.current).unwrap_or(0);
                 self.notice = "Choose a saved conversation. Nothing has been opened.".into();
+                self.apply_preselection(&page);
                 self.page = Some(page);
             }
             Update::Opened { .. } => {
@@ -433,6 +481,7 @@ impl View {
                 self.notice = "Conversation and held input verified.".into();
             }
             Update::Rejected(error) => {
+                self.preselect = None;
                 self.pending_open = None;
                 self.preview = None;
                 self.page = None;

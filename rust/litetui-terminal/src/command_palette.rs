@@ -28,6 +28,13 @@ fn text(v: &Value, key: &str, max: usize) -> io::Result<String> {
         .map(str::to_owned)
         .ok_or_else(|| fail("Invalid command metadata text"))
 }
+/// A command argument may only preselect a row in a control that still requires
+/// its own review: one bounded line, and no whitespace unless `spaced` (model names).
+fn preselection_ok(wanted: &str, max: usize, spaced: bool) -> bool {
+    wanted.len() <= max
+        && !wanted.chars().any(char::is_control)
+        && (spaced || !wanted.contains(char::is_whitespace))
+}
 pub(crate) fn token(v: &Value, key: &str) -> io::Result<String> {
     let s = text(v, key, 64)?;
     if s.len() != 64
@@ -64,6 +71,12 @@ pub enum Action {
     SystemPrompt,
     Work(crate::work_view::Destination),
     Themes,
+    ConversationResume,
+    Claude,
+    Help,
+    Keys,
+    Mcp,
+    ClearScreen,
 }
 impl Action {
     fn parse(v: &Value) -> io::Result<Option<Self>> {
@@ -94,6 +107,12 @@ impl Action {
             Some("conversation_rename") => Some(Self::ConversationRename),
             Some("system_prompt") => Some(Self::SystemPrompt),
             Some("themes") => Some(Self::Themes),
+            Some("conversation_resume") => Some(Self::ConversationResume),
+            Some("claude") => Some(Self::Claude),
+            Some("help") => Some(Self::Help),
+            Some("keys") => Some(Self::Keys),
+            Some("mcp") => Some(Self::Mcp),
+            Some("clear_screen") => Some(Self::ClearScreen),
             Some("plugins") => Some(Self::Work(Destination::Plugins)),
             Some("work_tasks") => Some(Self::Work(Destination::Tasks)),
             Some("work_jobs") => Some(Self::Work(Destination::Jobs)),
@@ -247,6 +266,12 @@ impl Catalog {
                                 | Action::ModelUnload
                                 | Action::ConversationCompact
                                 | Action::PluginReload
+                                | Action::Models
+                                | Action::Thinking
+                                | Action::Backend
+                                | Action::ConversationResume
+                                | Action::Claude
+                                | Action::Mcp
                         )
                     ) || kind == "command"
                         && matches!(action, Some(Action::Work(dest)) if matches!(dest, crate::work_view::Destination::Tasks | crate::work_view::Destination::Jobs | crate::work_view::Destination::Loops | crate::work_view::Destination::Goal)))
@@ -391,6 +416,47 @@ impl Route {
                 if !arguments.trim().is_empty() && arguments.trim() != c.model =>
             {
                 return Err(fail("Lifecycle command must target the current model"));
+            }
+            Action::Models
+                if !preselection_ok(arguments.trim(), 1024, true)
+                    || arguments.trim().parse::<usize>().is_ok_and(|n| n == 0) =>
+            {
+                return Err(fail("Unsupported model command argument"));
+            }
+            Action::Thinking if !preselection_ok(arguments.trim(), 64, false) => {
+                return Err(fail("Unsupported thinking command argument"));
+            }
+            Action::Backend
+                if !preselection_ok(arguments.trim(), 128, false)
+                    || arguments.trim().starts_with("--") =>
+            {
+                return Err(fail("Unsupported backend command argument"));
+            }
+            Action::ConversationResume
+                if !arguments.trim().is_empty()
+                    && (arguments.trim().len() > 36
+                        || arguments.trim().bytes().all(|b| b.is_ascii_digit())
+                        || !arguments.trim().bytes().all(|b| {
+                            b == b'-' || b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                        })) =>
+            {
+                return Err(fail(
+                    "Resume accepts a lowercase conversation id prefix only",
+                ));
+            }
+            Action::Claude
+                if !matches!(
+                    verb.as_str(),
+                    "" | "status" | "resolve" | "continue" | "new"
+                ) =>
+            {
+                return Err(fail("Unsupported Claude session command argument"));
+            }
+            Action::Claude if c.backend != "claude" => {
+                return Err(fail("Claude session commands require the Claude backend"));
+            }
+            Action::Mcp if !matches!(verb.as_str(), "" | "list" | "ls" | "status") => {
+                return Err(fail("MCP command accepts list only"));
             }
             Action::ConversationCompact => crate::conversation_compact::validate_hint(&arguments)?,
             Action::PluginReload

@@ -1,0 +1,276 @@
+//! Read-only `/help` and `/keys` overlay: the live command catalog already
+//! delivered by the source, and the keys this frontend binds. Inert: no
+//! intent, no mutation, nothing is sent; Esc closes it.
+use crate::{command_palette::Catalog, live::terminal_text, theme::Theme};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::Style,
+    widgets::{Block, Borders, Clear, Paragraph},
+};
+
+/// Every binding below is read from `main.rs` key routing for the live frontend.
+pub const KEYS: &[(&str, &str)] = &[
+    (
+        "Enter",
+        "send the draft (while a turn runs: review a mid-turn message)",
+    ),
+    ("Ctrl+J / Ctrl+Shift+Enter", "alternate send"),
+    (
+        "Up / Down",
+        "composer history; Down at the end moves onto the footer chips",
+    ),
+    ("Tab", "accept the highlighted slash completion"),
+    (
+        "Esc",
+        "stop the running turn (asks first); closes any open control",
+    ),
+    ("Ctrl+Esc", "open the stop dialog"),
+    ("Ctrl+Q", "quit and close the owned runtime"),
+    ("F1", "Work: tasks, jobs, loops, goal, calendar, plugins"),
+    ("F3", "models"),
+    ("F4", "themes"),
+    ("F6", "saved history"),
+    ("F7", "held input"),
+    ("F8", "conversations"),
+    ("F9", "backend"),
+    ("F10", "settings"),
+    ("F11", "command palette and skills"),
+    ("F12", "engine management"),
+    ("Ctrl+T", "tool selection"),
+    ("Ctrl+P", "plan mode"),
+    ("Alt+P", "chat pause"),
+    ("Shift+Tab", "authority profile"),
+    ("Ctrl+L", "new conversation (reviewed)"),
+    ("Ctrl+O", "review an image (reads the clipboard image)"),
+    ("Ctrl+X", "clear the attached image"),
+    ("Ctrl+G", "toggle compact / full transcript view"),
+    (
+        "Ctrl+B / Ctrl+E",
+        "select the previous tool card / open or fold the recent one",
+    ),
+    ("PgUp / PgDn", "scroll the transcript"),
+    (
+        "Ctrl+Home / Ctrl+End",
+        "jump to the top / bottom of the transcript",
+    ),
+    ("Ctrl+V", "paste from the clipboard"),
+    (
+        "Ctrl+C / Ctrl+Shift+C",
+        "copy the selection / always the transcript selection",
+    ),
+    ("Ctrl+A or Home / End", "start / end of the line"),
+    (
+        "Ctrl+Left / Ctrl+Right",
+        "move by word (add Shift to select)",
+    ),
+    (
+        "Ctrl+W / Ctrl+F",
+        "delete the word before / after the cursor",
+    ),
+    ("Ctrl+U / Ctrl+K", "delete to the start / end of the line"),
+    ("Ctrl+D", "delete the character under the cursor"),
+    ("Ctrl+Shift+A", "select the whole draft"),
+];
+
+#[derive(Default)]
+pub struct View {
+    pub open: bool,
+    lines: Vec<String>,
+    scroll: usize,
+    max_scroll: usize,
+    page: usize,
+}
+fn display(text: &str) -> String {
+    terminal_text(text).replace(['\n', '\t'], " ")
+}
+impl View {
+    /// `keys_first` only decides which section the reader lands on.
+    pub fn open(&mut self, catalog: Option<&Catalog>, keys_first: bool) {
+        let mut commands = vec!["Commands (live source registry)".to_owned()];
+        match catalog {
+            Some(catalog) => {
+                let mut rows: Vec<_> = catalog
+                    .entries
+                    .iter()
+                    .filter(|e| e.kind == "command" && e.completion_order.is_some())
+                    .collect();
+                rows.sort_by_key(|e| e.completion_order);
+                for entry in rows {
+                    commands.push(format!("  {}", display(&entry.tokens.join(", "))));
+                    if !entry.help.is_empty() {
+                        commands.push(format!("      {}", display(&entry.help)));
+                    }
+                    if entry.action.is_none() {
+                        commands.push(format!(
+                            "      Not available in this frontend: {}",
+                            display(&entry.unavailable)
+                        ));
+                    }
+                }
+                let skills = catalog.entries.iter().filter(|e| e.kind == "skill").count();
+                commands.push(format!(
+                    "  {skills} skills are listed under Tab in the F11 palette; /<skill name> prepares one for review."
+                ));
+            }
+            None => commands.push("  The command catalog has not been read yet; press F11.".into()),
+        }
+        let mut keys = vec!["Keys (this frontend)".to_owned()];
+        keys.extend(KEYS.iter().map(|(key, what)| format!("  {key}: {what}")));
+        let (first, second) = if keys_first {
+            (keys, commands)
+        } else {
+            (commands, keys)
+        };
+        self.lines = first;
+        self.lines.push(String::new());
+        self.lines.extend(second);
+        self.scroll = 0;
+        self.max_scroll = 0;
+        self.page = 1;
+        self.open = true;
+    }
+    pub fn close(&mut self) {
+        self.open = false;
+        self.lines.clear();
+    }
+    pub fn key(&mut self, key: KeyEvent) {
+        if key.kind == KeyEventKind::Release || !key.modifiers.is_empty() {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc if key.kind == KeyEventKind::Press => self.close(),
+            KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
+            KeyCode::Down => self.scroll = self.scroll.saturating_add(1).min(self.max_scroll),
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(self.page),
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_add(self.page).min(self.max_scroll)
+            }
+            KeyCode::Home => self.scroll = 0,
+            KeyCode::End => self.scroll = self.max_scroll,
+            _ => {}
+        }
+    }
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if !self.open || area.width < 36 || area.height < 14 {
+            return;
+        }
+        let width = area.width.saturating_sub(2).min(100);
+        let height = area.height.saturating_sub(2).min(34);
+        let rect = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        frame.render_widget(Clear, rect);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Help · commands and keys · read only ")
+            .style(Style::default().fg(theme.foreground).bg(theme.background))
+            .border_style(Style::default().fg(theme.title));
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        let body = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+        let wrapped: Vec<String> = self
+            .lines
+            .iter()
+            .flat_map(|line| {
+                if line.is_empty() {
+                    vec![String::new()]
+                } else {
+                    crate::ui::wrap(line, usize::from(body.width).max(1))
+                }
+            })
+            .collect();
+        let rows = usize::from(body.height).max(1);
+        self.page = rows;
+        self.max_scroll = wrapped.len().saturating_sub(rows);
+        self.scroll = self.scroll.min(self.max_scroll);
+        frame.render_widget(
+            Paragraph::new(
+                wrapped
+                    .iter()
+                    .skip(self.scroll)
+                    .take(rows)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            body,
+        );
+        frame.render_widget(
+            Paragraph::new(format!(
+                "↑↓ PgUp PgDn Home End scroll · {}/{} · Esc closes",
+                self.scroll + 1,
+                self.max_scroll + 1
+            )),
+            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn screen(view: &mut View, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let theme = crate::theme::builtin_themes().remove(0);
+        terminal.draw(|f| view.draw(f, f.area(), &theme)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+    #[test]
+    fn keys_section_leads_for_keys_and_follows_commands_for_help() {
+        let mut view = View::default();
+        view.open(None, true);
+        assert!(view.lines[0].starts_with("Keys"));
+        view.open(None, false);
+        assert!(view.lines[0].starts_with("Commands"));
+        assert!(view.lines.iter().any(|l| l.contains("press F11")));
+        assert!(
+            view.lines
+                .iter()
+                .any(|l| l.contains("Ctrl+Q: quit and close the owned runtime"))
+        );
+    }
+    #[test]
+    fn scrolls_within_bounds_and_only_escape_closes() {
+        let mut view = View::default();
+        view.open(None, false);
+        let first = screen(&mut view, 60, 16);
+        assert!(first.contains("Commands (live source registry)"));
+        for _ in 0..200 {
+            view.key(key(KeyCode::PageDown));
+            screen(&mut view, 60, 16);
+        }
+        assert_eq!(view.scroll, view.max_scroll);
+        assert!(screen(&mut view, 60, 16).contains("Ctrl+Shift+A"));
+        for other in [KeyCode::Enter, KeyCode::Char('q'), KeyCode::Tab] {
+            view.key(key(other));
+            assert!(view.open);
+        }
+        view.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::CONTROL));
+        assert!(view.open);
+        view.key(key(KeyCode::Esc));
+        assert!(!view.open);
+        assert!(screen(&mut view, 60, 16).trim().is_empty());
+    }
+}

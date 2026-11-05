@@ -58,6 +58,8 @@ pub mod settings_view;
 
 pub mod chat_pause;
 pub mod command_palette;
+mod command_routes;
+pub mod help_view;
 pub mod prepared_skill;
 
 pub mod engine_config;

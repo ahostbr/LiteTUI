@@ -168,6 +168,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 chat.stop_confirm = false;
             }
             app.approval_open = false;
+            app.help.close();
             if let Some(chat) = app.live.as_mut() {
                 chat.runtime_controls.close();
                 chat.controls.close();
@@ -257,6 +258,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         && key.modifiers.is_empty()
     {
         app.open_stop();
+        return false;
+    }
+    if app.help.open {
+        app.help.key(key);
         return false;
     }
     if app.has_live_runtime_controls() {

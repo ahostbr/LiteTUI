@@ -628,6 +628,7 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
         }
         if let Some(history) = &chat.history
             && history.descriptor.is_none()
+            && chat.screen_cleared_history.as_deref() != Some(history.session.as_str())
         {
             tool_body(
                 t,
@@ -670,6 +671,9 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
             }
         }
         for (row_index, row) in chat.rows.iter().enumerate() {
+            if row_index < chat.screen_cleared_rows {
+                continue;
+            }
             if row_index == 0 && chat.prior_context_rows > 0 {
                 lines.push(Line::styled(
                     "  Retained scrollback from before compaction · F6 shows current context",
@@ -1366,6 +1370,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             .expect("commands")
             .commands
             .draw(frame, area, &t);
+    }
+    if app.help.open && !app.stop_open() {
+        app.help.draw(frame, area, &t);
     }
     if app.has_live_history()
         && !app.has_live_rewrite()

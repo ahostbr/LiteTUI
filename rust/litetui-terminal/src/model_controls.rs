@@ -196,14 +196,59 @@ pub struct View {
     geometry: Option<Rect>,
     hits: Vec<(Rect, usize)>,
     pressed: Option<usize>,
+    preselect: Option<String>,
 }
 impl View {
+    /// A command argument only moves the cursor once the runtime choices arrive.
+    /// Applying still needs Enter on the visible row, as for any other selection.
+    pub fn preselect(&mut self, wanted: &str) {
+        if self.open && self.waiting && !wanted.trim().is_empty() {
+            self.preselect = Some(wanted.trim().to_owned());
+        }
+    }
+    fn apply_preselection(&mut self, menu: &Choices) {
+        let Some(wanted) = self.preselect.take() else {
+            return;
+        };
+        let found = if menu.kind == Kind::Thinking {
+            let level = wanted.to_ascii_lowercase();
+            let level = if matches!(level.as_str(), "unset" | "default" | "server") {
+                "default".to_owned()
+            } else {
+                level
+            };
+            menu.rows
+                .iter()
+                .position(|r| r.value.eq_ignore_ascii_case(&level))
+        } else if wanted.bytes().all(|b| b.is_ascii_digit()) {
+            wanted
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .filter(|i| *i < menu.rows.len())
+        } else {
+            menu.rows.iter().position(|r| r.value == wanted)
+        };
+        self.notice = match found {
+            Some(index) => {
+                self.cursor = index;
+                format!(
+                    "Command argument {wanted:?} selected {}. Nothing is applied until you press Enter.",
+                    menu.rows[index].label
+                )
+            }
+            None => format!(
+                "Command argument {wanted:?} is not offered by this runtime. Nothing was selected."
+            ),
+        };
+    }
     pub fn open(&mut self, kind: Kind) {
         if self.waiting {
             return;
         }
         self.open = true;
         self.waiting = true;
+        self.preselect = None;
         self.menu = None;
         self.horizontal = 0;
         self.kind = Some(kind);
@@ -219,6 +264,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.preselect = None;
         self.hide();
         if self.intent.take().is_some() {
             self.waiting = false;
@@ -251,9 +297,11 @@ impl View {
                     .message
                     .clone()
                     .unwrap_or_else(|| "Runtime selection verified.".into());
+                self.apply_preselection(&menu);
                 self.menu = Some(menu);
             }
             Update::Rejected(error) => {
+                self.preselect = None;
                 self.menu = None;
                 self.notice = error;
             }

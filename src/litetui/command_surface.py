@@ -9,7 +9,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from litetui import backend_catalog, plugins
+from litetui import backend_catalog, llm_backend, plugins
 from litetui.agent_store import valid_id
 
 VERSION = 1
@@ -33,9 +33,14 @@ _ROUTES = {
     ("misc", "/tools"): "tool_list",
     ("misc", "/quit"): "quit",
     ("misc", "/pause"): "chat_pause",
+    ("misc", "/keys"): "keys",
+    ("misc", "/clear-screen"): "clear_screen",
+    ("help", "/help"): "help",
+    ("mcp_manage", "/mcp"): "mcp",
     ("glassbox", "glassbox"): "glassbox",
     ("convo", "/convos"): "conversations",
-    ("convo", "/resume"): "conversations",
+    ("convo", "/resume"): "conversation_resume",
+    ("convo", "/claude"): "claude",
     ("convo", "/new"): "conversation_new",
     ("convo", "/rename"): "conversation_rename",
     ("settings-ui", "/settings"): "settings",
@@ -48,6 +53,27 @@ _ROUTES = {
     ("goal-loop", "/goal"): "work_goal",
 }
 _PALETTE_ROUTES = {("settings-ui", "Theme"): "themes", ("scheduler", "Scheduled jobs"): "work_jobs"}
+# Commands that stay unrouted say why, per exact (owner, first token). A third
+# party registering the same token never inherits these reasons.
+_UNAVAILABLE = {
+    ("misc", "/screenshot"): "Screenshot is a Textual window action; the terminal frontend has no window to capture.",
+    ("misc", "/maximize"): "Maximize is a Textual panel action; the terminal frontend draws one fixed layout.",
+    ("misc", "/test-sidebar"): "Test sidebar is a Textual-only dialog spike with no terminal equivalent.",
+    ("monitor", "/monitor"): "Browser monitor is a desktop overlay that is not available in the terminal frontend.",
+    ("sidecar-preview", "/sidecar"): "Native sidecar preview is a desktop overlay that is not available in the terminal frontend.",
+    ("mark", "/mark"): "Mark the screen is a desktop overlay that is not available in the terminal frontend.",
+    ("model-switch", "/modelcfg"): "Model configuration has no native control in this frontend yet.",
+    ("subagent", "/subagent-set"): "Subagent routing has no reviewed native control yet.",
+    ("subagent", "/subagent-global"): "Subagent routing has no reviewed native control yet.",
+}
+_NO_ARGUMENTS = {
+    "tool_list": "/tools takes no arguments; choose tools in the reviewed tool list.",
+    "model_reconnect": "/reconnect takes no arguments; it reviews a reconnect to the current model only.",
+    "settings": "/settings takes no arguments; pick a setting inside the settings control.",
+    "help": "/help takes no arguments; the help overlay lists every command and key.",
+    "keys": "/keys takes no arguments; the overlay lists every native key.",
+    "clear_screen": "/clear-screen takes no arguments; it clears the display only.",
+}
 _WORK_INSPECTION = {
     "work_tasks": {"list"},
     "work_jobs": {"list", "ls"},
@@ -97,8 +123,10 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "accepts_arguments": (action in {
             "skill_prepare", "conversation_rename", "glassbox", "conversation_compact",
             "model_load", "model_unload", "engine", "plugin_reload", "plan", "system_prompt",
+            "models", "thinking", "backend", "conversation_resume", "claude", "mcp",
         } or kind == "command" and action in _WORK_INSPECTION),
-        "unavailable_reason": "" if action else "This contribution has no native action adapter yet.",
+        "unavailable_reason": "" if action else _UNAVAILABLE.get(
+            (owner, tokens[0] if tokens else ""), "This contribution has no native action adapter yet."),
     }
     row["id"] = _digest([binding, row])
     return row
@@ -211,6 +239,68 @@ def _selection(app, cmd):
     return current
 
 
+def _preselection(app, action, arguments):
+    """Refuse arguments a native control cannot honor; honored ones only preselect.
+
+    Nothing here applies a model, level, backend, conversation or MCP change: the
+    argument reaches the same reviewed control the palette opens.
+    """
+    wanted = arguments.strip()
+    if action == "models" and wanted:
+        if wanted.isascii() and wanted.isdigit():
+            count = len(app.available_models)
+            if not 1 <= int(wanted) <= count:
+                raise ValueError(f"Invalid model number. Use 1-{count}" if count else "No models discovered")
+        elif wanted not in app.available_models:
+            raise ValueError(f"Model not found: {wanted}")
+    elif action == "thinking" and wanted:
+        from litetui.thinking_capabilities import thinking_capabilities
+
+        levels = thinking_capabilities(app)["levels"]
+        level = "default" if wanted.lower() in ("unset", "default", "server") else wanted.lower()
+        if level not in levels:
+            raise ValueError(f"Thinking level {wanted!r} is not offered by this backend and model. "
+                             f"Offered: {', '.join(levels)}")
+    elif action == "backend" and wanted:
+        tokens = wanted.lower().split()
+        if "--default" in tokens:
+            raise ValueError("--default changes the startup default; the native backend selector switches "
+                             "this conversation only. Command arguments were kept")
+        names = [name for name, _label in llm_backend.visible_backends()]
+        if len(tokens) > 1 or tokens[0] not in names:
+            raise ValueError(f"Backend argument must be one of: {', '.join(names)}")
+    elif action == "conversation_resume" and wanted:
+        if wanted.isascii() and wanted.isdigit():
+            raise ValueError("A numeric /resume position follows the Textual picker's order; give a "
+                             "conversation id prefix or choose it in the native browser (/convos)")
+        if len(wanted) > 36 or any(char not in "0123456789abcdef-" for char in wanted):
+            raise ValueError("A /resume argument must be a lowercase conversation id prefix")
+        session = getattr(app, "_agent_session", None)
+        if session is None:
+            raise ValueError("Choose an owned agent first with /resume; archives are read-only")
+        from litetui.storage_catalog import conversations
+
+        try:
+            found = [row.conversation_id for row in conversations(
+                session.store.data_root, agent_id=session.authority.agent_id)
+                if row.conversation_id.startswith(wanted)]
+        except (OSError, ValueError) as error:
+            raise ValueError(f"Agent conversations blocked: {error}") from error
+        if not found:
+            raise ValueError(f"No conversation matches {wanted!r}; open /convos to choose one")
+        if len(found) > 1:
+            raise ValueError(f"{wanted!r} matches {len(found)} conversations; give more of the id "
+                             "(the native browser needs one exact choice)")
+    elif action == "claude":
+        if app.backend.name != "claude":
+            raise ValueError("/claude requires /backend claude.")
+        if wanted.lower() not in {"", "status", "resolve", "continue", "new"}:
+            raise ValueError("/claude status | resolve | continue | new")
+    elif action == "mcp" and wanted.lower() not in {"", "list", "ls", "status"}:
+        raise ValueError("The native MCP panel accepts list only; add, connect, disconnect, reconnect, "
+                         "remove, reconcile and reload are reviewed inside the panel")
+
+
 def resolve(app, cmd):
     """Resolve exact rows or source-parsed text; never execute registered handlers."""
     current = _selection(app, cmd)
@@ -282,6 +372,10 @@ def resolve(app, cmd):
         verb = arguments.strip()
         if (verb if action == "work_tasks" else verb.lower()) not in _WORK_INSPECTION[action]:
             raise ValueError("Open Work and review this action there. This command accepts inspection verbs only.")
+    if arguments != "" and action in _NO_ARGUMENTS:
+        raise ValueError(_NO_ARGUMENTS[action])
+    if arguments != "" or action == "claude":
+        _preselection(app, action, arguments)
     if arguments != "" and not selected["accepts_arguments"]:
         raise ValueError("This native control adapter does not accept command arguments")
     result = {"version": VERSION, "kind": "command_route", "session_id": current["session_id"],

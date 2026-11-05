@@ -743,3 +743,504 @@ fn control_routes_keep_exact_arguments_and_reject_unrepresentable_intent() {
         );
     }
 }
+
+fn routed(action: &str, accepts: bool, backend: &str) -> Catalog {
+    let mut d = data();
+    d["backend"] = json!(backend);
+    d["entries"][0]["native_action"] = json!(action);
+    d["entries"][0]["accepts_arguments"] = json!(accepts);
+    Catalog::parse(&d, SESSION, AGENT, backend, "model").unwrap()
+}
+fn route_of(c: &Catalog, action: &str, backend: &str, arguments: &str) -> std::io::Result<Route> {
+    let mut v = route_data(c, Some("/c"));
+    v["backend"] = json!(backend);
+    v["native_action"] = json!(action);
+    v["arguments"] = json!(arguments);
+    Route::parse(&v, c, None, Some("/c"), "")
+}
+/// A live frontend that has just resolved `/c <arguments>` into `action`.
+fn routed_app(action: &str, accepts: bool, backend: &str, arguments: &str) -> Demo {
+    let c = routed(action, accepts, backend);
+    let route = route_of(&c, action, backend, arguments).unwrap();
+    let mut app = Demo::live(backend.into(), "model".into());
+    app.live.as_mut().unwrap().ready = true;
+    app.insert_text("PRESERVE COMPOSER");
+    let commands = &mut app.live.as_mut().unwrap().commands;
+    commands.raw("/c");
+    commands.take_intent();
+    app.observe_live(Observation::Commands(Update::Route { catalog: c, route }))
+        .unwrap();
+    assert_eq!(app.composer.text(), "PRESERVE COMPOSER");
+    app
+}
+fn paint(app: &mut Demo, w: u16, h: u16) -> String {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| litetui_terminal::ui::draw(f, app)).unwrap();
+    t.backend()
+        .buffer()
+        .content
+        .chunks(w as usize)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn argument_routes_accept_only_shapes_a_reviewed_control_can_preselect() {
+    let long = "a".repeat(37);
+    for (action, backend, good, bad) in [
+        (
+            "models",
+            "custom",
+            vec!["", "2", "model-B", " model-B "],
+            vec!["0", "bad\0name"],
+        ),
+        (
+            "thinking",
+            "custom",
+            vec!["high", "UNSET", ""],
+            vec!["very high", "bad\nlevel"],
+        ),
+        (
+            "backend",
+            "custom",
+            vec!["codex", ""],
+            vec!["--default", "codex lmstudio"],
+        ),
+        (
+            "conversation_resume",
+            "custom",
+            vec!["", "0000a", "abc-def0", "00000000-"],
+            vec!["12", "ABC", "xyz", long.as_str()],
+        ),
+        (
+            "claude",
+            "claude",
+            vec!["", "STATUS", "resolve", " continue ", "new"],
+            vec!["replay", "resolve now"],
+        ),
+        (
+            "mcp",
+            "custom",
+            vec!["", "list", "LS", "status"],
+            vec!["add x", "reload", "reconnect x"],
+        ),
+    ] {
+        let c = routed(action, true, backend);
+        for argument in good {
+            assert!(
+                route_of(&c, action, backend, argument).is_ok(),
+                "{action} {argument:?}"
+            );
+        }
+        for argument in bad {
+            assert!(
+                route_of(&c, action, backend, argument).is_err(),
+                "{action} {argument:?}"
+            );
+        }
+    }
+    // A Claude session command is never offered on another backend.
+    let c = routed("claude", true, "custom");
+    assert!(route_of(&c, "claude", "custom", "").is_err());
+    // Commands whose source ignores arguments still refuse them natively.
+    for action in [
+        "tool_list",
+        "model_reconnect",
+        "settings",
+        "help",
+        "keys",
+        "clear_screen",
+    ] {
+        let c = routed(action, false, "custom");
+        assert!(route_of(&c, action, "custom", "").is_ok(), "{action}");
+        assert!(route_of(&c, action, "custom", "extra").is_err(), "{action}");
+        let mut d = data();
+        d["entries"][0]["native_action"] = json!(action);
+        d["entries"][0]["accepts_arguments"] = json!(true);
+        assert!(
+            Catalog::parse(&d, SESSION, AGENT, "custom", "model").is_err(),
+            "{action}"
+        );
+    }
+}
+
+fn choices(
+    kind: litetui_terminal::model_controls::Kind,
+) -> litetui_terminal::model_controls::Choices {
+    use litetui_terminal::model_controls::{Choices, Kind};
+    let value = if kind == Kind::Model {
+        json!({"backend":"custom","model":"model-A","models":[
+            {"slug":"model-A","name":"Model A","current":true,"loaded":null},
+            {"slug":"model-B","name":"Model B","current":false,"loaded":false}]})
+    } else {
+        json!({"backend":"custom","model":"model-A","thinking":{"level":null,
+            "levels":["default","off","low","high"],"source":"backend metadata","note":"n"}})
+    };
+    Choices::parse(kind, &value, 3, "session").unwrap()
+}
+fn pending_select(app: &mut Demo) -> Option<String> {
+    use litetui_terminal::model_controls::Intent;
+    paint(app, 100, 30);
+    let controls = &mut app.live.as_mut().unwrap().controls;
+    assert_eq!(
+        controls.take_intent(),
+        None,
+        "an argument must not apply by itself"
+    );
+    controls.key(key(KeyCode::Enter));
+    match controls.take_intent() {
+        Some(Intent::Select { value, .. }) => Some(value),
+        other => {
+            assert_eq!(other, None);
+            None
+        }
+    }
+}
+
+#[test]
+fn model_and_thinking_arguments_move_the_cursor_and_wait_for_explicit_enter() {
+    use litetui_terminal::model_controls::{Intent, Kind, Update as Controls};
+    for (action, kind, argument, expected, notice) in [
+        (
+            "models",
+            Kind::Model,
+            "model-B",
+            "model-B",
+            "selected Model B",
+        ),
+        ("models", Kind::Model, "2", "model-B", "selected Model B"),
+        ("models", Kind::Model, "9", "model-A", "not offered"),
+        ("models", Kind::Model, "missing", "model-A", "not offered"),
+        ("thinking", Kind::Thinking, "HIGH", "high", "selected high"),
+        (
+            "thinking",
+            Kind::Thinking,
+            "unset",
+            "default",
+            "selected default",
+        ),
+        (
+            "thinking",
+            Kind::Thinking,
+            "xhigh",
+            "default",
+            "not offered",
+        ),
+    ] {
+        let mut app = routed_app(action, true, "custom", argument);
+        let controls = &mut app.live.as_mut().unwrap().controls;
+        assert_eq!(controls.take_intent(), Some(Intent::Open(kind)));
+        app.observe_live(Observation::Controls(Controls::Choices(choices(kind))))
+            .unwrap();
+        assert!(
+            app.live.as_ref().unwrap().controls.notice.contains(notice),
+            "{argument}: {}",
+            app.live.as_ref().unwrap().controls.notice
+        );
+        assert_eq!(
+            pending_select(&mut app).as_deref(),
+            Some(expected),
+            "{argument}"
+        );
+        assert_eq!(app.composer.text(), "PRESERVE COMPOSER");
+    }
+}
+
+#[test]
+fn backend_and_resume_arguments_preselect_rows_without_switching_or_opening() {
+    use litetui_terminal::{backend_controls, conversation_browser as browser};
+    let mut app = routed_app("backend", true, "custom", "CODEX");
+    assert_eq!(
+        app.live.as_mut().unwrap().backend_controls.take_intent(),
+        Some(backend_controls::Intent::Read)
+    );
+    let catalog = backend_controls::Catalog::parse(
+        &json!({"version":1,"kind":"support_metadata","readiness_checked":false,"session_id":SESSION,
+            "agent_id":AGENT,"agent_name":"Owned agent","snapshot":"a".repeat(64),
+            "selected_backend":"custom","configured_backend":"custom","selected_model":"old",
+            "codex_engine":{"requested_native":true,"effective":null},
+            "entries":[{"name":"custom","label":"Custom","selected":true,"owned_engine_controls":false},
+                {"name":"codex","label":"Codex","selected":false,"owned_engine_controls":false}]}),
+        7,
+        SESSION,
+        AGENT,
+    )
+    .unwrap();
+    app.observe_live(Observation::Backend(backend_controls::Update::Catalog(
+        catalog,
+    )))
+    .unwrap();
+    let backend = &mut app.live.as_mut().unwrap().backend_controls;
+    assert!(
+        backend.notice.contains("selected codex"),
+        "{}",
+        backend.notice
+    );
+    assert_eq!(backend.take_intent(), None);
+    let shown = paint(&mut app, 100, 30);
+    assert!(shown.contains(">  Codex [codex]"), "{shown}");
+    assert!(
+        shown.contains("● Custom [custom]"),
+        "current backend stays marked"
+    );
+    let backend = &mut app.live.as_mut().unwrap().backend_controls;
+    backend.key(key(KeyCode::Enter));
+    assert_eq!(
+        backend.take_intent(),
+        None,
+        "Enter only starts typing the model"
+    );
+
+    let page = |offset: usize| {
+        let entries: Vec<Value> = (0..3)
+            .map(|i| {
+                let session = if i == 0 {
+                    SESSION.to_owned()
+                } else {
+                    format!("00000000-0000-4000-8000-{:012x}", i + 1)
+                };
+                json!({"session_id":session,"agent_id":AGENT,"agent_name":"Owned agent",
+                    "title":format!("Saved {i}"),"message_count":2,"updated_at":1.0,
+                    "current":session == SESSION,"can_open":session != SESSION,
+                    "reason":if session == SESSION {"Already open"} else {""}})
+            })
+            .collect();
+        browser::Page::parse(
+            &json!({"session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"offset":offset,
+                "total":3,"entries":entries,"previous_cursor":null,"next_cursor":null}),
+            1,
+            SESSION,
+        )
+        .unwrap()
+    };
+    for (argument, notice) in [
+        (
+            "00000000-0000-4000-8000-000000000003",
+            "selected 00000000-0000-4000-8000-000000000003",
+        ),
+        ("00000000-", "matches 2 rows"),
+        ("ffff", "is not on this first page"),
+        (SESSION, "current conversation"),
+    ] {
+        let mut app = routed_app("conversation_resume", true, "custom", argument);
+        assert_eq!(
+            app.live.as_mut().unwrap().browser.take_intent(),
+            Some(browser::Intent::Refresh)
+        );
+        app.observe_live(Observation::Browser(browser::Update::Page(page(0))))
+            .unwrap();
+        let view = &mut app.live.as_mut().unwrap().browser;
+        assert!(view.notice.contains(notice), "{argument}: {}", view.notice);
+        assert!(
+            view.notice.contains("Nothing has been opened"),
+            "{}",
+            view.notice
+        );
+        paint(&mut app, 100, 30);
+        let view = &mut app.live.as_mut().unwrap().browser;
+        view.key(key(KeyCode::Enter));
+        assert_eq!(
+            view.take_intent(),
+            None,
+            "{argument}: Enter without O must not open"
+        );
+    }
+}
+
+#[test]
+fn claude_routes_open_only_existing_reviewed_controls() {
+    use litetui_terminal::{
+        conversation_actions as actions, conversation_browser as browser, restored_queue,
+        settings_view,
+    };
+    for verb in ["resolve", "CONTINUE"] {
+        let mut app = routed_app("claude", true, "claude", verb);
+        assert!(app.has_live_queue(), "{verb}");
+        assert_eq!(
+            app.live.as_mut().unwrap().queue.take_intent(),
+            Some(restored_queue::Intent::Open)
+        );
+        assert!(app.notice.contains("changed nothing"), "{}", app.notice);
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+    }
+    let mut app = routed_app("claude", true, "claude", "new");
+    assert_eq!(
+        app.live.as_mut().unwrap().browser.take_intent(),
+        Some(browser::Intent::Action(actions::Intent::Read {
+            action: actions::Action::New
+        }))
+    );
+    assert!(app.notice.contains("nothing was changed"), "{}", app.notice);
+    for verb in ["", "status"] {
+        let mut app = routed_app("claude", true, "claude", verb);
+        assert_eq!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            Some(settings_view::Intent::RuntimeStatus)
+        );
+    }
+}
+
+#[test]
+fn mcp_routes_reuse_the_settings_panel_and_list_is_inspection_only() {
+    use litetui_terminal::{mcp_config, mcp_lifecycle, settings_view};
+    for (verb, read_only) in [("", false), ("list", true), ("LS", true), ("status", true)] {
+        let mut app = routed_app("mcp", true, "custom", verb);
+        assert_eq!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            Some(settings_view::Intent::Mcp(Box::new(
+                mcp_config::Request::List
+            )))
+        );
+        app.observe_live(Observation::Settings(settings_view::Update::Mcp(Err(
+            "fixture".into(),
+        ))))
+        .unwrap();
+        let settings = &mut app.live.as_mut().unwrap().settings;
+        settings.key(key(KeyCode::Tab));
+        let switched = settings.take_intent();
+        if read_only {
+            assert_eq!(
+                switched, None,
+                "{verb}: list must not reach the runtime tab"
+            );
+            settings.key(key(KeyCode::Char('e')));
+            assert_eq!(settings.take_intent(), None);
+            settings.key(key(KeyCode::Esc));
+        } else {
+            assert_eq!(
+                switched,
+                Some(settings_view::Intent::McpLifecycle(Box::new(
+                    mcp_lifecycle::Request::List
+                )))
+            );
+        }
+    }
+}
+
+#[test]
+fn help_and_keys_overlay_list_the_live_catalog_and_native_keys_read_only() {
+    for (action, first) in [
+        ("help", "Commands (live source registry)"),
+        ("keys", "Keys (this frontend)"),
+    ] {
+        let mut app = routed_app(action, false, "custom", "");
+        assert!(app.help.open && app.has_live_input(), "{action}");
+        let head = paint(&mut app, 110, 40);
+        assert!(head.contains(first), "{action}");
+        app.help.key(key(KeyCode::End));
+        let tail = paint(&mut app, 110, 40);
+        app.help.key(key(KeyCode::Home));
+        let (commands, keys) = if action == "help" {
+            (&head, &tail)
+        } else {
+            (&tail, &head)
+        };
+        for text in [
+            "/settings, /config",
+            "Source description",
+            "/unsafe",
+            "Not available in this frontend: No native adapter",
+        ] {
+            assert!(commands.contains(text), "{action} {text}");
+        }
+        for text in [
+            "Ctrl+Q: quit and close the owned runtime",
+            "F11: command palette and skills",
+        ] {
+            assert!(keys.contains(text) || action == "help", "{action} {text}");
+        }
+        assert!(
+            tail.contains("Ctrl+Shift+A") || action == "keys",
+            "{action}"
+        );
+        // Dark theme: the overlay paints the theme background, never terminal default.
+        let mut t = Terminal::new(TestBackend::new(110, 40)).unwrap();
+        t.draw(|f| litetui_terminal::ui::draw(f, &mut app)).unwrap();
+        assert_eq!(t.backend().buffer()[(6, 6)].bg, app.palette().background);
+        // Inert: scrolling keys change nothing outside the overlay; Esc closes it.
+        for code in [
+            KeyCode::Down,
+            KeyCode::PageDown,
+            KeyCode::End,
+            KeyCode::Enter,
+            KeyCode::Char('x'),
+        ] {
+            app.help.key(key(code));
+        }
+        assert!(app.help.open);
+        assert!(app.live.as_mut().unwrap().commands.take_intent().is_none());
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        app.help.key(key(KeyCode::Esc));
+        assert!(!app.help.open && !app.has_live_input());
+        assert_eq!(app.composer.text(), "PRESERVE COMPOSER");
+    }
+}
+
+#[test]
+fn clear_screen_hides_the_transcript_display_only_and_new_work_still_shows() {
+    let mut app = Demo::live("custom".into(), "model".into());
+    app.observe_live(Observation::Ready).unwrap();
+    app.live.as_mut().unwrap().submit("FIRST-PROMPT").unwrap();
+    app.live.as_mut().unwrap().take_submission();
+    app.observe_live(Observation::Text("FIRST-ANSWER".into()))
+        .unwrap();
+    // A turn that has not settled is never hidden under the user's feet.
+    let c = routed("clear_screen", false, "custom");
+    let route = |app: &mut Demo| {
+        let route = route_of(&c, "clear_screen", "custom", "").unwrap();
+        app.live.as_mut().unwrap().commands.raw("/c");
+        app.live.as_mut().unwrap().commands.take_intent();
+        app.insert_text("DRAFT");
+        app.observe_live(Observation::Commands(Update::Route {
+            catalog: c.clone(),
+            route,
+        }))
+        .unwrap();
+    };
+    route(&mut app);
+    assert_eq!(app.live.as_ref().unwrap().screen_cleared_rows, 0);
+    assert!(app.notice.contains("Nothing was cleared"), "{}", app.notice);
+    assert!(paint(&mut app, 100, 30).contains("FIRST-PROMPT"));
+    app.observe_live(Observation::Complete).unwrap();
+    assert!(paint(&mut app, 100, 30).contains("FIRST-ANSWER"));
+    let rows = app.live.as_ref().unwrap().rows.len();
+    route(&mut app);
+    let chat = app.live.as_ref().unwrap();
+    assert_eq!((chat.screen_cleared_rows, chat.rows.len()), (rows, rows));
+    assert!(
+        app.notice.contains("The conversation is unchanged"),
+        "{}",
+        app.notice
+    );
+    assert_eq!(app.composer.text(), "DRAFTDRAFT");
+    let shown = paint(&mut app, 100, 30);
+    assert!(!shown.contains("FIRST-PROMPT") && !shown.contains("FIRST-ANSWER"));
+    app.live.as_mut().unwrap().submit("SECOND-PROMPT").unwrap();
+    assert!(paint(&mut app, 100, 30).contains("SECOND-PROMPT"));
+    assert!(!paint(&mut app, 100, 30).contains("FIRST-PROMPT"));
+}
+
+#[test]
+fn unavailable_commands_show_their_own_reason_in_completion_and_palette() {
+    let mut d = data();
+    d["entries"][1]["unavailable_reason"] = json!(
+        "Screenshot is a Textual window action; the terminal frontend has no window to capture."
+    );
+    let c = Catalog::parse(&d, SESSION, AGENT, "custom", "model").unwrap();
+    assert!(
+        c.completions()
+            .iter()
+            .any(|r| r.description.contains("Textual window action"))
+    );
+    let mut v = View::default();
+    v.open(false);
+    v.take_intent();
+    v.observe(Update::Catalog {
+        catalog: c,
+        skills: false,
+    });
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Down));
+    assert!(draw(&mut v, 80, 28).contains("Textual window action"));
+}

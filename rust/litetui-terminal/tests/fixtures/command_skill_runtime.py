@@ -198,6 +198,9 @@ async def serve(app):
                 if case == "work-routes":
                     modules += ("tasks_plugin", "scheduler_plugin", "goal_loop_plugin")
                     expected.update(("tasks", "scheduler", "goal-loop"))
+                if case == "arg-routes":
+                    modules += ("help_plugin", "mcp_manage")
+                    expected.update(("help", "mcp_manage"))
                 manifests = plugins.register_plugins(app, app.plugins, order=tuple("litetui.plugins." + m for m in modules))
                 assert {manifest.id for manifest in manifests} == expected
                 assert {skill.name for skill in app.skills} >= set(files), "Actual startup must discover fixture skills"
@@ -252,7 +255,7 @@ async def serve(app):
                         report["routes"].append(await dispatch({**base, "type": "gui.commands.resolve",
                             "id": "control-theme", "row_id": row["id"]}))
                     elif case in {"routes", "unknown", "unsupported", "control-args", "mixed", "raw-ambiguous", "stale-generation", "stale-policy", "foreign-agent", "foreign-session"}:
-                        commands = ["/settings", "/config", "/set", "/exit", "/thinking", "/conversations", "/skill"] if case == "routes" else [{"unknown": "/not-a-command", "unsupported": "/hooks", "control-args": "/settings extra", "raw-ambiguous": "/caseskill"}.get(case, "/settings")]
+                        commands = ["/settings", "/config", "/set", "/exit", "/thinking", "/conversations", "/skill"] if case == "routes" else [{"unknown": "/not-a-command", "unsupported": "/screenshot", "control-args": "/settings extra", "raw-ambiguous": "/caseskill"}.get(case, "/settings")]
                         report["routes"] = []
                         for index, text in enumerate(commands):
                             command = {**base, "type": "gui.commands.resolve", "id": "resolve-" + str(index), "command": text}

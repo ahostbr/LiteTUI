@@ -372,6 +372,9 @@ fn route_scenario(case: &str, raw: &str, action: &str) {
                 "conversations" => assert!(app.has_live_browser()),
                 "quit" => assert!(app.command_quit),
                 "skills" => assert!(app.has_live_commands()),
+                "help" => assert!(app.help.open && !app.has_live_commands()),
+                "mcp" => assert!(app.has_live_settings()),
+                "cleared" => assert!(app.notice.contains("Screen cleared"), "{}", app.notice),
                 "refused" => assert!(app.has_live_commands()),
                 "Tasks" | "Scheduled jobs" | "Loops" | "Goal" | "Calendar" | "Plugins" => {
                     assert!(app.has_live_work());
@@ -501,6 +504,32 @@ fn work_commands_open_the_selected_section_without_running_actions() {
         ("/goal clear", "refused"),
     ] {
         route_scenario("work-routes", raw, section);
+    }
+}
+
+#[test]
+#[ignore = "controlled real source runtime"]
+fn argument_routes_preselect_reviewed_controls_and_refuse_what_they_cannot_honor() {
+    for (raw, action) in [
+        ("/help", "help"),
+        ("/keys", "help"),
+        ("/mcp", "mcp"),
+        ("/mcp list", "mcp"),
+        ("/clear-screen", "cleared"),
+        ("/think default", "thinking"),
+        ("/model 1", "models"),
+        ("/backend custom", "backend"),
+        ("/resume", "conversations"),
+        ("/model 999", "refused"),
+        ("/think nonsense", "refused"),
+        ("/backend --default custom", "refused"),
+        ("/resume 1", "refused"),
+        ("/tools x", "refused"),
+        ("/mcp add x y", "refused"),
+        ("/claude", "refused"),
+        ("/screenshot", "refused"),
+    ] {
+        route_scenario("arg-routes", raw, action);
     }
 }
 
