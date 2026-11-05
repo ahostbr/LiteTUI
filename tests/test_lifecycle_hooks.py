@@ -144,3 +144,38 @@ async def test_timeout_and_cancellation_kill_fixture_child_tree(tmp_path, cancel
     finally:
         if router_record.pid_is_live(pid):
             ttyguard.kill_tree(pid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("signalled", [True, False])
+async def test_confirmed_tree_kill_joins_owned_handle_before_terminal_proof(tmp_path, monkeypatch, signalled):
+    import io
+    import subprocess
+
+    from litetui import lifecycle_hooks as hooks
+
+    class Child:
+        pid = 47
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        waited = False
+
+        def poll(self):
+            return 1 if self.waited and signalled else None
+
+        def wait(self, timeout):
+            assert timeout == 1
+            self.waited = True
+            if not signalled:
+                raise subprocess.TimeoutExpired("owned fixture", timeout)
+            return self.poll()
+
+    child = Child()
+    monkeypatch.setattr(hooks.ttyguard, "popen", lambda *a, **kw: child)
+    monkeypatch.setattr(hooks.ttyguard, "kill_tree", lambda pid, proc: proc is child and pid == child.pid)
+    proof = {}
+    result = await hooks.run_hook(hooks.Hook("test", ("tool_before",), "fixture", timeout=.01),
+                                  {}, tmp_path, on_settled=lambda _result, state: proof.update(state))
+    assert result.timed_out and child.waited
+    assert proof["kill_confirmed"] is True and proof["process_exited"] is signalled and proof["pipes_settled"] is True

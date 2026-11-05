@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -356,6 +357,14 @@ async def run_hook(hook: Hook, event: dict, workspace: Path, *, cancelled=lambda
             cancel.wait(.025)
         for worker in workers:
             worker.join(timeout=1)
+        # A closed Windows Job can be confirmed gone while the retained Popen
+        # handle is still becoming signalled. Join that exact process briefly
+        # before recording terminal proof, retaining uncertainty on expiry.
+        if settlement["kill_confirmed"] is True and proc.poll() is None:
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
         settlement["process_exited"] = proc.poll() is not None
         settlement["pipes_settled"] = not any(worker.is_alive() for worker in workers)
         # Job handles are integers, not RAII objects. Release even on success;
