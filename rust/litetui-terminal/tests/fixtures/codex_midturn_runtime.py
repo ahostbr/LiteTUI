@@ -96,7 +96,7 @@ async def request(server, method, params):
             and entry["work_input_id"] in work.bridge(app).inputs
         )
         controls.mark("native-steer", delivery=copy.deepcopy(entry))
-        if controls.case == "codex-midturn-rejected":
+        if controls.case in {"codex-midturn-rejected", "codex-midturn-image-rejected"}:
             raise RejectedRequest("Controlled pre-injection rejection", -32602)
         if controls.case == "codex-midturn-uncertain":
 

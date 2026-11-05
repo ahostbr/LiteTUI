@@ -101,7 +101,10 @@ runpy.run_path({},run_name='__main__')
             "strict".into()
         },
         "--tools".into(),
-        if case.starts_with("host-") || case == "claude-queue-tools" {
+        if case.starts_with("host-")
+            || case == "claude-queue-tools"
+            || case.starts_with("claude-queue-image")
+        {
             "on".into()
         } else {
             "off".into()
@@ -1145,6 +1148,177 @@ fn midturn_queues_source_bound_draft_and_preserves_an_unconfirmed_interrupt() {
     }
 }
 
+const TINY_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+fn work_key(runtime: &mut Interactive, app: &mut Demo, code: KeyCode) -> io::Result<()> {
+    draw(app);
+    let work = &mut app.live.as_mut().unwrap().work;
+    work.key(KeyEvent::new(code, KeyModifiers::NONE));
+    if let Some(intent) = work.take_intent() {
+        runtime.work(intent)?;
+        wait(runtime, app, |e| matches!(e, Observation::Work(_)))?;
+    }
+    Ok(())
+}
+fn attach_image(runtime: &mut Interactive, app: &mut Demo, path: &Path) -> io::Result<()> {
+    app.open_image();
+    assert!(app.live.as_ref().unwrap().work.image.open, "{}", app.notice);
+    draw(app);
+    app.live
+        .as_mut()
+        .unwrap()
+        .work
+        .paste(path.to_str().unwrap());
+    work_key(runtime, app, KeyCode::Enter)?;
+    let screen = draw(app);
+    assert!(screen.contains("Enter attaches"), "{screen}");
+    work_key(runtime, app, KeyCode::Enter)?;
+    assert!(app.live.as_ref().unwrap().work.image.attached.is_some());
+    Ok(())
+}
+fn find(root: &Path, name: &str) -> Option<PathBuf> {
+    for entry in fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|n| n == name) {
+            return Some(path);
+        }
+        if path.is_dir()
+            && let Some(found) = find(&path, name)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[test]
+#[ignore = "actual captured host stream, reviewed image and queued user-input ledger"]
+fn midturn_queues_the_reviewed_image_with_the_message_and_never_replays_it() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    for case in ["midturn-image", "midturn-image-quit", "midturn-image-stale"] {
+        let (runtime, root) = launch(case);
+        let draft = "  Look at this image 雪  ";
+        let picture = root.join("queued picture.png");
+        let digest = std::cell::RefCell::new(String::new());
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            let chat = app.live.as_mut().unwrap();
+            chat.submit("Original foreground request")?;
+            runtime.submit(chat.take_submission().unwrap())?;
+            stage(runtime, &mut app, &root, "stream-active")?;
+            fs::write(&picture, STANDARD.decode(TINY_PNG).unwrap())?;
+            attach_image(runtime, &mut app, &picture)?;
+            let attached = app.live.as_ref().unwrap().work.image.attached.clone().unwrap();
+            *digest.borrow_mut() = attached.wire()["png_sha256"].as_str().unwrap().into();
+            // The reviewed pixels are the source's retained copy; replacing the file changes nothing.
+            fs::remove_file(&picture)?;
+            app.insert_text(draft);
+            app.submit_chord(false);
+            let intent = app.live.as_mut().unwrap().work.take_intent().ok_or_else(|| {
+                io::Error::other(format!("No queue intent: {}", app.notice))
+            })?;
+            runtime.work(intent)?;
+            wait(runtime, &mut app, |e| matches!(e, Observation::Work(_)))?;
+            let screen = draw(&mut app);
+            assert!(
+                screen.contains("next safe boundary")
+                    && screen.contains("Attached image: queued picture.png")
+                    && screen.contains(digest.borrow().as_str()),
+                "{screen}"
+            );
+            assert_eq!(app.composer.text(), draft);
+            if case == "midturn-image-stale" {
+                fs::write(root.join("release-stream"), b"retire reviewed owner before Apply")?;
+                while app.live.as_ref().unwrap().busy {
+                    app.observe_live(next(runtime)?)?;
+                }
+            }
+            app.live
+                .as_mut()
+                .unwrap()
+                .work
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            let intent = app.live.as_mut().unwrap().work.take_intent().expect("one reviewed Apply");
+            // Nothing leaves the composer until the source has confirmed the queue.
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(app.live.as_ref().unwrap().work.image.attached, Some(attached.clone()));
+            runtime.work(intent)?;
+            wait(runtime, &mut app, |e| matches!(e, Observation::Work(_)))?;
+            if case == "midturn-image-stale" {
+                assert!(draw(&mut app).contains("foreground turn changed"));
+                assert_eq!(app.composer.text(), draft);
+                assert_eq!(app.live.as_ref().unwrap().work.image.attached, Some(attached));
+                return runtime.quit();
+            }
+            assert_eq!(app.composer.text(), "");
+            assert!(app.live.as_ref().unwrap().work.image.attached.is_none());
+            if case == "midturn-image-quit" {
+                return runtime.quit();
+            }
+            fs::write(root.join("release-stream"), b"finish original and consume exactly one queue entry")?;
+            let mut settled = false;
+            for _ in 0..160 {
+                let e = next(runtime)?;
+                settled |= matches!(&e, Observation::WorkExecution(update) if matches!(update.as_ref(), litetui_terminal::live::WorkExecution::Settled { .. }));
+                app.observe_live(e)?;
+                if settled && !app.live.as_ref().unwrap().busy {
+                    return runtime.quit();
+                }
+            }
+            Err(io::Error::other("Queued image input did not settle"))
+        });
+        assert!(result.is_ok(), "{case} {result:?} {}", root.display());
+        let digest = digest.into_inner();
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        let requests = r["requests"].as_array().unwrap();
+        let inputs = r["work"]["inputs"].as_array().unwrap();
+        let stored = find(&root, &format!("queued-{digest}.png"));
+        if case == "midturn-image-stale" {
+            assert!(inputs.is_empty() && stored.is_none());
+            assert_eq!(requests.len(), 1);
+            continue;
+        }
+        let identity = &inputs[0]["payload"]["image"];
+        assert_eq!(identity["png_sha256"], digest);
+        assert_eq!(identity["name"], "queued picture.png");
+        let stored = fs::read(stored.expect("conversation-owned queued image file")).unwrap();
+        assert_eq!(format!("{:x}", Sha256::digest(&stored)), digest);
+        assert_eq!(identity["png_bytes"], stored.len());
+        assert_eq!(inputs[0]["payload"]["content"], draft);
+        if case == "midturn-image-quit" {
+            assert_eq!(requests.len(), 1, "a held queued image is never replayed");
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0]["state"], "held");
+            assert_eq!(inputs[0]["admission"], Value::Null);
+            let recovered = r["queue_recovered"].as_array().unwrap();
+            assert_eq!(recovered.len(), 1);
+            assert_eq!(recovered[0]["state"], "held");
+            assert_eq!(recovered[0]["input"], inputs[0]["ref"]);
+        } else {
+            assert_eq!(requests.len(), 2);
+            let messages = requests[1]["messages"].as_array().unwrap();
+            let sent: Vec<&Value> = messages
+                .iter()
+                .filter(|m| m["role"] == "user" && m["content"].is_array())
+                .collect();
+            assert_eq!(sent.len(), 1);
+            let parts = sent[0]["content"].as_array().unwrap();
+            assert_eq!(parts[1], json!({"type": "text", "text": draft}));
+            let url = parts[0]["image_url"]["url"].as_str().unwrap();
+            let pixels = STANDARD
+                .decode(url.strip_prefix("data:image/png;base64,").unwrap())
+                .unwrap();
+            assert_eq!(pixels, stored);
+            assert_eq!(inputs[0]["state"], "settled");
+            assert_eq!(inputs[0]["admission"]["mode"], "new_turn");
+        }
+        assert_eq!(r["denied"], json!([]));
+    }
+}
+
 #[test]
 #[ignore = "actual source-owned soft interrupt and queued successor"]
 fn midturn_interrupt_preserves_order_worker_and_draft() {
@@ -1850,6 +2024,117 @@ fn claude_queue_preserves_draft_and_delivers_only_after_original_turn_settles() 
 }
 
 #[test]
+#[ignore = "real registered source and pinned SDK fixture, no live provider"]
+fn claude_queue_carries_the_reviewed_image_as_an_owned_file_without_replay() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    for case in ["claude-queue-image", "claude-queue-image-quit"] {
+        let (runtime, root) = launch(case);
+        let draft = "Claude queued picture 雪";
+        let picture = root.join("claude picture.png");
+        let digest = std::cell::RefCell::new(String::new());
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live("claude".into(), "claude-fixture".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            let chat = app.live.as_mut().unwrap();
+            chat.submit("Original controlled Claude input")?;
+            runtime.submit(chat.take_submission().unwrap())?;
+            stage(runtime, &mut app, &root, "stream-active")?;
+            fs::write(&picture, STANDARD.decode(TINY_PNG).unwrap())?;
+            attach_image(runtime, &mut app, &picture)?;
+            let attached = app.live.as_ref().unwrap().work.image.attached.clone().unwrap();
+            assert_eq!(attached.wire()["delivery"], "file");
+            *digest.borrow_mut() = attached.wire()["png_sha256"].as_str().unwrap().into();
+            app.insert_text(draft);
+            app.submit_chord(false);
+            dispatch_midturn(runtime, &mut app)?;
+            let screen = draw(&mut app);
+            assert!(
+                screen.contains("next Claude turn")
+                    && screen.contains("Attached image: claude picture.png")
+                    && screen.contains("conversation-owned file path"),
+                "{screen}"
+            );
+            app.live
+                .as_mut()
+                .unwrap()
+                .work
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(app.live.as_ref().unwrap().work.image.attached, Some(attached));
+            dispatch_midturn(runtime, &mut app)?;
+            assert_eq!(app.composer.text(), "");
+            assert!(app.live.as_ref().unwrap().work.image.attached.is_none());
+            if case == "claude-queue-image-quit" {
+                return runtime.quit();
+            }
+            fs::write(root.join("release-stream"), b"finish original before second query")?;
+            let mut settled = false;
+            for _ in 0..160 {
+                let event = next(runtime)?;
+                settled |= matches!(&event, Observation::WorkExecution(update) if matches!(update.as_ref(), litetui_terminal::live::WorkExecution::Settled { .. }));
+                app.observe_live(event)?;
+                if settled && !app.live.as_ref().unwrap().busy {
+                    return runtime.quit();
+                }
+            }
+            Err(io::Error::other("Claude queued image input did not settle"))
+        });
+        assert!(result.is_ok(), "{case}: {result:?} {}", root.display());
+        let digest = digest.into_inner();
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(r["denied"], json!([]));
+        assert_eq!(r["sdk_retired"], true);
+        let queries = r["claude_queries"].as_array().unwrap();
+        let inputs = r["work"]["inputs"].as_array().unwrap();
+        let stored = find(&root, &format!("queued-{digest}.png")).expect("owned image file");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(fs::read(&stored).unwrap())),
+            digest
+        );
+        let wire = r["wire"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["result"]["kind"] == "midturn_queued")
+            .unwrap();
+        let delivery = &wire["result"]["native_delivery"];
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0]["payload"]["content"], draft);
+        assert_eq!(inputs[0]["payload"]["image"]["png_sha256"], digest);
+        let segment = delivery["segment_id"].as_str().unwrap();
+        let entry = r["claude_ledger"]["segments"][segment]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == delivery["id"])
+            .unwrap();
+        let content = entry["content"].as_str().unwrap();
+        assert!(content.starts_with(draft) && content.contains(&format!("queued-{digest}.png")));
+        if case == "claude-queue-image-quit" {
+            assert_eq!(
+                queries.len(),
+                1,
+                "a prepared queued image is never replayed"
+            );
+            assert_eq!(inputs[0]["state"], "held");
+            assert_eq!(entry["state"], "prepared");
+            let recovered = r["queue_recovered"].as_array().unwrap();
+            assert_eq!(recovered.len(), 1);
+            assert_eq!(recovered[0]["input"], inputs[0]["ref"]);
+            assert_eq!(recovered[0]["state"], "held");
+        } else {
+            assert_eq!(queries.len(), 2);
+            assert_eq!(queries[1]["text"].as_str().unwrap(), content);
+            assert_eq!(inputs[0]["state"], "settled");
+            assert_eq!(entry["state"], "terminal");
+        }
+    }
+}
+
+#[test]
 #[ignore = "actual source-owned response playback through synthetic device-free speech helpers"]
 fn selected_response_playback_reviews_exact_text_and_preserves_remote_ownership() {
     for case in [
@@ -2156,6 +2441,126 @@ fn native_provider_midturn_steering_and_interrupt_use_exact_owned_delivery() {
                 }
             );
         }
+    }
+}
+
+#[test]
+#[ignore = "real registered source with controlled native JSON-RPC"]
+fn codex_midturn_steers_or_defers_the_exact_reviewed_image_without_replay() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    for case in ["codex-midturn-image", "codex-midturn-image-rejected"] {
+        let (runtime, root) = launch(case);
+        let rejected = case.ends_with("rejected");
+        let draft = "Codex queued picture 雪";
+        let picture = root.join("codex picture.png");
+        let digest = std::cell::RefCell::new(String::new());
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live("codex".into(), "gpt-6.1-sol".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            let chat = app.live.as_mut().unwrap();
+            chat.submit("Original controlled native input")?;
+            runtime.submit(chat.take_submission().unwrap())?;
+            stage(runtime, &mut app, &root, "stream-active")?;
+            fs::write(&picture, STANDARD.decode(TINY_PNG).unwrap())?;
+            attach_image(runtime, &mut app, &picture)?;
+            let attached = app.live.as_ref().unwrap().work.image.attached.clone().unwrap();
+            assert_eq!(attached.wire()["delivery"], "inline");
+            *digest.borrow_mut() = attached.wire()["png_sha256"].as_str().unwrap().into();
+            app.insert_text(draft);
+            app.submit_chord(false);
+            dispatch_midturn(runtime, &mut app)?;
+            let screen = draw(&mut app);
+            assert!(
+                screen.contains("current Codex turn")
+                    && screen.contains("Attached image: codex picture.png")
+                    && screen.contains("exact PNG"),
+                "{screen}"
+            );
+            app.live
+                .as_mut()
+                .unwrap()
+                .work
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(app.live.as_ref().unwrap().work.image.attached, Some(attached));
+            dispatch_midturn(runtime, &mut app)?;
+            assert_eq!(app.composer.text(), "");
+            assert!(app.live.as_ref().unwrap().work.image.attached.is_none());
+            stage(runtime, &mut app, &root, "native-steer")?;
+            fs::write(root.join("release-stream"), b"settle reviewed original")?;
+            let mut settled = false;
+            for _ in 0..180 {
+                let event = next(runtime)?;
+                settled |= matches!(&event, Observation::WorkExecution(update) if matches!(update.as_ref(), litetui_terminal::live::WorkExecution::Settled { .. }));
+                app.observe_live(event)?;
+                if settled && !app.live.as_ref().unwrap().busy {
+                    return runtime.quit();
+                }
+            }
+            Err(io::Error::other("Codex queued image did not settle"))
+        });
+        assert!(result.is_ok(), "{case}: {result:?} {}", root.display());
+        let digest = digest.into_inner();
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(r["denied"], json!([]), "{case}");
+        assert_eq!(r["native_retired"], true);
+        let stored =
+            fs::read(find(&root, &format!("queued-{digest}.png")).expect("owned image")).unwrap();
+        assert_eq!(format!("{:x}", Sha256::digest(&stored)), digest);
+        let calls = r["codex_calls"].as_array().unwrap();
+        let starts: Vec<&Value> = calls
+            .iter()
+            .filter(|c| c["method"] == "turn/start")
+            .collect();
+        let steers: Vec<&Value> = calls
+            .iter()
+            .filter(|c| c["method"] == "turn/steer")
+            .collect();
+        let carries = |input: &Value| {
+            let blocks = input.as_array().unwrap();
+            blocks
+                .iter()
+                .any(|b| b["type"] == "text" && b["text"] == draft)
+                && blocks.iter().any(|b| {
+                    b["type"] == "image"
+                        && STANDARD
+                            .decode(
+                                b["url"]
+                                    .as_str()
+                                    .unwrap()
+                                    .strip_prefix("data:image/png;base64,")
+                                    .unwrap(),
+                            )
+                            .unwrap()
+                            == stored
+                })
+        };
+        assert_eq!(steers.len(), 1);
+        assert!(carries(&steers[0]["params"]["input"]));
+        let inputs = r["work"]["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0]["payload"]["content"], draft);
+        assert_eq!(inputs[0]["payload"]["image"]["png_sha256"], digest);
+        assert_eq!(inputs[0]["state"], "settled");
+        if rejected {
+            // A known pre-injection rejection keeps the input for the next turn, image included.
+            assert_eq!(starts.len(), 2);
+            assert_eq!(inputs[0]["admission"]["mode"], "new_turn");
+            assert!(starts.iter().any(|s| carries(&s["params"]["input"])));
+        } else {
+            assert_eq!(starts.len(), 1);
+            assert_eq!(inputs[0]["admission"]["mode"], "in_turn");
+        }
+        let history = r["native_history"].as_array().unwrap();
+        let rows: Vec<&Value> = history
+            .iter()
+            .filter(|m| m["role"] == "user" && m["content"].is_array())
+            .collect();
+        assert_eq!(rows.len(), 1, "{history:?}");
+        assert_eq!(rows[0]["content"][1]["text"], draft);
     }
 }
 

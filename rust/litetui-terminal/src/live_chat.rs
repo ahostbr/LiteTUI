@@ -381,21 +381,18 @@ impl Chat {
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
         self.reserve_row(prompt, false)
     }
+    /// True while a source-owned foreground reply is running and can still take a queued message.
+    pub fn midturn_foreground(&self) -> bool {
+        self.submission_id.is_some() && self.busy && self.ready && !self.closed && !self.quitting
+    }
     pub fn review_midturn(&mut self, text: &str, alternate: bool) -> io::Result<()> {
         let op = self
             .submission_id
             .clone()
             .filter(|_| {
-                self.busy
-                    && self.ready
-                    && !self.closed
-                    && !self.quitting
-                    && self.work.image.attached.is_none()
-                    && !self.work.owns_input()
+                self.busy && self.ready && !self.closed && !self.quitting && !self.work.owns_input()
             })
-            .ok_or_else(|| {
-                io::Error::other("Wait for an active foreground reply with no pending attachment")
-            })?;
+            .ok_or_else(|| io::Error::other("Wait for an active foreground reply"))?;
         if text.len() > crate::midturn::MAX_TEXT
             || text.contains('\0')
             || text.trim().is_empty()
@@ -409,6 +406,7 @@ impl Chat {
             text: text.to_owned(),
             alternate,
             operation: op,
+            image: self.work.image.attached.clone(),
         });
         Ok(())
     }

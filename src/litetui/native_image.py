@@ -7,6 +7,7 @@ import io
 import os
 import secrets
 import stat
+import tempfile
 from pathlib import Path
 
 from litetui import (
@@ -80,7 +81,7 @@ def decode_image(name, data, formats):
              "png_bytes": len(png), "png_sha256": hashlib.sha256(png).hexdigest()}, encoded)
 
 
-def check_inline_budget(app, encoded, prompt):
+def check_inline_budget(app, encoded, prompt, reserved=0):
     from litetui.conversation import ConversationRepository
 
     content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}},
@@ -92,7 +93,7 @@ def check_inline_budget(app, encoded, prompt):
     path = app.store.convo_path
     size = path.stat().st_size if path is not None and path.is_file() else 0
     record = {"type": "msg", "message": row, "ts": 1.7976931348623157e308}
-    if size + len(ConversationRepository.record_bytes(record, separator=True)) > native_history.MAX_TRANSCRIPT:
+    if size + reserved + len(ConversationRepository.record_bytes(record, separator=True)) > native_history.MAX_TRANSCRIPT:
         raise ValueError("The image would exceed the 8 MiB saved transcript limit. Choose a smaller image.")
     if reason := app._oversize_refusal(content):
         raise ValueError(reason)
@@ -220,3 +221,82 @@ def consume(app, cmd):
     bridge.composer_image = None
     bridge.clipboard_candidate = None
     return entry[1]
+
+
+# --- A reviewed image attached to a mid-turn queued message --------------------------------------
+# The Work ledger rewrites its whole document on every state change and caps a payload at 64 KiB, so
+# queued pixels never enter it. The ledger keeps the image's identity (name, PNG byte count, SHA-256);
+# the bytes live in one conversation-owned content-addressed file that is re-verified on every read.
+
+def queued_descriptor(review):
+    return {"name": review["name"], "png_bytes": review["png_bytes"], "png_sha256": review["png_sha256"]}
+
+
+def validate_descriptor(image):
+    if (type(image) is not dict or set(image) != {"name", "png_bytes", "png_sha256"}
+            or type(image["name"]) is not str or not 0 < len(image["name"]) <= 1024
+            or any(ord(c) < 32 for c in image["name"])
+            or type(image["png_bytes"]) is not int or not 0 < image["png_bytes"] <= 16 * 1024 * 1024
+            or type(image["png_sha256"]) is not str or len(image["png_sha256"]) != 64
+            or any(c not in "0123456789abcdef" for c in image["png_sha256"])):
+        raise ValueError("Malformed queued image identity")
+    return image
+
+
+def queued_path(app, image):
+    return Path(app.convo_dir) / "images" / f"queued-{validate_descriptor(image)['png_sha256']}.png"
+
+
+def _exact(png, image):
+    if len(png) != image["png_bytes"] or hashlib.sha256(png).hexdigest() != image["png_sha256"]:
+        raise ValueError("Queued image bytes differ from the reviewed identity")
+    return png
+
+
+def store_queued(app, review, encoded):
+    """Write the exact retained PNG once under its own digest, then read it back."""
+    image = validate_descriptor(queued_descriptor(review))
+    png = _exact(base64.b64decode(encoded, validate=True), image)
+    path = queued_path(app, image)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        descriptor, name = tempfile.mkstemp(prefix=".queued-image-", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(png)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+    read_queued(app, image)
+    return str(path)
+
+
+def read_queued(app, image):
+    path = queued_path(app, image)
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size != image["png_bytes"]:
+            raise ValueError("Queued image file is missing or changed")
+        png = _exact(path.read_bytes(), image)
+    except OSError as exc:
+        raise ValueError("Queued image file is missing or unreadable") from exc
+    return base64.b64encode(png).decode("ascii")
+
+
+def provider_payload(app, payload):
+    """The payload as its provider owner stores and sends it, with the image bytes re-verified."""
+    if "image" not in payload:
+        return payload
+    image = validate_descriptor(payload["image"])
+    text = payload["content"]
+    if getattr(app.backend, "owns_native_turns", False):
+        from litetui.claude_turn import inline_images
+        read_queued(app, image)
+        content, _ = inline_images(app, [{"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
+                                         {"type": "text", "text": text}], str(queued_path(app, image)))
+    else:
+        content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + read_queued(app, image)}},
+                   {"type": "text", "text": text}]
+    return {key: value for key, value in {**payload, "content": content}.items() if key != "image"}

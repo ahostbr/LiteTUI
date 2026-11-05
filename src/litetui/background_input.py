@@ -614,7 +614,7 @@ def enqueue(app, producer, item):
         raise ValueError("Work completion lacks its exact producer task")
     if value.producers.get(producer.ref["producer_id"]) is not producer or producer.input_id is not None:
         raise ValueError("Work producer completion was foreign or duplicated")
-    keys = ("delivery", "text", "tool_profile", "source", "history") if item.get("delivery") == "committed_history" else ("content", "text", "tool_profile", "source")
+    keys = ("delivery", "text", "tool_profile", "source", "history") if item.get("delivery") == "committed_history" else ("content", "text", "tool_profile", "source", "image")
     payload = {key: copy.deepcopy(item[key]) for key in keys if key in item}
     validate_payload(payload)
     if payload.get("delivery") == "committed_history" and producer.ref["kind"] != "child_result":
@@ -683,10 +683,16 @@ def _begin(app, entry, in_turn):
         raise ValueError("Interrupting text requires a fresh turn after the interrupted worker retires")
     if in_turn and current_origin(app) is None:
         raise ValueError("Safe-boundary Work admission lacks its exact execution")
-    entry.claim_task = _task()
-    value.input_event(entry, "claiming")
     delivery = {**entry.item, **entry.payload,
                 "operation_id": current_origin(app).operation_id if in_turn else ident()}
+    if "image" in entry.payload:
+        # The ledger holds the image's identity only; its provider content is rebuilt from the exact
+        # verified bytes. Claim only after that succeeded, so a missing or changed file claims nothing.
+        from litetui import native_image
+        delivery["content"] = native_image.provider_payload(app, entry.payload)["content"]
+        del delivery["image"]
+    entry.claim_task = _task()
+    value.input_event(entry, "claiming")
     if in_turn:
         delivery["_gui_in_turn"] = True
     return delivery
@@ -1379,9 +1385,11 @@ def validate_document(document):
         if producer["kind"] in {"user_queue", "user_interrupt"} and (
                 epoch["provider"] not in {"host", "claude", "codex"}
                 or epoch["instance"] != producer["owner_instance"]
-                or set(payload) != {"content", "text", "source", "tool_profile"} or payload["source"] != "rpc"
+                or set(payload) - {"image"} != {"content", "text", "source", "tool_profile"} or payload["source"] != "rpc"
                 or type(payload["content"]) is not str or payload["text"] != payload["content"]):
             raise ValueError("Queued composer input lost its captured text or host epoch")
+        if "image" in payload and producer["kind"] not in {"user_queue", "user_interrupt"}:
+            raise ValueError("Only queued composer input may carry an image identity")
         if payload.get("delivery") == "committed_history" and (
                 producers[i["producer_id"]]["kind"] != "child_result"
                 or payload["history"]["session_id"] != owner["session_id"]):
@@ -1845,13 +1853,22 @@ async def _run_job(app, job, manual=False):
         release(app, reservation)
 
 
-def queue_user_input(app, parent, review, payload, *, interrupt=False, native=None):
-    """Capture one reviewed reply under the actual GUI worker and canonical FIFO."""
+def queue_user_input(app, parent, review, payload, *, interrupt=False, native=None, image=None):
+    """Capture one reviewed reply under the actual GUI worker and canonical FIFO.
+
+    `image` is the retained (review, base64 PNG) pair a payload["image"] identity was taken from.
+    """
     from textual.worker import get_current_worker
 
+    from litetui import native_image
     value = bridge(app)
     worker = get_current_worker()
     app._materialise_convo()
+    image_path = None
+    if (image is None) != ("image" not in payload) or image and native_image.queued_descriptor(image[0]) != payload["image"]:
+        raise ValueError("Queued image identity differs from its retained review")
+    if image is not None:
+        image_path = native_image.store_queued(app, *image)
     reservation = reserve(app)
     try:
         producer = register_producer(app, "user_interrupt" if interrupt else "user_queue", review, owner_instance=value.instance,
@@ -1864,13 +1881,14 @@ def queue_user_input(app, parent, review, payload, *, interrupt=False, native=No
             if native is not None:
                 if value.provider not in {"claude", "codex"}:
                     raise ValueError("Native preparation requires its captured provider")
-                item.update(native.prepare(app, payload, review))
+                item.update(native.prepare(app, native_image.provider_payload(app, payload), review))
             entry = enqueue(app, producer, item)
             if entry.state != "queued" or _read(value.path) != value.raw:
                 raise ValueError("Queued composer input lacks an exact persisted ledger record")
             if native is not None:
                 native.receipt(app, item, review)
-            item["bubble"] = app._user_bubble(payload["content"], False, queued=not interrupt)
+            item["bubble"] = app._user_bubble(payload["content"], image is not None, queued=not interrupt,
+                                              image_path=image_path)
             if interrupt:
                 # These consecutive synchronous steps mirror the host send chord. Signal the
                 # soft stop only after exact durable capture, before yielding to any other task.
@@ -2225,11 +2243,14 @@ def validate_payload(payload):
                 or len(set(ids)) != len(ids)):
             raise ValueError("Malformed committed completion receipt IDs")
     else:
-        _keys(payload, ("content", "tool_profile", "source"), ("text",))
+        _keys(payload, ("content", "tool_profile", "source"), ("text", "image"))
         payload_text(payload["content"])
         text(payload["source"])
         if "text" in payload and type(payload["text"]) is not str:
             raise ValueError("Malformed Work display text")
+        if "image" in payload:
+            from litetui import native_image
+            native_image.validate_descriptor(payload["image"])
     if payload["tool_profile"] not in PROFILES or len(encoded(payload)) > LIMITS["payload_bytes"]:
         raise ValueError("Work completion payload exceeds its reserved contract")
 
@@ -2407,11 +2428,13 @@ def accept_provider_input(app, lane, item):
                 or native.get("work_input_id") != entry.ref["input_id"]
                 or native.get("work_payload_sha256") != entry.ref["payload_sha256"]):
             raise ValueError("Native acceptance lacks the exact durable Work binding")
-        _begin(app, entry, True)
+        delivery = _begin(app, entry, True)
         if any(row.get("codex_delivery", {}).get("id") == native["id"] for row in app.conversation):
             raise ValueError("Native accepted input was already materialized without this Work claim")
         from litetui import hook_host
-        accepted = hook_host.accept_prompt_origin(app, {**item, "_gui_in_turn": True,
+        # A queued image reaches the saved transcript exactly as the provider received it.
+        shown = {"content": delivery["content"]} if "image" in entry.payload else {}
+        accepted = hook_host.accept_prompt_origin(app, {**item, **shown, "_gui_in_turn": True,
             "_codex_metadata": {"provider": "codex", "app_server_thread_id": native["threadId"],
                                 "instructions_digest": native.get("instructions_digest")}},
             native_accepted=True, persist_user=lambda message: _persist_user(app, entry, message))

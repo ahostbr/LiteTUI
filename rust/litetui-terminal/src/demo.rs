@@ -187,11 +187,15 @@ impl Demo {
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
         chat.work.chat_pause.foreground(chat.busy);
-        if let Some(draft) = chat.work.midturn.queued.take()
-            && self.composer.text() == draft.text
-        {
-            self.composer.push_history(&draft.text);
-            self.composer.clear();
+        if let Some(draft) = chat.work.midturn.queued.take() {
+            // The source consumed the exact reviewed image with the confirmed queue entry.
+            if draft.image.is_some() && chat.work.image.attached == draft.image {
+                chat.work.image.attached = None;
+            }
+            if self.composer.text() == draft.text {
+                self.composer.push_history(&draft.text);
+                self.composer.clear();
+            }
         }
         if let Some((draft, text)) = chat.work.dictation.applied.take() {
             if self.composer.text() == draft.text
@@ -625,8 +629,9 @@ impl Demo {
             return;
         }
         if let Some(chat) = self.live.as_mut() {
+            // A foreground reply that can take a mid-turn queue also lets the image be chosen for it.
             if !chat.ready
-                || chat.busy
+                || chat.busy && !chat.midturn_foreground()
                 || chat.closed
                 || chat.quitting
                 || chat.queue_pending()
@@ -1092,13 +1097,15 @@ impl Demo {
             return;
         }
         if self.live.as_ref().is_some_and(|chat| chat.busy) && !self.has_live_input() {
-            let text = self.composer.text();
-            match self
-                .live
-                .as_mut()
-                .expect("live")
-                .review_midturn(text, alternate)
-            {
+            let chat = self.live.as_mut().expect("live");
+            // Same wording as the idle send: an attached image alone asks to be described.
+            let text =
+                if chat.work.image.attached.is_some() && self.composer.text().trim().is_empty() {
+                    "Describe this image."
+                } else {
+                    self.composer.text()
+                };
+            match chat.review_midturn(text, alternate) {
                 Ok(()) => self.completion.dismiss(),
                 Err(err) => self.notice = err.to_string(),
             }

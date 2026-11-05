@@ -112,7 +112,7 @@ if __name__ == "__main__":
     original_prepare = native_claude_queue.prepare_input
     def release(repository, *args, **kwargs):
         app = controls.history.boundary.app_instance
-        if controls.case in {"claude-queue-quit", "claude-queue-emission"} and app is not None and repository is app.store and repository.owned:
+        if controls.case in {"claude-queue-quit", "claude-queue-emission", "claude-queue-image-quit"} and app is not None and repository is app.store and repository.owned:
             bridge = getattr(app, "_native_work_bridge", None)
             if bridge is not None and bridge.closing:
                 controls.report["queue_recovered"] = Bridge(app).recovered

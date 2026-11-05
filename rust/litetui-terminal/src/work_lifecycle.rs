@@ -381,14 +381,33 @@ impl Payload {
         digest: Option<&str>,
     ) -> io::Result<Self> {
         let committed = v.get("delivery").is_some();
-        let fields: &[&str] = if committed {
-            &["delivery", "source", "tool_profile", "text", "history"]
+        let mut fields: Vec<&str> = if committed {
+            vec!["delivery", "source", "tool_profile", "text", "history"]
         } else if v.get("text").is_some() {
-            &["content", "text", "tool_profile", "source"]
+            vec!["content", "text", "tool_profile", "source"]
         } else {
-            &["content", "tool_profile", "source"]
+            vec!["content", "tool_profile", "source"]
         };
-        keys(v, fields)?;
+        // A queued composer message keeps its attached image's identity here; the pixels never do.
+        let image = v.get("image").filter(|_| !committed);
+        if image.is_some() {
+            fields.push("image");
+        }
+        keys(v, &fields)?;
+        let image_name = match image {
+            None => None,
+            Some(image) => {
+                keys(image, &["name", "png_bytes", "png_sha256"])?;
+                let name = text(image, "name", 1024)?;
+                if name.chars().any(char::is_control)
+                    || !number(image, "png_bytes", true).is_ok_and(|n| n <= 16 * 1024 * 1024)
+                {
+                    return Err(bad("Invalid queued image identity"));
+                }
+                hash(image, "png_sha256")?;
+                Some(name)
+            }
+        };
         // Value objects use sorted keys. This frozen object contains strings only,
         // matching Python compact sorted UTF-8 JSON without ASCII escaping.
         let encoded = serde_json::to_vec(v)?;
@@ -451,11 +470,18 @@ impl Payload {
                 .filter(|value| !value.is_empty() && value.len() <= PAYLOAD_BYTES)
                 .ok_or_else(|| bad("Invalid Work content"))?
                 .to_owned();
-            let display = match v.get("text") {
+            let mut display = match v.get("text") {
                 None => None,
                 Some(Value::String(value)) if value.len() <= PAYLOAD_BYTES => Some(value.clone()),
                 _ => return Err(bad("Invalid Work display text")),
             };
+            if let Some(name) = &image_name {
+                // The admitted row shows what the source will send, attachment included.
+                display = Some(format!(
+                    "{}\n[Image: {name}]",
+                    display.as_deref().unwrap_or(&content)
+                ));
+            }
             (Delivery::Append, content, display)
         };
         let source = text(v, "source", 128)?;
@@ -2365,4 +2391,52 @@ pub(crate) fn validate_execution_settlement(
     hash(v, "history_sha256")?;
     hash(v, "ledger_sha256")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod queued_image_payload_tests {
+    use super::*;
+
+    #[test]
+    fn queued_image_identity_is_strict_bound_to_the_digest_and_shown_without_pixels() {
+        let identity = json!({"name":"pic.png","png_bytes":12,"png_sha256":"a".repeat(64)});
+        let payload = json!({"content":"look","text":"look","source":"rpc","tool_profile":"strict","image":identity});
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&payload).unwrap())
+        );
+        let parsed = Payload::evidence(&payload, "rpc", Profile::Strict, Some(&digest)).unwrap();
+        assert_eq!(parsed.content, "look");
+        assert_eq!(parsed.display_text(), "look\n[Image: pic.png]");
+        assert!(
+            Payload::evidence(&payload, "rpc", Profile::Strict, Some(&"b".repeat(64))).is_err()
+        );
+        for (key, value) in [
+            ("name", json!("")),
+            ("name", json!("bad\u{7}name")),
+            ("png_bytes", json!(0)),
+            ("png_bytes", json!(16 * 1024 * 1024 + 1)),
+            ("png_sha256", json!("A".repeat(64))),
+            ("png_sha256", json!("a".repeat(63))),
+            ("pixels", json!("AAAA")),
+        ] {
+            let mut forged = payload.clone();
+            forged["image"][key] = value;
+            assert!(
+                Payload::evidence(&forged, "rpc", Profile::Strict, None).is_err(),
+                "{key}"
+            );
+        }
+        let mut missing = payload.clone();
+        missing["image"].as_object_mut().unwrap().remove("name");
+        assert!(Payload::evidence(&missing, "rpc", Profile::Strict, None).is_err());
+        let mut plain = payload.clone();
+        plain.as_object_mut().unwrap().remove("image");
+        assert_eq!(
+            Payload::evidence(&plain, "rpc", Profile::Strict, None)
+                .unwrap()
+                .display_text(),
+            "look"
+        );
+    }
 }

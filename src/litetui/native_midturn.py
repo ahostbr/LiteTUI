@@ -1,9 +1,11 @@
 """Queue a reviewed text draft behind the exact ongoing host-managed turn."""
 from __future__ import annotations
 
+import copy
+
 from litetui import background_input as work
+from litetui import native_image, seat_authority
 from litetui import native_runtime_controls as controls
-from litetui import seat_authority
 from litetui.native_context import read_binding
 from litetui.textfmt import midturn_action
 
@@ -32,6 +34,21 @@ def interrupt_queue(app, bridge):
     return prior
 
 
+def reviewed_image(app, bridge, received, message, native):
+    """The exact retained image the composer reviewed, or a refusal that leaves it attached."""
+    entry = getattr(bridge, "composer_image", None)
+    if (native_image.retained(app, received) is None or native_image.delivery(app) != entry[0]["delivery"]
+            or getattr(app, "pending_image", None)):
+        raise ValueError("The selected image or conversation changed. Select the image again.")
+    if entry[0]["delivery"] == "inline":
+        # Every queued inline image is appended to the saved transcript later; a native provider
+        # journal keeps a second copy beside it. Count what is already waiting.
+        copies = 2 if native is not None and native.value()["provider"] == "codex" else 1
+        waiting = sum(4 * ((item["image"]["png_bytes"] + 2) // 3) + 4096 for item in app._pending_input if "image" in item)
+        native_image.check_inline_budget(app, entry[1], message, waiting + (copies - 1) * (len(entry[1]) + 4096))
+    return entry
+
+
 def dispatch(app, cmd):
     operation = cmd["type"]
     if operation not in (REVIEW, APPLY, SEND_REVIEW, SEND_APPLY):
@@ -41,6 +58,8 @@ def dispatch(app, cmd):
     fields = ("origin", "chord", "text", "profile", "policy_epoch") + (("review",) if apply else ())
     if apply and work.provider(app) in {"claude", "codex"}:
         fields += ("native",)
+    if "image" in cmd:
+        fields += ("image",)
     bridge, binding = read_binding(app, cmd, operation, *fields)
     pending = bridge.user_queue_review
     bridge.user_queue_review = None
@@ -86,10 +105,16 @@ def dispatch(app, cmd):
     if type(cmd["policy_epoch"]) is not int or not 1 <= epoch == cmd["policy_epoch"] or cmd["profile"] != profile:
         raise ValueError("The queued text belongs to a different runtime policy")
     payload = {"content": message, "text": message, "source": "rpc", "tool_profile": profile}
+    retained = None
+    if "image" in cmd:
+        retained = reviewed_image(app, bridge, cmd["image"], message, native)
+        payload["image"] = native_image.queued_descriptor(retained[0])
     work.validate_payload(payload)
     value = {"version": 1, **binding, "origin": origin.envelope_fields(), "chord": chord, "text": message,
              "behavior": behavior, "enter_interrupts": swapped, "profile": profile,
              "policy_epoch": epoch, "payload_sha256": work.digest(work.encoded(payload))}
+    if retained is not None:
+        value["image"] = copy.deepcopy(retained[0])
     if native is not None:
         value["native"] = native.value()
         if apply and cmd["native"] != value["native"]:
@@ -107,7 +132,12 @@ def dispatch(app, cmd):
         pending[2].check(app)
         native = pending[2]
     producer, entry = work.queue_user_input(app, origin, value["review"], payload,
-        interrupt=behavior == "interrupt", native=native)
+        interrupt=behavior == "interrupt", native=native, image=retained)
+    if retained is not None:
+        # The queue now owns the exact bytes (digest-named conversation file plus ledger identity).
+        # The composer's copy is released here; the native composer clears only on the published reply.
+        bridge.composer_image = None
+        bridge.clipboard_candidate = None
     result = {**value, "kind": "midturn_queued", "operation_id": cmd["id"], "producer": producer, "input": entry}
     if native is not None:
         try:

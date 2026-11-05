@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from litetui import background_input as work
+from litetui import native_image
 from litetui.backend_session import SessionState
 from litetui.codex_app_server import AppServerTransport
 from litetui.codex_compaction_evidence import _identifier
@@ -148,7 +149,10 @@ class Binding:
             or native["turnId"] != self.turn
             or native["conversationId"] != app.convo_id
             or native["item"]
-            != {**work.entry_for(app, item).payload, "operation_id": review}
+            != {
+                **native_image.provider_payload(app, work.entry_for(app, item).payload),
+                "operation_id": review,
+            }
         ):
             raise ValueError("Codex queued delivery changed before confirmation")
         work.canonical_id(native["id"])

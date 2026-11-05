@@ -24,10 +24,21 @@ pub struct Draft {
     pub text: String,
     pub alternate: bool,
     pub operation: String,
+    /// The reviewed composer image that rides with this message; it stays attached until the
+    /// source confirms the queue.
+    pub image: Option<crate::image::Review>,
 }
 impl Draft {
     fn chord(&self) -> &'static str {
         if self.alternate { "alternate" } else { "enter" }
+    }
+    fn payload(&self, profile: &str) -> Value {
+        let mut payload =
+            json!({"content":self.text,"text":self.text,"source":"rpc","tool_profile":profile});
+        if let Some(image) = &self.image {
+            payload["image"] = image.queued_identity();
+        }
+        payload
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -114,6 +125,9 @@ impl Request {
         let mut v = json!({"version":1,"type":self.operation(),"session_id":identity.session,
             "agent_id":identity.agent,"backend":identity.backend,"model":identity.model,"work_instance":instance,
             "origin":origin.value(),"chord":d.chord(),"text":d.text});
+        if let Some(image) = &d.image {
+            v["image"] = image.wire().clone();
+        }
         if let Self::Apply(r) = self {
             if &r.origin != origin {
                 return Err(bad());
@@ -138,7 +152,7 @@ impl Request {
         let draft = self.draft();
         let mut expected = self.command(identity, instance, origin)?;
         expected.as_object_mut().unwrap().remove("type");
-        let payload = json!({"content":draft.text,"text":draft.text,"source":"rpc","tool_profile":profile.as_str()});
+        let payload = draft.payload(profile.as_str());
         let payload_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&payload)?));
         let review_id = crate::stream::required_uuid4(v, "review")
             .map_err(|_| bad())?
@@ -394,8 +408,22 @@ impl View {
             } else {
                 "Queue this message at the next safe boundary of the running reply, or as the next turn.".into()
             };
+            let image = r.draft.image.as_ref().map_or(String::new(), |image| {
+                let v = image.wire();
+                format!(
+                    "\nAttached image: {} · {} PNG bytes\nSHA-256 {}\n{}",
+                    crate::live::terminal_text(image.name()),
+                    v["png_bytes"],
+                    v["png_sha256"].as_str().unwrap_or_default(),
+                    if v["delivery"] == "file" {
+                        "Claude receives a conversation-owned file path and needs its read tool."
+                    } else {
+                        "The provider receives this exact PNG with the message. Vision support depends on the model."
+                    }
+                )
+            });
             format!(
-                "{effect}\nTool profile: {}\n\n{}",
+                "{effect}\nTool profile: {}{image}\n\n{}",
                 r.profile.as_str(),
                 crate::live::terminal_text(&r.draft.text)
             )
@@ -486,6 +514,7 @@ mod tests {
             text: "Next Claude input 雪".into(),
             alternate: false,
             operation: "op".into(),
+            image: None,
         };
         let request = Request::Review(draft.clone());
         let payload =
@@ -598,6 +627,7 @@ mod tests {
                     text: "Exact native draft 雪".into(),
                     alternate: false,
                     operation: "foreground".into(),
+                    image: None,
                 };
                 let request = Request::Review(draft.clone());
                 let payload = json!({"content":draft.text,"text":draft.text,"source":"rpc","tool_profile":"strict"});
@@ -666,6 +696,207 @@ mod tests {
         }
     }
 
+    fn image_review(identity: &Identity, name: &str) -> crate::image::Review {
+        let wire = json!({"version":1,"kind":"image_review","session_id":identity.session,"agent_id":identity.agent,
+            "backend":identity.backend,"model":identity.model,"work_instance":"instance","token":"c".repeat(64),
+            "delivery":if identity.backend == "claude" {"file"}else{"inline"},"name":name,"format":"PNG","width":64,"height":32,
+            "sent_width":64,"sent_height":32,"png_bytes":4096,"png_sha256":"d".repeat(64)});
+        crate::image::parse(
+            &wire,
+            identity,
+            "instance",
+            &crate::image::Request::File(format!("C:/pictures/{name}")),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn attached_image_is_reviewed_echoed_and_bound_into_the_payload_digest() {
+        let identity = Identity {
+            session: "session".into(),
+            agent: "agent".into(),
+            backend: "custom".into(),
+            model: "fixture".into(),
+        };
+        let origin = Origin {
+            session: "session".into(),
+            operation: "op".into(),
+            hook: Some(HOOK.into()),
+            source: "rpc".into(),
+            execution: "execution".into(),
+        };
+        let image = image_review(&identity, "pic.png");
+        let draft = Draft {
+            text: "Look at this 雪".into(),
+            alternate: false,
+            operation: "op".into(),
+            image: Some(image.clone()),
+        };
+        let request = Request::Review(draft.clone());
+        let command = request.command(&identity, "instance", &origin).unwrap();
+        assert_eq!(command["image"], *image.wire());
+        let payload = draft.payload("strict");
+        assert_eq!(
+            payload["image"],
+            json!({"name":"pic.png","png_bytes":4096,"png_sha256":"d".repeat(64)})
+        );
+        let digest = |p: &Value| format!("{:x}", Sha256::digest(serde_json::to_vec(p).unwrap()));
+        let mut good = command.clone();
+        good.as_object_mut().unwrap().remove("type");
+        for (key, value) in [
+            ("kind", json!("midturn_review")),
+            ("behavior", json!("queue")),
+            ("enter_interrupts", json!(false)),
+            ("profile", json!("strict")),
+            ("policy_epoch", json!(1)),
+            ("payload_sha256", json!(digest(&payload))),
+            ("review", json!(HOOK)),
+        ] {
+            good[key] = value;
+        }
+        let parse = |v: &Value| {
+            request.parse(
+                &identity,
+                "instance",
+                &origin,
+                "op",
+                (1, Profile::Strict),
+                v,
+            )
+        };
+        let Reply::Review(review) = parse(&good).unwrap() else {
+            panic!("review")
+        };
+        let mut without_digest = good.clone();
+        without_digest["payload_sha256"] = json!(digest(&json!(
+            {"content":draft.text,"text":draft.text,"source":"rpc","tool_profile":"strict"}
+        )));
+        let mut dropped = good.clone();
+        dropped.as_object_mut().unwrap().remove("image");
+        let mut swapped = good.clone();
+        swapped["image"]["png_sha256"] = json!("e".repeat(64));
+        let mut other = good.clone();
+        other["image"]["token"] = json!("f".repeat(64));
+        for (label, forged) in [
+            ("digest without identity", without_digest),
+            ("image echo dropped", dropped),
+            ("image digest changed", swapped),
+            ("image token changed", other),
+        ] {
+            assert!(parse(&forged).is_err(), "{label}");
+        }
+        let apply = Request::Apply(review.clone());
+        assert_eq!(
+            apply.command(&identity, "instance", &origin).unwrap()["image"],
+            *image.wire()
+        );
+        let mut view = View::default();
+        view.begin();
+        view.reply(Reply::Review(review));
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| view.draw(f, f.area(), false)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            text.contains("Attached image: pic.png")
+                && text.contains("4096 PNG bytes")
+                && text.contains(&"d".repeat(64))
+                && text.contains("exact PNG"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn running_reply_accepts_an_image_that_rides_with_the_queue_and_leaves_only_on_confirmation() {
+        use crate::{demo::Demo, live::Observation};
+        let identity = Identity {
+            session: "session".into(),
+            agent: "agent".into(),
+            backend: "custom".into(),
+            model: "fixture".into(),
+        };
+        let image = image_review(&identity, "pic.png");
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("First prompt");
+        app.submit();
+        assert!(app.live.as_mut().unwrap().take_submission().is_some());
+        // A busy turn with no source-owned foreground reply cannot take a queue, so it cannot take an image.
+        app.open_image();
+        assert!(!app.live.as_ref().unwrap().work.image.open);
+        app.observe_live(Observation::Submission {
+            id: "foreground".into(),
+        })
+        .unwrap();
+        app.open_image();
+        assert!(app.live.as_ref().unwrap().work.image.open, "{}", app.notice);
+        app.live.as_mut().unwrap().work.image.attached = Some(image.clone());
+        app.live.as_mut().unwrap().work.image.close();
+        app.live.as_mut().unwrap().work.open = false;
+        app.insert_text("Second draft");
+        app.submit();
+        let crate::work_view::Request::Midturn(request) = app
+            .live
+            .as_mut()
+            .unwrap()
+            .work
+            .take_intent()
+            .expect(&app.notice)
+            .request
+        else {
+            panic!("Missing queue request")
+        };
+        assert_eq!(request.draft().image, Some(image.clone()));
+        // The image stays attached through review and apply; only the confirmed queue releases it.
+        assert_eq!(
+            app.live.as_ref().unwrap().work.image.attached,
+            Some(image.clone())
+        );
+        let draft = request.draft().clone();
+        app.live.as_mut().unwrap().work.midturn.queued = Some(draft);
+        app.observe_live(Observation::Information("queued".into()))
+            .unwrap();
+        assert!(app.live.as_ref().unwrap().work.image.attached.is_none());
+        assert_eq!(app.composer.text(), "");
+    }
+
+    #[test]
+    fn claude_image_review_names_the_file_delivery() {
+        let identity = Identity {
+            session: HOOK.into(),
+            agent: "agent".into(),
+            backend: "claude".into(),
+            model: "fixture".into(),
+        };
+        let image = image_review(&identity, "pic.png");
+        assert_eq!(image.wire()["delivery"], "file");
+        let origin = Origin {
+            session: HOOK.into(),
+            operation: "op".into(),
+            hook: Some(HOOK.into()),
+            source: "rpc".into(),
+            execution: HOOK.into(),
+        };
+        let draft = Draft {
+            text: "Next".into(),
+            alternate: false,
+            operation: "op".into(),
+            image: Some(image),
+        };
+        assert_eq!(
+            Request::Review(draft)
+                .command(&identity, "instance", &origin)
+                .unwrap()["image"]["delivery"],
+            "file"
+        );
+    }
+
     #[test]
     fn review_rejects_changed_owner_chord_text_scope_and_policy_and_requires_every_painted_page() {
         let identity = Identity {
@@ -685,6 +916,7 @@ mod tests {
             text: "line of text\n".repeat(15),
             alternate: true,
             operation: "op".into(),
+            image: None,
         };
         let request = Request::Review(draft.clone());
         let payload =

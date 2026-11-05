@@ -378,7 +378,7 @@ async def serve(app):
             questions=list(getattr(app, '_rpc_pending_asks', {})), approvals=list(getattr(app, '_approval_waiters', {})),
             authorities=list(getattr(app, '_approval_authority_records', {})))
         if bridge is not None:
-            if case in {'midturn-quit', 'midturn-interrupt-quit'} and bridge.closing:
+            if case in {'midturn-quit', 'midturn-interrupt-quit', 'midturn-image-quit'} and bridge.closing:
                 reopened = background_input.Bridge(app)
                 report['queue_recovered'] = reopened.recovered
                 assert reopened.raw == bridge.raw and not reopened.active and not reopened.executions

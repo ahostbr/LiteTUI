@@ -87,6 +87,10 @@ impl Review {
     pub(crate) fn token(&self) -> &str {
         self.0["token"].as_str().expect("parsed token")
     }
+    /// The identity a queued message keeps in the Work ledger; the pixels stay in the source.
+    pub fn queued_identity(&self) -> Value {
+        json!({"name": self.0["name"], "png_bytes": self.0["png_bytes"], "png_sha256": self.0["png_sha256"]})
+    }
 }
 
 pub fn parse(
