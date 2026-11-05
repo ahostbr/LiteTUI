@@ -1,5 +1,8 @@
 #![cfg(windows)]
 //! Actual F6 manual compaction controls through owned source RPC and controlled SDK boundaries.
+#[path = "support/acceptance_filter.rs"]
+mod acceptance_filter;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use litetui_terminal::{
     composer::Motion,
@@ -17,6 +20,10 @@ use std::{
     time::{Duration, Instant},
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    /// Set by the acceptance dry run: every observation on this thread must pass the paid run's rule.
+    static ACCEPTANCE_FILTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 const HINT: &str = " Preserve the exact tool result 雪🛰️e\u{301}\r\nand the unfinished task.  ";
 const QUESTION_NOTE: &str = "Explicit controlled compaction answer 雪";
 fn runtime_source() -> PathBuf {
@@ -156,7 +163,16 @@ fn next(runtime: &mut Interactive) -> io::Result<Observation> {
     let deadline = Instant::now() + Duration::from_secs(95);
     loop {
         match runtime.events.recv_timeout(Duration::from_millis(50)) {
-            Ok(event) => return Ok(event),
+            Ok(event) => {
+                if ACCEPTANCE_FILTER.get()
+                    && let Some(why) = acceptance_filter::abort_reason(&event)
+                {
+                    return Err(io::Error::other(format!(
+                        "the paid acceptance run would abort ({why}) on {event:?}"
+                    )));
+                }
+                return Ok(event);
+            }
             Err(_) => {
                 if let Some(done) = runtime.poll_done() {
                     return Err(done
@@ -701,6 +717,17 @@ fn f6_claude_compaction_with_tools_wake_and_approvals_is_reviewed_receipted_and_
             "{case}"
         );
     }
+}
+
+#[test]
+#[ignore = "controlled actual-source compaction; dependency Python required"]
+fn acceptance_filter_admits_a_reviewed_claude_tools_and_wake_compaction() {
+    // No provider: the controlled SDK drives the same reviewed tools-on Claude compaction (summary
+    // tool, wake turn, approvals) the paid live_claude_acceptance run performs, and every
+    // observation must pass that run's abort rule.
+    ACCEPTANCE_FILTER.set(true);
+    f6_claude_compaction_with_tools_wake_and_approvals_is_reviewed_receipted_and_attributed();
+    ACCEPTANCE_FILTER.set(false);
 }
 
 #[test]

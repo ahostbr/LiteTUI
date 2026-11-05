@@ -5,6 +5,9 @@
 //! turn 1 reads `token.txt` with Claude's Read tool, the reviewed F6 compaction runs (the summary
 //! turn may write the conversation's own memory store), and turn 3 recalls the token with tools
 //! off. Every approval and the settled compaction witness are logged for audit.
+#[path = "support/acceptance_filter.rs"]
+mod acceptance_filter;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use litetui_terminal::{
     approvals, conversation_compact as r,
@@ -305,54 +308,11 @@ fn pump(
             | Observation::ImageRefused { reason, .. } => {
                 return Err(fail(format!("{:?} stopped: {reason}", ctx.phase)));
             }
-            Observation::Question { .. } => {
-                return Err(fail(format!("{:?}: unexpected question", ctx.phase)));
-            }
-            Observation::History(_)
-            | Observation::RuntimeControls(_)
-            | Observation::ScheduledProposal(_)
-            | Observation::ScheduledHeld(_)
-            | Observation::ScheduledLocalNotSent { .. }
-            | Observation::ScheduledConversationChanged(_)
-            | Observation::Controls(_)
-            | Observation::Queue(_)
-            | Observation::Commands(_)
-            | Observation::Theme(_)
-            | Observation::Rewrite(_)
-            | Observation::RewriteSettled(_)
-            | Observation::RewriteSegment { .. }
-            | Observation::RewriteAftercare { .. }
-            | Observation::RewriteActivity { .. }
-            | Observation::RewriteStatus { .. }
-            | Observation::WorkLaunchStop { .. }
-            | Observation::WorkLaunchPending { .. }
-            | Observation::WorkLaunchFinished { .. }
-            | Observation::Work(_)
-            | Observation::WorkExecution(_)
-            | Observation::Settings(_)
-            | Observation::Backend(_)
-            | Observation::BackendChanged(_)
-            | Observation::Browser(_)
-            | Observation::ConversationChanged(_)
-            | Observation::ConversationUnverified(_)
-            | Observation::Opened(_)
-            | Observation::Engine(_)
-            | Observation::EngineAdmission(_) => {
-                return Err(fail(format!(
-                    "{:?}: unexpected observation kind {event:?}",
-                    ctx.phase
-                )));
-            }
-            Observation::State(_)
-            | Observation::RuntimePolicy(_)
-            | Observation::Ready
-            | Observation::Submission { .. }
-            | Observation::Activity(_)
-            | Observation::Approval(_)
-            | Observation::ApprovalSettled { .. }
-            | Observation::SavedHistory(_)
-            | Observation::Compact(_)
-            | Observation::Complete => {}
+            _ => {}
+        }
+        // The shared rule (proved without a provider by compact_process's acceptance dry run).
+        if let Some(why) = acceptance_filter::abort_reason(&event) {
+            return Err(fail(format!("{:?}: {why}: {event:?}", ctx.phase)));
         }
         let finished = done(&event);
         app.observe_live(event)?;
@@ -579,7 +539,11 @@ fn real_claude_reads_a_file_compacts_with_tools_and_recalls_it() {
             .unwrap()
             .as_nanos()
     ));
-    let workspace = root.join("workspace");
+    // A sibling of the data root: the runtime creates the data root itself and refuses one that exists.
+    let workspace = root.with_file_name(format!(
+        "{}-workspace",
+        root.file_name().unwrap().to_string_lossy()
+    ));
     fs::create_dir_all(&workspace).unwrap();
     let token = token();
     fs::write(workspace.join("token.txt"), &token).unwrap();
@@ -591,7 +555,7 @@ fn real_claude_reads_a_file_compacts_with_tools_and_recalls_it() {
         token: token.clone(),
         workspace: spellings(&workspace),
         store: Vec::new(),
-        audit: root.join("acceptance-audit.log"),
+        audit: workspace.join("acceptance-audit.log"),
         cards: BTreeMap::new(),
         legacy: String::new(),
         witness: None,
