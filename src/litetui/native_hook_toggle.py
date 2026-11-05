@@ -200,6 +200,7 @@ def dispatch(app, cmd):
     idx = SCOPES.index(scope)
     base = {"version": 1, **binding, "scope": scope}
     if verb in ("list", "review"):
+        bridge.hook_test = None
         bridge.hook_toggle = None
         current = capture(app)
         if verb == "list":

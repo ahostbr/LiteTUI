@@ -151,3 +151,75 @@ def test_foreign_scope_lock_declines_without_publishing(source):
     with hooks._file_lock(config.global_path), pytest.raises(ValueError, match="locked"):
         request("apply", "project", token=wire["token"])
     assert config.project_path.read_bytes() == before
+
+
+def hook_test_review(app, bridge, request, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from litetui import native_hook_test as testing
+
+    @asynccontextmanager
+    async def authority(app, *, profile, captured):
+        yield SimpleNamespace(profile=profile)
+
+    monkeypatch.setattr(testing.native_runtime_controls, "enabled", lambda _: True)
+    monkeypatch.setattr(testing.native_runtime_controls, "authorization", authority)
+    app.chosen_tool_profile = "strict"
+    listing = request("list", "global")
+    base = {"version": 1, **bridge.identity, "work_instance": bridge.instance, "scope": "global"}
+    wire = testing.review(app, {**base, "type": testing.REVIEW, "id": "review-test",
+                                "event": "tool_before", "revision": listing["revision"], "hook_id": "overlap"})
+    assert wire["source"] == "typed" and wire["sample"] == {"tool": "read", "args": {}}
+    return {**base, "type": testing.RUN, "id": "run-test", "token": wire["token"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["selected", "other", "owner", "instance", "profile", "refresh", "off"])
+async def test_hook_sample_rejects_stale_or_superseded_review(source, monkeypatch, changed):
+    from litetui import native_hook_test as testing
+
+    app, bridge, request = source
+    cmd = hook_test_review(app, bridge, request, monkeypatch)
+    if changed in ("selected", "other"):
+        path = app.hook_config.global_path if changed == "selected" else app.hook_config.project_path
+        path.write_bytes(path.read_bytes() + b" ")
+    elif changed == "owner":
+        app.hook_config = hooks.HookConfig(app.hook_config.global_path, app.hook_config.project_path)
+    elif changed == "instance":
+        bridge.instance = cmd["work_instance"] = "different-work"
+    elif changed == "profile":
+        app.chosen_tool_profile = "autonomous"
+    elif changed == "refresh":
+        request("list", "global")
+    else:
+        monkeypatch.setenv("LITETUI_HOOKS", "off")
+    async def forbidden(*args, **kwargs):
+        pytest.fail("A stale sample reached the hook host")
+    monkeypatch.setattr(testing.hook_host, "invoke", forbidden)
+    with pytest.raises(ValueError):
+        await testing.run(app, cmd)
+
+
+@pytest.mark.asyncio
+async def test_hook_sample_replays_only_its_redacted_terminal_receipt(source, monkeypatch):
+    from litetui import native_hook_test as testing
+
+    app, bridge, request = source
+    cmd = hook_test_review(app, bridge, request, monkeypatch)
+    calls = []
+
+    async def invoke(owner, hook, document, profile, *, allow_prompt, testing):
+        assert owner is app and hook.id == "overlap" and hook.scope == "global"
+        assert allow_prompt is False and testing is True and profile == "strict"
+        assert document["source"] == "typed" and document["conversation_id"] is None
+        calls.append(document["data"])
+        return hooks.HookResult(False, "global-hidden", stdout="secret argument", stderr="TOKEN", exit_code=4)
+    monkeypatch.setattr(testing.hook_host, "invoke", invoke)
+    receipt = await testing.run(app, cmd)
+    assert receipt["status"] == "denied" and receipt["exit_code"] == 4
+    assert receipt["stdout_bytes"] == 15 and receipt["stderr_bytes"] == 5
+    assert all(secret not in json.dumps(receipt) for secret in ("global-hidden", "secret argument", "TOKEN"))
+    assert await testing.run(app, cmd) == receipt
+    with pytest.raises(ValueError, match="already been attempted"):
+        await testing.run(app, {**cmd, "id": "another-run"})
+    assert calls == [{"tool": "read", "args": {}}]

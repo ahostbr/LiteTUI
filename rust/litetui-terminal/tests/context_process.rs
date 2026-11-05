@@ -951,3 +951,115 @@ fn hook_toggles_refuse_stale_review_and_verify_global_and_project_effects() {
         );
     }
 }
+
+#[test]
+#[ignore = "owned Interactive source, isolated hook configuration and a disposable fixture executable"]
+fn reviewed_hook_test_uses_canonical_authority_private_bounded_output_and_timeout() {
+    let (runtime, data) = launch("hook_test_runtime.py");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        app.insert_text("keep test draft");
+        app.open_work();
+        drain(runtime, &mut app)?;
+        let mut context = key(runtime, &mut app, KeyCode::Char('i'))?;
+        for _ in 0..litetui_terminal::context::Document::ALL.len() {
+            if context.contains("Effective lifecycle hooks") {
+                break;
+            }
+            context = key(runtime, &mut app, KeyCode::Right)?;
+        }
+        let list = key(runtime, &mut app, KeyCode::Char('e'))?;
+        assert!(
+            list.contains("authorized") && list.contains("requires-confirm"),
+            "{list}"
+        );
+        let marker = data.join("test-workspace/executed.jsonl");
+        let config = data.join("test-workspace/.litetui/hooks.json");
+        let before = fs::read(&config)?;
+        key(runtime, &mut app, KeyCode::Char(']'))?;
+        let review = key(runtime, &mut app, KeyCode::Char('t'))?;
+        assert!(
+            review.contains("Test project hook authorized once")
+                && review.contains("Event: prompt_before")
+                && review.contains("Hook test")
+                && review.contains("Profile: strict")
+                && !review.contains("SYNTHETIC_"),
+            "{review}"
+        );
+        key(runtime, &mut app, KeyCode::Esc)?;
+        assert!(!marker.exists());
+        key(runtime, &mut app, KeyCode::Char('t'))?;
+        let allowed = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(
+            allowed.contains("Test allowed")
+                && allowed.contains("65536 B")
+                && allowed.contains("clipped")
+                && !allowed.contains("SYNTHETIC_"),
+            "{allowed}"
+        );
+        let rows = fs::read_to_string(&marker)?;
+        assert_eq!(rows.lines().count(), 1);
+        let event: Value = serde_json::from_str(rows.trim()).unwrap();
+        assert_eq!(event["event"], "prompt_before");
+        assert_eq!(event["source"], "typed");
+        assert_eq!(event["data"], json!({"text":"Hook test"}));
+        key(runtime, &mut app, KeyCode::Down)?;
+        key(runtime, &mut app, KeyCode::Char('t'))?;
+        let refused = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(
+            refused.contains("authorization or launch unavailable")
+                && !refused.contains("SYNTHETIC_"),
+            "{refused}"
+        );
+        assert_eq!(fs::read_to_string(&marker)?, rows);
+        key(runtime, &mut app, KeyCode::Down)?;
+        key(runtime, &mut app, KeyCode::Char('t'))?;
+        let timed = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(
+            timed.contains("Test timed out") && !timed.contains("unverified"),
+            "{timed}"
+        );
+        assert_eq!(fs::read_to_string(&marker)?.lines().count(), 2);
+        assert_eq!(fs::read(&config)?, before);
+        assert_eq!(app.composer.text(), "keep test draft");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        key(runtime, &mut app, KeyCode::Down)?;
+        key(runtime, &mut app, KeyCode::Char('t'))?;
+        let work = &mut app.live.as_mut().unwrap().work;
+        work.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        runtime.work(work.take_intent().unwrap())?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while fs::read_to_string(&marker)?.lines().count() != 3 {
+            assert!(
+                Instant::now() < deadline,
+                "The private quit fixture did not start"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.live.as_mut().unwrap().begin_quit();
+        runtime.quit()?;
+        Ok(())
+    });
+    result.unwrap();
+    let exits = json_file(&data.join("tested-exits.json"));
+    assert_eq!(exits.as_array().unwrap().len(), 3);
+    assert!(exits.as_array().unwrap().iter().all(Value::is_i64));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"].as_array().unwrap().len(), 0);
+    let wire = report["wire"].as_array().unwrap();
+    let receipts = wire
+        .iter()
+        .filter(|f| f["result"]["kind"] == "hook_test_result")
+        .collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 4);
+    assert_eq!(receipts.last().unwrap()["result"]["status"], "cancelled");
+    assert!(
+        receipts
+            .iter()
+            .all(|f| f["result"]["cleanup_verified"] == true)
+    );
+    assert!(!serde_json::to_string(wire).unwrap().contains("SYNTHETIC_"));
+    assert!(!wire.iter().any(|f| f["type"] == "tool_approval_requested"));
+    assert_eq!(report["shutdown"]["ok"], true);
+}

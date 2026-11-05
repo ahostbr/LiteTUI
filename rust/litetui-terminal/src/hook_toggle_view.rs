@@ -1,5 +1,5 @@
 use crate::{
-    hook_toggle::{List, Reply, Request, Review, Scope},
+    hook_toggle::{List, Reply, Request, Review, Scope, TestReview},
     live::terminal_text,
     theme::Theme,
 };
@@ -18,6 +18,8 @@ pub struct View {
     list: Option<List>,
     selected: usize,
     review: Option<Review>,
+    test: Option<TestReview>,
+    event: usize,
     page: usize,
     seen: Vec<bool>,
     bounds: Option<Rect>,
@@ -40,6 +42,7 @@ impl View {
     }
     pub fn reject(&mut self, s: String) {
         self.review = None;
+        self.test = None;
         self.list = None;
         self.notice = s;
         self.seen.clear();
@@ -54,6 +57,17 @@ impl View {
                 self.selected = self.selected.min(list.rows.len().saturating_sub(1));
                 self.list = Some(list);
                 self.notice.clear();
+            }
+            Reply::TestReview(r) => {
+                self.review = None;
+                self.test = Some(r);
+                self.page = 0;
+                self.seen.clear();
+                self.notice.clear();
+            }
+            Reply::Tested(result) => {
+                self.test = None;
+                self.notice = result;
             }
             Reply::Review(r) => {
                 self.review = Some(r);
@@ -77,7 +91,9 @@ impl View {
             return None;
         }
         if e.code == KeyCode::Esc {
-            if self.review.take().is_some() {
+            if self.test.take().is_some() {
+                self.notice = "Test discarded.".into();
+            } else if self.review.take().is_some() {
                 self.notice = "Toggle discarded.".into();
             } else {
                 self.close();
@@ -88,14 +104,17 @@ impl View {
         if !self.visible {
             return None;
         }
-        if let Some(review) = &self.review {
+        if self.review.is_some() || self.test.is_some() {
             match e.code {
                 KeyCode::PageDown | KeyCode::Down => {
                     self.page = (self.page + 1).min(self.seen.len().saturating_sub(1))
                 }
                 KeyCode::PageUp | KeyCode::Up => self.page = self.page.saturating_sub(1),
                 KeyCode::Enter if !self.seen.is_empty() && self.seen.iter().all(|b| *b) => {
-                    return Some(Request::Apply(Box::new(review.clone())));
+                    if let Some(test) = &self.test {
+                        return Some(Request::Run(Box::new(test.clone())));
+                    }
+                    return self.review.clone().map(Box::new).map(Request::Apply);
                 }
                 _ => {}
             }
@@ -105,17 +124,36 @@ impl View {
             KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
                 self.scope = self.scope.other();
                 self.selected = 0;
+                self.event = 0;
                 self.list = None;
                 return Some(Request::List(self.scope));
             }
             KeyCode::F(5) => {
                 return Some(Request::List(self.scope));
             }
-            KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                self.event = 0;
+            }
             KeyCode::Down => {
                 if let Some(list) = &self.list {
                     self.selected = (self.selected + 1).min(list.rows.len().saturating_sub(1));
+                    self.event = 0;
                 }
+            }
+            KeyCode::Char(']') => {
+                self.event = self.event.wrapping_add(1);
+                self.notice.clear();
+            }
+            KeyCode::Char('t') => {
+                let list = self.list.as_ref()?;
+                let row = list.rows.get(self.selected)?;
+                return Some(Request::TestReview {
+                    scope: list.scope,
+                    revision: list.revision.clone(),
+                    row: row.clone(),
+                    event: row.test_event(self.event).into(),
+                });
             }
             KeyCode::Enter => {
                 let list = self.list.as_ref()?;
@@ -149,7 +187,7 @@ impl View {
             return;
         }
         let rows = usize::from(inner.height) - 3;
-        let (lines, keys) = if let Some(r) = &self.review {
+        let detail = if let Some(r) = &self.review {
             let mut text = vec![
                 format!("Review {} hook {}", r.scope.key(), r.before.id()),
                 format!("Saved: {} → {}", r.before.enabled(), r.after.enabled()),
@@ -173,6 +211,19 @@ impl View {
                 }
                 .into(),
             );
+            Some((text, "applies"))
+        } else {
+            self.test.as_ref().map(|r| {
+                let mut text=vec![format!("Test {} hook {} once",r.scope.key(),r.row.id()),
+                    format!("Event: {} · source: typed",r.event),format!("Sample data: {}",r.sample),
+                    format!("Saved: {} · effective: {}",r.row.enabled(),r.row.effect())];
+                text.extend(r.row.details());
+                text.push(format!("Profile: {}. Only existing source permission can run this executable. A policy requiring confirmation refuses this test.",r.profile));
+                text.push("The selected entry runs once with this synthetic event, including when disabled or shadowed. Its configured process can perform external actions. Output remains private.".into());
+                (text,"runs the test")
+            })
+        };
+        let (lines, keys) = if let Some((text, action)) = detail {
             let lines = crate::ui::wrap(&text.join("\n"), inner.width.into());
             let count = lines.len().div_ceil(rows).max(1);
             if self.seen.len() != count || self.bounds != Some(rect) {
@@ -188,7 +239,7 @@ impl View {
                     .take(rows)
                     .collect::<Vec<_>>(),
                 format!(
-                    "Page {}/{} · ↑ ↓ read · Enter applies after all pages · Esc discards",
+                    "Page {}/{} · ↑ ↓ read · Enter {action} after all pages · Esc discards",
                     self.page + 1,
                     count
                 ),
@@ -202,15 +253,20 @@ impl View {
                 let start = self.selected.saturating_add(1).saturating_sub(rows);
                 for (i, r) in list.rows.iter().enumerate().skip(start).take(rows) {
                     lines.push(format!(
-                        "{} {}",
+                        "{} {}{}",
                         if i == self.selected { "›" } else { " " },
-                        r.summary()
+                        r.summary(),
+                        if i == self.selected {
+                            format!(" · test: {}", r.test_event(self.event))
+                        } else {
+                            String::new()
+                        }
                     ));
                 }
             }
             (
                 lines,
-                "Tab changes scope · ↑ ↓ select · Enter reviews toggle · F5 reloads · Esc returns"
+                "Tab scope · ↑ ↓ select · Enter toggle · ] sample event · T test · F5 reload · Esc back"
                     .into(),
             )
         };

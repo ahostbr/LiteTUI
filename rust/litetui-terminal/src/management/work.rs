@@ -20,6 +20,7 @@ pub(super) struct Control {
     context_review: Option<crate::context_edit::Review>,
     hook_list: Option<crate::hook_toggle::List>,
     hook_review: Option<crate::hook_toggle::Review>,
+    hook_test: Option<crate::hook_toggle::TestReview>,
 }
 pub(super) struct Pending {
     pub id: CommandId,
@@ -45,6 +46,7 @@ impl Management {
         self.work.context_review = None;
         self.work.hook_list = None;
         self.work.hook_review = None;
+        self.work.hook_test = None;
     }
     pub fn work_pending(&self) -> bool {
         self.work.pending.is_some() || self.execution_review_pending()
@@ -316,6 +318,7 @@ impl Management {
                 use crate::hook_toggle::Request;
                 match request.as_ref() {
                     Request::List(_) => {
+                        self.work.hook_test = None;
                         self.work.hook_list = None;
                         self.work.hook_review = None;
                     }
@@ -323,7 +326,14 @@ impl Management {
                         scope,
                         revision,
                         row,
+                    }
+                    | Request::TestReview {
+                        scope,
+                        revision,
+                        row,
+                        ..
                     } => {
+                        self.work.hook_test = None;
                         self.work.hook_review = None;
                         if !self.work.hook_list.as_ref().is_some_and(|l| {
                             &l.scope == scope && &l.revision == revision && l.rows.contains(row)
@@ -331,6 +341,11 @@ impl Management {
                             return Err(fail(
                                 "Refresh and select the exact hook row before review",
                             ));
+                        }
+                    }
+                    Request::Run(r) => {
+                        if self.work.hook_test.take().as_ref() != Some(r) {
+                            return Err(fail("Review this hook sample again"));
                         }
                     }
                     Request::Apply(r) => {
@@ -477,6 +492,7 @@ impl Management {
             let mut reason = text(&frame, "error", 4096)?.to_owned();
             if matches!(&pending.request, view::Request::Hook(_)) {
                 self.work.hook_list = None;
+                self.work.hook_test = None;
                 self.work.hook_review = None;
                 if pending.context_apply_id.is_some() {
                     reason = format!("Hook was published but separate readback failed: {reason}");
@@ -600,7 +616,11 @@ impl Management {
                             value,
                             &snapshot.identity,
                             instance,
-                            pending.context_apply_id.as_deref(),
+                            if matches!(request.as_ref(), crate::hook_toggle::Request::Run(_)) {
+                                frame["id"].as_str()
+                            } else {
+                                pending.context_apply_id.as_deref()
+                            },
                         )?;
                         match &reply {
                             crate::hook_toggle::Reply::List(l) => {
@@ -609,6 +629,10 @@ impl Management {
                             crate::hook_toggle::Reply::Review(r) => {
                                 self.work.hook_review = Some(r.clone())
                             }
+                            crate::hook_toggle::Reply::TestReview(r) => {
+                                self.work.hook_test = Some(r.clone())
+                            }
+                            crate::hook_toggle::Reply::Tested(_) => self.work.hook_test = None,
                             crate::hook_toggle::Reply::Saved(_) => self.work.hook_list = None,
                         }
                         view::Data::Hook(Box::new(reply))

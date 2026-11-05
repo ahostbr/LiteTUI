@@ -46,6 +46,7 @@ OPERATIONS = (
     "history.native_snapshot", "history.native_page", "conversations.native_open",
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
     "hooks.native_list", "hooks.native_review", "hooks.native_apply", "hooks.native_readback",
+    "hooks.native_test_review", "hooks.native_test_run",
     "hooks.get", "hooks.validate", "hooks.apply", "hooks.repair", "hooks.test",
     "mcp.list", "mcp.connect", "mcp.disconnect", "mcp.reconnect", "mcp.reload", "mcp.add", "mcp.remove",
     "skills.list", "skills.read", "skills.use", "tools.list",
@@ -781,6 +782,9 @@ def dispatch(app, cmd):
             return {"name": skill.name, "text": Path(skill.path).read_text(encoding="utf-8")}
         app._handle_command(f"/skills {skill.name}")
         return {"accepted": True, "name": skill.name}
+    if operation == "hooks.native_test_review":
+        from litetui import native_hook_test
+        return native_hook_test.review(app, cmd)
     if operation in {"hooks.native_list", "hooks.native_review", "hooks.native_apply", "hooks.native_readback"}:
         from litetui import native_hook_toggle
         return native_hook_toggle.dispatch(app, cmd)
@@ -949,7 +953,7 @@ async def async_dispatch(app, cmd):
             OPERATION_CONTEXT.reset(token)
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
-    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
     if operation == "gui.models.select":
         from litetui import background_input
         blocking = background_input.enabled(app)
@@ -1270,6 +1274,9 @@ async def _async_dispatch(app, cmd):
                 raise ValueError(result)
         app.rebuild_mcp_dispatch()
         return app.mcp.describe()
+    if operation == "gui.hooks.native_test_run":
+        from litetui import native_hook_test
+        return await native_hook_test.run(app, cmd)
     if operation == "gui.hooks.test":
         from litetui import hook_host
         from litetui import lifecycle_hooks as hooks

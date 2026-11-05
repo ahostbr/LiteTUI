@@ -94,9 +94,14 @@ async def _invoke(app, hook, document, profile, *, allow_prompt, testing):
                     app._conversation_transition_cleanup_error = "Lifecycle hook process or pipe cleanup is unverified"
             options["on_settled"] = settled
         try:
-            result = await hooks.run_hook(hook, document, workspace,
-                cancelled=lambda: not testing and document.get("event") not in ("tool_after", "app_shutdown")
-                and getattr(app, "_stop_requested", False), **options)
+            def cancelled():
+                if testing:
+                    bridge = background_input.bridge(app)
+                    return bool(getattr(app, "_gui_quitting", False) or bridge and bridge.closing)
+                return (document.get("event") not in ("tool_after", "app_shutdown")
+                        and getattr(app, "_stop_requested", False))
+
+            result = await hooks.run_hook(hook, document, workspace, cancelled=cancelled, **options)
         finally:
             if scoped and not terminal_seen:
                 app._conversation_transition_cleanup_error = "Lifecycle hook did not report terminal cleanup proof"

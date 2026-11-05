@@ -83,6 +83,10 @@ impl Row {
             self.effect()
         )
     }
+    pub fn test_event(&self, index: usize) -> &str {
+        let events = self.0["events"].as_array().expect("validated events");
+        label(&events[index % events.len()])
+    }
     pub fn details(&self) -> Vec<String> {
         let r = &self.0;
         let names = |key: &str| {
@@ -251,6 +255,15 @@ pub struct Review {
     token: String,
 }
 #[derive(Clone, Debug, PartialEq)]
+pub struct TestReview {
+    pub scope: Scope,
+    pub row: Row,
+    pub event: String,
+    pub profile: String,
+    pub sample: Value,
+    token: String,
+}
+#[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     List(Scope),
     Review {
@@ -259,12 +272,21 @@ pub enum Request {
         row: Row,
     },
     Apply(Box<Review>),
+    TestReview {
+        scope: Scope,
+        revision: String,
+        row: Row,
+        event: String,
+    },
+    Run(Box<TestReview>),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Reply {
     List(List),
     Review(Review),
     Saved(Row),
+    TestReview(TestReview),
+    Tested(String),
 }
 impl Request {
     pub fn operation(&self) -> &'static str {
@@ -272,11 +294,14 @@ impl Request {
             Self::List(_) => "gui.hooks.native_list",
             Self::Review { .. } => "gui.hooks.native_review",
             Self::Apply(_) => "gui.hooks.native_apply",
+            Self::TestReview { .. } => "gui.hooks.native_test_review",
+            Self::Run(_) => "gui.hooks.native_test_run",
         }
     }
     fn scope(&self) -> Scope {
         match self {
-            Self::List(s) | Self::Review { scope: s, .. } => *s,
+            Self::List(s) | Self::Review { scope: s, .. } | Self::TestReview { scope: s, .. } => *s,
+            Self::Run(r) => r.scope,
             Self::Apply(r) => r.scope,
         }
     }
@@ -290,6 +315,17 @@ impl Request {
                 cmd["revision"] = json!(revision);
                 cmd["hook_id"] = json!(row.id());
             }
+            Self::TestReview {
+                revision,
+                row,
+                event,
+                ..
+            } => {
+                cmd["revision"] = json!(revision);
+                cmd["hook_id"] = json!(row.id());
+                cmd["event"] = json!(event);
+            }
+            Self::Run(r) => cmd["token"] = json!(r.token),
             Self::Apply(r) => cmd["token"] = json!(r.token),
             Self::List(_) => {}
         }
@@ -377,6 +413,107 @@ impl Request {
                     rows,
                 }))
             }
+            Self::TestReview {
+                scope,
+                revision,
+                row,
+                event,
+            } => {
+                self.check(
+                    v,
+                    id,
+                    instance,
+                    "hook_test_review",
+                    &[
+                        "revision", "row", "event", "source", "sample", "profile", "token",
+                    ],
+                )?;
+                let expected = match event.as_str() {
+                    "tool_before" | "tool_after" => json!({"tool":"read","args":{}}),
+                    "prompt_before" => json!({"text":"Hook test"}),
+                    _ => json!({}),
+                };
+                if v["revision"] != *revision
+                    || Row::parse(&v["row"], *scope)? != *row
+                    || !row.0["events"]
+                        .as_array()
+                        .is_some_and(|events| events.iter().any(|e| e == event))
+                    || v["event"] != *event
+                    || v["source"] != "typed"
+                    || v["sample"] != expected
+                    || !matches!(
+                        v["profile"].as_str(),
+                        Some("strict" | "interactive" | "autonomous")
+                    )
+                    || !hex(&v["token"], 64)
+                {
+                    return Err(invalid());
+                }
+                Ok(Reply::TestReview(TestReview {
+                    scope: *scope,
+                    row: row.clone(),
+                    event: event.clone(),
+                    sample: expected,
+                    profile: label(&v["profile"]).into(),
+                    token: label(&v["token"]).into(),
+                }))
+            }
+            Self::Run(r) => {
+                self.check(
+                    v,
+                    id,
+                    instance,
+                    "hook_test_result",
+                    &[
+                        "token",
+                        "run_id",
+                        "event",
+                        "status",
+                        "exit_code",
+                        "cleanup_verified",
+                        "truncated",
+                        "stdout_bytes",
+                        "stderr_bytes",
+                    ],
+                )?;
+                let status = label(&v["status"]);
+                let code = if v["exit_code"].is_null() {
+                    None
+                } else {
+                    Some(v["exit_code"].as_i64().ok_or_else(invalid)?)
+                };
+                let counts =
+                    |key: &str| v[key].as_u64().filter(|n| *n <= 65_536).ok_or_else(invalid);
+                let out = counts("stdout_bytes")?;
+                let err = counts("stderr_bytes")?;
+                let clipped = v["truncated"].as_bool().ok_or_else(invalid)?;
+                let verified = v["cleanup_verified"].as_bool().ok_or_else(invalid)?;
+                if apply_id.is_none()
+                    || v["run_id"].as_str() != apply_id
+                    || v["token"] != r.token
+                    || v["event"] != r.event
+                {
+                    return Err(invalid());
+                }
+                let message = match status {
+                    "allowed" if code == Some(0) => "allowed",
+                    "denied" if code.is_some() => "denied or failed",
+                    "timeout" => "timed out",
+                    "cancelled" => "cancelled",
+                    "unavailable" if code.is_none() => "authorization or launch unavailable",
+                    _ => return Err(invalid()),
+                };
+                Ok(Reply::Tested(format!(
+                    "Test {message}{} · exit {} · stdout {out} B · stderr {err} B{}",
+                    if verified {
+                        ""
+                    } else {
+                        " · cleanup unverified"
+                    },
+                    code.map_or_else(|| "unknown".into(), |n| n.to_string()),
+                    if clipped { " · output clipped" } else { "" }
+                )))
+            }
             Self::Review {
                 scope,
                 row,
@@ -458,6 +595,69 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn verify_sample_and_receipt(id: &Identity, base: &Value, list: &List) {
+        let req = Request::TestReview {
+            scope: list.scope,
+            revision: list.revision.clone(),
+            row: list.rows[0].clone(),
+            event: "tool_before".into(),
+        };
+        let mut wire = base.clone();
+        for (key, value) in [
+            ("kind", json!("hook_test_review")),
+            ("row", list.rows[0].0.clone()),
+            ("event", json!("tool_before")),
+            ("source", json!("typed")),
+            ("token", json!("b".repeat(64))),
+            ("revision", json!(list.revision)),
+            ("profile", json!("strict")),
+            ("sample", json!({"args":{},"tool":"read"})),
+        ] {
+            wire[key] = value;
+        }
+        let Reply::TestReview(review) = req.reply(&wire, id, "work", None).unwrap() else {
+            panic!()
+        };
+        for (key, value) in [
+            ("sample", json!({"secret":"unreviewed"})),
+            ("event", json!("prompt_before")),
+            ("profile", json!("forged")),
+        ] {
+            let mut forged = wire.clone();
+            forged[key] = value;
+            assert!(req.reply(&forged, id, "work", None).is_err());
+        }
+        let run = Request::Run(Box::new(review));
+        let mut result = base.clone();
+        for (key, value) in [
+            ("kind", json!("hook_test_result")),
+            ("event", json!("tool_before")),
+            ("token", json!("b".repeat(64))),
+            ("run_id", json!("test-id")),
+            ("status", json!("allowed")),
+            ("exit_code", json!(0)),
+            ("cleanup_verified", json!(true)),
+            ("truncated", json!(false)),
+            ("stdout_bytes", json!(4)),
+            ("stderr_bytes", json!(0)),
+        ] {
+            result[key] = value;
+        }
+        assert!(matches!(
+            run.reply(&result, id, "work", Some("test-id")),
+            Ok(Reply::Tested(_))
+        ));
+        for (key, value) in [
+            ("run_id", json!("other")),
+            ("stdout_bytes", json!(65537)),
+            ("stderr", json!("private")),
+            ("exit_code", json!(1)),
+        ] {
+            let mut forged = result.clone();
+            forged[key] = value;
+            assert!(run.reply(&forged, id, "work", Some("test-id")).is_err());
+        }
+    }
     #[test]
     fn rejects_extra_command_data_and_forged_shadowed_effect_or_readback() {
         let id = Identity {
@@ -478,6 +678,7 @@ mod tests {
         let Reply::List(result) = list.reply(&catalog, &id, "work", None).unwrap() else {
             panic!()
         };
+        verify_sample_and_receipt(&id, &base, &result);
         catalog["rows"][0]["argv"] = json!(["private"]);
         assert!(list.reply(&catalog, &id, "work", None).is_err());
         let req = Request::Review {
