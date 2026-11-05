@@ -56,7 +56,7 @@ os.environ['RUST_RUNTIME_CONTROLS_CASE']={}
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 p=Path(os.environ['LITETUI_DATA_ROOT'])/'settings.json'
 s=json.loads(p.read_text(encoding='utf-8'))
-s.update(user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False,tool_auto_background_s=0,custom_context_length=1000000)
+s.update(enter_interrupts=os.environ['RUST_RUNTIME_CONTROLS_CASE']=='midturn-swapped',user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False,tool_auto_background_s=0,custom_context_length=1000000)
 p.write_text(json.dumps(s),encoding='utf-8')
 runpy.run_path({},run_name='__main__')
 "#,quote(&source.to_string_lossy()),quote(case),quote(&fixture.to_string_lossy()))).unwrap();
@@ -962,4 +962,160 @@ fn identity_change(case: &str) {
         json!({"composer_preserved":true,"target_generation":0}),
         &frames,
     );
+}
+
+#[test]
+#[ignore = "actual captured host stream and queued user-input ledger"]
+fn midturn_queues_source_bound_draft_and_refuses_the_interrupt_chord() {
+    for case in [
+        "midturn-normal",
+        "midturn-swapped",
+        "host-midturn-boundary",
+        "midturn-stale",
+        "midturn-quit",
+    ] {
+        let swapped = case == "midturn-swapped";
+        let tool = case == "host-midturn-boundary";
+        let (runtime, root) = launch(case);
+        let draft = "  Exact queue draft with Unicode 雪  ";
+        let result=runtime.with_cleanup(|runtime| {
+            let mut app=Demo::live("custom".into(),"switch-old".into());
+            wait(runtime,&mut app,|e|matches!(e,Observation::Ready))?;
+            let chat=app.live.as_mut().unwrap();
+            chat.submit("Original foreground request")?;
+            runtime.submit(chat.take_submission().unwrap())?;
+            stage(runtime,&mut app,&root,if tool{"old-tool-running"}else{"stream-active"})?;
+            app.insert_text(draft);
+            app.composer.move_cursor(Motion::WordLeft,true);
+            let caret=(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned());
+            for (chord,accepted) in [(!swapped,false),(swapped,true)] {
+                app.submit_chord(chord);
+                let intent=app.live.as_mut().unwrap().work.take_intent().ok_or_else(||io::Error::other(format!("No queue intent: {}",app.notice)))?;
+                runtime.work(intent)?;
+                wait(runtime,&mut app,|e|matches!(e,Observation::Work(_)))?;
+                let screen=draw(&mut app);
+                assert_eq!(app.composer.text(), draft);
+                assert_eq!(caret,(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned()));
+                if !accepted {
+                    assert!(screen.contains("interrupt"),"{screen}");
+                    app.live.as_mut().unwrap().work.key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Esc,crossterm::event::KeyModifiers::NONE));
+                } else {
+                    assert!(screen.contains("next safe boundary") && screen.contains("Exact queue draft"),"{screen}");
+                    if case=="midturn-stale" {
+                        fs::write(root.join("release-stream"),b"retire reviewed owner before Apply")?;
+                        while app.live.as_ref().unwrap().busy {app.observe_live(next(runtime)?)?;}
+                    }
+                    app.live.as_mut().unwrap().work.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    let intent=app.live.as_mut().unwrap().work.take_intent().expect("one reviewed Apply");
+                    assert_eq!(app.composer.text(),draft);
+                    runtime.work(intent)?;
+                    wait(runtime,&mut app,|e|matches!(e,Observation::Work(_)))?;
+                    if case=="midturn-stale" {
+                        assert!(draw(&mut app).contains("foreground turn changed"));
+                        assert_eq!(app.composer.text(),draft);
+                        assert_eq!(caret,(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned()));
+                        return runtime.quit();
+                    }
+                    assert_eq!(app.composer.text(),"");
+                }
+            }
+            if case=="midturn-quit" {return runtime.quit()}
+            fs::write(root.join(if tool{"release-tool"}else{"release-stream"}),b"finish original and consume exactly one queue entry")?;
+            let mut settled=false;
+            // The old reply and the genuine next Work admission both complete.
+            for _ in 0..160 {
+                let e=next(runtime)?;
+                settled |=matches!(&e,Observation::WorkExecution(update) if matches!(update.as_ref(),litetui_terminal::live::WorkExecution::Settled{..}));
+                app.observe_live(e)?;
+                if settled && !app.live.as_ref().unwrap().busy {return runtime.quit()}
+            }
+            Err(io::Error::other("Queued input did not settle"))
+        });
+        assert!(result.is_ok(), "{case} {result:?} {}", root.display());
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        let requests = r["requests"].as_array().unwrap();
+        let inputs = r["work"]["inputs"].as_array().unwrap();
+        if case == "midturn-normal" {
+            let refused = &r["queue_refusals"];
+            assert!(refused["replay"].as_str().unwrap().contains("consumed"));
+            assert!(
+                refused["wrong-policy"]
+                    .as_str()
+                    .unwrap()
+                    .contains("different runtime policy")
+            );
+            assert!(
+                refused["wrong-instance"]
+                    .as_str()
+                    .unwrap()
+                    .contains("another version or Work session")
+            );
+            for label in ["wrong-operation", "wrong-hook"] {
+                assert!(
+                    refused[label]
+                        .as_str()
+                        .unwrap()
+                        .contains("foreground turn finished or changed")
+                );
+            }
+        }
+        match case {
+            "midturn-stale" => {
+                assert!(inputs.is_empty());
+                assert_eq!(requests.len(), 1);
+            }
+            "midturn-quit" => {
+                assert_eq!(requests.len(), 1);
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(inputs[0]["state"], "held");
+                assert_eq!(inputs[0]["admission"], Value::Null);
+                assert_eq!(inputs[0]["payload"]["content"], draft);
+                let recovered = r["queue_recovered"].as_array().unwrap();
+                assert_eq!(recovered.len(), 1);
+                assert_eq!(recovered[0]["state"], "held");
+                assert_eq!(recovered[0]["input"], inputs[0]["ref"]);
+                assert_eq!(recovered[0]["producer"]["kind"], "user_queue");
+            }
+            _ => {
+                assert_eq!(requests.len(), 2, "{case}");
+                let messages = requests[1]["messages"].as_array().unwrap();
+                assert_eq!(
+                    messages
+                        .iter()
+                        .filter(|m| m["role"] == "user" && m["content"] == draft)
+                        .count(),
+                    1
+                );
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(inputs[0]["state"], "settled");
+                let admission = &inputs[0]["admission"];
+                assert_eq!(admission["mode"], if tool { "in_turn" } else { "new_turn" });
+                let parent = r["wire"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["result"]["kind"] == "midturn_review")
+                    .unwrap();
+                if tool {
+                    assert_eq!(admission["origin"], parent["result"]["origin"]);
+                    let queued = messages.iter().position(|m| m["content"] == draft).unwrap();
+                    assert_eq!(
+                        messages[..queued]
+                            .iter()
+                            .filter(|m| m["role"] == "tool")
+                            .count(),
+                        2
+                    );
+                } else {
+                    assert_ne!(
+                        admission["origin"]["operation_id"],
+                        parent["result"]["origin"]["operation_id"]
+                    );
+                }
+            }
+        }
+        assert_eq!(r["denied"], json!([]));
+    }
 }

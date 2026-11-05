@@ -392,6 +392,13 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
     if key.code == KeyCode::Down && key.kind == KeyEventKind::Repeat && app.footer.owns_enter() {
         return false;
     }
+    if app.live.is_some()
+        && app.footer.owns_enter()
+        && key.code == KeyCode::Char('j')
+        && key.modifiers == KeyModifiers::CONTROL
+    {
+        return false;
+    }
     if key.code == KeyCode::Enter && app.footer.owns_enter() {
         if key.kind == KeyEventKind::Press && key.modifiers.is_empty() {
             let (_, intent) = app.footer.activate();
@@ -645,7 +652,16 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         KeyCode::End => app
             .composer
             .move_cursor(Motion::End, key.modifiers.contains(KeyModifiers::SHIFT)),
-        KeyCode::Enter if key.kind == KeyEventKind::Press => app.submit(),
+        KeyCode::Char('j')
+            if app.live.is_some()
+                && key.kind == KeyEventKind::Press
+                && key.modifiers == KeyModifiers::CONTROL =>
+        {
+            app.submit_chord(true)
+        }
+        KeyCode::Enter if key.kind == KeyEventKind::Press => {
+            app.submit_chord(key.modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        }
         KeyCode::Backspace => app.composer.delete(Delete::Left),
         KeyCode::Delete => app.composer.delete(Delete::Right),
         KeyCode::Esc => {
@@ -1743,6 +1759,47 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midturn_send_keys_use_one_request_and_respect_focused_input() {
+        use litetui_terminal::{live::Observation, midturn, work_view};
+        for (code, modifiers, alternate) in [
+            (KeyCode::Enter, KeyModifiers::NONE, false),
+            (
+                KeyCode::Enter,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                true,
+            ),
+            (KeyCode::Char('j'), KeyModifiers::CONTROL, true),
+        ] {
+            let mut app = Demo::live("custom".into(), "fixture".into());
+            app.observe_live(Observation::Ready).unwrap();
+            let mut router = KeyRouter::default();
+            let event = KeyEvent::new(code, modifiers);
+            app.insert_text("First prompt");
+            router.handle(&mut app, event);
+            assert!(app.live.as_mut().unwrap().take_submission().is_some());
+            app.observe_live(Observation::Submission {
+                id: "foreground".into(),
+            })
+            .unwrap();
+            app.insert_text("Second draft");
+            router.handle(&mut app, event);
+            let work = &mut app.live.as_mut().unwrap().work;
+            let work_view::Request::Midturn(request) = work.take_intent().unwrap().request else {
+                panic!("Missing queue request")
+            };
+            assert!(
+                matches!(*request,midturn::Request::Review(ref draft) if draft.alternate==alternate && draft.text=="Second draft" && draft.operation=="foreground")
+            );
+            assert!(work.take_intent().is_none());
+            paste(&mut app, "Leave focused review intact");
+            router.handle(&mut app, event);
+            assert_eq!(app.composer.text(), "Second draft");
+            assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+            assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        }
+    }
 
     #[test]
     fn saved_history_owns_f6_clipboard_paste_and_cancelled_late_key_repeats() {

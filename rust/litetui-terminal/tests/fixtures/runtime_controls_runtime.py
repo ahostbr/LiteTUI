@@ -90,7 +90,7 @@ class Stream:
                 yield delta(finish='tool_calls')
             else:
                 yield delta('CONTROLLED RUNTIME POLICY ANSWER')
-                if case in {'owner-finish-readback', 'stop-publication', 'quit-publication'} and self.ordinal == 1:
+                if (case in {'owner-finish-readback', 'stop-publication', 'quit-publication'} or case.startswith('midturn-')) and self.ordinal == 1:
                     mark('stream-active')
                     await until_file('release-stream')
                 yield delta(finish='stop')
@@ -219,6 +219,22 @@ async def serve(app):
 
     async def management(owner, command):
         operation = command['type']
+        if operation == 'gui.prompt.native_queue_apply' and case == 'midturn-normal':
+            result = await actual_gui(owner, command)
+            for label, updates in (
+                ('replay', {}),
+                ('wrong-policy', {'policy_epoch': command['policy_epoch'] + 1}),
+                ('wrong-instance', {'work_instance': str(uuid.uuid4())}),
+                ('wrong-operation', {'origin': {**command['origin'], 'operation_id': str(uuid.uuid4())}}),
+                ('wrong-hook', {'origin': {**command['origin'], 'hook_id': str(uuid.uuid4())}}),
+            ):
+                try:
+                    await actual_gui(owner, {**command, **updates, 'id': str(uuid.uuid4())})
+                except ValueError as exc:
+                    report.setdefault('queue_refusals', {})[label] = str(exc)
+                else:
+                    raise AssertionError(f'Accepted {label} queue Apply')
+            return result
         if not operation.startswith(PREFIX):
             return await actual_gui(owner, command)
         before = documents(app)
@@ -298,6 +314,10 @@ async def serve(app):
             questions=list(getattr(app, '_rpc_pending_asks', {})), approvals=list(getattr(app, '_approval_waiters', {})),
             authorities=list(getattr(app, '_approval_authority_records', {})))
         if bridge is not None:
+            if case == 'midturn-quit' and bridge.closing:
+                reopened = background_input.Bridge(app)
+                report['queue_recovered'] = reopened.recovered
+                assert reopened.raw == bridge.raw and not reopened.active and not reopened.executions
             report['work'] = {'instance': bridge.instance, 'active': bridge.active, 'closing': bridge.closing,
                 'producers': [{'ref': p.ref, 'phase': p.phase} for p in bridge.producers.values()],
                 'inputs': [{'ref': i.ref, 'payload': i.payload, 'state': i.state, 'admission': i.admission, 'receipt': i.receipt}

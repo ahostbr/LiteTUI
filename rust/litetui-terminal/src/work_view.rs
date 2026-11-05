@@ -37,6 +37,7 @@ pub enum Request {
     Hook(Box<crate::hook_toggle::Request>),
     Plugin(Box<crate::plugin_reload::Request>),
     Image(crate::image::Request),
+    Midturn(Box<crate::midturn::Request>),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
@@ -72,6 +73,7 @@ pub enum Data {
     Hook(Box<crate::hook_toggle::Reply>),
     Plugin(Box<crate::plugin_reload::Reply>),
     Image(Option<crate::image::Review>),
+    Midturn(Box<crate::midturn::Reply>),
     ImagePreview(crate::image::Thumbnail),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
@@ -139,6 +141,7 @@ pub struct View {
     hooks: crate::hook_toggle_view::View,
     plugin_reload: crate::plugin_reload::View,
     pub image: crate::image::Picker,
+    pub midturn: crate::midturn::View,
     section: usize,
     selected: usize,
     page_back: Vec<usize>,
@@ -188,6 +191,15 @@ impl View {
             self.request(Request::Image(self.image.clipboard_request()));
         }
     }
+    pub fn review_queued_text(&mut self, draft: crate::midturn::Draft) {
+        if !self.owns_input() {
+            self.open = true;
+            self.midturn.begin();
+            self.request(Request::Midturn(Box::new(crate::midturn::Request::Review(
+                draft,
+            ))));
+        }
+    }
     pub fn open_image(&mut self) {
         if !self.owns_input() {
             self.open = true;
@@ -229,6 +241,7 @@ impl View {
     pub fn close(&mut self) {
         self.context_after_snapshot = None;
         self.image.close();
+        self.midturn.open = false;
         self.hooks.close();
         self.plugin_reload.close();
         self.context.close();
@@ -350,6 +363,7 @@ impl View {
                 | (Request::ControlApply(_), Data::ControlSaved { .. })
                 | (Request::DeferredValidate, Data::DeferredReview(_))
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
+                | (Request::Midturn(_), Data::Midturn(_))
                 | (Request::Image(_), Data::Image(_))
                 | (
                     Request::Image(crate::image::Request::Preview(_)),
@@ -378,6 +392,16 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::Midturn(reply) => {
+                self.midturn.reply(*reply);
+                self.open = self.midturn.open;
+                if !self.open {
+                    self.notice = "Message queued in the current conversation.".into();
+                }
+            }
+            Data::Rejected(reason) if matches!(pending, Request::Midturn(_)) => {
+                self.midturn.reject(reason)
+            }
             Data::Plugin(reply) => self.plugin_reload.reply(*reply),
             Data::Rejected(reason) if matches!(pending, Request::Plugin(_)) => {
                 self.plugin_reload.reject(reason)
@@ -681,7 +705,7 @@ impl View {
         self.notice = error;
     }
     pub fn paste(&mut self, text: &str) {
-        if self.hooks.open || self.plugin_reload.open {
+        if self.midturn.open || self.hooks.open || self.plugin_reload.open {
             return;
         }
         if self.context.is_open() {
@@ -707,6 +731,15 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.midturn.open {
+            if key.kind == KeyEventKind::Press {
+                if let Some(req) = self.midturn.key(key, self.waiting) {
+                    self.request(Request::Midturn(Box::new(req)));
+                }
+                self.open = self.midturn.open;
+            }
+            return;
+        }
         if self.plugin_reload.open {
             if let Some(req) = self.plugin_reload.key(key, self.waiting) {
                 self.request(Request::Plugin(Box::new(req)));
@@ -1112,7 +1145,7 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.hooks.open || self.plugin_reload.open {
+        if self.midturn.open || self.hooks.open || self.plugin_reload.open {
             return;
         }
         if self.image.open {
@@ -1383,6 +1416,10 @@ impl View {
         self.current_row().map_or_else(Vec::new, Row::details)
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.midturn.open {
+            self.midturn.draw(frame, area, self.waiting);
+            return;
+        }
         if self.plugin_reload.open {
             self.plugin_reload.draw(frame, area, theme, self.waiting);
             return;

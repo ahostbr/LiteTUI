@@ -2518,6 +2518,17 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             _ => None,
                         };
                         let permitted = match &intent.request {
+                            crate::work_view::Request::Midturn(r) => {
+                                turn.ordinary_runtime_prompt
+                                    && turn.started
+                                    && !turn.settled
+                                    && !turn.closing
+                                    && turn.terminal.is_none()
+                                    && turn.questions.settled()
+                                    && turn.approvals.settled()
+                                    && turn.aborts.settled()
+                                    && turn.command_id == r.draft().operation
+                            }
                             crate::work_view::Request::ManualReview { .. }
                             | crate::work_view::Request::ManualDecision { accept: true, .. } => {
                                 turn.can_manage()
@@ -2534,8 +2545,24 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             }
                             _ => true,
                         };
-                        let request = if permitted {
+                        let queueing =
+                            matches!(&intent.request, crate::work_view::Request::Midturn(_));
+                        let request = if permitted && queueing {
+                            turn.runtime_policy
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    io::Error::other(
+                                        "Queued input lacks its captured runtime policy",
+                                    )
+                                })
+                                .and_then(|policy| management.bind_queue_policy(policy))
+                                .and_then(|()| management.request_work(intent))
+                        } else if permitted {
                             management.request_work(intent)
+                        } else if queueing {
+                            Err(io::Error::other(
+                                "The foreground turn changed or needs attention. The composer draft is still available.",
+                            ))
                         } else {
                             Err(io::Error::other(
                                 "Finish owned execution before changing durable Work",

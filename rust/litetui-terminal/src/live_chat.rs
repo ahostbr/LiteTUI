@@ -374,6 +374,37 @@ impl Chat {
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
         self.reserve_row(prompt, false)
     }
+    pub fn review_midturn(&mut self, text: &str, alternate: bool) -> io::Result<()> {
+        let op = self
+            .submission_id
+            .clone()
+            .filter(|_| {
+                self.busy
+                    && self.ready
+                    && !self.closed
+                    && !self.quitting
+                    && self.work.image.attached.is_none()
+                    && !self.work.owns_input()
+            })
+            .ok_or_else(|| {
+                io::Error::other("Wait for an active foreground reply with no pending attachment")
+            })?;
+        if text.len() > crate::midturn::MAX_TEXT
+            || text.contains('\0')
+            || text.trim().is_empty()
+            || text.trim_start().starts_with('/')
+        {
+            return Err(io::Error::other(
+                "Queue a plain text draft of 1 to 16384 UTF-8 bytes",
+            ));
+        }
+        self.work.review_queued_text(crate::midturn::Draft {
+            text: text.to_owned(),
+            alternate,
+            operation: op,
+        });
+        Ok(())
+    }
     pub fn submit_composer(&mut self, prompt: &str) -> io::Result<()> {
         let label = self
             .work

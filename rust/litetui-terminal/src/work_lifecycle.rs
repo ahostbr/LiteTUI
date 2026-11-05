@@ -208,6 +208,7 @@ impl Origin {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProducerKind {
+    UserQueue,
     HostTask,
     Inbox,
     ChildResult,
@@ -249,6 +250,7 @@ impl Producer {
             ],
         )?;
         let kind = match text(v, "kind", 32)?.as_str() {
+            "user_queue" => ProducerKind::UserQueue,
             "host_task" => ProducerKind::HostTask,
             "inbox" => ProducerKind::Inbox,
             "child_result" => ProducerKind::ChildResult,
@@ -267,6 +269,18 @@ impl Producer {
             || execution.is_some() != operation.is_some()
         {
             return Err(bad("Incomplete Work causal binding"));
+        }
+        if kind == ProducerKind::UserQueue {
+            uuid(v, "object_id")?;
+            hash(v, "owner_instance")?;
+            if action.is_some()
+                || execution.is_none()
+                || operation.is_none()
+                || !v["owner_created"].is_null()
+                || v["generation"].as_u64() != Some(1)
+            {
+                return Err(bad("Queued composer input lost its foreground owner"));
+            }
         }
         Ok(Self {
             id: uuid(v, "producer_id")?,
@@ -879,6 +893,13 @@ impl Capture {
             } else {
                 Some(Admission::parse(&r["admission"])?)
             };
+            if producer.kind == ProducerKind::UserQueue
+                && (epoch.provider != Provider::Host
+                    || producer.owner != epoch.instance
+                    || input.source != "rpc")
+            {
+                return Err(bad("Recovered composer input lost its captured host epoch"));
+            }
             let committed = producer.kind == ProducerKind::ChildResult;
             if committed
                 && (input.source != "child-result"
@@ -1218,6 +1239,22 @@ impl Ledger {
     }
     pub fn capture(&self) -> &Capture {
         &self.capture
+    }
+    pub(crate) fn verify_user_queue(&self, queued: &crate::midturn::Receipt) -> io::Result<()> {
+        let p = self.producers.get(&queued.producer.id);
+        let i = self.inputs.get(&queued.input.id);
+        if self.failed
+            || p.is_none_or(|p| {
+                p.producer != queued.producer
+                    || p.input.as_deref() != Some(queued.input.id.as_str())
+            })
+            || i.is_none_or(|i| {
+                i.recovered || i.input != queued.input || i.epoch_instance != self.capture.instance
+            })
+        {
+            return Err(bad("Queued draft lacks its exact source Work records"));
+        }
+        Ok(())
     }
     /// Compare immutable launch references with genuine events already consumed by this ledger.
     pub fn verify_execution_document(
@@ -1665,6 +1702,13 @@ impl Ledger {
     }
     fn producer_event(&mut self, e: &Value) -> io::Result<Effect> {
         let p = Producer::parse(&e["producer"])?;
+        if p.kind == ProducerKind::UserQueue
+            && (self.capture.provider != Provider::Host || p.owner != self.capture.instance)
+        {
+            return Err(bad(
+                "Queued composer input belongs to a different host epoch",
+            ));
+        }
         let state = match text(e, "phase", 32)?.as_str() {
             "registered" => ProducerState::Registered,
             "running" => ProducerState::Running,

@@ -23,6 +23,9 @@ pub(super) struct Control {
     hook_list: Option<crate::hook_toggle::List>,
     hook_review: Option<crate::hook_toggle::Review>,
     hook_test: Option<crate::hook_toggle::TestReview>,
+    queue_review: Option<crate::midturn::Review>,
+    queue_origin: Option<crate::work_lifecycle::Origin>,
+    queue_policy: Option<(u64, crate::tool_mode::Profile)>,
 }
 pub(super) struct Pending {
     pub id: CommandId,
@@ -36,10 +39,24 @@ pub(super) struct Pending {
     context_apply_id: Option<String>,
 }
 impl Management {
+    pub(crate) fn bind_queue_policy(
+        &mut self,
+        policy: &crate::runtime_controls::Policy,
+    ) -> io::Result<()> {
+        self.work.queue_policy = Some((
+            policy
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| fail("Runtime policy limit"))?,
+            policy.facts.seat_profile,
+        ));
+        Ok(())
+    }
     pub(super) fn invalidate_work_selection(&mut self) {
         self.work.plugin_names.clear();
         self.work.plugin_review = None;
         self.work.manual_review = None;
+        self.work.queue_review = None;
         self.invalidate_execution_review();
         self.work.snapshot = None;
         self.work.page = None;
@@ -129,6 +146,7 @@ impl Management {
             view::Request::DeferredValidate => deferred::VALIDATE,
             view::Request::DeferredApply(_) => deferred::DISCARD,
             view::Request::Image(request) => request.operation(),
+            view::Request::Midturn(r) => r.operation(),
             view::Request::Context(r) => r.operation(),
             view::Request::Plugin(request) => {
                 if !crate::plugin_reload::OPERATIONS
@@ -168,6 +186,13 @@ impl Management {
         {
             return Err(fail("Runtime lacks complete durable Work controls"));
         }
+        if matches!(&intent.request, view::Request::Midturn(_))
+            && [crate::midturn::REVIEW, crate::midturn::APPLY]
+                .iter()
+                .any(|op| !self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail("Runtime lacks reviewed composer queueing"));
+        }
         if matches!(&intent.request, view::Request::DeferredApply(_))
             && !self.operations.iter().any(|v| v == deferred::READBACK)
         {
@@ -202,7 +227,10 @@ impl Management {
             self.work.control_review = None;
             self.work.context_review = None;
             identity.request()
-        } else if matches!(&intent.request, view::Request::Image(_)) {
+        } else if matches!(
+            &intent.request,
+            view::Request::Image(_) | view::Request::Midturn(_)
+        ) {
             identity.request()
         } else {
             let snapshot = self
@@ -401,6 +429,24 @@ impl Management {
                 }
                 command = request.command(&identity, self.context_instance()?)?;
             }
+            view::Request::Midturn(request) => {
+                if let crate::midturn::Request::Apply(r) = request.as_ref()
+                    && self.work.queue_review.take().as_ref() != Some(r.as_ref())
+                {
+                    return Err(fail("Queue review is stale"));
+                }
+                let origin = self
+                    .known_work_origin()
+                    .ok_or_else(|| fail("The foreground turn has no captured execution"))?;
+                command = request.command(&identity, self.context_instance()?, &origin)?;
+                let (epoch, profile) = self
+                    .work
+                    .queue_policy
+                    .ok_or_else(|| fail("Queueing needs confirmed runtime policy"))?;
+                command["policy_epoch"] = json!(epoch);
+                command["profile"] = json!(profile.as_str());
+                self.work.queue_origin = Some(origin);
+            }
             view::Request::Image(request) => {
                 command = request.command(&identity, self.context_instance()?);
             }
@@ -495,7 +541,7 @@ impl Management {
             }
         }
         command["type"] = json!(op);
-        let id = if matches!(&intent.request,view::Request::Plugin(r) if matches!(r.as_ref(),crate::plugin_reload::Request::Apply(_))) || matches!(&intent.request,view::Request::Hook(r) if matches!(r.as_ref(),crate::hook_toggle::Request::Apply(_))) || matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
+        let id = if matches!(&intent.request,view::Request::Midturn(r) if matches!(r.as_ref(),crate::midturn::Request::Apply(_))) || matches!(&intent.request,view::Request::Plugin(r) if matches!(r.as_ref(),crate::plugin_reload::Request::Apply(_))) || matches!(&intent.request,view::Request::Hook(r) if matches!(r.as_ref(),crate::hook_toggle::Request::Apply(_))) || matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
             &intent.request,
             view::Request::PauseApply(_)
                 | view::Request::StopApply(_)
@@ -595,6 +641,36 @@ impl Management {
                 self.work.manual_review = Some(review.clone());
                 view::Data::ManualReview(Box::new(review))
             }
+            view::Request::Midturn(request) => {
+                let parent = self
+                    .work
+                    .queue_origin
+                    .take()
+                    .ok_or_else(|| fail("Queue review lost its bound foreground execution"))?;
+                let policy = self
+                    .work
+                    .queue_policy
+                    .take()
+                    .ok_or_else(|| fail("Lost queued policy"))?;
+                let reply = request.parse(
+                    &self.work_identity()?,
+                    self.context_instance()?,
+                    &parent,
+                    text(&frame, "id", 128)?,
+                    policy,
+                    value,
+                )?;
+                match &reply {
+                    crate::midturn::Reply::Review(r) => {
+                        self.work.queue_review = Some(r.as_ref().clone())
+                    }
+                    crate::midturn::Reply::Queued(r) => self
+                        .execution_ledger()
+                        .ok_or_else(|| fail("Queued text lost its Work ledger"))?
+                        .verify_user_queue(r)?,
+                }
+                view::Data::Midturn(Box::new(reply))
+            }
             view::Request::Image(crate::image::Request::Preview(review)) => {
                 match crate::image::Thumbnail::parse(
                     value,
@@ -635,6 +711,7 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
+                    view::Request::Midturn(_) => unreachable!(),
                     view::Request::Plugin(request) => {
                         let instance = self.context_instance()?;
                         if matches!(request.as_ref(), crate::plugin_reload::Request::Apply(_))

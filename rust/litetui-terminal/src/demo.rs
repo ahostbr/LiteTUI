@@ -181,6 +181,13 @@ impl Demo {
         };
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
+        if let Some(draft) = chat.work.midturn.queued.take() {
+            if self.composer.text() == draft.text {
+                self.composer.push_history(&draft.text);
+                self.composer.clear();
+            }
+            chat.notice = "Message queued in the current conversation.".into();
+        }
         if let Some(text) = restore_caption {
             self.composer.insert(&text);
         }
@@ -893,6 +900,22 @@ impl Demo {
     }
 
     pub fn submit(&mut self) {
+        self.submit_chord(false);
+    }
+    pub fn submit_chord(&mut self, alternate: bool) {
+        if self.live.as_ref().is_some_and(|chat| chat.busy) && !self.has_live_input() {
+            let text = self.composer.text();
+            match self
+                .live
+                .as_mut()
+                .expect("live")
+                .review_midturn(text, alternate)
+            {
+                Ok(()) => self.completion.dismiss(),
+                Err(err) => self.notice = err.to_string(),
+            }
+            return;
+        }
         let text = if self.live.is_some() {
             self.composer.text().to_string()
         } else {

@@ -218,3 +218,24 @@ async def test_retired_epoch_only_allows_its_reviewed_lifecycle_task(armed):
     with pytest.raises(controls.AuthorizationClosed):
         await authorize(True)
     assert not controls._state(app).tickets and not controls._state(app).waiters
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+async def test_native_provider_refuses_host_composer_queue_without_staging(armed, monkeypatch, provider):
+    from litetui import native_midturn
+
+    app, _ = armed
+    bridge = work.bridge(app)
+    if provider == "claude":
+        monkeypatch.setattr(app.backend, "owns_native_turns", True, raising=False)
+    else:
+        monkeypatch.setattr(app.backend, "app_server", object(), raising=False)
+    monkeypatch.setattr(bridge, "provider", work.provider(app))
+    assert bridge.provider == provider
+    before = bridge.raw
+    for operation in (native_midturn.REVIEW, native_midturn.APPLY):
+        command_fields = {"review": work.ident()} if operation == native_midturn.APPLY else {}
+        with pytest.raises(ValueError, match="captured host-managed stream"):
+            native_midturn.dispatch(app, command(app, type=operation, work_instance=bridge.instance,
+                origin={}, chord="enter", text="Unsent", profile="strict", policy_epoch=1, **command_fields))
+    assert bridge.raw == before and not bridge.inputs and not bridge.producers and not app._pending_input

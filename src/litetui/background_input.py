@@ -186,6 +186,7 @@ class Bridge:
         self.uncertain_inputs: set[str] = set()
         self.uncertain_error_owned = False
         self.pending_readbacks: dict[str, dict] = {}
+        self.user_queue_review: tuple[Any, bytes] | None = None
         self.close_event = None
         self.shutdown_task = None
         self.owner = (app._agent_session, app.store, app.backend, app.model_id, app.convo_id)
@@ -427,13 +428,13 @@ def release(app, token):
         value.reservations.discard(token)
 
 
-def register_producer(app, kind, object_id, *, owner_instance, owner_created=None, generation=1, task=None, reservation=None, call=None):
+def register_producer(app, kind, object_id, *, owner_instance, owner_created=None, generation=1, task=None, reservation=None, call=None, queue_parent=None):
     require_recapture_complete(app)
     value = bridge(app)
     if value is None or not value.active:
         return None
     value.check()
-    if kind not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake"} or type(generation) is not int or generation < 1:
+    if kind not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake", "user_queue"} or type(generation) is not int or generation < 1:
         raise ValueError("Invalid Work producer kind or generation")
     if reservation is None:
         reservation = reserve(app)
@@ -442,6 +443,14 @@ def register_producer(app, kind, object_id, *, owner_instance, owner_created=Non
     from litetui import conversation_action as action
     attempt = action._attempt(app) if action._authorized(app) else None
     origin = action.event_origin(app) if attempt is not None else current_origin(app)
+    if kind == "user_queue":
+        owned = value.executions.get(getattr(queue_parent, "execution_id", None))
+        if (attempt is not None or queue_parent is None or owned is None or owned[0].is_finished
+                or owned[1] != queue_parent or owner_instance != value.instance):
+            raise ValueError("Queued composer input requires its exact live turn")
+        origin = queue_parent
+    elif queue_parent is not None:
+        raise ValueError("Unexpected foreground parent for Work producer")
     if attempt is not None and attempt.kind == "compact" and not attempt.segments and origin is not None and origin.execution_id is None:
         # A manual compact can finish before any model stream exists. Its
         # registered maintenance worker is the real causal execution; no new
@@ -1288,7 +1297,7 @@ def validate_document(document):
         canonical_id(p["producer_session_id"])
         if p["producer_id"] in producers or p["producer_session_id"] != owner["session_id"]:
             raise ValueError("Duplicate or foreign Work producer")
-        if p["kind"] not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake"} or row["phase"] not in {"registered", "running", "stop_requested", "retired"}:
+        if p["kind"] not in {"host_task", "goal", "cron", "loop", "inbox", "child_result", "provider_question", "provider_recovery", "compact_wake", "user_queue"} or row["phase"] not in {"registered", "running", "stop_requested", "retired"}:
             raise ValueError("Malformed Work producer state")
         for key in ("object_id", "owner_instance"):
             text(p[key])
@@ -1300,6 +1309,12 @@ def validate_document(document):
                 canonical_id(p[key])
         if p["causal_operation_id"] is not None:
             text(p["causal_operation_id"])
+        if p["kind"] == "user_queue":
+            canonical_id(p["object_id"])
+            _hash(p["owner_instance"])
+            if (p["generation"] != 1 or p["owner_created"] is not None or p["causal_action_id"] is not None
+                    or not p["causal_operation_id"] or not p["causal_execution_id"]):
+                raise ValueError("Queued composer input lost its foreground owner")
         producers[p["producer_id"]] = p
     seen, used_producers, revisions, admissions = set(), set(), set(), set()
     pending = 0
@@ -1329,6 +1344,12 @@ def validate_document(document):
         used_producers.add(i["producer_id"])
         revisions.add(i["queue_revision"])
         validate_payload(payload)
+        producer = producers[i["producer_id"]]
+        if producer["kind"] == "user_queue" and (
+                epoch["provider"] != "host" or epoch["instance"] != producer["owner_instance"]
+                or set(payload) != {"content", "text", "source", "tool_profile"} or payload["source"] != "rpc"
+                or type(payload["content"]) is not str or payload["text"] != payload["content"]):
+            raise ValueError("Queued composer input lost its captured text or host epoch")
         if payload.get("delivery") == "committed_history" and (
                 producers[i["producer_id"]]["kind"] != "child_result"
                 or payload["history"]["session_id"] != owner["session_id"]):
@@ -1778,6 +1799,37 @@ async def _run_job(app, job, manual=False):
             app._native_work_scheduled_transition_hold_job = None
             app._native_work_scheduler_hold_reported = False
         return result
+    finally:
+        release(app, reservation)
+
+
+def queue_user_input(app, parent, review, payload):
+    """Capture one reviewed reply under the actual GUI worker and canonical FIFO."""
+    from textual.worker import get_current_worker
+
+    value = bridge(app)
+    worker = get_current_worker()
+    app._materialise_convo()
+    reservation = reserve(app)
+    try:
+        producer = register_producer(app, "user_queue", review, owner_instance=value.instance,
+                                     reservation=reservation, queue_parent=parent)
+        bind_producer_worker(app, producer, worker)
+        producer.asyncio_task = _task()
+        token = _PRODUCER.set((app, producer, _task()))
+        try:
+            item = dict(payload)
+            entry = enqueue(app, producer, item)
+            if entry.state != "queued" or _read(value.path) != value.raw:
+                raise ValueError("Queued composer input lacks an exact persisted ledger record")
+            item["bubble"] = app._user_bubble(payload["content"], False, queued=True)
+            app._pending_input.append(item)
+            return producer.ref, entry.ref
+        finally:
+            _PRODUCER.reset(token)
+    except Exception as exc:
+        value.error = "Queued draft publication is uncertain; close and inspect retained Work before sending again"
+        raise ValueError(value.error) from exc
     finally:
         release(app, reservation)
 
