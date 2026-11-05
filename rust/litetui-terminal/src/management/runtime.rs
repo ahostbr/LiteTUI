@@ -137,6 +137,14 @@ impl Management {
     pub(super) fn runtime_capture_request(&self, command: &mut Value) {
         if self.runtime_controls.capabilities.is_some() {
             command["runtime_controls_version"] = Value::from(1);
+            if self
+                .runtime_controls
+                .capabilities
+                .as_ref()
+                .is_some_and(|caps| caps.tool_selection)
+            {
+                command["tool_selection_version"] = Value::from(1);
+            }
         }
     }
     /// Validate only negotiated extension fields, then let the old strict parser
@@ -167,6 +175,7 @@ impl Management {
                 .ok_or_else(|| fail("Runtime controls capture lacks Work instance"))?
                 .to_owned(),
             provider: life::Provider::parse(value, "provider")?,
+            tool_selection: capabilities.tool_selection,
         };
         let policy = capabilities.parse_capture(value, &binding)?;
         self.runtime_controls.captured = Some(policy);
@@ -178,6 +187,7 @@ impl Management {
             "runtime_controls_version",
             "runtime_policy",
             "runtime_controls_limits",
+            "tool_selection_version",
         ] {
             object.remove(key);
         }
@@ -192,6 +202,14 @@ impl Management {
     pub(super) fn runtime_activation_request(&mut self, command: &mut Value) {
         if self.runtime_controls.captured.is_some() {
             command["runtime_controls_version"] = Value::from(1);
+            if self
+                .runtime_controls
+                .captured
+                .as_ref()
+                .is_some_and(|policy| policy.binding.tool_selection)
+            {
+                command["tool_selection_version"] = Value::from(1);
+            }
             self.runtime_controls.activation_sent = true;
         }
     }
@@ -265,7 +283,11 @@ impl Management {
         let object = legacy
             .as_object_mut()
             .ok_or_else(|| fail("Runtime activation is not an object"))?;
-        for key in ["runtime_controls_version", "runtime_policy"] {
+        for key in [
+            "runtime_controls_version",
+            "runtime_policy",
+            "tool_selection_version",
+        ] {
             object.remove(key);
         }
         if let Some(expected) = self.expected.as_mut() {
@@ -307,10 +329,21 @@ impl Management {
             fail("Runtime does not support activated Tools, Authority, and Plan controls")
         })?;
         let (mut command, kind) = match intent {
-            view::Intent::Read(field) => (
-                policy.binding.request(controls::SNAPSHOT),
-                Read::Snapshot(field),
-            ),
+            view::Intent::Read(field) => {
+                if field == controls::Field::ToolSelection && !policy.binding.tool_selection {
+                    return Err(fail("Runtime did not negotiate individual tool controls"));
+                }
+                (
+                    policy
+                        .binding
+                        .request(if field == controls::Field::ToolSelection {
+                            controls::TOOL_LIST
+                        } else {
+                            controls::SNAPSHOT
+                        }),
+                    Read::Snapshot(field),
+                )
+            }
             view::Intent::Review { snapshot, change } => {
                 if self.runtime_controls.snapshot.as_ref() != Some(snapshot.as_ref()) {
                     return Err(fail("Runtime choice differs from the retained snapshot"));
@@ -373,7 +406,11 @@ impl Management {
                     .policy
                     .as_ref()
                     .expect("active control policy");
-                let snapshot = controls::Snapshot::parse(value, &policy.binding)?;
+                let snapshot = if field == controls::Field::ToolSelection {
+                    controls::Snapshot::parse_tool_list(value, &policy.binding)?
+                } else {
+                    controls::Snapshot::parse(value, &policy.binding)?
+                };
                 policy.verify_stable(&snapshot.binding, snapshot.generation, &snapshot.facts)?;
                 self.runtime_controls.snapshot = Some(snapshot.clone());
                 Ok(Step::RuntimeControls(view::Update::Snapshot {

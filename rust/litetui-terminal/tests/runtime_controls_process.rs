@@ -2158,3 +2158,218 @@ fn native_provider_midturn_steering_and_interrupt_use_exact_owned_delivery() {
         }
     }
 }
+
+#[test]
+#[ignore = "actual per-tool mid-turn policy publication; controlled dependency Python required"]
+fn individual_tool_waits_for_publication_without_changing_global_authority() {
+    let (runtime, root) = launch("host-tool-selection-parked");
+    let mut frames = Vec::new();
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.live
+                .as_mut()
+                .unwrap()
+                .submit("EXPLICIT CONTROLLED TWO TOOL TURN")?;
+            runtime.submit(app.live.as_mut().unwrap().take_submission().unwrap())?;
+            app.insert_text("PRESERVE DRAFT DURING INDIVIDUAL TOOL REVIEW");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let draft = (
+                app.composer.text().to_string(),
+                app.composer.before_cursor().to_string(),
+                app.composer.selected_text().to_string(),
+            );
+            stage(runtime, &mut app, &root, "old-tool-running")?;
+            app.open_runtime_controls(view::Field::ToolSelection);
+            send(runtime, &mut app)?;
+            let index = loop {
+                let event = next(runtime)?;
+                let index = match &event {
+                    Observation::RuntimeControls(view::Update::Snapshot { snapshot, .. }) => Some(
+                        snapshot
+                            .tools
+                            .as_ref()
+                            .unwrap()
+                            .rows
+                            .iter()
+                            .position(|row| row.name == "runtime_fixture_tool")
+                            .unwrap(),
+                    ),
+                    Observation::RuntimeControls(view::Update::Rejected(reason)) => {
+                        return Err(io::Error::other(reason.clone()));
+                    }
+                    _ => None,
+                };
+                app.observe_live(event)?;
+                send(runtime, &mut app)?;
+                if let Some(index) = index {
+                    break index;
+                }
+            };
+            key(&mut app, KeyCode::Enter);
+            assert!(
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .runtime_controls
+                    .take_intent()
+                    .is_none()
+            );
+            for _ in 0..index {
+                key(&mut app, KeyCode::Down);
+            }
+            frames.push(draw(&mut app));
+            key(&mut app, KeyCode::Enter);
+            send(runtime, &mut app)?;
+            wait(runtime, &mut app, |e| {
+                matches!(e, Observation::RuntimeControls(view::Update::Review(_)))
+            })?;
+            confirm(runtime, &mut app, &mut frames)?;
+            stage(runtime, &mut app, &root, "readback-prepared")?;
+            fs::write(
+                root.join("release-tool"),
+                b"finish original authorization before publication",
+            )
+            .unwrap();
+            stage(runtime, &mut app, &root, "next-tool-attempt")?;
+            assert!(app.live.as_ref().unwrap().runtime_controls.pending());
+            fs::write(
+                root.join("release-publication"),
+                b"publish exact disabled list",
+            )
+            .unwrap();
+            wait(runtime, &mut app, |e| {
+                matches!(e, Observation::RuntimeControls(view::Update::Settled(_)))
+            })?;
+            while app.live.as_ref().unwrap().busy {
+                let event = next(runtime)?;
+                app.observe_live(event)?;
+                send(runtime, &mut app)?;
+            }
+            assert_eq!(
+                draft,
+                (
+                    app.composer.text().to_string(),
+                    app.composer.before_cursor().to_string(),
+                    app.composer.selected_text().to_string()
+                )
+            );
+            frames.push(draw(&mut app));
+            Ok(())
+        })
+        .unwrap_or_else(|e| panic!("{e}; {}", root.display()));
+    let r = collect(&root);
+    let review = &r["reviews"][0];
+    assert_eq!(
+        review["change"],
+        json!({"field":"tool_selection","value":{"name":"runtime_fixture_tool","enabled":false}})
+    );
+    assert_eq!(review["after"]["tools_enabled"], true);
+    assert_eq!(review["after"]["effective_profile"], "autonomous");
+    assert_eq!(
+        review["after"]["tools_disabled"],
+        json!(["runtime_fixture_tool"])
+    );
+    assert_eq!(r["readbacks"][0]["verified"], true);
+    let events = r["events"].as_array().unwrap();
+    let boundary = events
+        .iter()
+        .find(|e| {
+            e["kind"] == "wire" && e["frame"]["result"]["kind"] == "runtime_controls_readback"
+        })
+        .unwrap()["sequence"]
+        .as_u64()
+        .unwrap();
+    for (kind, ordinal) in [("tool-exit", 0), ("tool-attempt", 1)] {
+        let sequence = events
+            .iter()
+            .find(|e| {
+                e["kind"] == kind && (e["ordinal"] == ordinal || e["args"]["ordinal"] == ordinal)
+            })
+            .unwrap()["sequence"]
+            .as_u64()
+            .unwrap();
+        assert!(sequence < boundary);
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["kind"] == "tool-enter" && e["ordinal"] == 0)
+            .count(),
+        1
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["kind"] == "tool-enter" && e["ordinal"] == 1)
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["kind"] == "authorization-start" && e["args"]["ordinal"] == 1)
+    );
+    assert_eq!(
+        r["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["type"] == "prompt")
+            .count(),
+        1
+    );
+    native_result(
+        &root,
+        "host-tool-selection-parked",
+        json!({"composer_preserved":true,"global_authority_preserved":true,"published_boundary":boundary}),
+        &frames,
+    );
+}
+
+#[test]
+#[ignore = "registered source /tools command through compiled Interactive; controlled Python required"]
+fn registered_tools_command_opens_inert_list_and_preserves_composer() {
+    let (runtime, root) = launch("tool-selection-command");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("/tools");
+            app.submit();
+            runtime.commands(
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .commands
+                    .take_intent()
+                    .expect("registered command route"),
+            )?;
+            wait(runtime, &mut app, |e| {
+                matches!(
+                    e,
+                    Observation::RuntimeControls(view::Update::Snapshot {
+                        field: view::Field::ToolSelection,
+                        ..
+                    })
+                )
+            })?;
+            assert!(draw(&mut app).contains("Individual tools"));
+            assert_eq!(app.composer.text(), "/tools");
+            assert!(app.live.as_mut().unwrap().take_submission().is_none());
+            key(&mut app, KeyCode::Esc);
+            Ok(())
+        })
+        .unwrap_or_else(|e| panic!("{e}; {}", root.display()));
+    let r = collect(&root);
+    assert_eq!(r["tool_lists"].as_array().unwrap().len(), 1);
+    assert!(r["reviews"].as_array().unwrap().is_empty());
+    assert!(r["results"].as_array().unwrap().is_empty());
+    assert!(r["requests"].as_array().unwrap().is_empty());
+    assert!(
+        r["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["type"] != "prompt")
+    );
+}

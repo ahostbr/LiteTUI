@@ -260,6 +260,7 @@ impl NewReview {
                     identity: self.identity.clone(),
                     work_instance: proposal.instance.clone(),
                     provider: proposal.provider,
+                    tool_selection: false, // Retirement proof carries no mutable policy facts.
                 },
             )?;
             let retained = &v["runtime_controls_historical_shutdown"];
@@ -1043,6 +1044,7 @@ mod runtime_retirement_tests {
             identity,
             provider,
             work_instance: p.instance.clone(),
+            tool_selection: false,
         };
         let historical = Binding {
             identity: Identity {
@@ -1051,6 +1053,7 @@ mod runtime_retirement_tests {
             },
             provider,
             work_instance: "a".repeat(64),
+            tool_selection: false,
         };
         let mut result = source["result"].clone();
         let op = result["operation_id"].as_str().unwrap().to_owned();

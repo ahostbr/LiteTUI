@@ -16,7 +16,7 @@ from litetui import seat_authority, settings_runtime, tool_policy
 
 VERSION = 1
 PREFIX = "gui.runtime.native_"
-OPERATIONS = tuple(PREFIX + name for name in ("snapshot", "validate", "apply", "readback"))
+OPERATIONS = tuple(PREFIX + name for name in ("snapshot", "validate", "apply", "readback", "tool_list"))
 COMMON = ("version", "runtime_controls_version", "session_id", "agent_id", "backend", "model", "work_instance")
 LIMITS = {"authorizations": 128, "waiters": 128}
 MAX_BODY = 262144
@@ -102,6 +102,7 @@ class State:
     references: tuple
     snapshot: Any = None
     snapshot_context: bytes | None = None
+    tool_inventory: Any = None
     review: Review | None = None
     attempt: Attempt | None = None
     tickets: list = field(default_factory=list)
@@ -147,6 +148,33 @@ def _profile(value):
     return value
 
 
+def _tool_selection(app):
+    value = work.bridge(app)
+    return value is not None and getattr(value, "requested_tool_selection_version", None) == VERSION
+
+
+def _disabled(value):
+    if (not isinstance(value, list) or len(value) > 1024
+            or any(not isinstance(name, str) or not name or len(name.encode("utf-8")) > 128 for name in value)):
+        raise ValueError("Disabled tools must be a bounded list of exact names")
+    return copy.deepcopy(value)
+
+
+def _tool_rows(app):
+    from litetui.tool_list import tool_rows
+    rows = tool_rows(app)
+    if len(rows) > 1024 or len({row["name"] for row in rows}) != len(rows):
+        raise ValueError("Tool inventory is oversized or contains duplicate names")
+    disabled = _disabled(app.settings.tools_disabled)
+    for row, entry in zip(rows, app.plugins.tools, strict=True):
+        work.text(row["name"], 128)
+        for key in ("authority", "summary", "description"):
+            if not isinstance(row[key], str) or len(row[key].encode("utf-8")) > 65536:
+                raise ValueError("Tool metadata is invalid or oversized")
+        row.update(enabled=row["name"] not in disabled, gated=entry.gate is not None)
+    return rows
+
+
 def _facts(app):
     from litetui.gui_rpc import _tool_policy
     policy = _tool_policy(app)
@@ -156,7 +184,8 @@ def _facts(app):
     if flag is not None:
         _profile(flag)
     provider = work.provider(app)
-    return {"tools_enabled": policy["tools_enabled"],
+    return {**({"tools_disabled": _disabled(app.settings.tools_disabled)} if _tool_selection(app) else {}),
+            "tools_enabled": policy["tools_enabled"],
             "settings_profile": _profile(app.settings.tool_policy_profile),
             "chosen_profile": _profile(app.chosen_tool_profile),
             "seat_profile": _profile(seat_authority.seat_profile(app)),
@@ -211,6 +240,7 @@ def capture(app, value):
     facts = _facts(app)
     value.runtime_controls_capture = copy.deepcopy(facts)
     return {"runtime_controls_version": VERSION, "runtime_policy": {"generation": 0, "facts": facts},
+            **({"tool_selection_version": VERSION} if _tool_selection(app) else {}),
             "runtime_controls_limits": dict(LIMITS)}
 
 
@@ -221,7 +251,8 @@ def activation(app, value):
     facts = _facts(app)
     if facts != getattr(value, "runtime_controls_capture", None):
         raise ValueError("Runtime policy changed after Work capture")
-    return {"runtime_controls_version": VERSION, "runtime_policy": {"generation": 0, "facts": facts}}
+    return {"runtime_controls_version": VERSION, "runtime_policy": {"generation": 0, "facts": facts},
+            **({"tool_selection_version": VERSION} if _tool_selection(app) else {})}
 
 
 def activated(app, value):
@@ -286,12 +317,22 @@ def _saved(app):
     snapshot = settings_runtime.service_for(app).snapshot(app.convo_id, read_only=True, max_bytes=262144)
     work._keys(snapshot.revisions, ("global", "conversation", "agent"))
     return snapshot, {"tools_enabled": snapshot.saved.tools_enabled,
-                      "tool_profile": _profile(snapshot.saved.tool_policy_profile)}
+                      "tool_profile": _profile(snapshot.saved.tool_policy_profile),
+                      **({"tools_disabled": _disabled(snapshot.saved.tools_disabled)} if _tool_selection(app) else {})}
 
 
 def _context(app):
     from litetui import conversation_transition, hook_host
+    tools = []
+    if _tool_selection(app):
+        _tool_rows(app)  # Bound names and display metadata before capturing callback identities.
+        tools = [{"owner": entry.owner, "name": entry.name, "spec": entry.spec,
+                  "binding": [id(entry), id(entry.run), id(entry.gate), id(entry.policy),
+                              id(entry.policy.classify_args) if entry.policy else None]}
+                 for entry in app.plugins.tools]
+        _bounded(tools)
     return work.encoded({"settings": asdict(app.settings), "authority": asdict(app._agent_session.authority),
+                         **({"tools": tools} if _tool_selection(app) else {}),
                          "registry": conversation_transition._registry(app), "hooks": asdict(hook_host.snapshot(app)),
                          "workspace": str(getattr(app, "_hook_workspace", "")),
                          "invocation": getattr(app, "_invocation_saved_values", {}),
@@ -374,6 +415,25 @@ def snapshot(app, cmd):
     result["snapshot"] = work.digest(work.encoded(result) + context + secrets.token_bytes(32))
     _bounded(result)
     state.snapshot, state.snapshot_context = copy.deepcopy(result), context
+    state.tool_inventory = None
+    return result
+
+
+def tool_list(app, cmd):
+    state = _command(app, cmd, "tool_list")
+    if not _tool_selection(app) or state.bridge.tool_selection_version != VERSION:
+        raise ValueError("Per-tool controls were not negotiated")
+    current = snapshot(app, {**cmd, "type": PREFIX + "snapshot"})
+    rows = _tool_rows(app)
+    if len(app.plugins.dynamic) > 1024:
+        raise ValueError("Dynamic tool-source inventory exceeds the native limit")
+    reason = ("Codex native tool inventory is provider-owned; these host preferences cannot change it"
+              if current["facts"]["provider"] == "codex" else current["editable"]["tools_enabled"])
+    result = _bounded({**_base(state), "kind": "tool_selection_list", "snapshot": current,
+        "tools": rows, "editable_reason": reason, "dynamic_sources": len(app.plugins.dynamic)})
+    if state.snapshot_context != _context(app):
+        raise ValueError("Tool inventory changed while reading")
+    state.tool_inventory = copy.deepcopy(result)
     return result
 
 
@@ -382,6 +442,11 @@ def _change(value):
     key, selected = value["field"], value["value"]
     if key == "tool_profile":
         _profile(selected)
+    elif key == "tool_selection":
+        work._keys(selected, ("name", "enabled"))
+        work.text(selected["name"], 128)
+        if type(selected["enabled"]) is not bool:
+            raise ValueError("Tool selection requires one exact Boolean choice")
     elif key not in {"tools_enabled", "plan_mode"} or type(selected) is not bool:
         raise ValueError("Runtime controls require one exact Boolean or profile choice")
     return key, selected
@@ -403,7 +468,20 @@ def validate(app, cmd):
             or values != before["saved"] or _system_evidence(_system(app)) != before["first_system"]):
         raise ValueError("Runtime policy, owner or saved evidence changed before Review")
     after = copy.deepcopy(before["facts"])
-    if key == "tool_profile":
+    tool = None
+    if key == "tool_selection":
+        from litetui.tool_list import disabled_after
+        inventory = state.tool_inventory
+        if (not _tool_selection(app) or inventory is None or inventory["snapshot"] != before
+                or inventory["tools"] != _tool_rows(app)):
+            raise ValueError("Tool selection requires a fresh exact registry list")
+        if inventory["editable_reason"]:
+            raise ValueError(inventory["editable_reason"])
+        tool = next((row for row in inventory["tools"] if row["name"] == selected["name"]), None)
+        if tool is None:
+            raise ValueError("Only a statically registered tool can be selected here; MCP tools are managed per server")
+        after["tools_disabled"] = disabled_after(before["facts"]["tools_disabled"], selected["name"], selected["enabled"])
+    elif key == "tool_profile":
         for name in ("settings_profile", "chosen_profile", "seat_profile", "effective_profile"):
             after[name] = selected
         after["requested_cli_profile"] = None
@@ -418,14 +496,17 @@ def validate(app, cmd):
                    + ("Plan mode is runtime prompt guidance; it is not a tool permission profile. " if key == "plan_mode" else "The selected preference is saved for this conversation. "))
     if key == "plan_mode" and selected and not before["plan"]["present"]:
         consequence += "The plan prompt file is absent; the mode flag changes without a PLAN section. "
-    if key == "tools_enabled" and before["facts"]["provider"] == "claude":
+    if key == "tool_selection":
+        consequence += "Only this host tool preference changes. Global Tools, Authority, argument gates and MCP server controls remain in force. "
+    if key in {"tools_enabled", "tool_selection"} and before["facts"]["provider"] == "claude":
         consequence += "Claude's inventory remains fixed for its session; disabling denies calls, enabling requires explicit Claude New to advertise additional tools."
     result = {**_base(state), "kind": "runtime_controls_review", "action_id": str(uuid.uuid4()), "review_token": secrets.token_hex(32),
               "snapshot": before["snapshot"], "generation": state.generation, "change": copy.deepcopy(cmd["change"]),
               "before": copy.deepcopy(before["facts"]), "after": after, "owner_before": copy.deepcopy(before["owner"]),
               "saved_before": values, "revisions": copy.deepcopy(saved.revisions), "first_system_before": before["first_system"],
               "first_system_after": _system_evidence(next_system), "plan": copy.deepcopy(before["plan"]),
-              "context_sha256": work.digest(state.snapshot_context), "consequence": consequence}
+              "context_sha256": work.digest(state.snapshot_context), "consequence": consequence,
+              **({"tool": copy.deepcopy(tool)} if tool is not None else {})}
     _bounded(result)
     state.review = Review(app, state, work.encoded(result), (*_references(app), app.settings), state.snapshot_context, first, next_system)
     return result
@@ -513,8 +594,10 @@ def persist_selection(app, candidate):
     from litetui import convo_settings
     from litetui.settings_service import SettingChange
     review = work.strict_json(attempt.review.wire)
-    key = {"tool_profile": "tool_policy_profile", "tools_enabled": "tools_enabled"}.get(review["change"]["field"])
-    if key is None or candidate is not app.settings or getattr(candidate, key) != review["change"]["value"]:
+    field = review["change"]["field"]
+    key = {"tool_profile": "tool_policy_profile", "tools_enabled": "tools_enabled", "tool_selection": "tools_disabled"}.get(field)
+    selected = review["after"]["tools_disabled"] if field == "tool_selection" else review["change"]["value"]
+    if key is None or candidate is not app.settings or getattr(candidate, key) != selected:
         raise ValueError("Runtime persistence changed its selected field or Settings owner")
     service = settings_runtime.service_for(app)
     def before_write():
@@ -523,7 +606,7 @@ def persist_selection(app, candidate):
         if revisions != review["revisions"] or documents != attempt.documents_before:
             raise ValueError("Reviewed settings documents or ownership changed before the coordinated write")
     result = service.save_patch(app.convo_id,
-        [SettingChange(key, review["change"]["value"], "conversation")], review["revisions"],
+        [SettingChange(key, selected, "conversation")], review["revisions"],
         max_bytes=262144, before_write=before_write)
     attempt.persistence = result
     app._settings_save_result = result
@@ -531,7 +614,7 @@ def persist_selection(app, candidate):
         app._convo_settings = convo_settings.load(app.convo_dir)
         for name in ("_saved_values", "_baseline"):
             values = copy.deepcopy(getattr(candidate, name, {}))
-            values[key] = copy.deepcopy(review["change"]["value"])
+            values[key] = copy.deepcopy(selected)
             object.__setattr__(candidate, name, values)
         getattr(app, "_invocation_saved_values", {}).pop(key, None)
     return result
@@ -565,7 +648,9 @@ def _preflight(attempt):
     key, selected = _change(review["change"])
     if key != "plan_mode":
         from litetui.settings_service import SettingChange, conversation_document
-        field = "tool_policy_profile" if key == "tool_profile" else key
+        field = {"tool_profile": "tool_policy_profile", "tool_selection": "tools_disabled"}.get(key, key)
+        if key == "tool_selection":
+            selected = review["after"]["tools_disabled"]
         attempt.documents_after["conversation"] = conversation_document(documents["conversation"], saved.saved,
             [SettingChange(field, selected, "conversation")])
 
@@ -621,6 +706,12 @@ async def apply(app, cmd):
         elif key == "tool_profile":
             if not app.set_tool_profile(selected, source="native-review"):
                 raise ValueError("Canonical profile setter refused its reviewed value")
+        elif key == "tool_selection":
+            from litetui.tool_list import set_tool_enabled
+            try:
+                set_tool_enabled(app, selected["name"], selected["enabled"])
+            except OSError:
+                pass  # Exact durable readback below distinguishes session-only from uncertainty.
         else:
             app.set_plan_mode(selected)
         _same(attempt.review.state)
@@ -634,10 +725,9 @@ async def apply(app, cmd):
             raise ValueError("Unreviewed settings dependencies changed during publication")
         persistence, reason, status = "not_applicable", None, "applied"
         if key != "plan_mode":
-            saved_key = "tool_profile" if key == "tool_profile" else "tools_enabled"
-            unaffected = "tools_enabled" if key == "tool_profile" else "tool_profile"
-            if (documents == attempt.documents_after and values[saved_key] == selected
-                    and values[unaffected] == review["saved_before"][unaffected]):
+            saved_key = {"tool_profile": "tool_profile", "tool_selection": "tools_disabled"}.get(key, "tools_enabled")
+            expected = {**review["saved_before"], saved_key: review["after"]["tools_disabled"] if key == "tool_selection" else selected}
+            if documents == attempt.documents_after and values == expected:
                 persistence = "saved"
             elif (documents == attempt.documents_before and saved.revisions == review["revisions"]
                   and values == review["saved_before"]):
@@ -896,6 +986,8 @@ async def authorization(app, *, origin=None, profile=None, captured=None, lifecy
     # A parked request has not yet captured any authority. Values supplied before
     # that wait must never override the policy now in force.
     facts = _facts(app)
+    if _tool_selection(app) and stable(facts) != state.stable:
+        raise AuthorizationClosed("Tool authorization policy changed without published review")
     ticket = Authorization(state, task, origin, state.generation,
         facts["effective_profile"] if parked or not profile else _profile(profile),
         facts["tools_enabled"], frozenset(app.settings.tools_disabled or ()),
@@ -1027,6 +1119,8 @@ def operation_allowed(app, cmd):
     if op in {"set", "run_command", "gui.commands.execute", "gui.tools.execute", "gui.prompt.submit", "gui.system.set"}:
         raise ValueError("Use the reviewed runtime controls for this operation")
     fields = {"tools_enabled", "tool_policy_profile", "tool_profile", "profile", "plan_mode"}
+    if _tool_selection(app):
+        fields.add("tools_disabled")
     if op in {"set_settings", "gui.settings.apply", "gui.settings.native_validate", "gui.settings.native_save"}:
         def touches(value):
             if isinstance(value, list):

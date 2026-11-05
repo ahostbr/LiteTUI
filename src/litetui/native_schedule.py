@@ -126,7 +126,8 @@ def finish_publication(app, ticket):
             app._native_schedule_last, app._native_schedule_pending = schedule_owner, None
         work._activate(app, value, scheduled_transition_version=ticket.result.get("scheduled_transition_version"),
                        execution_version=ticket.result.get("execution_version"),
-                       runtime_controls_version=ticket.result.get("runtime_controls_version"))
+                       runtime_controls_version=ticket.result.get("runtime_controls_version"),
+                       tool_selection_version=ticket.result.get("tool_selection_version"))
     except BaseException:
         value.closing = True
         value.error = "Work activation publication is uncertain; close without replay"

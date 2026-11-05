@@ -70,7 +70,7 @@ OPERATIONS = (
     "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
-    "runtime.native_snapshot", "runtime.native_validate", "runtime.native_apply", "runtime.native_readback",
+    "runtime.native_snapshot", "runtime.native_validate", "runtime.native_apply", "runtime.native_readback", "runtime.native_tool_list",
     "work.native_capture", "work.native_activate", "work.native_settled",
     "work.native_execution_validate", "work.native_execution_apply", "work.native_execution_readback", "work.native_execution_stop",
     "work.native_schedule_manual_review",

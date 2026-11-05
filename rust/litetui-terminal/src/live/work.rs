@@ -637,6 +637,7 @@ mod tests {
                 },
                 work_instance: "a".repeat(64),
                 provider: life::Provider::Host,
+                tool_selection: false,
             },
             generation: 1,
             facts,

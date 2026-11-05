@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Individual tool preferences - November 5, 2026
+
+The Tools control and the registered `/tools` command now open an Individual tools list read from the live PluginRegistry (`gui.runtime.native_tool_list`). Enter reviews one host tool's enabled preference; G reviews global Tools. The change is negotiated separately (`tool_selection_version:1` on Work capture and activation), saved at conversation scope through the canonical settings revision checks, and published only after independent readback. Global Tools, Authority, argument gates and per-server MCP control are unchanged. Codex inventory remains read-only with its reason shown; Claude's advertised inventory stays fixed until an explicit New. A call already authorized before publication finishes; the next call waits for publication and is then denied.
+
+Verification (this checkout, uncommitted Codex work validated by the Claude owner seat): 1,020 ordinary Rust tests passed with 209 ignored, `cargo fmt --check` and all-target Clippy with warnings denied passed. All 14 runtime-controls compiled-child scenarios passed (75.37 seconds), including the two new per-tool cases. The six affected Python modules passed 139 tests; Ruff findings in each changed source file are at or below their committed count, and the new test file is clean. Controlled evidence only; no real provider or desktop acceptance.
+
 ## Native mid-turn controls and command adapters - November 5, 2026
 
 Codex now supports reviewed Queue/Steer and Interrupt-and-send through its captured app-server transport, process, thread, turn and steering owner. Accepted steering, explicit rejection with next-turn fallback, uncertain delivery and failed publication retain distinct durable outcomes. Claude supports reviewed Interrupt-and-send through its existing soft-stop and terminal-drain path. Both providers prepare the native input before confirmation and hold admission until its exact response has been published. Input already admitted into a foreground execution retains the existing ordering restriction.

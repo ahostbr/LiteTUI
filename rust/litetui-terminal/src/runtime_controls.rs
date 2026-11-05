@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, io};
 
+pub const TOOL_LIST: &str = "gui.runtime.native_tool_list";
 pub const SNAPSHOT: &str = "gui.runtime.native_snapshot";
 pub const VALIDATE: &str = "gui.runtime.native_validate";
 pub const APPLY: &str = "gui.runtime.native_apply";
@@ -90,6 +91,7 @@ pub enum Field {
     Tools,
     Profile,
     Plan,
+    ToolSelection,
 }
 impl Field {
     pub fn key(self) -> &'static str {
@@ -97,6 +99,7 @@ impl Field {
             Self::Tools => "tools_enabled",
             Self::Profile => "tool_profile",
             Self::Plan => "plan_mode",
+            Self::ToolSelection => "tool_selection",
         }
     }
     pub fn label(self) -> &'static str {
@@ -104,6 +107,7 @@ impl Field {
             Self::Tools => "Tools",
             Self::Profile => "Authority",
             Self::Plan => "Plan mode",
+            Self::ToolSelection => "Individual tools",
         }
     }
 }
@@ -112,6 +116,7 @@ pub enum Change {
     Tools(bool),
     Profile(Profile),
     Plan(bool),
+    ToolSelection { name: String, enabled: bool },
 }
 impl Change {
     pub fn field(&self) -> Field {
@@ -119,10 +124,11 @@ impl Change {
             Self::Tools(_) => Field::Tools,
             Self::Profile(_) => Field::Profile,
             Self::Plan(_) => Field::Plan,
+            Self::ToolSelection { .. } => Field::ToolSelection,
         }
     }
     pub fn wire(&self) -> Value {
-        json!({"field":self.field().key(),"value":match self {Self::Tools(v)|Self::Plan(v)=>json!(v),Self::Profile(v)=>json!(v.as_str())}})
+        json!({"field":self.field().key(),"value":match self {Self::Tools(v)|Self::Plan(v)=>json!(v),Self::Profile(v)=>json!(v.as_str()),Self::ToolSelection{name,enabled}=>json!({"name":name,"enabled":enabled})}})
     }
     fn parse(v: &Value) -> io::Result<Self> {
         keys(v, &["field", "value"])?;
@@ -130,6 +136,13 @@ impl Change {
             "tools_enabled" => Ok(Self::Tools(boolean(v, "value")?)),
             "plan_mode" => Ok(Self::Plan(boolean(v, "value")?)),
             "tool_profile" => Ok(Self::Profile(profile(v, "value")?)),
+            "tool_selection" => {
+                keys(&v["value"], &["name", "enabled"])?;
+                Ok(Self::ToolSelection {
+                    name: text(&v["value"], "name", 128)?,
+                    enabled: boolean(&v["value"], "enabled")?,
+                })
+            }
             _ => Err(bad("Unknown runtime control field")),
         }
     }
@@ -139,6 +152,7 @@ pub struct Binding {
     pub identity: life::Identity,
     pub work_instance: String,
     pub provider: life::Provider,
+    pub tool_selection: bool,
 }
 impl Binding {
     pub fn verify(&self, v: &Value) -> io::Result<()> {
@@ -165,6 +179,7 @@ impl Binding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Facts {
     pub tools_enabled: bool,
+    pub tools_disabled: Option<Vec<String>>,
     pub settings_profile: Profile,
     pub chosen_profile: Profile,
     pub seat_profile: Profile,
@@ -180,23 +195,33 @@ pub struct Facts {
 }
 impl Facts {
     pub fn parse(v: &Value, provider: life::Provider) -> io::Result<Self> {
-        keys(
-            v,
-            &[
-                "tools_enabled",
-                "settings_profile",
-                "chosen_profile",
-                "seat_profile",
-                "effective_profile",
-                "requested_cli_profile",
-                "plan_mode",
-                "mcp_enabled",
-                "approval_route",
-                "cwd",
-                "provider",
-                "inventory",
-            ],
-        )?;
+        Self::parse_tools(v, provider, false)
+    }
+    fn parse_bound(v: &Value, binding: &Binding) -> io::Result<Self> {
+        Self::parse_tools(v, binding.provider, binding.tool_selection)
+    }
+    fn parse_tools(v: &Value, provider: life::Provider, tool_selection: bool) -> io::Result<Self> {
+        let mut expected = vec![
+            "tools_enabled",
+            "settings_profile",
+            "chosen_profile",
+            "seat_profile",
+            "effective_profile",
+            "requested_cli_profile",
+            "plan_mode",
+            "mcp_enabled",
+            "approval_route",
+            "cwd",
+            "provider",
+            "inventory",
+        ];
+        if tool_selection {
+            expected.push("tools_disabled");
+        }
+        keys(v, &expected)?;
+        let tools_disabled = tool_selection
+            .then(|| disabled(&v["tools_disabled"]))
+            .transpose()?;
         let requested_cli_profile = match v.get("requested_cli_profile") {
             Some(Value::Null) => None,
             Some(_) => Some(profile(v, "requested_cli_profile")?),
@@ -225,6 +250,7 @@ impl Facts {
         }
         Ok(Self {
             tools_enabled: boolean(v, "tools_enabled")?,
+            tools_disabled,
             settings_profile: profile(v, "settings_profile")?,
             chosen_profile,
             seat_profile,
@@ -251,6 +277,18 @@ impl Facts {
         match change {
             Change::Tools(value) => v["tools_enabled"] = json!(value),
             Change::Plan(value) => v["plan_mode"] = json!(value),
+            Change::ToolSelection { name, enabled } => {
+                let mut names = self
+                    .tools_disabled
+                    .clone()
+                    .ok_or_else(|| bad("Per-tool policy was not negotiated"))?;
+                if *enabled {
+                    names.retain(|entry| entry != name);
+                } else if !names.contains(name) {
+                    names.push(name.clone());
+                }
+                v["tools_disabled"] = json!(names);
+            }
             Change::Profile(value) => {
                 for k in [
                     "settings_profile",
@@ -263,7 +301,7 @@ impl Facts {
                 v["requested_cli_profile"] = Value::Null;
             }
         }
-        Self::parse(&v, self.provider)
+        Self::parse_tools(&v, self.provider, self.tools_disabled.is_some())
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -319,12 +357,18 @@ impl Policy {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Capabilities(());
+pub struct Capabilities {
+    pub tool_selection: bool,
+}
 impl Capabilities {
     pub fn negotiate(ops: &[String]) -> io::Result<Option<Self>> {
         let counts = OPERATIONS.map(|op| ops.iter().filter(|s| *s == op).count());
-        if counts == [0; 4] {
+        let selected = ops.iter().filter(|op| op.as_str() == TOOL_LIST).count();
+        if counts == [0; 4] && selected == 0 {
             return Ok(None);
+        }
+        if selected > 1 {
+            return Err(bad("Duplicate per-tool capability"));
         }
         if counts != [1; 4]
             || [life::CAPTURE, life::ACTIVATE, life::SETTLED]
@@ -333,7 +377,9 @@ impl Capabilities {
         {
             return Err(bad("Incomplete runtime controls negotiation"));
         }
-        Ok(Some(Self(())))
+        Ok(Some(Self {
+            tool_selection: selected == 1,
+        }))
     }
     pub fn parse_capture(&self, v: &Value, binding: &Binding) -> io::Result<Policy> {
         keys(
@@ -351,6 +397,15 @@ impl Capabilities {
         if number(v, "runtime_controls_version", true)? != 1 {
             return Err(bad("Runtime control opt-in echo changed"));
         }
+        if self.tool_selection != binding.tool_selection
+            || if self.tool_selection {
+                v["tool_selection_version"] != 1
+            } else {
+                v.get("tool_selection_version").is_some()
+            }
+        {
+            return Err(bad("Per-tool policy opt-in echo changed"));
+        }
         let p = &v["runtime_policy"];
         keys(p, &["generation", "facts"])?;
         if count(p, "generation")? != 0 {
@@ -359,7 +414,7 @@ impl Capabilities {
         Ok(Policy {
             binding: binding.clone(),
             generation: 0,
-            facts: Facts::parse(&p["facts"], binding.provider)?,
+            facts: Facts::parse_bound(&p["facts"], binding)?,
         })
     }
     pub fn parse_activation(
@@ -375,8 +430,26 @@ impl Capabilities {
         Ok(p)
     }
 }
-fn saved(v: &Value) -> io::Result<()> {
-    keys(v, &["tools_enabled", "tool_profile"])?;
+fn disabled(v: &Value) -> io::Result<Vec<String>> {
+    v.as_array()
+        .filter(|names| names.len() <= 1024)
+        .ok_or_else(|| bad("Invalid disabled-tool list"))?
+        .iter()
+        .map(|name| {
+            name.as_str()
+                .filter(|name| !name.is_empty() && name.len() <= 128)
+                .map(str::to_owned)
+                .ok_or_else(|| bad("Invalid disabled-tool name"))
+        })
+        .collect()
+}
+fn saved(v: &Value, selected: bool) -> io::Result<()> {
+    if selected {
+        keys(v, &["tools_enabled", "tool_profile", "tools_disabled"])?;
+        disabled(&v["tools_disabled"])?;
+    } else {
+        keys(v, &["tools_enabled", "tool_profile"])?;
+    }
     boolean(v, "tools_enabled")?;
     profile(v, "tool_profile")?;
     Ok(())
@@ -417,6 +490,49 @@ fn plan(v: &Value) -> io::Result<()> {
     Ok(())
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolRow {
+    pub name: String,
+    pub authority: String,
+    pub description: String,
+    pub summary: String,
+    pub enabled: bool,
+    pub gated: bool,
+    pub wire: Value,
+}
+impl ToolRow {
+    fn parse(v: &Value) -> io::Result<Self> {
+        keys(
+            v,
+            &[
+                "name",
+                "authority",
+                "description",
+                "summary",
+                "enabled",
+                "gated",
+            ],
+        )?;
+        let name = text(v, "name", 128)?;
+        if name.is_empty() {
+            return Err(bad("Empty registered tool name"));
+        }
+        Ok(Self {
+            name,
+            authority: text(v, "authority", 65536)?,
+            description: text(v, "description", 65536)?,
+            summary: text(v, "summary", 65536)?,
+            enabled: boolean(v, "enabled")?,
+            gated: boolean(v, "gated")?,
+            wire: v.clone(),
+        })
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolInventory {
+    pub rows: Vec<ToolRow>,
+    pub dynamic_sources: usize,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub binding: Binding,
     pub generation: u64,
@@ -425,9 +541,60 @@ pub struct Snapshot {
     pub owner: Owner,
     pub next_profile: Profile,
     pub editable: BTreeMap<Field, Option<String>>,
+    pub tools: Option<ToolInventory>,
     pub wire: Value,
 }
 impl Snapshot {
+    pub fn parse_tool_list(v: &Value, binding: &Binding) -> io::Result<Self> {
+        object(
+            v,
+            &[
+                "kind",
+                "snapshot",
+                "tools",
+                "editable_reason",
+                "dynamic_sources",
+            ],
+        )?;
+        binding.verify(v)?;
+        if !binding.tool_selection || v["kind"] != "tool_selection_list" {
+            return Err(bad("Per-tool list was not negotiated"));
+        }
+        let mut snapshot = Self::parse(&v["snapshot"], binding)?;
+        let reason = optional(v, "editable_reason", 2048)?;
+        if snapshot.facts.provider == life::Provider::Codex && reason.is_none() {
+            return Err(bad("Native provider inventory must remain read-only"));
+        }
+        let rows = v["tools"]
+            .as_array()
+            .filter(|rows| rows.len() <= 1024)
+            .ok_or_else(|| bad("Oversized tool inventory"))?
+            .iter()
+            .map(ToolRow::parse)
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut names = std::collections::HashSet::new();
+        let off = snapshot
+            .facts
+            .tools_disabled
+            .as_ref()
+            .ok_or_else(|| bad("Missing selected tool policy"))?;
+        for row in &rows {
+            if !names.insert(row.name.clone()) || row.enabled == off.contains(&row.name) {
+                return Err(bad("Tool row contradicts captured preference"));
+            }
+        }
+        let dynamic_sources = usize::try_from(count(v, "dynamic_sources")?)
+            .map_err(|_| bad("Invalid dynamic inventory size"))?;
+        if dynamic_sources > 1024 {
+            return Err(bad("Oversized dynamic inventory"));
+        }
+        snapshot.editable.insert(Field::ToolSelection, reason);
+        snapshot.tools = Some(ToolInventory {
+            rows,
+            dynamic_sources,
+        });
+        Ok(snapshot)
+    }
     pub fn parse(v: &Value, binding: &Binding) -> io::Result<Self> {
         object(
             v,
@@ -450,8 +617,8 @@ impl Snapshot {
         if v["kind"] != "runtime_controls_snapshot" {
             return Err(bad("Wrong runtime snapshot kind"));
         }
-        let facts = Facts::parse(&v["facts"], binding.provider)?;
-        saved(&v["saved"])?;
+        let facts = Facts::parse_bound(&v["facts"], binding)?;
+        saved(&v["saved"], binding.tool_selection)?;
         revisions(&v["revisions"])?;
         system(&v["first_system"])?;
         plan(&v["plan"])?;
@@ -495,10 +662,20 @@ impl Snapshot {
             owner: Owner::parse(&v["owner"], binding)?,
             next_profile,
             editable,
+            tools: None,
             wire: v.clone(),
         })
     }
     pub fn validate_request(&self, change: &Change) -> io::Result<Value> {
+        if let Change::ToolSelection { name, .. } = change
+            && (!self.binding.tool_selection
+                || self
+                    .tools
+                    .as_ref()
+                    .is_none_or(|inventory| !inventory.rows.iter().any(|row| &row.name == name)))
+        {
+            return Err(bad("Select an exact registered tool from a fresh list"));
+        }
         if self
             .editable
             .get(&change.field())
@@ -528,27 +705,36 @@ pub struct Review {
 }
 impl Review {
     pub fn parse(v: &Value, snapshot: &Snapshot, change: &Change) -> io::Result<Self> {
-        object(
-            v,
-            &[
-                "kind",
-                "action_id",
-                "review_token",
-                "snapshot",
-                "generation",
-                "change",
-                "before",
-                "after",
-                "owner_before",
-                "saved_before",
-                "revisions",
-                "first_system_before",
-                "first_system_after",
-                "plan",
-                "context_sha256",
-                "consequence",
-            ],
-        )?;
+        let mut fields = vec![
+            "kind",
+            "action_id",
+            "review_token",
+            "snapshot",
+            "generation",
+            "change",
+            "before",
+            "after",
+            "owner_before",
+            "saved_before",
+            "revisions",
+            "first_system_before",
+            "first_system_after",
+            "plan",
+            "context_sha256",
+            "consequence",
+        ];
+        if let Change::ToolSelection { name, .. } = change {
+            fields.push("tool");
+            let row = snapshot
+                .tools
+                .as_ref()
+                .and_then(|inventory| inventory.rows.iter().find(|row| &row.name == name))
+                .ok_or_else(|| bad("Missing reviewed tool row"))?;
+            if v["tool"] != row.wire {
+                return Err(bad("Review changed selected tool metadata"));
+            }
+        }
+        object(v, &fields)?;
         snapshot.binding.verify(v)?;
         snapshot.validate_request(change)?;
         if v["kind"] != "runtime_controls_review"
@@ -558,8 +744,8 @@ impl Review {
         {
             return Err(bad("Runtime Review changed selected snapshot or change"));
         }
-        let before = Facts::parse(&v["before"], snapshot.binding.provider)?;
-        let after = Facts::parse(&v["after"], snapshot.binding.provider)?;
+        let before = Facts::parse_bound(&v["before"], &snapshot.binding)?;
+        let after = Facts::parse_bound(&v["after"], &snapshot.binding)?;
         let owner_before = Owner::parse(&v["owner_before"], &snapshot.binding)?;
         if before != snapshot.facts
             || owner_before != snapshot.owner
@@ -571,14 +757,14 @@ impl Review {
         {
             return Err(bad("Runtime Review changed protected evidence"));
         }
-        saved(&v["saved_before"])?;
+        saved(&v["saved_before"], snapshot.binding.tool_selection)?;
         revisions(&v["revisions"])?;
         system(&v["first_system_before"])?;
         system(&v["first_system_after"])?;
         plan(&v["plan"])?;
         hash(v, "context_sha256")?;
         text(v, "consequence", 4096)?;
-        let row_unchanged = matches!(change, Change::Profile(_))
+        let row_unchanged = matches!(change, Change::Profile(_) | Change::ToolSelection { .. })
             || matches!(change,Change::Tools(value) if *value==before.tools_enabled)
             || matches!(change,Change::Plan(value) if *value==before.plan_mode);
         if (row_unchanged && v["first_system_before"] != v["first_system_after"])
@@ -611,6 +797,10 @@ impl Review {
                 "Change authority from {} to {}",
                 self.before.settings_profile.as_str(),
                 profile.as_str()
+            ),
+            Change::ToolSelection { name, enabled } => format!(
+                "{} host tool {name} for this conversation",
+                if *enabled { "Enable" } else { "Disable" }
             ),
             Change::Plan(enabled) => format!(
                 "Turn Plan mode {} for this session",
@@ -652,6 +842,9 @@ impl Review {
             Change::Tools(value) => v["tools_enabled"] = json!(value),
             Change::Profile(value) => v["tool_profile"] = json!(value.as_str()),
             Change::Plan(_) => {}
+            Change::ToolSelection { .. } => {
+                v["tools_disabled"] = self.after.wire["tools_disabled"].clone()
+            }
         }
         v
     }
@@ -674,7 +867,7 @@ fn optional_facts(v: &Value, key: &str, binding: &Binding) -> io::Result<Option<
     if v.get(key) == Some(&Value::Null) {
         Ok(None)
     } else {
-        Facts::parse(&v[key], binding.provider).map(Some)
+        Facts::parse_bound(&v[key], binding).map(Some)
     }
 }
 fn optional_owner(v: &Value, key: &str, binding: &Binding) -> io::Result<Option<Owner>> {
@@ -739,7 +932,7 @@ impl Receipt {
         }
         let persistence = text(v, "persistence", 32)?;
         if !v["saved_after"].is_null() {
-            saved(&v["saved_after"])?;
+            saved(&v["saved_after"], r.binding.tool_selection)?;
         }
         if !v["revisions_after"].is_null() {
             revisions(&v["revisions_after"])?;
@@ -921,7 +1114,7 @@ impl Readback {
             Some(EffectiveTransition::parse(v, "effective_transition")?)
         };
         if !v["saved"].is_null() {
-            saved(&v["saved"])?;
+            saved(&v["saved"], a.binding.tool_selection)?;
         }
         if !v["revisions"].is_null() {
             revisions(&v["revisions"])?;

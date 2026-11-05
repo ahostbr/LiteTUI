@@ -172,6 +172,8 @@ class Bridge:
         self.requested_execution_version: int | None = None
         self.runtime_controls_version: int | None = None
         self.requested_runtime_controls_version: int | None = None
+        self.tool_selection_version: int | None = None
+        self.requested_tool_selection_version: int | None = None
         self.closing = False
         self.sequence = 0
         self.revision = 0
@@ -318,9 +320,12 @@ def _command(app, cmd, operation, extras=(), *, admission=True, expected_identit
 def capture(app, cmd):
     from litetui import native_schedule
     native_schedule.capture_allowed(app)
-    _command(app, cmd, "capture", tuple(k for k in ("execution_version", "runtime_controls_version") if k in cmd))
+    _command(app, cmd, "capture", tuple(k for k in ("execution_version", "runtime_controls_version", "tool_selection_version") if k in cmd))
     if "runtime_controls_version" in cmd and (type(cmd["runtime_controls_version"]) is not int or cmd["runtime_controls_version"] != VERSION):
         raise ValueError("Runtime controls require exact version 1")
+    if "tool_selection_version" in cmd and (type(cmd["tool_selection_version"]) is not int
+            or cmd["tool_selection_version"] != VERSION or cmd.get("runtime_controls_version") != VERSION):
+        raise ValueError("Tool selection requires exact runtime controls and selection version 1")
     if "execution_version" in cmd and (type(cmd["execution_version"]) is not int or cmd["execution_version"] != VERSION):
         raise ValueError("Explicit execution requires exact version 1")
     value = bridge(app)
@@ -338,6 +343,7 @@ def capture(app, cmd):
         raise ValueError("Work capture is already active or awaiting publication")
     value.requested_execution_version = cmd.get("execution_version")
     value.requested_runtime_controls_version = cmd.get("runtime_controls_version")
+    value.requested_tool_selection_version = cmd.get("tool_selection_version")
     result = {"kind": "work_capture", "version": VERSION, "instance": value.instance,
               "activation_token": value.activation_token, "sequence": 0, "identity": value.identity,
               "provider": provider(app), "limits": dict(LIMITS), "recovered": copy.deepcopy(value.recovered), "deferred_jobs": deferred_evidence(app)}
@@ -353,7 +359,7 @@ def capture(app, cmd):
 
 
 def activate(app, cmd):
-    extras = ("instance", "activation_token", *(k for k in ("scheduled_transition_version", "execution_version", "runtime_controls_version") if k in cmd))
+    extras = ("instance", "activation_token", *(k for k in ("scheduled_transition_version", "execution_version", "runtime_controls_version", "tool_selection_version") if k in cmd))
     _command(app, cmd, "activate", extras)
     requested = cmd.get("scheduled_transition_version")
     if "scheduled_transition_version" in cmd and (type(requested) is not int or requested != VERSION):
@@ -365,6 +371,9 @@ def activate(app, cmd):
     runtime = cmd.get("runtime_controls_version")
     if runtime != value.requested_runtime_controls_version or "runtime_controls_version" in cmd and (type(runtime) is not int or runtime != VERSION):
         raise ValueError("Activation changed exact runtime controls negotiation")
+    selected = cmd.get("tool_selection_version")
+    if selected != value.requested_tool_selection_version or "tool_selection_version" in cmd and (type(selected) is not int or selected != VERSION):
+        raise ValueError("Activation changed exact tool selection negotiation")
     execution = cmd.get("execution_version")
     if execution != value.requested_execution_version or "execution_version" in cmd and (type(execution) is not int or execution != VERSION):
         raise ValueError("Activation changed exact execution negotiation")
@@ -379,7 +388,7 @@ def activate(app, cmd):
     return _activate(app, value)
 
 
-def _activate(app, value, *, scheduled_transition_version=None, execution_version=None, runtime_controls_version=None):
+def _activate(app, value, *, scheduled_transition_version=None, execution_version=None, runtime_controls_version=None, tool_selection_version=None):
     value.check()
     recapture = getattr(app, "_native_work_recapture_required", None)
     if recapture is not None:
@@ -392,6 +401,7 @@ def _activate(app, value, *, scheduled_transition_version=None, execution_versio
     from litetui import native_work_execution
     native_work_execution.activated(app, value)
     value.runtime_controls_version = runtime_controls_version
+    value.tool_selection_version = tool_selection_version
     if runtime_controls_version is not None:
         from litetui import native_runtime_controls
         native_runtime_controls.activated(app, value)

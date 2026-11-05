@@ -298,13 +298,13 @@ async def serve(app):
         before = documents(app)
         result = await actual_gui(owner, command)
         suffix = operation.removeprefix(PREFIX)
-        report.setdefault({'snapshot': 'snapshots', 'validate': 'reviews', 'apply': 'results', 'readback': 'readback_candidates'}[suffix], []).append(copy.deepcopy(result))
+        report.setdefault({'tool_list': 'tool_lists', 'snapshot': 'snapshots', 'validate': 'reviews', 'apply': 'results', 'readback': 'readback_candidates'}[suffix], []).append(copy.deepcopy(result))
         record('control-result', operation=operation, result=result, runtime=facts(app))
-        if suffix in {'snapshot', 'validate'}:
+        if suffix in {'tool_list', 'snapshot', 'validate'}:
             assert documents(app) == before, 'Runtime control inspection changed durable bytes'
         if suffix == 'apply':
             mark('setter-returned', action_id=result['action_id'], status=result['status'])
-        if suffix == 'readback' and case in {'host-next-tool-parked', 'host-stop-parked', 'host-quit-parked', 'host-stop-captured', 'host-quit-captured', 'owner-finish-readback'}:
+        if suffix == 'readback' and case in {'host-tool-selection-parked', 'host-next-tool-parked', 'host-stop-parked', 'host-quit-parked', 'host-stop-captured', 'host-quit-captured', 'owner-finish-readback'}:
             mark('readback-prepared', action_id=result['action_id'])
             async with asyncio.timeout(40):
                 while not release_publication.is_set() and not (root/'release-publication').exists():

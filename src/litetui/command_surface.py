@@ -29,6 +29,7 @@ _ROUTES = {
     ("scheduler", "/job"): "work_new_job",
     ("misc", "/plan"): "plan",
     ("misc", "/think"): "thinking",
+    ("misc", "/tools"): "tool_list",
     ("misc", "/quit"): "quit",
     ("misc", "/pause"): "chat_pause",
     ("glassbox", "glassbox"): "glassbox",

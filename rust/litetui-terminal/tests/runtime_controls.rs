@@ -21,6 +21,7 @@ fn binding() -> r::Binding {
         },
         work_instance: "a".repeat(64),
         provider: life::Provider::Host,
+        tool_selection: false,
     }
 }
 fn base(kind: &str) -> Value {
@@ -60,6 +61,9 @@ fn review_value(s: &Value, change: &r::Change) -> Value {
     v["before"] = s["facts"].clone();
     v["after"] = s["facts"].clone();
     match change {
+        r::Change::ToolSelection { .. } => {
+            unreachable!("per-tool transactions use exported source evidence")
+        }
         r::Change::Tools(x) => v["after"]["tools_enabled"] = json!(x),
         r::Change::Plan(x) => v["after"]["plan_mode"] = json!(x),
         r::Change::Profile(x) => {
@@ -111,6 +115,9 @@ fn result(review: &r::Review, status: r::Status) -> Value {
     v["saved_after"] = review.wire["saved_before"].clone();
     v["revisions_after"] = review.wire["revisions"].clone();
     match &review.change {
+        r::Change::ToolSelection { .. } => {
+            unreachable!("per-tool transactions use exported source evidence")
+        }
         r::Change::Tools(x) => v["saved_after"]["tools_enabled"] = json!(x),
         r::Change::Profile(x) => v["saved_after"]["tool_profile"] = json!(x.as_str()),
         r::Change::Plan(_) => {}
@@ -236,6 +243,7 @@ fn verifies_exported_source_transactions_through_shutdown() {
             identity: life::Identity::parse(&capture["identity"]).unwrap(),
             work_instance: capture["instance"].as_str().unwrap().to_owned(),
             provider: life::Provider::Host,
+            tool_selection: false,
         };
         let initial = caps.parse_capture(capture, &binding).unwrap();
         caps.parse_activation(&case["activation"], &binding, &initial)

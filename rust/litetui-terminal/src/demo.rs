@@ -268,6 +268,9 @@ impl Demo {
                         chat.work.open_plugin_reload(&route_arguments);
                     }
                 }
+                Action::ToolList => {
+                    self.open_runtime_controls(crate::runtime_controls_view::Field::ToolSelection)
+                }
                 Action::ChatPause => self.open_chat_pause(),
                 Action::Glassbox => self.open_glassbox(&route_arguments),
                 Action::Models => self.open_models(crate::model_controls::Kind::Model),

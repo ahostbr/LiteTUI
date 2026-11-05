@@ -70,6 +70,21 @@ def tool_rows(app) -> list[dict]:
     return rows
 
 
+def disabled_after(disabled, name: str, enabled: bool) -> list[str]:
+    """The canonical checkbox update, retaining every unrelated saved name."""
+    off = list(disabled or ())
+    if enabled:
+        return [item for item in off if item != name]
+    if name not in off:
+        off.append(name)
+    return off
+
+
+def set_tool_enabled(app, name: str, enabled: bool) -> None:
+    app.settings.tools_disabled = disabled_after(app.settings.tools_disabled, name, enabled)
+    settings_runtime.persist_or_raise(app, app.settings)
+
+
 class ToolListBody(Widget):
     """A dialog body that works in either host. No ModalScreen assumptions."""
 
@@ -181,14 +196,8 @@ class ToolListBody(Widget):
         if not cid.startswith("tl-tool-"):
             return
         name = cid[len("tl-tool-"):]
-        off = list(getattr(self.app.settings, "tools_disabled", None) or ())
-        if event.value:
-            off = [n for n in off if n != name]
-        elif name not in off:
-            off.append(name)
-        self.app.settings.tools_disabled = off
         try:
-            settings_runtime.persist_or_raise(self.app, self.app.settings)
+            set_tool_enabled(self.app, name, bool(event.value))
         except OSError:
             # Same shape as every other persistence failure in this app: the
             # change holds for the session and says so, rather than reporting
