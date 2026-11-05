@@ -227,7 +227,47 @@ impl Demo {
             use crate::command_palette::Action;
             match action {
                 Action::Work(destination) => self.show_work(Some(destination)),
-                Action::Engine => self.open_engine(),
+                Action::Engine => {
+                    self.open_engine();
+                    if let Some(chat) = self.live.as_mut() {
+                        chat.engine.select_command(&route_arguments);
+                    }
+                }
+                Action::Plan => {
+                    self.open_runtime_controls(crate::runtime_controls_view::Field::Plan);
+                    let desired = match route_arguments.trim().to_ascii_lowercase().as_str() {
+                        "on" => Some(true),
+                        "off" => Some(false),
+                        _ => None,
+                    };
+                    if let Some(chat) = self.live.as_mut() {
+                        chat.runtime_controls.plan_choice(desired);
+                    }
+                }
+                Action::ModelLoad | Action::ModelUnload | Action::ModelReconnect => {
+                    self.open_model_lifecycle(
+                        match action {
+                            Action::ModelLoad => "load",
+                            Action::ModelUnload => "unload",
+                            _ => "reconnect",
+                        },
+                        route_arguments.trim(),
+                    );
+                }
+                Action::ConversationCompact => {
+                    self.open_history();
+                    if let Some(chat) = self.live.as_mut() {
+                        chat.saved_history.compact_command(&route_arguments);
+                    }
+                }
+                Action::PluginReload => {
+                    self.show_work(None);
+                    if let Some(chat) = self.live.as_mut()
+                        && chat.work.open
+                    {
+                        chat.work.open_plugin_reload(&route_arguments);
+                    }
+                }
                 Action::ChatPause => self.open_chat_pause(),
                 Action::Glassbox => self.open_glassbox(&route_arguments),
                 Action::Models => self.open_models(crate::model_controls::Kind::Model),
@@ -446,6 +486,8 @@ impl Demo {
             ));
         }
         chat.compact.open(selection)?;
+        chat.compact
+            .prefill(&chat.saved_history.take_compact_hint())?;
         chat.saved_history.suspend_for_rewrite();
         chat.browser.hide();
         self.themes_open = false;
@@ -603,6 +645,17 @@ impl Demo {
         self.live
             .as_ref()
             .is_some_and(|chat| chat.settings.owns_input())
+    }
+    fn open_model_lifecycle(&mut self, action: &str, model: &str) {
+        if self.has_live_input() {
+            return;
+        }
+        self.open_settings();
+        if let Some(chat) = self.live.as_mut()
+            && chat.settings.open
+        {
+            chat.settings.open_model_lifecycle(Some((action, model)));
+        }
     }
     fn open_glassbox(&mut self, arguments: &str) {
         if self.has_live_input() {

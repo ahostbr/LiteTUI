@@ -234,8 +234,9 @@ async def test_native_provider_refuses_host_composer_queue_without_staging(armed
     assert bridge.provider == provider
     before = bridge.raw
     for operation in (native_midturn.REVIEW, native_midturn.APPLY, native_midturn.SEND_REVIEW, native_midturn.SEND_APPLY):
-        command_fields = {"review": work.ident()} if operation in (native_midturn.APPLY,native_midturn.SEND_APPLY) else {}
-        with pytest.raises(ValueError, match="captured host-managed stream|current captured SDK session"):
+        command_fields = {"review": work.ident(), "native": {"provider": provider}} if operation in (native_midturn.APPLY,native_midturn.SEND_APPLY) else {}
+        expected = "current captured SDK session" if provider == "claude" else "exact running native steering owner"
+        with pytest.raises(ValueError, match=expected):
             native_midturn.dispatch(app, command(app, type=operation, work_instance=bridge.instance,
                 origin={}, chord="enter", text="Unsent", profile="strict", policy_epoch=1, **command_fields))
     assert bridge.raw == before and not bridge.inputs and not bridge.producers and not app._pending_input

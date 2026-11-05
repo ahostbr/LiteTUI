@@ -146,6 +146,7 @@ pub struct View {
     thumbnail: Option<crate::image::Thumbnail>,
     rewrite: Option<(RewriteAction, RewriteSelection)>,
     compact: Option<crate::conversation_compact::Selection>,
+    compact_command: Option<String>,
     stale: bool,
     visible: bool,
     intent: Option<Intent>,
@@ -169,6 +170,14 @@ impl View {
         self.select_target(Target::Current);
         self.open = true;
         self.refresh();
+    }
+    pub(crate) fn compact_command(&mut self, hint: &str) {
+        if self.open && matches!(self.intent, Some(Intent::Refresh { .. })) {
+            self.compact_command = Some(hint.to_owned());
+        }
+    }
+    pub(crate) fn take_compact_hint(&mut self) -> String {
+        self.compact_command.take().unwrap_or_default()
     }
     pub fn inspect(&mut self, revision: u64, session: String, current: bool) {
         if self.waiting {
@@ -209,6 +218,7 @@ impl View {
         self.rewrite = None;
         self.compact = None;
         self.target = target;
+        self.compact_command = None;
     }
     fn begin_read(&mut self) -> Option<ReadKey> {
         let Some(generation) = self.generation.checked_add(1) else {
@@ -407,6 +417,7 @@ impl View {
         self.pressed = None;
     }
     pub fn close(&mut self) {
+        self.compact_command = None;
         self.speech_choice = None;
         self.selected_image = None;
         self.thumbnail = None;
@@ -506,6 +517,12 @@ impl View {
                 self.stale = false;
                 self.anchor = None;
                 self.notice = "Saved display only; no historical action is active.".into();
+                if self.compact_command.is_some() {
+                    self.request_compact();
+                    if self.compact.is_none() {
+                        self.compact_command = None;
+                    }
+                }
             }
             Update::Page { key, page } => {
                 self.loaded_key = Some(key);

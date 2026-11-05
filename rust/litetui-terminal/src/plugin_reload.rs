@@ -283,6 +283,7 @@ pub struct View {
     pub open: bool,
     names: Vec<String>,
     selected: usize,
+    requested: Option<String>,
     review: Option<Review>,
     offset: usize,
     seen: Vec<bool>,
@@ -297,6 +298,11 @@ impl View {
             ..Self::default()
         };
         Request::List
+    }
+    pub(crate) fn open_target(&mut self, target: &str) -> Request {
+        let request = self.open();
+        self.requested = (!target.is_empty()).then(|| target.to_owned());
+        request
     }
     pub fn close(&mut self) {
         *self = Self::default();
@@ -320,6 +326,17 @@ impl View {
                 self.names = names;
                 self.selected = self.selected.min(self.names.len().saturating_sub(1));
                 self.notice.clear();
+                if let Some(target) = self.requested.as_ref() {
+                    match self.names.iter().position(|name| name == target) {
+                        Some(index) => self.selected = index,
+                        None => {
+                            self.selected = self.names.len();
+                            self.notice = format!(
+                                "Requested tool {target} is not eligible for metadata refresh; choose an available target explicitly."
+                            );
+                        }
+                    }
+                }
             }
             Reply::Reviewed(review) => {
                 self.review = Some(review);

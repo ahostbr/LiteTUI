@@ -903,11 +903,7 @@ impl Capture {
             if matches!(
                 producer.kind,
                 ProducerKind::UserQueue | ProducerKind::UserInterrupt
-            ) && ((epoch.provider != Provider::Host
-                && !(epoch.provider == Provider::Claude
-                    && producer.kind == ProducerKind::UserQueue))
-                || producer.owner != epoch.instance
-                || input.source != "rpc")
+            ) && (producer.owner != epoch.instance || input.source != "rpc")
             {
                 return Err(bad(
                     "Recovered composer input lost its captured provider epoch",
@@ -1745,9 +1741,7 @@ impl Ledger {
         if matches!(
             p.kind,
             ProducerKind::UserQueue | ProducerKind::UserInterrupt
-        ) && ((self.capture.provider != Provider::Host
-            && !(self.capture.provider == Provider::Claude && p.kind == ProducerKind::UserQueue))
-            || p.owner != self.capture.instance)
+        ) && p.owner != self.capture.instance
         {
             return Err(bad(
                 "Queued composer input belongs to a different provider epoch",

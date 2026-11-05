@@ -1,4 +1,4 @@
-"""Reviewed next-turn input for the exact running Claude SDK session."""
+"""Claude input ownership and shared exact native mid-turn publication tickets."""
 from __future__ import annotations
 
 import asyncio
@@ -120,7 +120,7 @@ class Binding:
 class Publication:
     app: object
     bridge: object
-    binding: Binding
+    binding: object
     entry: object
     task: object
     command: bytes
@@ -136,7 +136,7 @@ def blocking(app):
 
 def stage_publication(app, cmd, result, binding, entry):
     if blocking(app):
-        raise ValueError("Another Claude queue confirmation is still pending")
+        raise ValueError("Another native queue confirmation is still pending")
     ticket = Publication(app, work.bridge(app), binding, entry, asyncio.current_task(),
                          work.encoded(cmd), result, work.encoded(result))
     app._native_claude_queue_publication = ticket
@@ -149,22 +149,22 @@ def _check(app, ticket):
             or ticket.bridge.inputs.get(ticket.entry.ref["input_id"]) is not ticket.entry
             or ticket.entry.state != "queued" or ticket.entry.admission is not None
             or not any(item is ticket.entry.item for item in app._pending_input)):
-        raise ValueError("Claude queue publication lost its exact command, result or task")
+        raise ValueError("Native queue publication lost its exact command, result or task")
     ticket.bridge.check()
     if work._read(ticket.bridge.path) != ticket.bridge.raw:
-        raise ValueError("Claude queued Work journal changed before publication")
+        raise ValueError("Native queued Work journal changed before publication")
     native = ticket.binding.receipt(app, ticket.entry.item, ticket.result["review"])
     if native != ticket.result["native_delivery"]:
-        raise ValueError("Claude prepared queue receipt changed before publication")
+        raise ValueError("Native prepared queue receipt changed before publication")
 
 
 def prepare_publication(app, cmd, result):
-    if cmd.get("type") not in {"gui.prompt.native_queue_apply", "gui.prompt.native_send_apply"} or cmd.get("backend") != "claude":
+    if cmd.get("type") not in {"gui.prompt.native_queue_apply", "gui.prompt.native_send_apply"} or cmd.get("backend") not in {"claude", "codex"}:
         return None
     ticket = getattr(app, "_native_claude_queue_publication", None)
     if (not isinstance(ticket, Publication) or ticket.command != work.encoded(cmd)
             or ticket.result is not result or ticket.prepared):
-        raise ValueError("Claude queue confirmation is foreign or consumed")
+        raise ValueError("Native queue confirmation is foreign or consumed")
     _check(app, ticket)
     ticket.prepared = True
     return ticket
@@ -173,7 +173,7 @@ def prepare_publication(app, cmd, result):
 def finish_publication(app, ticket):
     _check(app, ticket)
     if not ticket.prepared:
-        raise ValueError("Claude queue confirmation was not prepared")
+        raise ValueError("Native queue confirmation was not prepared")
     ticket.used = True
     app._native_claude_queue_publication = None
     from litetui import native_runtime_controls

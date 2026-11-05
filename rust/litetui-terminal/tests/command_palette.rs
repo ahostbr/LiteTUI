@@ -708,3 +708,38 @@ fn glassbox_registered_routes_prefill_review_only_and_preserve_draft() {
         }
     }
 }
+
+#[test]
+fn control_routes_keep_exact_arguments_and_reject_unrepresentable_intent() {
+    for (action, accepts, arguments, bad) in [
+        (
+            "conversation_compact",
+            true,
+            "Keep  guidance 雪\n trailing  ",
+            "bad\0hint",
+        ),
+        ("model_load", true, "model", "different-model"),
+        ("model_unload", true, "model", "different-model"),
+        ("model_reconnect", false, "", "extra"),
+        ("engine", true, "STOP", "start 4"),
+        ("plan", true, "off", "maybe"),
+        ("plugin_reload", true, "exact_tool", "two tools"),
+        ("hooks", false, "", "extra"),
+        ("work_new_job", false, "", "every minute"),
+    ] {
+        let mut data = data();
+        data["entries"][0]["native_action"] = json!(action);
+        data["entries"][0]["accepts_arguments"] = json!(accepts);
+        let c = Catalog::parse(&data, SESSION, AGENT, "custom", "model").unwrap();
+        let mut wire = route_data(&c, None);
+        wire["native_action"] = json!(action);
+        wire["arguments"] = json!(arguments);
+        let route = Route::parse(&wire, &c, Some(&c.entries[0].id), None, arguments).unwrap();
+        assert_eq!(route.arguments, arguments);
+        wire["arguments"] = json!(bad);
+        assert!(
+            Route::parse(&wire, &c, Some(&c.entries[0].id), None, bad).is_err(),
+            "{action}"
+        );
+    }
+}

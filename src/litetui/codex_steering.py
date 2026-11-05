@@ -172,6 +172,12 @@ class HostSteering:
     async def run(self):
         background_input.bind_provider_lane(self.app, self, self.work_lane)
         while not getattr(self.app, "_stop_requested", False):
+            if self.work_lane is not None and self.work_lane.bridge.error:
+                return
+            from litetui import native_runtime_controls
+            if native_runtime_controls.mutation_hold(self.app):
+                await asyncio.sleep(0.05)
+                continue
             queue = getattr(self.app, "_pending_input", [])
             if not queue:
                 await asyncio.sleep(0.1)

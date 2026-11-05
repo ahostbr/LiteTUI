@@ -6,7 +6,13 @@
 
 During a host-managed reply, enter a plain text draft of up to 16 KiB. Enter queues it at the next safe tool boundary or as the next turn. Ctrl+Shift+Enter (Ctrl+J in Windows terminals) interrupts the current reply and sends the draft first in a fresh turn. “Enter interrupts mid-turn” swaps the two keys. Both actions open a review. Read each page, then press Enter to confirm a queue or I to confirm an interrupt. Escape keeps the draft.
 
-Interruption keeps partial output and earlier tool effects. The review shows how many queued messages the draft will precede. LiteTUI clears the composer after the source confirms the exact text in the Work ledger. Closing before delivery retains the input in F1 Work. An older source can offer queueing alone. Claude replies support reviewed next-turn queueing. The source binds the message to the active SDK session and prepares its durable entry before confirming. Delivery waits for the current reply to finish and for that exact confirmation to be published. A failed publication retains the input for recovery. Claude interruption, Codex mid-turn actions and queued attachments still require their own delivery contracts.
+Interruption keeps partial output and earlier tool effects. The review shows how many queued messages the draft will precede. LiteTUI clears the composer after the source confirms the exact text in the Work ledger. Closing before delivery retains the input in F1 Work. An older source can offer queueing alone. Claude replies support reviewed next-turn queueing. The source binds the message to the active SDK session and prepares its durable entry before confirming. Delivery waits for the current reply to finish and for that exact confirmation to be published. A failed publication retains the input for recovery. Claude also supports Interrupt-and-send, joining the current SDK response before the new query. Codex Queue uses its native steering path; explicit rejection falls back to the next turn, while uncertain delivery remains retained for inspection. Codex Interrupt-and-send drains the current turn first. Native input already admitted into the running execution cannot be reordered. Queued attachments remain unsupported.
+
+## Use existing controls from commands
+
+`/compact` preserves optional summary guidance. `/reconnect`, `/load` and `/unload` open current-model lifecycle review; a different model argument is refused. `/engine status|start|stop` opens the engine control with the intended action selected. `/plan on|off` prepares the exact Plan choice. `/hooks`, `/reload-plugins [tool]` and `/job` open the hook list, selected plugin refresh or job builder. Each route preserves the composer and requires the control's normal confirmation before changing anything.
+
+Extra reconnect/hooks/job arguments, inline engine configuration and Codex compaction guidance are refused explicitly.
 
 ## Attach an image to a live prompt
 

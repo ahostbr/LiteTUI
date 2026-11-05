@@ -215,6 +215,7 @@ pub struct View {
     pub waiting: bool,
     pub snapshot: Option<Snapshot>,
     pub notice: String,
+    lifecycle_command: Option<(String, String)>,
     selected: usize,
     scroll: usize,
     max_scroll: usize,
@@ -244,6 +245,16 @@ impl View {
             Some(action) => crate::glassbox_controls::Request::Review(action.into()),
             None => crate::glassbox_controls::Request::Snapshot,
         })));
+    }
+    pub(crate) fn open_model_lifecycle(&mut self, action: Option<(&str, &str)>) {
+        self.model_lifecycle.open();
+        self.lifecycle_command =
+            action.map(|(action, model)| (action.to_owned(), model.to_owned()));
+        self.waiting = true;
+        self.intent = Some(Intent::ModelLifecycle(Box::new(
+            crate::model_lifecycle::Request::List,
+        )));
+        self.hide();
     }
     pub fn runtime_status_open(&self) -> bool {
         self.runtime_status.is_open()
@@ -354,7 +365,13 @@ impl View {
                 self.model_preferences.update(result.map(|update| *update))
             }
             Update::ModelLifecycle(result) => {
-                self.model_lifecycle.update(result.map(|update| *update))
+                self.model_lifecycle.update(result.map(|update| *update));
+                if let Some((action, model)) = self.lifecycle_command.take()
+                    && let Some(request) = self.model_lifecycle.review_action(&action, &model)
+                {
+                    self.waiting = true;
+                    self.intent = Some(Intent::ModelLifecycle(Box::new(request)));
+                }
             }
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
@@ -481,12 +498,7 @@ impl View {
                 self.open_glassbox(None);
             }
             KeyCode::Char('l') if key.kind == KeyEventKind::Press => {
-                self.model_lifecycle.open();
-                self.waiting = true;
-                self.intent = Some(Intent::ModelLifecycle(Box::new(
-                    crate::model_lifecycle::Request::List,
-                )));
-                self.hide();
+                self.open_model_lifecycle(None);
             }
             KeyCode::Char('v') if key.kind == KeyEventKind::Press => {
                 self.voice.open();

@@ -39,6 +39,7 @@ pub struct View {
     page_height: usize,
     wrapped_review: Vec<String>,
     field: Option<Field>,
+    desired_plan: Option<bool>,
     review: Option<controls::Review>,
     intent: Option<Intent>,
     scroll: usize,
@@ -59,6 +60,7 @@ impl View {
         self.open = true;
         self.waiting = true;
         self.field = Some(field);
+        self.desired_plan = None;
         self.review = None;
         self.scroll = 0;
         self.painted_until = 0;
@@ -66,6 +68,12 @@ impl View {
         self.painted = false;
         self.notice = "Reading the current runtime choice…".into();
         self.intent = Some(Intent::Read(field));
+    }
+    pub(crate) fn plan_choice(&mut self, desired: Option<bool>) {
+        if self.field == Some(Field::Plan) && matches!(self.intent, Some(Intent::Read(Field::Plan)))
+        {
+            self.desired_plan = desired;
+        }
     }
     /// Hiding a panel does not discard its sent action or readback obligation.
     pub fn close(&mut self) {
@@ -103,7 +111,11 @@ impl View {
                 let change = match field {
                     Field::Tools => controls::Change::Tools(!snapshot.facts.tools_enabled),
                     Field::Profile => controls::Change::Profile(snapshot.next_profile),
-                    Field::Plan => controls::Change::Plan(!snapshot.facts.plan_mode),
+                    Field::Plan => controls::Change::Plan(
+                        self.desired_plan
+                            .take()
+                            .unwrap_or(!snapshot.facts.plan_mode),
+                    ),
                 };
                 self.waiting = true;
                 self.notice = "Preparing the exact change for review…".into();

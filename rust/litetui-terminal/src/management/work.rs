@@ -779,6 +779,21 @@ impl Management {
                     .queue_policy
                     .take()
                     .ok_or_else(|| fail("Lost queued policy"))?;
+                let provider = self
+                    .execution_ledger()
+                    .ok_or_else(|| fail("Queue lost its Work provider"))?
+                    .capture()
+                    .provider;
+                let expected_native = match provider {
+                    crate::work_lifecycle::Provider::Host => None,
+                    crate::work_lifecycle::Provider::Codex => Some("codex"),
+                    crate::work_lifecycle::Provider::Claude => Some("claude"),
+                };
+                if value["native"]["provider"].as_str() != expected_native {
+                    return Err(fail(
+                        "Queue native owner differs from its captured Work provider",
+                    ));
+                }
                 let reply = request.parse(
                     &self.work_identity()?,
                     self.context_instance()?,

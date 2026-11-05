@@ -7008,6 +7008,10 @@ class LiteTUI(App):
         Turning a wrong number into no number is not a fix on its own; the
         reading has to be retaken once it can be right.
         """
+        # A completed turn may have queued this callback before Quit closed
+        # admission. Deferred refresh cannot acquire a new worker during teardown.
+        if getattr(self, "_gui_quitting", False) or getattr(self, "_conversation_rewrite_closing", False):
+            return
         if not getattr(self, "ctx_loaded", False) and self.model_id:
             worker = self._fetch_ctx_window()
             conversation_rewrite.track_descendant(self, worker)

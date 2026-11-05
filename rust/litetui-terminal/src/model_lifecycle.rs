@@ -369,6 +369,29 @@ impl View {
             }
         }
     }
+    pub(crate) fn review_action(&mut self, action: &str, model: &str) -> Option<Request> {
+        if !self.open || self.waiting || self.review.is_some() {
+            return None;
+        }
+        let before = self.data.clone()?;
+        if !model.is_empty() && model != before.model {
+            self.note = format!(
+                "Requested model {model} is no longer selected; resolve the command again."
+            );
+            return None;
+        }
+        if let Some(reason) = before.actions.get(action)? {
+            self.note = reason.clone();
+            return None;
+        }
+        self.waiting = true;
+        self.scroll = 0;
+        self.hide();
+        Some(Request::Review(Selection {
+            before,
+            action: action.into(),
+        }))
+    }
     pub fn key(&mut self, key: KeyEvent) -> Option<Request> {
         if key.kind != KeyEventKind::Press || !key.modifiers.is_empty() || self.waiting {
             return None;

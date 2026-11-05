@@ -71,6 +71,23 @@ impl Form {
     pub fn is_goal(&self) -> bool {
         self.kind == "goal"
     }
+    pub fn new_job() -> io::Result<Self> {
+        let mut form = Self::new("cron", None)?;
+        // scheduler_plugin.NEW_JOB_PREFILL: the /job builder's daily default.
+        form.fields
+            .iter_mut()
+            .find(|field| field.key == "schedule")
+            .expect("cron schedule")
+            .draft
+            .set("0 9 * * *")?;
+        form.fields
+            .iter_mut()
+            .find(|field| field.key == "enabled")
+            .expect("cron enabled")
+            .draft
+            .set("true")?;
+        Ok(form)
+    }
     pub fn new(kind: &str, row: Option<Row>) -> io::Result<Self> {
         if !matches!(kind, "cron" | "loop") {
             return Err(io::Error::other("Select Jobs or Loops to create a job"));

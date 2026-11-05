@@ -50,6 +50,8 @@ fn launch(case: &str) -> (Interactive, PathBuf) {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if case.starts_with("claude-queue-") {
             "tests/fixtures/claude_queue_runtime.py"
+        } else if case.starts_with("codex-midturn-") {
+            "tests/fixtures/codex_midturn_runtime.py"
         } else {
             "tests/fixtures/runtime_controls_runtime.py"
         });
@@ -60,7 +62,7 @@ os.environ['RUST_RUNTIME_CONTROLS_CASE']={}
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 p=Path(os.environ['LITETUI_DATA_ROOT'])/'settings.json'
 s=json.loads(p.read_text(encoding='utf-8'))
-s.update(enter_interrupts=os.environ['RUST_RUNTIME_CONTROLS_CASE'] in ('midturn-swapped','midturn-interrupt-swapped'),user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False,tool_auto_background_s=0,custom_context_length=1000000)
+s.update(codex_native_engine=os.environ['RUST_RUNTIME_CONTROLS_CASE'].startswith('codex-midturn-'),enter_interrupts=os.environ['RUST_RUNTIME_CONTROLS_CASE'] in ('midturn-swapped','midturn-interrupt-swapped'),user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False,tool_auto_background_s=0,custom_context_length=1000000)
 p.write_text(json.dumps(s),encoding='utf-8')
 runpy.run_path({},run_name='__main__')
 "#,quote(&source.to_string_lossy()),quote(case),quote(&fixture.to_string_lossy()))).unwrap();
@@ -79,12 +81,16 @@ runpy.run_path({},run_name='__main__')
         "--backend".into(),
         if case.starts_with("claude-queue-") {
             "claude".into()
+        } else if case.starts_with("codex-midturn-") {
+            "codex".into()
         } else {
             "custom".into()
         },
         "--model".into(),
         if case.starts_with("claude-queue-") {
             "claude-fixture".into()
+        } else if case.starts_with("codex-midturn-") {
+            "gpt-6.1-sol".into()
         } else {
             "switch-old".into()
         },
@@ -101,7 +107,11 @@ runpy.run_path({},run_name='__main__')
             "off".into()
         },
         "--thinking-level".into(),
-        "default".into(),
+        if case.starts_with("codex-midturn-") {
+            "high".into()
+        } else {
+            "default".into()
+        },
         "--timeout".into(),
         "120".into(),
         "--server-timeout".into(),
@@ -111,7 +121,7 @@ runpy.run_path({},run_name='__main__')
         "--server-mode".into(),
         "connect".into(),
     ];
-    if case.starts_with("claude-queue-") {
+    if case.starts_with("claude-queue-") || case.starts_with("codex-midturn-") {
         args.truncate(args.len() - 4);
     }
     (Interactive::start(Options::parse(&args).unwrap()), root)
@@ -1692,10 +1702,10 @@ fn claude_queue_preserves_draft_and_delivers_only_after_original_turn_settles() 
             app.insert_text(draft);
             app.composer.move_cursor(Motion::WordLeft,true);
             let caret=(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned());
-            // The alternate chord is explicitly refused; it cannot silently interrupt.
+            // The alternate chord has its own explicit interrupt review; cancel preserves the draft.
             app.submit_chord(true);
             dispatch_midturn(runtime,&mut app)?;
-            assert!(draw(&mut app).contains("does not interrupt"));
+            assert!(draw(&mut app).contains("Interrupt the current reply"));
             app.live.as_mut().unwrap().work.key(KeyEvent::new(KeyCode::Esc,KeyModifiers::NONE));
             for cancel in [true,false] {
                 assert_eq!(app.composer.text(),draft);
@@ -2021,4 +2031,130 @@ fn playback_send(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("Missing playback/history intent"))?;
     runtime.history(intent)?;
     wait(runtime, app, |e| matches!(e, Observation::SavedHistory(_)))
+}
+
+#[test]
+#[ignore = "real registered source with controlled native JSON-RPC and SDK"]
+fn native_provider_midturn_steering_and_interrupt_use_exact_owned_delivery() {
+    for case in [
+        "claude-queue-interrupt",
+        "codex-midturn-queue",
+        "codex-midturn-rejected",
+        "codex-midturn-uncertain",
+        "codex-midturn-interrupt",
+        "codex-midturn-emission",
+        "codex-midturn-stale",
+    ] {
+        let (runtime, root) = launch(case);
+        let claude = case.starts_with("claude-");
+        let interrupt = case.ends_with("interrupt");
+        let draft = "  Reviewed native follow-up 雪  ";
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live(if claude {"claude"} else {"codex"}.into(), if claude {"claude-fixture"} else {"gpt-6.1-sol"}.into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            let chat = app.live.as_mut().unwrap();
+            chat.submit("Original controlled native input")?;
+            runtime.submit(chat.take_submission().unwrap())?;
+            stage(runtime, &mut app, &root, "stream-active")?;
+            app.insert_text(draft);
+            app.submit_chord(interrupt);
+            dispatch_midturn(runtime, &mut app)?;
+            let screen = draw(&mut app);
+            assert!(screen.contains(if interrupt {"Interrupt the current reply"} else {"current Codex turn"}), "{case}: {screen}");
+            assert_eq!(app.composer.text(), draft);
+            if case.ends_with("stale") {
+                fs::write(root.join("release-stream"), b"finish before apply")?;
+                while app.live.as_ref().unwrap().busy { app.observe_live(next(runtime)?)?; }
+            }
+            app.live.as_mut().unwrap().work.key(KeyEvent::new(if interrupt {KeyCode::Char('i')} else {KeyCode::Enter}, KeyModifiers::NONE));
+            if case.ends_with("emission") {
+                runtime.work(app.live.as_mut().unwrap().work.take_intent().unwrap())?;
+                stage(runtime, &mut app, &root, "queue-emission-failed")?;
+                assert_eq!(app.composer.text(), draft);
+                return runtime.quit();
+            }
+            dispatch_midturn(runtime, &mut app)?;
+            if case.ends_with("stale") {
+                assert_eq!(app.composer.text(), draft);
+                return runtime.quit();
+            }
+            assert_eq!(app.composer.text(), "");
+            if !interrupt { stage(runtime, &mut app, &root, "native-steer")?; }
+            if !interrupt { fs::write(root.join("release-stream"), b"settle reviewed original")?; }
+            if case.ends_with("uncertain") {
+                stage(runtime, &mut app, &root, "native-uncertain")?;
+                return runtime.quit();
+            }
+            let mut settled = false;
+            for _ in 0..180 {
+                let event = next(runtime)?;
+                settled |= matches!(&event, Observation::WorkExecution(update) if matches!(update.as_ref(), litetui_terminal::live::WorkExecution::Settled{..}));
+                app.observe_live(event)?;
+                if settled && !app.live.as_ref().unwrap().busy { return runtime.quit(); }
+            }
+            Err(io::Error::other("Native reviewed input did not settle"))
+        });
+        assert!(result.is_ok(), "{case}: {result:?} {}", root.display());
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(r["denied"], json!([]), "{case}");
+        assert_eq!(r["reader_retired"], true);
+        assert!(
+            r["workers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["finished"] == true)
+        );
+        let inputs = r["work"]["inputs"].as_array().unwrap();
+        if claude {
+            assert_eq!(r["sdk_retired"], true);
+            assert_eq!(r["claude_interrupts"], 1);
+            assert_eq!(r["claude_queries"].as_array().unwrap().len(), 2);
+            assert_eq!(inputs[0]["admission"]["mode"], "new_turn");
+            assert_eq!(inputs[0]["state"], "settled");
+            continue;
+        }
+        assert_eq!(r["native_retired"], true);
+        let calls = r["codex_calls"].as_array().unwrap();
+        let starts = calls.iter().filter(|c| c["method"] == "turn/start").count();
+        let steers = calls.iter().filter(|c| c["method"] == "turn/steer").count();
+        if case.ends_with("stale") {
+            assert!(inputs.is_empty());
+            assert_eq!(steers, 0);
+            continue;
+        }
+        assert_eq!(inputs.len(), 1);
+        if case.ends_with("emission") {
+            assert_eq!(starts, 1);
+            assert_eq!(steers, 0);
+            assert_eq!(inputs[0]["state"], "held");
+            assert_eq!(r["queue_recovered"][0]["state"], "held");
+        } else if case.ends_with("uncertain") {
+            assert_eq!(starts, 1);
+            assert_eq!(steers, 1);
+            assert_eq!(inputs[0]["state"], "uncertain");
+            assert!(inputs[0]["admission"].is_null());
+        } else {
+            assert_eq!(inputs[0]["state"], "settled");
+            assert_eq!(
+                starts,
+                if interrupt || case.ends_with("rejected") {
+                    2
+                } else {
+                    1
+                }
+            );
+            assert_eq!(steers, usize::from(!interrupt));
+            assert_eq!(
+                inputs[0]["admission"]["mode"],
+                if interrupt || case.ends_with("rejected") {
+                    "new_turn"
+                } else {
+                    "in_turn"
+                }
+            );
+        }
+    }
 }

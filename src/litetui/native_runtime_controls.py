@@ -300,7 +300,7 @@ def _context(app):
 
 def mutation_hold(app):
     if getattr(app, "_native_claude_queue_publication", None) is not None:
-        return "Claude queued input owns its exact confirmation publication"
+        return "Native queued input owns its exact confirmation publication"
     if getattr(app, "_native_model_lifecycle_hold", False):
         return "A reviewed model operation owns admission until its independent readback"
     state = _state(app)

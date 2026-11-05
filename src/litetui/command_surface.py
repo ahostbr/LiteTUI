@@ -19,6 +19,15 @@ MAX_BYTES = 512 * 1024
 _ROUTES = {
     ("model-switch", "/model"): "models",
     ("model-switch", "/backend"): "backend",
+    ("model-switch", "/reconnect"): "model_reconnect",
+    ("model-switch", "/load"): "model_load",
+    ("model-switch", "/unload"): "model_unload",
+    ("model-switch", "/engine"): "engine",
+    ("convo", "/compact"): "conversation_compact",
+    ("settings-ui", "/hooks"): "hooks",
+    ("reload-plugins", "/reload-plugins"): "plugin_reload",
+    ("scheduler", "/job"): "work_new_job",
+    ("misc", "/plan"): "plan",
     ("misc", "/think"): "thinking",
     ("misc", "/quit"): "quit",
     ("misc", "/pause"): "chat_pause",
@@ -82,8 +91,11 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "help": _text(help_text, 4096, empty=True), "group": _text(group, 128),
         "group_label": _text(plugins.PALETTE_GROUP_LABELS.get(group, group.title()), 256),
         "order": _order(order), "tokens": tokens, "palette": palette,
-        "native_action": action, "accepts_arguments": (action in {"skill_prepare", "conversation_rename", "glassbox"}
-                                                     or kind == "command" and action in _WORK_INSPECTION),
+        "native_action": action,
+        "accepts_arguments": (action in {
+            "skill_prepare", "conversation_rename", "glassbox", "conversation_compact",
+            "model_load", "model_unload", "engine", "plugin_reload", "plan",
+        } or kind == "command" and action in _WORK_INSPECTION),
         "unavailable_reason": "" if action else "This contribution has no native action adapter yet.",
     }
     row["id"] = _digest([binding, row])
@@ -247,6 +259,19 @@ def resolve(app, cmd):
     action = selected["native_action"]
     if action == "glassbox" and arguments.strip().lower() not in {"", "status", "start", "on", "stop", "off"}:
         raise ValueError("Glassbox accepts status, start/on or stop/off only; mutations require a fresh review")
+    if action == "conversation_compact":
+        if "\0" in arguments:
+            raise ValueError("Compaction guidance cannot contain NUL")
+        if arguments and app.backend.name == "codex" and hasattr(app.backend, "app_server"):
+            raise ValueError("Codex native compaction does not accept guidance; command arguments were kept")
+    if action in {"model_load", "model_unload"} and arguments.strip() not in {"", current["model"]}:
+        raise ValueError("This lifecycle control reviews the current model only; select the requested model with /model first")
+    if action == "engine" and arguments.strip().lower() not in {"", "status", "start", "stop"}:
+        raise ValueError("Engine command supports status, start or stop; lane arguments require the engine configuration control")
+    if action == "plan" and arguments.strip().lower() not in {"", "on", "off"}:
+        raise ValueError("Plan accepts on, off or no argument to toggle")
+    if action == "plugin_reload" and arguments and (arguments.strip() != arguments or len(arguments.split()) != 1):
+        raise ValueError("Plugin reload accepts one exact tool name or skills; select it in the refresh control")
     if arguments and action in _WORK_INSPECTION:
         verb = arguments.strip()
         if (verb if action == "work_tasks" else verb.lower()) not in _WORK_INSPECTION[action]:

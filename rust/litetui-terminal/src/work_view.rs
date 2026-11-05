@@ -20,6 +20,8 @@ pub enum Destination {
     Goal = 4,
     Calendar = 5,
     Plugins,
+    Hooks,
+    NewJob,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +152,8 @@ pub struct View {
     pub tail: Option<Tail>,
     context: crate::context_view::View,
     context_after_snapshot: Option<crate::context::Document>,
+    command_after_snapshot: Option<Destination>,
+    plugin_after_snapshot: Option<String>,
     hooks: crate::hook_toggle_view::View,
     plugin_reload: crate::plugin_reload::View,
     pub image: crate::image::Picker,
@@ -249,12 +253,21 @@ impl View {
         if self.waiting {
             return;
         }
-        if destination != Destination::Plugins {
-            self.section = destination as usize;
-        }
         self.open();
-        if destination == Destination::Plugins {
-            self.context_after_snapshot = Some(crate::context::Document::Plugins);
+        match destination {
+            Destination::Plugins => {
+                self.context_after_snapshot = Some(crate::context::Document::Plugins)
+            }
+            Destination::Hooks | Destination::NewJob => {
+                self.command_after_snapshot = Some(destination)
+            }
+            _ => self.section = destination as usize,
+        }
+    }
+    pub(crate) fn open_plugin_reload(&mut self, target: &str) {
+        // Preserve the fresh Work identity read before opening its child control.
+        if self.open && matches!(self.pending, Some(Request::Snapshot)) && self.intent.is_some() {
+            self.plugin_after_snapshot = Some(target.to_owned());
         }
     }
     pub fn open(&mut self) {
@@ -274,6 +287,8 @@ impl View {
     }
     pub fn close(&mut self) {
         self.context_after_snapshot = None;
+        self.command_after_snapshot = None;
+        self.plugin_after_snapshot = None;
         self.image.close();
         self.midturn.open = false;
         self.chat_pause.open = false;
@@ -326,6 +341,8 @@ impl View {
     }
     fn refresh(&mut self) {
         self.context_after_snapshot = None;
+        self.command_after_snapshot = None;
+        self.plugin_after_snapshot = None;
         self.hooks.close();
         self.plugin_reload.close();
         self.context.close();
@@ -592,7 +609,25 @@ impl View {
                 self.snapshot = Some(*snapshot);
                 self.notice = "Captured Work facts · Tab categories · Enter details".into();
                 if self.open {
-                    if let Some(document) = self.context_after_snapshot.clone() {
+                    if let Some(target) = self.plugin_after_snapshot.take() {
+                        let request = self.plugin_reload.open_target(&target);
+                        self.request(Request::Plugin(Box::new(request)));
+                    } else if let Some(destination) = self.command_after_snapshot.take() {
+                        match destination {
+                            Destination::Hooks => {
+                                let request = self.hooks.open();
+                                self.request(Request::Hook(Box::new(request)));
+                            }
+                            Destination::NewJob => {
+                                self.section = 2;
+                                match form::Form::new_job() {
+                                    Ok(form) => self.form = Some(form),
+                                    Err(error) => self.notice = error.to_string(),
+                                }
+                            }
+                            _ => unreachable!("only command destinations are deferred"),
+                        }
+                    } else if let Some(document) = self.context_after_snapshot.clone() {
                         let request = self.context.open_document(document);
                         self.request(Request::Context(request));
                     } else {

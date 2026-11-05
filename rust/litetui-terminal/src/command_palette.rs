@@ -42,6 +42,12 @@ pub(crate) fn token(v: &Value, key: &str) -> io::Result<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Engine,
+    Plan,
+    ModelLoad,
+    ModelUnload,
+    ModelReconnect,
+    ConversationCompact,
+    PluginReload,
     ChatPause,
     Glassbox,
     Models,
@@ -63,6 +69,14 @@ impl Action {
         Ok(match v.as_str() {
             None if v.is_null() => None,
             Some("engine") => Some(Self::Engine),
+            Some("plan") => Some(Self::Plan),
+            Some("model_load") => Some(Self::ModelLoad),
+            Some("model_unload") => Some(Self::ModelUnload),
+            Some("model_reconnect") => Some(Self::ModelReconnect),
+            Some("conversation_compact") => Some(Self::ConversationCompact),
+            Some("plugin_reload") => Some(Self::PluginReload),
+            Some("hooks") => Some(Self::Work(Destination::Hooks)),
+            Some("work_new_job") => Some(Self::Work(Destination::NewJob)),
             Some("chat_pause") => Some(Self::ChatPause),
             Some("glassbox") => Some(Self::Glassbox),
             Some("models") => Some(Self::Models),
@@ -218,9 +232,19 @@ impl Catalog {
                 || arguments
                     != (matches!(
                         action,
-                        Some(Action::SkillPrepare | Action::ConversationRename | Action::Glassbox)
+                        Some(
+                            Action::SkillPrepare
+                                | Action::ConversationRename
+                                | Action::Glassbox
+                                | Action::Engine
+                                | Action::Plan
+                                | Action::ModelLoad
+                                | Action::ModelUnload
+                                | Action::ConversationCompact
+                                | Action::PluginReload
+                        )
                     ) || kind == "command"
-                        && matches!(action, Some(Action::Work(dest)) if !matches!(dest, crate::work_view::Destination::Calendar | crate::work_view::Destination::Plugins)))
+                        && matches!(action, Some(Action::Work(dest)) if matches!(dest, crate::work_view::Destination::Tasks | crate::work_view::Destination::Jobs | crate::work_view::Destination::Loops | crate::work_view::Destination::Goal)))
                 || (action == Some(Action::SkillPrepare)) != (kind == "skill")
             {
                 return Err(fail("Command availability contradicts adapter policy"));
@@ -350,6 +374,29 @@ impl Route {
         {
             return Err(fail("Unknown Glassbox review command argument"));
         }
+        let verb = arguments.trim().to_ascii_lowercase();
+        match action {
+            Action::Engine if !matches!(verb.as_str(), "" | "status" | "start" | "stop") => {
+                return Err(fail("Unsupported engine command arguments"));
+            }
+            Action::Plan if !matches!(verb.as_str(), "" | "on" | "off") => {
+                return Err(fail("Unsupported plan command arguments"));
+            }
+            Action::ModelLoad | Action::ModelUnload
+                if !arguments.trim().is_empty() && arguments.trim() != c.model =>
+            {
+                return Err(fail("Lifecycle command must target the current model"));
+            }
+            Action::ConversationCompact => crate::conversation_compact::validate_hint(&arguments)?,
+            Action::PluginReload
+                if !arguments.is_empty()
+                    && (arguments.trim() != arguments
+                        || arguments.split_whitespace().count() != 1) =>
+            {
+                return Err(fail("Plugin refresh requires one exact target"));
+            }
+            _ => {}
+        }
         if let Action::Work(destination) = action
             && !arguments.is_empty()
         {
@@ -361,7 +408,10 @@ impl Route {
                 Destination::Jobs => matches!(lower.as_str(), "list" | "ls"),
                 Destination::Loops => matches!(lower.as_str(), "list" | "ls" | "status"),
                 Destination::Goal => matches!(lower.as_str(), "status" | "show"),
-                Destination::Calendar | Destination::Plugins => false,
+                Destination::Calendar
+                | Destination::Plugins
+                | Destination::Hooks
+                | Destination::NewJob => false,
             };
             if !inspection {
                 return Err(fail("Work inspection cannot authorize this command"));

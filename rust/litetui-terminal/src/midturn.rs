@@ -170,7 +170,29 @@ impl Request {
                 || crate::stream::required_uuid4(n, "native_session").is_err()
                 || !valid_hex(&n["segment"])
                 || !valid_hex(&n["active_input"])
-                || v["behavior"] != "queue"
+            {
+                return Err(bad());
+            }
+            expected["native"] = n.clone();
+            Some(n.clone())
+        } else if identity.backend == "codex" && !v["native"].is_null() {
+            let n = &v["native"];
+            let native_id = |v: &Value| {
+                v.as_str().is_some_and(|s| {
+                    !s.is_empty()
+                        && s.len() <= 256
+                        && s.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+                })
+            };
+            if n.as_object().map(|o| o.len()) != Some(4)
+                || n["provider"] != "codex"
+                || n["generation"]
+                    .as_u64()
+                    .filter(|n| *n > 0 && *n <= 9007199254740991)
+                    .is_none()
+                || !native_id(&n["thread_id"])
+                || !native_id(&n["turn_id"])
             {
                 return Err(bad());
             }
@@ -230,12 +252,17 @@ impl Request {
                 if let Some(native) = &r.native {
                     let d = &v["native_delivery"];
                     let ident = d["id"].as_str().ok_or_else(bad)?;
-                    if ident.len() != 32
-                        || !ident
-                            .bytes()
-                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-                        || d != &json!({"id":ident,"segment_id":native["segment"],"state":"prepared","operation_id":r.id})
-                    {
+                    let valid = if native["provider"] == "codex" {
+                        crate::stream::required_uuid4(d, "id").is_ok()
+                            && d == &json!({"id":ident,"thread_id":native["thread_id"],"turn_id":native["turn_id"],"state":"queued","operation_id":r.id})
+                    } else {
+                        ident.len() == 32
+                            && ident
+                                .bytes()
+                                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                            && d == &json!({"id":ident,"segment_id":native["segment"],"state":"prepared","operation_id":r.id})
+                    };
+                    if !valid {
                         return Err(bad());
                     }
                     expected["native_delivery"] = d.clone();
@@ -351,11 +378,19 @@ impl View {
                     prior.len()
                 )
             } else if let Some(native) = &r.native {
-                format!(
-                    "Queue this message for the next Claude turn, after the current reply finishes. This does not interrupt or steer the running reply.\nClaude session: {}\nSegment: {}",
-                    native["native_session"].as_str().unwrap_or_default(),
-                    native["segment"].as_str().unwrap_or_default()
-                )
+                if native["provider"] == "codex" {
+                    format!(
+                        "Queue this message for steering into the current Codex turn. A known rejection keeps it for the next turn; an uncertain delivery stays held for inspection.\nThread: {}\nTurn: {}",
+                        native["thread_id"].as_str().unwrap_or_default(),
+                        native["turn_id"].as_str().unwrap_or_default()
+                    )
+                } else {
+                    format!(
+                        "Queue this message for the next Claude turn, after the current reply finishes. This does not interrupt or steer the running reply.\nClaude session: {}\nSegment: {}",
+                        native["native_session"].as_str().unwrap_or_default(),
+                        native["segment"].as_str().unwrap_or_default()
+                    )
+                }
             } else {
                 "Queue this message at the next safe boundary of the running reply, or as the next turn.".into()
             };
@@ -433,7 +468,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
     const HOOK: &str = "3aab1c4f-4e72-422c-88f2-d770df1eb65f";
     #[test]
-    fn claude_queue_requires_native_owner_and_prepared_delivery_and_never_interrupts() {
+    fn claude_queue_requires_native_owner_and_prepared_delivery() {
         let identity = Identity {
             session: HOOK.into(),
             agent: "agent".into(),
@@ -540,6 +575,95 @@ mod tests {
             view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn native_queue_and_interrupt_validate_exact_provider_identity_and_delivery() {
+        for provider in ["codex", "claude"] {
+            for interrupt in [false, true] {
+                let identity = Identity {
+                    session: HOOK.into(),
+                    agent: "agent".into(),
+                    backend: provider.into(),
+                    model: "fixture".into(),
+                };
+                let origin = Origin {
+                    session: HOOK.into(),
+                    operation: "foreground".into(),
+                    hook: Some(HOOK.into()),
+                    source: "rpc".into(),
+                    execution: HOOK.into(),
+                };
+                let draft = Draft {
+                    text: "Exact native draft 雪".into(),
+                    alternate: false,
+                    operation: "foreground".into(),
+                };
+                let request = Request::Review(draft.clone());
+                let payload = json!({"content":draft.text,"text":draft.text,"source":"rpc","tool_profile":"strict"});
+                let native = if provider == "codex" {
+                    json!({"provider":"codex","generation":1,"thread_id":"native-thread","turn_id":"native-turn"})
+                } else {
+                    json!({"provider":"claude","generation":1,"native_session":HOOK,"segment":"a".repeat(32),"active_input":"b".repeat(32)})
+                };
+                let mut wire = json!({"version":1,"kind":"midturn_review","session_id":HOOK,"agent_id":"agent","backend":provider,"model":"fixture","work_instance":"a".repeat(64),"origin":origin.value(),"chord":"enter","text":draft.text,
+                    "behavior":if interrupt {"interrupt"}else{"queue"},"enter_interrupts":interrupt,"profile":"strict","policy_epoch":1,"payload_sha256":format!("{:x}",Sha256::digest(serde_json::to_vec(&payload).unwrap())),"review":HOOK,"native":native});
+                if interrupt {
+                    wire["prior_inputs"] = json!([]);
+                }
+                let parse = |v: &Value| {
+                    request.parse(
+                        &identity,
+                        &"a".repeat(64),
+                        &origin,
+                        "review",
+                        (1, Profile::Strict),
+                        v,
+                    )
+                };
+                let Reply::Review(review) = parse(&wire).unwrap() else {
+                    panic!("review")
+                };
+                for (key, value) in [("generation", json!(0)), ("provider", json!("foreign"))] {
+                    let mut changed = wire.clone();
+                    changed["native"][key] = value;
+                    assert!(parse(&changed).is_err());
+                }
+                let mut extra = wire.clone();
+                extra["native"]["unreviewed"] = json!(true);
+                assert!(parse(&extra).is_err());
+                wire["kind"] = json!("midturn_queued");
+                wire["operation_id"] = json!("apply");
+                wire["producer"] = json!({"producer_id":HOOK,"kind":if interrupt {"user_interrupt"}else{"user_queue"},"object_id":HOOK,"producer_session_id":HOOK,"owner_instance":"a".repeat(64),"owner_created":null,"generation":1,"causal_action_id":null,"causal_operation_id":"foreground","causal_execution_id":HOOK});
+                wire["input"] = json!({"input_id":HOOK,"producer_id":HOOK,"payload_sha256":wire["payload_sha256"],"source":"rpc","requested_profile":"strict","delivery_session_id":HOOK,"queue_revision":1});
+                wire["native_delivery"] = if provider == "codex" {
+                    json!({"id":HOOK,"thread_id":"native-thread","turn_id":"native-turn","state":"queued","operation_id":HOOK})
+                } else {
+                    json!({"id":"c".repeat(32),"segment_id":"a".repeat(32),"state":"prepared","operation_id":HOOK})
+                };
+                let apply = Request::Apply(review);
+                let accepted = |v: &Value| {
+                    apply.parse(
+                        &identity,
+                        &"a".repeat(64),
+                        &origin,
+                        "apply",
+                        (1, Profile::Strict),
+                        v,
+                    )
+                };
+                assert!(accepted(&wire).is_ok());
+                for (key, value) in [
+                    ("state", json!("accepted")),
+                    ("operation_id", json!("foreign")),
+                    ("id", json!("wrong")),
+                ] {
+                    let mut changed = wire.clone();
+                    changed["native_delivery"][key] = value;
+                    assert!(accepted(&changed).is_err());
+                }
+            }
+        }
     }
 
     #[test]

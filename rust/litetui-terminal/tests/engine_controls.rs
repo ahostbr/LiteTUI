@@ -698,3 +698,62 @@ fn reconnect_review_never_permits_remote_alias_loading_or_an_owned_process() {
     receipt["spawn_attempted"] = json!(true);
     assert!(Receipt::parse(&receipt, reviewed).is_err());
 }
+
+#[test]
+fn engine_command_stop_never_falls_back_to_start_after_fresh_inspection() {
+    use litetui_terminal::{command_palette as c, demo::Demo, live::Observation};
+    for argument in ["stop", "STOP", "start", "status", ""] {
+        let mut app = Demo::live("strata".into(), "engine-model".into());
+        app.live.as_mut().unwrap().ready = true;
+        app.insert_text("preserved draft");
+        let raw = format!("/engine {argument}");
+        app.live.as_mut().unwrap().commands.raw(&raw);
+        app.live.as_mut().unwrap().commands.take_intent();
+        app.observe_live(Observation::Commands(c::Update::Route {
+            catalog: c::Catalog {
+                session: SESSION.into(),
+                agent: AGENT.into(),
+                backend: "strata".into(),
+                model: "engine-model".into(),
+                snapshot: "a".repeat(64),
+                entries: Vec::new(),
+            },
+            route: c::Route {
+                row: "b".repeat(64),
+                action: c::Action::Engine,
+                arguments: argument.into(),
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            app.live.as_mut().unwrap().engine.take_intent(),
+            Some(Intent::Read)
+        );
+        app.observe_live(Observation::Engine(Update::Snapshot(Box::new(snapshot()))))
+            .unwrap();
+        assert!(app.live.as_mut().unwrap().engine.take_intent().is_none());
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| litetui_terminal::ui::draw(frame, &mut app))
+            .unwrap();
+        app.live
+            .as_mut()
+            .unwrap()
+            .engine
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let intent = app.live.as_mut().unwrap().engine.take_intent();
+        if argument.eq_ignore_ascii_case("stop") {
+            // This snapshot has no owned handle. A lost argument would validate Start.
+            assert!(intent.is_none());
+        } else {
+            assert!(matches!(
+                intent,
+                Some(Intent::Validate {
+                    action: Action::Start,
+                    ..
+                })
+            ));
+        }
+        assert_eq!(app.composer.text(), "preserved draft");
+    }
+}

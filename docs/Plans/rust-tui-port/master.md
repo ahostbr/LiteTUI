@@ -1,5 +1,15 @@
 # LiteTUI Rust terminal port
 
+## Native mid-turn controls and command adapters - November 5, 2026
+
+Codex now supports reviewed Queue/Steer and Interrupt-and-send through its captured app-server transport, process, thread, turn and steering owner. Accepted steering, explicit rejection with next-turn fallback, uncertain delivery and failed publication retain distinct durable outcomes. Claude supports reviewed Interrupt-and-send through its existing soft-stop and terminal-drain path. Both providers prepare the native input before confirmation and hold admission until its exact response has been published. Input already admitted into a foreground execution retains the existing ordering restriction.
+
+The registered commands /compact, /reconnect, /load, /unload, /engine, /hooks, /reload-plugins, /job and /plan now route into their existing native controls. Routing preserves compaction guidance, explicit Plan choices, engine action and plugin target; it does not apply a mutation. Load/unload currently accepts only the current model. Unsupported lane arguments, extra reconnect/hooks/job arguments and Codex compaction guidance refuse explicitly without losing the draft.
+
+A real child test caught a deferred context-refresh callback attempting to start a worker during Quit. The callback now respects closing admission. Integration also restored Unicode fixture text to the exact original characters and reran the affected actual-child flows.
+
+The final integrated checkout passed 1,016 ordinary Rust tests, formatting and strict all-target Clippy. The seven-file source matrix passed all 199 tests; the two native queue modules passed Ruff and mypy. Four actual compiled-child test groups passed all 23 controlled host, Claude and Codex scenarios using the fresh runtime-only Python environment. The command adapter preview separately passed ten controlled process groups. Logs are in target/commands-native-final-*, target/native-midturn-unicode-child.log and target/native-midturn-unicode-claude.log. These are controlled source/compiled-child proofs; a final relocated package and authenticated provider/host acceptance remain separate.
+
 ## Model lifecycle, Glassbox, speech and Claude queueing - November 5, 2026
 
 F10 → L now reviews current-model load, unload and reconnect through the existing backend operations, then verifies model and client state independently. Reconnect retains a replaced HTTP client until its close has completed. A failed close remains owned for shutdown retry and prevents successful cleanup acknowledgement while unresolved.

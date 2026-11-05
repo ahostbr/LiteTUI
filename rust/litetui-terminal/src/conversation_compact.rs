@@ -1077,6 +1077,10 @@ impl View {
         self.refresh();
         Ok(())
     }
+    pub(crate) fn prefill(&mut self, hint: &str) -> io::Result<()> {
+        validate_hint(hint)?;
+        self.draft.set(hint)
+    }
     fn begin(&mut self, phase: Phase) -> Option<RequestKey> {
         let Some(generation) = self.generation.checked_add(1) else {
             self.notice = "Compaction request identity exhausted; reopen the runtime.".into();

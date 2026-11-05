@@ -17,6 +17,9 @@ use std::{
 };
 
 fn launch(fixture_file: &str) -> (Interactive, PathBuf) {
+    launch_fixture(fixture_file, false)
+}
+fn launch_fixture(fixture_file: &str, command_controls: bool) -> (Interactive, PathBuf) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let ordinal = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -49,7 +52,8 @@ fn launch(fixture_file: &str) -> (Interactive, PathBuf) {
         r#"import json,os,runpy
 from pathlib import Path
 os.environ.update(RUST_RUNTIME_CONTROLS_SOURCE={}, RUST_CONTEXT_COMMON_FIXTURE={},
-    RUST_RUNTIME_CONTROLS_CASE='context-read-only', PYTHONDONTWRITEBYTECODE='1')
+    RUST_RUNTIME_CONTROLS_CASE='context-read-only', PYTHONDONTWRITEBYTECODE='1',
+    RUST_COMMAND_CONTROLS_BASE={})
 p=Path(os.environ['LITETUI_DATA_ROOT'])/'settings.json'
 s=json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False)
@@ -58,7 +62,12 @@ runpy.run_path({}, run_name='__main__')
 "#,
         literal(&source),
         literal(&fixture.join("runtime_controls_runtime.py")),
-        literal(&fixture.join(fixture_file))
+        literal(&fixture.join(fixture_file)),
+        literal(&fixture.join(if command_controls {
+            "command_controls_runtime.py"
+        } else {
+            fixture_file
+        }))
     );
     fs::write(wrapper.join("cli.py"), script).unwrap();
     let args = [
@@ -2212,4 +2221,202 @@ fn mcp_owned_shutdown_joins_retained_stdio_server_before_ack_and_lease_release()
             })
     );
     eprintln!("MCP owned shutdown evidence: {}", data.display());
+}
+
+fn route_registered_command(
+    runtime: &mut Interactive,
+    app: &mut Demo,
+    raw: &str,
+) -> io::Result<()> {
+    app.composer.clear();
+    app.insert_text(raw);
+    app.submit();
+    while let Some(intent) = app.live.as_mut().unwrap().commands.take_intent() {
+        runtime.commands(intent)?;
+        observe(runtime, app, |event| {
+            matches!(event, Observation::Commands(_))
+        })?;
+    }
+    assert_eq!(
+        app.composer.text(),
+        raw,
+        "command routing preserves the composer"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "registered command routes against the actual controlled source child"]
+fn registered_command_controls_retain_arguments_and_do_not_apply_on_route() {
+    let (runtime, data) = launch_fixture("model_lifecycle_runtime.py", true);
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |event| {
+                matches!(event, Observation::Ready)
+            })?;
+            for raw in ["/plan off", "/plan ON", "/plan"] {
+                route_registered_command(runtime, &mut app, raw)?;
+                while let Some(intent) = app.live.as_mut().unwrap().runtime_controls.take_intent() {
+                    assert!(!matches!(
+                        intent,
+                        litetui_terminal::runtime_controls_view::Intent::Apply(_)
+                    ));
+                    if let litetui_terminal::runtime_controls_view::Intent::Review {
+                        change, ..
+                    } = &intent
+                    {
+                        assert_eq!(
+                            *change,
+                            litetui_terminal::runtime_controls::Change::Plan(raw != "/plan off")
+                        );
+                    }
+                    runtime.runtime_controls(intent)?;
+                    observe(runtime, &mut app, |event| {
+                        matches!(event, Observation::RuntimeControls(_))
+                    })?;
+                }
+                let screen = draw(&mut app);
+                assert!(screen.contains("Apply"), "{screen}");
+                app.live.as_mut().unwrap().runtime_controls.close();
+            }
+            for raw in ["/reconnect", "/load switch-old", "/unload switch-old"] {
+                route_registered_command(runtime, &mut app, raw)?;
+                settings_drain(runtime, &mut app)?;
+                let screen = draw(&mut app);
+                assert!(screen.contains("Current model lifecycle"), "{screen}");
+                if raw == "/reconnect" {
+                    assert!(screen.contains("Review reconnect"), "{screen}");
+                }
+                for _ in 0..3 {
+                    settings_key(runtime, &mut app, KeyCode::Esc)?;
+                }
+                assert!(!app.has_live_input());
+            }
+            route_registered_command(runtime, &mut app, "/job")?;
+            drain(runtime, &mut app)?;
+            key(runtime, &mut app, KeyCode::Tab)?;
+            let screen = key(runtime, &mut app, KeyCode::Tab)?;
+            assert!(
+                screen.contains("Cron schedule") && screen.contains("0 9 * * *"),
+                "{screen}"
+            );
+            let screen = key(runtime, &mut app, KeyCode::Tab)?;
+            assert!(
+                screen.contains("Enabled") && screen.contains("true"),
+                "{screen}"
+            );
+            app.live.as_mut().unwrap().work.close();
+            route_registered_command(runtime, &mut app, "/engine stop")?;
+            assert!(app.notice.contains("NInfer or Strata"));
+            let hint = "Keep  these exact facts 雪 and trailing  ";
+            route_registered_command(runtime, &mut app, &format!("/compact {hint}"))?;
+            let intent = app
+                .live
+                .as_mut()
+                .unwrap()
+                .saved_history
+                .take_intent()
+                .expect("fresh saved history");
+            runtime.history(intent)?;
+            observe(runtime, &mut app, |event| {
+                matches!(event, Observation::SavedHistory(_))
+            })?;
+            app.take_history_compact()?;
+            assert!(app.has_live_compact());
+            assert_eq!(app.live.as_ref().unwrap().compact.draft(), hint);
+            let intent = app
+                .live
+                .as_mut()
+                .unwrap()
+                .compact
+                .take_intent()
+                .expect("fresh compact snapshot");
+            runtime.compact(intent)?;
+            observe(runtime, &mut app, |event| {
+                matches!(event, Observation::Compact(_))
+            })?;
+            assert_eq!(app.live.as_ref().unwrap().compact.draft(), hint);
+            app.live.as_mut().unwrap().compact.close();
+            app.live.as_mut().unwrap().saved_history.close();
+            runtime.quit()
+        })
+        .unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"], json!([]));
+    assert_eq!(report["initial_documents"], report["final_documents"]);
+    let commands = report["commands"].as_array().unwrap();
+    assert!(!commands.iter().any(|c| {
+        c["type"]
+            .as_str()
+            .is_some_and(|name| name.ends_with("apply") || name.ends_with("execute"))
+    }));
+    assert_eq!(report["shutdown"]["ok"], true);
+}
+
+#[test]
+#[ignore = "registered hook and plugin commands against disposable source fixtures"]
+fn registered_hooks_and_plugin_target_open_existing_review_controls() {
+    for fixture in ["hook_toggle_runtime.py", "plugin_reload_runtime.py"] {
+        let (runtime, data) = launch_fixture(fixture, true);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = Demo::live("custom".into(), "switch-old".into());
+                observe(runtime, &mut app, |event| {
+                    matches!(event, Observation::Ready)
+                })?;
+                if fixture == "hook_toggle_runtime.py" {
+                    route_registered_command(runtime, &mut app, "/hooks")?;
+                    drain(runtime, &mut app)?;
+                    let screen = draw(&mut app);
+                    assert!(screen.contains("audit-file"), "{screen}");
+                } else {
+                    let seed = json_file(&data.join("plugin-seed.json"));
+                    let target = seed["name"].as_str().unwrap();
+                    route_registered_command(
+                        runtime,
+                        &mut app,
+                        &format!("/reload-plugins {target}"),
+                    )?;
+                    drain(runtime, &mut app)?;
+                    let screen = key(runtime, &mut app, KeyCode::Enter)?;
+                    assert!(screen.contains(target) && screen.contains("F6"), "{screen}");
+                    app.live.as_mut().unwrap().work.close();
+                    route_registered_command(
+                        runtime,
+                        &mut app,
+                        "/reload-plugins nonexistent_tool",
+                    )?;
+                    drain(runtime, &mut app)?;
+                    let screen = draw(&mut app);
+                    assert!(
+                        screen.contains("nonexistent_tool") && screen.contains("not eligible"),
+                        "{screen}"
+                    );
+                    key(runtime, &mut app, KeyCode::Enter)?;
+                    assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+                }
+                app.live.as_mut().unwrap().work.close();
+                runtime.quit()
+            })
+            .unwrap();
+        let report = json_file(&data.join("runtime-controls-report.json"));
+        assert_eq!(report["requests"], json!([]));
+        assert!(!report["commands"].as_array().unwrap().iter().any(|c| {
+            c["type"]
+                .as_str()
+                .is_some_and(|name| name.ends_with("apply"))
+        }));
+        if fixture == "hook_toggle_runtime.py" {
+            assert_eq!(
+                json_file(&data.join("hook-after.json"))["executed"],
+                json!([])
+            );
+        } else {
+            assert_eq!(
+                json_file(&data.join("plugin-after.json"))["generation_changed"],
+                false
+            );
+        }
+    }
 }

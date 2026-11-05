@@ -150,13 +150,18 @@ async def test_stale_queue_review_never_prepares_or_sends(running, fault):
     assert calls == ["first controlled input"]
 
 
-async def test_queue_refuses_interrupt_and_closed_native_inventory_without_mutation(running):
+async def test_interrupt_prepares_front_input_and_requests_canonical_soft_stop(running):
     app, cmd, calls = running
     request = cmd(native_midturn.SEND_REVIEW)
     request["chord"] = "alternate"
     result = await invoke(app, request)
-    assert isinstance(result, ValueError) and "does not interrupt" in str(result)
-    assert not app._pending_input and not app._stop_requested and calls == ["first controlled input"]
+    assert result["behavior"] == "interrupt" and result["prior_inputs"] == []
+    applied = await invoke(app, {**request, "id": str(uuid.uuid4()), "type": native_midturn.SEND_APPLY,
+                                "review": result["review"], "native": result["native"]})
+    assert applied["producer"]["kind"] == "user_interrupt"
+    assert app._stop_requested and calls == ["first controlled input"]
+    assert app._pending_input[0]["_claude_entry"]["state"] == "prepared"
+    work.validate_document(work.strict_json(work.bridge(app).raw))
 
 
 async def test_partial_native_prepare_is_retained_without_work_queue_or_success(running, monkeypatch):

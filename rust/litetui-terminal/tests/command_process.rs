@@ -507,7 +507,12 @@ fn work_commands_open_the_selected_section_without_running_actions() {
 #[test]
 #[ignore = "controlled real source runtime"]
 fn raw_unknown_unsupported_arguments_and_cancel_never_fall_back() {
-    for raw in ["/not-a-command", "/hooks", "/settings extra", "/caseskill"] {
+    for raw in [
+        "/not-a-command",
+        "/hooks extra",
+        "/settings extra",
+        "/caseskill",
+    ] {
         route_scenario("success", raw, "refused");
     }
     route_scenario("cancel-route", "/exit", "quit");

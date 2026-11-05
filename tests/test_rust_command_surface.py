@@ -357,3 +357,67 @@ async def test_registered_glassbox_routes_only_inspect_or_prefill_review(command
         app.plugins.commands[token] = foreign
     changed = read(app)
     assert next(r for r in changed["entries"] if "/glassbox" in r["tokens"])["native_action"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_app", [("custom", False)], indirect=True)
+async def test_registered_control_commands_preserve_intent_without_callbacks(command_app, monkeypatch):
+    app = command_app
+    for token, entry in list(app.plugins.commands.items()):
+        replacement = replace(entry, handler=forbidden)
+        for alias in entry.tokens:
+            app.plugins.commands[alias] = replacement
+    catalog = read(app)
+    base = {k: v for k, v in selection(app, catalog).items() if k != "row_id"}
+    before = tree(app)
+    cases = [
+        ("/compact", "conversation_compact", ""),
+        ("/compact Keep  exact guidance 雪\n  and trailing  ", "conversation_compact", "Keep  exact guidance 雪\n  and trailing  "),
+        ("/load", "model_load", ""), ("/load fixture-model", "model_load", "fixture-model"),
+        ("/unload fixture-model", "model_unload", "fixture-model"),
+        ("/reconnect", "model_reconnect", ""),
+        ("/engine STOP", "engine", "STOP"), ("/engine start", "engine", "start"),
+        ("/engine status", "engine", "status"), ("/hooks", "hooks", ""),
+        ("/reload-plugins", "plugin_reload", ""),
+        ("/reload-plugins skills", "plugin_reload", "skills"),
+        ("/reload-plugins exact_tool", "plugin_reload", "exact_tool"),
+        ("/job", "work_new_job", ""), ("/plan", "plan", ""),
+        ("/plan ON", "plan", "ON"), ("/plan off", "plan", "off"),
+    ]
+    for command, action, arguments in cases:
+        route = command_surface.resolve(app, {**base, "command": command})
+        assert (route["command"], route["native_action"], route["arguments"]) == (command, action, arguments)
+    for command, reason in [
+        ("/load different-model", "current model"), ("/unload different-model", "current model"),
+        ("/engine start 4", "lane arguments"), ("/engine lanes 4", "configuration"),
+        ("/plan maybe", "on, off"), ("/reload-plugins two targets", "one exact"),
+        ("/compact bad\0hint", "NUL"), ("/hooks extra", "arguments"),
+        ("/job every minute", "arguments"), ("/reconnect extra", "arguments"),
+    ]:
+        with pytest.raises(ValueError, match=reason):
+            command_surface.resolve(app, {**base, "command": command})
+    assert tree(app) == before
+
+
+@pytest.mark.asyncio
+async def test_codex_native_compact_guidance_is_refused_instead_of_discarded(command_app):
+    app = command_app
+    request = {k: v for k, v in selection(app, read(app)).items() if k != "row_id"}
+    with pytest.raises(ValueError, match="does not accept guidance"):
+        command_surface.resolve(app, {**request, "command": "/compact keep this exact guidance"})
+    assert command_surface.resolve(app, {**request, "command": "/compact"})["arguments"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["/compact", "/reconnect", "/load", "/unload", "/engine", "/hooks", "/reload-plugins", "/job", "/plan"])
+async def test_control_adapters_require_exact_source_registry_owner(command_app, token):
+    app = command_app
+    registry = plugins.PluginRegistry()
+    registry.add_command("third-party", (token,), forbidden)
+    app.plugins = registry
+    catalog = read(app)
+    row = catalog["entries"][0]
+    assert row["native_action"] is None
+    with pytest.raises(ValueError, match="no native action adapter"):
+        command_surface.resolve(app, {"session_id": app.convo_id, "version": 1,
+            "agent_id": catalog["agent_id"], "snapshot": catalog["snapshot"], "command": token})

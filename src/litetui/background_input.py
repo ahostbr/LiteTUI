@@ -1352,7 +1352,7 @@ def validate_document(document):
         validate_payload(payload)
         producer = producers[i["producer_id"]]
         if producer["kind"] in {"user_queue", "user_interrupt"} and (
-                (epoch["provider"] != "host" and not (epoch["provider"] == "claude" and producer["kind"] == "user_queue"))
+                epoch["provider"] not in {"host", "claude", "codex"}
                 or epoch["instance"] != producer["owner_instance"]
                 or set(payload) != {"content", "text", "source", "tool_profile"} or payload["source"] != "rpc"
                 or type(payload["content"]) is not str or payload["text"] != payload["content"]):
@@ -1814,7 +1814,7 @@ async def _run_job(app, job, manual=False):
         release(app, reservation)
 
 
-def queue_user_input(app, parent, review, payload, *, interrupt=False, claude=None):
+def queue_user_input(app, parent, review, payload, *, interrupt=False, native=None):
     """Capture one reviewed reply under the actual GUI worker and canonical FIFO."""
     from textual.worker import get_current_worker
 
@@ -1830,15 +1830,15 @@ def queue_user_input(app, parent, review, payload, *, interrupt=False, claude=No
         token = _PRODUCER.set((app, producer, _task()))
         try:
             item = dict(payload)
-            if claude is not None:
-                if interrupt or value.provider != "claude":
-                    raise ValueError("Only Claude next-turn queue may prepare native input")
-                item.update(claude.prepare(app, payload, review))
+            if native is not None:
+                if value.provider not in {"claude", "codex"}:
+                    raise ValueError("Native preparation requires its captured provider")
+                item.update(native.prepare(app, payload, review))
             entry = enqueue(app, producer, item)
             if entry.state != "queued" or _read(value.path) != value.raw:
                 raise ValueError("Queued composer input lacks an exact persisted ledger record")
-            if claude is not None:
-                claude.receipt(app, item, review)
+            if native is not None:
+                native.receipt(app, item, review)
             item["bubble"] = app._user_bubble(payload["content"], False, queued=not interrupt)
             if interrupt:
                 # These consecutive synchronous steps mirror the host send chord. Signal the
@@ -2319,6 +2319,7 @@ def bind_provider_lane(app, owner, lane):
         if not lane.worker.is_finished:
             raise RuntimeError("Native steering callback is still live")
     lane.observer = _observe(retired())
+    app._native_work_provider_lane = lane
 
 
 def _provider_scope(app, lane):
@@ -2630,7 +2631,7 @@ def prepare_publication(app, cmd, result):
     if ticket is None:
         from litetui import native_dictation
         ticket = native_dictation.prepare_publication(app, cmd, result)
-    if (ticket is None and cmd.get("backend") == "claude"
+    if (ticket is None and cmd.get("backend") in {"claude", "codex"}
             and cmd.get("type") in {"gui.prompt.native_queue_apply", "gui.prompt.native_send_apply"}):
         from litetui import native_claude_queue
         ticket = native_claude_queue.prepare_publication(app, cmd, result)

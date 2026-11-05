@@ -25,6 +25,9 @@ def interrupt_queue(app, bridge):
             raise ValueError("Interrupt cannot change the order of held or unowned input")
         if entry.ref["input_id"] in prior:
             raise ValueError("Interrupt queue contains the same input twice")
+        delivery = item.get("_codex_entry")
+        if delivery is not None and delivery.get("state") not in {"queued", "next_turn"}:
+            raise ValueError("Interrupt cannot reorder a native delivery already in progress")
         prior.append(entry.ref["input_id"])
     return prior
 
@@ -36,16 +39,19 @@ def dispatch(app, cmd):
     extended = operation in (SEND_REVIEW, SEND_APPLY)
     apply = operation in (APPLY, SEND_APPLY)
     fields = ("origin", "chord", "text", "profile", "policy_epoch") + (("review",) if apply else ())
-    if apply and app.backend.name == "claude":
+    if apply and work.provider(app) in {"claude", "codex"}:
         fields += ("native",)
     bridge, binding = read_binding(app, cmd, operation, *fields)
     pending = bridge.user_queue_review
     bridge.user_queue_review = None
-    if not controls.enabled(app) or bridge.provider not in {"host", "claude"}:
+    if not controls.enabled(app) or bridge.provider not in {"host", "claude", "codex"}:
         raise ValueError("Mid-turn composer queueing requires a captured host-managed stream")
     native = None
     if bridge.provider == "claude":
         from litetui.native_claude_queue import Binding
+        native = Binding.capture(app)
+    elif bridge.provider == "codex":
+        from litetui.native_codex_queue import Binding
         native = Binding.capture(app)
     state = controls._state(app)
     if reason := work.prompt_refusal(app):
@@ -73,8 +79,6 @@ def dispatch(app, cmd):
     if type(swapped) is not bool:
         raise ValueError("The effective Enter behavior is unavailable")
     behavior = midturn_action(swapped, chord == "alternate")
-    if behavior == "interrupt" and native is not None:
-        raise ValueError("Claude queue does not interrupt. Use the other send key to queue for the next turn.")
     if behavior == "interrupt" and not extended:
         raise ValueError("This key would interrupt the turn. Use the other send key to queue, or stop the turn explicitly.")
     profile = seat_authority.seat_profile(app)
@@ -89,7 +93,7 @@ def dispatch(app, cmd):
     if native is not None:
         value["native"] = native.value()
         if apply and cmd["native"] != value["native"]:
-            raise ValueError("The reviewed Claude native delivery changed")
+            raise ValueError("The reviewed native delivery changed")
     if behavior == "interrupt":
         value["prior_inputs"] = interrupt_queue(app, bridge)
     if not apply:
@@ -103,7 +107,7 @@ def dispatch(app, cmd):
         pending[2].check(app)
         native = pending[2]
     producer, entry = work.queue_user_input(app, origin, value["review"], payload,
-        interrupt=behavior == "interrupt", claude=native)
+        interrupt=behavior == "interrupt", native=native)
     result = {**value, "kind": "midturn_queued", "operation_id": cmd["id"], "producer": producer, "input": entry}
     if native is not None:
         try:
@@ -111,6 +115,6 @@ def dispatch(app, cmd):
             from litetui.native_claude_queue import stage_publication
             stage_publication(app, cmd, result, native, bridge.inputs[entry["input_id"]])
         except Exception as exc:
-            bridge.error = "Claude queue confirmation is uncertain; close and inspect retained input"
+            bridge.error = "Native queue confirmation is uncertain; close and inspect retained input"
             raise ValueError(bridge.error) from exc
     return result
