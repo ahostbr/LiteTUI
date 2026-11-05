@@ -10485,6 +10485,8 @@ class LiteTUI(App):
         self._owner_compact_now: owner_mode.NowSnapshot | None = None
         owner_dir = getattr(self, '_owner_memory_dir', None)
         if owner_dir is not None:
+            # T0483-B: a cancelled compaction's handoff commit lands before this STEP 1 snapshots.
+            await owner_mode.settle_inflight_handoff(owner_dir)
             try:
                 self._owner_compact_now = (Path(owner_dir) / owner_mode.NOW).read_bytes()
             except OSError:

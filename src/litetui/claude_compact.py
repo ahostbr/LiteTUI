@@ -91,6 +91,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     owner_dir = getattr(app, "_owner_memory_dir", None)
     if owner_dir is not None and owner_before is None:
         # A direct caller snapshots this operation, never a previous compaction's app state.
+        await owner_mode.settle_inflight_handoff(owner_dir)   # T0483-B
         try:
             owner_before = (Path(owner_dir) / owner_mode.NOW).read_bytes()
         except OSError:

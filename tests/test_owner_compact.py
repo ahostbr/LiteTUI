@@ -690,3 +690,74 @@ async def test_absent_snapshot_is_distinct_from_empty_bytes(owner_dir, monkeypat
     ok, reason = await owner_mode.owner_gate(owner_dir, b"")
     assert not ok and "was not rewritten" in reason
     assert len(handoff.calls) == 1
+
+
+# ===== T0483-B (WS4 N9): a cancelled compaction's owner-handoff must land before the next STEP 1 =====
+
+class _BlockingHandoff:
+    """owner-handoff stand-in that blocks in its worker thread until released."""
+
+    def __init__(self, order):
+        import threading
+        self.order, self.started, self.release = order, threading.Event(), threading.Event()
+
+    def __call__(self, memory_dir, agent_id=None, timeout=120.0):
+        self.started.set()
+        self.release.wait(10)
+        self.order.append("commit")
+        return True, "/compact"
+
+
+def test_a_cancelled_gates_handoff_is_waited_for_before_the_next_compaction(owner_dir, monkeypatch):
+    import asyncio
+    order = []
+    handoff = _BlockingHandoff(order)
+    monkeypatch.setattr(owner_mode, "run_handoff", handoff)
+    _write_now(owner_dir)
+
+    async def body():
+        gate = asyncio.create_task(owner_mode.owner_gate(owner_dir, b"before"))
+        await asyncio.to_thread(handoff.started.wait, 5)
+        gate.cancel()                      # the second /compact cancels the first worker
+        with pytest.raises(asyncio.CancelledError):
+            await gate
+        settle = asyncio.create_task(owner_mode.settle_inflight_handoff(owner_dir))
+        await asyncio.sleep(0.2)
+        assert not settle.done(), "the next STEP 1 must wait for the cancelled handoff's commit"
+        handoff.release.set()
+        await settle
+        order.append("next STEP 1")
+        await owner_mode.settle_inflight_handoff(owner_dir)   # nothing in flight: returns at once
+
+    asyncio.run(body())
+    assert order == ["commit", "next STEP 1"]
+
+
+def test_compact_body_settles_the_previous_handoff_before_its_now_snapshot(make_app, owner_dir, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    app = make_app()
+    calls = []
+
+    async def settle(folder):
+        calls.append("settle")
+        (owner_dir / "NOW.md").write_text("COMMITTED-BY-THE-CANCELLED-HANDOFF\n", encoding="utf-8")
+
+    async def no_compact(*a, **k):
+        calls.append("compact")
+
+    _bypass_owned_seat(monkeypatch)
+    monkeypatch.setattr(owner_mode, "settle_inflight_handoff", settle)
+    monkeypatch.setattr(claude_compact, "compact", no_compact)
+    async def body():
+        async with app.run_test(size=(120, 40)):
+            real = app._backend
+            app._backend = SimpleNamespace(owns_native_turns=True)   # skip the persisting setter
+            try:
+                await app_mod.LiteTUI._compact_body(app)
+            finally:
+                app._backend = real
+    asyncio.run(body())
+    assert calls == ["settle", "compact"]
+    # the snapshot was taken AFTER the settle, so it holds what the late commit left
+    assert app._owner_compact_now.strip() == b"COMMITTED-BY-THE-CANCELLED-HANDOFF"
