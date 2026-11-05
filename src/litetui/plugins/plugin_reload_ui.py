@@ -163,6 +163,14 @@ def _handler_reload_branch(
     return render_handler_reload(target, result)
 
 
+def current_activity(app: Any, *, ignore_workers=()):
+    """Canonical activity and persisted-child evidence sampled on the app owner loop."""
+    return produce_activity(
+        app, children_pending=lambda: children_pending(Path.home() / _AGENTS_ROOT, app.convo_id),
+        **({"ignore_workers": ignore_workers} if ignore_workers else {}),
+    ).snapshot
+
+
 def _handle(app: Any, name: str, arg: str) -> None:
     # Provenance: bind the generation we operate on BEFORE any lookup or load,
     # so every check below and the commit refer to the same registry object.
@@ -234,13 +242,8 @@ def _handle(app: Any, name: str, arg: str) -> None:
         app.system_message(f"[reload-plugins] restart required: {reason}. Live tools unchanged.")
         return
 
-    def _activity():
-        return produce_activity(
-            app,
-            children_pending=lambda: children_pending(Path.home() / _AGENTS_ROOT, app.convo_id),
-        ).snapshot
 
-    result = commit_metadata_candidate(app, expected, candidate, activity=_activity)
+    result = commit_metadata_candidate(app, expected, candidate, activity=lambda: current_activity(app))
     app.system_message(_render(target, result))
 
 
@@ -248,12 +251,7 @@ def _handle_skills(app: Any) -> None:
     """`/reload-plugins skills` — refresh the skills index (disk data) through the
     shared guarded helper. Native/busy/source-drift/unknown-children all refuse
     before any discovery or cache write."""
-    def _activity():
-        return produce_activity(
-            app,
-            children_pending=lambda: children_pending(Path.home() / _AGENTS_ROOT, app.convo_id),
-        ).snapshot
-    app.system_message(_render_skills(refresh_skills_guarded(app, activity=_activity)))
+    app.system_message(_render_skills(refresh_skills_guarded(app, activity=lambda: current_activity(app))))
 
 
 def _register(ctx) -> None:

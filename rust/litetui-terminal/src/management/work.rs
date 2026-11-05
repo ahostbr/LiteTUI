@@ -18,6 +18,8 @@ pub(super) struct Control {
     control_review: Option<controls::Review>,
     pub(super) manual_review: Option<crate::scheduled_transition::ManualReview>,
     context_review: Option<crate::context_edit::Review>,
+    plugin_names: Vec<String>,
+    plugin_review: Option<crate::plugin_reload::Review>,
     hook_list: Option<crate::hook_toggle::List>,
     hook_review: Option<crate::hook_toggle::Review>,
     hook_test: Option<crate::hook_toggle::TestReview>,
@@ -35,6 +37,8 @@ pub(super) struct Pending {
 }
 impl Management {
     pub(super) fn invalidate_work_selection(&mut self) {
+        self.work.plugin_names.clear();
+        self.work.plugin_review = None;
         self.work.manual_review = None;
         self.invalidate_execution_review();
         self.work.snapshot = None;
@@ -126,6 +130,15 @@ impl Management {
             view::Request::DeferredApply(_) => deferred::DISCARD,
             view::Request::Image(request) => request.operation(),
             view::Request::Context(r) => r.operation(),
+            view::Request::Plugin(request) => {
+                if !crate::plugin_reload::OPERATIONS
+                    .iter()
+                    .all(|op| self.operations.iter().any(|v| v == op))
+                {
+                    return Err(fail("Source lacks reviewed static description reload"));
+                }
+                request.operation()
+            }
             view::Request::Hook(request) => request.operation(),
             view::Request::ContextEdit(request) => {
                 if request
@@ -315,6 +328,27 @@ impl Management {
                 }
                 command = retained.request();
             }
+            view::Request::Plugin(request) => {
+                use crate::plugin_reload::Request;
+                match request.as_ref() {
+                    Request::List => {
+                        self.work.plugin_review = None;
+                        self.work.plugin_names.clear();
+                    }
+                    Request::Review(n) => {
+                        self.work.plugin_review = None;
+                        if !self.work.plugin_names.contains(n) {
+                            return Err(fail("Refresh and select a registered static description"));
+                        }
+                    }
+                    Request::Apply(r) => {
+                        if self.work.plugin_review.take().as_ref() != Some(r.as_ref()) {
+                            return Err(fail("Review this exact plugin description again"));
+                        }
+                    }
+                }
+                command = request.command(&identity, self.context_instance()?);
+            }
             view::Request::Hook(request) => {
                 use crate::hook_toggle::Request;
                 match request.as_ref() {
@@ -461,7 +495,7 @@ impl Management {
             }
         }
         command["type"] = json!(op);
-        let id = if matches!(&intent.request,view::Request::Hook(r) if matches!(r.as_ref(),crate::hook_toggle::Request::Apply(_))) || matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
+        let id = if matches!(&intent.request,view::Request::Plugin(r) if matches!(r.as_ref(),crate::plugin_reload::Request::Apply(_))) || matches!(&intent.request,view::Request::Hook(r) if matches!(r.as_ref(),crate::hook_toggle::Request::Apply(_))) || matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
             &intent.request,
             view::Request::PauseApply(_)
                 | view::Request::StopApply(_)
@@ -491,6 +525,12 @@ impl Management {
         let mut pending = self.work.pending.take().expect("Work request");
         if frame["ok"] != true {
             let mut reason = text(&frame, "error", 4096)?.to_owned();
+            if matches!(&pending.request, view::Request::Plugin(_)) {
+                self.work.plugin_review = None;
+                if pending.context_apply_id.is_some() {
+                    reason = format!("Plugin metadata was published but readback failed. {reason}");
+                }
+            }
             if matches!(&pending.request, view::Request::Hook(_)) {
                 self.work.hook_list = None;
                 self.work.hook_test = None;
@@ -595,6 +635,43 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
+                    view::Request::Plugin(request) => {
+                        let instance = self.context_instance()?;
+                        if matches!(request.as_ref(), crate::plugin_reload::Request::Apply(_))
+                            && pending.context_apply_id.is_none()
+                        {
+                            let op = text(&frame, "id", 128)?.to_owned();
+                            let mut command =
+                                request.readback(value, &snapshot.identity, instance, &op)?;
+                            let id = self
+                                .wire
+                                .register_read()
+                                .map_err(|_| fail("Cannot reserve plugin registry readback"))?;
+                            command["id"] = id.to_value();
+                            pending.id = id;
+                            pending.context_apply_id = Some(op);
+                            self.work.pending = Some(pending);
+                            return Ok(Step::Write(command));
+                        }
+                        let reply = request.reply(
+                            value,
+                            &snapshot.identity,
+                            instance,
+                            pending.context_apply_id.as_deref(),
+                        )?;
+                        match &reply {
+                            crate::plugin_reload::Reply::List(names) => {
+                                self.work.plugin_names = names.clone()
+                            }
+                            crate::plugin_reload::Reply::Reviewed(review) => {
+                                self.work.plugin_review = Some(review.clone())
+                            }
+                            crate::plugin_reload::Reply::Verified(_) => {
+                                self.work.plugin_review = None
+                            }
+                        }
+                        view::Data::Plugin(Box::new(reply))
+                    }
                     view::Request::Hook(request) => {
                         let instance = self.context_instance()?;
                         if matches!(request.as_ref(), crate::hook_toggle::Request::Apply(_))

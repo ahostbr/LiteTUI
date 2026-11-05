@@ -56,6 +56,7 @@ OPERATIONS = (
     "calendar.list", "diagnostics.get", "host_tools.register", "host_tools.unregister", "host_tools.result",
     "images.attach", "images.clear", "images.native_prepare", "images.native_clipboard", "images.native_preview", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
+    "plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback",
     "context.native_page", "inspection.native_status",
     "voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback",
     "mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_apply", "mcp.native_config_readback",
@@ -568,6 +569,9 @@ def dispatch(app, cmd):
                      "context.native_topic_readback", "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback"}:
         from litetui import native_context_edit
         return native_context_edit.dispatch(app, cmd)
+    if operation in {"plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback"}:
+        from litetui import native_plugin_reload
+        return native_plugin_reload.dispatch(app, cmd)
     if operation in {"context.native_page", "context.native_topic_page"}:
         from litetui import native_context
         return native_context.page(app, cmd)

@@ -78,6 +78,7 @@ pub mod hook_toggle_view;
 pub mod image;
 pub mod inspection;
 pub mod mcp_config;
+pub mod plugin_reload;
 pub mod transcript_selection;
 pub mod voice_preferences;
 

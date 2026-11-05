@@ -106,7 +106,7 @@ From F1 Work → Context → Hooks, press E to manage existing hook entries. Tab
 
 ## Work inspection (in progress)
 
-`/plugins` and the F11 Plugins entry show this session’s plugin load order and status. F1 → I → Plugins opens the same reader. F5 refreshes it. Failures use the selected Plain Talk or Full Detail setting. Reading this view does not load or activate plugins.
+`/plugins` and the F11 Plugins entry show this session’s plugin load order and status. F1 → I → Plugins opens the same reader. F5 refreshes the list. Press R to select an eligible tool description. Enter opens the review and F6 applies it to the current registry. The panel then rereads the registered description. Failures use the selected Plain Talk or Full Detail setting.
 
 From the composer or F11, `/tasks`, `/cron`, `/loop`, `/goal` and `/calendar` (also `/cal`) open the corresponding Work section. The list and status spellings select the same view, including `/tasks list`, `/cron ls`, `/loop status` and `/goal show`. Choose any changes inside Work, where the selected row and proposed action can be reviewed.
 

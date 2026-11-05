@@ -35,6 +35,7 @@ pub enum Request {
     Context(crate::context::Request),
     ContextEdit(Box<crate::context_edit::Request>),
     Hook(Box<crate::hook_toggle::Request>),
+    Plugin(Box<crate::plugin_reload::Request>),
     Image(crate::image::Request),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
@@ -69,6 +70,7 @@ pub enum Data {
     Context(Box<crate::context::Page>),
     ContextEdit(Box<crate::context_edit::Reply>),
     Hook(Box<crate::hook_toggle::Reply>),
+    Plugin(Box<crate::plugin_reload::Reply>),
     Image(Option<crate::image::Review>),
     ImagePreview(crate::image::Thumbnail),
     ExecutionReview(Box<execution::Review>),
@@ -135,6 +137,7 @@ pub struct View {
     context: crate::context_view::View,
     context_after_snapshot: Option<crate::context::Document>,
     hooks: crate::hook_toggle_view::View,
+    plugin_reload: crate::plugin_reload::View,
     pub image: crate::image::Picker,
     section: usize,
     selected: usize,
@@ -219,6 +222,7 @@ impl View {
     pub fn hide(&mut self) {
         self.image.hide();
         self.hooks.hide();
+        self.plugin_reload.hide();
         self.context.hide();
         self.visible = false;
     }
@@ -226,6 +230,7 @@ impl View {
         self.context_after_snapshot = None;
         self.image.close();
         self.hooks.close();
+        self.plugin_reload.close();
         self.context.close();
         self.open = false;
         self.hide();
@@ -271,6 +276,7 @@ impl View {
     fn refresh(&mut self) {
         self.context_after_snapshot = None;
         self.hooks.close();
+        self.plugin_reload.close();
         self.context.close();
         self.review = None;
         self.form = None;
@@ -352,6 +358,7 @@ impl View {
                 | (Request::Context(_), Data::Context(_))
                 | (Request::ContextEdit(_), Data::ContextEdit(_))
                 | (Request::Hook(_), Data::Hook(_))
+                | (Request::Plugin(_), Data::Plugin(_))
                 | (Request::Snapshot, Data::Snapshot(_))
                 | (Request::Page { .. }, Data::Page(_))
                 | (Request::Tail(_), Data::Tail(_))
@@ -371,6 +378,10 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::Plugin(reply) => self.plugin_reload.reply(*reply),
+            Data::Rejected(reason) if matches!(pending, Request::Plugin(_)) => {
+                self.plugin_reload.reject(reason)
+            }
             Data::Hook(reply) => self.hooks.reply(*reply),
             Data::Rejected(reason) if matches!(pending, Request::Hook(_)) => {
                 self.hooks.reject(reason)
@@ -651,7 +662,7 @@ impl View {
         }
     }
     pub fn accepts_paste(&self) -> bool {
-        if self.hooks.open {
+        if self.hooks.open || self.plugin_reload.open {
             return false;
         }
         if self.context.is_open() {
@@ -670,7 +681,7 @@ impl View {
         self.notice = error;
     }
     pub fn paste(&mut self, text: &str) {
-        if self.hooks.open {
+        if self.hooks.open || self.plugin_reload.open {
             return;
         }
         if self.context.is_open() {
@@ -696,6 +707,24 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.plugin_reload.open {
+            if let Some(req) = self.plugin_reload.key(key, self.waiting) {
+                self.request(Request::Plugin(Box::new(req)));
+            }
+            return;
+        }
+        if self.context.is_open()
+            && self.context.document() == crate::context::Document::Plugins
+            && self.context.page().is_some()
+            && !self.waiting
+            && key.kind == KeyEventKind::Press
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Char('r')
+        {
+            let req = self.plugin_reload.open();
+            self.request(Request::Plugin(Box::new(req)));
+            return;
+        }
         if self.hooks.open {
             if let Some(request) = self.hooks.key(key, self.waiting) {
                 self.request(Request::Hook(Box::new(request)));
@@ -1083,7 +1112,7 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.hooks.open {
+        if self.hooks.open || self.plugin_reload.open {
             return;
         }
         if self.image.open {
@@ -1354,6 +1383,10 @@ impl View {
         self.current_row().map_or_else(Vec::new, Row::details)
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.plugin_reload.open {
+            self.plugin_reload.draw(frame, area, theme, self.waiting);
+            return;
+        }
         if self.hooks.open {
             self.hooks.draw(frame, area, theme, self.waiting);
             return;

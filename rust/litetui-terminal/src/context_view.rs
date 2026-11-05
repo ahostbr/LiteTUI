@@ -689,6 +689,8 @@ impl View {
         }
         let keys = if matches!(self.document, Document::Topic(_)) {
             "e edit or create · [ ] pages · Esc topics"
+        } else if self.document == Document::Plugins {
+            "R reload a tool description · ← → documents · Esc back"
         } else if self.document == Document::Hooks && inner.width >= 48 {
             "← → / Tab documents · E manage hook toggles\n↑ ↓ scroll · F5 refresh · Esc returns to Work"
         } else if crate::context_edit::editable(&self.document) && inner.width >= 48 {

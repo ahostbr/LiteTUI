@@ -1417,3 +1417,67 @@ fn nested_topics_browse_create_and_edit_the_current_agents_file() {
         true
     );
 }
+
+#[test]
+#[ignore = "real owned source with private static schema and controlled provider"]
+fn plugins_control_reviews_one_description_and_verifies_the_current_registry() {
+    let (runtime, data) = launch("plugin_reload_runtime.py");
+    let run = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        let seed = json_file(&data.join("plugin-seed.json"));
+        app.insert_text("keep chat draft");
+        app.open_work();
+        drain(runtime, &mut app)?;
+        key(runtime, &mut app, KeyCode::Char('i'))?;
+        let mut screen = String::new();
+        for _ in 0..5 {
+            screen = key(runtime, &mut app, KeyCode::Right)?;
+        }
+        assert!(screen.contains("Context · Plugins"), "{screen}");
+        let list = key(runtime, &mut app, KeyCode::Char('r'))?;
+        assert!(
+            list.contains(seed["name"].as_str().unwrap()) && list.contains("Enter review"),
+            "{list}"
+        );
+        let first = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(first.contains("Current description"), "{first}");
+        key(runtime, &mut app, KeyCode::Esc)?;
+        let mut review = key(runtime, &mut app, KeyCode::Enter)?;
+        for _ in 0..64 {
+            if review.contains("F6 reload this description") {
+                break;
+            }
+            review = key(runtime, &mut app, KeyCode::PageDown)?;
+        }
+        assert!(
+            review.contains("A reviewed replacement")
+                && review.contains("F6 reload this description"),
+            "{review}"
+        );
+        let done = key(runtime, &mut app, KeyCode::F(6))?;
+        assert!(done.contains("Reloaded and verified"), "{done}");
+        assert_eq!(app.composer.text(), "keep chat draft");
+        Ok(())
+    });
+    run.unwrap_or_else(|e| panic!("Plugin process in {}: {e}", data.display()));
+    let after = json_file(&data.join("plugin-after.json"));
+    assert_eq!(after["generation_changed"], true);
+    assert_eq!(after["same_handler"], true);
+    assert_eq!(after["same_gate"], true);
+    assert_eq!(after["same_policy"], true);
+    assert_eq!(
+        after["description"],
+        json_file(&data.join("plugin-seed.json"))["after"]
+    );
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"].as_array().unwrap();
+    for op in ["gui.plugins.native_apply", "gui.plugins.native_readback"] {
+        assert_eq!(commands.iter().filter(|v| v["type"] == op).count(), 1);
+    }
+    assert!(
+        !commands
+            .iter()
+            .any(|v| v["type"] == "prompt" || v["type"] == "gui.tools.execute")
+    );
+}

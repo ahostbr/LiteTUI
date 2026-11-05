@@ -69,19 +69,33 @@ def _legacy_dir() -> Path:
 
 
 @lru_cache(maxsize=None)
-def _read(name: str) -> str:
+def _read(name: str, *, max_bytes: int | None = None) -> str:
     """The stored text of one schema file, package-first, legacy second."""
+    def read(ref):
+        if max_bytes is None:
+            return ref.read_text(encoding="utf-8")
+        if isinstance(ref, Path):
+            from litetui.agent_store import _unlinked
+            _unlinked(ref)
+            if ref.stat().st_nlink != 1:
+                raise ValueError("Linked schema file is outside metadata reload scope")
+        with ref.open("rb") as stream:
+            data = stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError("Static schema exceeds the metadata reload limit")
+        return data.decode("utf-8")
+
     pkg = _package_dir()
     if pkg is not None:
         ref = pkg.joinpath(f"{name}.json")
         try:
             if ref.is_file():
-                return ref.read_text(encoding="utf-8")
+                return read(ref)
         except OSError:
             pass  # unreadable in-package copy — fall through to the legacy home
     legacy = _legacy_dir() / f"{name}.json"
     if legacy.is_file():
-        return legacy.read_text(encoding="utf-8")
+        return read(legacy)
     raise FileNotFoundError(
         f"tool schema {name!r} not found in {SCHEMA_PACKAGE}/ or "
         f"{_legacy_dir()} — the wheel is missing its package data, or the "
@@ -123,6 +137,11 @@ def load_fresh(name: str, **fmt: str) -> dict:
     if fmt:
         _fill(spec, fmt)
     return spec
+
+
+def load_fresh_bounded(name: str, max_bytes: int) -> dict:
+    """An uncached static schema through the same lookup, with a byte limit."""
+    return json.loads(_read.__wrapped__(name, max_bytes=max_bytes))
 
 
 def _fill(node, fmt: dict[str, str]) -> None:
