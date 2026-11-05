@@ -608,3 +608,93 @@ fn held_input_recovery_is_available_without_prompt_admission() {
         assert_eq!(app.composer.text(), "KEEP UNSENT DRAFT");
     }
 }
+
+#[test]
+fn peer_review_does_not_grant_a_different_seat_or_unconfirmed_process_start() {
+    use sha2::{Digest, Sha256};
+    let mut v = data();
+    v["generation"] = json!(1);
+    let row = |id: &str, pid: u32| json!({"agent_id":id,"name":"Local seat","backend":"strata","pid":pid,"born_us":1234});
+    let mut peer = json!({"refused_action_id":ACTION_ID,"generation":1,"selection_id":v["launch"]["selection_id"],
+        "current":row(AGENT,12),"peers":[row(SESSION,34)],"spawn_new_engine":true,"other_engine_ownership":"unverified","resource_checks":"required"});
+    peer["sha256"] = json!(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&peer).unwrap())
+    ));
+    v["local_peer_start"] = peer.clone();
+    let snap = Snapshot::parse(&v, &identity()).unwrap();
+    let mut validation = review_data(&snap, Action::Start);
+    validation["local_peer_start"] = peer.clone();
+    let reviewed = Review::parse(&validation, snap.clone(), Action::Start).unwrap();
+    assert_eq!(
+        reviewed.request().unwrap()["consent_scope"],
+        "one_start_with_local_peers"
+    );
+    validation["local_peer_start"]["peers"][0]["born_us"] = json!(2345);
+    assert!(Review::parse(&validation, snap, Action::Start).is_err());
+    for (key, bad) in [
+        ("resource_checks", json!("bypassed")),
+        ("spawn_new_engine", json!(false)),
+        ("sha256", json!("e".repeat(64))),
+    ] {
+        let mut altered = v.clone();
+        altered["local_peer_start"][key] = bad;
+        assert!(Snapshot::parse(&altered, &identity()).is_err());
+    }
+    let mut receipt = receipt_data();
+    receipt["consumed_generation"] = json!(1);
+    receipt["generation"] = json!(2);
+    receipt["peer_sha256"] = peer["sha256"].clone();
+    receipt["peer_accepted"] = json!(false);
+    assert!(Receipt::parse(&receipt, reviewed.clone()).is_err());
+    receipt["peer_accepted"] = json!(true);
+    let accepted = Receipt::parse(&receipt, reviewed).unwrap();
+    let mut read = readback_data();
+    read["generation"] = json!(2);
+    read["peer_sha256"] = peer["sha256"].clone();
+    read["peer_accepted"] = json!(true);
+    accepted.verify_readback(&read).unwrap();
+    read["peer_sha256"] = json!("2".repeat(64));
+    assert!(accepted.verify_readback(&read).is_err());
+}
+
+#[test]
+fn reconnect_review_never_permits_remote_alias_loading_or_an_owned_process() {
+    use sha2::{Digest, Sha256};
+    let mut v = data();
+    let mut target = json!({"endpoint":"http://127.0.0.1:33123","model":"engine-model","start_process":false,"load_model":false,"acquire_handle":false});
+    target["selection_id"] = json!(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&target).unwrap())
+    ));
+    v["reconnect"] = target.clone();
+    let snap = Snapshot::parse(&v, &identity()).unwrap();
+    for (k, bad) in [
+        ("start_process", json!(true)),
+        ("load_model", json!(true)),
+        ("acquire_handle", json!(true)),
+        ("endpoint", json!("http://localhost@foreign.example:1234")),
+    ] {
+        let mut badsnap = v.clone();
+        badsnap["reconnect"][k] = bad;
+        assert!(Snapshot::parse(&badsnap, &identity()).is_err());
+    }
+    let mut rev = review_data(&snap, Action::Reconnect);
+    rev["summary"] = target.clone();
+    let reviewed = Review::parse(&rev, snap, Action::Reconnect).unwrap();
+    let mut receipt = receipt_data();
+    receipt["action"] = json!("reconnect");
+    receipt["status"] = json!("connected");
+    receipt["handle_token"] = Value::Null;
+    receipt["spawn_attempted"] = json!(false);
+    receipt["reconnect"] = target.clone();
+    let accepted = Receipt::parse(&receipt, reviewed.clone()).unwrap();
+    let mut read = readback_data();
+    read["handle_token"] = Value::Null;
+    read["reconnect"] = target.clone();
+    accepted.verify_readback(&read).unwrap();
+    read["reconnect"]["endpoint"] = json!("http://localhost:3333");
+    assert!(accepted.verify_readback(&read).is_err());
+    receipt["spawn_attempted"] = json!(true);
+    assert!(Receipt::parse(&receipt, reviewed).is_err());
+}

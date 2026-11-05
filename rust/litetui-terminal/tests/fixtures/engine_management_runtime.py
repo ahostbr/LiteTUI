@@ -46,7 +46,7 @@ app_instance = None
 spawn_entered = threading.Event()
 spawn_release = threading.Event()
 spawn_release.set()
-if case == "quit-during-start":
+if case in {"quit-during-start","attach-quit"}:
     spawn_release.clear()
 stale_settings = None
 readback_fault = False
@@ -135,12 +135,17 @@ def http(request, **_kwargs):
     method = request.get_method() if isinstance(request, urllib.request.Request) else "GET"
     calls.append({"effect": "http", "url": url, "method": method})
     active = next((proc for proc in reversed(processes) if proc.returncode is None), None)
-    attached = case in {"attached", "registered-foreign"}
+    attached = case in {"attached", "registered-foreign"} or (case.startswith("attach-") and (root/"engine-ready").exists())
     if active is None and not attached:
         raise urllib.error.URLError("Controlled engine is unavailable")
     if url.endswith("/health") and readback_fault and case == "source-health-drift":
         raise urllib.error.URLError("Controlled health changed before independent readback")
     if url.endswith("/health"):
+        if case=="attach-quit" and attached and not spawn_entered.is_set():
+            spawn_entered.set()
+            (root/"attach-in-flight").write_text("bounded metadata read",encoding="utf-8")
+            assert spawn_release.wait(15)
+            calls.append({"effect":"attach-metadata-read-returned"})
         return Response({"loaded": active.loaded if active is not None else True})
     if url.endswith("/v1/unload") and method == "POST":
         assert active is not None, "Never unload an attached or registry-only engine"
@@ -148,6 +153,8 @@ def http(request, **_kwargs):
         return Response({"ok": True})
     if url.endswith("/v1/models"):
         selected = "wrong-engine-model" if (case == "model-drift" or (readback_fault and case == "source-model-drift")) and active is not None else model_name
+        if case == "attach-wrong-model" or (case=="attach-readback-drift" and readback_fault):
+            selected = "another-loaded-model"
         loaded = active.loaded if active is not None else True
         return Response({"data": [{"id": selected, "max_model_len": 8192,
                                    "meta": {"n_ctx": 8192}, "status": {"value": "loaded" if loaded else "unloaded"}}]})
@@ -210,7 +217,7 @@ def install():
     settings_path = root / "settings.json"
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     settings.update(ninfer_executable=str(executable), ninfer_artifact=str(artifact),
-                    ninfer_host="http://127.0.0.1:45128" if case == "attached" else "",
+                    ninfer_host="http://127.0.0.1:45128" if case == "attached" or case.startswith("attach-") else "",
                     ninfer_max_context=8192, strata_root=str(installation), strata_config=str(config),
                     strata_host="", strata_max_context=None)
     settings_path.write_text(json.dumps(settings), encoding="utf-8")
@@ -273,7 +280,7 @@ async def serve(app):
                 async def dispatch(command):
                     nonlocal action_finished
                     global readback_fault
-                    if command["type"] == "gui.engine.native_readback" and case.startswith("source-"):
+                    if command["type"] == "gui.engine.native_readback" and (case.startswith("source-") or case=="attach-readback-drift"):
                         readback_fault = True
                     command_log.append(copy.deepcopy(command))
                     with (root / "engine-management-commands.jsonl").open("a", encoding="utf-8") as output:
@@ -323,12 +330,12 @@ async def serve(app):
                             result["generation"] += 1
                         return result
                     rpc._dispatch(app, command)
-                    if case == "quit-during-start" and command["type"] == "shutdown":
+                    if case in {"quit-during-start","attach-quit"} and command["type"] == "shutdown":
                         async with asyncio.timeout(3):
                             while not app._native_engine_state.cancel_start.is_set():
                                 await asyncio.sleep(0.005)
                         calls.append({"effect": "shutdown-cancellation-requested"})
-                        assert app.backend._starting and not spawn_release.is_set()
+                        assert (app.backend._starting or case=="attach-quit") and not spawn_release.is_set()
                         spawn_release.set()
                     await settle(app)
                     return None
@@ -354,7 +361,7 @@ async def serve(app):
                         if not line:
                             break
                         command = json.loads(line)
-                        if case == "quit-during-start" and command["type"] == "gui.engine.native_action":
+                        if case in {"quit-during-start","attach-quit"} and command["type"] == "gui.engine.native_action":
                             in_flight.append(asyncio.create_task(action_reply(command)))
                             continue
                         try:
@@ -651,12 +658,12 @@ def other_sibling(*_args):
         app_instance.settings.ninfer_max_context = 16384
         app_instance.settings.strata_max_context = 16384
         calls.append({"effect": "concurrent-settings-change"})
-    return "controlled-local-sibling" if case == "resource-sibling" else None
+    return "controlled-local-sibling" if case == "resource-sibling" or case.startswith("peer-") else None
 
 def main():
     import atexit
 
-    from litetui import harness, jobkill, ninfer_engine, strata_engine
+    from litetui import harness, jobkill, native_engine_endpoint, native_engine_peer, ninfer_engine, strata_engine
     install()
     if case == "registered-foreign" and backend_name == "ninfer":
         registry = ninfer_engine._config_path()
@@ -677,8 +684,22 @@ def main():
             return original(settings, spawn=spawn, **kwargs)
         return launch
 
+    peer_root=root/"simulated-local-registry"
+    if case.startswith("peer-"):
+        peer_root.mkdir()
+        row={"agent_id":"22222222-2222-4222-8222-222222222222","cli":"litetui","name":"controlled-local-sibling",
+             "backend":"lmstudio","session_pid":2000000444}
+        (peer_root/(row["agent_id"]+".json")).write_text(json.dumps(row),encoding="utf-8")
+    def birth(pid):
+        if pid==os.getpid():return 123400
+        assert pid==2000000444
+        return 456701 if (root/"replace-peer").exists() else 456700
     with ExitStack() as stack:
         for obj, name, replacement in (
+            (harness,"AGENTS_DIR",peer_root),
+            (harness.router_record,"pid_is_live",lambda pid:pid==2000000444),
+            (native_engine_peer,"_process_birth",birth),
+            (native_engine_endpoint, "_open_pinned",lambda req,timeout:http(req,timeout=timeout)),
             (boundary, "serve", serve), (boundary, "inference", inference), (boundary, "command", gpu_command),
             (urllib.request, "urlopen", http), (atexit, "register", register),
             (jobkill, "create", job_create), (jobkill, "assign", job_assign),
@@ -686,7 +707,7 @@ def main():
             (jobkill, "close", job_close), (jobkill, "alive", boundary.forbidden), (ninfer_engine, "free_port", lambda: 45128),
             (ninfer_engine, "engine_process_alive", lambda: hardware("ninfer_process", False)),
             (ninfer_engine, "gpu_free_mib", lambda: hardware("ninfer_vram", 0 if case == "resource-memory" else 32768)),
-            (strata_engine, "engine_process_alive", lambda: hardware("strata_process", False)),
+            (strata_engine, "engine_process_alive", lambda: hardware("strata_process", case=="peer-competing-engine")),
             (strata_engine, "memory_free_bytes", lambda: hardware("ram", (128 * 1024**3, 256 * 1024**3))),
             (strata_engine, "gpu_memory_mib", lambda: hardware("strata_vram", (0 if case == "resource-memory" else 32768, 32768))),
             (harness, "other_live_litetui", other_sibling),

@@ -25,6 +25,8 @@ import json
 import urllib.error
 import urllib.request
 
+from litetui import native_engine_endpoint
+
 from . import strata_engine
 from .engine_lifecycle import EngineUnavailable, OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
@@ -73,7 +75,7 @@ class StrataBackend(OwnedEngineLifecycle):
         """'loaded' | 'unloaded' | None (nothing answering) from `GET /health`."""
         try:
             req = urllib.request.Request(f"{host}/health", headers={"User-Agent": "LiteTUI"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with native_engine_endpoint.open_read(req, timeout=timeout) as r:
                 body = json.load(r)
         except Exception:  # noqa: BLE001 - refused, timed out, not JSON: nothing usable is there
             return None
@@ -139,7 +141,7 @@ class StrataBackend(OwnedEngineLifecycle):
     def _get_json(self, url: str, timeout: float = 10.0) -> dict:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "LiteTUI"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with native_engine_endpoint.open_read(req, timeout=timeout) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             raise BackendError(f"Strata returned {e.code} for {url}.") from e

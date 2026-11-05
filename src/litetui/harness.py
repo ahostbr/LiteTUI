@@ -894,6 +894,18 @@ def registered_spawner(agent_id: str) -> str | None:
     return parent
 
 
+def _local_sibling_id(data, fallback, self_id):
+    # Cloud seats cannot add local model weights. Legacy rows may lack backend.
+    if (not isinstance(data, dict) or data.get("cli") != "litetui"
+            or data.get("backend") in {"codex", "claude", "cline", "free"}):
+        return None
+    aid = data.get("agent_id") or fallback
+    pid = data.get("session_pid")
+    if aid == self_id or type(pid) is not int or pid <= 0:
+        return None
+    return aid
+
+
 def other_live_litetui(self_id: str | None = None) -> str | None:
     """The NAME of another live local-model LiteTUI, if one exists.
 
@@ -920,20 +932,8 @@ def other_live_litetui(self_id: str | None = None) -> str | None:
             data = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if data.get("cli") != "litetui":
-            continue
-        # Hosted seats cannot add model weights to this host's VRAM. Keep an
-        # unknown backend in scope for older presence rows and local custom
-        # endpoints, where skipping the warning would be an unsafe guess.
-        if data.get("backend") in {"codex", "claude", "cline", "free"}:
-            continue
-        aid = data.get("agent_id") or f.stem
-        if self_id and aid == self_id:
-            continue
-        pid = data.get("session_pid")
-        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-            continue
-        if router_record.pid_is_live(pid):
+        aid = _local_sibling_id(data, f.stem, self_id)
+        if aid and router_record.pid_is_live(data["session_pid"]):
             return str(data.get("name") or aid[:8])
     return None
 

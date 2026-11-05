@@ -5562,6 +5562,10 @@ class LiteTUI(App):
             return True
 
         if getattr(self, '_native_engine_resource_action', False):
+            from litetui import native_engine_peer
+            if native_engine_peer.authorize(self, self._native_engine_state, sibling, model):
+                return True
+            self._native_engine_resource_sibling = sibling
             self._native_engine_resource_refusal = 'resource_confirmation_required'
             return False
 

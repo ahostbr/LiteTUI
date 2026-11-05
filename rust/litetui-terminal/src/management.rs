@@ -445,6 +445,7 @@ pub struct Management {
     engine: Option<EnginePending>,
     engine_instance: Option<(String, u64, crate::engine_controls::Admission)>,
     engine_snapshot: Option<crate::engine_controls::Snapshot>,
+    engine_peer_refusal: Option<(String, u64, String)>,
     config_snapshot: Option<crate::engine_config::Snapshot>,
     config_review: Option<crate::engine_config::Review>,
     engine_review: Option<(crate::engine_controls::Review, crate::resume::History)>,
@@ -528,6 +529,7 @@ impl Default for Management {
             engine: None,
             engine_instance: None,
             engine_snapshot: None,
+            engine_peer_refusal: None,
             config_snapshot: None,
             config_review: None,
             engine_review: None,
@@ -3342,6 +3344,33 @@ impl Management {
                         "Engine inspection changed admission without an owned action",
                     ));
                 }
+                if let Some(peer) = &snapshot.local_peer_start
+                    && (!self
+                        .operations
+                        .iter()
+                        .any(|op| op == "gui.engine.native_peer_validate")
+                        || !self.engine_peer_refusal.as_ref().is_some_and(
+                            |(id, generation, selection)| {
+                                peer["refused_action_id"] == *id
+                                    && snapshot.generation == *generation
+                                    && peer["selection_id"] == *selection
+                            },
+                        ))
+                {
+                    return Err(fail(
+                        "Second-instance override lacks a verified prior canonical refusal",
+                    ));
+                }
+                if snapshot.reconnect.is_some()
+                    && !self
+                        .operations
+                        .iter()
+                        .any(|op| op == "gui.engine.native_reconnect_validate")
+                {
+                    return Err(fail(
+                        "Connect-only engine action lacks negotiated source support",
+                    ));
+                }
                 self.engine_snapshot = Some(snapshot.clone());
                 return Ok(Step::Engine {
                     policy: Some(snapshot.policy.clone()),
@@ -3428,6 +3457,21 @@ impl Management {
                 if pending.stage == 9 {
                     let receipt = pending.receipt.take().expect("receipt");
                     let (_, generation, admission) = self.engine_instance.as_mut().expect("engine");
+                    self.engine_peer_refusal = if receipt.status == "refused"
+                        && receipt.error_code.as_deref() == Some("resource_confirmation_required")
+                        && receipt.review.action == crate::engine_controls::Action::Start
+                    {
+                        Some((
+                            receipt.review.action_id.clone(),
+                            receipt.generation,
+                            receipt.review.snapshot.launch["selection_id"]
+                                .as_str()
+                                .expect("validated plan")
+                                .to_owned(),
+                        ))
+                    } else {
+                        None
+                    };
                     *generation = receipt.generation;
                     *admission = receipt.admission;
                     self.engine_snapshot = None;

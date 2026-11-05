@@ -71,7 +71,7 @@ OPERATIONS = (
     "work.native_control_validate", "work.native_control_apply", "work.native_control_readback",
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
-    "engine.native_inspect", "engine.native_validate", "engine.native_action", "engine.native_readback",
+    "engine.native_inspect", "engine.native_validate", "engine.native_peer_validate", "engine.native_reconnect_validate", "engine.native_action", "engine.native_readback",
     "engine.native_config_snapshot", "engine.native_config_review", "engine.native_config_save", "engine.native_config_readback",
     "settings.native_snapshot", "settings.native_validate", "settings.native_save",
     "settings.native_compact_snapshot", "settings.native_compact_validate", "settings.native_compact_save",

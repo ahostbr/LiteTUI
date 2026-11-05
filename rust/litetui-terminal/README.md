@@ -456,8 +456,9 @@ PageUp/PageDown inspects every page, and a fresh Enter on the final visible page
 confirms once. R or F5 refreshes. Escape cancels a review; pointer selection alone
 never executes an action.
 The source rechecks the exact choice and applies its existing resource/ownership
-gates. A changed review needs refresh; there is no automatic retry. A second-instance
-confirmation requirement currently refuses with a reason instead of approving it.
+gates. A changed review needs refresh. If another local LiteTUI instance is running, Start shows a second review with its process identity. A changed process or competing engine requires fresh inspection.
+
+Press A to attach to a running NInfer or Strata engine at the configured loopback address and port. Read the endpoint and model, then confirm. The source checks the loaded model and the client binding before enabling the composer. Starting a process and loading a different model each require their own action.
 
 After start, prompt entry opens only after independent engine, model, session,
 history and policy checks. Stop targets only the process owned by this invocation.

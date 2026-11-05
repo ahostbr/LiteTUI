@@ -34,7 +34,7 @@ READ_ONLY = frozenset({
     "gui.history.native_snapshot", "gui.history.native_page",
     "gui.work.native_snapshot", "gui.work.native_page", "gui.work.native_tail", "gui.work.native_calendar",
     "gui.work.native_pause_validate", "gui.work.native_pause_apply", "gui.work.native_pause_readback",
-    "gui.engine.native_inspect", "gui.engine.native_validate",
+    "gui.engine.native_inspect", "gui.engine.native_validate", "gui.engine.native_peer_validate", "gui.engine.native_reconnect_validate",
     "gui.engine.native_action", "gui.engine.native_readback",
     "gui.engine.native_config_snapshot", "gui.engine.native_config_review", "gui.engine.native_config_save", "gui.engine.native_config_readback",
 })
@@ -55,6 +55,8 @@ class State:
     action_task: object = None
     shutdown_requested: bool = False
     cancel_start: threading.Event = field(default_factory=threading.Event)
+    peer_refusal: dict | None = None
+    peer_attempt: dict | None = None
     fatal: str | None = None
     reviews: dict = field(default_factory=dict)
     receipts: dict = field(default_factory=dict)
@@ -311,6 +313,21 @@ def _inspect(app, cmd):
               "actions": {"start": {"eligible": start_reason is None, "reason": start_reason},
                           "stop": {"eligible": stop_reason is None, "reason": stop_reason}},
               "readiness_checked": False, "resources_checked": False}
+    if (requested(app) and current.admission == "management_only" and current.handle is None
+            and reason is None and resource_reason is None and lifecycle["worker_settled"]):
+        from litetui import native_engine_endpoint
+        try:
+            result["reconnect"]=native_engine_endpoint.selection(app)
+        except (ValueError, RuntimeError, OSError):
+            pass  # No currently selected attachable endpoint.
+    if (current.peer_refusal and current.peer_refusal["verified"] and not start_reason
+            and plan.summary["selection_id"] == current.peer_refusal["selection_id"]):
+        from litetui import native_engine_peer
+        try:
+            result["local_peer_start"] = native_engine_peer.capture(app, current, current.peer_refusal, plan)
+        except (OSError, RuntimeError, ValueError):
+            # A changed/inaccessible registration cannot authorize a bypass of the warning.
+            pass
     result["snapshot"] = backend_catalog.fingerprint(app, context, result)
     if before != _binding(app, context):
         raise ValueError("Engine authority changed during inspection")
@@ -325,13 +342,25 @@ def validate(app, cmd):
     snap, plan, context = _inspect(app, cmd)
     current = state(app)
     action = cmd.get("action")
-    if action not in ("start", "stop") or cmd.get("consent_scope") != "one_" + action:
+    from litetui import native_engine_endpoint, native_engine_peer
+    peer = None
+    reconnect = None
+    if cmd.get("type") == native_engine_endpoint.OPERATION:
+        reconnect = snap.get("reconnect")
+        if action != "reconnect" or reconnect is None or cmd.get("consent_scope") != "one_reconnect":
+            raise ValueError("Choose the current configured endpoint for connect-only verification")
+    elif cmd.get("type") == native_engine_peer.OPERATION:
+        peer = snap.get("local_peer_start")
+        if (action != "start" or peer is None or cmd.get("peer_sha256") != peer["sha256"]
+                or cmd.get("consent_scope") != native_engine_peer.SCOPE):
+            raise ValueError("Second-instance consent requires the exact local seat review")
+    elif action not in ("start", "stop") or cmd.get("consent_scope") != "one_" + action:
         raise ValueError("Choose one explicit engine start or stop")
     if type(cmd.get("generation")) is not int or cmd["generation"] != snap["generation"] or cmd.get("snapshot") != snap["snapshot"]:
         raise ValueError("Engine review is stale; inspect again")
-    if not snap["actions"][action]["eligible"]:
+    if reconnect is None and not snap["actions"][action]["eligible"]:
         raise ValueError(snap["actions"][action]["reason"])
-    selection = snap["launch"]["selection_id"] if action == "start" else None
+    selection = reconnect["selection_id"] if reconnect else snap["launch"]["selection_id"] if action == "start" else None
     handle = snap["ownership"]["handle_token"] if action == "stop" else None
     if cmd.get("selection_id") != selection or cmd.get("handle_token") != handle:
         raise ValueError("Engine selection or retained handle changed")
@@ -340,8 +369,11 @@ def validate(app, cmd):
     request = {key: cmd.get(key) for key in fields}
     result = {"kind": "engine_review", **request, "review": secrets.token_hex(32),
               "action_id": str(uuid.uuid4()),
-              "summary": snap["launch"] if action == "start" else snap["ownership"],
+              "summary": reconnect or (snap["launch"] if action == "start" else snap["ownership"]),
               "timeout_ms": 1200000 if action == "start" else 120000}
+    if peer is not None:
+        result["local_peer_start"] = peer
+        result["peer_sha256"] = peer["sha256"]
     current.reviews.clear()  # only the latest explicit review can be consumed
     current.reviews[result["review"]] = (copy.deepcopy(result), plan, context, _binding(app, context))
     return _bounded(result)
@@ -353,7 +385,7 @@ def _shutdown(value):
     return {key: getattr(value, key) for key in ("owned", "attempted", "main_exited", "tree", "pid", "retained", "error")}
 
 
-async def _connect(app, current, desired):
+async def _connect(app, current, desired, *, endpoint=None):
     old_client = app.client
     current.connect_task = _task()
     try:
@@ -370,7 +402,7 @@ async def _connect(app, current, desired):
         if len(rows) != 1 or rows[0].key != desired or not rows[0].loaded:
             raise ValueError("The engine did not confirm exactly the reviewed loaded model")
         await current.backend.ensure_chat_ready(desired)
-        if not await asyncio.to_thread(current.backend._health, current.backend._owned.host):
+        if not await asyncio.to_thread(current.backend._health, endpoint or current.backend._owned.host):
             raise ValueError("The owned engine stopped being ready during connection")
     finally:
         current.connect_worker = None
@@ -387,12 +419,14 @@ async def action(app, cmd):
     review, plan, reviewed_context, binding = record
     keys = ("version", "session_id", "agent_id", "backend", "desired_model", "management_instance",
             "snapshot", "generation", "action", "selection_id", "handle_token", "consent_scope", "review", "action_id")
-    if any(cmd.get(key) != review.get(key) for key in keys):
+    if cmd.get("peer_sha256") != review.get("peer_sha256") or any(cmd.get(key) != review.get(key) for key in keys):
         raise ValueError("Engine action differs from the explicit review")
     if current.pending or current.generation != review["generation"]:
         raise ValueError("Engine action generation was already consumed")
     current.reviews.clear()
     consumed = current.generation
+    refused = current.peer_refusal
+    current.peer_refusal = None
     current.generation += 1
     result = {"kind": "engine_action", **common, "action_id": review["action_id"], "review": review["review"],
               "action": review["action"], "snapshot": review["snapshot"], "consumed_generation": consumed,
@@ -400,6 +434,12 @@ async def action(app, cmd):
               "effective_model": current.effective_model, "handle_token": _ownership(current)["handle_token"],
               "worker_settled": True, "cancel_requested": False, "spawn_attempted": False,
               "mutated": False, "close_required": False, "error_code": None, "error": None, "shutdown": None}
+    if review["action"]=="reconnect":
+        result["reconnect"]=review["summary"]
+    peer=review.get("local_peer_start")
+    if peer is not None:
+        result["peer_sha256"]=peer["sha256"]
+        result["peer_accepted"]=False
     history = copy.deepcopy(app.conversation)
     from litetui.gui_rpc import _tool_policy
     policy = _tool_policy(app)
@@ -410,6 +450,10 @@ async def action(app, cmd):
         if (app.backend is not current.backend or context.session is not reviewed_context.session
                 or _binding(app, context) != binding):
             raise ValueError("Reviewed engine authority changed before action")
+        if review["action"]=="reconnect":
+            from litetui import native_engine_endpoint
+            if native_engine_endpoint.selection(app)!=review["summary"]:
+                raise ValueError("Reviewed engine endpoint changed")
         if plan is not None and review["action"] == "start":
             plan.verify()
     try:
@@ -430,12 +474,33 @@ async def action(app, cmd):
     current.effective_model = None
     app._native_engine_resource_action = True
     app._native_engine_resource_refusal = None
+    app._native_engine_resource_sibling = None
+    if peer is not None:
+        current.peer_attempt={"proof":peer,"refusal":refused,"plan":plan,"used":False}
     try:
-        if review["action"] == "start":
+        if review["action"]=="reconnect":
+            from litetui import native_engine_endpoint
+            target=review["summary"]
+            with native_engine_endpoint.pinned(target["endpoint"]):
+                await native_engine_endpoint.join_probe(native_engine_endpoint.check_served(current.backend,target))
+                verify()  # Remain in the exact GUI management owner after the protected read.
+                result["mutated"]=True  # The canonical client rebind can now have started.
+                await native_engine_endpoint.join_probe(_connect(app,current,common["desired_model"],endpoint=target["endpoint"]))
+                verify()
+                native_engine_endpoint.verify_connection(app,target)
+            if app.conversation!=history or _tool_policy(app)!=policy:
+                raise ValueError("Connect-only action changed the reviewed conversation or policy")
+            current.admission="prompt_ready"
+            current.effective_model=common["desired_model"]
+            result["status"]="connected"
+        elif review["action"] == "start":
             def notice():
                 result["spawn_attempted"] = True
             def admitted_start():
                 verify()
+                if peer is not None:
+                    from litetui import native_engine_peer
+                    native_engine_peer.verify_admitted(app, current)
                 # From this point the canonical launcher may append logs or
                 # materialize a reviewed config before any spawn is attempted.
                 result["mutated"] = True
@@ -476,10 +541,18 @@ async def action(app, cmd):
                 result.update(status="failed", close_required=True)
     finally:
         app._native_engine_resource_action = False
+        if current.peer_attempt is not None:
+            result["peer_accepted"]=current.peer_attempt["used"]
+            current.peer_attempt=None
+        if (result["error_code"]=="resource_confirmation_required" and not result["mutated"]
+                and not result["spawn_attempted"] and current.backend._owned is None
+                and isinstance(app._native_engine_resource_sibling,str)):
+            current.peer_refusal={"action_id":review["action_id"],"generation":current.generation,
+                                  "selection_id":review["selection_id"],"sibling":app._native_engine_resource_sibling,"verified":False}
         current.pending = False
         owned = _ownership(current)
         settled = not current.backend._starting and not current.backend._stopping
-        if result["status"] != "started":
+        if result["status"] not in ("started","connected"):
             current.admission = "retained_recovery" if current.handle is not None else "management_only"
             current.effective_model = None
         if not settled:
@@ -502,7 +575,14 @@ async def readback(app, cmd):
     settled = not current.pending and not current.backend._starting and not current.backend._stopping
     connected = current.admission == "prompt_ready" and settled
     try:
-        if connected:
+        if connected and receipt["action"]=="reconnect":
+            from litetui import native_engine_endpoint
+            target=receipt["reconnect"]
+            with native_engine_endpoint.pinned(target["endpoint"]):
+                native_engine_endpoint.verify_connection(app,target)
+                await native_engine_endpoint.check_served(current.backend,target)
+                native_engine_endpoint.verify_connection(app,target)
+        elif connected:
             owned = current.backend._owned
             host = owned.host if owned is not None else current.backend.host()
             if not await asyncio.to_thread(current.backend._health, host):
@@ -524,4 +604,10 @@ async def readback(app, cmd):
               "effective_model": current.effective_model, "handle_token": _ownership(current)["handle_token"],
               "worker_settled": settled, "connected": connected,
               "loaded_model": common["desired_model"] if connected else None, "shutdown": receipt["shutdown"]}
+    if "reconnect" in receipt:
+        result["reconnect"]=receipt["reconnect"]
+    if "peer_sha256" in receipt:
+        result.update(peer_sha256=receipt["peer_sha256"],peer_accepted=receipt["peer_accepted"])
+    if current.peer_refusal and current.peer_refusal["action_id"] == receipt["action_id"]:
+        current.peer_refusal["verified"]=True
     return _bounded(result)

@@ -41,6 +41,8 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+from litetui import native_engine_endpoint
 from pathlib import Path
 
 from . import ninfer_engine
@@ -382,7 +384,7 @@ class NInferBackend(OwnedEngineLifecycle):
         """`GET /health`, which is UNAUTHENTICATED (`serving.md:68-70`)."""
         try:
             req = urllib.request.Request(f"{host}/health", headers={"User-Agent": "LiteTUI"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with native_engine_endpoint.open_read(req, timeout=timeout) as r:
                 return 200 <= r.status < 300
         except Exception:
             return False
@@ -561,7 +563,7 @@ class NInferBackend(OwnedEngineLifecycle):
     def _get_json(self, url: str, timeout: float = 10.0) -> dict:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "LiteTUI"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with native_engine_endpoint.open_read(req, timeout=timeout) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             raw = e.read().decode("utf-8", "replace") if hasattr(e, "read") else ""

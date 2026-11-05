@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## F12 second-instance confirmation and connect-only attachment - 2026-11-04
+
+Start identifies another local LiteTUI by process ID and creation time and asks for a separate confirmation. Reconnect (A) displays the exact loopback endpoint and requested model. Its metadata reads stay on that host and port and independently confirm the loaded model and client binding. Quit joins a pending metadata read.
+
+The integrated checkout passed 974 ordinary Rust tests, strict all-target Clippy, formatting and 176 source tests across engines and hooks. Fourteen F12 process groups and the F1 hook-toggle group passed against a freshly relocated runtime. The launcher verified all 372 payload files afterward. These checks used controlled processes and endpoints.
+
 ## Preview a composer image before sending - 2026-11-04
 
 Press V during image review to preview the retained PNG with alpha compositing. Escape returns to the attachment details. Enter there confirms the selection. The preview works after the original file is removed and never reopens a file or rereads the clipboard.

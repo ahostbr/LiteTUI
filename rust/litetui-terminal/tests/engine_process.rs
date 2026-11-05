@@ -731,3 +731,276 @@ fn configure_both_engines_saves_one_conversation_preference_and_never_starts() {
         ));
     }
 }
+
+#[test]
+#[ignore = "controlled source, registry and engine processes only"]
+fn second_instance_requires_separate_consent_preserves_process_limits_and_detects_pid_reuse() {
+    for case in ["peer-start", "peer-reused-pid", "peer-competing-engine"] {
+        let (runtime, root) = launch("strata", case, true);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = Demo::live("strata".into(), "engine-model".into());
+                app.insert_text("KEEP THE PEER DRAFT");
+                wait(runtime, &mut app, |e| {
+                    matches!(e, Observation::EngineAdmission(_) | Observation::Ready)
+                })?;
+                send(runtime, &mut app)?;
+                wait_engine(runtime, &mut app)?;
+                review(runtime, &mut app, false)?;
+                confirm(runtime, &mut app)?;
+                assert_eq!(admission(&app), Some(Admission::ManagementOnly));
+                inspect(runtime, &mut app)?;
+                review(runtime, &mut app, false)?;
+                assert!(
+                    commands(&root)
+                        .iter()
+                        .any(|v| v["type"] == "gui.engine.native_peer_validate")
+                );
+                key(&mut app, KeyCode::Esc);
+                assert_eq!(
+                    commands(&root)
+                        .iter()
+                        .filter(|v| v["type"] == "gui.engine.native_action")
+                        .count(),
+                    1
+                );
+                inspect(runtime, &mut app)?;
+                review(runtime, &mut app, false)?;
+                if case == "peer-reused-pid" {
+                    fs::write(root.join("replace-peer"), "changed")?;
+                }
+                confirm(runtime, &mut app)?;
+                assert_eq!(
+                    admission(&app),
+                    Some(if case == "peer-start" {
+                        Admission::PromptReady
+                    } else {
+                        Admission::ManagementOnly
+                    })
+                );
+                if case == "peer-start" {
+                    inspect(runtime, &mut app)?;
+                    review(runtime, &mut app, true)?;
+                    confirm(runtime, &mut app)?;
+                }
+                assert_eq!(app.composer.text(), "KEEP THE PEER DRAFT");
+                runtime.quit()?;
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("{case}: {e}; root {}", root.display()));
+        let r = report(&root);
+        let results = r["results"].as_array().unwrap();
+        let proofs: Vec<_> = results
+            .iter()
+            .filter(|r| {
+                r["command"]["type"] == "gui.engine.native_action"
+                    && r["command"]["consent_scope"] == "one_start_with_local_peers"
+            })
+            .collect();
+        assert_eq!(proofs.len(), 1);
+        let a = &proofs[0]["result"];
+        assert_eq!(a["peer_accepted"], case != "peer-reused-pid");
+        assert_eq!(a["spawn_attempted"], case == "peer-start");
+        assert!(
+            results
+                .iter()
+                .any(|r| r["command"]["type"] == "gui.engine.native_readback"
+                    && r["result"]["peer_sha256"] == a["peer_sha256"]
+                    && r["result"]["peer_accepted"] == a["peer_accepted"])
+        );
+        let peer = results
+            .iter()
+            .find(|r| r["command"]["type"] == "gui.engine.native_peer_validate")
+            .unwrap();
+        assert_eq!(
+            peer["result"]["local_peer_start"]["peers"][0]["pid"],
+            2000000444
+        );
+        assert!(r["denied"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+#[ignore = "controlled source, owned conversation and synthetic existing local services"]
+fn explicit_attach_only_accepts_serving_reviewed_model_and_never_acquires_an_engine() {
+    for (backend, case, success) in [
+        ("ninfer", "attach-online", true),
+        ("strata", "attach-online", true),
+        ("strata", "attach-wrong-model", false),
+        ("ninfer", "attach-offline", false),
+    ] {
+        let (runtime, root) = launch(backend, case, true);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = Demo::live(backend.into(), "engine-model".into());
+                app.insert_text("KEEP THE ATTACH DRAFT");
+                wait(runtime, &mut app, |e| {
+                    matches!(e, Observation::EngineAdmission(_) | Observation::Ready)
+                })?;
+                send(runtime, &mut app)?;
+                wait_engine(runtime, &mut app)?;
+                draw(&mut app);
+                key(&mut app, KeyCode::Char('a'));
+                send(runtime, &mut app)?;
+                wait_engine(runtime, &mut app)?;
+                key(&mut app, KeyCode::Esc);
+                assert!(
+                    !commands(&root)
+                        .iter()
+                        .any(|v| v["type"] == "gui.engine.native_action")
+                );
+                inspect(runtime, &mut app)?;
+                draw(&mut app);
+                key(&mut app, KeyCode::Char('a'));
+                send(runtime, &mut app)?;
+                wait_engine(runtime, &mut app)?;
+                if case != "attach-offline" {
+                    fs::write(root.join("engine-ready"), "controlled available service")?;
+                }
+                confirm(runtime, &mut app)?;
+                assert_eq!(
+                    admission(&app),
+                    Some(if success {
+                        Admission::PromptReady
+                    } else {
+                        Admission::ManagementOnly
+                    })
+                );
+                if success {
+                    key(&mut app, KeyCode::Esc);
+                    app.live
+                        .as_mut()
+                        .unwrap()
+                        .submit("Explicit user turn on attached endpoint")?;
+                    runtime.submit(app.live.as_mut().unwrap().take_submission().unwrap())?;
+                    wait(runtime, &mut app, |e| matches!(e, Observation::Complete))?;
+                    inspect(runtime, &mut app)?;
+                    draw(&mut app);
+                    key(&mut app, KeyCode::Down);
+                    draw(&mut app);
+                    key(&mut app, KeyCode::Enter);
+                    assert!(app.live.as_mut().unwrap().engine.take_intent().is_none());
+                }
+                assert_eq!(app.composer.text(), "KEEP THE ATTACH DRAFT");
+                runtime.quit()?;
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("{backend}/{case}: {e}; root {}", root.display()));
+        let r = report(&root);
+        let results = r["results"].as_array().unwrap();
+        let a = &results
+            .iter()
+            .find(|r| r["command"]["type"] == "gui.engine.native_action")
+            .unwrap()["result"];
+        let v = &results
+            .iter()
+            .find(|r| r["command"]["type"] == "gui.engine.native_readback")
+            .unwrap()["result"];
+        assert_eq!(a["action"], "reconnect");
+        assert_eq!(a["spawn_attempted"], false);
+        assert!(a["handle_token"].is_null());
+        assert_eq!(a["reconnect"], v["reconnect"]);
+        assert_eq!(v["connected"], success);
+        assert!(r["processes"].as_array().unwrap().is_empty());
+        assert!(r["denied"].as_array().unwrap().is_empty());
+        for call in r["calls"].as_array().unwrap() {
+            assert_ne!(call["effect"], "job-terminate");
+            if call["effect"] == "http" {
+                assert_eq!(call["method"], "GET");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "controlled source and attached endpoint only"]
+fn changed_attachment_during_readback_never_admits_a_turn() {
+    let (runtime, root) = launch("strata", "attach-readback-drift", true);
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("strata".into(), "engine-model".into());
+        wait(runtime, &mut app, |e| {
+            matches!(e, Observation::EngineAdmission(_) | Observation::Ready)
+        })?;
+        send(runtime, &mut app)?;
+        wait_engine(runtime, &mut app)?;
+        draw(&mut app);
+        key(&mut app, KeyCode::Char('a'));
+        send(runtime, &mut app)?;
+        wait_engine(runtime, &mut app)?;
+        fs::write(root.join("engine-ready"), "temporarily correct")?;
+        let settled = confirm(runtime, &mut app);
+        assert!(settled.is_err());
+        assert!(!app.live.as_ref().unwrap().ready);
+        settled
+    });
+    assert!(result.is_err());
+    let r = report(&root);
+    assert!(r["requests"].as_array().unwrap().is_empty());
+    assert!(r["processes"].as_array().unwrap().is_empty());
+    assert!(
+        r["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["result"]["status"] == "connected")
+    );
+    assert!(
+        r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["ok"] == false)
+    );
+}
+
+#[test]
+#[ignore = "controlled blocking metadata read and actual shutdown"]
+fn quit_during_attach_joins_the_read_without_admitting_a_prompt() {
+    let (runtime, root) = launch("strata", "attach-quit", true);
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("strata".into(), "engine-model".into());
+            wait(runtime, &mut app, |e| {
+                matches!(e, Observation::EngineAdmission(_) | Observation::Ready)
+            })?;
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            draw(&mut app);
+            key(&mut app, KeyCode::Char('a'));
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            fs::write(root.join("engine-ready"), "controlled available service")?;
+            for _ in 0..100 {
+                draw(&mut app);
+                key(&mut app, KeyCode::PageDown);
+            }
+            draw(&mut app);
+            key(&mut app, KeyCode::Enter);
+            send(runtime, &mut app)?;
+            let until = Instant::now() + Duration::from_secs(7);
+            while !root.join("attach-in-flight").exists() {
+                assert!(Instant::now() < until);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            runtime.quit()?;
+            Ok(())
+        })
+        .unwrap_or_else(|e| panic!("attach-quit: {e}; root {}", root.display()));
+    let r = report(&root);
+    assert!(r["requests"].as_array().unwrap().is_empty());
+    assert!(r["processes"].as_array().unwrap().is_empty());
+    assert!(
+        r["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["effect"] == "attach-metadata-read-returned")
+    );
+    assert!(
+        r["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["result"]["status"] == "cancelled" && v["result"]["worker_settled"] == true)
+    );
+}

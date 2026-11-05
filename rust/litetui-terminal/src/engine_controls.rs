@@ -125,6 +125,8 @@ impl Identity {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    pub reconnect: Option<Value>,
+    pub local_peer_start: Option<Value>,
     pub identity: Identity,
     pub token: String,
     pub generation: u64,
@@ -137,6 +139,109 @@ pub struct Snapshot {
     pub stop: bool,
     pub start_reason: String,
     pub stop_reason: String,
+}
+fn peer_start(v: &Value, identity: &Identity, launch: &Value, generation: u64) -> io::Result<()> {
+    use crate::work_lifecycle as life;
+    use std::collections::BTreeSet;
+    life::keys(
+        v,
+        &[
+            "refused_action_id",
+            "generation",
+            "selection_id",
+            "current",
+            "peers",
+            "spawn_new_engine",
+            "other_engine_ownership",
+            "resource_checks",
+            "sha256",
+        ],
+    )?;
+    crate::resume::conversation_id(&text(v, "refused_action_id", 36)?)?;
+    if v["generation"] != generation
+        || v["selection_id"] != launch["selection_id"]
+        || generation == 0
+        || v["spawn_new_engine"] != true
+        || v["other_engine_ownership"] != "unverified"
+        || v["resource_checks"] != "required"
+    {
+        return Err(fail(
+            "Peer confirmation lost its original Start or resource limits",
+        ));
+    }
+    let rows = v["peers"]
+        .as_array()
+        .filter(|rows| !rows.is_empty() && rows.len() <= 8)
+        .ok_or_else(|| fail("Expected 1 to 8 other local seats"))?;
+    let mut ids = BTreeSet::new();
+    let mut pids = BTreeSet::new();
+    for row in std::iter::once(&v["current"]).chain(rows) {
+        life::keys(row, &["agent_id", "name", "backend", "pid", "born_us"])?;
+        let agent = text(row, "agent_id", 128)?;
+        let name = text(row, "name", 256)?;
+        let backend = text(row, "backend", 64)?;
+        if agent
+            .chars()
+            .chain(name.chars())
+            .chain(backend.chars())
+            .any(char::is_control)
+            || !ids.insert(agent)
+            || !pids.insert(number(row, "pid")?)
+            || row["pid"] == 0
+            || number(row, "born_us")? == 0
+        {
+            return Err(fail("Ambiguous or incomplete local process identity"));
+        }
+    }
+    if v["current"]["agent_id"] != identity.agent || v["current"]["backend"] != identity.backend {
+        return Err(fail(
+            "Peer confirmation changed the current LiteTUI identity",
+        ));
+    }
+    let mut body = v.clone();
+    body.as_object_mut().unwrap().remove("sha256");
+    if token(v, "sha256")? != crate::scheduled_transition::digest(&body)? {
+        return Err(fail("Local peer confirmation hash changed"));
+    }
+    Ok(())
+}
+fn reconnect_plan(v: &Value, id: &Identity) -> io::Result<()> {
+    crate::work_lifecycle::keys(
+        v,
+        &[
+            "endpoint",
+            "model",
+            "start_process",
+            "load_model",
+            "acquire_handle",
+            "selection_id",
+        ],
+    )?;
+    let endpoint = text(v, "endpoint", 512)?;
+    let (host, port) = endpoint
+        .strip_prefix("https://")
+        .or_else(|| endpoint.strip_prefix("http://"))
+        .and_then(|s| s.rsplit_once(':'))
+        .ok_or_else(|| fail("Missing connect-only host or port"))?;
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+        || !port
+            .parse::<u16>()
+            .is_ok_and(|n| n > 0 && n.to_string() == port)
+        || v["model"] != id.model
+        || ["start_process", "load_model", "acquire_handle"]
+            .iter()
+            .any(|k| v[*k] != false)
+    {
+        return Err(fail(
+            "Connect-only review changed endpoint, model or lifecycle scope",
+        ));
+    }
+    let mut body = v.clone();
+    body.as_object_mut().unwrap().remove("selection_id");
+    if token(v, "selection_id")? != crate::scheduled_transition::digest(&body)? {
+        return Err(fail("Connect-only selection hash changed"));
+    }
+    Ok(())
 }
 impl Snapshot {
     pub fn parse(v: &Value, identity: &Identity) -> io::Result<Self> {
@@ -217,7 +322,23 @@ impl Snapshot {
         if !v["tool_policy"].is_object() {
             return Err(fail("Missing engine policy"));
         }
+        let local_peer_start = v.get("local_peer_start").cloned();
+        if let Some(peers) = &local_peer_start {
+            if !start {
+                return Err(fail("Ineligible engine proposed second-instance consent"));
+            }
+            peer_start(peers, identity, launch, number(v, "generation")?)?;
+        }
+        let reconnect = v.get("reconnect").cloned();
+        if let Some(plan) = &reconnect {
+            if admission != Admission::ManagementOnly || handle.is_some() {
+                return Err(fail("Connect-only action claimed owned or active endpoint"));
+            }
+            reconnect_plan(plan, identity)?;
+        }
         Ok(Self {
+            reconnect,
+            local_peer_start,
             identity: identity.clone(),
             token: token(v, "snapshot")?,
             generation: number(v, "generation")?,
@@ -236,6 +357,7 @@ impl Snapshot {
         if !(match action {
             Action::Start => self.start,
             Action::Stop => self.stop,
+            Action::Reconnect => self.reconnect.is_some(),
         }) {
             return Err(fail("Selected engine action is unavailable"));
         }
@@ -254,6 +376,17 @@ impl Snapshot {
             Value::Null
         };
         v["consent_scope"] = json!(action.scope());
+        if action == Action::Reconnect {
+            v["type"] = json!("gui.engine.native_reconnect_validate");
+            v["selection_id"] = self.reconnect.as_ref().expect("eligible")["selection_id"].clone();
+        }
+        if action == Action::Start
+            && let Some(peers) = &self.local_peer_start
+        {
+            v["type"] = json!("gui.engine.native_peer_validate");
+            v["consent_scope"] = json!("one_start_with_local_peers");
+            v["peer_sha256"] = peers["sha256"].clone();
+        }
         Ok(v)
     }
 }
@@ -274,16 +407,21 @@ fn check_model(
 pub enum Action {
     Start,
     Stop,
+    Reconnect,
 }
 impl Action {
     pub fn as_str(self) -> &'static str {
-        if self == Self::Start { "start" } else { "stop" }
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Reconnect => "reconnect",
+        }
     }
     fn scope(self) -> &'static str {
-        if self == Self::Start {
-            "one_start"
-        } else {
-            "one_stop"
+        match self {
+            Self::Start => "one_start",
+            Self::Stop => "one_stop",
+            Self::Reconnect => "one_reconnect",
         }
     }
 }
@@ -313,10 +451,22 @@ impl Review {
                 return Err(fail("Engine review differs from selection"));
             }
         }
-        let summary = if action == Action::Start {
-            &snapshot.launch
+        let expected_peers = if action == Action::Start {
+            snapshot.local_peer_start.as_ref()
         } else {
-            &snapshot.ownership
+            None
+        };
+        if v.get("local_peer_start") != expected_peers
+            || v.get("peer_sha256") != request.get("peer_sha256")
+        {
+            return Err(fail(
+                "Engine review changed the local seats requiring confirmation",
+            ));
+        }
+        let summary = match action {
+            Action::Start => &snapshot.launch,
+            Action::Stop => &snapshot.ownership,
+            Action::Reconnect => snapshot.reconnect.as_ref().expect("validated reconnect"),
         };
         if &v["summary"] != summary {
             return Err(fail("Engine review changed inspected plan"));
@@ -355,6 +505,7 @@ pub struct Receipt {
     pub shutdown: Value,
     pub error: Option<String>,
     pub error_code: Option<String>,
+    peer_accepted: Option<bool>,
 }
 fn shutdown(v: &Value) -> io::Result<()> {
     if v.is_null() {
@@ -411,7 +562,7 @@ impl Receipt {
         let status = text(v, "status", 32)?;
         if !matches!(
             status.as_str(),
-            "refused" | "started" | "stopped" | "retained" | "cancelled" | "failed"
+            "refused" | "started" | "stopped" | "retained" | "cancelled" | "failed" | "connected"
         ) {
             return Err(fail("Unknown engine outcome"));
         }
@@ -438,12 +589,30 @@ impl Receipt {
         {
             return Err(fail("Contradictory engine lifecycle evidence"));
         }
+        if review.action == Action::Reconnect {
+            if v.get("reconnect") != Some(&review.summary)
+                || v["spawn_attempted"] != false
+                || handle.is_some()
+                || !v["shutdown"].is_null()
+                || (status == "connected") != (admission == Admission::PromptReady)
+                || !matches!(
+                    status.as_str(),
+                    "connected" | "refused" | "cancelled" | "failed"
+                )
+            {
+                return Err(fail(
+                    "Reconnect receipt changed the endpoint or claimed engine process effects",
+                ));
+            }
+        } else if status == "connected" || v.get("reconnect").is_some() {
+            return Err(fail("Unexpected connect-only receipt"));
+        }
         let error = nullable_text(v, "error", 4096)?;
         let error_code = nullable_text(v, "error_code", 4096)?;
         if (admission == Admission::PromptReady
-            && status != "started"
+            && !matches!(status.as_str(), "started" | "connected")
             && review.snapshot.admission != Admission::PromptReady)
-            || (status == "started"
+            || (matches!(status.as_str(), "started" | "connected")
                 && (v["mutated"] != true
                     || v["cancel_requested"] != false
                     || error.is_some()
@@ -459,7 +628,30 @@ impl Receipt {
         {
             return Err(fail("Engine failure lacks a visible reason"));
         }
+        let peers = review
+            .snapshot
+            .local_peer_start
+            .as_ref()
+            .filter(|_| review.action == Action::Start);
+        let peer_accepted = if let Some(peers) = peers {
+            let accepted = boolean(v, "peer_accepted")?;
+            if v["peer_sha256"] != peers["sha256"]
+                || (!accepted
+                    && (v["spawn_attempted"] == true
+                        || v["mutated"] == true
+                        || status == "started"))
+            {
+                return Err(fail("Engine spawn lacked the exact one-use peer consent"));
+            }
+            Some(accepted)
+        } else {
+            if v.get("peer_sha256").is_some() || v.get("peer_accepted").is_some() {
+                return Err(fail("Unexpected peer authorization"));
+            }
+            None
+        };
         Ok(Self {
+            peer_accepted,
             review,
             generation,
             status,
@@ -492,6 +684,27 @@ impl Receipt {
         {
             return Err(fail("Engine readback contradicts lifecycle receipt"));
         }
+        if v.get("reconnect")
+            != (self.review.action == Action::Reconnect).then_some(&self.review.summary)
+        {
+            return Err(fail(
+                "Connect-only readback changed its reviewed destination",
+            ));
+        }
+        if self.peer_accepted
+            != v.get("peer_accepted")
+                .map(|_| boolean(v, "peer_accepted"))
+                .transpose()?
+            || v.get("peer_sha256")
+                != self
+                    .peer_accepted
+                    .and(self.review.snapshot.local_peer_start.as_ref())
+                    .map(|p| &p["sha256"])
+        {
+            return Err(fail(
+                "Independent engine readback lost the peer warning decision",
+            ));
+        }
         if boolean(v, "connected")? != (self.admission == Admission::PromptReady)
             || nullable_text(v, "loaded_model", 1024)? != self.effective
         {
@@ -500,6 +713,9 @@ impl Receipt {
         Ok(())
     }
     pub fn message(&self) -> String {
+        if self.error_code.as_deref() == Some("resource_confirmation_required") {
+            return "Another local LiteTUI seat blocked Start. Press R to inspect it and review a separate Start.".into();
+        }
         if let Some(error) = &self.error {
             format!("{}: {error}", self.status)
         } else if self.status == "stopped" && self.shutdown["tree"] == "unknown" {
@@ -697,6 +913,20 @@ impl View {
             return;
         }
         match key.code {
+            KeyCode::Char('a') if self.visible && self.review.is_none() => {
+                if let Some(snap) = &self.snapshot
+                    && snap.reconnect.is_some()
+                {
+                    self.intent = Some(Intent::Validate {
+                        snapshot: snap.token.clone(),
+                        action: Action::Reconnect,
+                    });
+                    self.waiting = true;
+                    self.message =
+                        "Reviewing the selected endpoint for connect-only attachment.".into();
+                    self.hide();
+                }
+            }
             KeyCode::Char('r' | 'R') | KeyCode::F(5) => self.open(),
             KeyCode::Up | KeyCode::Down | KeyCode::Tab if self.review.is_none() => {
                 self.selected = 1 - self.selected;
@@ -848,8 +1078,48 @@ impl View {
                 review.snapshot.identity.backend,
                 display(&review.snapshot.identity.model),
                 review.action.as_str(),
-                review.action.scope(),
-                display(&serde_json::to_string_pretty(&review.summary).unwrap_or_default())
+                if review.action == Action::Start && review.snapshot.local_peer_start.is_some() {
+                    "one_start_with_local_peers"
+                } else {
+                    review.action.scope()
+                },
+                {
+                    let plan =
+                        display(&serde_json::to_string_pretty(&review.summary).unwrap_or_default());
+                    if let Some(peers) = review
+                        .snapshot
+                        .local_peer_start
+                        .as_ref()
+                        .filter(|_| review.action == Action::Start)
+                    {
+                        let seat = |v: &Value| {
+                            format!(
+                                "{} · {} · agent {} · PID {} · born {} µs",
+                                display(v["name"].as_str().unwrap()),
+                                display(v["backend"].as_str().unwrap()),
+                                display(v["agent_id"].as_str().unwrap()),
+                                v["pid"],
+                                v["born_us"]
+                            )
+                        };
+                        let others = peers["peers"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(seat)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!(
+                            "SECOND-INSTANCE CONFIRMATION\nCurrent LiteTUI: {}\nOther local LiteTUI seats:\n{}\n\nStart will attempt a new engine process for {} and may load a second set of weights into VRAM. Memory, port and competing-process checks still apply. Other seats' engine ownership is unknown.\n\n{}",
+                            seat(&peers["current"]),
+                            others,
+                            display(&review.snapshot.identity.model),
+                            plan
+                        )
+                    } else {
+                        plan
+                    }
+                }
             )
         } else if let Some(snapshot) = &self.snapshot {
             format!(
@@ -857,7 +1127,9 @@ impl View {
                 snapshot.identity.backend,
                 display(&snapshot.identity.model),
                 snapshot.admission.label(),
-                if snapshot.start {
+                if snapshot.local_peer_start.is_some() {
+                    "requires separate local-seat confirmation".into()
+                } else if snapshot.start {
                     "eligible".into()
                 } else {
                     display(&snapshot.start_reason)
@@ -893,6 +1165,12 @@ impl View {
             }
         } else if self.review.is_some() {
             "PgUp/PgDn | Enter confirm | Esc cancel"
+        } else if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.reconnect.is_some())
+        {
+            "Esc | a attach | c config | Enter review"
         } else {
             "Esc | ↑↓ select | Enter review | c config"
         };
