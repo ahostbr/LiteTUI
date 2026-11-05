@@ -654,13 +654,16 @@ fn finish_stop_and_quit_while_control_readback_is_held() {
         "owner-finish-readback",
         "host-stop-parked",
         "host-quit-parked",
+        // The source order the load flake produced, forced: the quit-drained stream's
+        // turn_end reaches this side before the held readback is published.
+        "host-quit-parked-late",
         "host-stop-captured",
         "host-quit-captured",
     ] {
         let (runtime, root) = launch(case);
         let mut frames = Vec::new();
         let has_tool = case.starts_with("host-");
-        let parked = case.ends_with("-parked");
+        let parked = case.contains("-parked");
         let quit = case.starts_with("host-quit-");
         runtime
             .with_cleanup(|runtime| {
@@ -698,7 +701,7 @@ fn finish_stop_and_quit_while_control_readback_is_held() {
                     stage(runtime, &mut app, &root, "next-tool-attempt")?;
                 }
                 match case {
-                    "host-quit-parked" | "host-quit-captured" => {
+                    "host-quit-parked" | "host-quit-parked-late" | "host-quit-captured" => {
                         app.live.as_mut().unwrap().begin_quit();
                         runtime.quit()?;
                     }
@@ -762,6 +765,23 @@ fn finish_stop_and_quit_while_control_readback_is_held() {
             .unwrap();
         assert_eq!(e["readback_operation_id"], rb["id"]);
         let events = r["events"].as_array().unwrap();
+        if case == "host-quit-parked-late" {
+            let end = events
+                .iter()
+                .find(|v| v["kind"] == "wire" && v["frame"]["type"] == "turn_end")
+                .expect("the quit-drained stream ended");
+            let published = events
+                .iter()
+                .find(|v| {
+                    v["kind"] == "wire"
+                        && v["frame"]["type"] == "response"
+                        && v["frame"]["id"] == rb["id"]
+                })
+                .expect("the held readback was published");
+            assert!(end["sequence"].as_u64() < published["sequence"].as_u64());
+            // Past Active at publication, though this side never settles a quit-drained turn.
+            assert_ne!(published["frame"]["result"]["owner"]["state"], "active");
+        }
         if has_tool {
             assert!(
                 !events

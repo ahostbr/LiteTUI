@@ -316,11 +316,16 @@ async def serve(app):
             assert documents(app) == before, 'Runtime control inspection changed durable bytes'
         if suffix == 'apply':
             mark('setter-returned', action_id=result['action_id'], status=result['status'])
-        if suffix == 'readback' and case in {'host-tool-selection-parked', 'host-next-tool-parked', 'host-stop-parked', 'host-quit-parked', 'host-stop-captured', 'host-quit-captured', 'owner-finish-readback'}:
+        if suffix == 'readback' and case in {'host-tool-selection-parked', 'host-next-tool-parked', 'host-stop-parked', 'host-quit-parked', 'host-quit-parked-late', 'host-stop-captured', 'host-quit-captured', 'owner-finish-readback'}:
             mark('readback-prepared', action_id=result['action_id'])
             async with asyncio.timeout(40):
                 while not release_publication.is_set() and not (root/'release-publication').exists():
                     await asyncio.sleep(0.01)
+                if case == 'host-quit-parked-late':
+                    # Under load the quit-drained stream's turn_end can be written before the
+                    # held readback. Force that source order: publish only after turn_end.
+                    while not any(row.get('type') == 'turn_end' for row in report['wire']):
+                        await asyncio.sleep(0.01)
         return result
 
     def dispatch(owner, command):

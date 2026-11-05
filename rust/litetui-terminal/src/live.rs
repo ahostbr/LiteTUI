@@ -403,6 +403,10 @@ pub struct Turn {
     acknowledged: bool,
     admission_refused: bool,
     settled: bool,
+    /// A Quit drained this turn's stream: its turn_end was seen but, by design, never
+    /// recorded as a terminal outcome and never settled. The source owner is retired
+    /// all the same.
+    quit_ended: bool,
     terminal: Option<TerminalOutcome>,
     content_bytes: usize,
     approvals: crate::approvals::Ledger,
@@ -503,7 +507,12 @@ impl Turn {
     ) -> io::Result<()> {
         use crate::runtime_controls::OwnerState;
         let valid = match owner.state {
-            OwnerState::Idle => (!self.sent || self.settled) && !self.work.owns_work(),
+            // A readback's owner is read at publication. After a Quit the source may
+            // publish it once the stream has retired (idle or terminal), and this side
+            // never settles a quit-drained turn: its observed end is the retirement evidence.
+            OwnerState::Idle => {
+                (!self.sent || self.settled || self.quit_ended) && !self.work.owns_work()
+            }
             OwnerState::Active | OwnerState::Terminal => {
                 let origin = owner.origin.as_ref().expect("strict owner parser");
                 self.started
@@ -511,7 +520,7 @@ impl Turn {
                     && known.as_ref() == Some(origin)
                     && match owner.state {
                         OwnerState::Active => !current || self.terminal.is_none() && !self.settled,
-                        OwnerState::Terminal => self.terminal.is_some(),
+                        OwnerState::Terminal => self.terminal.is_some() || self.quit_ended,
                         _ => false,
                     }
             }
@@ -542,7 +551,7 @@ impl Turn {
                 && let Some(previous) = receipt.owner_after.as_ref().and_then(|o| o.origin.as_ref())
                 && (known.as_ref() != Some(previous)
                     || self.command_id != previous.operation
-                    || !self.settled)
+                    || !(self.settled || self.quit_ended))
             {
                 return Err(io::Error::other(
                     "Runtime readback lost the exact settled predecessor",
@@ -1782,6 +1791,7 @@ impl Turn {
             }
             "turn_end" if self.started && self.terminal.is_none() => {
                 if self.closing && event["stopReason"] != "stop" {
+                    self.quit_ended = true;
                     return Ok(Observation::Information(
                         "turn interrupted while quitting; not completed".into(),
                     ));
@@ -4518,5 +4528,100 @@ mod shutdown_refusal_tests {
             "{error}"
         );
         assert!(!error.contains("prompt"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod quit_interruption_tests {
+    use super::*;
+    use crate::runtime_controls::{Owner, OwnerState};
+    fn owner(state: OwnerState, origin: Option<crate::work_lifecycle::Origin>) -> Owner {
+        Owner {
+            state,
+            origin,
+            wire: Value::Null,
+        }
+    }
+    /// A started host turn, then a user Quit. `ended` delivers the interrupted turn_end
+    /// that the source emits while it drains the exact stream.
+    fn quitting(ended: bool) -> (Turn, crate::work_lifecycle::Origin) {
+        let mut turn = Turn::default();
+        turn.accept(&json!({"type":"ready","protocol_version":1,"launch_status":"ready","backend":"claude","model":"fixture"}),"claude","fixture").unwrap();
+        let command = turn.submit("fixture").unwrap();
+        for event in [
+            json!({"type":"response","id":command["id"],"ok":true,"result":{"turn":"accepted"}}),
+            json!({"type":"turn_start","model":"fixture"}),
+        ] {
+            turn.accept(&event, "claude", "fixture").unwrap();
+        }
+        turn.begin_close();
+        if ended {
+            turn.accept(
+                &json!({"type":"turn_end","stopReason":"error","error":"Something went wrong talking to the model server."}),
+                "claude",
+                "fixture",
+            )
+            .unwrap();
+        }
+        let origin = crate::work_lifecycle::Origin {
+            session: "s".into(),
+            operation: turn.command_id.clone(),
+            hook: None,
+            source: "rpc".into(),
+            execution: "e".into(),
+        };
+        (turn, origin)
+    }
+    #[test]
+    fn a_readback_published_after_the_quit_interrupted_stream_may_name_it_retired() {
+        // Source order under load: the interrupted turn_end, then the held readback,
+        // whose owner is read at publication and is already past Active.
+        let (turn, origin) = quitting(true);
+        turn.verify_runtime_owner(&owner(OwnerState::Idle, None), Some(origin.clone()), true)
+            .expect("an idle owner after the observed interrupted end");
+        turn.verify_runtime_owner(
+            &owner(OwnerState::Terminal, Some(origin.clone())),
+            Some(origin),
+            true,
+        )
+        .expect("a terminal owner after the observed interrupted end");
+    }
+    #[test]
+    fn a_readback_cannot_retire_a_stream_whose_end_was_never_observed() {
+        let (turn, origin) = quitting(false);
+        assert!(
+            turn.verify_runtime_owner(&owner(OwnerState::Idle, None), Some(origin.clone()), true)
+                .is_err(),
+            "idle with no stream end observed"
+        );
+        assert!(
+            turn.verify_runtime_owner(
+                &owner(OwnerState::Terminal, Some(origin.clone())),
+                Some(origin.clone()),
+                true
+            )
+            .is_err(),
+            "terminal with no stream end observed"
+        );
+        turn.verify_runtime_owner(
+            &owner(OwnerState::Active, Some(origin.clone())),
+            Some(origin),
+            true,
+        )
+        .expect("the early order: the owner is still active before the end");
+    }
+    #[test]
+    fn a_foreign_origin_is_still_refused_after_the_interrupted_end() {
+        let (turn, origin) = quitting(true);
+        let mut other = origin.clone();
+        other.execution = "other".into();
+        assert!(
+            turn.verify_runtime_owner(
+                &owner(OwnerState::Terminal, Some(other)),
+                Some(origin),
+                true
+            )
+            .is_err()
+        );
     }
 }
