@@ -24,6 +24,7 @@ pub struct Review {
     after: String,
     before_spec: String,
     after_spec: String,
+    cache_sha256: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -130,6 +131,36 @@ impl Request {
         let Self::Apply(r) = self else {
             return Err(life::bad("Plugin publication requires a review"));
         };
+        if let Some(cache) = &r.cache_sha256 {
+            let mut fields = vec!["name", "token", "apply_id", "after_spec", "cache_sha256"];
+            if readback {
+                fields.extend(["live_index", "cache_index"]);
+            }
+            self.bind(
+                v,
+                id,
+                instance,
+                if readback {
+                    "skills_verified"
+                } else {
+                    "skills_applied"
+                },
+                &fields,
+            )?;
+            if v["name"] != "skills"
+                || v["token"] != r.token
+                || v["apply_id"] != apply_id
+                || v["after_spec"] != r.after_spec
+                || v["cache_sha256"] != *cache
+                || (readback
+                    && (v["live_index"] != r.after_spec || v["cache_index"] != r.after_spec))
+            {
+                return Err(life::bad(
+                    "Live skills or saved cache differ from the reviewed index",
+                ));
+            }
+            return Ok(());
+        }
         let fields: &[&str] = if readback {
             &["name", "token", "apply_id", "after_spec", "description"]
         } else {
@@ -194,19 +225,28 @@ impl Request {
                 Ok(Reply::List(names))
             }
             Self::Review(target) => {
+                let skills = target == "skills";
+                let mut fields = vec![
+                    "name",
+                    "token",
+                    "before",
+                    "after",
+                    "before_spec",
+                    "after_spec",
+                ];
+                if skills {
+                    fields.push("cache_sha256");
+                }
                 self.bind(
                     v,
                     id,
                     instance,
-                    "plugin_review",
-                    &[
-                        "name",
-                        "token",
-                        "before",
-                        "after",
-                        "before_spec",
-                        "after_spec",
-                    ],
+                    if skills {
+                        "skills_review"
+                    } else {
+                        "plugin_review"
+                    },
+                    &fields,
                 )?;
                 let r = Review {
                     name: name(&v["name"])?,
@@ -215,6 +255,7 @@ impl Request {
                     after: description(&v["after"])?,
                     before_spec: digest(&v["before_spec"])?,
                     after_spec: digest(&v["after_spec"])?,
+                    cache_sha256: skills.then(|| digest(&v["cache_sha256"])).transpose()?,
                 };
                 if r.name != *target || r.before == r.after || r.before_spec == r.after_spec {
                     return Err(life::bad(
@@ -289,7 +330,11 @@ impl View {
             }
             Reply::Verified(name) => {
                 self.review = None;
-                self.notice = format!("Reloaded and verified {name} in the current tool registry.");
+                self.notice = if name == "skills" {
+                    "Refreshed and verified the live skills index and saved cache.".into()
+                } else {
+                    format!("Reloaded and verified {name} in the current tool registry.")
+                };
             }
         }
     }
@@ -348,7 +393,7 @@ impl View {
             self.hide();
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Resize to review tool descriptions. Esc returns."),
+                Paragraph::new("Resize to review the reload. Esc returns."),
                 area,
             );
             return;
@@ -360,7 +405,7 @@ impl View {
             height,
         );
         let block = Block::bordered()
-            .title(" Reload static tool description ")
+            .title(" Reload plugins and skills ")
             .style(Style::default().fg(theme.foreground).bg(theme.panel));
         let inner = block.inner(rect);
         let body = Rect::new(inner.x, inner.y, inner.width, inner.height - 3);
@@ -371,8 +416,16 @@ impl View {
         self.visible = true;
         self.bounds = Some(body);
         let (rows, help) = if let Some(r) = &self.review {
+            let (old, new) = if r.cache_sha256.is_some() {
+                (
+                    "Current index and changed rows",
+                    "Proposed index and changed rows",
+                )
+            } else {
+                ("Current description", "Description from disk")
+            };
             let text = format!(
-                "{}\n\nCurrent description\n{}\n\nDescription from disk\n{}",
+                "{}\n\n{old}\n{}\n\n{new}\n{}",
                 r.name,
                 ui::display_safe(&r.before),
                 ui::display_safe(&r.after)
@@ -384,7 +437,11 @@ impl View {
             (
                 lines[self.offset..end].join("\n"),
                 if self.seen.iter().all(|p| *p) {
-                    "F6 reload this description · Esc cancel"
+                    if r.cache_sha256.is_some() {
+                        "F6 refresh this skills index · Esc cancel"
+                    } else {
+                        "F6 reload this description · Esc cancel"
+                    }
                 } else {
                     "PgDn / ↓ read all lines · Esc cancel"
                 },
@@ -395,14 +452,24 @@ impl View {
                 .saturating_sub(usize::from(body.height).saturating_sub(1));
             (
                 if self.names.is_empty() {
-                    "No eligible registered static descriptions.".into()
+                    "No registered reload targets.".into()
                 } else {
                     self.names
                         .iter()
                         .enumerate()
                         .skip(first)
                         .take(usize::from(body.height))
-                        .map(|(i, n)| format!("{} {n}", if i == self.selected { "›" } else { " " }))
+                        .map(|(i, n)| {
+                            format!(
+                                "{} {}",
+                                if i == self.selected { "›" } else { " " },
+                                if n == "skills" {
+                                    "skills · refresh index and cache"
+                                } else {
+                                    n
+                                }
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("\n")
                 },
@@ -441,6 +508,7 @@ mod tests {
             after: "replacement".into(),
             before_spec: "a".repeat(64),
             after_spec: "b".repeat(64),
+            cache_sha256: None,
         }
     }
     fn identity() -> Identity {
@@ -463,6 +531,35 @@ mod tests {
             .unwrap()
             .draw(|f| view.draw(f, f.area(), &theme, false))
             .unwrap();
+    }
+    #[test]
+    fn skills_verification_binds_both_observed_indexes_and_the_reviewed_cache_bytes() {
+        let mut r = reviewed();
+        r.name = "skills".into();
+        r.cache_sha256 = Some("d".repeat(64));
+        let req = Request::Apply(Box::new(r.clone()));
+        let mut v = response("skills_verified");
+        v["name"] = json!(r.name);
+        v["token"] = json!(r.token);
+        v["apply_id"] = json!("apply-1");
+        v["after_spec"] = json!(r.after_spec);
+        v["cache_sha256"] = json!(r.cache_sha256);
+        v["live_index"] = json!(r.after_spec);
+        v["cache_index"] = json!(r.after_spec);
+        let parse = |row: &Value| req.reply(row, &identity(), "current", Some("apply-1"));
+        assert!(parse(&v).is_ok());
+        for key in [
+            "after_spec",
+            "cache_sha256",
+            "live_index",
+            "cache_index",
+            "apply_id",
+            "work_instance",
+        ] {
+            let mut changed = v.clone();
+            changed[key] = json!("e".repeat(64));
+            assert!(parse(&changed).is_err(), "{key}");
+        }
     }
     #[test]
     fn readback_requires_the_actual_reviewed_description_and_exact_owner_token_and_application() {

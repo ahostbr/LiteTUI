@@ -1481,3 +1481,61 @@ fn plugins_control_reviews_one_description_and_verifies_the_current_registry() {
             .any(|v| v["type"] == "prompt" || v["type"] == "gui.tools.execute")
     );
 }
+
+#[test]
+#[ignore = "real owned source with private skill library and verified cache"]
+fn plugins_control_refreshes_the_live_skills_index_and_private_cache() {
+    let (runtime, data) = launch("skills_index_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("keep skill refresh draft");
+            app.open_work();
+            drain(runtime, &mut app)?;
+            key(runtime, &mut app, KeyCode::Char('i'))?;
+            for _ in 0..5 {
+                key(runtime, &mut app, KeyCode::Right)?;
+            }
+            let list = key(runtime, &mut app, KeyCode::Char('r'))?;
+            assert!(list.contains("skills · refresh index and cache"), "{list}");
+            let selected = key(runtime, &mut app, KeyCode::Down)?;
+            assert!(selected.contains("› skills · refresh index"), "{selected}");
+            let first = key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(first.contains("Current index"), "{first}");
+            key(runtime, &mut app, KeyCode::Esc)?;
+            let mut review = key(runtime, &mut app, KeyCode::Enter)?;
+            for _ in 0..30 {
+                if review.contains("F6 refresh this skills index") {
+                    break;
+                }
+                review = key(runtime, &mut app, KeyCode::PageDown)?;
+            }
+            assert!(review.contains("F6 refresh this skills index"), "{review}");
+            let done = key(runtime, &mut app, KeyCode::F(6))?;
+            assert!(done.contains("verified the live skills index"), "{done}");
+            assert_eq!(app.composer.text(), "keep skill refresh draft");
+            Ok(())
+        })
+        .unwrap_or_else(|e| panic!("Skills refresh in {}: {e}", data.display()));
+    let live = json_file(&data.join("skills-after.json"));
+    assert_eq!(live, json_file(&data.join("skills/index.json"))["skills"]);
+    assert_eq!(live[0]["description"], "Private refreshed metadata");
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"].as_array().unwrap();
+    for op in ["gui.plugins.native_apply", "gui.plugins.native_readback"] {
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|v| v["type"] == op && v["name"] == "skills")
+                .count(),
+            1
+        );
+    }
+    assert!(
+        !commands
+            .iter()
+            .any(|v| v["type"] == "prompt" || v["type"] == "gui.tools.execute")
+    );
+    assert!(report["denied"].as_array().unwrap().is_empty());
+}

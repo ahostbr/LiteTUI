@@ -135,6 +135,17 @@ def _label_for(d: Path) -> str:
     return d.name
 
 
+def _select_root(hits):
+    if hits and all(p.name == SKILLS_DIR_NAME and
+                    re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", p.parent.name)
+                    for p in hits):
+        hits.sort(key=lambda p: tuple(int(n) for n in p.parent.name.split(".")),
+                  reverse=True)
+    else:
+        hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return hits[:1]
+
+
 def resolve_roots(patterns) -> list[Path]:
     """Expand `~` and globs to existing directories, in order, deduped.
 
@@ -154,14 +165,7 @@ def resolve_roots(patterns) -> list[Path]:
         pat = os.path.expanduser(pat)
         if any(ch in pat for ch in "*?["):
             hits = [Path(p) for p in glob.glob(pat) if Path(p).is_dir()]
-            if hits and all(p.name == SKILLS_DIR_NAME and
-                            re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", p.parent.name)
-                            for p in hits):
-                hits.sort(key=lambda p: tuple(int(n) for n in p.parent.name.split(".")),
-                          reverse=True)
-            else:
-                hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            cand = hits[:1]
+            cand = _select_root(hits)
         else:
             cand = [Path(pat)] if Path(pat).is_dir() else []
         for c in cand:
@@ -188,6 +192,15 @@ def unresolved_roots(patterns) -> list[str]:
     return bad
 
 
+def _skill_from_text(path, source, text):
+    fm, _ = _parse_frontmatter(text)
+    name = (fm.get("name") or path.parent.name).strip() or path.parent.name
+    desc = (fm.get("description") or "").strip()
+    if len(desc) > MAX_DESC_CHARS:
+        desc = desc[: MAX_DESC_CHARS - 1].rstrip() + "\u2026"
+    return Skill(name, desc, path, source)
+
+
 def discover_dir(d: Path, source: str) -> list[Skill]:
     """Every `<name>/SKILL.md` directly under `d`.
 
@@ -210,12 +223,7 @@ def discover_dir(d: Path, source: str) -> list[Skill]:
         except OSError as e:
             out.append(Skill(sub.name, f"[unreadable: {e.__class__.__name__}]", f, source))
             continue
-        fm, _ = _parse_frontmatter(text)
-        name = (fm.get("name") or sub.name).strip() or sub.name
-        desc = (fm.get("description") or "").strip()
-        if len(desc) > MAX_DESC_CHARS:
-            desc = desc[: MAX_DESC_CHARS - 1].rstrip() + "\u2026"
-        out.append(Skill(name, desc, f, source))
+        out.append(_skill_from_text(f, source, text))
     return out
 
 
@@ -232,6 +240,10 @@ def discover_all(root: Path, extra=None) -> list[Skill]:
     for d in resolve_roots(DEFAULT_EXTRA_ROOTS if extra is None else extra):
         got += discover_dir(d, _label_for(d))
 
+    return _ordered_skills(got)
+
+
+def _ordered_skills(got):
     seen: dict[str, Skill] = {}
     out: list[Skill] = []
     for s in got:
@@ -274,32 +286,49 @@ def write_cache(root: Path, skills: list[Skill], extra=None) -> Path | None:
     """Persist the index and selected roots. Pass the same extra roots used for
     discovery. Best-effort: a cache that cannot be written must never stop the
     app from having skills -- discovery already succeeded."""
+    data = cache_document(_cache_roots(root, extra), [cache_row(s) for s in skills])
+    return write_cache_document(root, data)
+
+
+def cache_document(roots, rows):
+    payload = {"generated": time.time(), "roots": list(roots), "count": len(rows), "skills": rows}
+    return json.dumps(payload, indent=2).encode("utf-8")
+
+
+def write_cache_document(root, data, *, before_replace=None, after_replace=None):
+    from litetui.agent_store import StoreError, _unlinked
+    from litetui.shared_state import coordinated_write
+
     p = cache_path(root)
-    payload = {
-        "generated": time.time(),
-        "roots": _cache_roots(root, extra),
-        "count": len(skills),
-        "skills": [
-            {
-                "name": s.name,
-                "description": s.description,
-                "path": str(s.path),
-                "source": s.source,
-            }
-            for s in skills
-        ],
-    }
+    tmp = None
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         # Write-then-rename: a torn cache is worse than no cache, because a
         # half-written one still parses often enough to be believed.
-        fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".idx-", suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2)
-        os.replace(tmp, p)
+        lock = _unlinked(Path(str(p) + ".lock"))
+        if lock.exists() and (not lock.is_file() or lock.stat().st_nlink != 1):
+            return None
+        with coordinated_write(p, timeout=0):
+            fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".idx-", suffix=".tmp")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            if before_replace is not None:
+                before_replace()
+            os.replace(tmp, p)
+            tmp = None
+            if after_replace is not None:
+                after_replace()
         return p
-    except OSError:
+    except (OSError, StoreError):
         return None
+    finally:
+        if tmp is not None:
+            Path(tmp).unlink(missing_ok=True)
+
+
+def cache_row(skill):
+    return {"name": skill.name, "description": skill.description, "path": str(skill.path), "source": skill.source}
+
 
 
 def read_cache(root: Path, extra=None) -> tuple[list[Skill], float] | None:

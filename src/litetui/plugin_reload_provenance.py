@@ -231,6 +231,13 @@ def capture_skills_baseline(app: Any) -> dict:
                 files[path] = _digest(path)
             except OSError:
                 files[path] = None
+    # The Rust-facing reader is lazy. Pin its installed file without importing
+    # a module just to capture provenance for the independent Textual path.
+    native = str(Path(__file__).with_name("native_skills_index.py").resolve())
+    try:
+        files[native] = _digest(native)
+    except OSError:
+        files[native] = None
     baseline = {"files": files, "modules": modules}
     setattr(app, _SKILLS_KEY, baseline)
     return baseline
@@ -255,3 +262,12 @@ def skills_provenance_ok(app: Any) -> tuple[bool, str]:
         if reason is not None:
             return False, f"skills-refresh source {Path(pinned).name!r} {reason}; restart required"
     return True, ""
+
+
+def native_skills_provenance_ok(app: Any) -> bool:
+    baseline = getattr(app, _SKILLS_KEY, None)
+    name = "litetui.native_skills_index"
+    expected = str(Path(__file__).with_name("native_skills_index.py").resolve())
+    return (isinstance(baseline, dict) and isinstance(baseline.get("files"), dict)
+            and expected in baseline["files"] and _module_path(name) == expected
+            and _drifted(baseline["files"], expected) is None)

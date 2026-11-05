@@ -37,6 +37,18 @@ def refresh_skills_guarded(app: Any, *, activity: Callable[[], ActivitySnapshot]
     """Run the gated skills refresh. `activity` is supplied by the app owner and
     must return an ActivitySnapshot (built with the real durable-child probe), so
     the idle gate and unknown-children both defer here. No auto-retry."""
+    refusal = refresh_refusal(app, activity)
+    if refusal is not None:
+        return refusal
+    try:
+        added, removed = app.refresh_skills()
+    except Exception as e:  # noqa: BLE001 — discover/cache error: live skills untouched (swap is last)
+        return SkillsRefreshResult("failed", reason=f"{type(e).__name__}: {e}")
+
+    return SkillsRefreshResult("refreshed", added=tuple(added), removed=tuple(removed))
+
+
+def refresh_refusal(app: Any, activity: Callable[[], ActivitySnapshot]) -> SkillsRefreshResult | None:
     if not getattr(app.settings, "skills_enabled", False):
         return SkillsRefreshResult("disabled", reason="Skills are OFF in /settings — nothing to refresh.")
 
@@ -60,12 +72,7 @@ def refresh_skills_guarded(app: Any, *, activity: Callable[[], ActivitySnapshot]
     if reasons:
         return SkillsRefreshResult("deferred", reason="; ".join(reasons))
 
-    try:
-        added, removed = app.refresh_skills()
-    except Exception as e:  # noqa: BLE001 — discover/cache error: live skills untouched (swap is last)
-        return SkillsRefreshResult("failed", reason=f"{type(e).__name__}: {e}")
-
-    return SkillsRefreshResult("refreshed", added=tuple(added), removed=tuple(removed))
+    return None
 
 
 def render_result(result: SkillsRefreshResult) -> str:

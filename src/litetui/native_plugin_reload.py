@@ -150,10 +150,19 @@ def dispatch(app, cmd):
         app, cmd, PREFIX + action, *fields[action]
     )
     common = {"version": 1, **binding}
+    from litetui import native_skills_index
+
     if action == "list":
         app._native_plugin_reload = None
-        return {**common, "kind": "plugin_list", "names": _eligible(app.plugins)}
+        names = _eligible(app.plugins)
+        if native_skills_index.registered(app):
+            if len(names) >= MAX_REGISTRY:
+                raise ValueError("Registered reload targets exceed the review limit")
+            names = sorted([*names, "skills"])
+        return {**common, "kind": "plugin_list", "names": names}
     name = cmd["name"]
+    if name == "skills":
+        return native_skills_index.dispatch(app, cmd, bridge, common, _activity)
     if action == "review":
         app._native_plugin_reload = None
         gui_rpc._idle(app)
