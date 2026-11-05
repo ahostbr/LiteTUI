@@ -419,6 +419,7 @@ enum PreferencesRequest {
     Voice(Box<crate::voice_preferences::Request>),
     Presentation(Box<crate::presentation_preferences::Request>),
     Connection(Box<crate::connection_preferences::Request>),
+    Agent(Box<crate::agent_preferences::Request>),
 }
 enum PreferencesReply {
     Glassbox(Box<crate::glassbox_controls::Update>),
@@ -429,6 +430,7 @@ enum PreferencesReply {
     Voice(Box<crate::voice_preferences::Update>),
     Presentation(Box<crate::presentation_preferences::Update>),
     Connection(Box<crate::connection_preferences::Update>),
+    Agent(Box<crate::agent_preferences::Update>),
     Next(PreferencesRequest),
 }
 impl PreferencesRequest {
@@ -442,6 +444,7 @@ impl PreferencesRequest {
             Self::Voice(_) => &crate::voice_preferences::OPERATIONS,
             Self::Presentation(_) => &crate::presentation_preferences::OPERATIONS,
             Self::Connection(_) => &crate::connection_preferences::OPERATIONS,
+            Self::Agent(_) => &crate::agent_preferences::OPERATIONS,
         }
     }
     fn is_apply(&self) -> bool {
@@ -456,6 +459,7 @@ impl PreferencesRequest {
                 matches!(**r, crate::presentation_preferences::Request::Apply(_))
             }
             Self::Connection(r) => matches!(**r, crate::connection_preferences::Request::Apply(_)),
+            Self::Agent(r) => matches!(**r, crate::agent_preferences::Request::Apply(_)),
         }
     }
     fn command(&self, id: &crate::work_protocol::Identity, instance: &str) -> io::Result<Value> {
@@ -468,6 +472,7 @@ impl PreferencesRequest {
             Self::Voice(r) => r.command(id, instance),
             Self::Presentation(r) => r.command(id, instance),
             Self::Connection(r) => r.command(id, instance),
+            Self::Agent(r) => r.command(id, instance),
         }
     }
     fn rejected(&self) -> fn(String) -> crate::settings_view::Update {
@@ -488,6 +493,7 @@ impl PreferencesRequest {
                 |reason| crate::settings_view::Update::Presentation(Err(reason))
             }
             Self::Connection(_) => |reason| crate::settings_view::Update::Connection(Err(reason)),
+            Self::Agent(_) => |reason| crate::settings_view::Update::Agent(Err(reason)),
         }
     }
     fn response(
@@ -565,6 +571,14 @@ impl PreferencesRequest {
                 }
                 crate::connection_preferences::Reply::Update(update) => {
                     PreferencesReply::Connection(Box::new(update))
+                }
+            },
+            Self::Agent(r) => match r.response(v, id, instance, command_id)? {
+                crate::agent_preferences::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::Agent(Box::new(next)))
+                }
+                crate::agent_preferences::Reply::Update(update) => {
+                    PreferencesReply::Agent(Box::new(update))
                 }
             },
         })
@@ -2999,6 +3013,7 @@ impl Management {
             crate::settings_view::Intent::Connection(r) => {
                 (Some(PreferencesRequest::Connection(r)), false)
             }
+            crate::settings_view::Intent::Agent(r) => (Some(PreferencesRequest::Agent(r)), false),
             crate::settings_view::Intent::RuntimeStatus => (None, true),
             _ => (None, false),
         };
@@ -3116,6 +3131,9 @@ impl Management {
                 }
                 Ok(PreferencesReply::Connection(update)) => {
                     crate::settings_view::Update::Connection(Ok(update))
+                }
+                Ok(PreferencesReply::Agent(update)) => {
+                    crate::settings_view::Update::Agent(Ok(update))
                 }
                 Err(reason) if fatal_mcp => {
                     return Err(fail(&format!("MCP mutation did not settle: {reason}")));

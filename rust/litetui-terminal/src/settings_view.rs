@@ -41,6 +41,7 @@ pub enum Intent {
     Voice(Box<crate::voice_preferences::Request>),
     Presentation(Box<crate::presentation_preferences::Request>),
     Connection(Box<crate::connection_preferences::Request>),
+    Agent(Box<crate::agent_preferences::Request>),
     RuntimeStatus,
     Read,
     Editor(crate::settings_editor::Intent),
@@ -56,6 +57,7 @@ pub enum Update {
     Voice(Result<Box<crate::voice_preferences::Update>, String>),
     Presentation(Result<Box<crate::presentation_preferences::Update>, String>),
     Connection(Result<Box<crate::connection_preferences::Update>, String>),
+    Agent(Result<Box<crate::agent_preferences::Update>, String>),
     RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
     Rejected(String),
@@ -229,6 +231,7 @@ pub struct View {
     voice: crate::voice_preferences::View,
     presentation: crate::presentation_preferences::View,
     connection: crate::connection_preferences::View,
+    agent: crate::agent_preferences::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
     pub open: bool,
@@ -291,6 +294,14 @@ impl View {
         )));
         self.hide();
     }
+    pub(crate) fn open_agent(&mut self, focus: Option<crate::agent_preferences::Focus>) {
+        self.agent.open(focus);
+        self.waiting = true;
+        self.intent = Some(Intent::Agent(Box::new(
+            crate::agent_preferences::Request::List,
+        )));
+        self.hide();
+    }
     pub fn runtime_status_open(&self) -> bool {
         self.runtime_status.is_open()
     }
@@ -301,6 +312,7 @@ impl View {
             || self.voice.open
             || self.presentation.open
             || self.connection.open
+            || self.agent.open
             || self.model_preferences.open
             || self.glassbox.open
             || self.model_lifecycle.open
@@ -324,6 +336,7 @@ impl View {
         self.voice.hide();
         self.presentation.hide();
         self.connection.hide();
+        self.agent.hide();
         self.runtime_status.hide();
         self.editor.hide();
         self.compaction.hide();
@@ -345,6 +358,7 @@ impl View {
         self.voice = Default::default();
         self.presentation = Default::default();
         self.connection = Default::default();
+        self.agent = Default::default();
         self.runtime_status.close();
         self.editor.close();
         self.compaction.close();
@@ -425,6 +439,7 @@ impl View {
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Presentation(result) => self.presentation.update(result.map(|update| *update)),
             Update::Connection(result) => self.connection.update(result.map(|update| *update)),
+            Update::Agent(result) => self.agent.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::McpLifecycle(result) => self.mcp_lifecycle.update(result.map(|update| *update)),
             Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
@@ -509,6 +524,13 @@ impl View {
             if let Some(request) = self.connection.key(key) {
                 self.waiting = true;
                 self.intent = Some(Intent::Connection(Box::new(request)));
+            }
+            return;
+        }
+        if self.agent.open {
+            if let Some(request) = self.agent.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Agent(Box::new(request)));
             }
             return;
         }
@@ -604,6 +626,7 @@ impl View {
             KeyCode::Char('l') if key.kind == KeyEventKind::Press => {
                 self.open_model_lifecycle(None);
             }
+            KeyCode::Char('a') if key.kind == KeyEventKind::Press => self.open_agent(None),
             KeyCode::Char('v') if key.kind == KeyEventKind::Press => {
                 self.voice.open();
                 self.waiting = true;
@@ -653,6 +676,10 @@ impl View {
                         self.editor.open(&row.name);
                     } else if crate::compaction_settings::FIELDS.contains(&row.name.as_str()) {
                         self.compaction.open_field(&row.name);
+                    } else if crate::agent_preferences::FIELDS.contains(&row.name.as_str()) {
+                        let name = row.name.clone();
+                        self.open_agent(None);
+                        self.agent.open_field(&name);
                     } else {
                         self.notice = "This setting is available for inspection only.".into();
                     }
@@ -666,6 +693,7 @@ impl View {
             || self.voice.open
             || self.presentation.open
             || self.connection.open
+            || self.agent.open
             || self.model_preferences.open
             || self.glassbox.open
             || self.model_lifecycle.open
@@ -746,6 +774,10 @@ impl View {
         }
         if self.connection.open {
             self.connection.draw(frame, area, theme);
+            return;
+        }
+        if self.agent.open {
+            self.agent.draw(frame, area, theme);
             return;
         }
         if self.mcp_lifecycle.open {
@@ -917,7 +949,7 @@ impl View {
         );
         frame.render_widget(
             Paragraph::new(
-                "P preferences · L model lifecycle · V voice · U interface · N connections · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
+                "P preferences · A agent · L model lifecycle · V voice · U interface · N connections · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
             ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );

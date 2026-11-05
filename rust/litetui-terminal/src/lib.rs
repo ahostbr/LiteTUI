@@ -73,6 +73,7 @@ pub mod conversation_rewrite;
 
 pub mod theme_controls;
 
+pub mod agent_preferences;
 pub mod context;
 pub mod context_edit;
 mod context_edit_view;

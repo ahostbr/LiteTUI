@@ -56,6 +56,7 @@ pub enum Action {
     ConversationCompact,
     PluginReload,
     ToolList,
+    AgentPreferences(crate::agent_preferences::Focus),
     ChatPause,
     Glassbox,
     Models,
@@ -93,6 +94,12 @@ impl Action {
             Some("hooks") => Some(Self::Work(Destination::Hooks)),
             Some("work_new_job") => Some(Self::Work(Destination::NewJob)),
             Some("tool_list") => Some(Self::ToolList),
+            Some("agent_prefs_override") => Some(Self::AgentPreferences(
+                crate::agent_preferences::Focus::Override,
+            )),
+            Some("agent_prefs_global") => Some(Self::AgentPreferences(
+                crate::agent_preferences::Focus::Global,
+            )),
             Some("chat_pause") => Some(Self::ChatPause),
             Some("glassbox") => Some(Self::Glassbox),
             Some("models") => Some(Self::Models),

@@ -276,6 +276,7 @@ impl Demo {
                 Action::ToolList => {
                     self.open_runtime_controls(crate::runtime_controls_view::Field::ToolSelection)
                 }
+                Action::AgentPreferences(focus) => self.open_agent_preferences(focus),
                 Action::ChatPause => self.open_chat_pause(),
                 Action::Glassbox => self.open_glassbox(&route_arguments),
                 Action::Models => self
@@ -681,6 +682,17 @@ impl Demo {
             && chat.settings.open
         {
             chat.settings.open_model_lifecycle(Some((action, model)));
+        }
+    }
+    fn open_agent_preferences(&mut self, focus: crate::agent_preferences::Focus) {
+        if self.has_live_input() {
+            return;
+        }
+        self.open_settings();
+        if let Some(chat) = self.live.as_mut()
+            && chat.settings.open
+        {
+            chat.settings.open_agent(Some(focus));
         }
     }
     fn open_glassbox(&mut self, arguments: &str) {

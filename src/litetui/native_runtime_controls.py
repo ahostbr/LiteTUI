@@ -348,6 +348,8 @@ def mutation_hold(app):
         return "A reviewed MCP operation owns admission until its independent readback"
     if getattr(app, "_native_model_preferences_hold", False):
         return "Model preferences own admission until their exact saved readback publication"
+    if getattr(app, "_native_agent_preferences_hold", False):
+        return "A saved tool-authority preference owns admission until its exact readback"
     if getattr(app, "_native_claude_queue_publication", None) is not None:
         return "Native queued input owns its exact confirmation publication"
     if getattr(app, "_native_model_lifecycle_hold", False):
@@ -1137,6 +1139,8 @@ def operation_allowed(app, cmd):
         fields.add("tools_disabled")
     if native_mcp_lifecycle.enabled(app):
         fields.update(("mcp_enabled", "mcp_disabled_servers"))
+    # Standing tool authority changes only through its reviewed, effect-stating control.
+    fields.update(("tool_always_allow", "tool_deny", "tool_trusted_interpreters"))
     if op in {"set_settings", "gui.settings.apply", "gui.settings.native_validate", "gui.settings.native_save"}:
         def touches(value):
             if isinstance(value, list):
@@ -1153,6 +1157,9 @@ def operation_allowed(app, cmd):
             return
         from litetui import native_model_preferences
         if native_model_preferences.readback_allowed(app, cmd):
+            return
+        from litetui import native_agent_preferences
+        if native_agent_preferences.readback_allowed(app, cmd):
             return
         from litetui import native_model_lifecycle
         if native_model_lifecycle.readback_allowed(app, cmd):

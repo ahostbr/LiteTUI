@@ -31,6 +31,8 @@ _ROUTES = {
     ("misc", "/plan"): "plan",
     ("misc", "/think"): "thinking",
     ("misc", "/tools"): "tool_list",
+    ("subagent", "/subagent-set"): "agent_prefs_override",
+    ("subagent", "/subagent-global"): "agent_prefs_global",
     ("misc", "/quit"): "quit",
     ("misc", "/pause"): "chat_pause",
     ("misc", "/keys"): "keys",
