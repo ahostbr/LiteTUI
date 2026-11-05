@@ -72,6 +72,7 @@ impl Action {
             Some("conversation_new") => Some(Self::ConversationNew),
             Some("conversation_rename") => Some(Self::ConversationRename),
             Some("themes") => Some(Self::Themes),
+            Some("plugins") => Some(Self::Work(Destination::Plugins)),
             Some("work_tasks") => Some(Self::Work(Destination::Tasks)),
             Some("work_jobs") => Some(Self::Work(Destination::Jobs)),
             Some("work_loops") => Some(Self::Work(Destination::Loops)),
@@ -215,7 +216,7 @@ impl Catalog {
                         action,
                         Some(Action::SkillPrepare | Action::ConversationRename)
                     ) || kind == "command"
-                        && matches!(action, Some(Action::Work(dest)) if dest != crate::work_view::Destination::Calendar))
+                        && matches!(action, Some(Action::Work(dest)) if !matches!(dest, crate::work_view::Destination::Calendar | crate::work_view::Destination::Plugins)))
                 || (action == Some(Action::SkillPrepare)) != (kind == "skill")
             {
                 return Err(fail("Command availability contradicts adapter policy"));
@@ -348,7 +349,7 @@ impl Route {
                 Destination::Jobs => matches!(lower.as_str(), "list" | "ls"),
                 Destination::Loops => matches!(lower.as_str(), "list" | "ls" | "status"),
                 Destination::Goal => matches!(lower.as_str(), "status" | "show"),
-                Destination::Calendar => false,
+                Destination::Calendar | Destination::Plugins => false,
             };
             if !inspection {
                 return Err(fail("Work inspection cannot authorize this command"));

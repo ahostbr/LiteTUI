@@ -13,7 +13,7 @@ from litetui.agent_store import MEMORY_FILES, _unlinked
 OPERATION = "gui.context.native_page"
 MAX_DOCUMENT = 262144
 PAGE_BYTES = 4096
-DOCUMENTS = MEMORY_FILES | {"system", "hooks"}
+DOCUMENTS = MEMORY_FILES | {"system", "hooks", "plugins"}
 
 
 def _stamp(info):
@@ -54,7 +54,7 @@ def _hooks(app):
 
     config = getattr(app, "hook_config", None)
     if not isinstance(config, hooks.HookConfig):
-        raise ValueError("Lifecycle hook configuration is unavailable")
+        raise ValueError("Lifecycle hook configuration is unavailable")  # noqa: TRY004 - unavailable source state
 
     def read_scope(scope):
         status, data = _regular_file(config.path(scope))
@@ -86,6 +86,32 @@ def _hooks(app):
             lines.append("  Sources: " + ", ".join(dict.fromkeys(hook.sources)))
         if hook.tools:
             lines.append(f"  Tool filters: {len(hook.tools)}")
+    data = "\n".join(lines).encode("utf-8")
+    return ("oversize", None) if len(data) > MAX_DOCUMENT else ("content", data)
+
+
+def _plugins(app):
+    from litetui import plugins
+    from litetui.friendly_errors import display_error
+
+    if not isinstance(app.plugins, plugins.PluginRegistry):
+        raise TypeError("Current plugin registry is unavailable")
+    statuses = app.plugins.status
+    if len(statuses) > 1024:
+        return "oversize", None
+    size = 0
+    for name, status in statuses.items():
+        if type(name) is not str or type(status) is not str:
+            raise ValueError("Invalid plugin status")
+        size += len(name) + len(status)
+        if size > MAX_DOCUMENT:
+            return "oversize", None
+    lines = [f"{len(statuses)} plugin(s), load order:"]
+    for name, raw in statuses.items():
+        # Match /plugins' selected error style without writing another runtime-log entry on every read.
+        status = display_error(raw, app.settings.error_message_style, surface="plugin")
+        # Keep each row on one line even if an import error contains terminal controls.
+        lines.append(f"{json.dumps(name, ensure_ascii=False)}  {json.dumps(status, ensure_ascii=False)}")
     data = "\n".join(lines).encode("utf-8")
     return ("oversize", None) if len(data) > MAX_DOCUMENT else ("content", data)
 
@@ -133,6 +159,8 @@ def page(app, cmd):
         status, data = _system(app)
     elif document == "hooks":
         status, data = _hooks(app)
+    elif document == "plugins":
+        status, data = _plugins(app)
     else:
         status, data = _memory(app, document)
     bridge.check()

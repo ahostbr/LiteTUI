@@ -62,7 +62,7 @@ async def test_live_catalog_tracks_canonical_palette_and_routes_without_executio
     native = sorted((row for row in rows if row["palette"]), key=lambda row: row["palette_order"])
     assert [row["title"] for row in native] == [row[0].split(" · ")[0] for row in textual]
     for action in ("models", "backend", "thinking", "conversations", "settings", "quit",
-                   "work_tasks", "work_jobs", "work_calendar", "work_loops", "work_goal"):
+                   "work_tasks", "work_jobs", "work_calendar", "work_loops", "work_goal", "plugins"):
         request = selection(app, result, action)
         route = command_surface.resolve(app, request)
         assert route == {"version": 1, "kind": "command_route", "session_id": app.convo_id,

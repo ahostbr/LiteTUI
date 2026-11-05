@@ -16,15 +16,17 @@ pub enum Document {
     Soul,
     Handoff,
     Hooks,
+    Plugins,
 }
 
 impl Document {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::System,
         Self::Memory,
         Self::Soul,
         Self::Handoff,
         Self::Hooks,
+        Self::Plugins,
     ];
 
     pub fn key(self) -> &'static str {
@@ -34,6 +36,7 @@ impl Document {
             Self::Soul => "soul.md",
             Self::Handoff => "handoff.md",
             Self::Hooks => "hooks",
+            Self::Plugins => "plugins",
         }
     }
 
@@ -41,6 +44,7 @@ impl Document {
         match self {
             Self::System => "System prompt",
             Self::Hooks => "Hooks",
+            Self::Plugins => "Plugins",
             other => other.key(),
         }
     }

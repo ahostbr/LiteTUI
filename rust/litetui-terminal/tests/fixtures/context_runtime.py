@@ -43,6 +43,7 @@ def seed(app):
     from litetui.lifecycle_hooks import HookConfig
 
     original_seed(app)
+    app.plugins.status["fixture-parser"] = "disabled"
     app.hook_config = HookConfig(root / "inspection-hooks.json", root / "empty-project-hooks.json")
     os.environ["LITETUI_HOOKS"] = "on"
     app.hook_config.global_path.write_text(json.dumps({"version": 1, "hooks": [{

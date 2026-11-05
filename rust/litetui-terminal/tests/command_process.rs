@@ -373,7 +373,7 @@ fn route_scenario(case: &str, raw: &str, action: &str) {
                 "quit" => assert!(app.command_quit),
                 "skills" => assert!(app.has_live_commands()),
                 "refused" => assert!(app.has_live_commands()),
-                "Tasks" | "Scheduled jobs" | "Loops" | "Goal" | "Calendar" => {
+                "Tasks" | "Scheduled jobs" | "Loops" | "Goal" | "Calendar" | "Plugins" => {
                     assert!(app.has_live_work());
                     while let Some(intent) = app.live.as_mut().unwrap().work.take_intent() {
                         runtime.work(intent)?;
@@ -381,13 +381,29 @@ fn route_scenario(case: &str, raw: &str, action: &str) {
                     }
                     let mut t = Terminal::new(TestBackend::new(100, 32)).unwrap();
                     t.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+                    let header = if action == "Plugins" {
+                        "Context · Plugins".to_owned()
+                    } else {
+                        format!("{action} · Schedules ")
+                    };
                     let displayed = t.backend().buffer().content.chunks(100).any(|row| {
                         row.iter()
                             .map(|cell| cell.symbol())
                             .collect::<String>()
-                            .contains(&format!("{action} · Schedules "))
+                            .contains(&header)
                     });
                     assert!(displayed, "Expected Work section {action} for {raw}");
+                    if action == "Plugins" {
+                        app.live
+                            .as_mut()
+                            .unwrap()
+                            .work
+                            .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                        assert!(
+                            !app.has_live_work(),
+                            "Direct /plugins must return to the composer"
+                        );
+                    }
                     assert_eq!(app.composer.text(), raw);
                 }
                 _ => panic!(),
@@ -478,6 +494,7 @@ fn work_commands_open_the_selected_section_without_running_actions() {
         ("/tasks list", "Tasks"),
         ("/cron LS", "Scheduled jobs"),
         ("/cal", "Calendar"),
+        ("/plugins", "Plugins"),
         ("/loop status", "Loops"),
         ("/goal SHOW", "Goal"),
         ("/cron run example", "refused"),

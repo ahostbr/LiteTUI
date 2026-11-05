@@ -33,6 +33,31 @@ def request(app, document="system", **fields):
             "document": document, "offset": 0, "revision": None, **fields}
 
 
+async def test_plugin_view_preserves_load_order_error_style_and_registry(armed, monkeypatch):
+    from litetui import runtime_log
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Plugin inspection logged, executed or enumerated a tool provider")
+
+    monkeypatch.setattr(runtime_log, "record_error", unexpected)
+    monkeypatch.setattr(armed.plugins, "tool_specs", unexpected)
+    armed.plugins.status = {"second": "active", "first": "failed: Error\nmore"}
+    armed.settings.error_message_style = "plain"
+    before = armed.convo_path.read_bytes()
+    page = native_context.page(armed, request(armed, "plugins"))
+    lines = page["text"].splitlines()
+    assert len(lines) == 3 and lines[1] == '"second"  "active"'
+    assert lines[2].startswith('"first"  "A plugin could not start')
+    armed.settings.error_message_style = "detail"
+    stale = native_context.page(armed, request(armed, "plugins", revision=page["revision"]))
+    assert stale["status"] == "changed"
+    detail = native_context.page(armed, request(armed, "plugins"))
+    assert detail["text"].splitlines()[-1] == '"first"  "failed: Error\\nmore"'
+    assert armed.convo_path.read_bytes() == before
+    armed.plugins.status = {"too-large": "a" * (native_context.MAX_DOCUMENT + 1)}
+    assert native_context.page(armed, request(armed, "plugins"))["status"] == "oversize"
+
+
 async def test_exact_current_prompt_and_no_rebuild(armed, monkeypatch):
     def forbidden(*_args):
         pytest.fail("Reading the actual system row rebuilt or mutated it")

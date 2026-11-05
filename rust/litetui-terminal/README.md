@@ -90,6 +90,8 @@ In **F10 Settings**, press **I** for the runtime version, current session and mo
 
 ## Work inspection (in progress)
 
+`/plugins` and the F11 Plugins entry show this session’s plugin load order and status. F1 → I → Plugins opens the same reader. F5 refreshes it. Failures use the selected Plain Talk or Full Detail setting. Reading this view does not load or activate plugins.
+
 From the composer or F11, `/tasks`, `/cron`, `/loop`, `/goal` and `/calendar` (also `/cal`) open the corresponding Work section. The list and status spellings select the same view, including `/tasks list`, `/cron ls`, `/loop status` and `/goal show`. Choose any changes inside Work, where the selected row and proposed action can be reviewed.
 
 F1 opens Work during ordinary chat. Tab/Shift+Tab switch between host tasks, provider activity, scheduled jobs, loops, the current goal and the calendar. Enter opens complete details; T reads a selected finished host task's bounded output suffix. N/PageDown and B/PageUp follow actual source page offsets, including pages shortened to fit their byte budget. Calendar Left/Right changes month and Enter opens the selected day's complete schedule entries. F5 refreshes the captured facts.

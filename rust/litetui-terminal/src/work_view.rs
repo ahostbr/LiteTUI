@@ -19,6 +19,7 @@ pub enum Destination {
     Loops = 3,
     Goal = 4,
     Calendar = 5,
+    Plugins,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,6 +130,7 @@ pub struct View {
     pub calendar: Option<Calendar>,
     pub tail: Option<Tail>,
     context: crate::context_view::View,
+    context_after_snapshot: Option<crate::context::Document>,
     pub image: crate::image::Picker,
     section: usize,
     selected: usize,
@@ -182,9 +184,15 @@ impl View {
         self.open || self.waiting
     }
     pub fn open_at(&mut self, destination: Destination) {
-        if !self.waiting {
+        if self.waiting {
+            return;
+        }
+        if destination != Destination::Plugins {
             self.section = destination as usize;
-            self.open();
+        }
+        self.open();
+        if destination == Destination::Plugins {
+            self.context_after_snapshot = Some(crate::context::Document::Plugins);
         }
     }
     pub fn open(&mut self) {
@@ -200,6 +208,7 @@ impl View {
         self.visible = false;
     }
     pub fn close(&mut self) {
+        self.context_after_snapshot = None;
         self.image.close();
         self.context.close();
         self.open = false;
@@ -244,6 +253,7 @@ impl View {
         self.hide();
     }
     fn refresh(&mut self) {
+        self.context_after_snapshot = None;
         self.context.close();
         self.review = None;
         self.form = None;
@@ -455,7 +465,12 @@ impl View {
                 self.snapshot = Some(*snapshot);
                 self.notice = "Captured Work facts · Tab categories · Enter details".into();
                 if self.open {
-                    self.section_request();
+                    if let Some(document) = self.context_after_snapshot {
+                        let request = self.context.open_document(document);
+                        self.request(Request::Context(request));
+                    } else {
+                        self.section_request();
+                    }
                 }
             }
             Data::Page(page) => {
@@ -673,6 +688,9 @@ impl View {
                 && let Some(request) = self.context.key(key)
             {
                 self.request(Request::Context(request));
+            }
+            if !self.context.is_open() && self.context_after_snapshot.is_some() {
+                self.close();
             }
             return;
         }

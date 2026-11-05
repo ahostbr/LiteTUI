@@ -27,6 +27,7 @@ _ROUTES = {
     ("convo", "/rename"): "conversation_rename",
     ("settings-ui", "/settings"): "settings",
     ("skills", "/skills"): "skills",
+    ("host", "/plugins"): "plugins",
     ("tasks", "/tasks"): "work_tasks",
     ("scheduler", "/cron"): "work_jobs",
     ("scheduler", "/calendar"): "work_calendar",

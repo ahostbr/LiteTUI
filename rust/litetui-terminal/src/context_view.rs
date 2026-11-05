@@ -151,8 +151,12 @@ impl View {
     }
 
     pub fn open(&mut self) -> Request {
+        self.open_document(Document::System)
+    }
+
+    pub fn open_document(&mut self, document: Document) -> Request {
         self.open = true;
-        self.select(Document::System)
+        self.select(document)
     }
 
     pub fn is_open(&self) -> bool {
