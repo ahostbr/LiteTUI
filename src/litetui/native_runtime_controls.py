@@ -178,7 +178,10 @@ def _tool_rows(app):
 def _facts(app):
     from litetui.gui_rpc import _tool_policy
     policy = _tool_policy(app)
-    if type(policy["tools_enabled"]) is not bool or policy["mcp_enabled"] is not False or policy["approval_route"] != "host":
+    value = work.bridge(app)
+    mcp = value is not None and value.active and getattr(value, "mcp_lifecycle_version", None) == VERSION
+    if (type(policy["tools_enabled"]) is not bool or type(policy["mcp_enabled"]) is not bool
+            or policy["mcp_enabled"] and not mcp or policy["approval_route"] != "host"):
         raise ValueError("Runtime controls require the captured host approval/MCP policy")
     flag = getattr(app, "_cli_tool_profile", None)
     if flag is not None:
@@ -190,7 +193,7 @@ def _facts(app):
             "chosen_profile": _profile(app.chosen_tool_profile),
             "seat_profile": _profile(seat_authority.seat_profile(app)),
             "effective_profile": _profile(app._active_tool_profile), "requested_cli_profile": flag,
-            "plan_mode": bool(app._plan_mode), "mcp_enabled": False, "approval_route": "host",
+            "plan_mode": bool(app._plan_mode), "mcp_enabled": policy["mcp_enabled"], "approval_route": "host",
             "cwd": work.text(policy["cwd"], 32768), "provider": provider,
             "inventory": {"host": "host_request", "claude": "claude_session", "codex": "codex_runtime"}[provider]}
 
@@ -340,6 +343,9 @@ def _context(app):
 
 
 def mutation_hold(app):
+    from litetui import native_mcp_lifecycle
+    if native_mcp_lifecycle.blocking(app):
+        return "A reviewed MCP operation owns admission until its independent readback"
     if getattr(app, "_native_claude_queue_publication", None) is not None:
         return "Native queued input owns its exact confirmation publication"
     if getattr(app, "_native_model_lifecycle_hold", False):
@@ -985,6 +991,8 @@ async def authorization(app, *, origin=None, profile=None, captured=None, lifecy
         raise AuthorizationClosed("Runtime authorization limit reached")
     # A parked request has not yet captured any authority. Values supplied before
     # that wait must never override the policy now in force.
+    from litetui import native_mcp_lifecycle
+    native_mcp_lifecycle.require_inventory(app)
     facts = _facts(app)
     if _tool_selection(app) and stable(facts) != state.stable:
         raise AuthorizationClosed("Tool authorization policy changed without published review")
@@ -1104,7 +1112,11 @@ def operation_allowed(app, cmd):
     if not enabled(app):
         return
     op = cmd.get("type")
+    from litetui import native_mcp_lifecycle
+    if native_mcp_lifecycle.enabled(app) and op in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}:
+        raise ValueError("Use the reviewed MCP lifecycle controls")
     if op == "prompt":
+        native_mcp_lifecycle.require_inventory(app)
         state = _state(app)
         policy = cmd.get("runtime_policy")
         if (cmd.keys() - {"native_image"} != {"type", "id", "message", "runtime_policy"} or not isinstance(cmd["message"], str)
@@ -1121,6 +1133,8 @@ def operation_allowed(app, cmd):
     fields = {"tools_enabled", "tool_policy_profile", "tool_profile", "profile", "plan_mode"}
     if _tool_selection(app):
         fields.add("tools_disabled")
+    if native_mcp_lifecycle.enabled(app):
+        fields.update(("mcp_enabled", "mcp_disabled_servers"))
     if op in {"set_settings", "gui.settings.apply", "gui.settings.native_validate", "gui.settings.native_save"}:
         def touches(value):
             if isinstance(value, list):
@@ -1133,6 +1147,8 @@ def operation_allowed(app, cmd):
         if touches(cmd):
             raise ValueError("Use the reviewed runtime control for this setting")
     if why := mutation_hold(app):
+        if native_mcp_lifecycle.readback_allowed(app, cmd):
+            return
         from litetui import native_model_lifecycle
         if native_model_lifecycle.readback_allowed(app, cmd):
             return
@@ -1240,3 +1256,57 @@ def retired(app, bridge):
     app._native_runtime_predecessor = copy.deepcopy(state.shutdown)
     app._native_runtime_controls = None
     return copy.deepcopy(bridge.runtime_controls_retirement)
+
+
+def require_mcp_prior_settled(app):
+    """A later MCP policy may retire only a fully published, finished control."""
+    state = _state(app)
+    attempt = state.attempt if state is not None else None
+    if attempt is None:
+        return
+    worker = getattr(attempt, "worker", None)
+    readback = attempt.readback if isinstance(attempt.readback, dict) else {}
+    unchanged = readback.get("release") == "unchanged" and readback.get("status") == "refused"
+    installed = readback.get("release") == "install" and readback.get("status") in {"applied", "session_only"}
+    generation = readback.get("generation_before" if unchanged else "generation_after")
+    if (not attempt.verified or not attempt.result_published or not attempt.readback_published
+            or attempt.publication is not None or attempt.historical
+            or worker is not None and not worker.is_finished
+            or any(task is not None and not task.done() for task in (attempt.task, attempt.readback_task))
+            or not (unchanged or installed) or readback.get("verified") is not True
+            or generation != state.generation
+            or work.encoded(attempt.readback) != attempt.readback_raw):
+        raise ValueError("The prior runtime control must finish its verified publication before MCP changes")
+
+
+def validate_mcp_policy(app, before, after):
+    """Only MCP may change at its own joined, reviewed publication boundary."""
+    state = _state(app)
+    _same(state)
+    require_mcp_prior_settled(app)
+    def other(facts):
+        return {key: value for key, value in facts.items() if key != "mcp_enabled"}
+    if (state.error or state.closing or state.tickets or state.generation != before["generation"]
+            or state.stable != stable(before["facts"]) or after["generation"] != state.generation + 1
+            or after["generation"] > MAX_GENERATION or _facts(app) != after["facts"]
+            or other(before["facts"]) != other(after["facts"])):
+        raise ValueError("MCP publication changed an unrelated runtime policy owner or fact")
+
+
+def install_mcp_policy(app, ticket):
+    from litetui import native_mcp_lifecycle
+    owner = native_mcp_lifecycle._state(app)
+    if (not isinstance(ticket, native_mcp_lifecycle.Publication) or ticket.app is not app
+            or not ticket.used or ticket.phase != "readback" or ticket.task is not work._task()
+            or ticket.state is not owner or owner.review is not ticket.review or not owner.hold
+            or ticket.review.readback_result is not ticket.result
+            or native_mcp_lifecycle._encoded(ticket.result) != ticket.raw):
+        raise ValueError("MCP policy installation lacks its exact readback publication")
+    before, after = ticket.review.policy_before, ticket.review.policy_after
+    validate_mcp_policy(app, before, after)
+    state = _state(app)
+    if state.attempt is not None:
+        state.attempt.closed = True
+        state.attempt = None
+    state.generation, state.stable = after["generation"], stable(after["facts"])
+    state.snapshot = state.review = None

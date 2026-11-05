@@ -58,9 +58,13 @@ pub fn validate_root(root: &Path, tools: bool) -> io::Result<()> {
         return Err(io::Error::other("Unsupported Rust frontend root marker"));
     }
     let settings = read_json(&root.join("settings.json"), 256 * 1024)?;
-    if settings["tools_enabled"].as_bool() != Some(tools) || settings["mcp_enabled"] != false {
+    // The explicit lifecycle launch capability overlays MCP off before Python
+    // constructs any manager, even when the saved preference is enabled.
+    if settings["tools_enabled"].as_bool() != Some(tools)
+        || settings["mcp_enabled"].as_bool().is_none()
+    {
         return Err(io::Error::other(
-            "Resume tool mode must match the saved root; external MCP must remain off",
+            "Resume tool mode must match the saved root; MCP preference must be boolean",
         ));
     }
     Ok(())

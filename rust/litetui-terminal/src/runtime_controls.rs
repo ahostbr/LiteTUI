@@ -149,6 +149,7 @@ impl Change {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
+    pub mcp_lifecycle: bool,
     pub identity: life::Identity,
     pub work_instance: String,
     pub provider: life::Provider,
@@ -195,12 +196,31 @@ pub struct Facts {
 }
 impl Facts {
     pub fn parse(v: &Value, provider: life::Provider) -> io::Result<Self> {
-        Self::parse_tools(v, provider, false)
+        Self::parse_tools(v, provider, false, false)
     }
-    fn parse_bound(v: &Value, binding: &Binding) -> io::Result<Self> {
-        Self::parse_tools(v, binding.provider, binding.tool_selection)
+    /// Parse facts with exactly the extensions negotiated for this binding.
+    pub(crate) fn parse_bound(v: &Value, binding: &Binding) -> io::Result<Self> {
+        Self::parse_tools(
+            v,
+            binding.provider,
+            binding.tool_selection,
+            binding.mcp_lifecycle,
+        )
     }
-    fn parse_tools(v: &Value, provider: life::Provider, tool_selection: bool) -> io::Result<Self> {
+    #[cfg(test)]
+    pub(crate) fn parse_mcp(
+        v: &Value,
+        provider: life::Provider,
+        allowed: bool,
+    ) -> io::Result<Self> {
+        Self::parse_tools(v, provider, false, allowed)
+    }
+    fn parse_tools(
+        v: &Value,
+        provider: life::Provider,
+        tool_selection: bool,
+        allowed: bool,
+    ) -> io::Result<Self> {
         let mut expected = vec![
             "tools_enabled",
             "settings_profile",
@@ -240,7 +260,7 @@ impl Facts {
         if actual != provider
             || inventory != expected
             || seat_profile != requested_cli_profile.unwrap_or(chosen_profile)
-            || boolean(v, "mcp_enabled")?
+            || boolean(v, "mcp_enabled")? && (!allowed || provider == life::Provider::Codex)
             || v["approval_route"] != "host"
             || !std::path::Path::new(&cwd).is_absolute()
         {
@@ -257,7 +277,7 @@ impl Facts {
             effective_profile: profile(v, "effective_profile")?,
             requested_cli_profile,
             plan_mode: boolean(v, "plan_mode")?,
-            mcp_enabled: false,
+            mcp_enabled: boolean(v, "mcp_enabled")?,
             approval_route: "host".into(),
             cwd,
             provider,
@@ -301,7 +321,12 @@ impl Facts {
                 v["requested_cli_profile"] = Value::Null;
             }
         }
-        Self::parse_tools(&v, self.provider, self.tools_disabled.is_some())
+        Self::parse_tools(
+            &v,
+            self.provider,
+            self.tools_disabled.is_some(),
+            self.mcp_enabled,
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -414,7 +439,14 @@ impl Capabilities {
         Ok(Policy {
             binding: binding.clone(),
             generation: 0,
-            facts: Facts::parse_bound(&p["facts"], binding)?,
+            // Capture/activation never admit enabled MCP; only a later published
+            // lifecycle generation may carry mcp_enabled:true.
+            facts: Facts::parse_tools(
+                &p["facts"],
+                binding.provider,
+                binding.tool_selection,
+                false,
+            )?,
         })
     }
     pub fn parse_activation(

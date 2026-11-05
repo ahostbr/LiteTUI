@@ -321,6 +321,9 @@ impl View {
             ..Self::default()
         }
     }
+    pub fn can_switch(&self) -> bool {
+        !self.waiting && self.review.is_none()
+    }
     pub fn hide(&mut self) {
         self.ready = false;
     }
@@ -464,7 +467,7 @@ impl View {
         frame.render_widget(
             Paragraph::new(body)
                 .style(Style::default().fg(theme.foreground))
-                .block(Block::bordered().title(" MCP declarations ")),
+                .block(Block::bordered().title(" MCP declarations · Tab: Runtime ")),
             area,
         );
     }

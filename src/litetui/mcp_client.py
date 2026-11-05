@@ -1353,7 +1353,8 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
 
     def _inventories(self):
         with self._servers_lock:
-            inventories = {name: srv.tools for name, srv in self.servers.items() if self.allowed(name)}
+            inventories = {name: srv.tools for name, srv in self.servers.items()
+                           if self.allowed(name) and name not in self._stop_failed}
             inventories.update({name: tools for name, tools in self._lazy_tools.items()
                                 if name not in inventories and name in self._lazy_pending
                                 and self.allowed(name)})
@@ -1386,14 +1387,14 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             names = list(dict.fromkeys((*self.servers, *self._lazy_pending)))
         for sname in names:
             prefix = f"mcp__{sname}__"
-            if not name.startswith(prefix) or not self.allowed(sname):
+            if not name.startswith(prefix) or not self.allowed(sname) or sname in self._stop_failed:
                 continue
             tool = name[len(prefix):]
             def call(args, server=sname, tool=tool):
                 try:
                     with self._servers_lock:
                         available = server in self.servers or server in self._lazy_pending
-                    if not available or not self.allowed(server):
+                    if not available or not self.allowed(server) or server in self._stop_failed:
                         raise MCPError("server disconnected or excluded by this seat")
                     if server not in self.servers:
                         err = self._connect_lazy(server)

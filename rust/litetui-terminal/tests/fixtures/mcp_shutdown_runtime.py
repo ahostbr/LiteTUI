@@ -20,7 +20,7 @@ report = {"exit_joined": False, "lease_joined": False, "spawns": 0}
 
 
 async def serve(app):
-    from litetui import native_mcp_shutdown
+    from litetui import gui_rpc, native_mcp_lifecycle, native_mcp_shutdown
 
     source = Path(os.environ["RUST_RUNTIME_CONTROLS_SOURCE"])
     assert (
@@ -95,6 +95,7 @@ async def serve(app):
         report["retained"] = manager.inspect_cached()
         assert report["retained"]["servers"][0]["state"] == "failed"
         with (
+            patch.object(gui_rpc, "OPERATIONS", tuple(op for op in gui_rpc.OPERATIONS if "gui." + op not in native_mcp_lifecycle.OPERATIONS)),
             patch.object(app, "exit", exit_app),
             patch.object(app, "_release_owned_storage", release),
         ):

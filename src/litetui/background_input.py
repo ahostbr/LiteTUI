@@ -170,6 +170,8 @@ class Bridge:
         self.scheduled_transition_version: int | None = None
         self.execution_version: int | None = None
         self.requested_execution_version: int | None = None
+        self.mcp_lifecycle_version: int | None = None
+        self.requested_mcp_lifecycle_version: int | None = None
         self.runtime_controls_version: int | None = None
         self.requested_runtime_controls_version: int | None = None
         self.tool_selection_version: int | None = None
@@ -320,7 +322,7 @@ def _command(app, cmd, operation, extras=(), *, admission=True, expected_identit
 def capture(app, cmd):
     from litetui import native_schedule
     native_schedule.capture_allowed(app)
-    _command(app, cmd, "capture", tuple(k for k in ("execution_version", "runtime_controls_version", "tool_selection_version") if k in cmd))
+    _command(app, cmd, "capture", tuple(k for k in ("execution_version", "runtime_controls_version", "tool_selection_version", "mcp_lifecycle_version") if k in cmd))
     if "runtime_controls_version" in cmd and (type(cmd["runtime_controls_version"]) is not int or cmd["runtime_controls_version"] != VERSION):
         raise ValueError("Runtime controls require exact version 1")
     if "tool_selection_version" in cmd and (type(cmd["tool_selection_version"]) is not int
@@ -328,6 +330,8 @@ def capture(app, cmd):
         raise ValueError("Tool selection requires exact runtime controls and selection version 1")
     if "execution_version" in cmd and (type(cmd["execution_version"]) is not int or cmd["execution_version"] != VERSION):
         raise ValueError("Explicit execution requires exact version 1")
+    if "mcp_lifecycle_version" in cmd and (type(cmd["mcp_lifecycle_version"]) is not int or cmd["mcp_lifecycle_version"] != VERSION or cmd.get("runtime_controls_version") != VERSION):
+        raise ValueError("MCP lifecycle requires exact version 1 and runtime controls")
     value = bridge(app)
     if value is None:
         from litetui import restored_input
@@ -344,9 +348,13 @@ def capture(app, cmd):
     value.requested_execution_version = cmd.get("execution_version")
     value.requested_runtime_controls_version = cmd.get("runtime_controls_version")
     value.requested_tool_selection_version = cmd.get("tool_selection_version")
+    value.requested_mcp_lifecycle_version = cmd.get("mcp_lifecycle_version")
     result = {"kind": "work_capture", "version": VERSION, "instance": value.instance,
               "activation_token": value.activation_token, "sequence": 0, "identity": value.identity,
               "provider": provider(app), "limits": dict(LIMITS), "recovered": copy.deepcopy(value.recovered), "deferred_jobs": deferred_evidence(app)}
+    if value.requested_mcp_lifecycle_version is not None:
+        from litetui import native_mcp_lifecycle
+        result.update(native_mcp_lifecycle.capture(app, value))
     if value.requested_runtime_controls_version is not None:
         from litetui import native_runtime_controls
         result.update(native_runtime_controls.capture(app, value))
@@ -359,7 +367,7 @@ def capture(app, cmd):
 
 
 def activate(app, cmd):
-    extras = ("instance", "activation_token", *(k for k in ("scheduled_transition_version", "execution_version", "runtime_controls_version", "tool_selection_version") if k in cmd))
+    extras = ("instance", "activation_token", *(k for k in ("scheduled_transition_version", "execution_version", "runtime_controls_version", "tool_selection_version", "mcp_lifecycle_version") if k in cmd))
     _command(app, cmd, "activate", extras)
     requested = cmd.get("scheduled_transition_version")
     if "scheduled_transition_version" in cmd and (type(requested) is not int or requested != VERSION):
@@ -368,6 +376,9 @@ def activate(app, cmd):
     if value is None or value.active or cmd.get("instance") != value.instance or cmd.get("activation_token") != value.activation_token:
         raise ValueError("Unknown or consumed Work activation")
     value.check()
+    mcp = cmd.get("mcp_lifecycle_version")
+    if mcp != value.requested_mcp_lifecycle_version or "mcp_lifecycle_version" in cmd and (type(mcp) is not int or mcp != VERSION):
+        raise ValueError("Activation changed exact MCP lifecycle negotiation")
     runtime = cmd.get("runtime_controls_version")
     if runtime != value.requested_runtime_controls_version or "runtime_controls_version" in cmd and (type(runtime) is not int or runtime != VERSION):
         raise ValueError("Activation changed exact runtime controls negotiation")
@@ -388,7 +399,7 @@ def activate(app, cmd):
     return _activate(app, value)
 
 
-def _activate(app, value, *, scheduled_transition_version=None, execution_version=None, runtime_controls_version=None, tool_selection_version=None):
+def _activate(app, value, *, scheduled_transition_version=None, execution_version=None, runtime_controls_version=None, tool_selection_version=None, mcp_lifecycle_version=None):
     value.check()
     recapture = getattr(app, "_native_work_recapture_required", None)
     if recapture is not None:
@@ -400,11 +411,15 @@ def _activate(app, value, *, scheduled_transition_version=None, execution_versio
     value.execution_version = execution_version
     from litetui import native_work_execution
     native_work_execution.activated(app, value)
+    value.mcp_lifecycle_version = mcp_lifecycle_version
     value.runtime_controls_version = runtime_controls_version
     value.tool_selection_version = tool_selection_version
     if runtime_controls_version is not None:
         from litetui import native_runtime_controls
         native_runtime_controls.activated(app, value)
+    if mcp_lifecycle_version is not None:
+        from litetui import native_mcp_lifecycle
+        native_mcp_lifecycle.activated(app, value)
     app._native_work_initial_activated = True
     deferred = getattr(app, "_native_work_deferred", None)
     if deferred is not None and not deferred.claimed:
@@ -1435,6 +1450,8 @@ def validate_document(document):
 
 async def before_identity_transition(app):
     """Join a quiet epoch naturally after the caller's canonical preflight."""
+    from litetui import native_mcp_lifecycle
+    native_mcp_lifecycle.require_transition(app)
     value = bridge(app)
     if value is None or not value.active:
         return None
@@ -1475,8 +1492,12 @@ def after_identity_transition(app, proof):
     app._validate_owned_identity()
     # Existing ledger partitions remain on disk under their owned conversation;
     # unresolved records preserve their original epoch when subsequently read.
-    from litetui import native_work_execution
-    from litetui import native_runtime_controls
+    from litetui import (
+        native_mcp_lifecycle,
+        native_runtime_controls,
+        native_work_execution,
+    )
+    native_mcp_lifecycle.retired(app, value)
     runtime = native_runtime_controls.retired(app, value)
     execution = native_work_execution.identity_retired(app, value)
     app._native_work_bridge = None
@@ -2646,6 +2667,9 @@ def prepare_publication(app, cmd, result):
         from litetui import native_claude_queue
         ticket = native_claude_queue.prepare_publication(app, cmd, result)
     if ticket is None:
+        from litetui import native_mcp_lifecycle
+        ticket = native_mcp_lifecycle.prepare_publication(app, cmd, result)
+    if ticket is None:
         from litetui import native_model_lifecycle
         ticket = native_model_lifecycle.prepare_publication(app, cmd, result)
     if ticket is None:
@@ -2667,7 +2691,15 @@ def finish_publication(app, ticket):
         from litetui import native_claude_queue
         native_claude_queue.finish_publication(app, ticket)
         return
-    from litetui import native_dictation, native_model_lifecycle, native_playback
+    from litetui import (
+        native_dictation,
+        native_mcp_lifecycle,
+        native_model_lifecycle,
+        native_playback,
+    )
+    if isinstance(ticket, native_mcp_lifecycle.Publication):
+        native_mcp_lifecycle.finish_publication(app, ticket)
+        return
     if isinstance(ticket, native_dictation.Publication):
         native_dictation.finish_publication(app, ticket)
     elif isinstance(ticket, native_model_lifecycle.Publication):

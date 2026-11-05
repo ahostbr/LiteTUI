@@ -461,13 +461,22 @@ impl Turn {
         policy: crate::runtime_controls::Policy,
     ) -> io::Result<()> {
         let expected = self.policy.as_ref().expect("launch policy");
-        let mode = if self.runtime_policy.is_none() {
-            crate::tool_mode::ValidationMode::Launch
-        } else {
-            crate::tool_mode::ValidationMode::Target
+        let mode = match self.runtime_policy.as_ref() {
+            None => crate::tool_mode::ValidationMode::Launch,
+            Some(old) if old.binding == policy.binding => {
+                crate::tool_mode::ValidationMode::Current(&policy)
+            }
+            Some(_) => crate::tool_mode::ValidationMode::Target,
         };
         expected.validate_facts(&policy.facts, mode)?;
         if let Some(old) = self.runtime_policy.as_ref() {
+            if old.binding.work_instance == policy.binding.work_instance
+                && old.binding != policy.binding
+            {
+                return Err(io::Error::other(
+                    "Runtime capability or identity changed within one Work epoch",
+                ));
+            }
             if old.binding == policy.binding && policy.generation != old.generation + 1 {
                 return Err(io::Error::other(
                     "Runtime control policy generation was repeated or skipped",
@@ -2126,8 +2135,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             &options.model,
             "--tool-profile",
             profile.as_str(),
+            "--mcp-lifecycle-version",
+            "1",
             "--mcp-servers",
-            "none",
+            "all",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

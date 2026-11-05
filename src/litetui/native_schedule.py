@@ -41,6 +41,9 @@ def activation(app, cmd, value):
     for key in ("scheduled_transition_version", "execution_version"):
         if key in cmd:
             result[key] = cmd[key]
+    if "mcp_lifecycle_version" in cmd:
+        from litetui import native_mcp_lifecycle
+        result.update(native_mcp_lifecycle.activation(app, value))
     if "runtime_controls_version" in cmd:
         from litetui import native_runtime_controls
         result.update(native_runtime_controls.activation(app, value))
@@ -83,6 +86,10 @@ def prepare_publication(app: Any, cmd: dict, result: dict) -> ActivationPublicat
         policy = native_runtime_controls.activation(app, value)
         if any(result.get(key) != expected for key, expected in policy.items()):
             raise ValueError("Runtime policy changed before activation publication")
+    if value.requested_mcp_lifecycle_version is not None:
+        from litetui import native_mcp_lifecycle
+        if result.get("mcp_lifecycle_version") != native_mcp_lifecycle.activation(app, value)["mcp_lifecycle_version"]:
+            raise ValueError("MCP lifecycle changed before activation publication")
     activation_ticket.prepared = True
     return activation_ticket
 
@@ -127,7 +134,8 @@ def finish_publication(app, ticket):
         work._activate(app, value, scheduled_transition_version=ticket.result.get("scheduled_transition_version"),
                        execution_version=ticket.result.get("execution_version"),
                        runtime_controls_version=ticket.result.get("runtime_controls_version"),
-                       tool_selection_version=ticket.result.get("tool_selection_version"))
+                       tool_selection_version=ticket.result.get("tool_selection_version"),
+                       mcp_lifecycle_version=ticket.result.get("mcp_lifecycle_version"))
     except BaseException:
         value.closing = True
         value.error = "Work activation publication is uncertain; close without replay"

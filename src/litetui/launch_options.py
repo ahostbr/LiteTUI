@@ -32,6 +32,12 @@ class LaunchOptions:
     engine_management: bool = False
     history_projection_version: int | None = None
     work_lifecycle_version: int | None = None
+    mcp_lifecycle_version: int | None = None
+
+    def validate_mcp_lifecycle(self) -> None:
+        version = self.mcp_lifecycle_version
+        if version is not None and (type(version) is not int or version != 1 or self.work_lifecycle_version != 1):
+            raise ValueError('--mcp-lifecycle-version requires integer 1 and --work-lifecycle-version 1')
 
     def validate_work_lifecycle(self) -> None:
         version = self.work_lifecycle_version
@@ -61,9 +67,12 @@ class LaunchOptions:
     def overrides(self, settings, backend, model):
         self.validate_history_projection()
         self.validate_work_lifecycle()
+        self.validate_mcp_lifecycle()
         self.validate_engine_management(backend, model)
         from litetui.custom_backend import api_base
         values: dict[str, Any] = {}
+        if self.mcp_lifecycle_version is not None:
+            values["mcp_enabled"] = False
         if self.codex_engine is not None:
             if self.codex_engine not in ('native', 'http'):
                 raise ValueError('codex_engine must be native or http')
@@ -166,6 +175,8 @@ class LaunchOptions:
 
 
 def add_arguments(parser):
+    parser.add_argument("--mcp-lifecycle-version", type=int, choices=(1,),
+                        help="Reviewed MCP RPC lifecycle; starts MCP off and requires captured Work version 1")
     parser.add_argument('--work-lifecycle-version', type=int, choices=(1,),
                         help='Captured background-input RPC lifecycle; requires --rpc and --hold-restored-input')
     parser.add_argument('--history-projection-version', type=int, choices=(1,),
@@ -211,9 +222,11 @@ def from_args(args):
                             args.api_key_env, args.server_timeout, codex_engine,
                             getattr(args, 'engine_management', False),
                             getattr(args, 'history_projection_version', None),
-                            getattr(args, 'work_lifecycle_version', None))
+                            getattr(args, 'work_lifecycle_version', None),
+                            getattr(args, 'mcp_lifecycle_version', None))
     options.validate_history_projection()
     options.validate_work_lifecycle()
+    options.validate_mcp_lifecycle()
     if options.work_lifecycle_version is not None:
         if not getattr(args, 'rpc', False) or not getattr(args, 'hold_restored_input', False):
             raise ValueError('--work-lifecycle-version requires --rpc and --hold-restored-input')
@@ -229,8 +242,9 @@ def to_argv(options):
     """Use the same public arguments for supervised and external agents."""
     options.validate_history_projection()
     options.validate_work_lifecycle()
+    options.validate_mcp_lifecycle()
     args = ['--server-mode', options.server_mode, '--server-timeout', str(options.timeout)]
-    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine', 'history_projection_version', 'work_lifecycle_version'):
+    for name in ('base_url', 'context_length', 'max_tokens', 'server_executable', 'model_path', 'api_key_env', 'codex_engine', 'history_projection_version', 'work_lifecycle_version', 'mcp_lifecycle_version'):
         value = getattr(options, name)
         if value is not None:
             args += ['--' + name.replace('_', '-'), str(value)]
@@ -248,6 +262,7 @@ async def prepare(app):
     if options is not None:
         options.validate_history_projection()
         options.validate_work_lifecycle()
+        options.validate_mcp_lifecycle()
     if options is not None and getattr(options, 'engine_management', False):
         options.validate_engine_management(
             app.backend.name, getattr(app, '_cli_initial_model', None) or getattr(app, 'model_id', None))

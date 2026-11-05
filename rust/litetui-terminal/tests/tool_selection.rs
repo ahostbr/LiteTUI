@@ -13,6 +13,7 @@ fn binding(c: &Value) -> r::Binding {
         work_instance: c["capture"]["instance"].as_str().unwrap().into(),
         provider: life::Provider::Host,
         tool_selection: true,
+        mcp_lifecycle: false,
     }
 }
 fn capabilities() -> r::Capabilities {

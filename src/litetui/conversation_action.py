@@ -976,7 +976,12 @@ async def _finish_exit(app):
             if (engine["worker_settled"] is not True or proof["retained"] is not False
                     or proof["owned"] is not False and proof["main_exited"] is not True):
                 raise RuntimeError("Engine cleanup remains unproven")
-        from litetui import native_glassbox, native_model_lifecycle
+        from litetui import (
+            native_glassbox,
+            native_mcp_lifecycle,
+            native_model_lifecycle,
+        )
+        await native_mcp_lifecycle.settle_before_shutdown(app)
         await native_model_lifecycle.settle_before_shutdown(app)
         await native_glassbox.settle_before_shutdown(app)
         from litetui import native_mcp_shutdown

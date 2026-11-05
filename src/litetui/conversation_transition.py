@@ -175,6 +175,9 @@ def _snapshot(app, cmd):
                           "materialized": not pending},
               "actions": {name: {"eligible": reason is None, "reason": reason} for name in ("rename", "new")},
               "effects": effects}
+    from litetui import native_mcp_lifecycle
+    if mcp_reason := native_mcp_lifecycle.transition_refusal(app):
+        result["actions"]["new"] = {"eligible": False, "reason": mcp_reason}
     facts = {"result": result, "registry": registry, "hooks": asdict(hooks),
              "hook_context": hook_host.context(app),
              "hook_conversation": getattr(app, "_hook_conversation_id", None),

@@ -7,6 +7,7 @@ use std::io;
 #[derive(Default)]
 pub(super) struct Control {
     capabilities: Option<controls::Capabilities>,
+    mcp_lifecycle: bool,
     captured: Option<controls::Policy>,
     policy: Option<controls::Policy>,
     policy_update: Option<controls::Policy>,
@@ -47,6 +48,10 @@ fn rpc_id(id: &CommandId) -> io::Result<String> {
 impl Management {
     pub(super) fn configure_runtime_controls(&mut self, operations: &[String]) -> io::Result<()> {
         self.runtime_controls.capabilities = controls::Capabilities::negotiate(operations)?;
+        self.runtime_controls.mcp_lifecycle = crate::mcp_lifecycle::negotiate(
+            operations,
+            self.runtime_controls.capabilities.is_some(),
+        )?;
         Ok(())
     }
     pub fn runtime_controls_pending(&self) -> bool {
@@ -131,6 +136,48 @@ impl Management {
     pub fn runtime_policy(&self) -> Option<&controls::Policy> {
         self.runtime_controls.policy.as_ref()
     }
+    pub(super) fn install_mcp_policy(
+        &mut self,
+        before: &controls::Policy,
+        after: controls::Policy,
+    ) -> io::Result<()> {
+        let current = self
+            .runtime_controls
+            .policy
+            .as_ref()
+            .ok_or_else(|| fail("MCP policy has no active owner"))?;
+        if current != before {
+            return Err(fail("MCP receipt changed the exact published policy"));
+        }
+        crate::mcp_lifecycle::verify_policy_transition(before, &after)?;
+        if self
+            .runtime_controls
+            .invocation
+            .as_ref()
+            .is_some_and(|attempt| {
+                !attempt.released
+                    || !attempt.readback.as_ref().is_some_and(|readback| {
+                        readback.verified
+                            && matches!(
+                                readback.release,
+                                controls::Release::Install | controls::Release::Unchanged
+                            )
+                    })
+            })
+        {
+            return Err(fail(
+                "MCP policy cannot retire an unfinished runtime control",
+            ));
+        }
+        // The verified MCP transition supersedes a completed generic control,
+        // just as a new generic Apply does. Keep strict idle-generation shutdown.
+        self.runtime_controls.invocation = None;
+        self.runtime_controls.policy = Some(after.clone());
+        self.runtime_controls.policy_update = Some(after);
+        self.runtime_controls.snapshot = None;
+        self.runtime_controls.review = None;
+        Ok(())
+    }
     pub fn take_runtime_policy(&mut self) -> Option<controls::Policy> {
         self.runtime_controls.policy_update.take()
     }
@@ -144,6 +191,9 @@ impl Management {
                 .is_some_and(|caps| caps.tool_selection)
             {
                 command["tool_selection_version"] = Value::from(1);
+            }
+            if self.runtime_controls.mcp_lifecycle {
+                command["mcp_lifecycle_version"] = Value::from(1);
             }
         }
     }
@@ -168,7 +218,9 @@ impl Management {
                 "Runtime controls recapture lacks completed retirement",
             ));
         }
+        crate::mcp_lifecycle::verify_capability(value, self.runtime_controls.mcp_lifecycle)?;
         let binding = controls::Binding {
+            mcp_lifecycle: self.runtime_controls.mcp_lifecycle,
             identity: identity.clone(),
             work_instance: value["instance"]
                 .as_str()
@@ -191,6 +243,9 @@ impl Management {
         ] {
             object.remove(key);
         }
+        if self.runtime_controls.mcp_lifecycle {
+            object.remove("mcp_lifecycle_version");
+        }
         Ok(legacy)
     }
     pub(super) fn runtime_capture_seat(&self) -> Option<crate::tool_mode::Profile> {
@@ -209,6 +264,9 @@ impl Management {
                 .is_some_and(|policy| policy.binding.tool_selection)
             {
                 command["tool_selection_version"] = Value::from(1);
+            }
+            if self.runtime_controls.mcp_lifecycle {
+                command["mcp_lifecycle_version"] = Value::from(1);
             }
             self.runtime_controls.activation_sent = true;
         }
@@ -273,6 +331,7 @@ impl Management {
                 "Runtime activation overtook a historical control publication",
             ));
         }
+        crate::mcp_lifecycle::verify_capability(value, captured.binding.mcp_lifecycle)?;
         let policy = self
             .runtime_controls
             .capabilities
@@ -283,6 +342,9 @@ impl Management {
         let object = legacy
             .as_object_mut()
             .ok_or_else(|| fail("Runtime activation is not an object"))?;
+        if captured.binding.mcp_lifecycle {
+            object.remove("mcp_lifecycle_version");
+        }
         for key in [
             "runtime_controls_version",
             "runtime_policy",

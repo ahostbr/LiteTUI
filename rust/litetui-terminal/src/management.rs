@@ -405,6 +405,7 @@ struct SavedHistoryPending {
 enum PreferencesRequest {
     Glassbox(Box<crate::glassbox_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
+    McpLifecycle(Box<crate::mcp_lifecycle::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
     ModelLifecycle(Box<crate::model_lifecycle::Request>),
     Voice(Box<crate::voice_preferences::Request>),
@@ -412,6 +413,7 @@ enum PreferencesRequest {
 enum PreferencesReply {
     Glassbox(Box<crate::glassbox_controls::Update>),
     Mcp(Box<crate::mcp_config::Update>),
+    McpLifecycle(Box<crate::mcp_lifecycle::Update>),
     ModelPreferences(Box<crate::model_preferences::Update>),
     ModelLifecycle(Box<crate::model_lifecycle::Update>),
     Voice(Box<crate::voice_preferences::Update>),
@@ -421,6 +423,7 @@ impl PreferencesRequest {
     fn operations(&self) -> &[&str] {
         match self {
             Self::Mcp(_) => &crate::mcp_config::OPERATIONS,
+            Self::McpLifecycle(_) => &crate::mcp_lifecycle::OPERATIONS,
             Self::ModelPreferences(_) => &crate::model_preferences::OPERATIONS,
             Self::Glassbox(_) => &crate::glassbox_controls::OPERATIONS,
             Self::ModelLifecycle(_) => &crate::model_lifecycle::OPERATIONS,
@@ -430,6 +433,7 @@ impl PreferencesRequest {
     fn is_apply(&self) -> bool {
         match self {
             Self::Mcp(r) => matches!(**r, crate::mcp_config::Request::Apply(_, _)),
+            Self::McpLifecycle(r) => matches!(**r, crate::mcp_lifecycle::Request::Apply(_)),
             Self::ModelPreferences(r) => matches!(**r, crate::model_preferences::Request::Apply(_)),
             Self::Glassbox(r) => matches!(**r, crate::glassbox_controls::Request::Apply(_)),
             Self::ModelLifecycle(r) => matches!(**r, crate::model_lifecycle::Request::Apply(_)),
@@ -439,6 +443,7 @@ impl PreferencesRequest {
     fn command(&self, id: &crate::work_protocol::Identity, instance: &str) -> io::Result<Value> {
         match self {
             Self::Mcp(r) => r.command(id, instance),
+            Self::McpLifecycle(r) => r.command(id, instance),
             Self::ModelPreferences(r) => r.command(id, instance),
             Self::Glassbox(r) => r.command(id, instance),
             Self::ModelLifecycle(r) => r.command(id, instance),
@@ -448,6 +453,9 @@ impl PreferencesRequest {
     fn rejected(&self) -> fn(String) -> crate::settings_view::Update {
         match self {
             Self::Mcp(_) => |reason| crate::settings_view::Update::Mcp(Err(reason)),
+            Self::McpLifecycle(_) => {
+                |reason| crate::settings_view::Update::McpLifecycle(Err(reason))
+            }
             Self::ModelPreferences(_) => {
                 |reason| crate::settings_view::Update::ModelPreferences(Err(reason))
             }
@@ -464,8 +472,23 @@ impl PreferencesRequest {
         id: &crate::work_protocol::Identity,
         instance: &str,
         command_id: &str,
+        policy: Option<&crate::runtime_controls::Policy>,
     ) -> io::Result<PreferencesReply> {
         Ok(match self {
+            Self::McpLifecycle(r) => match r.response(
+                v,
+                id,
+                instance,
+                command_id,
+                policy.ok_or_else(|| fail("MCP policy was not activated"))?,
+            )? {
+                crate::mcp_lifecycle::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::McpLifecycle(Box::new(next)))
+                }
+                crate::mcp_lifecycle::Reply::Update(update) => {
+                    PreferencesReply::McpLifecycle(Box::new(update))
+                }
+            },
             Self::Glassbox(r) => match r.response(v, id, instance, command_id)? {
                 crate::glassbox_controls::Reply::Next(next) => {
                     PreferencesReply::Next(Self::Glassbox(Box::new(next)))
@@ -2913,6 +2936,13 @@ impl Management {
         }
         let (request, runtime_status) = match intent {
             crate::settings_view::Intent::Mcp(r) => (Some(PreferencesRequest::Mcp(r)), false),
+            crate::settings_view::Intent::McpLifecycle(r) => {
+                r.verify_policy(
+                    self.runtime_policy()
+                        .ok_or_else(|| fail("MCP policy was not activated"))?,
+                )?;
+                (Some(PreferencesRequest::McpLifecycle(r)), false)
+            }
             crate::settings_view::Intent::ModelPreferences(r) => {
                 (Some(PreferencesRequest::ModelPreferences(r)), false)
             }
@@ -2987,6 +3017,7 @@ impl Management {
         let (_, read) = self.settings.take().expect("matched settings read");
         self.ensure_drained()?;
         if let SettingsRead::Preferences(identity, instance, request) = read {
+            let fatal_mcp = matches!(&request, PreferencesRequest::McpLifecycle(r) if matches!(**r,crate::mcp_lifecycle::Request::Apply(_)|crate::mcp_lifecycle::Request::Readback(..)));
             let reject = request.rejected();
             let result = if frame["ok"] != true {
                 Err(text(&frame, "error", 4096)?.to_string())
@@ -2999,6 +3030,7 @@ impl Management {
                         &identity,
                         &instance,
                         text(&frame, "id", 128)?,
+                        self.runtime_policy(),
                     )
                     .map_err(|error| error.to_string())
             };
@@ -3013,6 +3045,13 @@ impl Management {
                     self.settings = Some((id, SettingsRead::Preferences(identity, instance, next)));
                     return Ok(Step::Write(value));
                 }
+                Ok(PreferencesReply::McpLifecycle(update)) => {
+                    if let crate::mcp_lifecycle::Update::Settled(state, before, _) = update.as_ref()
+                    {
+                        self.install_mcp_policy(before, state.policy().clone())?;
+                    }
+                    crate::settings_view::Update::McpLifecycle(Ok(update))
+                }
                 Ok(PreferencesReply::Mcp(update)) => crate::settings_view::Update::Mcp(Ok(update)),
                 Ok(PreferencesReply::ModelPreferences(update)) => {
                     crate::settings_view::Update::ModelPreferences(Ok(update))
@@ -3025,6 +3064,9 @@ impl Management {
                 }
                 Ok(PreferencesReply::Voice(update)) => {
                     crate::settings_view::Update::Voice(Ok(update))
+                }
+                Err(reason) if fatal_mcp => {
+                    return Err(fail(&format!("MCP mutation did not settle: {reason}")));
                 }
                 Err(reason) => reject(reason),
             };

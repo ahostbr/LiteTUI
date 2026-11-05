@@ -1587,6 +1587,7 @@ class LiteTUI(App):
         if launch_options is not None:
             launch_options.validate_history_projection()
             launch_options.validate_work_lifecycle()
+            launch_options.validate_mcp_lifecycle()
             if launch_options.work_lifecycle_version is not None and (rpc is not True or hold_restored_input is not True):
                 raise ValueError('Work lifecycle requires RPC and restored-input holds')
             if launch_options.history_projection_version is not None and (rpc is not True or hold_restored_input is not True):
@@ -2431,7 +2432,12 @@ class LiteTUI(App):
         await conversation_rewrite.settle_before_shutdown(self)
         await conversation_shutdown.settle_before_shutdown(self)
         await native_engine_shutdown.settle_before_shutdown(self)
-        from litetui import native_glassbox, native_model_lifecycle
+        from litetui import (
+            native_glassbox,
+            native_mcp_lifecycle,
+            native_model_lifecycle,
+        )
+        await native_mcp_lifecycle.settle_before_shutdown(self)
         await native_model_lifecycle.settle_before_shutdown(self)
         await native_glassbox.settle_before_shutdown(self)
         from litetui import native_mcp_shutdown
@@ -5366,6 +5372,8 @@ class LiteTUI(App):
                 setattr(self.settings, key, deepcopy(value))
         if getattr(self, '_agent_session', None) is not None:
             apply_settings(self._agent_session, self.settings)
+        from litetui import native_mcp_lifecycle
+        native_mcp_lifecycle.apply_startup_overlay(self)
         current_backend = getattr(self, '_backend', None)
         if current_backend is not None and hasattr(current_backend, 'set_settings'):
             current_backend.set_settings(self.settings)

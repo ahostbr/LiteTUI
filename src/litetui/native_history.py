@@ -568,6 +568,8 @@ async def open_conversation(app: Any, cmd: dict[str, Any]) -> dict[str, Any]:
         backend_transition._quiet(app, require_unowned_server=False)
         if native_engine.state(app) is not None:
             raise ValueError("Reopen explicitly before changing a native-engine conversation")
+        from litetui import native_mcp_lifecycle
+        native_mcp_lifecycle.require_transition(app)
         if reason := transition._eligibility(app):
             raise ValueError(reason)
         context = backend_catalog._context(app, app.convo_id)

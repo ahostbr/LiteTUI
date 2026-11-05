@@ -2420,3 +2420,242 @@ fn registered_hooks_and_plugin_target_open_existing_review_controls() {
         }
     }
 }
+
+#[test]
+#[ignore = "registered native MCP lifecycle with private disposable stdio, host policy and joined Quit"]
+fn mcp_runtime_review_readback_dispatch_retry_and_joined_quit() {
+    use litetui_terminal::runtime_controls_view::Field;
+    let (runtime, data) = launch("mcp_lifecycle_runtime.py");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        let draft = "Keep MCP lifecycle draft 雪";
+        app.insert_text(draft);
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let cursor = app.composer.before_cursor().to_owned();
+        app.open_settings();
+        settings_drain(runtime, &mut app)?;
+        settings_key(runtime, &mut app, KeyCode::Char('m'))?;
+        let off = settings_key(runtime, &mut app, KeyCode::Tab)?;
+        assert!(
+            off.contains("MCP · Runtime") && off.contains("MCP false"),
+            "{off}"
+        );
+        let review = settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+        assert!(
+            review.contains("Review enable") && review.contains("Opens no server"),
+            "{review}"
+        );
+        settings_key(runtime, &mut app, KeyCode::Esc)?;
+        settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+        settings_key(runtime, &mut app, KeyCode::Enter)?;
+        let review = settings_key(runtime, &mut app, KeyCode::Char('c'))?;
+        assert!(
+            review.contains("Review connect") && !review.contains("SECRET"),
+            "{review}"
+        );
+        let connected = settings_key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(
+            connected.contains("connected") && connected.contains("Host dispatch: 1"),
+            "{connected}"
+        );
+        settings_key(runtime, &mut app, KeyCode::Esc)?;
+        settings_key(runtime, &mut app, KeyCode::Esc)?;
+        for field in [Field::Tools, Field::Profile, Field::Profile] {
+            app.live.as_mut().unwrap().runtime_controls.open(field);
+            while let Some(intent) = app.live.as_mut().unwrap().runtime_controls.take_intent() {
+                runtime.runtime_controls(intent)?;
+                observe(runtime, &mut app, |e| {
+                    matches!(e, Observation::RuntimeControls(_))
+                })?;
+            }
+            for _ in 0..4 {
+                draw(&mut app);
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .runtime_controls
+                    .key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+            }
+            draw(&mut app);
+            app.live
+                .as_mut()
+                .unwrap()
+                .runtime_controls
+                .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            app.live
+                .as_mut()
+                .unwrap()
+                .runtime_controls
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            let intent = app
+                .live
+                .as_mut()
+                .unwrap()
+                .runtime_controls
+                .take_intent()
+                .ok_or_else(|| io::Error::other("Runtime policy review did not reach Apply"))?;
+            runtime.runtime_controls(intent)?;
+            observe(runtime, &mut app, |e| {
+                matches!(e, Observation::RuntimeControls(_))
+            })?;
+            assert!(draw(&mut app).contains("Applied and verified"));
+            app.live.as_mut().unwrap().runtime_controls.close();
+        }
+        assert_eq!(app.composer.text(), draft);
+        assert_eq!(app.composer.before_cursor(), cursor);
+        app.submit();
+        let prompt = app
+            .live
+            .as_mut()
+            .unwrap()
+            .take_submission()
+            .expect("explicit private fixture prompt");
+        runtime.submit(prompt)?;
+        observe(runtime, &mut app, |e| matches!(e, Observation::Complete))?;
+        app.insert_text(draft);
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let tool = json_file(&data.join("private-tool-proof.json"));
+        assert_eq!(tool["result"][1], true, "{tool}");
+        assert!(
+            tool["result"][0]
+                .as_str()
+                .unwrap()
+                .contains("CONTROLLED:registered-proof")
+        );
+        assert_eq!(tool["generation"], 5);
+        assert_eq!(tool["approvals"], json!(["mcp__private__private"]));
+        app.open_settings();
+        settings_drain(runtime, &mut app)?;
+        settings_key(runtime, &mut app, KeyCode::Char('m'))?;
+        settings_key(runtime, &mut app, KeyCode::Tab)?;
+        for action in ['r', 'n', 'd', 'x', 'd', 'e', 'c'] {
+            let review = settings_key(runtime, &mut app, KeyCode::Char(action))?;
+            assert!(review.contains("Review"), "{action}: {review}");
+            let settled = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            if action == 'x' {
+                assert!(settled.contains("disconnected"), "{settled}");
+            }
+            if action == 'd' && settled.contains("MCP true") {
+                assert!(settled.contains("failed"), "{settled}");
+            }
+        }
+        assert_eq!(app.composer.text(), draft);
+        assert_eq!(app.composer.before_cursor(), cursor);
+        runtime.quit()
+    });
+    assert!(result.is_ok(), "{result:?} {}", data.display());
+    let proof = json_file(&data.join("mcp-lifecycle.json"));
+    for key in [
+        "exit_joined",
+        "lease_joined",
+        "proc_exited",
+        "reader_joined",
+    ] {
+        assert_eq!(proof[key], true, "{key}: {proof}");
+    }
+    assert_eq!(proof["spawns"], 3);
+    assert_eq!(proof["final_generation"], 12);
+    let operations = proof["operations"].as_array().unwrap();
+    assert!(
+        operations
+            .iter()
+            .any(|row| row["result"]["kind"] == "mcp_lifecycle_settled"
+                && row["result"]["status"] == "failed")
+    );
+    let runtime = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(runtime["requests"].as_array().unwrap().len(), 2);
+    assert!(
+        runtime["requests"][0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["function"]["name"] == "mcp__private__private")
+    );
+    assert_eq!(runtime["denied"], json!([]));
+    assert_eq!(
+        runtime["shutdown"]["result"]["runtime_controls_shutdown"]["published_generation"],
+        12
+    );
+    assert_eq!(runtime["reader_retired"], true);
+    eprintln!(
+        "MCP lifecycle registered child evidence: {}",
+        data.display()
+    );
+}
+
+#[test]
+#[ignore = "registered private MCP child, lost result/readback publication and joined Quit"]
+fn mcp_runtime_lost_publication_holds_generation_and_joins_quit() {
+    for phase in ["applied", "settled"] {
+        let (runtime, data) = launch("mcp_lifecycle_runtime.py");
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Keep uncertain MCP draft");
+            fs::write(data.join("mcp-fail-publication"), phase)?;
+            app.open_settings();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('m'))?;
+            settings_key(runtime, &mut app, KeyCode::Tab)?;
+            settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            settings_key(runtime, &mut app, KeyCode::Char('c'))?;
+            draw(&mut app);
+            app.live
+                .as_mut()
+                .unwrap()
+                .settings
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            let intent = app
+                .live
+                .as_mut()
+                .unwrap()
+                .settings
+                .take_intent()
+                .ok_or_else(|| io::Error::other("Missing exact MCP apply"))?;
+            runtime.settings(intent)?;
+            let deadline = Instant::now() + Duration::from_secs(12);
+            while !data.join("mcp-publication-failed.json").exists() {
+                if let Ok(event) = runtime.events.recv_timeout(Duration::from_millis(50)) {
+                    app.observe_live(event)?;
+                }
+                if Instant::now() > deadline {
+                    return Err(io::Error::other("Controlled publication did not fail"));
+                }
+            }
+            let held = json_file(&data.join("mcp-publication-failed.json"));
+            if held["hold"] != true || held["generation"] != 1 {
+                return Err(io::Error::other("Unpublished MCP policy was installed"));
+            }
+            if app.composer.text() != "Keep uncertain MCP draft" {
+                return Err(io::Error::other("Uncertain lifecycle replaced composer"));
+            }
+            runtime.quit()
+        });
+        assert!(result.is_ok(), "{phase}: {result:?} {}", data.display());
+        let proof = json_file(&data.join("mcp-lifecycle.json"));
+        for key in [
+            "exit_joined",
+            "lease_joined",
+            "proc_exited",
+            "reader_joined",
+            "failed_hold",
+            "final_hold",
+        ] {
+            assert_eq!(proof[key], true, "{phase} {key}: {proof}");
+        }
+        assert_eq!(proof["publication_failed"], phase);
+        assert_eq!(proof["spawns"], 1);
+        assert_eq!(proof["failed_generation"], 1);
+        assert_eq!(proof["final_generation"], 1);
+        let transport = json_file(&data.join("runtime-controls-report.json"));
+        assert_eq!(transport["requests"], json!([]));
+        assert_eq!(
+            transport["shutdown"]["result"]["runtime_controls_shutdown"]["published_generation"],
+            1
+        );
+        assert_eq!(transport["reader_retired"], true);
+        eprintln!("MCP lost {phase} publication evidence: {}", data.display());
+    }
+}

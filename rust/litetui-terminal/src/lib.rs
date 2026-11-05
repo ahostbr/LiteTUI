@@ -82,6 +82,7 @@ pub mod hook_toggle_view;
 pub mod image;
 pub mod inspection;
 pub mod mcp_config;
+pub mod mcp_lifecycle;
 pub mod model_lifecycle;
 pub mod model_preferences;
 pub mod playback;

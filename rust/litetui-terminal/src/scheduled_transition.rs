@@ -257,6 +257,7 @@ impl NewReview {
             crate::runtime_controls::Shutdown::parse(
                 value,
                 &crate::runtime_controls::Binding {
+                    mcp_lifecycle: false,
                     identity: self.identity.clone(),
                     work_instance: proposal.instance.clone(),
                     provider: proposal.provider,
@@ -1041,12 +1042,14 @@ mod runtime_retirement_tests {
         )
         .unwrap();
         let current = Binding {
+            mcp_lifecycle: false,
             identity,
             provider,
             work_instance: p.instance.clone(),
             tool_selection: false,
         };
         let historical = Binding {
+            mcp_lifecycle: false,
             identity: Identity {
                 session: "00000000-0000-4000-8000-000000000009".into(),
                 ..current.identity.clone()

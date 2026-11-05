@@ -35,6 +35,7 @@ pub struct Snapshot {
 pub enum Intent {
     Glassbox(Box<crate::glassbox_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
+    McpLifecycle(Box<crate::mcp_lifecycle::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
     ModelLifecycle(Box<crate::model_lifecycle::Request>),
     Voice(Box<crate::voice_preferences::Request>),
@@ -47,6 +48,7 @@ pub enum Intent {
 pub enum Update {
     Glassbox(Result<Box<crate::glassbox_controls::Update>, String>),
     Mcp(Result<Box<crate::mcp_config::Update>, String>),
+    McpLifecycle(Result<Box<crate::mcp_lifecycle::Update>, String>),
     ModelPreferences(Result<Box<crate::model_preferences::Update>, String>),
     ModelLifecycle(Result<Box<crate::model_lifecycle::Update>, String>),
     Voice(Result<Box<crate::voice_preferences::Update>, String>),
@@ -206,6 +208,7 @@ pub struct View {
     glassbox: crate::glassbox_controls::View,
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
+    mcp_lifecycle: crate::mcp_lifecycle::View,
     model_preferences: crate::model_preferences::View,
     model_lifecycle: crate::model_lifecycle::View,
     voice: crate::voice_preferences::View,
@@ -262,6 +265,7 @@ impl View {
     pub fn subpanel_open(&self) -> bool {
         self.runtime_status_open()
             || self.mcp.open
+            || self.mcp_lifecycle.open
             || self.voice.open
             || self.model_preferences.open
             || self.glassbox.open
@@ -280,6 +284,7 @@ impl View {
     pub fn hide(&mut self) {
         self.glassbox.hide();
         self.mcp.hide();
+        self.mcp_lifecycle.hide();
         self.model_preferences.hide();
         self.model_lifecycle.hide();
         self.voice.hide();
@@ -297,6 +302,7 @@ impl View {
     pub fn close(&mut self) {
         self.glassbox = Default::default();
         self.mcp = Default::default();
+        self.mcp_lifecycle.close();
         self.model_preferences = Default::default();
         self.model_lifecycle = Default::default();
         self.voice = Default::default();
@@ -375,6 +381,7 @@ impl View {
             }
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
+            Update::McpLifecycle(result) => self.mcp_lifecycle.update(result.map(|update| *update)),
             Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
             Update::RuntimeStatus(status) => {
                 if self.runtime_status.is_open() {
@@ -446,7 +453,36 @@ impl View {
             }
             return;
         }
+        if self.mcp_lifecycle.open {
+            if key.kind == KeyEventKind::Press
+                && key.modifiers.is_empty()
+                && key.code == KeyCode::Tab
+                && self.mcp_lifecycle.can_switch()
+            {
+                self.mcp_lifecycle.close();
+                self.mcp.open();
+                self.waiting = true;
+                self.intent = Some(Intent::Mcp(Box::new(crate::mcp_config::Request::List)));
+            } else if let Some(request) = self.mcp_lifecycle.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::McpLifecycle(Box::new(request)));
+            }
+            return;
+        }
         if self.mcp.open {
+            if key.kind == KeyEventKind::Press
+                && key.modifiers.is_empty()
+                && key.code == KeyCode::Tab
+                && self.mcp.can_switch()
+            {
+                self.mcp = Default::default();
+                self.mcp_lifecycle.open();
+                self.waiting = true;
+                self.intent = Some(Intent::McpLifecycle(Box::new(
+                    crate::mcp_lifecycle::Request::List,
+                )));
+                return;
+            }
             if let Some(request) = self.mcp.key(key) {
                 self.waiting = true;
                 self.intent = Some(Intent::Mcp(Box::new(request)));
@@ -615,6 +651,10 @@ impl View {
         }
         if self.voice.open {
             self.voice.draw(frame, area, theme);
+            return;
+        }
+        if self.mcp_lifecycle.open {
+            self.mcp_lifecycle.draw(frame, area, theme);
             return;
         }
         if self.mcp.open {

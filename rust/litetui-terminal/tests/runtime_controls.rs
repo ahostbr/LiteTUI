@@ -13,6 +13,7 @@ fn hash(v: &Value) -> String {
 }
 fn binding() -> r::Binding {
     r::Binding {
+        mcp_lifecycle: false,
         identity: life::Identity {
             session: id(1),
             agent: id(2),
@@ -240,6 +241,7 @@ fn verifies_exported_source_transactions_through_shutdown() {
         let capture = &case["capture"];
         assert_eq!(capture["provider"], "host");
         let binding = r::Binding {
+            mcp_lifecycle: false,
             identity: life::Identity::parse(&capture["identity"]).unwrap(),
             work_instance: capture["instance"].as_str().unwrap().to_owned(),
             provider: life::Provider::Host,

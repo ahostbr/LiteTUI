@@ -629,6 +629,7 @@ mod tests {
         }), life::Provider::Host).unwrap();
         turn.runtime_policy = Some(Policy {
             binding: Binding {
+                mcp_lifecycle: false,
                 identity: life::Identity {
                     session: "session".into(),
                     agent: "agent".into(),
@@ -1097,5 +1098,52 @@ mod tests {
         closed.begin_close();
         assert!(!closed.can_reconcile_work());
         assert!(closed.accept_work(reconciled_input(input, true)).is_err());
+    }
+    #[test]
+    fn reviewed_mcp_enable_installs_only_within_the_same_negotiated_epoch() {
+        use crate::runtime_controls::{Binding, Facts, Policy};
+        let mut turn = idle();
+        let facts = json!({"tools_enabled":true,"settings_profile":"autonomous","chosen_profile":"autonomous",
+            "seat_profile":"autonomous","effective_profile":"autonomous","requested_cli_profile":"autonomous",
+            "plan_mode":false,"mcp_enabled":false,"approval_route":"host","cwd":std::env::temp_dir(),
+            "provider":"host","inventory":"host_request"});
+        let initial = Policy {
+            binding: Binding {
+                mcp_lifecycle: true,
+                tool_selection: false,
+                identity: life::Identity {
+                    session: "session".into(),
+                    agent: "agent".into(),
+                    backend: "custom".into(),
+                    model: "fixture".into(),
+                },
+                work_instance: "a".repeat(64),
+                provider: life::Provider::Host,
+            },
+            generation: 0,
+            facts: Facts::parse(&facts, life::Provider::Host).unwrap(),
+        };
+        turn.install_runtime_policy(initial.clone()).unwrap();
+        let mut enabled = initial.clone();
+        enabled.generation = 1;
+        let mut f = facts;
+        f["mcp_enabled"] = json!(true);
+        enabled.facts = Facts::parse_mcp(&f, life::Provider::Host, true).unwrap();
+        turn.install_runtime_policy(enabled.clone()).unwrap();
+        assert!(turn.runtime_policy.as_ref().unwrap().facts.mcp_enabled);
+        assert!(turn.install_runtime_policy(enabled.clone()).is_err());
+        let mut target = enabled.clone();
+        target.binding.work_instance = "b".repeat(64);
+        target.generation = 0;
+        assert!(turn.install_runtime_policy(target).is_err());
+        let mut unsupported = enabled;
+        unsupported.binding.mcp_lifecycle = false;
+        unsupported.facts = initial.facts.clone();
+        unsupported.generation = 0;
+        assert!(turn.install_runtime_policy(unsupported).is_err());
+        let mut startup = idle();
+        let mut bad = initial;
+        bad.facts = Facts::parse_mcp(&f, life::Provider::Host, true).unwrap();
+        assert!(startup.install_runtime_policy(bad).is_err());
     }
 }

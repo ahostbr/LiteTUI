@@ -162,6 +162,17 @@ fn root_resume_preflight_never_rewrites_settings_or_adopts_an_unmarked_root() {
     assert!(resume::validate_root(&path, true).is_err());
     assert_eq!(fs::read(path.join("settings.json")).unwrap(), settings);
     assert_eq!(fs::read(path.join(resume::MARKER)).unwrap(), before);
+    let enabled = br#"{"tools_enabled":false,"mcp_enabled":true,"unrelated":"retained"}"#;
+    fs::write(path.join("settings.json"), enabled).unwrap();
+    resume::validate_root(&path, false).unwrap();
+    assert_eq!(fs::read(path.join("settings.json")).unwrap(), enabled);
+    fs::write(
+        path.join("settings.json"),
+        br#"{"tools_enabled":false,"mcp_enabled":"true"}"#,
+    )
+    .unwrap();
+    assert!(resume::validate_root(&path, false).is_err());
+
     fs::write(
         path.join(resume::MARKER),
         r#"{"format":"litetui-rust-owned-root","version":2}"#,

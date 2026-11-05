@@ -64,6 +64,7 @@ OPERATIONS = (
     "plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback",
     "context.native_page", "inspection.native_status", "inspection.native_status_with_glassbox",
     "voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback",
+    "mcp.native_lifecycle_snapshot", "mcp.native_lifecycle_review", "mcp.native_lifecycle_apply", "mcp.native_lifecycle_readback",
     "mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_apply", "mcp.native_config_readback",
     "context.native_topic_page", "context.native_topic_edit", "context.native_topic_review",
     "context.native_topic_apply", "context.native_topic_readback",
@@ -997,7 +998,7 @@ async def async_dispatch(app, cmd):
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
     blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
-    if operation.startswith(("gui.models.native_preferences_", "gui.models.native_lifecycle_")):
+    if operation.startswith(("gui.models.native_preferences_", "gui.models.native_lifecycle_", "gui.mcp.native_lifecycle_")):
         blocking = True
     if operation == "gui.models.select":
         from litetui import background_input
@@ -1032,6 +1033,9 @@ async def _async_dispatch(app, cmd):
     native_schedule.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
+    if operation.startswith("gui.mcp.native_lifecycle_"):
+        from litetui import native_mcp_lifecycle
+        return await native_mcp_lifecycle.dispatch(app, cmd)
     if operation.startswith("gui.models.native_lifecycle_"):
         from litetui import native_model_lifecycle
         return await native_model_lifecycle.dispatch(app, cmd)

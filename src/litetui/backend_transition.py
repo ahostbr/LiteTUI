@@ -186,6 +186,8 @@ async def transition(app, cmd):
         if type(cmd.get("version")) is not int or cmd["version"] != VERSION:
             raise ValueError("Guarded backend transition requires version 1")
         _quiet(app)
+        from litetui import native_mcp_lifecycle
+        native_mcp_lifecycle.require_transition(app)
         catalog = backend_catalog.catalog(app, {"session_id": cmd.get("session_id")})
         if valid_id(cmd.get("agent_id")) != catalog["agent_id"]:
             raise ValueError("Backend selection belongs to another agent")
@@ -211,7 +213,9 @@ async def transition(app, cmd):
                                timeout=getattr(old_launch, "timeout", 600),
                                max_tokens=getattr(old_launch, "max_tokens", None)
                                if name not in {"codex", "claude"} else None,
-                               history_projection_version=getattr(old_launch, "history_projection_version", None))
+                               history_projection_version=getattr(old_launch, "history_projection_version", None),
+                               work_lifecycle_version=getattr(old_launch, "work_lifecycle_version", None),
+                               mcp_lifecycle_version=getattr(old_launch, "mcp_lifecycle_version", None))
         candidate = llm_backend.make_backend(settings)
         if name == "llamacpp":
             candidate.require_existing_server()

@@ -39,6 +39,9 @@ pub struct Facts {
 }
 impl Facts {
     pub fn from_ready(event: &Value) -> io::Result<Option<Self>> {
+        Self::from_ready_mcp(event, false)
+    }
+    fn from_ready_mcp(event: &Value, mcp_enabled: bool) -> io::Result<Option<Self>> {
         if event.get("tools_enabled").is_none()
             && event.get("approval_route").is_none()
             && event.get("mcp_enabled").is_none()
@@ -51,8 +54,8 @@ impl Facts {
             )
         };
         let enabled = event["tools_enabled"].as_bool().ok_or_else(bad)?;
-        // External MCP is not yet connected by this launcher.
-        if event["mcp_enabled"].as_bool() != Some(false) {
+        // Only an exact published MCP lifecycle policy permits a live MCP gate.
+        if event["mcp_enabled"].as_bool() != Some(mcp_enabled) {
             return Err(bad());
         }
         let profile = Profile::parse(event["tool_profile"].as_str().ok_or_else(bad)?)?;
@@ -93,7 +96,11 @@ impl Expected {
         self.validate_mode(event, ValidationMode::Launch)
     }
     pub fn validate_mode(&self, event: &Value, mode: ValidationMode<'_>) -> io::Result<()> {
-        let facts = Facts::from_ready(event)?
+        let mcp = match mode {
+            ValidationMode::Current(p) => p.binding.mcp_lifecycle && p.facts.mcp_enabled,
+            _ => false,
+        };
+        let facts = Facts::from_ready_mcp(event, mcp)?
             .ok_or_else(|| io::Error::other("Runtime omitted tool-policy facts; no prompt sent"))?;
         let requested = match event.get("tool_profile_requested") {
             Some(Value::Null) => None,
