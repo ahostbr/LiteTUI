@@ -125,7 +125,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 && !app.has_live_question()
                 && let Some(chat) = app.live.as_mut()
             {
-                if chat.work.context_open() || chat.work.image.open {
+                if chat.work.context_open() || chat.work.image.open || chat.work.dictation.open {
                     chat.work.key(key);
                     return false;
                 }
@@ -296,7 +296,12 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         return false;
     }
     if app.has_live_settings() {
-        app.live.as_mut().expect("settings view").settings.key(key);
+        if app.live.as_ref().unwrap().settings.dictation_key(key) {
+            app.live.as_mut().unwrap().settings.close();
+            app.open_dictation();
+        } else {
+            app.live.as_mut().expect("settings view").settings.key(key);
+        }
         return false;
     }
     if app.has_live_backend() {
@@ -1766,6 +1771,59 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dictation_overlay_owns_paste_repeat_and_small_viewport_escape() {
+        use litetui_terminal::{dictation, live::Observation, work_view};
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("Unsent draft");
+        app.open_dictation();
+        let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+        let work_view::Request::Dictation(request) = intent.request else {
+            panic!("dictation request")
+        };
+        assert_eq!(request.action, "review");
+        paste(&mut app, "Do not overwrite draft");
+        let mut router = KeyRouter::default();
+        router.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "Unsent draft");
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        let identity = litetui_terminal::work_protocol::Identity {
+            session: "s".into(),
+            agent: "a".into(),
+            backend: "custom".into(),
+            model: "fixture".into(),
+        };
+        let response = serde_json::json!({"version":1,"kind":"dictation","session_id":"s","agent_id":"a","backend":"custom","model":"fixture",
+            "work_instance":"w","capture":"12345678-1234-4123-8123-123456789012","draft_sha256":dictation::digest("Unsent draft"),
+            "preferences":{"model":"base.en","microphone":"","hotkey":"ctrl+space"},"seconds":60,"status":"review","text":"","text_sha256":null});
+        let state = request.parse(&identity, "w", &response, None).unwrap();
+        app.observe_live(Observation::Work(work_view::Update {
+            generation: intent.generation,
+            data: work_view::Data::Dictation(state),
+        }))
+        .unwrap();
+        app.viewport_too_small = true;
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let work_view::Request::Dictation(cancel) = app
+            .live
+            .as_mut()
+            .unwrap()
+            .work
+            .take_intent()
+            .unwrap()
+            .request
+        else {
+            panic!("cancel request")
+        };
+        assert_eq!(cancel.action, "cancel");
+        assert_eq!(app.composer.text(), "Unsent draft");
+        assert!(router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
+    }
 
     #[test]
     fn midturn_send_keys_use_one_request_and_respect_focused_input() {

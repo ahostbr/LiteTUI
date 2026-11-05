@@ -39,6 +39,7 @@ pub enum Request {
     Image(crate::image::Request),
     Midturn(Box<crate::midturn::Request>),
     ChatPause(Box<crate::chat_pause::Request>),
+    Dictation(crate::dictation::Request),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
@@ -76,6 +77,7 @@ pub enum Data {
     Image(Option<crate::image::Review>),
     Midturn(Box<crate::midturn::Reply>),
     ChatPause(Box<crate::chat_pause::Reply>),
+    Dictation(crate::dictation::State),
     ImagePreview(crate::image::Thumbnail),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
@@ -153,6 +155,7 @@ pub struct View {
     pub image: crate::image::Picker,
     pub midturn: crate::midturn::View,
     pub chat_pause: crate::chat_pause::View,
+    pub dictation: crate::dictation::View,
     section: usize,
     selected: usize,
     page_back: Vec<usize>,
@@ -209,6 +212,13 @@ impl View {
             self.request(Request::ChatPause(Box::new(
                 crate::chat_pause::Request::Review { active },
             )));
+        }
+    }
+    pub fn dictate(&mut self, draft: crate::dictation::Draft) {
+        if !self.owns_input() {
+            self.open = true;
+            let request = self.dictation.begin(draft);
+            self.request(Request::Dictation(request));
         }
     }
     pub fn review_queued_text(&mut self, draft: crate::midturn::Draft) {
@@ -291,6 +301,9 @@ impl View {
         self.generation = generation;
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
+        if let Some(request) = self.dictation.poll(self.waiting) {
+            self.request(Request::Dictation(request));
+        }
         self.intent.take()
     }
     pub fn pending_generation(&self) -> Option<u64> {
@@ -390,6 +403,7 @@ impl View {
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
                 | (Request::Midturn(_), Data::Midturn(_))
                 | (Request::ChatPause(_), Data::ChatPause(_))
+                | (Request::Dictation(_), Data::Dictation(_))
                 | (Request::Image(_), Data::Image(_))
                 | (
                     Request::Image(crate::image::Request::Preview(_)),
@@ -424,6 +438,16 @@ impl View {
             }
             Data::Rejected(reason) if matches!(pending, Request::ChatPause(_)) => {
                 self.chat_pause.reject(reason)
+            }
+            Data::Dictation(state) => {
+                self.dictation.reply(state);
+                self.open = self.dictation.open;
+                if !self.open {
+                    self.notice = "Dictation finished. Review your composer before sending.".into();
+                }
+            }
+            Data::Rejected(reason) if matches!(pending, Request::Dictation(_)) => {
+                self.dictation.reject(reason)
             }
             Data::Midturn(reply) => {
                 let interrupted = reply.interrupted().is_some();
@@ -744,7 +768,12 @@ impl View {
         self.notice = error;
     }
     pub fn paste(&mut self, text: &str) {
-        if self.chat_pause.open || self.midturn.open || self.hooks.open || self.plugin_reload.open {
+        if self.dictation.open
+            || self.chat_pause.open
+            || self.midturn.open
+            || self.hooks.open
+            || self.plugin_reload.open
+        {
             return;
         }
         if self.context.is_open() {
@@ -770,6 +799,13 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.dictation.open {
+            if let Some(r) = self.dictation.key(key, self.waiting) {
+                self.request(Request::Dictation(r));
+            }
+            self.open = self.dictation.open;
+            return;
+        }
         if self.chat_pause.open {
             if let Some(req) = self.chat_pause.key(key, self.waiting) {
                 self.request(Request::ChatPause(Box::new(req)));
@@ -1191,7 +1227,12 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.chat_pause.open || self.midturn.open || self.hooks.open || self.plugin_reload.open {
+        if self.dictation.open
+            || self.chat_pause.open
+            || self.midturn.open
+            || self.hooks.open
+            || self.plugin_reload.open
+        {
             return;
         }
         if self.image.open {
@@ -1462,6 +1503,10 @@ impl View {
         self.current_row().map_or_else(Vec::new, Row::details)
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.dictation.open {
+            self.dictation.draw(frame, area, self.waiting);
+            return;
+        }
         if self.chat_pause.open {
             self.chat_pause.draw(frame, area, self.waiting);
             return;

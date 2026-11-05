@@ -35,7 +35,7 @@ def current_operation(app):
 
 
 OPERATIONS = (
-    "hello", "state", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
+    "hello", "state", "voice.native_dictation", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -57,6 +57,8 @@ OPERATIONS = (
     "calendar.list", "diagnostics.get", "host_tools.register", "host_tools.unregister", "host_tools.result",
     "images.attach", "images.clear", "images.native_prepare", "images.native_clipboard", "images.native_preview", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
+    "models.native_preferences_snapshot", "models.native_preferences_review",
+    "models.native_preferences_apply", "models.native_preferences_readback",
     "plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback",
     "context.native_page", "inspection.native_status", "inspection.native_status_with_glassbox",
     "voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback",
@@ -931,6 +933,11 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    from litetui import native_dictation
+    if operation == native_dictation.OPERATION:
+        return await native_dictation.dispatch(app, cmd)
+    if native_dictation.blocking(app):
+        raise ValueError("Finish or cancel dictation before another management action")
     from litetui import native_runtime_controls, native_work_execution
     if operation in native_runtime_controls.OPERATIONS:
         token = OPERATION_CONTEXT.set(cmd.get("id"))
@@ -979,6 +986,8 @@ async def async_dispatch(app, cmd):
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
     blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
+    if operation.startswith("gui.models.native_preferences_"):
+        blocking = True
     if operation == "gui.models.select":
         from litetui import background_input
         blocking = background_input.enabled(app)
@@ -1012,6 +1021,9 @@ async def _async_dispatch(app, cmd):
     native_schedule.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
+    if operation.startswith("gui.models.native_preferences_"):
+        from litetui import native_model_preferences
+        return await native_model_preferences.dispatch(app, cmd)
     if operation == "gui.work.native_stop_apply":
         from litetui import native_work
         return await native_work.stop_apply(app, cmd)

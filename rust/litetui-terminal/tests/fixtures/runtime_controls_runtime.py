@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -36,6 +37,7 @@ release_publication = asyncio.Event()
 report: dict[str, Any] = {'case': case, 'commands': [], 'wire': [], 'requests': [], 'summaries': [],
     'snapshots': [], 'reviews': [], 'results': [], 'readbacks': [], 'events': [], 'lease_release': []}
 event_lock = threading.Lock()
+real_popen = subprocess.Popen
 
 
 def canonical(value):
@@ -220,6 +222,10 @@ async def serve(app):
 
     async def management(owner, command):
         operation = command['type']
+        if operation == 'gui.voice.native_dictation':
+            result = await actual_gui(owner, command)
+            report.setdefault('dictation', []).append(copy.deepcopy(result))
+            return result
         if operation.startswith('gui.prompt.native_pause_'):
             if (case == 'host-pause-readback-error' and operation.endswith('_readback')
                     and not report.get('pause_readback_error')):
@@ -342,6 +348,9 @@ async def serve(app):
         if not seeded:
             return
         bridge = background_input.bridge(app)
+        if case.startswith('dictation-'):
+            report['dictation_retired'] = getattr(app, '_native_dictation', None) is None
+            report['dictation_directories_removed'] = all(not Path(p).exists() for p in report.get('dictation_directories', []))
         report.update(after=protected(app), final_facts=facts(app), final_documents=documents(app),
             history=copy.deepcopy(app.conversation), durable=ConversationRepository.read(app.convo_path, max_bytes=8*1024*1024)[1] if app.convo_path.is_file() else [],
             questions=list(getattr(app, '_rpc_pending_asks', {})), approvals=list(getattr(app, '_approval_waiters', {})),
@@ -377,6 +386,38 @@ async def serve(app):
             await asyncio.sleep(0.01)
 
     with ExitStack() as stack:
+        if case.startswith('dictation-'):
+            from litetui import native_dictation
+            script = root / 'device_free_capture.py'
+            script.write_text(
+                "import pathlib,sys\n"
+                "from litetui import native_dictation_worker as w, stt_backend\n"
+                "p=pathlib.Path(sys.argv[1]);(p/'fixture-started').touch()\n"
+                "class Recorder:\n"
+                " def poll(self):return None\n"
+                "stt_backend.missing=lambda:''\n"
+                "def record(device,**kwargs):\n"
+                " assert kwargs=={'directory':p,'duration_s':60}\n"
+                " (p/'fixture-device').write_text(str(device),encoding='utf8');return Recorder()\n"
+                "stt_backend.record_start=record\n"
+                "stt_backend.record_stop=lambda proc:str(p/'fixture.wav')\n"
+                "def transcribe(wav,model,*,local_only):\n"
+                " assert local_only is True and model=='base.en' and wav==str(p/'fixture.wav')\n"
+                + (" raise RuntimeError('Private unavailable model')\n" if case == 'dictation-failed'
+                 else " return ''\n" if case == 'dictation-empty' else " return 'Fixture dictated words'\n") +
+
+                "stt_backend.transcribe=transcribe\n"
+                "w.run(p)\n",
+                encoding='utf-8')
+            def command(directory):
+                report.setdefault('dictation_directories', []).append(str(directory))
+                return [sys.executable, '-B', str(script), str(directory)]
+            def popen(argv, **kwargs):
+                assert argv[:3] == [sys.executable, '-B', str(script)]
+                assert kwargs['cwd'] == Path(argv[3]) and kwargs['creationflags'] & 4
+                return real_popen(argv, **kwargs)
+            stack.enter_context(patch.object(native_dictation, '_command', command))
+            stack.enter_context(patch.object(subprocess, 'Popen', popen))
         for owner, name, replacement in ((gui_rpc, 'async_dispatch', management), (rpc, '_dispatch', dispatch),
                 (rpc, 'rpc_emit', emit), (app, '_authorize_action', authorize), (app, '_execute_tool', execute_tool),
                 (hook_host, 'dispatch', hooks), (app, 'exit', exit_app),

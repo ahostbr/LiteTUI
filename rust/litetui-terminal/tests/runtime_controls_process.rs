@@ -1495,3 +1495,161 @@ fn host_chat_pause_refuses_retired_review_without_changing_prompt_or_pause() {
             .any(|e| e["kind"] == "chat-pause" && e["result"]["paused"] == true)
     );
 }
+
+#[test]
+#[ignore = "actual source-managed dictation, private generated helper, no devices"]
+fn dictation_voice_route_preserves_draft_and_joins_capture() {
+    for case in [
+        "dictation-apply",
+        "dictation-empty",
+        "dictation-failed",
+        "dictation-cancel",
+        "dictation-quit",
+    ] {
+        let (runtime, root) = launch(case);
+        let original = "Keep the existing draft";
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text(original);
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let caret = (
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned(),
+            );
+            app.open_settings();
+            runtime.settings(app.live.as_mut().unwrap().settings.take_intent().unwrap())?;
+            wait(runtime, &mut app, |e| matches!(e, Observation::Settings(_)))?;
+            let _ = draw(&mut app);
+            app.live
+                .as_mut()
+                .unwrap()
+                .settings
+                .key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+            runtime.settings(app.live.as_mut().unwrap().settings.take_intent().unwrap())?;
+            wait(runtime, &mut app, |e| matches!(e, Observation::Settings(_)))?;
+            assert!(draw(&mut app).contains("D dictate to composer"));
+            assert!(
+                app.live
+                    .as_ref()
+                    .unwrap()
+                    .settings
+                    .dictation_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
+            );
+            app.live.as_mut().unwrap().settings.close();
+            app.open_dictation();
+            dictation_send(runtime, &mut app)?;
+            let screen = draw(&mut app);
+            assert!(
+                screen.contains("60 seconds") && screen.contains("must already be"),
+                "{screen}"
+            );
+            app.live
+                .as_mut()
+                .unwrap()
+                .work
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            dictation_send(runtime, &mut app)?;
+            assert_eq!(app.composer.text(), original);
+            assert_eq!(
+                caret,
+                (
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
+            if case == "dictation-quit" {
+                return runtime.quit();
+            }
+            let _ = draw(&mut app);
+            let key = if case == "dictation-cancel" {
+                KeyCode::Esc
+            } else {
+                KeyCode::Enter
+            };
+            app.live
+                .as_mut()
+                .unwrap()
+                .work
+                .key(KeyEvent::new(key, KeyModifiers::NONE));
+            dictation_send(runtime, &mut app)?;
+            if matches!(
+                case,
+                "dictation-apply" | "dictation-empty" | "dictation-failed"
+            ) {
+                let expected = match case {
+                    "dictation-empty" => "No speech was recognized",
+                    "dictation-failed" => "Dictation failed",
+                    _ => "Fixture dictated words",
+                };
+                for _ in 0..90 {
+                    let screen = draw(&mut app);
+                    if screen.contains(expected) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    if let Some(intent) = app.live.as_mut().unwrap().work.take_intent() {
+                        runtime.work(intent)?;
+                        wait(runtime, &mut app, |e| matches!(e, Observation::Work(_)))?;
+                    }
+                }
+                assert!(draw(&mut app).contains(expected));
+                assert_eq!(app.composer.text(), original);
+                assert_eq!(
+                    caret,
+                    (
+                        app.composer.before_cursor().to_owned(),
+                        app.composer.selected_text().to_owned()
+                    )
+                );
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .work
+                    .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                if case == "dictation-apply" {
+                    dictation_send(runtime, &mut app)?;
+                    assert_eq!(
+                        app.composer.text(),
+                        format!("{original} Fixture dictated words")
+                    );
+                } else {
+                    assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+                    assert_eq!(app.composer.text(), original);
+                    app.live
+                        .as_mut()
+                        .unwrap()
+                        .work
+                        .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    dictation_send(runtime, &mut app)?;
+                }
+            } else {
+                assert_eq!(app.composer.text(), original);
+            }
+            assert!(app.live.as_mut().unwrap().take_submission().is_none());
+            runtime.quit()
+        });
+        assert!(result.is_ok(), "{case} {result:?} {}", root.display());
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(r["denied"], json!([]));
+        assert_eq!(r["requests"], json!([]));
+        assert_eq!(r["dictation_retired"], true);
+        assert_eq!(r["dictation_directories_removed"], true);
+        assert_eq!(r["dictation_directories"].as_array().unwrap().len(), 1);
+    }
+}
+fn dictation_send(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+    runtime.work(
+        app.live
+            .as_mut()
+            .unwrap()
+            .work
+            .take_intent()
+            .ok_or_else(|| {
+                io::Error::other(format!("Missing dictation request: {}", app.notice))
+            })?,
+    )?;
+    wait(runtime, app, |e| matches!(e, Observation::Work(_)))
+}

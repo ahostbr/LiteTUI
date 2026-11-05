@@ -403,10 +403,12 @@ struct SavedHistoryPending {
 }
 enum PreferencesRequest {
     Mcp(Box<crate::mcp_config::Request>),
+    ModelPreferences(Box<crate::model_preferences::Request>),
     Voice(Box<crate::voice_preferences::Request>),
 }
 enum PreferencesReply {
     Mcp(Box<crate::mcp_config::Update>),
+    ModelPreferences(Box<crate::model_preferences::Update>),
     Voice(Box<crate::voice_preferences::Update>),
     Next(PreferencesRequest),
 }
@@ -414,24 +416,30 @@ impl PreferencesRequest {
     fn operations(&self) -> &[&str] {
         match self {
             Self::Mcp(_) => &crate::mcp_config::OPERATIONS,
+            Self::ModelPreferences(_) => &crate::model_preferences::OPERATIONS,
             Self::Voice(_) => &crate::voice_preferences::OPERATIONS,
         }
     }
     fn is_apply(&self) -> bool {
         match self {
             Self::Mcp(r) => matches!(**r, crate::mcp_config::Request::Apply(_, _)),
+            Self::ModelPreferences(r) => matches!(**r, crate::model_preferences::Request::Apply(_)),
             Self::Voice(r) => matches!(**r, crate::voice_preferences::Request::Apply(_)),
         }
     }
     fn command(&self, id: &crate::work_protocol::Identity, instance: &str) -> io::Result<Value> {
         match self {
             Self::Mcp(r) => r.command(id, instance),
+            Self::ModelPreferences(r) => r.command(id, instance),
             Self::Voice(r) => r.command(id, instance),
         }
     }
     fn rejected(&self) -> fn(String) -> crate::settings_view::Update {
         match self {
             Self::Mcp(_) => |reason| crate::settings_view::Update::Mcp(Err(reason)),
+            Self::ModelPreferences(_) => {
+                |reason| crate::settings_view::Update::ModelPreferences(Err(reason))
+            }
             Self::Voice(_) => |reason| crate::settings_view::Update::Voice(Err(reason)),
         }
     }
@@ -448,6 +456,14 @@ impl PreferencesRequest {
                     PreferencesReply::Next(Self::Mcp(Box::new(next)))
                 }
                 crate::mcp_config::Reply::Update(update) => PreferencesReply::Mcp(Box::new(update)),
+            },
+            Self::ModelPreferences(r) => match r.response(v, id, instance, command_id)? {
+                crate::model_preferences::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::ModelPreferences(Box::new(next)))
+                }
+                crate::model_preferences::Reply::Update(update) => {
+                    PreferencesReply::ModelPreferences(Box::new(update))
+                }
             },
             Self::Voice(r) => match r.response(v, id, instance, command_id)? {
                 crate::voice_preferences::Reply::Next(next) => {
@@ -2863,6 +2879,9 @@ impl Management {
         }
         let (request, runtime_status) = match intent {
             crate::settings_view::Intent::Mcp(r) => (Some(PreferencesRequest::Mcp(r)), false),
+            crate::settings_view::Intent::ModelPreferences(r) => {
+                (Some(PreferencesRequest::ModelPreferences(r)), false)
+            }
             crate::settings_view::Intent::Voice(r) => (Some(PreferencesRequest::Voice(r)), false),
             crate::settings_view::Intent::RuntimeStatus => (None, true),
             _ => (None, false),
@@ -2955,6 +2974,9 @@ impl Management {
                     return Ok(Step::Write(value));
                 }
                 Ok(PreferencesReply::Mcp(update)) => crate::settings_view::Update::Mcp(Ok(update)),
+                Ok(PreferencesReply::ModelPreferences(update)) => {
+                    crate::settings_view::Update::ModelPreferences(Ok(update))
+                }
                 Ok(PreferencesReply::Voice(update)) => {
                     crate::settings_view::Update::Voice(Ok(update))
                 }

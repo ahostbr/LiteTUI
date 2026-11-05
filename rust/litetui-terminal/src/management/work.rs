@@ -26,6 +26,7 @@ pub(super) struct Control {
     queue_review: Option<crate::midturn::Review>,
     pause_review: Option<crate::chat_pause::Review>,
     pause_origin: Option<crate::work_lifecycle::Origin>,
+    dictation: Option<crate::dictation::State>,
     queue_origin: Option<crate::work_lifecycle::Origin>,
     queue_policy: Option<(u64, crate::tool_mode::Profile)>,
 }
@@ -175,6 +176,7 @@ impl Management {
                 }
                 r.operation()
             }
+            view::Request::Dictation(_) => crate::dictation::OPERATION,
             view::Request::Context(r) => r.operation(),
             view::Request::Plugin(request) => {
                 if !crate::plugin_reload::OPERATIONS
@@ -257,7 +259,10 @@ impl Management {
             identity.request()
         } else if matches!(
             &intent.request,
-            view::Request::Image(_) | view::Request::Midturn(_) | view::Request::ChatPause(_)
+            view::Request::Image(_)
+                | view::Request::Midturn(_)
+                | view::Request::ChatPause(_)
+                | view::Request::Dictation(_)
         ) {
             identity.request()
         } else {
@@ -495,6 +500,9 @@ impl Management {
                 command["profile"] = json!(profile.as_str());
                 self.work.queue_origin = Some(origin);
             }
+            view::Request::Dictation(request) => {
+                command = request.command(&identity, self.context_instance()?);
+            }
             view::Request::Image(request) => {
                 command = request.command(&identity, self.context_instance()?);
             }
@@ -590,6 +598,7 @@ impl Management {
         }
         command["type"] = json!(op);
         let mutating = match &intent.request {
+            view::Request::Dictation(r) => !matches!(r.action, "review" | "status"),
             view::Request::ChatPause(request) => {
                 matches!(request.as_ref(), crate::chat_pause::Request::Apply(_))
             }
@@ -745,6 +754,20 @@ impl Management {
                 };
                 view::Data::ChatPause(Box::new(reply))
             }
+            view::Request::Dictation(request) => {
+                let state = request.parse(
+                    &self.work_identity()?,
+                    self.context_instance()?,
+                    value,
+                    self.work.dictation.as_ref(),
+                )?;
+                self.work.dictation = if matches!(state.status.as_str(), "cancelled" | "applied") {
+                    None
+                } else {
+                    Some(state.clone())
+                };
+                view::Data::Dictation(state)
+            }
             view::Request::Midturn(request) => {
                 let parent = self
                     .work
@@ -823,7 +846,9 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
-                    view::Request::Midturn(_) | view::Request::ChatPause(_) => unreachable!(),
+                    view::Request::Midturn(_)
+                    | view::Request::ChatPause(_)
+                    | view::Request::Dictation(_) => unreachable!(),
                     view::Request::Plugin(request) => {
                         let instance = self.context_instance()?;
                         if matches!(request.as_ref(), crate::plugin_reload::Request::Apply(_))

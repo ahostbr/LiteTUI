@@ -2542,6 +2542,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             | crate::work_view::Request::ManualDecision { accept: true, .. } => {
                                 turn.can_manage()
                             }
+                            crate::work_view::Request::Dictation(_) => turn.can_manage(),
                             crate::work_view::Request::Hook(_)
                             | crate::work_view::Request::Plugin(_) => turn.can_manage(),
                             crate::work_view::Request::ExecutionValidate(_)
@@ -2621,6 +2622,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Input::Settings(intent) => {
                         let voice = matches!(intent, crate::settings_view::Intent::Voice(_));
+                        let model_preferences =
+                            matches!(intent, crate::settings_view::Intent::ModelPreferences(_));
                         let mcp = matches!(intent, crate::settings_view::Intent::Mcp(_));
                         let runtime_status =
                             matches!(intent, crate::settings_view::Intent::RuntimeStatus);
@@ -2650,26 +2653,34 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => frontend.observe(Observation::Settings(if voice {
-                                crate::settings_view::Update::Voice(Err(error.to_string()))
-                            } else if mcp {
-                                crate::settings_view::Update::Mcp(Err(error.to_string()))
-                            } else if runtime_status {
-                                crate::settings_view::Update::RuntimeStatus(Err(error.to_string()))
-                            } else if let Some(generation) = compact_generation {
-                                crate::settings_view::Update::Compaction(
-                                    crate::compaction_settings::Update::Rejected {
-                                        generation,
-                                        reason: error.to_string(),
-                                    },
-                                )
-                            } else if editing {
-                                crate::settings_view::Update::Editor(
-                                    crate::settings_editor::Update::Rejected(error.to_string()),
-                                )
-                            } else {
-                                crate::settings_view::Update::Rejected(error.to_string())
-                            }))?,
+                            Err(error) => {
+                                frontend.observe(Observation::Settings(if model_preferences {
+                                    crate::settings_view::Update::ModelPreferences(Err(
+                                        error.to_string()
+                                    ))
+                                } else if voice {
+                                    crate::settings_view::Update::Voice(Err(error.to_string()))
+                                } else if mcp {
+                                    crate::settings_view::Update::Mcp(Err(error.to_string()))
+                                } else if runtime_status {
+                                    crate::settings_view::Update::RuntimeStatus(Err(
+                                        error.to_string()
+                                    ))
+                                } else if let Some(generation) = compact_generation {
+                                    crate::settings_view::Update::Compaction(
+                                        crate::compaction_settings::Update::Rejected {
+                                            generation,
+                                            reason: error.to_string(),
+                                        },
+                                    )
+                                } else if editing {
+                                    crate::settings_view::Update::Editor(
+                                        crate::settings_editor::Update::Rejected(error.to_string()),
+                                    )
+                                } else {
+                                    crate::settings_view::Update::Rejected(error.to_string())
+                                }))?
+                            }
                         }
                     }
                     Input::Backend(intent) => {

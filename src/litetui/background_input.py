@@ -937,6 +937,8 @@ def begin_close(app):
 
 async def settle_before_shutdown(app):
     cutoff = begin_close(app)
+    from litetui import native_dictation
+    await native_dictation.retire(app, closing=True)
     if cutoff is None:
         return None
     value = bridge(app)
@@ -1913,6 +1915,9 @@ def cancel_deferred(app):
 
 
 def prompt_refusal(app):
+    from litetui import native_dictation
+    if native_dictation.blocking(app):
+        return "Finish or cancel dictation before sending a prompt"
     from litetui import native_runtime_controls, native_work_execution
     if why := native_runtime_controls.mutation_hold(app):
         return why
@@ -2611,6 +2616,9 @@ def prepare_publication(app, cmd, result):
     from litetui import native_runtime_controls
     ticket = native_runtime_controls.prepare_publication(app, cmd, result)
     if ticket is None:
+        from litetui import native_dictation
+        ticket = native_dictation.prepare_publication(app, cmd, result)
+    if ticket is None:
         ticket = native_work_execution.prepare_publication(app, cmd, result)
     if ticket is None:
         ticket = native_schedule.prepare_publication(app, cmd, result)
@@ -2622,7 +2630,10 @@ def prepare_publication(app, cmd, result):
 def finish_publication(app, ticket):
     from litetui import native_deferred, native_schedule, native_work_execution
     from litetui import native_runtime_controls
-    if isinstance(ticket, native_runtime_controls.Publication):
+    from litetui import native_dictation
+    if isinstance(ticket, native_dictation.Publication):
+        native_dictation.finish_publication(app, ticket)
+    elif isinstance(ticket, native_runtime_controls.Publication):
         native_runtime_controls.finish_publication(app, ticket)
     elif isinstance(ticket, native_work_execution.Publication):
         native_work_execution.finish_publication(app, ticket)

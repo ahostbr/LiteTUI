@@ -34,6 +34,7 @@ pub struct Snapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     Mcp(Box<crate::mcp_config::Request>),
+    ModelPreferences(Box<crate::model_preferences::Request>),
     Voice(Box<crate::voice_preferences::Request>),
     RuntimeStatus,
     Read,
@@ -43,6 +44,7 @@ pub enum Intent {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
     Mcp(Result<Box<crate::mcp_config::Update>, String>),
+    ModelPreferences(Result<Box<crate::model_preferences::Update>, String>),
     Voice(Result<Box<crate::voice_preferences::Update>, String>),
     RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
@@ -199,6 +201,7 @@ fn display(value: &str) -> String {
 pub struct View {
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
+    model_preferences: crate::model_preferences::View,
     voice: crate::voice_preferences::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
@@ -231,7 +234,10 @@ impl View {
         self.runtime_status.is_open()
     }
     pub fn subpanel_open(&self) -> bool {
-        self.runtime_status_open() || self.mcp.open || self.voice.open
+        self.runtime_status_open()
+            || self.mcp.open
+            || self.voice.open
+            || self.model_preferences.open
     }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting || self.editor.owns_input() || self.compaction.owns_input()
@@ -245,6 +251,7 @@ impl View {
     }
     pub fn hide(&mut self) {
         self.mcp.hide();
+        self.model_preferences.hide();
         self.voice.hide();
         self.runtime_status.hide();
         self.editor.hide();
@@ -254,8 +261,12 @@ impl View {
         self.details = None;
         self.pressed = None;
     }
+    pub fn dictation_key(&self, key: KeyEvent) -> bool {
+        self.voice.dictation_key(key)
+    }
     pub fn close(&mut self) {
         self.mcp = Default::default();
+        self.model_preferences = Default::default();
         self.voice = Default::default();
         self.runtime_status.close();
         self.editor.close();
@@ -318,6 +329,9 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
+            Update::ModelPreferences(result) => {
+                self.model_preferences.update(result.map(|update| *update))
+            }
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::RuntimeStatus(status) => {
@@ -362,6 +376,13 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.model_preferences.open {
+            if let Some(request) = self.model_preferences.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::ModelPreferences(Box::new(request)));
+            }
+            return;
+        }
         if self.voice.open {
             if let Some(request) = self.voice.key(key) {
                 self.waiting = true;
@@ -409,6 +430,14 @@ impl View {
             KeyCode::End => self.select(usize::MAX),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(4),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(4).min(self.max_scroll),
+            KeyCode::Char('p') if key.kind == KeyEventKind::Press => {
+                self.model_preferences.open();
+                self.waiting = true;
+                self.intent = Some(Intent::ModelPreferences(Box::new(
+                    crate::model_preferences::Request::List,
+                )));
+                self.hide();
+            }
             KeyCode::Char('v') if key.kind == KeyEventKind::Press => {
                 self.voice.open();
                 self.waiting = true;
@@ -450,7 +479,7 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.mcp.open || self.voice.open {
+        if self.mcp.open || self.voice.open || self.model_preferences.open {
             return;
         }
         if self.runtime_status.is_open() {
@@ -505,6 +534,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.model_preferences.open {
+            self.model_preferences.draw(frame, area, theme);
+            return;
+        }
         if self.voice.open {
             self.voice.draw(frame, area, theme);
             return;
@@ -674,7 +707,7 @@ impl View {
         );
         frame.render_widget(
             Paragraph::new(
-                "V voice · M MCP declarations · I status · E edit · C compaction · R refresh · Esc close",
+                "P model · V voice · M MCP declarations · I status · E edit · C compaction · R refresh · Esc close",
             ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );

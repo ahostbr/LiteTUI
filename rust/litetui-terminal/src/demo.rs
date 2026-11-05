@@ -188,6 +188,23 @@ impl Demo {
             self.composer.push_history(&draft.text);
             self.composer.clear();
         }
+        if let Some((draft, text)) = chat.work.dictation.applied.take() {
+            if self.composer.text() == draft.text
+                && self.composer.before_cursor() == draft.before_cursor
+                && self.composer.selected_text() == draft.selected
+            {
+                self.composer
+                    .move_cursor(crate::composer::Motion::End, false);
+                if !draft.text.is_empty() {
+                    self.composer.insert(" ");
+                }
+                self.composer.insert(&text);
+                chat.notice = "Dictation added to the composer. Edit it before sending.".into();
+            } else {
+                chat.notice =
+                    "Composer changed during dictation. The current draft was kept.".into();
+            }
+        }
         if let Some(text) = restore_caption {
             self.composer.insert(&text);
         }
@@ -506,6 +523,31 @@ impl Demo {
         self.live
             .as_ref()
             .is_some_and(|chat| chat.work.owns_input())
+    }
+    pub fn open_dictation(&mut self) {
+        if self.has_live_input() || self.viewport_too_small {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || chat.queue_pending()
+                || chat.rewrite_pending()
+                || chat.engine.pending()
+            {
+                self.notice = "Finish the current reply before dictating.".into();
+                return;
+            }
+            chat.work.dictate(crate::dictation::Draft {
+                text: self.composer.text().into(),
+                before_cursor: self.composer.before_cursor().into(),
+                selected: self.composer.selected_text().into(),
+            });
+            self.completion.dismiss();
+            self.footer.leave();
+        }
     }
     pub fn open_image(&mut self) {
         if self.has_live_input() || self.viewport_too_small {

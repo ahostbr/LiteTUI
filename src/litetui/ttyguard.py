@@ -89,10 +89,16 @@ def run(cmd, *, timeout=DEFAULT_TIMEOUT_S, stdin=subprocess.DEVNULL,
         _repair_terminal()
 
 
-def run_owned_writer(cmd, *, cwd, env, timeout):
+class OwnedTreeUnsettled(OSError):
+    """A contained child's complete retirement could not be verified."""
+
+
+def run_owned_writer(cmd, *, cwd, env, timeout, cancel=None):
     """Run a Windows writer only after containment, returning once its job has drained."""
     import ctypes
 
+    if cancel is not None and cancel.is_set():
+        raise InterruptedError("Owned operation cancelled before launch")
     job = jobkill.create()
     if not job:
         raise OSError("Cannot contain the owner handoff command")
@@ -105,12 +111,23 @@ def run_owned_writer(cmd, *, cwd, env, timeout):
         assigned = jobkill.assign(job, proc.pid)
         if not assigned:
             raise OSError("Could not bind the owner handoff command to its private job")
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Owned operation cancelled before execution")
         resume = ctypes.WinDLL("ntdll").NtResumeProcess
         resume.argtypes = [ctypes.c_void_p]
         resume.restype = ctypes.c_long
         if resume(int(proc._handle)) != 0:
             raise OSError("Could not resume the contained owner handoff command")
-        result = proc.wait(timeout=timeout)
+        if cancel is None:
+            result = proc.wait(timeout=timeout)
+        else:
+            until = time.monotonic() + timeout
+            while proc.poll() is None:
+                if cancel.wait(0.025):
+                    raise InterruptedError("Owned operation cancelled")
+                if time.monotonic() >= until:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+            result = proc.returncode
         until = time.monotonic() + 0.25
         while jobkill.active_process_count(job) != 0:
             if time.monotonic() >= until:
@@ -121,16 +138,22 @@ def run_owned_writer(cmd, *, cwd, env, timeout):
         try:
             if proc is not None:
                 if not assigned:
-                    proc.kill()  # still suspended: it cannot have created a descendant
+                    try:
+                        proc.kill()  # still suspended: it cannot have created a descendant
+                    except OSError as error:
+                        raise OwnedTreeUnsettled("Suspended process retirement is unproven") from error
                 elif jobkill.active_process_count(job) != 0:
                     if not jobkill.terminate(job):
-                        raise OSError("Could not retire the contained writer")
+                        raise OwnedTreeUnsettled("Could not retire the contained writer")
                     until = time.monotonic() + 5
                     while jobkill.active_process_count(job) != 0:
                         if time.monotonic() >= until:
-                            raise OSError("Owner handoff writer did not drain")
+                            raise OwnedTreeUnsettled("Owner handoff writer did not drain")
                         time.sleep(0.01)
-                proc.wait(timeout=5)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired as error:
+                    raise OwnedTreeUnsettled("Contained process did not retire") from error
         finally:
             jobkill.close(job)
 

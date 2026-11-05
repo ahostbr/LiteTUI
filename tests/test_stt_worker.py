@@ -36,3 +36,15 @@ def test_child_nonzero_preserves_stderr(monkeypatch):
     monkeypatch.setattr(s, "_STT_CHILD", "import sys; print('decoder failed', file=sys.stderr); sys.exit(3)")
     with pytest.raises(RuntimeError, match="decoder failed"):
         s._run_worker(sys.executable, "audio.wav", "base.en")
+
+
+def test_local_only_worker_uses_owned_directory_and_cleans_script(tmp_path, monkeypatch):
+    wav = tmp_path / "private.wav"
+    wav.write_bytes(b"private fixture")
+    monkeypatch.setattr(s, "_STT_CHILD",
+        "import sys;from pathlib import Path;"
+        "assert '--local-only' in sys.argv[3:];"
+        "assert Path(__file__).parent==Path(sys.argv[1]).parent;"
+        "print('private transcript')")
+    assert s._run_worker(sys.executable, str(wav), "base.en", local_only=True) == "private transcript"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["private.wav"]

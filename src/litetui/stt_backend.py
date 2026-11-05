@@ -79,7 +79,7 @@ def list_mics() -> list[str]:
     return re.findall(r'"([^"]+)"\s*\(audio\)', proc.stderr or "")
 
 
-def record_start(device: str | None = None):
+def record_start(device: str | None = None, *, directory: Path | None = None, duration_s: int | None = None):
     """Start recording to a 16 kHz mono WAV. Returns the ffmpeg Popen (its
     stdin is the stop channel) or None if there is no ffmpeg or no mic."""
     ff = _ffmpeg()
@@ -88,10 +88,15 @@ def record_start(device: str | None = None):
     dev = (device or "").strip() or _first_dshow_device()
     if not dev:
         return None
-    wav = paths.data_root() / "recordings" / f"stt-{uuid4().hex}.wav"
+    wav = (directory if directory is not None else paths.data_root() / "recordings") / f"stt-{uuid4().hex}.wav"
     wav.parent.mkdir(parents=True, exist_ok=True)
     cmd = [ff, "-y", "-f", "dshow", "-i", f"audio={dev}",
-           "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)]
+           "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"]
+    if duration_s is not None:
+        if type(duration_s) is not int or not 1 <= duration_s <= 120:
+            raise ValueError("Recording duration must be between 1 and 120 seconds")
+        cmd.extend(["-t", str(duration_s)])
+    cmd.append(str(wav))
     try:
         from litetui import ttyguard
         proc = ttyguard.popen(cmd, stdin=subprocess.PIPE,
@@ -133,7 +138,7 @@ _STT_CHILD = """\
 import sys
 from faster_whisper import WhisperModel
 wav, size = sys.argv[1], sys.argv[2]
-model = WhisperModel(size, device="cpu", compute_type="int8")
+model = WhisperModel(size, device="cpu", compute_type="int8", local_files_only="--local-only" in sys.argv[3:])
 segments, _info = model.transcribe(wav, language="en")
 print(" ".join(seg.text.strip() for seg in segments).strip())
 """
@@ -146,7 +151,7 @@ def _interpreter() -> str | None:
     return optional_python.resolve("faster_whisper")
 
 
-def _run_worker(exe: str, wav: str, model_size: str) -> str:
+def _run_worker(exe: str, wav: str, model_size: str, *, local_only: bool = False) -> str:
     """Return the transcript; raise on launch, timeout or child failure.
 
     The UI reports failures separately from a successful but empty transcript.
@@ -160,11 +165,13 @@ def _run_worker(exe: str, wav: str, model_size: str) -> str:
         # (same pattern as voice_backend.speak).
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
                                          suffix=".py", prefix="litetui-stt-",
-                                         delete=False) as output:
+                                         delete=False, dir=Path(wav).parent if local_only else None) as output:
             script = output.name
             output.write(_STT_CHILD)
-        r = ttyguard.run([exe, "-E", "-B", script, wav, model_size],
-                         timeout=_STT_TIMEOUT)
+        command = [exe, "-E", "-B", script, wav, model_size]
+        if local_only:
+            command.append("--local-only")
+        r = ttyguard.run(command, timeout=_STT_TIMEOUT)
         if r.returncode != 0:
             detail = (r.stderr or "").strip()[-2000:]
             raise RuntimeError(f"transcriber exited {r.returncode}: {detail or 'no error output'}")
@@ -174,7 +181,7 @@ def _run_worker(exe: str, wav: str, model_size: str) -> str:
             Path(script).unlink(missing_ok=True)
 
 
-def transcribe(wav: str, model_size: str = DEFAULT_MODEL) -> str:
+def transcribe(wav: str, model_size: str = DEFAULT_MODEL, *, local_only: bool = False) -> str:
     """Transcribe a WAV with faster-whisper. Blocking — call it in a worker
     thread. Returns "" for no speech; raises on transcription failure."""
     # Silence gate BEFORE whisper: base whisper hallucinates "You" / "Thank you"
@@ -189,7 +196,7 @@ def transcribe(wav: str, model_size: str = DEFAULT_MODEL) -> str:
     exe = _interpreter()
     if exe is None:
         raise RuntimeError("faster-whisper interpreter is unavailable")
-    text = _run_worker(exe, wav, model_size)
+    text = _run_worker(exe, wav, model_size, local_only=True) if local_only else _run_worker(exe, wav, model_size)
     # Belt for borderline audio that passes the volume gate: whisper's
     # stock hallucinations for "no real content" are a tiny closed set.
     if text.lower().strip(" .!?,") in _HALLUCINATIONS:

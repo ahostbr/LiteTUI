@@ -1540,3 +1540,123 @@ fn plugins_control_refreshes_the_live_skills_index_and_private_cache() {
     );
     assert!(report["denied"].as_array().unwrap().is_empty());
 }
+
+#[test]
+#[ignore = "registered model preference operations and a controlled real source turn"]
+fn model_preferences_review_reread_and_reach_the_normal_request_consumer() {
+    let (runtime, data) = launch("model_preferences_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Keep this exact draft through preferences.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selection = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            let opened = settings_key(runtime, &mut app, KeyCode::Char('p'))?;
+            assert!(
+                opened.contains("Model preferences for this conversation"),
+                "{opened}"
+            );
+            assert!(opened.contains("Requested model: switch-old"), "{opened}");
+            assert!(opened.contains("client declared"), "{opened}");
+            settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            for c in "0.35".chars() {
+                settings_key(runtime, &mut app, KeyCode::Char(c))?;
+            }
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                review.contains("Save Temperature for switch-old?"),
+                "{review}"
+            );
+            assert!(review.contains("Requested next request: 0.35"), "{review}");
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            for c in "0.35".chars() {
+                settings_key(runtime, &mut app, KeyCode::Char(c))?;
+            }
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                saved.contains("Saved and verified for the next request."),
+                "{saved}"
+            );
+            settings_key(runtime, &mut app, KeyCode::Down)?;
+            settings_key(runtime, &mut app, KeyCode::Down)?;
+            settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            for c in "321".chars() {
+                settings_key(runtime, &mut app, KeyCode::Char(c))?;
+            }
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(
+                app.composer.text(),
+                "Keep this exact draft through preferences."
+            );
+            assert_eq!(app.composer.before_cursor(), selection);
+            app.submit();
+            let prompt = app
+                .live
+                .as_mut()
+                .unwrap()
+                .take_submission()
+                .expect("explicit turn");
+            runtime.submit(prompt)?;
+            observe(runtime, &mut app, |e| matches!(e, Observation::Complete))?;
+            Ok(())
+        })
+        .unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let requests = report["requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "switch-old");
+    assert_eq!(requests[0]["temperature"], json!(0.35));
+    assert_eq!(requests[0]["top_p"], json!(0.9));
+    assert_eq!(requests[0]["max_tokens"], 321);
+    assert_eq!(
+        requests[0]["messages"].as_array().unwrap().last().unwrap()["content"],
+        "Keep this exact draft through preferences."
+    );
+    let initial = &report["initial_documents"];
+    let final_docs = &report["final_documents"];
+    assert_eq!(initial["global"], final_docs["global"]);
+    assert_eq!(initial["agent"], final_docs["agent"]);
+    let doc: Value =
+        serde_json::from_str(final_docs["conversation"]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        doc["execution"]["model_infer_overrides"]["unselected-model"]["temperature"],
+        json!(0.61)
+    );
+    let commands = report["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| {
+            c["type"]
+                .as_str()?
+                .strip_prefix("gui.models.native_preferences_")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        [
+            "snapshot", "review", "review", "apply", "readback", "review", "apply", "readback"
+        ]
+    );
+    assert_eq!(
+        report["shutdown"]["result"]["work_shutdown"]["worker_settled"],
+        true
+    );
+    assert_eq!(report["reader_retired"], true);
+    assert!(
+        report["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["finished"] == true)
+    );
+    eprintln!("Model preference process evidence: {}", data.display());
+}

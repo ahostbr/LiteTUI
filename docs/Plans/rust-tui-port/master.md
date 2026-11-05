@@ -1,5 +1,32 @@
 # LiteTUI Rust terminal port
 
+## Model preferences and explicit dictation - November 4, 2026
+
+F10 → P edits the current model's conversation-scoped temperature, Top P and response-token override. Each save has a separate review and independent saved/effective readback. Choosing Inherit removes the model override. The view distinguishes requested values, adapter-reported loaded state, context and the parameters used by the next request.
+
+F10 → V → D reviews the microphone and installed faster-whisper model before recording for up to 60 seconds. A second explicit confirmation appends the reviewed transcript to the unsent draft. Cancel and Quit join the contained helper and its descendants. Automatic Work remains queued during capture and transcript review, then resumes after the exact successful Apply or Cancel response has been published. Uncertain publication retains the hold through shutdown. New capture also waits for any pending runtime-control publication.
+
+The integrated checkout passed 1,001 ordinary Rust tests, strict all-target Clippy and formatting. The selected source matrix passed 100 tests, with one existing process-envelope audit failure excluded after reproducing it on both the frozen baseline and current source. All 24 relocated-package process tests passed using the fresh runtime-only Python environment. The package verifier checked all 385 payload files afterward.
+
+The actual packaged executable also passed two hidden Windows pseudoconsole keyboard flows for preference saving and complete dictation application. Both preserved the draft and joined workers on exit. This check found and corrected a missing interactive status poll. The process regression now exercises the same Work request drain as the live keyboard loop. The exact runner and parsed screens are retained in `target/native-settings-keys-2qyg7a`, with package provenance in `target/model-dictation-reviewed-clean-package.json`. The audio and provider boundaries were controlled. Physical microphone, installed transcription model and both-host acceptance remain open.
+
+## Frozen broad regression checkpoint and sustained streaming - November 4, 2026
+
+A frozen source export at 89b6046d passed all 1,916 cases across the selected 87-file source matrix. Its unchanged source also passed 191 controlled native process tests across 24 groups. The authenticated Claude two-turn test was excluded. Source hashes and all 42 unrelated lock files matched afterward. Per-test results and provenance are retained in `target/broad-source-89b6046d-d540717e/proof.json` and `native-proof.json`. Later changes require their own integrated validation.
+
+A separate frozen release at 4c0ec50f ran three interleaved warm launches per frontend with three sustained turns per launch. Each controlled turn emitted 200 distinct chunks. All 18 turns preserved the exact unsent draft through typing, paste and resize, saved the complete expected conversation, and exited cleanly. Both frontends used the same frozen Python source and fresh locked runtime environment.
+
+| Median measurement | Textual | Release Rust + Python |
+| --- | ---: | ---: |
+| Typing to parsed visible text | 40.48 ms | 40.18 ms |
+| Paste to parsed visible text | 30.94 ms | 45.94 ms |
+| Enter to complete parsed answer | 4,460.15 ms | 4,254.23 ms |
+| First parsed resize update retaining the draft | 15.26 ms | 30.64 ms |
+| Peak observed process-tree private memory | 78.22 MiB | 82.33 MiB |
+| Sampled process-tree CPU time per launch | 7.844 s | 6.656 s |
+
+Six additional turns introduced a 100 ms parser delay. Typing and paste medians increased by at least 75 ms in both frontends, confirming sensitivity of those timing landmarks. The runs observed parsed pseudoconsole cells under uncontrolled host load and warm caches. Physical painting, cold startup, actual inference and numerical acceptance targets remain open. Process sampling can miss activity between samples and exit. The proof, exact runner copies and raw results are retained under `target/next-streaming-baseline`, with the summary in `streaming-proof.json`.
+
 ## Host chat-loop pause and fresh dependencies - November 4, 2026
 
 The native `/pause` command and Alt+P open a review of the host chat-loop state. Apply changes the canonical pause flag and independently reads it back. The panel distinguishes a requested pause from a worker actually waiting between model rounds. Resume, Stop and Quit remain reachable while held. The composer retains its text, caret and selection.

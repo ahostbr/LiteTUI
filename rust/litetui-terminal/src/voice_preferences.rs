@@ -320,6 +320,16 @@ pub struct View {
     lines: usize,
 }
 impl View {
+    pub fn dictation_key(&self, key: KeyEvent) -> bool {
+        self.open
+            && self.visible
+            && !self.waiting
+            && self.review.is_none()
+            && self.draft.is_none()
+            && key.kind == KeyEventKind::Press
+            && key.modifiers.is_empty()
+            && matches!(key.code, KeyCode::Char('d' | 'D'))
+    }
     pub fn open(&mut self) {
         *self = Self {
             open: true,
@@ -460,6 +470,7 @@ impl View {
                 format!("Windows voice: {}   Edge voice: {}",s.shown("tts_voice","Windows default"),s.shown("tts_edge_voice","default")),
                 format!("Qwen2-Audio listen tool registered: {}. It handles audio separately from dictation.",s.listen),
                 String::new()]);
+            lines.push("D dictate to composer".into());
             let key = EDITABLE[self.selected];
             let row = &s.fields[key];
             lines.push(format!(

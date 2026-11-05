@@ -543,3 +543,22 @@ themes remain fixture data.
 F11's Theme entry opens the same controls. /new, /clear and /reset open New's
 confirmation, and /rename can prefill its title editor. These routes only open
 controls; another explicit review/save is required before changing saved state.
+
+
+### Explicit dictation to the composer
+
+In a live idle conversation, F10 opens Settings, V opens Voice and D opens
+Dictate to composer. Review the current microphone and model, then press Enter
+to start recording for up to 60 seconds. Enter finishes early and starts local
+transcription. Read every transcript page and press Enter to append the result
+to the editable, unsent composer. Escape cancels and joins the owned helper.
+Ctrl+Q also joins cleanup before releasing the conversation. Automatic Work stays
+queued during capture and transcript review, then resumes after the exact Apply
+or Cancel response is published.
+
+The original draft, selection and caret stay intact until a matching Apply
+receipt. Voice preferences use the existing device settings. The selected
+faster-whisper model must already be installed. This bounded native route
+supports the canonical Windows ffmpeg recorder. Controlled subprocess tests use
+private simulated audio boundaries. Physical microphone and model acceptance
+remain pending.
