@@ -849,3 +849,105 @@ fn clipboard_declining_b_keeps_a_across_refused_caption_then_submits_a_once() {
         2
     );
 }
+
+#[test]
+#[ignore = "private lifecycle configuration; real owned source never executes a hook or provider"]
+fn hook_toggles_refuse_stale_review_and_verify_global_and_project_effects() {
+    let (runtime, data) = launch("hook_toggle_runtime.py");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        app.insert_text("keep this hook-edit draft");
+        app.open_work();
+        drain(runtime, &mut app)?;
+        let mut context = key(runtime, &mut app, KeyCode::Char('i'))?;
+        for _ in 0..litetui_terminal::context::Document::ALL.len() {
+            if context.contains("Effective lifecycle hooks") { break; }
+            context = key(runtime, &mut app, KeyCode::Right)?;
+        }
+        assert!(context.contains("Effective lifecycle hooks"), "{context}");
+        let list = key(runtime, &mut app, KeyCode::Char('e'))?;
+        assert!(list.contains("Lifecycle hooks · project") && list.contains("audit-file"), "{list}");
+        let review = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(review.contains("Saved: false → true") && review.contains("Effective: disabled → enabled"), "{review}");
+        assert!(review.contains("fixture-audit.exe") && review.contains("Future matching events may run"));
+        assert!(!review.contains("PRIVATE_"));
+        let mut small = Terminal::new(TestBackend::new(50, 16)).unwrap();
+        small.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let work = &mut app.live.as_mut().unwrap().work;
+        work.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(work.take_intent().is_none(), "unseen review pages must prevent Apply");
+        let paths = json_file(&data.join("hook-inputs.json"));
+        let global = PathBuf::from(paths[0].as_str().unwrap()).canonicalize()?;
+        let project = PathBuf::from(paths[1].as_str().unwrap()).canonicalize()?;
+        assert!(global.starts_with(data.canonicalize()?) && project.starts_with(data.canonicalize()?));
+        let before_project = fs::read(&project)?;
+        let mut changed_global = fs::read(&global)?;
+        changed_global.push(b'\n');
+        fs::write(&global, &changed_global)?;
+        draw(&mut app);
+        let work = &mut app.live.as_mut().unwrap().work;
+        work.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        runtime.work(work.take_intent().unwrap())?;
+        loop {
+            let event = runtime.events.recv_timeout(Duration::from_secs(20)).map_err(io::Error::other)?;
+            let refused = matches!(&event, Observation::Work(u) if matches!(&u.data, Data::Rejected(why) if why.contains("changed")));
+            app.observe_live(event)?;
+            if refused { break; }
+        }
+        assert_eq!(fs::read(&project)?, before_project);
+        key(runtime, &mut app, KeyCode::F(5))?;
+        key(runtime, &mut app, KeyCode::Enter)?;
+        let saved = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(saved.contains("Verified audit-file · enabled · enabled"), "{saved}");
+        assert_eq!(fs::read(&global)?, changed_global);
+        key(runtime, &mut app, KeyCode::Tab)?;
+        let shadow = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(shadow.contains("Effective: shadowed → shadowed"), "{shadow}");
+        key(runtime, &mut app, KeyCode::Esc)?;
+        assert_eq!(fs::read(&global)?, changed_global);
+        key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(key(runtime, &mut app, KeyCode::Enter)?.contains("Verified audit-file · disabled · shadowed"));
+        key(runtime, &mut app, KeyCode::Esc)?;
+        let page = key(runtime, &mut app, KeyCode::F(5))?;
+        assert!(page.contains("project/") && page.contains("enabled"), "{page}");
+        assert_eq!(app.composer.text(), "keep this hook-edit draft");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        Ok(())
+    });
+    result.unwrap();
+    let state = json_file(&data.join("hook-after.json"));
+    assert_eq!(state["scopes"]["global"][0]["enabled"], false);
+    assert_eq!(state["scopes"]["project"][0]["enabled"], true);
+    assert_eq!(
+        state["effective"][0],
+        json!({"id":"audit-file","scope":"project","enabled":true})
+    );
+    assert_eq!(state["executed"], json!([]));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"], json!([]));
+    let replies = report["wire"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| {
+            v["result"]["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("hook_"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !serde_json::to_string(&replies)
+            .unwrap()
+            .contains("PRIVATE_")
+    );
+    for kind in ["hook_apply", "hook_saved"] {
+        assert_eq!(
+            replies
+                .iter()
+                .filter(|v| v["result"]["kind"] == kind)
+                .count(),
+            2
+        );
+    }
+}

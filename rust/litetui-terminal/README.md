@@ -88,6 +88,8 @@ To edit `memory.md`, `soul.md` or `handoff.md`, select the document in Context a
 
 In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, and cached MCP server information. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
 
+From F1 Work → Context → Hooks, press E to manage existing hook entries. Tab switches project and global scope. Use Up/Down to select an entry and Enter to review its enabled flag, executable name, command fingerprint and effect on future matching events. Page through the review and press Enter to apply, or Escape to discard. The source locks both scope configurations during publication and independently reads their saved and effective state. Command arguments and environment values stay private.
+
 ## Work inspection (in progress)
 
 `/plugins` and the F11 Plugins entry show this session’s plugin load order and status. F1 → I → Plugins opens the same reader. F5 refreshes it. Failures use the selected Plain Talk or Full Detail setting. Reading this view does not load or activate plugins.

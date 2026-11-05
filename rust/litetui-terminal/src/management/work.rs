@@ -18,6 +18,8 @@ pub(super) struct Control {
     control_review: Option<controls::Review>,
     pub(super) manual_review: Option<crate::scheduled_transition::ManualReview>,
     context_review: Option<crate::context_edit::Review>,
+    hook_list: Option<crate::hook_toggle::List>,
+    hook_review: Option<crate::hook_toggle::Review>,
 }
 pub(super) struct Pending {
     pub id: CommandId,
@@ -41,6 +43,8 @@ impl Management {
         self.work.deferred_review = None;
         self.work.control_review = None;
         self.work.context_review = None;
+        self.work.hook_list = None;
+        self.work.hook_review = None;
     }
     pub fn work_pending(&self) -> bool {
         self.work.pending.is_some() || self.execution_review_pending()
@@ -120,6 +124,7 @@ impl Management {
             view::Request::DeferredApply(_) => deferred::DISCARD,
             view::Request::Image(request) => request.operation(),
             view::Request::Context(_) => crate::context::OPERATION,
+            view::Request::Hook(request) => request.operation(),
             view::Request::ContextEdit(request) => {
                 if crate::context_edit::OPERATIONS
                     .iter()
@@ -151,6 +156,14 @@ impl Management {
             && !self.operations.iter().any(|v| v == deferred::READBACK)
         {
             return Err(fail("Runtime lacks deferred discard readback"));
+        }
+        if matches!(&intent.request, view::Request::Hook(_))
+            && !self
+                .operations
+                .iter()
+                .any(|v| v == "gui.hooks.native_readback")
+        {
+            return Err(fail("Source lacks verified lifecycle hook editing"));
         }
         if !self.operations.iter().any(|v| v == op)
             || matches!(&intent.request, view::Request::PauseApply(_))
@@ -299,6 +312,35 @@ impl Management {
                 }
                 command = retained.request();
             }
+            view::Request::Hook(request) => {
+                use crate::hook_toggle::Request;
+                match request.as_ref() {
+                    Request::List(_) => {
+                        self.work.hook_list = None;
+                        self.work.hook_review = None;
+                    }
+                    Request::Review {
+                        scope,
+                        revision,
+                        row,
+                    } => {
+                        self.work.hook_review = None;
+                        if !self.work.hook_list.as_ref().is_some_and(|l| {
+                            &l.scope == scope && &l.revision == revision && l.rows.contains(row)
+                        }) {
+                            return Err(fail(
+                                "Refresh and select the exact hook row before review",
+                            ));
+                        }
+                    }
+                    Request::Apply(r) => {
+                        if self.work.hook_review.take().as_ref() != Some(r) {
+                            return Err(fail("Review this exact hook change again"));
+                        }
+                    }
+                }
+                command = request.command(&identity, self.context_instance()?);
+            }
             view::Request::ContextEdit(request) => {
                 if let crate::context_edit::Request::Apply(r) = request.as_ref() {
                     if self.work.context_review.take().as_ref() != Some(r) {
@@ -403,7 +445,7 @@ impl Management {
             }
         }
         command["type"] = json!(op);
-        let id = if matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
+        let id = if matches!(&intent.request,view::Request::Hook(r) if matches!(r.as_ref(),crate::hook_toggle::Request::Apply(_))) || matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
             &intent.request,
             view::Request::PauseApply(_)
                 | view::Request::StopApply(_)
@@ -432,7 +474,14 @@ impl Management {
     pub(super) fn work_response(&mut self, frame: Value) -> io::Result<Step> {
         let mut pending = self.work.pending.take().expect("Work request");
         if frame["ok"] != true {
-            let reason = text(&frame, "error", 4096)?.to_owned();
+            let mut reason = text(&frame, "error", 4096)?.to_owned();
+            if matches!(&pending.request, view::Request::Hook(_)) {
+                self.work.hook_list = None;
+                self.work.hook_review = None;
+                if pending.context_apply_id.is_some() {
+                    reason = format!("Hook was published but separate readback failed: {reason}");
+                }
+            }
             self.work.review = None;
             self.work.stop_review = None;
             self.work.deferred_review = None;
@@ -529,6 +578,41 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
+                    view::Request::Hook(request) => {
+                        let instance = self.context_instance()?;
+                        if matches!(request.as_ref(), crate::hook_toggle::Request::Apply(_))
+                            && pending.context_apply_id.is_none()
+                        {
+                            let op = text(&frame, "id", 128)?.to_string();
+                            let mut command =
+                                request.readback(value, &snapshot.identity, instance, &op)?;
+                            let id = self
+                                .wire
+                                .register_read()
+                                .map_err(|_| fail("Cannot reserve hook readback"))?;
+                            command["id"] = id.to_value();
+                            pending.id = id;
+                            pending.context_apply_id = Some(op);
+                            self.work.pending = Some(pending);
+                            return Ok(Step::Write(command));
+                        }
+                        let reply = request.reply(
+                            value,
+                            &snapshot.identity,
+                            instance,
+                            pending.context_apply_id.as_deref(),
+                        )?;
+                        match &reply {
+                            crate::hook_toggle::Reply::List(l) => {
+                                self.work.hook_list = Some(l.clone())
+                            }
+                            crate::hook_toggle::Reply::Review(r) => {
+                                self.work.hook_review = Some(r.clone())
+                            }
+                            crate::hook_toggle::Reply::Saved(_) => self.work.hook_list = None,
+                        }
+                        view::Data::Hook(Box::new(reply))
+                    }
                     view::Request::ContextEdit(request) => {
                         let instance = self.context_instance()?;
                         if matches!(request.as_ref(), crate::context_edit::Request::Apply(_))

@@ -72,6 +72,8 @@ mod context_edit_view;
 pub mod context_view;
 pub mod history;
 pub mod history_view;
+pub mod hook_toggle;
+pub mod hook_toggle_view;
 pub mod image;
 pub mod inspection;
 

@@ -45,6 +45,7 @@ OPERATIONS = (
     "conversations.native_compact_apply", "conversations.native_compact_settled",
     "history.native_snapshot", "history.native_page", "conversations.native_open",
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
+    "hooks.native_list", "hooks.native_review", "hooks.native_apply", "hooks.native_readback",
     "hooks.get", "hooks.validate", "hooks.apply", "hooks.repair", "hooks.test",
     "mcp.list", "mcp.connect", "mcp.disconnect", "mcp.reconnect", "mcp.reload", "mcp.add", "mcp.remove",
     "skills.list", "skills.read", "skills.use", "tools.list",
@@ -780,6 +781,9 @@ def dispatch(app, cmd):
             return {"name": skill.name, "text": Path(skill.path).read_text(encoding="utf-8")}
         app._handle_command(f"/skills {skill.name}")
         return {"accepted": True, "name": skill.name}
+    if operation in {"hooks.native_list", "hooks.native_review", "hooks.native_apply", "hooks.native_readback"}:
+        from litetui import native_hook_toggle
+        return native_hook_toggle.dispatch(app, cmd)
     if domain == "hooks":
         from litetui import lifecycle_hooks as hooks
         config = app.hook_config

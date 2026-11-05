@@ -131,7 +131,7 @@ class Snapshot:
 
 
 @contextmanager
-def _file_lock(path: Path):
+def _file_lock(path: Path, *, wait=True):
     """Lock a persistent sibling, not the file replaced by atomic save."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(path.suffix + ".lock").open("a+b") as lock:
@@ -142,10 +142,10 @@ def _file_lock(path: Path):
         lock.seek(0)
         if sys.platform == "win32":
             import msvcrt
-            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            fcntl.flock(lock, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             yield
         finally:

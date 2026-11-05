@@ -34,6 +34,7 @@ pub enum Request {
     },
     Context(crate::context::Request),
     ContextEdit(Box<crate::context_edit::Request>),
+    Hook(Box<crate::hook_toggle::Request>),
     Image(crate::image::Request),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
@@ -67,6 +68,7 @@ pub enum Data {
     ManualReview(Box<crate::scheduled_transition::ManualReview>),
     Context(Box<crate::context::Page>),
     ContextEdit(Box<crate::context_edit::Reply>),
+    Hook(Box<crate::hook_toggle::Reply>),
     Image(Option<crate::image::Review>),
     ImagePreview(crate::image::Thumbnail),
     ExecutionReview(Box<execution::Review>),
@@ -132,6 +134,7 @@ pub struct View {
     pub tail: Option<Tail>,
     context: crate::context_view::View,
     context_after_snapshot: Option<crate::context::Document>,
+    hooks: crate::hook_toggle_view::View,
     pub image: crate::image::Picker,
     section: usize,
     selected: usize,
@@ -205,12 +208,14 @@ impl View {
     }
     pub fn hide(&mut self) {
         self.image.hide();
+        self.hooks.hide();
         self.context.hide();
         self.visible = false;
     }
     pub fn close(&mut self) {
         self.context_after_snapshot = None;
         self.image.close();
+        self.hooks.close();
         self.context.close();
         self.open = false;
         self.hide();
@@ -255,6 +260,7 @@ impl View {
     }
     fn refresh(&mut self) {
         self.context_after_snapshot = None;
+        self.hooks.close();
         self.context.close();
         self.review = None;
         self.form = None;
@@ -335,6 +341,7 @@ impl View {
                 )
                 | (Request::Context(_), Data::Context(_))
                 | (Request::ContextEdit(_), Data::ContextEdit(_))
+                | (Request::Hook(_), Data::Hook(_))
                 | (Request::Snapshot, Data::Snapshot(_))
                 | (Request::Page { .. }, Data::Page(_))
                 | (Request::Tail(_), Data::Tail(_))
@@ -354,6 +361,10 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::Hook(reply) => self.hooks.reply(*reply),
+            Data::Rejected(reason) if matches!(pending, Request::Hook(_)) => {
+                self.hooks.reject(reason)
+            }
             Data::ContextEdit(reply) => self.context.edit_reply(*reply),
             Data::Rejected(reason) if matches!(pending, Request::ContextEdit(_)) => {
                 self.context.edit_rejected(&reason)
@@ -628,6 +639,9 @@ impl View {
         }
     }
     pub fn accepts_paste(&self) -> bool {
+        if self.hooks.open {
+            return false;
+        }
         if self.context.editing() {
             return !self.waiting && self.context.accepts_paste();
         }
@@ -644,6 +658,9 @@ impl View {
         self.notice = error;
     }
     pub fn paste(&mut self, text: &str) {
+        if self.hooks.open {
+            return;
+        }
         if self.context.editing() {
             if !self.waiting {
                 self.context.paste(text);
@@ -667,6 +684,24 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.hooks.open {
+            if let Some(request) = self.hooks.key(key, self.waiting) {
+                self.request(Request::Hook(Box::new(request)));
+            }
+            return;
+        }
+        if self.context.is_open()
+            && self.context.document() == crate::context::Document::Hooks
+            && self.context.page().is_some()
+            && !self.waiting
+            && key.kind == KeyEventKind::Press
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Char('e')
+        {
+            let req = self.hooks.open();
+            self.request(Request::Hook(Box::new(req)));
+            return;
+        }
         if self.image.open {
             if let Some(request) = self.image.key(key, self.waiting) {
                 self.request(Request::Image(request));
@@ -1036,6 +1071,9 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.hooks.open {
+            return;
+        }
         if self.image.open {
             return;
         }
@@ -1304,6 +1342,10 @@ impl View {
         self.current_row().map_or_else(Vec::new, Row::details)
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.hooks.open {
+            self.hooks.draw(frame, area, theme, self.waiting);
+            return;
+        }
         if self.image.open {
             self.image.draw(frame, area, theme, self.waiting);
             return;

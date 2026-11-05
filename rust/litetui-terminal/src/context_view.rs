@@ -450,7 +450,9 @@ impl View {
             .join("\n");
         frame.render_widget(Paragraph::new(lines), body);
         self.body = Some(body);
-        let keys = if crate::context_edit::editable(self.document) && inner.width >= 48 {
+        let keys = if self.document == Document::Hooks && inner.width >= 48 {
+            "← → / Tab documents · E manage hook toggles\n↑ ↓ scroll · F5 refresh · Esc returns to Work"
+        } else if crate::context_edit::editable(self.document) && inner.width >= 48 {
             "← → / Tab documents · [ ] pages · e edit\n↑ ↓ / PgUp PgDn scroll · F5 refresh · Esc returns to Work"
         } else if inner.width >= 48 {
             "← → / Tab documents · [ ] pages · F5 refresh\n↑ ↓ / PgUp PgDn scroll · Esc returns to Work"
