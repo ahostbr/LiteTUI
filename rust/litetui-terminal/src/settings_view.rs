@@ -40,6 +40,7 @@ pub enum Intent {
     ModelLifecycle(Box<crate::model_lifecycle::Request>),
     Voice(Box<crate::voice_preferences::Request>),
     Presentation(Box<crate::presentation_preferences::Request>),
+    Connection(Box<crate::connection_preferences::Request>),
     RuntimeStatus,
     Read,
     Editor(crate::settings_editor::Intent),
@@ -54,6 +55,7 @@ pub enum Update {
     ModelLifecycle(Result<Box<crate::model_lifecycle::Update>, String>),
     Voice(Result<Box<crate::voice_preferences::Update>, String>),
     Presentation(Result<Box<crate::presentation_preferences::Update>, String>),
+    Connection(Result<Box<crate::connection_preferences::Update>, String>),
     RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
     Rejected(String),
@@ -226,6 +228,7 @@ pub struct View {
     model_lifecycle: crate::model_lifecycle::View,
     voice: crate::voice_preferences::View,
     presentation: crate::presentation_preferences::View,
+    connection: crate::connection_preferences::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
     pub open: bool,
@@ -297,6 +300,7 @@ impl View {
             || self.mcp_lifecycle.open
             || self.voice.open
             || self.presentation.open
+            || self.connection.open
             || self.model_preferences.open
             || self.glassbox.open
             || self.model_lifecycle.open
@@ -319,6 +323,7 @@ impl View {
         self.model_lifecycle.hide();
         self.voice.hide();
         self.presentation.hide();
+        self.connection.hide();
         self.runtime_status.hide();
         self.editor.hide();
         self.compaction.hide();
@@ -339,6 +344,7 @@ impl View {
         self.model_lifecycle = Default::default();
         self.voice = Default::default();
         self.presentation = Default::default();
+        self.connection = Default::default();
         self.runtime_status.close();
         self.editor.close();
         self.compaction.close();
@@ -356,11 +362,13 @@ impl View {
         self.snapshot = None;
     }
     pub fn accepts_paste(&self) -> bool {
-        self.mcp.accepts_paste() || self.editor.editing() || self.compaction.accepts_paste()
+        self.mcp.accepts_paste() || self.editor.editing() || self.compaction.accepts_paste() || self.connection.accepts_paste()
     }
     pub fn paste(&mut self, text: &str) {
         if self.mcp.open {
             self.mcp.paste(text);
+        } else if self.connection.accepts_paste() {
+            self.connection.paste(text);
         } else if self.compaction.owns_input() {
             self.compaction.paste(text);
         } else {
@@ -416,6 +424,7 @@ impl View {
             }
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Presentation(result) => self.presentation.update(result.map(|update| *update)),
+            Update::Connection(result) => self.connection.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::McpLifecycle(result) => self.mcp_lifecycle.update(result.map(|update| *update)),
             Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
@@ -493,6 +502,13 @@ impl View {
             if let Some(request) = self.presentation.key(key) {
                 self.waiting = true;
                 self.intent = Some(Intent::Presentation(Box::new(request)));
+            }
+            return;
+        }
+        if self.connection.open {
+            if let Some(request) = self.connection.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Connection(Box::new(request)));
             }
             return;
         }
@@ -604,6 +620,14 @@ impl View {
                 )));
                 self.hide();
             }
+            KeyCode::Char('n') if key.kind == KeyEventKind::Press => {
+                self.connection.open();
+                self.waiting = true;
+                self.intent = Some(Intent::Connection(Box::new(
+                    crate::connection_preferences::Request::List,
+                )));
+                self.hide();
+            }
             KeyCode::Char('m') if key.kind == KeyEventKind::Press => {
                 self.mcp.open();
                 self.mcp_read_only = false;
@@ -641,6 +665,7 @@ impl View {
         if self.mcp.open
             || self.voice.open
             || self.presentation.open
+            || self.connection.open
             || self.model_preferences.open
             || self.glassbox.open
             || self.model_lifecycle.open
@@ -717,6 +742,10 @@ impl View {
         }
         if self.presentation.open {
             self.presentation.draw(frame, area, theme);
+            return;
+        }
+        if self.connection.open {
+            self.connection.draw(frame, area, theme);
             return;
         }
         if self.mcp_lifecycle.open {
@@ -888,7 +917,7 @@ impl View {
         );
         frame.render_widget(
             Paragraph::new(
-                "P preferences · L model lifecycle · V voice · U interface · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
+                "P preferences · L model lifecycle · V voice · U interface · N connections · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
             ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );

@@ -2635,6 +2635,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let voice = matches!(intent, crate::settings_view::Intent::Voice(_));
                         let presentation =
                             matches!(intent, crate::settings_view::Intent::Presentation(_));
+                        let connection =
+                            matches!(intent, crate::settings_view::Intent::Connection(_));
                         let model_preferences =
                             matches!(intent, crate::settings_view::Intent::ModelPreferences(_));
                         let model_lifecycle =
@@ -2683,6 +2685,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     crate::settings_view::Update::Presentation(Err(
                                         error.to_string()
                                     ))
+                                } else if connection {
+                                    crate::settings_view::Update::Connection(Err(error.to_string()))
                                 } else if mcp {
                                     crate::settings_view::Update::Mcp(Err(error.to_string()))
                                 } else if runtime_status {

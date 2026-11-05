@@ -459,6 +459,130 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
     assert_eq!(json_file(&data.join("voice-guards.json")), json!([]));
 }
 
+fn settings_files(data: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.file_name().is_some_and(|name| name == "settings.json") {
+                out.push((path.clone(), fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(data, &mut out);
+    out.sort();
+    out
+}
+
+#[test]
+#[ignore = "compiled Settings connection preferences against registered source RPC"]
+fn connection_preferences_review_save_and_reread_without_connecting() {
+    let (runtime, data) = launch("connection_preferences_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve the draft and selection.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selected = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            let opened = settings_key(runtime, &mut app, KeyCode::Char('n'))?;
+            assert!(
+                opened.contains("Connection and local-server preferences")
+                    && opened.contains("LM Studio address")
+                    && opened.contains("never read or shown here"),
+                "{opened}"
+            );
+            let before = settings_files(&data);
+            // Review a toggle, then cancel: nothing is written.
+            settings_key(runtime, &mut app, KeyCode::Down)?;
+            settings_key(runtime, &mut app, KeyCode::Right)?;
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                review.contains("Save Re-select the default model on connect?")
+                    && review.contains("Applies: the next reconnect or relaunch")
+                    && review
+                        .replace(
+                            "│
+│", ""
+                        )
+                        .contains("Saving never reconnects"),
+                "{review}"
+            );
+            assert_eq!(settings_files(&data), before);
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(settings_files(&data), before);
+            // The same toggle again, saved.
+            settings_key(runtime, &mut app, KeyCode::Right)?;
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(saved.contains("Saved and verified on disk."), "{saved}");
+            assert_ne!(settings_files(&data), before);
+            // A text field: replace the LM Studio address.
+            settings_key(runtime, &mut app, KeyCode::Up)?;
+            settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            for _ in 0..80 {
+                settings_key(runtime, &mut app, KeyCode::Backspace)?;
+            }
+            for c in "http://h.test:9".chars() {
+                settings_key(runtime, &mut app, KeyCode::Char(c))?;
+            }
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                review.contains("Save LM Studio address?")
+                    && review.contains("Requested: http://h.test:9"),
+                "{review}"
+            );
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(saved.contains("Saved and verified on disk."), "{saved}");
+            let pending = settings_key(runtime, &mut app, KeyCode::F(5))?;
+            assert!(
+                pending.contains("saved http://h.test:9; applies the next reconnect"),
+                "{pending}"
+            );
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Preserve the draft and selection.");
+            assert_eq!(app.composer.before_cursor(), selected);
+            Ok(())
+        })
+        .unwrap_or_else(|err| panic!("{}: {err}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["type"].as_str()?.strip_prefix("gui.connection.native_"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        [
+            "preferences",
+            "review",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "preferences"
+        ]
+    );
+    assert_eq!(json_file(&data.join("connection-guards.json")), json!([]));
+    // The reconnect fields were saved but stay pending: nothing applied them to the session.
+    let saved = json_file(&data.join("connection-saved.json"));
+    assert_eq!(saved[0]["saved"]["pin_default_model"], true);
+    assert_eq!(saved[0]["effective"]["pin_default_model"], false);
+    assert_eq!(saved[1]["saved"]["lm_host"], "http://h.test:9");
+    assert_ne!(saved[1]["effective"]["lm_host"], "http://h.test:9");
+}
+
 #[test]
 #[ignore = "compiled Settings Interface preferences against registered source RPC"]
 fn presentation_preferences_review_save_and_reread_change_what_is_rendered() {

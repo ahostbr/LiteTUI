@@ -65,6 +65,7 @@ OPERATIONS = (
     "context.native_page", "inspection.native_status", "inspection.native_status_with_glassbox",
     "voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback",
     "presentation.native_preferences", "presentation.native_review", "presentation.native_apply", "presentation.native_readback",
+    "connection.native_preferences", "connection.native_review", "connection.native_apply", "connection.native_readback",
     "mcp.native_lifecycle_snapshot", "mcp.native_lifecycle_review", "mcp.native_lifecycle_apply", "mcp.native_lifecycle_readback",
     "mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_add_review", "mcp.native_config_remove_review",
     "mcp.native_config_apply", "mcp.native_config_readback",
@@ -569,6 +570,9 @@ def dispatch(app, cmd):
                      "mcp.native_config_remove_review", "mcp.native_config_apply", "mcp.native_config_readback"}:
         from litetui import native_mcp_config
         return native_mcp_config.dispatch(app, cmd)
+    if operation in {"connection.native_preferences", "connection.native_review", "connection.native_apply", "connection.native_readback"}:
+        from litetui import native_connection_preferences
+        return native_connection_preferences.dispatch(app, cmd)
     if operation in {"voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback"}:
         from litetui import native_voice_preferences
         return native_voice_preferences.dispatch(app, cmd)
