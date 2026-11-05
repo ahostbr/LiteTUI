@@ -57,7 +57,7 @@ OPERATIONS = (
     "images.attach", "images.clear", "images.native_prepare", "images.native_clipboard", "images.native_preview", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
     "plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback",
-    "context.native_page", "inspection.native_status",
+    "context.native_page", "inspection.native_status", "inspection.native_status_with_glassbox",
     "voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback",
     "mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_apply", "mcp.native_config_readback",
     "context.native_topic_page", "context.native_topic_edit", "context.native_topic_review",
@@ -562,7 +562,7 @@ def dispatch(app, cmd):
     if operation in {"voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback"}:
         from litetui import native_voice_preferences
         return native_voice_preferences.dispatch(app, cmd)
-    if operation == "inspection.native_status":
+    if operation in {"inspection.native_status", "inspection.native_status_with_glassbox"}:
         from litetui import native_inspection
         return native_inspection.status(app, cmd)
     if operation in {"context.native_topic_edit", "context.native_topic_review", "context.native_topic_apply",

@@ -17,6 +17,37 @@ fn identity() -> Identity {
     }
 }
 
+#[test]
+fn glassbox_observations_are_explicit_bounded_and_compatible_with_old_sources() {
+    let mut value = wire();
+    assert!(Snapshot::parse_status(&value, &identity(), INSTANCE, true).is_err());
+    value["diagnostics"]["glassbox"] = json!({"recording":true,"port":7580});
+    assert!(Snapshot::parse(&value, &identity(), INSTANCE).is_err());
+    let status = Snapshot::parse_status(&value, &identity(), INSTANCE, true).unwrap();
+    assert!(status.glassbox.is_some());
+    for bad in [
+        json!({"recording":1,"port":7580}),
+        json!({"recording":true,"port":0}),
+        json!({"recording":true,"port":65536}),
+        json!({"recording":true,"port":1.5}),
+        json!({"recording":false,"port":null,"raw_path":"private"}),
+    ] {
+        value["diagnostics"]["glassbox"] = bad;
+        assert!(Snapshot::parse_status(&value, &identity(), INSTANCE, true).is_err());
+    }
+    value["diagnostics"]["glassbox"] = json!({"recording":false,"port":null});
+    let idle = Snapshot::parse_status(&value, &identity(), INSTANCE, true).unwrap();
+    assert!(idle.glassbox.is_some());
+    assert_ne!(idle.glassbox, status.glassbox);
+    value["diagnostics"]["glassbox"] = Value::Null;
+    assert!(
+        Snapshot::parse_status(&value, &identity(), INSTANCE, true)
+            .unwrap()
+            .glassbox
+            .is_none()
+    );
+}
+
 fn wire() -> Value {
     let mut value = inspection::command(&identity(), INSTANCE);
     assert_eq!(

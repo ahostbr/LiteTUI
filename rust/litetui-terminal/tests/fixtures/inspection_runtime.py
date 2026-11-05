@@ -23,10 +23,14 @@ def forbidden(*_args, **_kwargs):
 
 async def serve(app):
     from litetui import gui_rpc
+    from litetui.plugins import PluginContext
+    from litetui.plugins import glassbox_plugin as glassbox
+
+    glassbox.register(PluginContext(app, app.plugins, glassbox.PLUGIN_ID), root=root / "glassbox-fixture")
     actual_dispatch = gui_rpc.dispatch
 
     def dispatch(owner, command):
-        if command["type"] != "gui.inspection.native_status":
+        if command["type"] != "gui.inspection.native_status_with_glassbox":
             return actual_dispatch(owner, command)
         read = len(samples)
         assert read < 2
@@ -38,6 +42,12 @@ async def serve(app):
         configs.update({f"fixture-{number:02}": {"command": secret} for number in range(37)})
         server = SimpleNamespace(error=None, tools=[{"name": secret}] * (2 + read))
         with ExitStack() as guards:
+            guards.enter_context(patch.object(glassbox, "_ENABLED", bool(read)))
+            listener = SimpleNamespace(server_address=("127.0.0.1", 7580)) if read else None
+            guards.enter_context(patch.object(glassbox.SERVER, "_httpd", listener))
+            guards.enter_context(patch.object(glassbox._RECORDER, "write", forbidden))
+            for method in ("start", "stop"):
+                guards.enter_context(patch.object(glassbox.SERVER, method, forbidden))
             for attr, value in (("configs", configs), ("servers", {"cached-alpha": server}),
                                 ("failures", {"cached-failed": secret})):
                 guards.enter_context(patch.object(mgr, attr, value))
@@ -49,6 +59,7 @@ async def serve(app):
                 guards.enter_context(patch.object(mgr, method, forbidden))
             result = actual_dispatch(owner, command)
             assert secret not in json.dumps(result, ensure_ascii=False)
+            assert result["diagnostics"]["glassbox"] == {"recording": bool(read), "port": 7580 if read else None}
             samples.append({"cached_alpha_tools": len(server.tools), "declared": len(configs), "app_mcp_enabled": app.settings.mcp_enabled})
             return result
 

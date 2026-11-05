@@ -213,6 +213,17 @@ class Server:
 SERVER = Server()
 
 
+def cached_status() -> dict:
+    """Use only the in-process recorder flag and the bound loopback socket address."""
+    listener = SERVER._httpd
+    port = None
+    if listener is not None:
+        host, port = listener.server_address
+        if host != HOST or type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("Glassbox listener has an unexpected address")
+    return {"recording": _ENABLED, "port": port}
+
+
 def _cmd_glassbox(app, name: str, arg: str) -> None:
     global _ENABLED
     action = (arg or "").strip().lower()

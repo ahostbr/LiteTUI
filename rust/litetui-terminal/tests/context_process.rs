@@ -528,6 +528,7 @@ fn runtime_status_uses_only_bounded_cached_sanitized_facts_on_open_and_refresh()
         let visible = frames.join("\n");
         assert!(visible.contains("Runtime status") && visible.contains("Runtime version"));
         assert!(visible.contains("cached-alpha"));
+        assert!(visible.contains("Glassbox") && visible.contains("127.0.0.1:7580"));
         assert!(!visible.contains("SYNTHETIC_MCP_SECRET") && !visible.contains("example.invalid"));
         frames.push(settings_key(runtime, &mut app, KeyCode::Esc)?);
         assert!(app.live.as_ref().unwrap().settings.owns_input());
@@ -556,7 +557,7 @@ fn runtime_status_uses_only_bounded_cached_sanitized_facts_on_open_and_refresh()
     let commands = report["commands"].as_array().unwrap();
     let requests: Vec<_> = commands
         .iter()
-        .filter(|cmd| cmd["type"] == "gui.inspection.native_status")
+        .filter(|cmd| cmd["type"] == "gui.inspection.native_status_with_glassbox")
         .collect();
     assert_eq!(requests.len(), 2);
     let values: Vec<_> = requests

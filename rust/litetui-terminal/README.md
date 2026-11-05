@@ -100,7 +100,7 @@ To work with nested memory files for the active agent, select **Topics** in Cont
 
 To edit `memory.md`, `soul.md` or `handoff.md`, select the document in Context and press **E**. F6 opens a review. Read the whole review, then press F6 again to apply. If the file changes on disk, F5 loads the new base and keeps your draft for another review. Escape returns to editing or asks before discarding a draft. The editor distinguishes an absent file from an empty one and verifies the saved UTF-8 bytes.
 
-In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, and cached MCP server information. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
+In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, cached MCP server information, and the existing Glassbox recorder/listener state. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
 
 Press **V** in F10 to inspect voice and dictation preferences. Use the arrows to choose an editable value and Enter to review the change. After saving, the panel rereads the preference. Opening the panel leaves audio devices idle.
 

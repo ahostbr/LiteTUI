@@ -466,6 +466,7 @@ enum SettingsRead {
     RuntimeStatus {
         identity: crate::work_protocol::Identity,
         instance: String,
+        glassbox: bool,
     },
 }
 pub struct Management {
@@ -2881,18 +2882,31 @@ impl Management {
                 SettingsRead::Preferences(identity, instance, request),
             )
         } else if runtime_status {
-            if !self
+            let glassbox = self
                 .operations
                 .iter()
-                .any(|op| op == crate::inspection::OPERATION)
+                .any(|op| op == crate::inspection::WITH_GLASSBOX);
+            if !glassbox
+                && !self
+                    .operations
+                    .iter()
+                    .any(|op| op == crate::inspection::OPERATION)
             {
                 return Err(fail("This runtime does not support status inspection"));
             }
             let identity = self.work_identity()?;
             let instance = self.context_instance()?.to_owned();
+            let mut command = crate::inspection::command(&identity, &instance);
+            if glassbox {
+                command["type"] = json!(crate::inspection::WITH_GLASSBOX);
+            }
             (
-                crate::inspection::command(&identity, &instance),
-                SettingsRead::RuntimeStatus { identity, instance },
+                command,
+                SettingsRead::RuntimeStatus {
+                    identity,
+                    instance,
+                    glassbox,
+                },
             )
         } else {
             (
@@ -2951,15 +2965,25 @@ impl Management {
                 policy: None,
             });
         }
-        if let SettingsRead::RuntimeStatus { identity, instance } = read {
+        if let SettingsRead::RuntimeStatus {
+            identity,
+            instance,
+            glassbox,
+        } = read
+        {
             let status = if frame["ok"] != true {
                 Err(text(&frame, "error", 4096)?.to_owned())
             } else if identity != self.work_identity()? || instance != self.context_instance()? {
                 Err("Runtime changed during inspection. Open status again.".into())
             } else {
-                crate::inspection::Snapshot::parse(&frame["result"], &identity, &instance)
-                    .map(Box::new)
-                    .map_err(|error| error.to_string())
+                crate::inspection::Snapshot::parse_status(
+                    &frame["result"],
+                    &identity,
+                    &instance,
+                    glassbox,
+                )
+                .map(Box::new)
+                .map_err(|error| error.to_string())
             };
             return Ok(Step::Settings {
                 update: crate::settings_view::Update::RuntimeStatus(status),

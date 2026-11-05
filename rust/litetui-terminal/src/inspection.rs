@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use std::{collections::HashSet, io};
 
 pub const OPERATION: &str = "gui.inspection.native_status";
+pub const WITH_GLASSBOX: &str = "gui.inspection.native_status_with_glassbox";
 const MAX_SERVERS: usize = 32;
 const MAX_COUNTER: u64 = 9_007_199_254_740_991;
 
@@ -65,12 +66,39 @@ pub struct Mcp {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Glassbox {
+    recording: bool,
+    port: Option<u16>,
+}
+
+impl Glassbox {
+    fn parse(value: &Value) -> io::Result<Self> {
+        work::keys(value, &["recording", "port"])?;
+        let recording = value["recording"]
+            .as_bool()
+            .ok_or_else(|| work::bad("Invalid Glassbox recorder state"))?;
+        let port = match &value["port"] {
+            Value::Null => None,
+            number => Some(
+                number
+                    .as_u64()
+                    .and_then(|p| u16::try_from(p).ok())
+                    .filter(|p| *p > 0)
+                    .ok_or_else(|| work::bad("Invalid Glassbox listener port"))?,
+            ),
+        };
+        Ok(Self { recording, port })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub runtime_version: String,
     pub protocol_version: u64,
     pub conversation_persistence: Persistence,
     pub settings_persistence: Persistence,
     pub mcp: Mcp,
+    pub glassbox: Option<Glassbox>,
 }
 
 fn nullable_count(value: &Value) -> io::Result<Option<u64>> {
@@ -154,6 +182,14 @@ impl Mcp {
 
 impl Snapshot {
     pub fn parse(value: &Value, identity: &Identity, work_instance: &str) -> io::Result<Self> {
+        Self::parse_status(value, identity, work_instance, false)
+    }
+    pub fn parse_status(
+        value: &Value,
+        identity: &Identity,
+        work_instance: &str,
+        extended: bool,
+    ) -> io::Result<Self> {
         work::bounded(value, 32768)?;
         work::keys(
             value,
@@ -182,15 +218,21 @@ impl Snapshot {
             ));
         }
         let diagnostics = &value["diagnostics"];
-        work::keys(
-            diagnostics,
-            &[
-                "runtime_version",
-                "protocol_version",
-                "conversation_persistence",
-                "settings_persistence",
-            ],
-        )?;
+        let mut fields = vec![
+            "runtime_version",
+            "protocol_version",
+            "conversation_persistence",
+            "settings_persistence",
+        ];
+        if extended {
+            fields.push("glassbox");
+        }
+        work::keys(diagnostics, &fields)?;
+        let glassbox = diagnostics
+            .get("glassbox")
+            .filter(|value| !value.is_null())
+            .map(Glassbox::parse)
+            .transpose()?;
         let runtime_version = work::text(diagnostics, "runtime_version", 64)?;
         if !runtime_version
             .bytes()
@@ -207,6 +249,7 @@ impl Snapshot {
             conversation_persistence: Persistence::parse(&diagnostics["conversation_persistence"])?,
             settings_persistence: Persistence::parse(&diagnostics["settings_persistence"])?,
             mcp: Mcp::parse(&value["mcp"])?,
+            glassbox,
         })
     }
 
@@ -227,6 +270,20 @@ impl Snapshot {
                 "Settings persistence       {}",
                 self.settings_persistence.label()
             ),
+            match &self.glassbox {
+                Some(status) => {
+                    let recorder = if status.recording {
+                        "recording"
+                    } else {
+                        "recording off"
+                    };
+                    match status.port {
+                        Some(port) => format!("Glassbox   {recorder} · 127.0.0.1:{port}"),
+                        None => format!("Glassbox   {recorder} · listener off"),
+                    }
+                }
+                None => "Glassbox   unavailable".into(),
+            },
             String::new(),
             "MCP servers".into(),
             format!("MCP setting   {enabled}"),

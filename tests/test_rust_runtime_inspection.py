@@ -22,6 +22,42 @@ def request(app):
             **work.identity(app), "work_instance": work.bridge(app).instance}
 
 
+async def test_registered_glassbox_status_uses_only_existing_local_state(armed, monkeypatch):
+    app = armed
+    from litetui.plugins import glassbox_plugin as glassbox
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Status attempted a Glassbox side effect")
+
+    assert app.plugins.commands["glassbox"].handler is glassbox._cmd_glassbox
+    monkeypatch.setattr(glassbox.SERVER, "start", forbidden)
+    monkeypatch.setattr(glassbox.SERVER, "stop", forbidden)
+    monkeypatch.setattr(glassbox, "_ENABLED", True)
+    monkeypatch.setattr(glassbox.SERVER, "_httpd",
+                        SimpleNamespace(server_address=("127.0.0.1", 57491)))
+    command = {**request(app), "type": native_inspection.WITH_GLASSBOX}
+    result = await published_rpc(app, monkeypatch, command)
+    assert result["diagnostics"]["glassbox"] == {"recording": True, "port": 57491}
+    legacy = await published_rpc(app, monkeypatch, request(app))
+    assert "glassbox" not in legacy["diagnostics"]
+    monkeypatch.setattr(glassbox, "_ENABLED", False)
+    monkeypatch.setattr(glassbox.SERVER, "_httpd", None)
+    result = await published_rpc(app, monkeypatch, command)
+    assert result["diagnostics"]["glassbox"] == {"recording": False, "port": None}
+
+
+async def test_glassbox_observations_require_the_registered_builtin_and_loopback(armed, monkeypatch):
+    app = armed
+    from litetui.plugins import glassbox_plugin as glassbox
+    command = {**request(app), "type": native_inspection.WITH_GLASSBOX}
+    monkeypatch.setattr(glassbox.SERVER, "_httpd",
+                        SimpleNamespace(server_address=("0.0.0.0", 7580)))
+    with pytest.raises(ValueError, match="unexpected address"):
+        native_inspection.status(app, command)
+    monkeypatch.setitem(app.plugins.commands, "glassbox", SimpleNamespace(owner="third-party", handler=lambda *args: None))
+    assert (await published_rpc(app, monkeypatch, command))["diagnostics"]["glassbox"] is None
+
+
 async def test_real_rpc_projects_only_current_cached_metadata(armed, monkeypatch):
     app = armed
     manager = app.mcp
