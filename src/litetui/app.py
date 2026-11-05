@@ -9229,7 +9229,8 @@ class LiteTUI(App):
                 LiteTUI._validate_owned_execution(self)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
-                return
+                from litetui.turn_deferral import STREAM_REFUSED
+                return STREAM_REFUSED  # T0483-A: refused, not run
         from litetui.turn_deferral import STREAM_DEFERRED, TurnDeferred
         try:
             if (restart_checkpoint.is_held(self)
@@ -9246,7 +9247,8 @@ class LiteTUI(App):
                 LiteTUI._validate_owned_execution(self)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
-                return
+                from litetui.turn_deferral import STREAM_REFUSED
+                return STREAM_REFUSED  # T0483-A: refused, not run
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import stream_turn
             await stream_turn(self)
@@ -10419,9 +10421,13 @@ class LiteTUI(App):
         if not hook_host.accept_prompt(self, item, **admission):
             self._system("The owner STEP 1 turn was not admitted; the context was not compacted.")
             return False
-        from litetui.turn_deferral import STREAM_DEFERRED
-        if await LiteTUI._stream.__wrapped__(self, restart_maintenance=restart_maintenance) is STREAM_DEFERRED:
+        from litetui.turn_deferral import STREAM_DEFERRED, STREAM_REFUSED
+        result = await LiteTUI._stream.__wrapped__(self, restart_maintenance=restart_maintenance)
+        if result is STREAM_DEFERRED:
             self._system("Owner maintenance was deferred; context was not compacted.")
+            return False
+        if result is STREAM_REFUSED:
+            self._system("The owner STEP 1 turn was refused; the context was not compacted.")
             return False
         if self._stop_requested:
             self._system("Stopped; the context was not compacted.")
