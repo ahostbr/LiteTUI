@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import subprocess
 import uuid
 from dataclasses import asdict, dataclass, replace
 from typing import Any
@@ -14,6 +15,8 @@ from litetui import (
     compaction_preferences,
     conversation_transition,
     native_history,
+    native_owner_handoff,
+    owner_mode,
 )
 from litetui import conversation_action as action
 from litetui import history_projection as projection
@@ -38,6 +41,11 @@ class CompactOutcome:
     publication_verified: bool = False
     native: VerifiedCompaction | None = None
     claude: claude_compaction_evidence.SegmentReceipt | None = None
+
+
+@dataclass(frozen=True)
+class OwnerReview(action.Review):
+    binding: native_owner_handoff.Binding
 
 
 @dataclass(frozen=True)
@@ -82,7 +90,9 @@ def _config(app):
     return value
 
 
-def _prompt():
+def _prompt(app=None):
+    if (directory := getattr(app, "_owner_memory_dir", None)) is not None:
+        return owner_mode.compact_prompt(directory)
     from litetui.app import COMPACT_PROMPT
     return COMPACT_PROMPT
 
@@ -95,7 +105,7 @@ def _plan(app, messages, config):
     return {"messages": len(messages), "system_messages": system, "head_messages": len(head),
             "tail_messages": len(tail), "head_context_sha256": projection.digest(projection.encoded(head)),
             "tail_context_sha256": projection.digest(projection.encoded(tail)),
-            "prompt_sha256": projection.digest(_prompt().encode("utf-8")),
+            "prompt_sha256": projection.digest(_prompt(app).encode("utf-8")),
             "config_sha256": projection.digest(projection.encoded(config))}
 
 
@@ -111,7 +121,13 @@ def _eligibility(app):
         except ValueError as exc:
             return str(exc)
     if getattr(app, "_owner_memory_dir", None) is not None:
-        return "Reviewed manual compaction does not yet support owner-mode handoff"
+        if hasattr(app.backend, "app_server") or getattr(app.backend, "owns_native_turns", False):
+            return "Reviewed owner handoff requires host-managed compaction"
+        from litetui import jobkill
+        if not jobkill.available():
+            return "Reviewed owner handoff needs Windows process containment"
+        if not app.tools_enabled:
+            return "Reviewed owner handoff needs tools enabled to rewrite NOW.md"
     if app.store.pending or not app.store.owned:
         return "Compaction requires an already materialized owned conversation"
     if getattr(app, "pending_image", None) is not None:
@@ -137,6 +153,7 @@ def _snapshot(app, cmd):
     codex = app.backend.name == "codex" and hasattr(app.backend, "app_server")
     claude = app.backend.name == "claude" and getattr(app.backend, "owns_native_turns", False)
     binding = None
+    owner_error = None
     if claude:
         try:
             binding = claude_compaction_evidence.Binding.capture(app)
@@ -153,8 +170,14 @@ def _snapshot(app, cmd):
                 "messages": len(captured.messages)}
     else:
         plan = _plan(app, captured.messages, config)
+        if getattr(app, "_owner_memory_dir", None) is not None:
+            try:
+                binding = native_owner_handoff.Binding.capture(app)
+                plan["owner_handoff"] = binding.plan()
+            except (ValueError, OSError, subprocess.SubprocessError):
+                owner_error = "Owner handoff needs the selected lease, bounded documents and a dedicated local Git repository"
     hooks, registry = conversation_transition._hooks(app), conversation_transition._registry(app)
-    reason = "Current transcript is read-only" if not captured.writable else _eligibility(app)
+    reason = "Current transcript is read-only" if not captured.writable else _eligibility(app) or owner_error
     value = {"kind": "conversation_compact_snapshot", **action._identity(app),
              **{key: cmd[key] for key in SELECTION}, "eligible": reason is None, "reason": reason,
              "plan": plan, "config": config}
@@ -166,10 +189,11 @@ def _snapshot(app, cmd):
         **({"claude": [id(binding.ledger), id(binding.session), id(binding.owner), binding.generation]}
            if claude and binding else {})})
     profile = getattr(app, "_active_tool_profile", None)
-    review_type = ClaudeReview if claude else CodexReview if codex else action.Review
+    owner = isinstance(binding, native_owner_handoff.Binding)
+    review_type = ClaudeReview if claude else CodexReview if codex else OwnerReview if owner else action.Review
     review = review_type(b"", action._objects(app), action._protected(app), action._files(app), hooks, registry,
                            captured.messages_bytes, captured.raw or b"", app.conversation,
-                           profile, profile, action._receipts(app), **({"binding": binding} if codex or claude else {}))
+                           profile, profile, action._receipts(app), **({"binding": binding} if codex or claude or owner else {}))
     action._stable(app, review, original=True)
     return value, review
 
@@ -192,7 +216,7 @@ def validate(app, cmd):
         from litetui.claude_compact import request
         prompt = request(hint)
     else:
-        prompt = _prompt() + ("\n\n" + hint if hint else "")
+        prompt = _prompt(app) + ("\n\n" + hint if hint else "")
     config = current["config"]
     value = {"kind": "conversation_compact_review", **{key: current[key] for key in
              (*COMMON, *SELECTION, "snapshot", "plan", "config")},
@@ -242,6 +266,9 @@ async def apply(app, cmd):
                 plan = {"kind": "codex", "messages": len(app.conversation), "thread_id": review.binding.thread_id}
             else:
                 plan = _plan(app, app.conversation, wire["config"])
+                if isinstance(review, OwnerReview):
+                    review.binding.before(app)
+                    plan["owner_handoff"] = review.binding.plan()
             if _config(app) != wire["config"] or plan != wire["plan"]:
                 raise ValueError("Compaction plan or configuration changed")
             # Manual maintenance cannot consume a stale automatic/handoff flag.
@@ -269,6 +296,18 @@ async def apply(app, cmd):
         if failed:
             app._conversation_rewrite_error = action.CLOSE_REQUIRED
     return _receipt(app, cmd, attempt)
+
+
+def owner_review_required(app):
+    return getattr(app, "_owner_memory_dir", None) is not None and native_history.enabled(app)
+
+
+def reviewed_owner(app):
+    if action._authorized(app):
+        attempt = action._required_attempt(app)
+        if attempt.kind == "compact" and isinstance(attempt.review, OwnerReview):
+            return attempt.review.binding
+    return None
 
 
 def is_reviewed_claude(app):
@@ -323,6 +362,8 @@ def begin_publication(app, rebuilt):
         return None
     attempt = action._required_attempt(app)
     action._stable(app, attempt.review, admitted=True)
+    if isinstance(attempt.review, OwnerReview) and attempt.review.binding.readback(app) is None:
+        raise ValueError("The reviewed owner handoff requires a verified commit before truncation")
     raw = projection.encoded(rebuilt)
     if len(raw) > native_history.MAX_TRANSCRIPT:
         raise ValueError("Compacted context exceeds the 8 MiB source budget")
@@ -386,6 +427,10 @@ def capture_root_result(app, attempt: action.Attempt, result):
                ("cancelled", "cancelled"), ("failed", "no_summary"), ("failed", "provider_failed")}
     if (result.outcome, result.reason_code) not in allowed:
         raise ValueError("Compaction root returned an unknown outcome")
+    if isinstance(attempt.review, OwnerReview):
+        receipt = attempt.review.binding.readback(app)
+        if result.outcome == "compacted" and not receipt:
+            raise ValueError("Missing verified owner handoff")
     publication = attempt.publication
     attempted = bool(isinstance(publication, Publication) and publication.attempted)
     verified = bool(isinstance(publication, Publication) and publication.verified)
@@ -485,6 +530,8 @@ async def settled(app, cmd):
                               "publication_verified": outcome.publication_verified},
                   "execution": {"segments": len(attempt.segments or ()),
                                 "last_execution_id": attempt.segments[-1] if attempt.segments else None}}
+        if isinstance(attempt.review, OwnerReview):
+            result["witness"]["owner_handoff"] = None if refused else attempt.review.binding.readback(app)
         if isinstance(attempt.review, ClaudeReview):
             result["witness"]["claude_compaction"] = asdict(outcome.claude) if outcome.claude else None
         if isinstance(attempt.review, CodexReview):

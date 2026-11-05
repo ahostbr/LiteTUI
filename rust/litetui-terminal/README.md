@@ -18,6 +18,10 @@ Native and generic turn producers must carry the captured execution/session/oper
 
 ## Reopen saved conversations
 
+For owner memory, pass both `-Owner 'NAME'` and `-Memory 'C:/absolute/owner-folder'` to the checkout or portable launcher. The executable accepts `--owner NAME --memory DIR`. The source requires SOUL.md, NOW.md, DOMAIN.md, and LiteHarness owner-handoff. It leases the selected folder until Quit. To resume an owner conversation, pass the same owner name and folder together with its retained data root and conversation ID.
+
+F6 opens saved history. Press C to review host-managed compaction. With tools enabled and the owner folder at the root of a dedicated Git repository on a local branch, the review includes its path and current commit. The provider may rewrite NOW.md and append to DOMAIN.md. The host commits those files, verifies their Git blobs, and only then replaces saved context. Completed tool writes and commits can survive Stop. Provider-native owner compaction remains unavailable.
+
 After interactive exit, the terminal prints the retained root, full conversation ID and current backend/model. Resume that saved conversation explicitly:
 
     ./open-chat.ps1 -DataRoot 'C:/path/to/retained-root' -Resume '<conversation-uuid>' -Backend claude -Model '<saved-model>'

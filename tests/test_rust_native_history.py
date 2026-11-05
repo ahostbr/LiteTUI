@@ -441,3 +441,39 @@ async def test_image_preview_requires_materialized_owner_exact_block_and_embedde
     save_history(app, [{"role": "user", "content": "replaced"}])
     with pytest.raises(ValueError, match="changed"):
         native_history.image(app, select(rows[0]))
+
+
+@pytest.mark.parametrize("target_mode", ["home", "owner"])
+async def test_open_refuses_a_foreign_store_before_leaving_current_conversation(switch_app, tmp_path, monkeypatch, target_mode):
+    from litetui import background_input, hook_host
+    from litetui.conversation import ConversationRepository
+
+    app = switch_app
+    authority = app._agent_session.authority
+    app._owner_memory_dir = tmp_path / "current-owner"
+    app._owner_memory_dir.mkdir()
+    saved = ConversationRepository(agent_session=app._agent_session)
+    saved.stage(str(uuid.uuid4()))
+    saved.acquire()
+    try:
+        saved.pending = False
+        saved.record_meta(app.model_id, authority.name, authority.agent_id)
+        saved.record_snapshot([{"role": "system", "content": "Other store"}, {"role": "user", "content": "saved"}],
+                              store_identity={"version": 1, "mode": target_mode, "folder": str(tmp_path / "foreign")},
+                              store_injected=True)
+        assert not saved.persist_error
+    finally:
+        saved.release()
+    catalog = conversation_page._catalog(app, app.convo_id)[4]
+    cmd = common(app, session_id=saved.convo_id, scope="preview", catalog_snapshot=catalog)
+    target = native_history.snapshot(app, cmd)
+    before = disk(app), app.convo_id, app.store, app.conversation
+    def unauthorized(*args, **kwargs):
+        pytest.fail("Foreign store proceeded into an identity transition")
+    monkeypatch.setattr(background_input, "before_identity_transition", unauthorized)
+    monkeypatch.setattr(hook_host, "leave_conversation", unauthorized)
+    result = await native_history.open_conversation(app, {**cmd, "history_snapshot": target["snapshot"],
+                                                        "action_id": target["open_action_id"]})
+    assert result["status"] == "refused" and not result["mutated"] and not result["close_required"]
+    assert "different memory stores" in result["error"]
+    assert before == (disk(app), app.convo_id, app.store, app.conversation)

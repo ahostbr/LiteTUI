@@ -10,6 +10,8 @@ param(
     [Parameter(ParameterSetName='Run')][string]$Workspace,
     [Parameter(ParameterSetName='Run')][string]$DataRoot,
     [Parameter(ParameterSetName='Run')][string]$Resume,
+    [Parameter(ParameterSetName='Run')][string]$Owner,
+    [Parameter(ParameterSetName='Run')][string]$Memory,
     [Parameter(ParameterSetName='Run')][ValidateRange(1,600)][int]$Timeout = 180,
     [Parameter(ParameterSetName='Run')][string]$BaseUrl,
     [Parameter(ParameterSetName='Run')][ValidateSet('auto', 'connect', 'start')][string]$ServerMode,

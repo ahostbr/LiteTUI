@@ -106,18 +106,24 @@ def require_handoff() -> None:
             "it was not found or is too old: install or update liteharness, then launch again")
 
 
-def run_handoff(memory_dir: Path, agent_id: str | None = None, timeout: float = 120.0) -> tuple[bool, str]:
+def run_handoff(memory_dir: Path, agent_id: str | None = None, timeout: float = 120.0, *,
+                command=None, environment=None, contained=False) -> tuple[bool, str]:
     """Run `liteharness owner-handoff --memory DIR`; (ok, the reason or its output).
 
     Outside the tool policy on purpose: this is the host committing, not the
     model running git. Exact paths only: the command itself commits NOW.md and
     DOMAIN.md and never anything else, so `.owner.lock` is never staged.
     """
-    env = dict(os.environ)
+    env = dict(os.environ if environment is None else environment)
     if agent_id:
         env["LITEHARNESS_AGENT_ID"] = agent_id
     try:
-        done = subprocess.run([*handoff_command(), "owner-handoff", "--memory", str(memory_dir)],
+        if contained:
+            from litetui import ttyguard
+            status = ttyguard.run_owned_writer([*(command or handoff_command()), "owner-handoff", "--memory",
+                                                str(memory_dir)], cwd=memory_dir, env=env, timeout=timeout)
+            return status == 0, ""
+        done = subprocess.run([*(command or handoff_command()), "owner-handoff", "--memory", str(memory_dir)],
                               capture_output=True, text=True, timeout=timeout, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"could not run liteharness owner-handoff: {exc}"
@@ -257,6 +263,16 @@ class OwnerLock:
             return note
         raise OwnerModeError(f"could not take the owner lock {self.path}: another launch keeps winning it")
 
+    def require_holder(self, agent_id: str) -> None:
+        """Check the exact process, acquisition and named agent without replacing a lock."""
+        if self._mine is not None and self._mine[0] == os.getpid():
+            with self._transaction():
+                _, data = self._read()
+                if (data is not None and (data.get("pid"), data.get("started")) == self._mine
+                        and data.get("agent_id") == agent_id):
+                    return
+        raise OwnerModeError("The selected owner memory lease changed")
+
     def set_agent(self, agent_id: str) -> None:
         """Record the agent id once the seat exists (the lock is taken before it does)."""
         import json
@@ -284,6 +300,20 @@ class OwnerLock:
 
 
 # -- the compaction contract ----------------------------------------------------------------
+
+def native_binding(app) -> dict:
+    directory = getattr(app, "_owner_memory_dir", None)
+    if directory is None:
+        return {}
+    directory = validate_memory_dir(str(directory))
+    lock = getattr(app, "_owner_memory_lock", None)
+    if not isinstance(lock, OwnerLock) or lock.path != directory / LOCK_NAME:
+        raise OwnerModeError("The selected owner memory lease is unavailable")
+    authority = app._agent_session.authority
+    lock.require_holder(authority.agent_id)
+    return {"owner_store": {"version": 1, "name": authority.name,
+                            "directory": str(directory), "agent_id": authority.agent_id}}
+
 
 def _posix(path) -> str:
     return str(path).replace("\\", "/")

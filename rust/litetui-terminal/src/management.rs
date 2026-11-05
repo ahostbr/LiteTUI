@@ -535,6 +535,7 @@ pub struct Management {
     revision: u64,
     phase: Phase,
     expected: Option<(String, String, String, String)>,
+    owner_store: Option<(String, String)>,
     state_id: Option<CommandId>,
     resume: Option<String>,
     startup: Option<Snapshot>,
@@ -617,6 +618,7 @@ impl Default for Management {
             revision: 0,
             phase: Phase::AwaitReady,
             expected: None,
+            owner_store: None,
             state_id: None,
             resume: None,
             startup: None,
@@ -651,6 +653,10 @@ impl Management {
     }
     fn begin_inner(&mut self, ready: &Value) -> io::Result<Value> {
         self.work_lifecycle_advertisement(ready)?;
+        self.owner_store = ready["owner_store"]["agent_id"]
+            .as_str()
+            .zip(ready["owner_store"]["directory"].as_str())
+            .map(|(id, directory)| (id.to_owned(), directory.to_owned()));
         self.history_projection = match ready.get("history_projection_version") {
             None | Some(Value::Null) => false,
             Some(value) if value.as_u64() == Some(1) => true,
@@ -996,6 +1002,15 @@ impl Management {
                     .as_str()
                     .filter(|id| !id.is_empty() && id.len() <= 128)
                     .map(|id| (id.to_owned(), snapshot.schedules_paused));
+                if self.owner_store.as_ref().is_some_and(|(agent, _)| {
+                    self.browser_authority
+                        .as_ref()
+                        .is_none_or(|(found, _)| found != agent)
+                }) {
+                    return Err(fail(
+                        "Runtime ownership differs from the selected memory lease",
+                    ));
+                }
                 self.state_id = None;
                 if self.resume.is_some() || self.history_projection {
                     let session = &snapshot.session;

@@ -5,6 +5,8 @@ param(
     [string]$Workspace,
     [string]$DataRoot,
     [string]$Resume,
+    [string]$Owner,
+    [string]$Memory,
     [string]$Backend = 'claude',
     [string]$Model = 'claude-sonnet-5-5',
     [string]$BaseUrl,

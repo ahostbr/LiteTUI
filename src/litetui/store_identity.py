@@ -122,6 +122,20 @@ def transcript_store_match(app, recorded=UNRECORDED, *, messages: list[dict], co
     return require_store_match(app, recorded, prompt=prompt if isinstance(prompt, str) else "", convo_id=convo_id)
 
 
+def resume_store_match(app, path, meta, messages):
+    from litetui.claude_persistence import ClaudeLedger, path_for
+
+    saved = transcript_store_match(app, meta.get("store_identity", UNRECORDED),
+                                   messages=messages, convo_id=path.parent.name)
+    if path_for(path.parent).exists():
+        segment = ClaudeLedger(path.parent).selected
+        if segment and (segment.get("system_prompt") or segment.get("session_id")):
+            require_store_match(app, segment.get("store_identity", UNRECORDED),
+                                prompt=segment.get("system_prompt") or "",
+                                convo_id=path.parent.name, native=True)
+    return saved
+
+
 def require_store_match(app, recorded=UNRECORDED, *, prompt: str, convo_id: str, native: bool = False) -> dict:
     """Compare data, using the bounded legacy reader only when data is absent."""
     expected = capture(app)

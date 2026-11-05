@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{self, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc,
     thread,
@@ -67,8 +67,66 @@ pub struct Options {
     pub tool_profile: Option<crate::tool_mode::Profile>,
     pub workspace: Option<PathBuf>,
     pub resume: Option<String>,
+    pub owner: Option<OwnerStore>,
     pub launch: crate::runtime_launch::LaunchOptions,
 }
+#[derive(Debug)]
+pub struct OwnerStore {
+    name: String,
+    directory: PathBuf,
+}
+
+impl OwnerStore {
+    fn from_flags(name: Option<String>, directory: Option<String>) -> io::Result<Option<Self>> {
+        match (name, directory) {
+            (None, None) => Ok(None),
+            (Some(name), Some(directory))
+                if !name.trim().is_empty()
+                    && name.len() <= 1024
+                    && !name.chars().any(char::is_control)
+                    && Path::new(&directory).is_absolute()
+                    && !directory.chars().any(char::is_control) =>
+            {
+                Ok(Some(Self {
+                    name: name.trim().to_owned(),
+                    directory: directory.into(),
+                }))
+            }
+            _ => Err(io::Error::other(
+                "--owner needs a name and --memory an absolute folder, together",
+            )),
+        }
+    }
+
+    fn verify(expected: Option<&Self>, ready: &Value, child: &OwnedChild) -> io::Result<()> {
+        match (expected, ready.get("owner_store")) {
+            (None, None) => Ok(()),
+            (Some(store), Some(value))
+                if value.as_object().is_some_and(|obj| obj.len() == 4)
+                    && ready["pid"]
+                        .as_u64()
+                        .and_then(|pid| u32::try_from(pid).ok())
+                        .is_some_and(|pid| {
+                            pid == child.child.id() || child.job.contains_pid(pid).unwrap_or(false)
+                        })
+                    && value["version"].as_u64() == Some(1)
+                    && value["name"] == store.name
+                    && value["agent_id"]
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty() && id.len() <= 128)
+                    && value["directory"]
+                        .as_str()
+                        .is_some_and(|s| Path::new(s) == store.directory) =>
+            {
+                Ok(())
+            }
+            _ => Err(io::Error::other(
+                "Runtime did not verify the selected owner memory lease",
+            )),
+        }
+    }
+}
+
 impl Options {
     /// Required at the runtime boundary, before filesystem writes or child creation.
     pub fn selected_profile(&self) -> io::Result<crate::tool_mode::Profile> {
@@ -92,6 +150,8 @@ impl Options {
                     "--tool-profile",
                     "--workspace",
                     "--resume",
+                    "--owner",
+                    "--memory",
                 ]
                 .contains(&pair[0].as_str())
                 || fields.insert(pair[0].as_str(), pair[1].clone()).is_some()
@@ -119,6 +179,7 @@ impl Options {
                 "Engine management cannot queue a launch prompt",
             ));
         }
+        let owner = OwnerStore::from_flags(fields.remove("--owner"), fields.remove("--memory"))?;
         let resume = fields.remove("--resume");
         if let Some(id) = &resume {
             crate::resume::conversation_id(id)?;
@@ -163,6 +224,7 @@ impl Options {
             tools_enabled,
             tool_profile,
             workspace,
+            owner,
             resume,
             launch,
         })
@@ -2065,6 +2127,13 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     if let Some(id) = &options.resume {
         command.args(["--convo", id]);
     }
+    if let Some(store) = &options.owner {
+        command
+            .arg("--owner")
+            .arg(&store.name)
+            .arg("--memory")
+            .arg(&store.directory);
+    }
     command.args(launch_args).args(thinking_args);
     let (job, mut child) = crate::live_process::Job::spawn(&mut command)?;
     let mut stdin = child.stdin.take().expect("piped stdin");
@@ -2935,6 +3004,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         }
                     }
                     Step::Bootstrap(ready) => {
+                        OwnerStore::verify(options.owner.as_ref(), &ready, &owned)?;
                         require_work_lifecycle(&ready)?;
                         turn.accept(&ready, &options.backend, &options.model)?;
                         crate::history::require_projection(&ready)?;

@@ -875,7 +875,7 @@ def main():
             stack.enter_context(patch.object(AppServer, "request", codex_request))
             stack.enter_context(patch.object(AppServer, "close", codex_close))
         for obj, key, replacement in (
-            (platform, "node", lambda: "controlled-host"), (subprocess, "Popen", boundary.forbidden),
+            (platform, "node", lambda: "controlled-host"), (subprocess, "Popen", getattr(boundary, "scoped_popen", boundary.forbidden)),
             (httpx.Client, "send", boundary.forbidden), (httpx.AsyncClient, "send", boundary.forbidden_async),
             (ttyguard, "run", boundary.command), (ttyguard, "popen", boundary.forbidden),
             (gpu_gate, "nvidia_smi", lambda: "fixture-nvidia-smi"),

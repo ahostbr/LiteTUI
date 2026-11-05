@@ -562,6 +562,9 @@ async def open_conversation(app: Any, cmd: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(reason)
         if not capture.messages:
             raise ValueError("Conversation has no saved context to resume")
+        # Resolve store provenance before leaving the current conversation or running its hooks.
+        from litetui.store_identity import resume_store_match
+        resume_store_match(app, record.path, capture.meta, capture.messages)
         backend_transition._quiet(app, require_unowned_server=False)
         if native_engine.state(app) is not None:
             raise ValueError("Reopen explicitly before changing a native-engine conversation")

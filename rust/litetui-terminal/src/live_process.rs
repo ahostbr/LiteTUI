@@ -13,12 +13,13 @@ mod platform {
         Foundation::{CloseHandle, HANDLE},
         System::{
             JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-                QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+                AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+                JobObjectExtendedLimitInformation, QueryInformationJobObject,
+                SetInformationJobObject, TerminateJobObject,
             },
-            Threading::CREATE_SUSPENDED,
+            Threading::{CREATE_SUSPENDED, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
         },
     };
 
@@ -72,6 +73,24 @@ mod platform {
             }
             Ok((job, child))
         }
+        pub fn contains_pid(&self, pid: u32) -> io::Result<bool> {
+            // A Windows venv redirector can launch the interpreter as its child.
+            // Check the live process handle against this launch's private kernel job.
+            unsafe {
+                let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if process.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut member = 0;
+                let checked = IsProcessInJob(process, self.0, &mut member);
+                let error = (checked == 0).then(io::Error::last_os_error);
+                CloseHandle(process);
+                match error {
+                    Some(error) => Err(error),
+                    None => Ok(member != 0),
+                }
+            }
+        }
         pub fn active(&self) -> io::Result<u32> {
             let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
             // SAFETY: live handle and initialized output buffer with exact size.
@@ -115,6 +134,9 @@ mod platform {
             Err(io::Error::other(
                 "Live child containment is currently Windows-only",
             ))
+        }
+        pub fn contains_pid(&self, _: u32) -> io::Result<bool> {
+            Ok(false)
         }
         pub fn active(&self) -> io::Result<u32> {
             Ok(0)

@@ -7,6 +7,7 @@ function Get-LiteTuiLaunchArguments {
     }
     $result = [System.Collections.Generic.List[string]]::new()
     $fields = [ordered]@{
+        Owner='--owner'; Memory='--memory'
         BaseUrl='--base-url'; ServerMode='--server-mode'; ContextLength='--context-length'
         MaxTokens='--max-tokens'; ServerExecutable='--server-executable'; ModelPath='--model-path'
         ServerCommand='--server-command'; ApiKeyEnv='--api-key-env'; ServerTimeout='--server-timeout'

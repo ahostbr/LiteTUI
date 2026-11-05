@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 import os
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -117,7 +118,14 @@ def seed(app):
     artifact = Path.cwd() / "compact-owned-output.txt"
     assert artifact.resolve().parent == Path.cwd().resolve()
     write_args = {"path": str(artifact), "content": WRITE_CONTENT}
-    if CASE in {"tools-on", "tool-then-empty", "tool-cap"}:
+    if CASE.startswith("owner-verified"):
+        artifact = app._owner_memory_dir / "NOW.md"
+        write_args = {"path": str(artifact), "content": "Fresh private owner handoff.\n"}
+        live_files = appsvc.store_block(app, live=True)
+        history.report["owner"] = {"id": app._agent_session.authority.agent_id,
+            "name": app._agent_session.authority.name, "privileged": bool(app._owner_seat),
+            "store": store_identity.capture(app), "session": app.convo_id}
+    if CASE in {"tools-on", "tool-then-empty", "tool-cap"} or CASE.startswith("owner-verified"):
         app.settings.tool_always_allow = [tool_policy.rule_key(
             "write", tool_policy.WRITE_POLICY.classify(write_args, paths.ROOT))]
     if CASE == "held":
@@ -137,7 +145,7 @@ def seed(app):
     live_store = ("\n\n## Your store, as it stands right now\n\nRe-read from disk just now.\n\n"
         "### memory.md (current contents)\n\n" + MEMORY + "\n")
     history.report.update(original=original, expected_head=copy.deepcopy(actual_head),
-        expected_tail=copy.deepcopy(actual_tail), live_store=live_store,
+        expected_tail=copy.deepcopy(actual_tail), live_store=live_files if CASE.startswith("owner-verified") else live_store,
         before=stable(app), transcript_path=str(app.convo_path), records_before=records(app),
         archive_before=owned_transcript(app).read_bytes().hex(), artifact=str(artifact),
         write_args=write_args)
@@ -251,7 +259,7 @@ class ControlledStream:
             is_followup = messages[-1].get("role") == "tool"
             on_wake = self.kind == "wake"
             asks = "question" in CASE and (("wake" in CASE) == on_wake)
-            writes = CASE in {"tools-on", "tools-off", "tool-then-empty", "tool-cap"} or ("approval" in CASE and (("wake" in CASE) == on_wake))
+            writes = CASE.startswith("owner-verified") or CASE in {"tools-on", "tools-off", "tool-then-empty", "tool-cap"} or ("approval" in CASE and (("wake" in CASE) == on_wake))
             if (asks or writes) and (not is_followup or CASE == "tool-cap"):
                 name = "ask_user_question" if asks else "write"
                 args = QUESTION_ARGS if asks else history.report["write_args"]
@@ -302,7 +310,11 @@ async def completions(resource, **request):
         return NS(choices=[NS(message=NS(content="Controlled card title"))])
     if kind == "compact" and not any(row.get("role") == "tool" and str(row.get("tool_call_id", "")).startswith("compact-live-call-") for row in messages):
         expected = copy.deepcopy(history.report["expected_head"])
-        expected.append({"role": "user", "content": COMPACT_PROMPT + ("\n\n" + history.report["hint"] if history.report["hint"] else "")})
+        prompt = COMPACT_PROMPT
+        if CASE.startswith("owner-verified"):
+            from litetui import owner_mode
+            prompt = owner_mode.compact_prompt(app._owner_memory_dir)
+        expected.append({"role": "user", "content": prompt + ("\n\n" + history.report["hint"] if history.report["hint"] else "")})
         original = history.report["original"]
         if original[0]["role"] == "system":
             expected.insert(0, {**original[0], "content": original[0]["content"] + history.report["live_store"]})
@@ -418,6 +430,8 @@ async def serve(app):
         return original_release()
 
     def command(argv, *args, **kwargs):
+        if CASE.startswith("owner-verified") and len(argv) > 2 and argv[1] == "--no-optional-locks":
+            return history.boundary.real_git_read(argv, *args, **kwargs)
         artifact = Path(history.report["artifact"]) if seeded else None
         if artifact is not None and argv == ["git", "check-attr", "-z", "eol", "--", artifact.name]:
             assert not args and kwargs == {"cwd": artifact.parent, "timeout": 2}
@@ -670,7 +684,14 @@ async def serve(app):
             async with asyncio.timeout(120), app.run_test(size=(100, 32)):
                 await asyncio.wait_for(history.boundary.ready.wait(), 15)
                 await history.settle(app)
-                seed(app)
+                if CASE.startswith("owner-verified") and "--convo" in sys.argv:
+                    from litetui import store_identity
+                    history.report.update(archive_before=owned_transcript(app).read_bytes().hex(),
+                        artifact=str(app._owner_memory_dir / "NOW.md"),
+                        owner={"id": app._agent_session.authority.agent_id, "name": app._agent_session.authority.name,
+                               "store": store_identity.capture(app), "session": app.convo_id, "privileged": bool(app._owner_seat)})
+                else:
+                    seed(app)
                 if CASE.startswith("claude-segment"):
                     await seed_claude(app)
                 seeded = True
@@ -768,7 +789,13 @@ if __name__ == "__main__":
             "litetui.plugins.convo", "litetui.plugins.self_compact", "litetui.plugins.ask_user_question"), disabled=disabled)
 
     with patch.object(plugins, "register_plugins", controlled_register):
-        if CASE.startswith("claude-segment"):
+        if CASE.startswith("owner-verified"):
+            spec = importlib.util.spec_from_file_location("_private_owner", Path(__file__).with_name("owner_handoff_fixture.py"))
+            helper = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(helper)
+            with helper.configure(history):
+                history.main()
+        elif CASE.startswith("claude-segment"):
             from claude_agent_sdk.types import ResultMessage
             from litetui.claude_backend import ClaudeBackend
             async def metadata(backend):

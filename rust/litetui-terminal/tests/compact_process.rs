@@ -46,10 +46,15 @@ fn model(case: &str) -> &'static str {
 }
 fn tools_on(case: &str) -> bool {
     matches!(case, "tools-on" | "tool-then-empty" | "tool-cap")
+        || case.starts_with("owner-verified")
         || case.contains("question")
         || case.contains("approval")
 }
 fn launch(case: &str) -> (Interactive, PathBuf) {
+    let (args, root) = launch_args(case);
+    (Interactive::start(Options::parse(&args).unwrap()), root)
+}
+fn launch_args(case: &str) -> (Vec<String>, PathBuf) {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let actual = runtime_source();
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -86,7 +91,8 @@ os.environ['RUST_COMPACT_DRIVER'] = 'rpc'
 p = Path(os.environ['LITETUI_DATA_ROOT']) / 'settings.json'
 s = json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True, skills_enabled=False, footer_task_manager=False, tts_enabled=False, sidecar_enabled=False, autocompact_enabled=False, tool_auto_background_s=0, custom_context_length=1000000, compact_keep_recent=2, compact_max_tokens=256, compact_max_tool_iters=2, compact_thinking_level='off', wake_after_compact={}, clear_screen_after_compact={})
-p.write_text(json.dumps(s), encoding='utf-8')
+if '--convo' not in __import__('sys').argv:
+    p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
 "#,quote(&actual.to_string_lossy()),quote(&format!("compact-{case}")),quote(case),if case=="wake"||case.ends_with("-wake"){"True"}else{"False"},if case=="clear-screen"{"True"}else{"False"},quote(&fixtures.join("history_compact_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
@@ -128,8 +134,16 @@ runpy.run_path({}, run_name='__main__')
             "connect",
         ]
     };
+    if case.starts_with("owner-verified") {
+        args.extend([
+            "--owner".to_owned(),
+            "OwnerFixture".into(),
+            "--memory".into(),
+            workspace.to_string_lossy().into_owned(),
+        ]);
+    }
     args.extend(launch_fields.iter().map(|field| (*field).to_owned()));
-    (Interactive::start(Options::parse(&args).unwrap()), root)
+    (args, root)
 }
 fn next(runtime: &mut Interactive) -> io::Result<Observation> {
     let deadline = Instant::now() + Duration::from_secs(95);
@@ -280,7 +294,7 @@ fn validate(runtime: &mut Interactive, app: &mut Demo, text: Option<&str>) -> io
         .unwrap()
         .compact
         .take_intent()
-        .expect("visible validation");
+        .ok_or_else(|| io::Error::other(format!("Missing validation: {}", draw(app))))?;
     let request = intent.key().clone();
     runtime.compact(intent)?;
     wait(
@@ -930,4 +944,131 @@ fn f6_compact_nochange_and_clean_failures_release_only_after_verified_readback()
             matches!(case, "tool-then-empty" | "tool-cap")
         );
     }
+}
+
+#[test]
+#[ignore = "actual owner-bound Python source and a private Git repository"]
+fn owner_handoff_checks_lease_stale_review_and_commits_only_selected_files() {
+    for case in ["owner-verified", "owner-verified-stale"] {
+        let (runtime, root) = launch(case);
+        let folder = root.parent().unwrap().join("workspace");
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = start(runtime, case)?;
+            let draft = editor(&app);
+            let lease: Value = serde_json::from_slice(&fs::read(folder.join(".owner.lock"))?)?;
+            assert!(lease["agent_id"].as_str().is_some_and(|id| !id.is_empty()));
+            select(runtime, &mut app)?;
+            validate(runtime, &mut app, None)?;
+            let review = draw(&mut app);
+            assert!(
+                review.contains("Owner handoff") && review.contains("DOMAIN.md"),
+                "{review}"
+            );
+            if case.ends_with("stale") {
+                fs::write(folder.join("SOUL.md"), "External change after review")?;
+            }
+            let request = apply(runtime, &mut app)?;
+            settle(runtime, &mut app, &request)?;
+            assert_eq!(editor(&app), draft);
+            runtime.quit()
+        });
+        assert!(result.is_ok(), "{case}: {result:?}; {}", root.display());
+        assert!(!folder.join(".owner.lock").exists());
+        let r = report(&root);
+        assert_eq!(r["owner"]["name"], "OwnerFixture");
+        assert_eq!(r["owner"]["privileged"], false);
+        if case.ends_with("stale") {
+            assert_eq!(r["settled"]["reason_code"], "admission_refused");
+            assert_eq!(r["sdk_requests"], json!([]));
+            assert_eq!(
+                fs::read_to_string(folder.join("NOW.md"))
+                    .unwrap()
+                    .trim_end(),
+                "Private starting NOW.md"
+            );
+        } else {
+            let receipt = &r["settled"]["witness"]["owner_handoff"];
+            assert_eq!(r["settled"]["outcome"], "compacted");
+            assert_eq!(
+                receipt["parent"],
+                r["review"]["plan"]["owner_handoff"]["head"]
+            );
+            assert_ne!(receipt["commit"], receipt["parent"]);
+            assert_eq!(
+                fs::read_to_string(folder.join("unrelated.txt"))
+                    .unwrap()
+                    .trim_end(),
+                "Keep this unrelated staged edit."
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "real private owner lease and retained source store"]
+fn fresh_owner_refuses_another_holder_then_resumes_after_clean_quit() {
+    let case = "owner-verified-resume";
+    let (args, root) = launch_args(case);
+    let folder = root.parent().unwrap().join("workspace");
+    let runtime = Interactive::start(Options::parse(&args).unwrap());
+    runtime
+        .with_cleanup(|runtime| {
+            let _app = start(runtime, case)?;
+            let before = fs::read(folder.join(".owner.lock"))?;
+            let mut other = args.clone();
+            let index = other.iter().position(|s| s == "--data-root").unwrap();
+            let other_root = root.with_file_name("other-data");
+            other[index + 1] = other_root.to_string_lossy().into_owned();
+            let mut contender = Interactive::start(Options::parse(&other)?);
+            let msg = loop {
+                match next(&mut contender) {
+                    Err(error) => break error.to_string(),
+                    Ok(Observation::Ready) => panic!("Concurrent owner was admitted"),
+                    Ok(_) => {}
+                }
+            };
+            assert!(msg.contains("in use"), "{msg}");
+            assert_eq!(fs::read(folder.join(".owner.lock"))?, before);
+            assert!(!other_root.join(".agents").exists());
+            runtime.quit()
+        })
+        .unwrap();
+    let original = report(&root);
+    let session = original["owner"]["session"].as_str().unwrap();
+    let transcript = PathBuf::from(original["transcript_path"].as_str().unwrap());
+    let raw = fs::read(&transcript).unwrap();
+    assert!(!folder.join(".owner.lock").exists());
+    let settings = fs::read(root.join("settings.json")).unwrap();
+    let mut resume = args;
+    resume.extend(["--resume".into(), session.to_owned()]);
+    let runtime = Interactive::start(Options::parse(&resume).unwrap());
+    runtime
+        .with_cleanup(|runtime| {
+            let _app = start(runtime, case)?;
+            let held: Value = serde_json::from_slice(&fs::read(folder.join(".owner.lock"))?)?;
+            assert_eq!(held["agent_id"], original["owner"]["id"]);
+            runtime.quit()
+        })
+        .unwrap();
+    let resumed = report(&root);
+    assert_eq!(resumed["owner"], original["owner"]);
+    assert_eq!(resumed["sdk_requests"], json!([]));
+    let reopened = fs::read(transcript).unwrap();
+    assert!(reopened.starts_with(&raw));
+    let edits: Vec<Value> = serde_json::Deserializer::from_slice(&reopened[raw.len()..])
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        edits.len(),
+        1,
+        "Canonical refresh of the fixture's legacy store address"
+    );
+    assert_eq!(edits[0]["type"], "edit");
+    assert_eq!(edits[0]["index"], 0);
+    assert_eq!(edits[0]["reason"], "owned store address refreshed");
+    assert_eq!(edits[0]["message"]["role"], "system");
+    assert_eq!(edits[0]["store_identity"], original["owner"]["store"]);
+    assert_eq!(fs::read(root.join("settings.json")).unwrap(), settings);
+    assert!(!folder.join(".owner.lock").exists());
 }

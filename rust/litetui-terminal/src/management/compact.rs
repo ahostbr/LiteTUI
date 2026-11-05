@@ -381,6 +381,23 @@ impl Management {
         let (next, command) = match stage {
             Stage::Read => {
                 let snapshot = r::Snapshot::parse(value, &key.selection)?;
+                if snapshot.eligible {
+                    let planned = match &snapshot.plan {
+                        r::Plan::Host(host) => host
+                            .owner_handoff
+                            .as_ref()
+                            .map(|plan| plan.directory.as_str()),
+                        _ => None,
+                    };
+                    if planned
+                        != self
+                            .owner_store
+                            .as_ref()
+                            .map(|(_, directory)| directory.as_str())
+                    {
+                        return Err(fail("Compaction plan differs from the launch owner store"));
+                    }
+                }
                 (
                     Stage::ReadState(snapshot),
                     json!({"type":"gui.state","include_conversations":false}),

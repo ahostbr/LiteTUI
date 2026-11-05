@@ -4414,19 +4414,11 @@ class LiteTUI(App):
                 and meta.get('id') not in (None, path.parent.name)):
             self._system('Transcript identity disagrees with its owned conversation folder')
             return False
-        from litetui.claude_persistence import ClaudeLedger, LedgerError, path_for
+        from litetui.claude_persistence import LedgerError
         from litetui.owner_mode import OwnerModeError
-        from litetui.store_identity import UNRECORDED, launch_message_matches, require_store_match, transcript_store_match
+        from litetui.store_identity import launch_message_matches, resume_store_match
         try:
-            saved_identity = transcript_store_match(
-                self, meta.get('store_identity', UNRECORDED),
-                messages=msgs, convo_id=path.parent.name)
-            if path_for(path.parent).exists():
-                segment = ClaudeLedger(path.parent).selected
-                if segment and (segment.get('system_prompt') or segment.get('session_id')):
-                    require_store_match(self, segment.get('store_identity', UNRECORDED),
-                                        prompt=segment.get('system_prompt') or '',
-                                        convo_id=path.parent.name, native=True)
+            saved_identity = resume_store_match(self, path, meta, msgs)
         except (OwnerModeError, LedgerError) as exc:
             if startup:
                 raise ValueError(str(exc)) from None
@@ -6098,6 +6090,7 @@ class LiteTUI(App):
             "mcp_enabled": bool(self.settings.mcp_enabled),
             "approval_route": seat_authority.confirm_route(self),
             **native_engine.ready_fields(self),
+            **(owner_mode.native_binding(self) if conversation_compact.owner_review_required(self) else {}),
         })
         self._rpc_ready_sent = True
 
@@ -7044,6 +7037,8 @@ class LiteTUI(App):
         compaction request itself to produce a summary, which is the failure it
         exists to prevent.
         """
+        if conversation_compact.owner_review_required(self):
+            return  # The explicit F6 review owns writes to this external store.
         pct = self._autocompact_due()
         if pct is None:
             return
@@ -10443,6 +10438,10 @@ class LiteTUI(App):
         """
         session = getattr(self, "_agent_session", None)
         agent_id = session.authority.agent_id if session is not None else None
+        if (binding := conversation_compact.reviewed_owner(self)) is not None:
+            return await binding.gate(self, t0_ns)
+        if conversation_compact.owner_review_required(self):
+            raise ValueError("Owner handoff needs its reviewed compaction worker")
         return await owner_mode.owner_gate(self._owner_memory_dir, t0_ns, agent_id)
 
     async def _owner_drive_turn(self, text: str) -> bool:
@@ -10506,6 +10505,10 @@ class LiteTUI(App):
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
                 return None
+        if conversation_compact.owner_review_required(self) and conversation_compact.reviewed_owner(self) is None:
+            self._compact_is_auto = False
+            self._system("Open F6 and review owner handoff before compacting this conversation.")
+            return None
         # Owner mode: the time STEP 1 begins. The gate (owner_gate) accepts NOW.md only if it
         # was rewritten at or after this, and runs before anything is truncated.
         self._owner_compact_t0 = time.time_ns() if getattr(self, '_owner_memory_dir', None) is not None else None

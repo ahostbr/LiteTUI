@@ -233,7 +233,50 @@ impl Config {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnerPlan {
+    pub directory: String,
+    pub head: String,
+    pub documents: [String; 3],
+}
+fn git_oid(v: &Value, key: &str) -> io::Result<String> {
+    let oid = text(v, key, 64, false)?;
+    if !matches!(oid.len(), 40 | 64)
+        || !oid
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(fail("Invalid owner Git commit identity"));
+    }
+    Ok(oid)
+}
+fn owner_documents(v: &Value) -> io::Result<[String; 3]> {
+    keys(v, &["SOUL.md", "NOW.md", "DOMAIN.md"])?;
+    Ok([
+        token(v, "SOUL.md")?,
+        token(v, "NOW.md")?,
+        token(v, "DOMAIN.md")?,
+    ])
+}
+impl OwnerPlan {
+    fn parse(v: &Value) -> io::Result<Self> {
+        keys(v, &["directory", "head", "files"])?;
+        let directory = text(v, "directory", 32768, false)?;
+        if !std::path::Path::new(&directory).is_absolute()
+            || directory.chars().any(char::is_control)
+        {
+            return Err(fail("Invalid owner store directory"));
+        }
+        Ok(Self {
+            directory,
+            head: git_oid(v, "head")?,
+            documents: owner_documents(&v["files"])?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostPlan {
+    pub owner_handoff: Option<OwnerPlan>,
     pub messages: u64,
     pub system_messages: u64,
     pub head_messages: u64,
@@ -245,20 +288,23 @@ pub struct HostPlan {
 }
 impl HostPlan {
     fn parse(v: &Value, config: &Value, selection: &Selection) -> io::Result<Self> {
-        keys(
-            v,
-            &[
-                "messages",
-                "system_messages",
-                "head_messages",
-                "tail_messages",
-                "head_context_sha256",
-                "tail_context_sha256",
-                "prompt_sha256",
-                "config_sha256",
-            ],
-        )?;
+        let mut fields = vec![
+            "messages",
+            "system_messages",
+            "head_messages",
+            "tail_messages",
+            "head_context_sha256",
+            "tail_context_sha256",
+            "prompt_sha256",
+            "config_sha256",
+        ];
+        let owner_handoff = v.get("owner_handoff").map(OwnerPlan::parse).transpose()?;
+        if owner_handoff.is_some() {
+            fields.push("owner_handoff");
+        }
+        keys(v, &fields)?;
         let result = Self {
+            owner_handoff,
             messages: number(v, "messages")?,
             system_messages: number(v, "system_messages")?,
             head_messages: number(v, "head_messages")?,
@@ -669,6 +715,7 @@ pub struct NativeCompaction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settlement {
     pub native_compaction: Option<NativeCompaction>,
+    pub owner_commit: Option<String>,
     pub claude_receipt: Option<ClaudeReceipt>,
     pub outcome: Outcome,
     pub reason: Option<String>,
@@ -682,6 +729,9 @@ pub struct Settlement {
 impl Settlement {
     /// Keep a bounded source explanation; otherwise describe its validated code.
     pub fn explanation(&self) -> Option<String> {
+        if let Some(commit) = &self.owner_commit {
+            return Some(format!("Owner handoff verified at Git commit {commit}."));
+        }
         if let Some(receipt) = &self.claude_receipt {
             return Some(format!(
                 "Claude summary saved in segment {}.",
@@ -756,7 +806,40 @@ impl Settlement {
         if matches!(review.before.plan, Plan::Claude(_)) {
             fields.push("claude_compaction");
         }
+        let owner = match &review.before.plan {
+            Plan::Host(plan) => plan.owner_handoff.as_ref(),
+            _ => None,
+        };
+        if owner.is_some() {
+            fields.push("owner_handoff");
+        }
         keys(w, &fields)?;
+        let mut owner_commit = None;
+        if let Some(plan) = owner {
+            let receipt = &w["owner_handoff"];
+            if receipt.is_null() {
+                if outcome == Outcome::Compacted {
+                    return Err(fail("Published owner compaction lacks a verified commit"));
+                }
+            } else {
+                keys(receipt, &["parent", "commit", "files"])?;
+                let commit = git_oid(receipt, "commit")?;
+                let files = owner_documents(&receipt["files"])?;
+                if admission.status == AdmissionStatus::Refused
+                    || outcome == Outcome::NoChange
+                    || git_oid(receipt, "parent")? != plan.head
+                    || commit == plan.head
+                    || commit.len() != plan.head.len()
+                    || files[0] != plan.documents[0]
+                    || files[1] == plan.documents[1]
+                {
+                    return Err(fail(
+                        "Owner commit contradicts its reviewed repository or documents",
+                    ));
+                }
+                owner_commit = Some(commit);
+            }
+        }
         let mut native_compaction = None;
         if let Plan::Codex { thread_id } = &review.before.plan {
             let evidence = &w["native_compaction"];
@@ -895,6 +978,7 @@ impl Settlement {
         };
         Ok(Self {
             native_compaction,
+            owner_commit,
             claude_receipt,
             outcome,
             reason,
@@ -1353,8 +1437,12 @@ impl View {
                 Plan::Claude(None) => display(&self.notice),
                 Plan::Host(p) => {
                     let c = &review.before.config;
+                    let owner = p.owner_handoff.as_ref().map(|plan| format!(
+                        "\nOwner handoff in {}\nThe provider may rewrite NOW.md and append to DOMAIN.md. The host will commit those files on top of {} before replacing chat history. It may ask the provider once more for a fresh NOW.md. Stopping can leave edited or committed files.\n",
+                        display(&plan.directory), plan.head
+                    )).unwrap_or_default();
                     format!(
-                        "Confirm manual compaction once\nSession: {}\nBackend: {} · model: {}\nSummarise {} older messages; retain {} recent messages at complete tool boundaries.\nOriginal transcript records stay on disk. A provider request may run; a smaller result is not guaranteed.\nTools enabled: {}. Completed tool writes or approval audits may remain after Stop or failure.\nWake after success: {}. Clear older displayed rows: {}.\nCompaction budget: {} tokens · {} tool rounds · thinking {}.\nPost-compaction token counts are estimates until a later provider request.\nBackground and automatically promoted tools refuse before starting.\nYour composer draft stays unchanged.\n\nExact optional guidance:\n{}",
+                        "Confirm manual compaction once{owner}\nSession: {}\nBackend: {} · model: {}\nSummarise {} older messages; retain {} recent messages at complete tool boundaries.\nOriginal transcript records stay on disk. A provider request may run; a smaller result is not guaranteed.\nTools enabled: {}. Completed tool writes or approval audits may remain after Stop or failure.\nWake after success: {}. Clear older displayed rows: {}.\nCompaction budget: {} tokens · {} tool rounds · thinking {}.\nPost-compaction token counts are estimates until a later provider request.\nBackground and automatically promoted tools refuse before starting.\nYour composer draft stays unchanged.\n\nExact optional guidance:\n{}",
                         review.before.selection.identity.session,
                         display(&review.before.selection.identity.backend),
                         display(&review.before.selection.identity.model),

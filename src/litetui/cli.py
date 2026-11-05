@@ -292,6 +292,8 @@ def main() -> None:
             **app_kwargs,
         )
 
+        app._owner_memory_lock = owner_lock
+
         from litetui.image_viewer import init_image_backend
 
         # Pre-run, before the fd-1 redirect below: the image backend bind +

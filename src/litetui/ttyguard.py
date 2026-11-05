@@ -63,7 +63,7 @@ def _repair_terminal() -> None:
 
 
 def run(cmd, *, timeout=DEFAULT_TIMEOUT_S, stdin=subprocess.DEVNULL,
-        cwd=None, env=None, shell=False) -> "subprocess.CompletedProcess":
+        cwd=None, env=None, shell=False, binary=False) -> "subprocess.CompletedProcess":
     """Spawn a short-lived child under the envelope. See module docstring.
 
     `cmd` is an argv list (or a string when shell=True). Output is always
@@ -78,8 +78,8 @@ def run(cmd, *, timeout=DEFAULT_TIMEOUT_S, stdin=subprocess.DEVNULL,
             shell=shell,
             stdin=stdin,
             capture_output=True,
-            text=True,
-            errors="replace",
+            text=not binary,
+            errors=None if binary else "replace",
             timeout=timeout,
             cwd=cwd,
             env=env,
@@ -87,6 +87,52 @@ def run(cmd, *, timeout=DEFAULT_TIMEOUT_S, stdin=subprocess.DEVNULL,
         )
     finally:
         _repair_terminal()
+
+
+def run_owned_writer(cmd, *, cwd, env, timeout):
+    """Run a Windows writer only after containment, returning once its job has drained."""
+    import ctypes
+
+    job = jobkill.create()
+    if not job:
+        raise OSError("Cannot contain the owner handoff command")
+    proc = None
+    assigned = False
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, cwd=cwd, env=env,
+                                creationflags=NO_WINDOW | 0x4)  # CREATE_SUSPENDED
+        assigned = jobkill.assign(job, proc.pid)
+        if not assigned:
+            raise OSError("Could not bind the owner handoff command to its private job")
+        resume = ctypes.WinDLL("ntdll").NtResumeProcess
+        resume.argtypes = [ctypes.c_void_p]
+        resume.restype = ctypes.c_long
+        if resume(int(proc._handle)) != 0:
+            raise OSError("Could not resume the contained owner handoff command")
+        result = proc.wait(timeout=timeout)
+        until = time.monotonic() + 0.25
+        while jobkill.active_process_count(job) != 0:
+            if time.monotonic() >= until:
+                raise OSError("Owner handoff helper exited with a live descendant")
+            time.sleep(0.01)
+        return result
+    finally:
+        try:
+            if proc is not None:
+                if not assigned:
+                    proc.kill()  # still suspended: it cannot have created a descendant
+                elif jobkill.active_process_count(job) != 0:
+                    if not jobkill.terminate(job):
+                        raise OSError("Could not retire the contained writer")
+                    until = time.monotonic() + 5
+                    while jobkill.active_process_count(job) != 0:
+                        if time.monotonic() >= until:
+                            raise OSError("Owner handoff writer did not drain")
+                        time.sleep(0.01)
+                proc.wait(timeout=5)
+        finally:
+            jobkill.close(job)
 
 
 def popen(cmd, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
