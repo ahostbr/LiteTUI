@@ -71,6 +71,7 @@ OPERATIONS = (
     "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
     "engine.native_inspect", "engine.native_validate", "engine.native_action", "engine.native_readback",
+    "engine.native_config_snapshot", "engine.native_config_review", "engine.native_config_save", "engine.native_config_readback",
     "settings.native_snapshot", "settings.native_validate", "settings.native_save",
     "settings.native_compact_snapshot", "settings.native_compact_validate", "settings.native_compact_save",
     "themes.native_snapshot", "themes.native_validate", "themes.native_save",
@@ -1016,6 +1017,9 @@ async def _async_dispatch(app, cmd):
         if action in {"snapshot", "validate"}:
             return getattr(conversation_transition, action)(app, cmd)
         raise ValueError("Unknown native conversation operation")
+    if operation.startswith("gui.engine.native_config_"):
+        from litetui import native_engine_config
+        return native_engine_config.dispatch(app, cmd)
     if operation.startswith("gui.engine.native_"):
         from litetui import native_engine
         name = operation.rsplit("_", 1)[1]

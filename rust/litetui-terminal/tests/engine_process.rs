@@ -17,8 +17,10 @@ use std::{
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 fn launch(backend: &str, case: &str, management: bool) -> (Interactive, PathBuf) {
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let actual = std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate_root.join("../.."))
         .canonicalize()
         .unwrap();
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -50,7 +52,7 @@ s = json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True, footer_task_manager=False, tts_enabled=False, sidecar_enabled=False, autocompact_enabled=False, tool_auto_background_s=0, max_tokens_chat=101, max_tokens_tools=202)
 p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
-"#,quote(&actual.to_string_lossy()),quote(case),quote(&actual.join("rust/litetui-terminal/tests/fixtures/engine_management_runtime.py").to_string_lossy()))).unwrap();
+"#,quote(&actual.to_string_lossy()),quote(case),quote(&crate_root.join("tests/fixtures/engine_management_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
     let mut args = vec![
         "--python".into(),
@@ -300,6 +302,18 @@ fn scenario(backend: &str, case: &str) {
                 .iter()
                 .any(|c| c["effect"] == "spawn"),
             "{case}: {r}"
+        );
+    }
+    if unowned {
+        let close = r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "rust-live-shutdown")
+            .unwrap();
+        assert_eq!(
+            close["result"]["work_shutdown"]["ledger_sha256"],
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
     }
     if cancel || unowned {
@@ -586,4 +600,134 @@ fn held_input_requires_explicit_cancellation_before_fresh_engine_start() {
             .iter()
             .all(|p| p["returncode"].as_i64().is_some())
     );
+}
+
+#[test]
+#[ignore = "compiled F12 against both controlled source adapters; requires LITETUI_AUTHORITY_PYTHON"]
+fn configure_both_engines_saves_one_conversation_preference_and_never_starts() {
+    use litetui_terminal::{engine_config as cfg, engine_controls::Update};
+    for backend in ["ninfer", "strata"] {
+        let (runtime, root) = launch(backend, "config-only", true);
+        let outcome = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live(backend.into(), "engine-model".into());
+            wait(runtime, &mut app, |e| {
+                matches!(e, Observation::EngineAdmission(_) | Observation::Ready)
+            })?;
+            app.insert_text("F12 private draft");
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            draw(&mut app);
+            key(&mut app, KeyCode::Char('c'));
+            send(runtime, &mut app)?;
+            let mut snapshot = None;
+            while snapshot.is_none() {
+                let event = next(runtime)?;
+                if let Observation::Engine(Update::Config(reply)) = &event
+                    && let cfg::Update::Snapshot(s) = reply.as_ref()
+                {
+                    snapshot = Some(s.clone());
+                }
+                if let Observation::Engine(Update::Rejected(reason)) = &event {
+                    return Err(io::Error::other(reason.clone()));
+                }
+                app.observe_live(event)?;
+            }
+            let snapshot = snapshot.unwrap();
+            let destination = PathBuf::from(snapshot.wire["destination"].as_str().unwrap());
+            assert!(
+                destination.starts_with(root.canonicalize()?)
+                    && destination.file_name().unwrap() == "settings.json"
+            );
+            let before = if destination.exists() {
+                Some(fs::read(&destination)?)
+            } else {
+                None
+            };
+            let global_before = fs::read(root.join("settings.json"))?;
+            let setting = format!("{backend}_max_context");
+            assert_eq!(snapshot.names[3], setting);
+            for _ in 0..3 {
+                draw(&mut app);
+                key(&mut app, KeyCode::Down);
+            }
+            draw(&mut app);
+            key(&mut app, KeyCode::Enter);
+            draw(&mut app);
+            assert!(app.live.as_ref().unwrap().engine.accepts_config_paste());
+            app.live.as_mut().unwrap().engine.config_paste("12001");
+            key(&mut app, KeyCode::Enter);
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            assert_eq!(fs::read(&destination).ok(), before);
+            draw(&mut app);
+            key(&mut app, KeyCode::Esc);
+            draw(&mut app);
+            key(&mut app, KeyCode::Enter);
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            let mut altered: Value = match &before {
+                Some(bytes) => serde_json::from_slice(bytes)?,
+                None => serde_json::json!({}),
+            };
+            fs::create_dir_all(destination.parent().unwrap())?;
+            altered["future_extension"] = serde_json::json!({"keep":"disk"});
+            fs::write(&destination, serde_json::to_vec(&altered)?)?;
+            draw(&mut app);
+            key(&mut app, KeyCode::Enter);
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            assert_eq!(
+                serde_json::from_slice::<Value>(&fs::read(&destination)?)?,
+                altered
+            );
+            draw(&mut app);
+            key(&mut app, KeyCode::F(5));
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            draw(&mut app);
+            key(&mut app, KeyCode::Enter);
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            draw(&mut app);
+            key(&mut app, KeyCode::Enter);
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?;
+            send(runtime, &mut app)?;
+            wait_engine(runtime, &mut app)?; // automatic post-save refresh
+            let saved: Value = serde_json::from_slice(&fs::read(&destination)?)?;
+            assert_eq!(saved["future_extension"], altered["future_extension"]);
+            assert_eq!(saved["execution"][&setting], 12001);
+            assert_eq!(fs::read(root.join("settings.json"))?, global_before);
+            assert_eq!(admission(&app), Some(Admission::ManagementOnly));
+            assert_eq!(app.composer.text(), "F12 private draft");
+            runtime.quit()?;
+            Ok(())
+        });
+        outcome.unwrap_or_else(|e| panic!("{backend} configuration {}: {e}", root.display()));
+        let report = report(&root);
+        assert!(
+            report["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["effect"] == "verified-offline-refusal")
+        );
+        assert_eq!(report["processes"].as_array().unwrap().len(), 0);
+        assert_eq!(report["requests"].as_array().unwrap().len(), 0);
+        let commands = commands(&root);
+        assert_eq!(
+            commands.iter().filter(|v| v["type"] == cfg::SAVE).count(),
+            2
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|v| v["type"] == cfg::READBACK)
+                .count(),
+            1
+        );
+        assert!(!commands.iter().any(
+            |v| v["type"] == "gui.engine.native_action" || v["type"] == "gui.models.reconnect"
+        ));
+    }
 }

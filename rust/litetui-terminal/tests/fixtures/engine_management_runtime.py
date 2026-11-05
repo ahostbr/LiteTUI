@@ -279,7 +279,28 @@ async def serve(app):
                     with (root / "engine-management-commands.jsonl").open("a", encoding="utf-8") as output:
                         output.write(json.dumps(command) + "\n")
                     if command["type"].startswith("gui."):
-                        result = await asyncio.create_task(gui_rpc.async_dispatch(app, command))
+                        result = await gui_rpc.async_dispatch(app, command)
+                        if ((case=="config-only" and command["type"]=="gui.engine.native_config_snapshot")
+                                or (command["type"]=="gui.engine.native_readback" and result.get("admission")=="management_only")):
+                            from litetui import scheduler
+                            old_history=copy.deepcopy(app.conversation)
+                            old_requests=len(requests)
+                            jobs_path=scheduler.jobs_path(root)
+                            disk_before=jobs_path.read_bytes() if jobs_path.exists() else None
+                            job=scheduler.Job(prompt="Blocked scheduler input",schedule="* * * * *")
+                            assert app._fire_job(job,manual=False) is None
+                            try:
+                                app._fire_job(job,manual=True)
+                            except ValueError:
+                                pass
+                            else:
+                                raise AssertionError("Manual scheduled job crossed engine admission")
+                            assert job.run_count==0 and disk_before==(jobs_path.read_bytes() if jobs_path.exists() else None)
+                            with patch.object(app, "_rpc_emit") as refusal:
+                                app._submit_text("Blocked typed engine prompt",alt_chord=False)
+                            assert any(call.args[0]["type"]=="submit_refused" for call in refusal.call_args_list)
+                            assert len(requests)==old_requests and app.conversation==old_history
+                            calls.append({"effect":"verified-offline-refusal"})
                         results.append({"command": copy.deepcopy(command), "result": copy.deepcopy(result)})
                         with (root / "engine-management-results.jsonl").open("a", encoding="utf-8") as output:
                             output.write(json.dumps(results[-1]) + "\n")
@@ -315,10 +336,16 @@ async def serve(app):
                 if driver == "rpc":
                     in_flight = []
 
+                    def publish(command, result):
+                        from litetui import background_input
+                        ticket = background_input.prepare_publication(app, command, result)
+                        rpc._respond(command.get("id"), ok=True, result=result)
+                        background_input.finish_publication(app, ticket)
+
                     async def action_reply(command):
                         try:
                             result = await dispatch(command)
-                            rpc._respond(command.get("id"), ok=True, result=result)
+                            publish(command, result)
                         except Exception as exc:  # noqa: BLE001 - actual wire response boundary
                             rpc._respond(command.get("id"), ok=False, error=str(exc))
 
@@ -333,7 +360,7 @@ async def serve(app):
                         try:
                             result = await dispatch(command)
                             if command["type"].startswith("gui."):
-                                rpc._respond(command.get("id"), ok=True, result=result)
+                                publish(command, result)
                         except Exception as exc:  # noqa: BLE001 - same RPC isolation boundary
                             rpc._respond(command.get("id"), ok=False, error=str(exc))
                         if command["type"] == "shutdown":

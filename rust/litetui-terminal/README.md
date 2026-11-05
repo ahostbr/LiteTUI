@@ -169,7 +169,7 @@ Both PowerShell launchers forward BaseUrl, ServerMode/StartServer, LoadModel, Co
 
 Fresh generic/local launches use the source's default thinking choice. Fresh Claude/Codex launches retain low unless explicitly overridden. An omitted thinking level on resume preserves the saved choice. CodexEngine accepts native or http; omission preserves the source's flag/environment/saved precedence. An explicitly unsupported level fails instead of selecting another one.
 
-These paths have controlled source/child-process coverage. Installed engines, provider accounts, real inference and terminal-host behavior still require acceptance. F9 backend switching, F10 budget editing and explicit F12 engine controls are described below. Broader settings and engine configuration remain open.
+These paths have controlled source/child-process coverage. Installed engines, provider accounts, real inference and terminal-host behavior still require acceptance. F9 backend switching, F10 budget editing and explicit F12 engine controls are described below. F12 supports reviewed conversation-scoped NInfer and Strata configuration. Other settings are tracked in the parity plan.
 
 ## Open interactive live chat
 
@@ -438,6 +438,8 @@ plugin screens and real-provider/terminal-host acceptance are still open.
 
 
 ### Explicit NInfer and Strata engine management
+
+In F12, press C to configure the selected NInfer or Strata engine. Choose a field, enter the proposed value and read the review before confirming. The editor saves that field on the current conversation and verifies the saved value. It shows when a reconnect or restart is needed for the running engine to adopt it. Start and Stop each have their own controls.
 
 Use -EngineManagement with -Backend ninfer or strata, an exact -Model, and connect
 mode. Configure the executable/artifact or Strata config through the existing launch

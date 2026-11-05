@@ -652,6 +652,25 @@ fn handle_key(
     if input.suppress_live_repeat(event) {
         return false;
     }
+    if app.has_live_engine()
+        && !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.viewport_too_small
+        && event.kind == KeyEventKind::Press
+        && event.modifiers == KeyModifiers::CONTROL
+        && matches!(event.code, KeyCode::Char('v' | 'V'))
+    {
+        let engine = &mut app.live.as_mut().expect("engine").engine;
+        if engine.accepts_config_paste() {
+            match clipboard.read_text() {
+                Ok(Some(s)) => engine.config_paste(&s),
+                Err(e) => engine.config_notice(e.to_string()),
+                _ => {}
+            }
+        }
+        return false;
+    }
     if app.has_live_work() {
         if !app.stop_open()
             && !app.has_live_approval()
@@ -883,6 +902,13 @@ fn paste(app: &mut Demo, text: &str) {
     }
 
     if app.has_live_engine() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app.has_live_approval()
+            && !app.has_live_question()
+        {
+            app.live.as_mut().expect("engine").engine.config_paste(text);
+        }
         return;
     }
     if app.has_live_commands() {

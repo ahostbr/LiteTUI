@@ -352,7 +352,12 @@ struct CommandPending {
     skills: bool,
     reviewed: Option<crate::prepared_skill::Prepared>,
 }
+struct EngineConfigPending {
+    request: crate::engine_config::Intent,
+    receipt: Option<Value>,
+}
 struct EnginePending {
+    config: Option<EngineConfigPending>,
     id: Option<CommandId>,
     stage: u8,
     action: Option<crate::engine_controls::Action>,
@@ -440,6 +445,8 @@ pub struct Management {
     engine: Option<EnginePending>,
     engine_instance: Option<(String, u64, crate::engine_controls::Admission)>,
     engine_snapshot: Option<crate::engine_controls::Snapshot>,
+    config_snapshot: Option<crate::engine_config::Snapshot>,
+    config_review: Option<crate::engine_config::Review>,
     engine_review: Option<(crate::engine_controls::Review, crate::resume::History)>,
 
     wire: WireClient,
@@ -521,6 +528,8 @@ impl Default for Management {
             engine: None,
             engine_instance: None,
             engine_snapshot: None,
+            config_snapshot: None,
+            config_review: None,
             engine_review: None,
             control: None,
             model_target_state: None,
@@ -3123,6 +3132,7 @@ impl Management {
             return Err(fail("Runtime lacks complete owned engine controls"));
         }
         let mut pending = EnginePending {
+            config: None,
             id: None,
             stage: 0,
             action: None,
@@ -3135,7 +3145,50 @@ impl Management {
             mutation: None,
         };
         let mut command = match intent {
+            Intent::Config(request) => {
+                use crate::engine_config as cfg;
+                if cfg::OPERATIONS
+                    .iter()
+                    .any(|op| !self.operations.iter().any(|cap| cap == op))
+                {
+                    return Err(fail("This source lacks reviewed engine configuration"));
+                }
+                let command = match &request {
+                    cfg::Intent::Read => {
+                        self.config_review = None;
+                        self.config_snapshot = None;
+                        identity.command(cfg::SNAPSHOT)
+                    }
+                    cfg::Intent::Review {
+                        snapshot,
+                        field,
+                        value,
+                    } => {
+                        self.config_review = None;
+                        let snap = self
+                            .config_snapshot
+                            .as_ref()
+                            .filter(|s| s.token == *snapshot && s.id == identity)
+                            .ok_or_else(|| fail("Refresh the current engine configuration"))?;
+                        snap.review_command(field, value)?
+                    }
+                    cfg::Intent::Save(token) => self
+                        .config_review
+                        .as_ref()
+                        .filter(|r| r.token == *token && r.snap.id == identity)
+                        .ok_or_else(|| fail("Review the current engine preference again"))?
+                        .save_command(),
+                };
+                self.engine_review = None;
+                pending.config = Some(EngineConfigPending {
+                    request,
+                    receipt: None,
+                });
+                command
+            }
             Intent::Read => {
+                self.config_review = None;
+                self.config_snapshot = None;
                 self.engine_review = None;
                 identity.command(INSPECT)
             }
@@ -3190,6 +3243,80 @@ impl Management {
         use crate::engine_controls::{Receipt, Review, Snapshot as EngineSnapshot, Update};
         self.ensure_drained()?;
         let mut pending = self.engine.take().expect("matched engine");
+        if let Some(config) = pending.config.as_mut() {
+            use crate::engine_config as cfg;
+            let (id, generation, admission) = (
+                self.engine_identity()?,
+                self.engine_instance.as_ref().expect("engine").1,
+                self.engine_instance.as_ref().expect("engine").2,
+            );
+            let update = if frame["ok"] != true {
+                if matches!(&config.request, cfg::Intent::Save(_)) {
+                    return Err(fail(
+                        "Engine preference publication or readback failed; close and inspect the conversation settings",
+                    ));
+                }
+                self.config_review = None;
+                cfg::Update::Rejected(text(&frame, "error", 4096)?.into())
+            } else {
+                let value = &frame["result"];
+                match &config.request {
+                    cfg::Intent::Read => {
+                        let snap = cfg::Snapshot::parse(value, &id, generation, admission)?;
+                        self.config_snapshot = Some(snap.clone());
+                        cfg::Update::Snapshot(snap)
+                    }
+                    cfg::Intent::Review {
+                        snapshot,
+                        field,
+                        value: requested,
+                    } => {
+                        let snap = self
+                            .config_snapshot
+                            .as_ref()
+                            .filter(|s| s.token == *snapshot && s.id == id)
+                            .ok_or_else(|| fail("Engine configuration selection expired"))?;
+                        let review = cfg::Review::parse(value, snap, field, requested)?;
+                        self.config_review = Some(review.clone());
+                        cfg::Update::Review(review)
+                    }
+                    cfg::Intent::Save(token) => {
+                        let review = self
+                            .config_review
+                            .as_ref()
+                            .filter(|r| r.token == *token && r.snap.id == id)
+                            .ok_or_else(|| fail("Engine preference review expired"))?;
+                        if let Some(receipt) = config.receipt.as_ref() {
+                            review.verify(value, receipt)?;
+                            let field = review.field.clone();
+                            self.config_review = None;
+                            self.config_snapshot = None;
+                            self.engine_snapshot = None;
+                            cfg::Update::Saved(field)
+                        } else if value["kind"] == "engine_config_refused" {
+                            let message = review.refusal(value, text(&frame, "id", 128)?)?;
+                            self.config_review = None;
+                            cfg::Update::Rejected(message)
+                        } else {
+                            let mut cmd = review.receipt(value, text(&frame, "id", 128)?)?;
+                            let id = self.wire.register_read().map_err(|_| {
+                                fail("Cannot reserve independent engine configuration readback")
+                            })?;
+                            cmd["id"] = id.to_value();
+                            pending.id = Some(id);
+                            config.receipt = Some(value.clone());
+                            self.engine = Some(pending);
+                            return Ok(Step::Write(cmd));
+                        }
+                    }
+                }
+            };
+            return Ok(Step::Engine {
+                update: Update::Config(Box::new(update)),
+                policy: None,
+                state: None,
+            });
+        }
         if frame["ok"] != true {
             if pending.stage <= 4 {
                 self.engine_snapshot = None;

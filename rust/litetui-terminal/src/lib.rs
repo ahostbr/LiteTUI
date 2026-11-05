@@ -56,6 +56,8 @@ pub mod settings_view;
 pub mod command_palette;
 pub mod prepared_skill;
 
+pub mod engine_config;
+mod engine_config_view;
 pub mod engine_controls;
 
 pub mod conversation_actions;

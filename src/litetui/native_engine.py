@@ -36,6 +36,7 @@ READ_ONLY = frozenset({
     "gui.work.native_pause_validate", "gui.work.native_pause_apply", "gui.work.native_pause_readback",
     "gui.engine.native_inspect", "gui.engine.native_validate",
     "gui.engine.native_action", "gui.engine.native_readback",
+    "gui.engine.native_config_snapshot", "gui.engine.native_config_review", "gui.engine.native_config_save", "gui.engine.native_config_readback",
 })
 
 

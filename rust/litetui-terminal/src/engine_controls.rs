@@ -511,12 +511,14 @@ impl Receipt {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
+    Config(crate::engine_config::Intent),
     Read,
     Validate { snapshot: String, action: Action },
     Execute { review: String },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
+    Config(Box<crate::engine_config::Update>),
     Snapshot(Box<Snapshot>),
     Review(Box<Review>),
     Settled {
@@ -527,6 +529,7 @@ pub enum Update {
 }
 #[derive(Default)]
 pub struct View {
+    config: Option<crate::engine_config_view::View>,
     open: bool,
     waiting: bool,
     executing: bool,
@@ -571,6 +574,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.config = None;
         self.review = None;
         if self.intent.take().is_some() {
             self.waiting = false;
@@ -586,6 +590,17 @@ impl View {
         self.executing = false;
         self.hide();
         match update {
+            Update::Config(result) => {
+                if self.open
+                    && let Some(config) = self.config.as_mut()
+                {
+                    let refresh = config.observe(*result);
+                    if refresh {
+                        self.waiting = true;
+                        self.intent = Some(Intent::Config(crate::engine_config::Intent::Read));
+                    }
+                }
+            }
             Update::Snapshot(snapshot) => {
                 self.snapshot = Some(*snapshot);
                 self.review = None;
@@ -606,13 +621,67 @@ impl View {
                 self.message = format!("{message}\n{}", admission.label());
             }
             Update::Rejected(message) => {
+                if let Some(config) = self.config.as_mut() {
+                    config.observe(crate::engine_config::Update::Rejected(message));
+                    return;
+                }
                 self.review = None;
                 self.snapshot = None;
                 self.message = message;
             }
         }
     }
+    pub fn accepts_config_paste(&self) -> bool {
+        self.open
+            && self.visible
+            && !self.waiting
+            && self.config.as_ref().is_some_and(|c| c.accepts_paste())
+    }
+    pub fn config_paste(&mut self, text: &str) {
+        if self.accepts_config_paste()
+            && let Some(c) = self.config.as_mut()
+        {
+            c.paste(text);
+        }
+    }
+    pub fn config_notice(&mut self, text: String) {
+        if let Some(c) = self.config.as_mut() {
+            c.notice = text;
+        }
+    }
     pub fn key(&mut self, key: KeyEvent) {
+        if let Some(config) = self.config.as_mut() {
+            if self.open && self.visible && !self.waiting {
+                match config.key(key) {
+                    crate::engine_config_view::Action::Back => {
+                        self.config = None;
+                        self.open();
+                    }
+                    crate::engine_config_view::Action::Send(intent) => {
+                        self.intent = Some(Intent::Config(intent));
+                        self.waiting = true;
+                        self.hide();
+                    }
+                    crate::engine_config_view::Action::Stay => {}
+                }
+            }
+            return;
+        }
+        if self.open
+            && self.visible
+            && !self.waiting
+            && self.review.is_none()
+            && key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.is_empty()
+        {
+            self.config = Some(crate::engine_config_view::View::default());
+            self.waiting = true;
+            self.intent = Some(Intent::Config(crate::engine_config::Intent::Read));
+            self.hide();
+            return;
+        }
+
         if !self.open
             || key.kind != KeyEventKind::Press
             || !(key.modifiers.is_empty()
@@ -683,6 +752,9 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.config.is_some() {
+            return;
+        }
         if !self.open || self.waiting {
             return;
         }
@@ -733,6 +805,9 @@ impl View {
             area,
         );
         if area.width < 42 || area.height < 18 {
+            if let Some(config) = self.config.as_mut() {
+                config.clear_layout();
+            }
             frame.render_widget(
                 Paragraph::new("Resize to 42x18\nEsc: close engine panel").style(style),
                 area.inner(ratatui::layout::Margin::new(1, 1)),
@@ -740,6 +815,11 @@ impl View {
             return;
         }
         self.area = area;
+        if let Some(config) = self.config.as_mut() {
+            config.draw(frame, area, theme, self.waiting);
+            self.visible = true;
+            return;
+        }
         let body = Rect::new(area.x + 2, area.y + 3, area.width - 4, area.height - 6);
         if let Some(review) = &self.review {
             frame.render_widget(
@@ -814,7 +894,7 @@ impl View {
         } else if self.review.is_some() {
             "PgUp/PgDn | Enter confirm | Esc cancel"
         } else {
-            "Up/Dn select | Enter review | R | Esc"
+            "Esc | ↑↓ select | Enter review | c config"
         };
         frame.render_widget(
             Paragraph::new(footer).style(style),

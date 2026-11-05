@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## F12 configuration for NInfer and Strata - 2026-11-04
+
+C in the engine inspector opens configuration, including when an engine is offline. A reviewed save persists one field for the current conversation and rereads it. Host fields apply on reconnect. The other fields apply on restart. Management-only startup now waits for a verified prompt-ready engine before activating Work. Quit on a fresh attached engine verifies the absence of a Work ledger and leaves the conversation unmaterialized.
+
+The checkout passed 968 Rust tests, full formatting, strict Clippy and 106 source tests. All ten controlled engine process groups passed using the relocated runtime, including offline configuration, Start/Stop admission, attached-engine Quit and no foreign stop. Six reader/image groups and the Work/Plugins command group also passed. The launcher verified all 368 payload files. Installed engine performance and real model inference remain separate acceptance work.
+
 ## Edit or retry a native Codex turn from F6 - 2026-11-04
 
 F6 ties the selected saved user message to its actual Codex thread, turn and user item. The review lists the turns that will be removed, including recorded command and file actions. After confirmation, the source checks the full native history again, reverts at the selected turn and verifies the retained prefix before starting one replacement. A failure after the provider changes the thread reports partial completion and requires fresh inspection. Existing filesystem effects persist.

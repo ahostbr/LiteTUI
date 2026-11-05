@@ -2165,7 +2165,16 @@ impl Ledger {
         {
             return Err(bad("Work shutdown lacks exact lifetime proof"));
         }
-        hash(v, "ledger_sha256")?;
+        let ledger_hash = hash(v, "ledger_sha256")?;
+        if ledger_hash == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            && (!self.producers.is_empty()
+                || !self.inputs.is_empty()
+                || !self.admissions.is_empty())
+        {
+            return Err(bad(
+                "An active Work ledger cannot close with an empty digest",
+            ));
+        }
         let expected = cutoff
             .inputs
             .union(&cutoff.late_inputs)

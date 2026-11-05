@@ -996,14 +996,24 @@ async def _settle_shutdown(app, value, cutoff, *, cancel=True):
         raise RuntimeError("Work hook process or pipe retirement is unproven")
     if getattr(app, "_hook_lifecycle", ()) or app._hook_lock.locked():
         raise RuntimeError("Work lifecycle hooks remain pending")
-    value.persist()
+    if app.store.pending and value.raw is None:
+        # A fresh conversation has no store lease or ledger to flush. Joining an
+        # unused bridge must not materialize a conversation just to close it.
+        value.check(allow_closing=True)
+        if (value.revision or value.producers or value.inputs or value.calls or value.reservations
+                or value.executions or _read(value.path) is not None):
+            raise ValueError("Pending conversation has unexpected Work ledger activity")
+        ledger_hash = digest(b"")
+    else:
+        value.persist()
+        ledger_hash = digest(value.raw)
     ids = set(cutoff["input_ids"])
     ids.update(i.ref["input_id"] for i in value.inputs.values() if i.ref["producer_id"] in cutoff["producer_ids"])
     return {"version": VERSION, "instance": value.instance, "closing_sequence": cutoff["sequence"],
             "final_sequence": value.sequence, "admission_closed": True, "worker_settled": True,
             "callback_settled": True, "process_settled": True, "producer_ids": cutoff["producer_ids"],
             "inputs": [{"input_id": key, "disposition": value.inputs[key].state} for key in sorted(ids)],
-            "admission_ids": cutoff["admission_ids"], "ledger_sha256": digest(value.raw), "effects_verified": False}
+            "admission_ids": cutoff["admission_ids"], "ledger_sha256": ledger_hash, "effects_verified": False}
 
 
 def action_queue_owned(app, attempt):

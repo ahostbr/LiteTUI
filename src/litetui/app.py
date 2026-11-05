@@ -2855,6 +2855,11 @@ class LiteTUI(App):
         background_mail.deliver(self, background_mail.item(self, msg))
 
     def _fire_job(self, job, *, manual: bool = False, _work_prepare: bool = False):
+        from litetui import native_engine
+        if (native_engine.state(self) is not None or native_engine.requested(self)) and (reason := native_engine.submission_refusal(self)):
+            if manual:
+                raise ValueError(reason)
+            return None
         from litetui import native_work_execution
         if not _work_prepare and (why := native_work_execution.mutation_hold(self)):
             if manual:

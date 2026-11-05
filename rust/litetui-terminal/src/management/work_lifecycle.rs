@@ -228,8 +228,29 @@ impl Management {
         })
     }
     pub(super) fn work_startup_gate(&mut self, step: Step) -> io::Result<Step> {
+        // An offline managed engine can inspect settings, but activating Work may
+        // release deferred input. Keep the source activation barrier until the first
+        // independently verified engine connection.
+        if self
+            .engine_instance
+            .as_ref()
+            .is_some_and(|(_, _, admission)| {
+                *admission != crate::engine_controls::Admission::PromptReady
+            })
+        {
+            return Ok(step);
+        }
         let snapshot: Option<&Snapshot> = match &step {
             Step::Initialized(snapshot) | Step::Restored { snapshot, .. } => Some(snapshot),
+            Step::Engine {
+                update:
+                    crate::engine_controls::Update::Settled {
+                        admission: crate::engine_controls::Admission::PromptReady,
+                        ..
+                    },
+                state,
+                ..
+            } => state.as_ref(),
             Step::Theme {
                 startup: Some((snapshot, _)),
                 ..
