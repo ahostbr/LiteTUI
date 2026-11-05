@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## F10 shared MCP declarations - 2026-11-04
+
+Press M in Settings to inspect both shared MCP declaration files. An unshadowed editable entry in `.mcp.json` supports a reviewed enable/disable change with independent disk readback. The operation requires MCP disabled and zero unresolved or connected servers. Arguments, environment values and credentials stay out of the view. A later explicit MCP startup reads the saved flag.
+
+The integrated checkout passed 980 ordinary Rust tests, strict Clippy and formatting. Twenty focused Python declaration/writer tests passed. The relocated package passed three process groups covering the MCP save/cancel flow, nested memory topics and saved images, then verified all 376 payload files. No server connection was opened.
+
 ## Copy visible transcript text and clear the current composer image - 2026-11-04
 
 Drag across visible transcript rows and press Ctrl+Shift+C to copy. Ctrl+C prefers selected composer text and otherwise copies the transcript selection. Selection uses displayed graphemes, including wide and combining characters. A change to the selected cells, scrolling, resizing or opening a modal invalidates it. Ctrl+X requests a source-checked clear of the attached image and leaves the draft available.

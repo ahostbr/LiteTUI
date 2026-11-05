@@ -90,6 +90,8 @@ To edit `memory.md`, `soul.md` or `handoff.md`, select the document in Context a
 
 In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, and cached MCP server information. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
 
+Press M in F10 to inspect MCP server declarations in the shared LiteTUI data folder. Use the arrows to select a declaration. E reviews enabling or disabling an editable entry in `.mcp.json`. Enter saves the reviewed change and rereads the file. A matching `mcp.json` entry takes precedence. The setting takes effect at a later explicit MCP startup.
+
 In F6 Saved History, press I to preview embedded still images on the loaded page. Left and Right switch images. Escape returns to the same history page. The source reads pixels from the selected saved message. External image links stay unopened.
 
 From F1 Work → Context → Hooks, press E to manage existing hook entries. Tab switches project and global scope. Use Up/Down to select an entry and Enter to review its enabled flag, executable name, command fingerprint and effect on future matching events. Page through the review and press Enter to apply, or Escape to discard. The source locks both scope configurations during publication and independently reads their saved and effective state. Command arguments and environment values stay private. With a hook selected, use \`]\` to choose a configured event and T to review a one-off test. Enter runs the reviewed sample only when the source already permits the configured command. Its receipt shows the result, exit code, output sizes and truncation; command output stays private.

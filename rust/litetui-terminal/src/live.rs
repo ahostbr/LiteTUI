@@ -2514,6 +2514,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         execution_stop_deadline = Some(Instant::now() + Duration::from_secs(20));
                     }
                     Input::Settings(intent) => {
+                        let mcp = matches!(intent, crate::settings_view::Intent::Mcp(_));
                         let runtime_status =
                             matches!(intent, crate::settings_view::Intent::RuntimeStatus);
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
@@ -2542,26 +2543,24 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => {
-                                frontend.observe(Observation::Settings(if runtime_status {
-                                    crate::settings_view::Update::RuntimeStatus(Err(
-                                        error.to_string()
-                                    ))
-                                } else if let Some(generation) = compact_generation {
-                                    crate::settings_view::Update::Compaction(
-                                        crate::compaction_settings::Update::Rejected {
-                                            generation,
-                                            reason: error.to_string(),
-                                        },
-                                    )
-                                } else if editing {
-                                    crate::settings_view::Update::Editor(
-                                        crate::settings_editor::Update::Rejected(error.to_string()),
-                                    )
-                                } else {
-                                    crate::settings_view::Update::Rejected(error.to_string())
-                                }))?
-                            }
+                            Err(error) => frontend.observe(Observation::Settings(if mcp {
+                                crate::settings_view::Update::Mcp(Err(error.to_string()))
+                            } else if runtime_status {
+                                crate::settings_view::Update::RuntimeStatus(Err(error.to_string()))
+                            } else if let Some(generation) = compact_generation {
+                                crate::settings_view::Update::Compaction(
+                                    crate::compaction_settings::Update::Rejected {
+                                        generation,
+                                        reason: error.to_string(),
+                                    },
+                                )
+                            } else if editing {
+                                crate::settings_view::Update::Editor(
+                                    crate::settings_editor::Update::Rejected(error.to_string()),
+                                )
+                            } else {
+                                crate::settings_view::Update::Rejected(error.to_string())
+                            }))?,
                         }
                     }
                     Input::Backend(intent) => {

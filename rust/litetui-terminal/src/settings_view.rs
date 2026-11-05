@@ -33,6 +33,7 @@ pub struct Snapshot {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
+    Mcp(Box<crate::mcp_config::Request>),
     RuntimeStatus,
     Read,
     Editor(crate::settings_editor::Intent),
@@ -40,6 +41,7 @@ pub enum Intent {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
+    Mcp(Result<Box<crate::mcp_config::Update>, String>),
     RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
     Rejected(String),
@@ -194,6 +196,7 @@ fn display(value: &str) -> String {
 #[derive(Default)]
 pub struct View {
     runtime_status: crate::inspection::View,
+    mcp: crate::mcp_config::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
     pub open: bool,
@@ -224,6 +227,9 @@ impl View {
     pub fn runtime_status_open(&self) -> bool {
         self.runtime_status.is_open()
     }
+    pub fn subpanel_open(&self) -> bool {
+        self.runtime_status_open() || self.mcp.open
+    }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting || self.editor.owns_input() || self.compaction.owns_input()
     }
@@ -235,6 +241,7 @@ impl View {
             .or_else(|| self.intent.take())
     }
     pub fn hide(&mut self) {
+        self.mcp.hide();
         self.runtime_status.hide();
         self.editor.hide();
         self.compaction.hide();
@@ -244,6 +251,7 @@ impl View {
         self.pressed = None;
     }
     pub fn close(&mut self) {
+        self.mcp = Default::default();
         self.runtime_status.close();
         self.editor.close();
         self.compaction.close();
@@ -305,6 +313,7 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
+            Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::RuntimeStatus(status) => {
                 if self.runtime_status.is_open() {
                     match status {
@@ -347,6 +356,13 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.mcp.open {
+            if let Some(request) = self.mcp.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Mcp(Box::new(request)));
+            }
+            return;
+        }
         if self.runtime_status.is_open() {
             if self.runtime_status.key(key) && !self.waiting {
                 self.waiting = true;
@@ -380,6 +396,12 @@ impl View {
             KeyCode::End => self.select(usize::MAX),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(4),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(4).min(self.max_scroll),
+            KeyCode::Char('m') if key.kind == KeyEventKind::Press => {
+                self.mcp.open();
+                self.waiting = true;
+                self.intent = Some(Intent::Mcp(Box::new(crate::mcp_config::Request::List)));
+                self.hide();
+            }
             KeyCode::Char('i') if key.kind == KeyEventKind::Press => {
                 self.runtime_status.open();
                 self.waiting = true;
@@ -407,6 +429,9 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.mcp.open {
+            return;
+        }
         if self.runtime_status.is_open() {
             self.runtime_status.mouse(event);
             return;
@@ -459,6 +484,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.mcp.open {
+            self.mcp.draw(frame, area, theme);
+            return;
+        }
         if self.runtime_status.is_open() {
             self.runtime_status.draw(frame, area, theme);
             return;
@@ -619,7 +648,9 @@ impl View {
             Rect::new(inner.x, inner.bottom() - 2, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("I runtime status · E edit · C compaction · R refresh · Esc close"),
+            Paragraph::new(
+                "M MCP declarations · I status · E edit · C compaction · R refresh · Esc close",
+            ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
         self.visible = self.open && !self.waiting;

@@ -129,7 +129,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                     chat.work.key(key);
                     return false;
                 }
-                if chat.settings.runtime_status_open() {
+                if chat.settings.subpanel_open() {
                     chat.settings.key(key);
                     return false;
                 }

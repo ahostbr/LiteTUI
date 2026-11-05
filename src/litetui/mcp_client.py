@@ -743,6 +743,30 @@ def _save_doc(path, doc: dict) -> None:
     os.replace(tmp, path)
 
 
+def save_reviewed_declaration(path: Path, data: bytes, guard) -> None:
+    """Publish the precomputed document only after the owned caller rechecks both config files."""
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile(mode="wb", dir=path.parent, prefix=".mcp-edit-", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            stream.close()
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        from litetui.native_context import _regular_file
+        if _regular_file(temporary) != ("content", data):
+            raise ValueError("Staged MCP declaration changed before publication")
+        guard()
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def shadowing_file(root, name: str):
     """The higher-precedence file that already declares `name`, if any.
 

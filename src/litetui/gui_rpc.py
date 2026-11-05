@@ -57,6 +57,7 @@ OPERATIONS = (
     "images.attach", "images.clear", "images.native_prepare", "images.native_clipboard", "images.native_preview", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
     "context.native_page", "inspection.native_status",
+    "mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_apply", "mcp.native_config_readback",
     "context.native_topic_page", "context.native_topic_edit", "context.native_topic_review",
     "context.native_topic_apply", "context.native_topic_readback",
     "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback",
@@ -553,6 +554,9 @@ def dispatch(app, cmd):
     operation = str(cmd.get("type", ""))[4:]
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
+    if operation in {"mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_apply", "mcp.native_config_readback"}:
+        from litetui import native_mcp_config
+        return native_mcp_config.dispatch(app, cmd)
     if operation == "inspection.native_status":
         from litetui import native_inspection
         return native_inspection.status(app, cmd)
@@ -959,7 +963,7 @@ async def async_dispatch(app, cmd):
             OPERATION_CONTEXT.reset(token)
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
-    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation.startswith("gui.mcp.") and not operation.endswith(".list")
+    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
     if operation == "gui.models.select":
         from litetui import background_input
         blocking = background_input.enabled(app)
@@ -1259,7 +1263,8 @@ async def _async_dispatch(app, cmd):
             return {"name": name, "ok": ok, "result": text}
         finally:
             app._active_tool_profile = prior
-    if operation.startswith("gui.mcp."):
+    if operation in {"gui.mcp.list", "gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect",
+                     "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}:
         action = operation.rsplit(".", 1)[1]
         if action == "list":
             return app.mcp.describe()

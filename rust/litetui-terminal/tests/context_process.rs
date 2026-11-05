@@ -346,6 +346,77 @@ fn settings_key(runtime: &mut Interactive, app: &mut Demo, key: KeyCode) -> io::
 }
 
 #[test]
+#[ignore = "compiled Settings MCP declaration review; dependency Python required"]
+fn shared_mcp_declaration_requires_review_and_fresh_disk_readback() {
+    let (runtime, data) = launch("mcp_declaration_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Keep this composer draft.");
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            let first = settings_key(runtime, &mut app, KeyCode::Char('m'))?;
+            assert!(
+                first.contains("primary") && !first.contains("PRIVATE_MCP_SENTINEL"),
+                "{first}"
+            );
+            let next = settings_key(runtime, &mut app, KeyCode::Down)?;
+            assert!(
+                next.contains("offline") && !next.contains("example.invalid"),
+                "{next}"
+            );
+            let review = settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            assert!(review.contains("Disable offline in .mcp.json?"), "{review}");
+            assert!(
+                json_file(&data.join(".mcp.json"))["mcpServers"]["offline"]
+                    .get("disabled")
+                    .is_none()
+            );
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                saved.contains("Saved and verified on disk.") && saved.contains("disabled"),
+                "{saved}"
+            );
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Keep this composer draft.");
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("{}: {error}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["type"].as_str())
+        .filter(|s| s.starts_with("gui.mcp."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        [
+            "gui.mcp.native_config_list",
+            "gui.mcp.native_config_review",
+            "gui.mcp.native_config_review",
+            "gui.mcp.native_config_apply",
+            "gui.mcp.native_config_readback"
+        ]
+    );
+    assert_eq!(
+        json_file(&data.join("mcp-declaration-guards.json")),
+        json!([])
+    );
+    let doc = json_file(&data.join(".mcp.json"));
+    assert_eq!(doc["shared-extra"], "PRIVATE_MCP_SENTINEL");
+    assert_eq!(
+        doc["mcpServers"]["offline"]["headers"]["Authorization"],
+        "PRIVATE_MCP_SENTINEL"
+    );
+}
+
+#[test]
 #[ignore = "compiled Settings Runtime status, controlled source/cache; requires LITETUI_AUTHORITY_PYTHON"]
 fn runtime_status_uses_only_bounded_cached_sanitized_facts_on_open_and_refresh() {
     let (runtime, data) = launch("inspection_runtime.py");
