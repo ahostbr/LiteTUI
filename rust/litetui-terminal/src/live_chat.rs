@@ -51,6 +51,12 @@ pub struct Card {
     pub reasoning: String,
     answer_units: usize,
     reasoning_units: usize,
+    pub(crate) reasoning_expanded: Option<bool>,
+}
+impl Card {
+    pub fn toggle_reasoning(&mut self, compact: bool) {
+        self.reasoning_expanded = Some(!self.reasoning_expanded.unwrap_or(!compact));
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Item {
@@ -143,6 +149,7 @@ pub struct Chat {
     pub backend: String,
     pub model: String,
     pub rows: Vec<Row>,
+    pub(crate) last_activity_summary: Option<String>,
     pub history: Option<crate::resume::History>,
     pub saved_history: crate::history_view::View,
     pub rewrite: crate::conversation_rewrite::View,
@@ -209,6 +216,7 @@ impl Chat {
             backend,
             model,
             rows: Vec::new(),
+            last_activity_summary: None,
             history: None,
             saved_history: crate::history_view::View::default(),
             rewrite: crate::conversation_rewrite::View::default(),
@@ -343,9 +351,21 @@ impl Chat {
         self.focus_live_tool(true).is_some()
     }
     pub fn toggle_recent_tool(&mut self) -> bool {
+        self.toggle_recent_tool_in_view(false)
+    }
+    pub fn toggle_recent_tool_in_view(&mut self, compact: bool) -> bool {
         let Some((row, index)) = self.focus_live_tool(false) else {
             return false;
         };
+        if compact
+            && row.tool_expanded(index)
+            && matches!(
+                row.tools[index].result,
+                crate::native_activity::ResultState::Pending
+            )
+        {
+            return true;
+        }
         let expanded = !row.tool_expanded(index);
         row.tool_view.expanded.insert(index, expanded);
         true
@@ -749,6 +769,7 @@ impl Chat {
         self.queue = crate::restored_queue::View::default();
         self.queue
             .observe(crate::restored_queue::Update::Snapshot(queue));
+        self.last_activity_summary = None;
         self.rows.clear();
         self.operation_rows.clear();
         self.work_admissions.clear();
@@ -932,6 +953,7 @@ impl Chat {
                 if changed.settlement.outcome == crate::conversation_compact::Outcome::Compacted
                     && changed.review.clear_display()
                 {
+                    self.last_activity_summary = None;
                     self.rows.drain(..start);
                     self.rebase_operation_rows(start);
                     self.prior_context_rows = 0;
@@ -1043,6 +1065,7 @@ impl Chat {
                     if start >= self.rows.len() {
                         return Err(io::Error::other("Missing retained rewrite rows"));
                     }
+                    self.last_activity_summary = None;
                     self.rows.drain(..start);
                     self.rebase_operation_rows(start);
                     self.prior_context_rows = 0;
@@ -2185,6 +2208,16 @@ impl Chat {
         self.retained_bytes += reason.len();
         let index = self.current_row_index()?;
         let row = &mut self.rows[index];
+        self.last_activity_summary = Some(
+            match state {
+                ReplyState::Complete => "Turn completed",
+                ReplyState::Cancelled => "Turn cancelled",
+                ReplyState::ApprovalStopped => "Turn stopped at approval",
+                ReplyState::Failed => "Turn failed",
+                _ => "Turn settled",
+            }
+            .to_owned(),
+        );
         row.state = state;
         row.stop_reason = stop_reason;
         for tool in &mut row.tools {
@@ -2330,6 +2363,17 @@ impl Chat {
         let tool = Tool::updated(old, activity)?;
         let new_cost = cost(&tool)?;
         self.replace_cost(old_cost, new_cost)?;
+        if let crate::native_activity::ResultState::Returned { is_error, .. } = &tool.result {
+            let status = match is_error {
+                Some(true) => "reported failure",
+                Some(false) => "returned",
+                None => "result observed",
+            };
+            self.last_activity_summary = Some(format!(
+                "{} · {status}",
+                crate::compact_display::summary(tool.name.as_deref().unwrap_or(&tool.id), 72)
+            ));
+        }
         let row = &mut self.rows[index];
         if let Some(index) = existing {
             row.tools[index] = tool;

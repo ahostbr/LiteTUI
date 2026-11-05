@@ -99,6 +99,13 @@ impl FooterLayout {
     /// Caller provides normalized source order and only currently applicable
     /// facts. Unknown authority is represented by ABSENCE, never a default level.
     pub fn new(fields: &[FooterField], width: usize) -> Self {
+        Self::with_status_width(fields, width, width)
+    }
+    pub(crate) fn with_status_width(
+        fields: &[FooterField],
+        status_width: usize,
+        width: usize,
+    ) -> Self {
         let mut status = FooterRow {
             fields: vec![],
             separator: "  ·  ",
@@ -126,7 +133,7 @@ impl FooterLayout {
             };
             row.fields.push(FooterField::new(field.key, text));
         }
-        if status.width() > width {
+        if status.width() > status_width {
             status.separator = " · ";
         }
         for key in [
@@ -138,12 +145,12 @@ impl FooterLayout {
             FieldKey::Conversation,
             FieldKey::Context,
         ] {
-            if status.width() <= width {
+            if status.width() <= status_width {
                 break;
             }
             status.fields.retain(|field| field.key != key);
         }
-        let excess = status.width().saturating_sub(width);
+        let excess = status.width().saturating_sub(status_width);
         if excess > 0
             && let Some(seat) = status
                 .fields
@@ -170,12 +177,12 @@ impl FooterLayout {
                 }
             }
         }
-        if status.width() > width {
+        if status.width() > status_width {
             status
                 .fields
                 .retain(|field| field.key != FieldKey::Thinking);
         }
-        status.finish(width);
+        status.finish(status_width);
         permission.finish(width);
         let mut actions = vec![];
         for field in fields {

@@ -558,6 +558,12 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
                 app.notice = error.to_string();
             }
         }
+        KeyCode::Char('g') if app.live.is_some() && key.modifiers == KeyModifiers::CONTROL => {
+            if key.kind == KeyEventKind::Press {
+                app.compact_display.toggle();
+                app.transcript_selection.hide();
+            }
+        }
         KeyCode::Char('b' | 'e')
             if app.live.is_some() && key.modifiers == KeyModifiers::CONTROL =>
         {
@@ -568,7 +574,7 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
             let selected = if key.code == KeyCode::Char('b') {
                 chat.select_previous_tool()
             } else {
-                chat.toggle_recent_tool()
+                chat.toggle_recent_tool_in_view(app.compact_display.active())
             };
             if selected {
                 app.follow_selection = true;
@@ -1016,6 +1022,23 @@ fn paste(app: &mut Demo, text: &str) {
 }
 
 fn terminal_mouse(app: &mut Demo, event: MouseEvent, shown: &ratatui::buffer::Buffer) {
+    if app.live.is_some()
+        && !app.has_live_input()
+        && !app.approval_open
+        && !app.themes_open
+        && !app.viewport_too_small
+        && !app.completion.is_open()
+        && let Some(hit) = app.compact_display.click(event)
+        && let Some(card) = app
+            .live
+            .as_mut()
+            .and_then(|c| c.rows.get_mut(hit.row))
+            .and_then(|r| r.cards.get_mut(hit.card))
+    {
+        card.toggle_reasoning(app.compact_display.active());
+        app.transcript_selection.clear();
+        return;
+    }
     if !app.has_live_input()
         && !app.approval_open
         && !app.themes_open
@@ -1707,7 +1730,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: Ctrl+O clipboard image (F2 chooses file) | Ctrl+Shift+O image file | Ctrl+L new conversation | F1 Work (I opens context) | F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings (I opens runtime status) | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: Ctrl+G compact view | Ctrl+O clipboard image (F2 chooses file) | Ctrl+Shift+O image file | Ctrl+L new conversation | F1 Work (I opens context) | F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings (I opens runtime status) | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -5200,6 +5223,110 @@ mod live_keyboard_navigation_tests {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    #[test]
+    fn compact_display_hysteresis_sticky_override_and_routed_profile_preserve_the_draft() {
+        let mut app = Demo::live("claude".into(), "m".into());
+        let mut keys = KeyRouter::default();
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("draft selection");
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let selected = app.composer.selected_text().to_owned();
+        assert!(!draw(&mut app, 100, 42).contains("^G view"));
+        assert!(!draw(&mut app, 94, 42).contains("^G view"));
+        assert!(draw(&mut app, 93, 42).contains("^G view"));
+        assert!(draw(&mut app, 100, 42).contains("^G view"));
+        assert!(!draw(&mut app, 101, 42).contains("^G view"));
+        press(&mut app, &mut keys, 'g');
+        keys.handle(
+            &mut app,
+            KeyEvent::new_with_kind(
+                KeyCode::Char('g'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Repeat,
+            ),
+        );
+        assert!(draw(&mut app, 140, 42).contains("^G view"));
+        press(&mut app, &mut keys, 'g');
+        assert!(!draw(&mut app, 73, 42).contains("^G view"));
+        app.open_work();
+        press(&mut app, &mut keys, 'g');
+        assert!(!app.compact_display.active());
+        assert_eq!(app.composer.text(), "draft selection");
+        assert_eq!(app.composer.selected_text(), selected);
+        let mut first = Demo::live("custom".into(), "m".into());
+        assert!(draw(&mut first, 99, 42).contains("^G view"));
+    }
+    #[test]
+    fn compact_display_folds_completed_tools_and_keeps_explicit_thinking_across_resize() {
+        let mut app = Demo::live("claude".into(), "m".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.live.as_mut().unwrap().submit("question").unwrap();
+        app.observe_live(Observation::Reasoning(
+            "First thinking line\ncurrent reasoning step".into(),
+        ))
+        .unwrap();
+        let narrow = draw(&mut app, 84, 60);
+        assert!(
+            narrow.contains("▸ Thinking · current reasoning step")
+                && !narrow.contains("First thinking line"),
+            "{narrow}"
+        );
+        assert!(narrow.contains("now  thinking") && narrow.contains("Task claim unavailable"));
+        let mut terminal = Terminal::new(TestBackend::new(84, 60)).unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        let y = narrow
+            .lines()
+            .position(|line| line.contains("▸ Thinking"))
+            .unwrap() as u16;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            terminal_mouse(
+                &mut app,
+                MouseEvent {
+                    kind,
+                    column: 12,
+                    row: y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                terminal.backend().buffer(),
+            );
+        }
+        assert!(draw(&mut app, 84, 60).contains("First thinking line"));
+        assert!(draw(&mut app, 120, 60).contains("First thinking line"));
+        let mut router = KeyRouter::default();
+        press(&mut app, &mut router, 'g');
+        record(
+            &mut app,
+            "t1",
+            "ToolOne",
+            Detail::Input("keep running args"),
+        );
+        press(&mut app, &mut router, 'e');
+        assert!(draw(&mut app, 120, 60).contains("keep running args"));
+        record(
+            &mut app,
+            "t1",
+            "ToolOne",
+            Detail::Result("complete result body", Some(true)),
+        );
+        let compact = draw(&mut app, 120, 60);
+        assert!(
+            compact.contains("last ToolOne · reported failure")
+                && !compact.contains("complete result body")
+        );
+        assert!(
+            compact
+                .lines()
+                .any(|l| l.contains("▸ Claude · ToolOne") && l.contains("reported failure"))
+        );
+        press(&mut app, &mut router, 'e');
+        assert!(draw(&mut app, 120, 60).contains("complete result body"));
+        press(&mut app, &mut router, 'g');
+        assert!(draw(&mut app, 120, 60).contains("complete result body"));
+    }
+
     enum Detail<'a> {
         Input(&'a str),
         Result(&'a str, Option<bool>),

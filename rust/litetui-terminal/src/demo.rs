@@ -32,6 +32,7 @@ pub struct Demo {
     pub max_scroll: usize,
     pub follow_selection: bool,
     pub transcript_selection: crate::transcript_selection::TranscriptSelection,
+    pub compact_display: crate::compact_display::Profile,
     pub transcript_viewport: Option<(u16, u16)>,
     pub viewport_too_small: bool,
     pub command_quit: bool,
@@ -125,6 +126,7 @@ impl Default for Demo {
             max_scroll: 0,
             follow_selection: false,
             transcript_selection: Default::default(),
+            compact_display: Default::default(),
             transcript_viewport: None,
             viewport_too_small: false,
             command_quit: false,
@@ -150,6 +152,8 @@ impl Demo {
         app
     }
     pub fn observe_live(&mut self, observation: crate::live::Observation) -> std::io::Result<()> {
+        // A rebased/replaced row must never inherit a press on an older rendered header.
+        self.compact_display.clear_hits();
         let following = self.scroll >= self.max_scroll
             || matches!(&observation, crate::live::Observation::Opened(_));
         if matches!(

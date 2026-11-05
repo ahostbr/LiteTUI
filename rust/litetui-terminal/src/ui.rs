@@ -236,7 +236,12 @@ fn assistant_card(
         " ".repeat(inner_width),
         style(t.foreground, t.surface),
     )]));
-    if !reasoning.is_empty() {
+    if let [folded] = reasoning {
+        lines.push(outer_row(vec![Span::styled(
+            padded(&clip_label(folded, inner_width), inner_width),
+            style(t.thinking_text, t.surface),
+        )]));
+    } else if !reasoning.is_empty() {
         lines.push(outer_row(vec![Span::styled(
             format!("┏{}┓", "╍".repeat(inner_width.saturating_sub(2))),
             style(t.thinking_border, t.surface),
@@ -499,6 +504,7 @@ fn native_tool(
     row: &crate::live_chat::Row,
     index: usize,
     width: usize,
+    compact: bool,
 ) {
     use crate::native_activity::ResultState;
     let tool = &row.tools[index];
@@ -511,13 +517,7 @@ fn native_tool(
         row.tool_provider(),
         metadata(tool.name.as_deref().unwrap_or(&tool.id))
     );
-    let color = if selected { t.title } else { t.tool_text };
-    for fragment in wrap(&header, width.saturating_sub(8)) {
-        lines.push(Line::styled(
-            format!("   {} {fragment}", if selected { "›" } else { " " }),
-            style(color, t.tool_background).add_modifier(Modifier::BOLD),
-        ));
-    }
+    let header_color = if selected { t.title } else { t.tool_text };
     let (status, color) = match &tool.result {
         ResultState::Pending => ("Request observed · result pending", t.title),
         ResultState::Incomplete => ("Incomplete · result unavailable", t.error),
@@ -533,6 +533,24 @@ fn native_tool(
             ("Result observed · outcome unknown", t.title)
         }
     };
+    if compact && !expanded {
+        let marker = if selected { "›" } else { " " };
+        let label = clip_label(
+            &format!("{marker} {header} · {status}"),
+            width.saturating_sub(2),
+        );
+        lines.push(Line::styled(
+            format!("  {label}"),
+            style(color, t.tool_background),
+        ));
+        return;
+    }
+    for fragment in wrap(&header, width.saturating_sub(8)) {
+        lines.push(Line::styled(
+            format!("   {} {fragment}", if selected { "›" } else { " " }),
+            style(header_color, t.tool_background).add_modifier(Modifier::BOLD),
+        ));
+    }
     tool_body(t, lines, status, color, width);
     if !expanded {
         lines.push(Line::raw(""));
@@ -575,7 +593,9 @@ fn native_tool(
     lines.push(Line::raw(""));
 }
 
-fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) {
+type ThinkingHeaders = Vec<(usize, crate::compact_display::ThinkingHit)>;
+fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), ThinkingHeaders) {
+    let mut headers = Vec::new();
     let t = app.palette();
     if let Some(chat) = &app.live {
         let mut lines = Vec::new();
@@ -741,21 +761,52 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                     }
                     crate::live_chat::Item::Tool(index) => {
                         let start = lines.len();
-                        native_tool(t, &mut lines, row, index, width);
+                        native_tool(
+                            t,
+                            &mut lines,
+                            row,
+                            index,
+                            width,
+                            app.compact_display.active(),
+                        );
                         if row.tool_view.selected == Some(index) {
                             selected = (start, lines.len());
                         }
                     }
                     crate::live_chat::Item::Card(index) => {
                         let card = &row.cards[index];
+                        let expanded = card
+                            .reasoning_expanded
+                            .unwrap_or(!app.compact_display.active());
+                        if !card.reasoning.is_empty() {
+                            headers.push((
+                                lines.len() + if expanded { 3 } else { 2 },
+                                crate::compact_display::ThinkingHit {
+                                    row: row_index,
+                                    card: index,
+                                },
+                            ));
+                        }
                         assistant_card(
                             t,
                             &mut lines,
                             &format!("Assistant · {}", display_safe(&chat.model)),
                             &if card.reasoning.is_empty() {
                                 Vec::new()
-                            } else {
+                            } else if expanded {
                                 vec!["▾ Thinking".to_owned(), display_safe(&card.reasoning)]
+                            } else {
+                                let text = card
+                                    .reasoning
+                                    .trim_end()
+                                    .rsplit('\n')
+                                    .next()
+                                    .unwrap_or("")
+                                    .trim_start_matches([' ', '#', '*', '\t']);
+                                vec![format!(
+                                    "▸ Thinking · {}",
+                                    crate::compact_display::summary(text, 65)
+                                )]
                             },
                             &display_safe(&card.answer),
                             state,
@@ -785,7 +836,7 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                 lines.push(Line::raw(""));
             }
         }
-        return (lines, selected);
+        return (lines, selected, headers);
     }
     let mut lines = vec![
         Line::styled(
@@ -852,12 +903,16 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
         }
         lines.push(Line::raw(""));
     }
-    (lines, selected_range)
+    (lines, selected_range, headers)
 }
 
 pub fn draw(frame: &mut Frame, app: &mut Demo) {
     let t = app.palette().clone();
     let area = frame.area();
+    if app.live.is_some() {
+        app.compact_display.resize(area.width);
+    }
+    let compact = app.live.is_some() && app.compact_display.active();
     frame.render_widget(
         Block::default().style(style(t.foreground, t.background)),
         area,
@@ -875,6 +930,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         || app.has_live_input()
         || app.completion.is_open());
     if !selectable {
+        app.compact_display.clear_hits();
         app.transcript_selection.hide();
     }
     if app.viewport_too_small {
@@ -904,10 +960,19 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     let areas = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(if compact { 3 } else { 1 }),
         Constraint::Min(3),
         Constraint::Length(1),
-        Constraint::Length(5),
+        Constraint::Length(
+            if compact
+                && app.composer.text().is_empty()
+                && (app.footer.selected().is_some() || app.has_live_input())
+            {
+                3
+            } else {
+                5
+            },
+        ),
         Constraint::Length(2),
     ])
     .split(area);
@@ -926,12 +991,26 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         areas[0],
     );
     frame.render_widget(
-        Paragraph::new(if let Some(chat) = &app.live {
-            format!(" LIVE · {} · F4 themes · Ctrl+Q quits", chat.theme_status)
-        } else {
-            " LOCAL PREVIEW · No model connected · all calls, timings and counts are fixtures"
-                .into()
-        })
+        Paragraph::new(
+            if let Some(chat) = &app.live
+                && compact
+            {
+                app.compact_display
+                    .now(chat)
+                    .iter()
+                    .map(|line| clip_label(line, usize::from(areas[1].width)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else if let Some(chat) = &app.live {
+                format!(
+                    " LIVE · {} · F4 themes · Ctrl+G view · Ctrl+Q quits",
+                    chat.theme_status
+                )
+            } else {
+                " LOCAL PREVIEW · No model connected · all calls, timings and counts are fixtures"
+                    .into()
+            },
+        )
         .style(style(t.tool_text, t.background)),
         areas[1],
     );
@@ -948,7 +1027,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         areas[2].width.saturating_sub(2),
         areas[2].height.saturating_sub(picker_height),
     );
-    let (lines, selected) = transcript(app, viewport.width as usize);
+    let (lines, selected, headers) = transcript(app, viewport.width as usize);
     let height = viewport.height as usize;
     app.max_scroll = lines.len().saturating_sub(height);
     let size = (viewport.width, viewport.height);
@@ -974,6 +1053,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         viewport,
     );
     if selectable {
+        app.compact_display.set_hits(viewport, app.scroll, &headers);
         app.transcript_selection
             .draw(frame.buffer_mut(), viewport, app.scroll);
     }
@@ -1149,9 +1229,17 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             areas[4].y + 1,
         ));
     }
-    let footer = crate::footer::FooterLayout::new(
+    let hint = if compact {
+        "^G view · ^B select · ^E open"
+    } else {
+        ""
+    };
+    let footer_width = usize::from(areas[5].width.saturating_sub(1));
+    let status_width = footer_width.saturating_sub(hint.width() + usize::from(compact));
+    let footer = crate::footer::FooterLayout::with_status_width(
         &app.footer_fields,
-        areas[5].width.saturating_sub(1) as usize,
+        status_width,
+        footer_width,
     );
     app.footer.update_visible(&footer.actions);
     let footer_style = style(t.footer_foreground, t.footer_background);
@@ -1183,6 +1271,13 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         Paragraph::new(vec![row(&footer.status), row(&footer.permission)]).style(footer_style),
         areas[5],
     );
+    if compact {
+        let w = hint.width().min(usize::from(areas[5].width)) as u16;
+        frame.render_widget(
+            Paragraph::new(hint).style(footer_style),
+            Rect::new(areas[5].right() - w, areas[5].y, w, 1),
+        );
+    }
     if app.approval_open {
         approval(frame, app, area);
     }
