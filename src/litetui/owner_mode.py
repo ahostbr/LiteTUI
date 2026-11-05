@@ -355,7 +355,41 @@ async def owner_gate(owner_dir, before: NowSnapshot, agent_id: str | None = None
         return False, f"NOW.md cannot be read: {exc}"
     if current == before:
         return False, "NOW.md was not rewritten during this compaction (it has not changed since the compaction began)"
-    ok, output = await asyncio.to_thread(run_handoff, owner_dir, agent_id)
+    # T0483-B: the commit runs in a thread that cancelling this coroutine cannot stop. Shield it
+    # and keep it findable, so a second /compact waits for it (settle_inflight_handoff) before its
+    # STEP 1 instead of racing it. Killing git mid-commit could leave a stale index.lock.
+    handoff = asyncio.ensure_future(asyncio.to_thread(run_handoff, owner_dir, agent_id))
+    key = _inflight_key(owner_dir)
+    _INFLIGHT[key] = handoff
+    handoff.add_done_callback(lambda done, k=key: _INFLIGHT.pop(k, None) if _INFLIGHT.get(k) is done else None)
+    ok, output = await asyncio.shield(handoff)
     if ok:
         return True, output
     return False, " ".join(output.split()) or "the handoff refused without a reason"
+
+
+#: owner-handoff futures still running, by memory folder (at most one per folder).
+_INFLIGHT: dict = {}
+
+
+def _inflight_key(owner_dir) -> str:
+    return os.path.normcase(str(Path(owner_dir).resolve()))
+
+
+async def settle_inflight_handoff(owner_dir) -> None:
+    """Wait until a cancelled compaction's owner-handoff for this folder has finished (T0483-B).
+
+    Call before a compaction snapshots NOW.md, so a late commit cannot overlap its STEP 1.
+    The result is ignored: the cancelled compaction no longer acts on it.
+    """
+    import asyncio
+    handoff = _INFLIGHT.get(_inflight_key(owner_dir))
+    if handoff is None or handoff.done():
+        return
+    if handoff.get_loop() is not asyncio.get_running_loop():
+        _INFLIGHT.pop(_inflight_key(owner_dir), None)   # left by a loop that has closed
+        return
+    try:
+        await asyncio.shield(handoff)
+    except Exception:
+        pass
