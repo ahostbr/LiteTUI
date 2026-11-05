@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Preview a composer image before sending - 2026-11-04
+
+Press V during image review to preview the retained PNG with alpha compositing. Escape returns to the attachment details. Enter there confirms the selection. The preview works after the original file is removed and never reopens a file or rereads the clipboard.
+
+The integrated checkout passed 971 ordinary Rust tests, formatting and strict Clippy. Twelve focused source cases passed. A packaged child verified the exact pixels from a private DIB and one ordinary image send. Two hidden Windows pseudoconsole runs displayed the same retained navy pixels in true color and monochrome, verified the reply bytes, and returned to the existing draft. The launcher verified 369 packaged payload files.
+
 ## F6 Edit and Retry for Claude conversations - 2026-11-04
 
 F6 can fork a completed tools-off text conversation at the assistant checkpoint immediately before the selected user message. The source verifies the original transcript, the retained message IDs in the fork, and one replacement turn. The first user message needs a new conversation because it has no preceding checkpoint. Anthropic prompt caching starts cold on the fork.

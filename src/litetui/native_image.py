@@ -171,6 +171,37 @@ def retained(app, received):
     return entry[0]
 
 
+def preview(app, cmd):
+    from PIL import Image
+
+    bridge, binding = native_context.read_binding(app, cmd, "gui.images.native_preview", "token", "png_sha256")
+    if not native_runtime_controls.enabled(app) or bridge.closing:
+        raise ValueError("Image preview requires an active owned composer")
+    for slot in ("clipboard_candidate", "composer_image"):
+        entry = getattr(bridge, slot, None)
+        if entry and entry[0]["token"] == cmd["token"]:
+            break
+    else:
+        raise ValueError("This image is no longer selected")
+    review, encoded = entry
+    if (any(review[key] != value for key, value in binding.items())
+            or cmd["png_sha256"] != review["png_sha256"]):
+        raise ValueError("The reviewed image changed")
+    png = base64.b64decode(encoded, validate=True)
+    if len(png) != review["png_bytes"] or hashlib.sha256(png).hexdigest() != review["png_sha256"]:
+        raise ValueError("Retained image bytes differ from the review")
+    with Image.open(io.BytesIO(png), formats=["PNG"]) as source:
+        if source.size != (review["sent_width"], review["sent_height"]):
+            raise ValueError("Retained image dimensions differ from the review")
+        source.thumbnail((64, 40), Image.Resampling.LANCZOS)
+        rgba = source.convert("RGBA").tobytes()
+        width, height = source.size
+    bridge.check()
+    return {"kind": "image_preview", "version": 1, **binding, "token": review["token"],
+            "png_sha256": review["png_sha256"], "width": width, "height": height,
+            "rgba": base64.b64encode(rgba).decode("ascii")}
+
+
 def consume(app, cmd):
     bridge = background_input.bridge(app)
     entry = getattr(bridge, "composer_image", None)

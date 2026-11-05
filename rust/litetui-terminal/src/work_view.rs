@@ -68,6 +68,7 @@ pub enum Data {
     Context(Box<crate::context::Page>),
     ContextEdit(Box<crate::context_edit::Reply>),
     Image(Option<crate::image::Review>),
+    ImagePreview(crate::image::Thumbnail),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
         action: execution::Action,
@@ -328,6 +329,10 @@ impl View {
                 | (Request::DeferredValidate, Data::DeferredReview(_))
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
                 | (Request::Image(_), Data::Image(_))
+                | (
+                    Request::Image(crate::image::Request::Preview(_)),
+                    Data::ImagePreview(_)
+                )
                 | (Request::Context(_), Data::Context(_))
                 | (Request::ContextEdit(_), Data::ContextEdit(_))
                 | (Request::Snapshot, Data::Snapshot(_))
@@ -353,6 +358,7 @@ impl View {
             Data::Rejected(reason) if matches!(pending, Request::ContextEdit(_)) => {
                 self.context.edit_rejected(&reason)
             }
+            Data::ImagePreview(thumbnail) => self.image.thumbnail = Some(thumbnail),
             Data::Image(value) => {
                 let Request::Image(request) = &pending else {
                     unreachable!()

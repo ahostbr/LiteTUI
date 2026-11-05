@@ -1,5 +1,7 @@
 //! A private, source-decoded image selected for one ordinary composer submission.
 use crate::{live::terminal_text, theme::Theme, work_lifecycle, work_protocol::Identity};
+#[path = "image_thumbnail.rs"]
+mod thumbnail;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
@@ -9,12 +11,14 @@ use ratatui::{
 };
 use serde_json::{Value, json};
 use std::{io, path::Path};
+pub use thumbnail::Thumbnail;
 
 pub const OPERATION: &str = "gui.images.native_prepare";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     File(String),
+    Preview(Review),
     Clear(String),
     Clipboard(Option<String>),
     ReplaceFile {
@@ -31,6 +35,7 @@ impl Request {
     pub fn operation(&self) -> &'static str {
         match self {
             Self::File(_) | Self::Clear(_) => OPERATION,
+            Self::Preview(_) => "gui.images.native_preview",
             _ => "gui.images.native_clipboard",
         }
     }
@@ -39,6 +44,11 @@ impl Request {
         cmd["type"] = json!(self.operation());
         cmd["work_instance"] = json!(instance);
         let (path, clear) = match self {
+            Self::Preview(review) => {
+                cmd["token"] = json!(review.token());
+                cmd["png_sha256"] = review.wire()["png_sha256"].clone();
+                return cmd;
+            }
             Self::File(path) => (Some(path), None),
             Self::Clear(token) => (None, Some(token)),
             other => {
@@ -216,6 +226,7 @@ pub struct Picker {
     pub open: bool,
     pub attached: Option<Review>,
     candidate: Option<Review>,
+    pub thumbnail: Option<Thumbnail>,
     file_mode: bool,
     path: String,
     pub notice: String,
@@ -225,6 +236,7 @@ pub struct Picker {
 impl Picker {
     pub fn open(&mut self) {
         self.open = true;
+        self.thumbnail = None;
         self.path.clear();
         self.file_mode = self.attached.is_none();
         self.candidate = None;
@@ -236,6 +248,7 @@ impl Picker {
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.thumbnail = None;
         self.candidate = None;
         self.path.clear();
         self.visible = false;
@@ -287,6 +300,21 @@ impl Picker {
             || !event.modifiers.difference(KeyModifiers::SHIFT).is_empty()
         {
             return None;
+        }
+        if self.thumbnail.is_some() {
+            if matches!(event.code, KeyCode::Esc | KeyCode::Char('v')) {
+                self.thumbnail = None;
+                self.hide();
+            }
+            return None;
+        }
+        if event.code == KeyCode::Char('v') && self.visible && !self.editing() {
+            return self
+                .candidate
+                .as_ref()
+                .or(self.attached.as_ref())
+                .cloned()
+                .map(Request::Preview);
         }
         if event.code == KeyCode::Esc {
             self.file_mode = false;
@@ -360,6 +388,11 @@ impl Picker {
         None
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, waiting: bool) {
+        if let Some(thumbnail) = &self.thumbnail {
+            thumbnail.draw(frame, area, theme);
+            self.visible = false;
+            return;
+        }
         let width = area.width.min(88);
         let height = area.height.min(16);
         let rect = Rect::new(
@@ -397,7 +430,7 @@ impl Picker {
                 })
                 .unwrap_or_default();
             format!(
-                "{}{}\n{} · {} × {} source pixels\nSending {} × {} · {} PNG bytes\nSHA-256 {}\n{}\n\n{}",
+                "{}{}\n{} · {} × {} source pixels\nSending {} × {} · {} PNG bytes\nSHA-256 {}\n{}\n\nV previews pixels · {}",
                 terminal_text(review.name()),
                 clip,
                 v["format"].as_str().unwrap_or(""),

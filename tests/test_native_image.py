@@ -71,6 +71,29 @@ def test_wrong_receipt_is_refused_without_releasing_other_image():
 
 
 
+def test_preview_reads_retained_png_after_deletion_and_refuses_wrong_token_or_bytes(tmp_path, monkeypatch):
+    path = tmp_path / "preview.png"
+    image = Image.new("RGBA", (192, 96), (12, 34, 56, 255))
+    image.save(path)
+    details, encoded = native_image.read_image(None, str(path))
+    path.unlink()
+    binding = {"work_instance": "fixture"}
+    review = {**details, **binding, "token": "a" * 64}
+    bridge = SimpleNamespace(composer_image=(review, encoded), closing=False, check=lambda: None)
+    monkeypatch.setattr(native_image.native_context, "read_binding", lambda *_: (bridge, binding))
+    monkeypatch.setattr(native_image.native_runtime_controls, "enabled", lambda _: True)
+    cmd = {"token": review["token"], "png_sha256": details["png_sha256"]}
+    preview = native_image.preview(None, cmd)
+    assert (preview["width"], preview["height"]) == (64, 32)
+    assert base64.b64decode(preview["rgba"], validate=True) == bytes((12, 34, 56, 255)) * (64 * 32)
+    assert bridge.composer_image[0] == review
+    with pytest.raises(ValueError, match="no longer selected"):
+        native_image.preview(None, {**cmd, "token": "b" * 64})
+    bridge.composer_image = (review, base64.b64encode(b"wrong bytes").decode())
+    with pytest.raises(ValueError, match="differ"):
+        native_image.preview(None, cmd)
+
+
 def test_inline_image_respects_remaining_real_native_history_budgets(tmp_path):
     from litetui import history_projection, native_history
 

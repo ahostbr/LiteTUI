@@ -703,6 +703,20 @@ fn clipboard_review_replace_clear_and_file_choice_use_the_captured_version() {
         app.insert_text("Which pixels did I choose?");
         let screen=review(runtime,&mut app)?;
         assert!(screen.contains("Clipboard DIB #201") && screen.contains("F2 chooses a file"),"{screen}");
+        let pixels=key(runtime,&mut app,KeyCode::Char('v'))?;
+        assert!(pixels.contains("Image preview"));
+        let mut terminal=Terminal::new(TestBackend::new(80,24)).unwrap();
+        terminal.draw(|frame| ui::draw(frame,&mut app)).unwrap();
+        let content=&terminal.backend().buffer().content;
+        if crossterm::style::Colored::ansi_color_disabled_memoized() {
+            assert!(content.iter().filter(|cell| cell.symbol()=="·").count()>100);
+        } else {
+            assert!(content.iter().any(|cell| cell.symbol()=="▀"
+                && cell.fg==ratatui::style::Color::Rgb(0,0,128) && cell.bg==cell.fg));
+        }
+        assert!(key(runtime,&mut app,KeyCode::Enter)?.contains("Image preview"));
+        assert!(app.live.as_ref().unwrap().work.image.attached.is_none());
+        assert!(key(runtime,&mut app,KeyCode::Esc)?.contains("Clipboard DIB #201"));
         key(runtime,&mut app,KeyCode::Enter)?;
         let held=|app:&Demo|app.live.as_ref().unwrap().work.image.attached.as_ref().unwrap().wire().clone();
         let first=held(&app);

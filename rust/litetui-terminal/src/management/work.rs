@@ -489,6 +489,17 @@ impl Management {
                 self.work.manual_review = Some(review.clone());
                 view::Data::ManualReview(Box::new(review))
             }
+            view::Request::Image(crate::image::Request::Preview(review)) => {
+                match crate::image::Thumbnail::parse(
+                    value,
+                    &self.work_identity()?,
+                    self.context_instance()?,
+                    review,
+                ) {
+                    Ok(thumbnail) => view::Data::ImagePreview(thumbnail),
+                    Err(error) => view::Data::Rejected(error.to_string()),
+                }
+            }
             view::Request::Image(request) => match crate::image::parse(
                 value,
                 &self.work_identity()?,
