@@ -37,6 +37,25 @@ impl View {
     pub fn hide(&mut self) {
         self.visible = false;
     }
+    /// Re-read the scope shown here, after the authoring editor saved a change.
+    pub fn reload(&mut self) -> Request {
+        self.list = None;
+        self.review = None;
+        self.test = None;
+        self.seen.clear();
+        Request::List(self.scope)
+    }
+    /// The entry point to hook authoring: plain A on the idle list, in the scope being browsed.
+    pub fn authoring_entry(&self, e: &KeyEvent, waiting: bool) -> Option<Scope> {
+        (!waiting
+            && self.visible
+            && self.review.is_none()
+            && self.test.is_none()
+            && e.kind == KeyEventKind::Press
+            && e.modifiers == KeyModifiers::NONE
+            && matches!(e.code, KeyCode::Char('a' | 'A')))
+        .then_some(self.scope)
+    }
     pub fn close(&mut self) {
         *self = Self::default();
     }
@@ -266,7 +285,7 @@ impl View {
             }
             (
                 lines,
-                "Tab scope · ↑ ↓ select · Enter toggle · ] sample event · T test · F5 reload · Esc back"
+                "Tab scope · ↑ ↓ select · Enter toggle · ] sample event · T test · A author · F5 reload · Esc back"
                     .into(),
             )
         };

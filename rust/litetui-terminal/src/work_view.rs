@@ -37,6 +37,7 @@ pub enum Request {
     Context(crate::context::Request),
     ContextEdit(Box<crate::context_edit::Request>),
     Hook(Box<crate::hook_toggle::Request>),
+    HookEdit(Box<crate::hook_edit::Request>),
     Plugin(Box<crate::plugin_reload::Request>),
     Image(crate::image::Request),
     Midturn(Box<crate::midturn::Request>),
@@ -75,6 +76,7 @@ pub enum Data {
     Context(Box<crate::context::Page>),
     ContextEdit(Box<crate::context_edit::Reply>),
     Hook(Box<crate::hook_toggle::Reply>),
+    HookEdit(Box<crate::hook_edit::Reply>),
     Plugin(Box<crate::plugin_reload::Reply>),
     Image(Option<crate::image::Review>),
     Midturn(Box<crate::midturn::Reply>),
@@ -156,6 +158,7 @@ pub struct View {
     plugin_after_snapshot: Option<String>,
     system_after_snapshot: Option<String>,
     hooks: crate::hook_toggle_view::View,
+    hook_edit: crate::hook_edit_view::View,
     plugin_reload: crate::plugin_reload::View,
     pub image: crate::image::Picker,
     pub midturn: crate::midturn::View,
@@ -288,6 +291,7 @@ impl View {
         self.chat_pause.hide();
         self.image.hide();
         self.hooks.hide();
+        self.hook_edit.hide();
         self.plugin_reload.hide();
         self.context.hide();
         self.visible = false;
@@ -301,6 +305,7 @@ impl View {
         self.midturn.open = false;
         self.chat_pause.open = false;
         self.hooks.close();
+        self.hook_edit.close();
         self.plugin_reload.close();
         self.context.close();
         self.open = false;
@@ -353,6 +358,7 @@ impl View {
         self.plugin_after_snapshot = None;
         self.system_after_snapshot = None;
         self.hooks.close();
+        self.hook_edit.close();
         self.plugin_reload.close();
         self.context.close();
         self.review = None;
@@ -438,6 +444,7 @@ impl View {
                 | (Request::Context(_), Data::Context(_))
                 | (Request::ContextEdit(_), Data::ContextEdit(_))
                 | (Request::Hook(_), Data::Hook(_))
+                | (Request::HookEdit(_), Data::HookEdit(_))
                 | (Request::Plugin(_), Data::Plugin(_))
                 | (Request::Snapshot, Data::Snapshot(_))
                 | (Request::Page { .. }, Data::Page(_))
@@ -498,6 +505,12 @@ impl View {
             Data::Hook(reply) => self.hooks.reply(*reply),
             Data::Rejected(reason) if matches!(pending, Request::Hook(_)) => {
                 self.hooks.reject(reason)
+            }
+            Data::HookEdit(reply) => self.hook_edit.reply(*reply),
+            Data::Rejected(reason) if matches!(&pending, Request::HookEdit(_)) => {
+                if let Request::HookEdit(request) = &pending {
+                    self.hook_edit.reject(reason, request);
+                }
             }
             Data::ContextEdit(reply) => self.context.edit_reply(*reply),
             Data::Rejected(reason) if matches!(pending, Request::ContextEdit(_)) => {
@@ -798,6 +811,9 @@ impl View {
         }
     }
     pub fn accepts_paste(&self) -> bool {
+        if self.hook_edit.open {
+            return !self.waiting && self.hook_edit.accepts_paste();
+        }
         if self.hooks.open || self.plugin_reload.open {
             return false;
         }
@@ -823,6 +839,9 @@ impl View {
             || self.hooks.open
             || self.plugin_reload.open
         {
+            if self.hook_edit.open && !self.waiting {
+                self.hook_edit.paste(text);
+            }
             return;
         }
         if self.context.is_open() {
@@ -889,15 +908,29 @@ impl View {
             self.request(Request::Plugin(Box::new(req)));
             return;
         }
+        if self.hook_edit.open {
+            if let Some(request) = self.hook_edit.key(key, self.waiting) {
+                self.request(Request::HookEdit(Box::new(request)));
+            } else if self.hook_edit.take_closed() == Some(true) {
+                // The browsing list below was read before this change; reload it.
+                let reload = self.hooks.reload();
+                self.request(Request::Hook(Box::new(reload)));
+            }
+            return;
+        }
         if self.hooks.open {
-            if let Some(request) = self.hooks.key(key, self.waiting) {
+            if let Some(scope) = self.hooks.authoring_entry(&key, self.waiting) {
+                let request = self.hook_edit.open(scope);
+                self.request(Request::HookEdit(Box::new(request)));
+            } else if let Some(request) = self.hooks.key(key, self.waiting) {
                 self.request(Request::Hook(Box::new(request)));
             }
             return;
         }
         if self.context.is_open()
             && self.context.document() == crate::context::Document::Hooks
-            && self.context.page().is_some()
+            // An unreadable scope document makes this page fail; authoring must still be reachable to repair it.
+            && (self.context.page().is_some() || self.context.notice().starts_with("Read failed"))
             && !self.waiting
             && key.kind == KeyEventKind::Press
             && key.modifiers.is_empty()
@@ -1566,6 +1599,10 @@ impl View {
         }
         if self.plugin_reload.open {
             self.plugin_reload.draw(frame, area, theme, self.waiting);
+            return;
+        }
+        if self.hook_edit.open {
+            self.hook_edit.draw(frame, area, theme, self.waiting);
             return;
         }
         if self.hooks.open {

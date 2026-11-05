@@ -23,6 +23,9 @@ pub(super) struct Control {
     hook_list: Option<crate::hook_toggle::List>,
     hook_review: Option<crate::hook_toggle::Review>,
     hook_test: Option<crate::hook_toggle::TestReview>,
+    hook_edit_snapshot: Option<crate::hook_edit::Snapshot>,
+    hook_edit_review: Option<crate::hook_edit::Review>,
+    hook_repair_review: Option<crate::hook_edit::RepairReview>,
     queue_review: Option<crate::midturn::Review>,
     pause_review: Option<crate::chat_pause::Review>,
     pause_origin: Option<crate::work_lifecycle::Origin>,
@@ -71,6 +74,9 @@ impl Management {
         self.work.hook_list = None;
         self.work.hook_review = None;
         self.work.hook_test = None;
+        self.work.hook_edit_snapshot = None;
+        self.work.hook_edit_review = None;
+        self.work.hook_repair_review = None;
     }
     fn extended_midturn(&self) -> bool {
         [crate::midturn::SEND_REVIEW, crate::midturn::SEND_APPLY]
@@ -188,6 +194,15 @@ impl Management {
                 request.operation()
             }
             view::Request::Hook(request) => request.operation(),
+            view::Request::HookEdit(request) => {
+                if crate::hook_edit::OPERATIONS
+                    .iter()
+                    .any(|op| !self.operations.iter().any(|v| v == op))
+                {
+                    return Err(fail("Source lacks verified lifecycle hook authoring"));
+                }
+                request.operation()
+            }
             view::Request::ContextEdit(request) => {
                 if request
                     .operations()
@@ -452,6 +467,68 @@ impl Management {
                 }
                 command = request.command(&identity, self.context_instance()?);
             }
+            view::Request::HookEdit(request) => {
+                use crate::hook_edit::Request;
+                match request.as_ref() {
+                    Request::Snapshot(_) => {
+                        self.work.hook_edit_snapshot = None;
+                        self.work.hook_edit_review = None;
+                        self.work.hook_repair_review = None;
+                    }
+                    Request::Repair {
+                        scope,
+                        revision,
+                        catalog,
+                        ..
+                    } => {
+                        self.work.hook_repair_review = None;
+                        if !self.work.hook_edit_snapshot.as_ref().is_some_and(|s| {
+                            &s.scope == scope
+                                && &s.revision == revision
+                                && &s.catalog == catalog
+                                && s.unreadable.is_some()
+                        }) {
+                            return Err(fail(
+                                "Reload the unreadable hook document before reviewing its repair",
+                            ));
+                        }
+                    }
+                    Request::RepairApply(r) => {
+                        if self.work.hook_repair_review.take().as_ref() != Some(r.as_ref()) {
+                            return Err(fail("Review this exact hook repair again"));
+                        }
+                    }
+                    Request::Review {
+                        scope,
+                        revision,
+                        rows,
+                        catalog,
+                        before,
+                        ..
+                    } => {
+                        self.work.hook_edit_review = None;
+                        // The source stays authoritative on staleness; this only binds the request to
+                        // the exact rows the person was shown.
+                        if !self.work.hook_edit_snapshot.as_ref().is_some_and(|s| {
+                            &s.scope == scope
+                                && &s.revision == revision
+                                && s.rows.len() == *rows
+                                && &s.catalog == catalog
+                                && before.as_ref().is_none_or(|b| s.rows.contains(b))
+                        }) {
+                            return Err(fail(
+                                "Reload the hook scope and select the exact hook before review",
+                            ));
+                        }
+                    }
+                    Request::Apply(r) => {
+                        if self.work.hook_edit_review.take().as_ref() != Some(r.as_ref()) {
+                            return Err(fail("Review this exact hook change again"));
+                        }
+                    }
+                }
+                command = request.command(&identity, self.context_instance()?);
+            }
             view::Request::ContextEdit(request) => {
                 if let crate::context_edit::Request::Apply(r) = request.as_ref() {
                     if self.work.context_review.take().as_ref() != Some(r) {
@@ -611,6 +688,7 @@ impl Management {
             view::Request::Hook(request) => {
                 matches!(request.as_ref(), crate::hook_toggle::Request::Apply(_))
             }
+            view::Request::HookEdit(request) => request.applies(),
             view::Request::ContextEdit(request) => {
                 matches!(request.as_ref(), crate::context_edit::Request::Apply(_))
             }
@@ -656,6 +734,20 @@ impl Management {
                 self.work.plugin_review = None;
                 if pending.context_apply_id.is_some() {
                     reason = format!("Plugin metadata was published but readback failed. {reason}");
+                }
+            }
+            if let view::Request::HookEdit(request) = &pending.request {
+                self.work.hook_edit_review = None;
+                self.work.hook_repair_review = None;
+                if !matches!(
+                    request.as_ref(),
+                    crate::hook_edit::Request::Review { .. }
+                        | crate::hook_edit::Request::Repair { .. }
+                ) {
+                    self.work.hook_edit_snapshot = None;
+                }
+                if pending.context_apply_id.is_some() {
+                    reason = format!("Hook was published but separate readback failed: {reason}");
                 }
             }
             if matches!(&pending.request, view::Request::Hook(_)) {
@@ -943,6 +1035,45 @@ impl Management {
                             crate::hook_toggle::Reply::Saved(_) => self.work.hook_list = None,
                         }
                         view::Data::Hook(Box::new(reply))
+                    }
+                    view::Request::HookEdit(request) => {
+                        let instance = self.context_instance()?;
+                        if request.applies() && pending.context_apply_id.is_none() {
+                            let op = text(&frame, "id", 128)?.to_string();
+                            let mut command =
+                                request.readback(value, &snapshot.identity, instance, &op)?;
+                            let id = self
+                                .wire
+                                .register_read()
+                                .map_err(|_| fail("Cannot reserve hook readback"))?;
+                            command["id"] = id.to_value();
+                            pending.id = id;
+                            pending.context_apply_id = Some(op);
+                            self.work.pending = Some(pending);
+                            return Ok(Step::Write(command));
+                        }
+                        let reply = request.reply(
+                            value,
+                            &snapshot.identity,
+                            instance,
+                            pending.context_apply_id.as_deref(),
+                        )?;
+                        match &reply {
+                            crate::hook_edit::Reply::Snapshot(s) => {
+                                self.work.hook_edit_snapshot = Some(s.as_ref().clone())
+                            }
+                            crate::hook_edit::Reply::Review(r) => {
+                                self.work.hook_edit_review = Some(r.as_ref().clone())
+                            }
+                            crate::hook_edit::Reply::RepairReview(r) => {
+                                self.work.hook_repair_review = Some(r.as_ref().clone())
+                            }
+                            crate::hook_edit::Reply::Saved(_)
+                            | crate::hook_edit::Reply::RepairSaved(_) => {
+                                self.work.hook_edit_snapshot = None
+                            }
+                        }
+                        view::Data::HookEdit(Box::new(reply))
                     }
                     view::Request::ContextEdit(request) => {
                         let instance = self.context_instance()?;

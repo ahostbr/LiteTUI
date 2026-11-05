@@ -49,6 +49,8 @@ OPERATIONS = (
     "models.list", "models.discover", "models.reconnect", "models.select", "models.confirm", "extensions.list",
     "hooks.native_list", "hooks.native_review", "hooks.native_apply", "hooks.native_readback",
     "hooks.native_test_review", "hooks.native_test_run",
+    "hooks.native_edit_snapshot", "hooks.native_edit_review", "hooks.native_edit_apply", "hooks.native_edit_readback",
+    "hooks.native_repair_review", "hooks.native_repair_apply", "hooks.native_repair_readback",
     "hooks.get", "hooks.validate", "hooks.apply", "hooks.repair", "hooks.test",
     "mcp.list", "mcp.connect", "mcp.disconnect", "mcp.reconnect", "mcp.reload", "mcp.add", "mcp.remove",
     "skills.list", "skills.read", "skills.use", "tools.list",
@@ -840,6 +842,10 @@ def dispatch(app, cmd):
     if operation in {"hooks.native_list", "hooks.native_review", "hooks.native_apply", "hooks.native_readback"}:
         from litetui import native_hook_toggle
         return native_hook_toggle.dispatch(app, cmd)
+    if operation in {"hooks.native_edit_snapshot", "hooks.native_edit_review", "hooks.native_edit_apply", "hooks.native_edit_readback",
+                     "hooks.native_repair_review", "hooks.native_repair_apply", "hooks.native_repair_readback"}:
+        from litetui import native_hook_edit
+        return native_hook_edit.dispatch(app, cmd)
     if domain == "hooks":
         from litetui import lifecycle_hooks as hooks
         config = app.hook_config

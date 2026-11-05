@@ -2555,6 +2555,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             }
                             crate::work_view::Request::Dictation(_) => turn.can_manage(),
                             crate::work_view::Request::Hook(_)
+                            | crate::work_view::Request::HookEdit(_)
                             | crate::work_view::Request::Plugin(_) => turn.can_manage(),
                             crate::work_view::Request::ExecutionValidate(_)
                             | crate::work_view::Request::ExecutionApply(_) => turn.can_manage(),
