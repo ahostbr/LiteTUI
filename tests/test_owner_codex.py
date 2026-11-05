@@ -356,6 +356,24 @@ def test_a_refused_admission_of_the_driven_turn_runs_no_turn_and_no_compaction(m
     assert any("not admitted" in m and "not compacted" in m for m in system)
 
 
+def test_a_turn_refused_by_owned_execution_is_not_taken_as_answered(make_app, owner_dir, monkeypatch):
+    """T0483-A (WS4 N7): _stream's validation refusal is a bare return; the driven STEP 1
+    must read it as 'not run', not as success, so no gate, no retry and no compaction follow."""
+    def refuse_in_stream(self, **kw):
+        if kw.get("chat_effort", True):      # _compact validates with chat_effort=False first
+            raise ValueError("Agent execution authority refused this turn")
+
+    app = make_app()
+    monkeypatch.setattr(app_mod.LiteTUI, "_validate_owned_execution", refuse_in_stream)
+    handoff = Handoff([])
+    events, calls, system = _drive(app, (True,), owner_dir, monkeypatch, handoff)
+    assert "turn" not in events, "the refused STEP 1 never reached the model"
+    assert handoff.calls == [], "no gate on a turn that did not run"
+    assert "compact" not in events, "nothing is compacted after a refused STEP 1"
+    assert not any("asking once more" in m for m in system), "no retry of a refused turn"
+    assert any("refused" in m and "not compacted" in m for m in system), system
+
+
 @pytest.mark.parametrize("writes_note", [True, False])
 def test_codex_missing_initial_note_does_not_block_compaction(make_app, owner_dir, monkeypatch, writes_note):
     app = make_app()
