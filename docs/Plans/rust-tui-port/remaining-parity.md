@@ -44,6 +44,10 @@ Historical inventory.md checkboxes are discovery data, not current feature statu
 | Fault and resource acceptance | Full-feature controlled process tests; runtime-contract.md P4 protocol | Extend fault/cleanup coverage across the remaining features. Equivalent controlled startup and sustained-streaming comparisons cover both frontends and observed process trees. Actual inference, cold-start measurements and Ryan's numerical targets remain open. |
 | Host acceptance | Windows Terminal and LiteSuite embedded terminal | Layout, shortcuts, images, clipboard, scroll/resize and terminal restoration in both; Ryan's visual signoff. Preview approval is not full feature acceptance. |
 
+## Open flake: playback-stop under load
+
+On 2026-11-05 the integrated gate at 4bfd394c^ (762e3649 + docs) failed `runtime_controls_process::selected_response_playback_reviews_exact_text_and_preserves_remote_ownership`, case `playback-stop`, once: the live chat rejected "Unexpected prompt response" (live.rs `prompt response` id/sent/acknowledged guard) and runtime shutdown then timed out with provider cleanup unproven. It ran with `--test-threads=4` while a SOTS editor Play and a local model were using the machine. Rerun alone it passed twice (81.8 s, 75.5 s). Treat it as a possible ordering race between the playback Stop path and a late prompt response, not as passing. Repro: `cargo test --test runtime_controls_process -- --ignored --test-threads=4` under CPU/RAM load; the failed run's data is under `rust/litetui-terminal/target/runtime-controls-process-tests/39012-61-*-playback-stop` (no fixture report was written because shutdown timed out).
+
 ## Remaining session-action work
 
 F6 host-history edit/retry now uses source-issued selection/review tokens, exact message and prefix hashes, canonical admission before durable publication, captured worker ownership and independent history readback. It does not call the legacy GUI edit/retry handlers or infer authority from displayed text. Source-owned automatic/self-compaction, card summaries and maintenance wake streams are tracked through final settlement.
