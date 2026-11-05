@@ -253,7 +253,9 @@ def test_a_non_owner_codex_compact_is_unchanged(make_app, owner_dir, monkeypatch
 # ===================== the 70% reminder, on every backend =====================
 
 def _reminders(system):
-    return [m for m in system if m == owner_mode.CONTEXT_REMINDER]
+    # T0483-C: the reminder names the real percentage, so match the wording, not "70%".
+    return [m for m in system
+            if m.startswith("context ") and m.endswith("%: run /compact to write NOW.md first")]
 
 
 def _climb(app, values):
@@ -308,6 +310,40 @@ def test_an_unknown_window_never_reminds(make_app):
             await pilot.pause()
     _run(body())
     assert _reminders(system) == []
+
+
+@pytest.mark.parametrize("codex", [True, False])
+def test_the_reminder_names_the_real_percentage_not_seventy(make_app, codex):
+    """T0483-C (WS4 N14): a first reading of 95% must say 95%, not the threshold."""
+    app = make_app(codex=codex)
+    system = _climb(app, [950])
+    assert _reminders(system) == ["context 95%: run /compact to write NOW.md first"]
+
+
+@pytest.mark.parametrize("codex", [True, False])
+def test_a_transient_unknown_reading_does_not_re_arm_the_reminder(make_app, codex):
+    """T0483-C (WS4 N14): a None ctx_used or ctx_max is 'unknown', not 'below 70%'."""
+    app = make_app(codex=codex)
+    system = []
+
+    async def body():
+        async with app.run_test(size=(120, 40)) as pilot:
+            app._system = lambda text, *a, **k: system.append(text)
+            app.ctx_max = 1000
+            app.ctx_used = 720
+            await pilot.pause()
+            app.ctx_used = None          # transient unknown reading
+            await pilot.pause()
+            app.ctx_used = 760
+            await pilot.pause()
+            app.ctx_max = None           # transient unknown window
+            app.ctx_used = 770
+            await pilot.pause()
+            app.ctx_max = 1000
+            app.ctx_used = 780
+            await pilot.pause()
+    _run(body())
+    assert len(_reminders(system)) == 1, system
 
 
 def test_a_refused_admission_of_the_driven_turn_runs_no_turn_and_no_compaction(make_app, owner_dir, monkeypatch):

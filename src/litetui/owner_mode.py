@@ -320,6 +320,11 @@ REMINDER_AT_PERCENT = 70
 CONTEXT_REMINDER = "context 70%: run /compact to write NOW.md first"
 
 
+def context_reminder(percent: int) -> str:
+    """The reminder with the reading that crossed, so a first reading of 95% says 95% (T0483-C)."""
+    return f"context {percent}%: run /compact to write NOW.md first"
+
+
 def not_committed_note(reason: str) -> str:
     return f"NOW.md was NOT committed: {reason}"
 
