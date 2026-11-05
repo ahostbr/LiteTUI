@@ -421,6 +421,8 @@ fn report(root: &Path) -> Value {
                         | "gui.themes.native_snapshot"
                         | "gui.history.native_snapshot"
                         | "gui.history.native_page"
+                        | litetui_terminal::work_lifecycle::CAPTURE
+                        | litetui_terminal::work_lifecycle::ACTIVATE
                         | edit::READ
                         | edit::VALIDATE
                         | edit::SAVE
@@ -446,6 +448,52 @@ fn report(root: &Path) -> Value {
     }
     r
 }
+// The Work handshake creates its own empty ledger on clean shutdown. Its bytes
+// must describe this exact activation. Every other file must match the baseline.
+fn assert_only_idle_ledger_published(r: &Value, root: &Path, baseline: &Value) {
+    use sha2::{Digest, Sha256};
+
+    let responses = r["responses"].as_array().unwrap();
+    let captures: Vec<_> = responses
+        .iter()
+        .filter_map(|row| {
+            let value = &row["result"];
+            (row["ok"] == true && value["kind"] == "work_capture").then_some(value)
+        })
+        .collect();
+    let [capture] = captures.as_slice() else {
+        panic!("expected one Work capture")
+    };
+    let identity = &capture["identity"];
+    let session = identity["session_id"].as_str().unwrap();
+    assert_eq!(session, r["before"]["identity"]["session_id"]);
+    let relative = Path::new(".agents")
+        .join("RustLive")
+        .join("conversations")
+        .join(session)
+        .join("native-work-inputs.json");
+    let bytes = fs::read(root.join(&relative)).unwrap();
+    let stored: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        stored,
+        json!({
+            "version": 1, "revision": 1, "provider": capture["provider"],
+            "instance": capture["instance"], "identity": identity, "producers": [], "inputs": [],
+        })
+    );
+    let key = relative.to_str().unwrap();
+    let hash = json!(format!("{:x}", Sha256::digest(&bytes)));
+    let mut expected = baseline.clone();
+    if let Some(previous) = expected
+        .as_object_mut()
+        .unwrap()
+        .insert(key.to_owned(), hash.clone())
+    {
+        assert_eq!(previous, hash);
+    }
+    assert_eq!(r["final_disk"], expected);
+}
+
 fn count(r: &Value, operation: &str) -> usize {
     r["commands"]
         .as_array()
@@ -597,14 +645,12 @@ fn scenario(case: &str, field: &str, value: Value, via_c: bool) {
     if refused {
         assert_eq!(r["saves"][0]["status"], "refused");
         assert_eq!(r["before"], r["after"]);
-        assert_eq!(
-            r["final_disk"],
-            if case == "stale" {
-                r["stale_disk"].clone()
-            } else {
-                r["initial_disk"].clone()
-            }
-        );
+        let baseline = if case == "stale" {
+            &r["stale_disk"]
+        } else {
+            &r["initial_disk"]
+        };
+        assert_only_idle_ledger_published(&r, &root, baseline);
     } else if fatal {
         assert_eq!(r["saves"][0]["status"], "failed");
         assert_eq!(r["saves"][0]["close_required"], true);
@@ -671,7 +717,7 @@ fn f10_editor_review_cancel_and_refresh_keep_drafts_without_publishing() {
         assert!(result.is_ok(), "{mode}: {result:?} at {}", root.display());
         let r = report(&root);
         assert_eq!(count(&r, edit::SAVE), 0);
-        assert_eq!(r["initial_disk"], r["final_disk"]);
+        assert_only_idle_ledger_published(&r, &root, &r["initial_disk"]);
         assert_eq!(r["before"], r["after"]);
         assert_eq!(
             count(&r, edit::VALIDATE),
@@ -879,7 +925,7 @@ fn f10_quit_consumes_late_read_or_saved_receipt_without_new_readbacks_or_success
             assert_eq!(r["after"]["settings"]["compact_max_tokens"], 768);
         } else {
             assert_eq!(r["before"], r["after"]);
-            assert_eq!(r["initial_disk"], r["final_disk"]);
+            assert_only_idle_ledger_published(&r, &root, &r["initial_disk"]);
         }
     }
 }
