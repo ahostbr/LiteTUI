@@ -470,7 +470,7 @@ impl View {
             ]);
         } else if let Some(s) = &self.data {
             lines.extend([format!("Dictation (faster-whisper)   Model: {}",s.shown("stt_model","default")),
-                format!("Microphone: {}   Python shortcut: {}",s.shown("stt_mic","first available"),s.shown("stt_hotkey","default")),
+                format!("Microphone: {}   Dictation shortcut: {}",s.shown("stt_mic","first available"),s.shown("stt_hotkey","default")),
                 format!("Response speech: {}   Prefer LiteSuite: {}",s.shown("tts_enabled","default"),s.shown("tts_litesuite_first","default")),
                 format!("Fallback engine: {}   Local timeout: {} s",s.shown("tts_engine","default"),s.shown("tts_timeout","default")),
                 format!("Windows voice: {}   Edge voice: {}",s.shown("tts_voice","Windows default"),s.shown("tts_edge_voice","default")),

@@ -475,6 +475,17 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 }
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
+    // Source `toggle_mic` (settings.stt_hotkey): here it opens the reviewed dictation flow.
+    if key.kind == KeyEventKind::Press
+        && app.live.is_some()
+        && app
+            .presentation()
+            .dictation_hotkey
+            .is_some_and(|hotkey| hotkey.matches(key.code, key.modifiers))
+    {
+        app.open_dictation();
+        return false;
+    }
     if key.code == KeyCode::Esc
         && key.modifiers.is_empty()
         && key.kind == KeyEventKind::Press

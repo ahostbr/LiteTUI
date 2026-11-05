@@ -28,6 +28,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("Ctrl+Esc", "open the stop dialog"),
     ("Ctrl+Q", "quit and close the owned runtime"),
+    (
+        "Ctrl+Space",
+        "dictate into the composer (Voice sets the key)",
+    ),
     ("F1", "Work: tasks, jobs, loops, goal, calendar, plugins"),
     ("F3", "models"),
     ("F4", "themes"),

@@ -2,6 +2,7 @@
 //! Python settings, plus the pure formatting they drive. The runtime delivers the effective
 //! values; nothing here persists or decides a value.
 use crate::footer::{FieldKey, FooterField};
+use crossterm::event::{KeyCode, KeyModifiers};
 use serde_json::{Map, Value};
 use std::{
     io,
@@ -79,6 +80,10 @@ pub struct Presentation {
     pub footer_throughput: bool,
     pub footer_cache: bool,
     pub key_hints: bool,
+    /// The dictation shortcut (`stt_hotkey`). It rides the same effective-settings delivery
+    /// as the presentation values; a spelling this frontend cannot read binds nothing, as the
+    /// source's runtime bind ignores a malformed key.
+    pub dictation_hotkey: Option<Hotkey>,
     order: Vec<&'static str>,
 }
 impl Default for Presentation {
@@ -100,6 +105,7 @@ impl Default for Presentation {
             footer_throughput: true,
             footer_cache: true,
             key_hints: false,
+            dictation_hotkey: Hotkey::parse("ctrl+space"),
             order: FOOTER_ORDER_DEFAULT.to_vec(),
         }
     }
@@ -163,6 +169,17 @@ impl Presentation {
                     .collect();
             }
             Some(_) => return Err(bad("footer_order")),
+        }
+        match effective.get("stt_hotkey") {
+            None => {}
+            Some(Value::String(spelling)) => {
+                out.dictation_hotkey = Hotkey::parse(if spelling.trim().is_empty() {
+                    "ctrl+space"
+                } else {
+                    spelling
+                })
+            }
+            Some(_) => return Err(bad("stt_hotkey")),
         }
         Ok(out)
     }
@@ -486,5 +503,106 @@ mod tests {
         assert_eq!(clock_text((13, 7)), "1:07 PM");
         assert_eq!(duration_text(Duration::from_millis(400)), "0.4s");
         assert_eq!(TurnTiming::default().line(Ending::Completed, &plain), None);
+    }
+}
+
+/// A key chord in Textual's spelling (`ctrl+space`, `alt+r`, `f9`, `ctrl+shift+d`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hotkey {
+    code: KeyCode,
+    modifiers: KeyModifiers,
+}
+impl Hotkey {
+    pub fn parse(spelling: &str) -> Option<Self> {
+        let spelling = spelling.trim().to_ascii_lowercase();
+        let mut parts: Vec<&str> = spelling.split('+').collect();
+        // `ctrl++` names the plus key itself.
+        let key = if spelling.ends_with("++") {
+            parts.truncate(parts.len().saturating_sub(2));
+            "+"
+        } else {
+            parts.pop()?
+        };
+        let mut modifiers = KeyModifiers::NONE;
+        for part in parts {
+            modifiers |= match part {
+                "ctrl" | "control" => KeyModifiers::CONTROL,
+                "shift" => KeyModifiers::SHIFT,
+                "alt" | "meta" => KeyModifiers::ALT,
+                _ => return None,
+            };
+        }
+        let code = match key {
+            "space" => KeyCode::Char(' '),
+            "enter" => KeyCode::Enter,
+            "tab" => KeyCode::Tab,
+            "escape" => KeyCode::Esc,
+            "backspace" => KeyCode::Backspace,
+            "delete" => KeyCode::Delete,
+            "insert" => KeyCode::Insert,
+            "home" => KeyCode::Home,
+            "end" => KeyCode::End,
+            "pageup" => KeyCode::PageUp,
+            "pagedown" => KeyCode::PageDown,
+            "up" => KeyCode::Up,
+            "down" => KeyCode::Down,
+            "left" => KeyCode::Left,
+            "right" => KeyCode::Right,
+            _ if key.len() > 1 && key.starts_with('f') => {
+                KeyCode::F(key[1..].parse().ok().filter(|n| (1..=24).contains(n))?)
+            }
+            _ => {
+                let mut chars = key.chars();
+                let c = chars.next()?;
+                if chars.next().is_some() || c.is_control() {
+                    return None;
+                }
+                KeyCode::Char(c)
+            }
+        };
+        Some(Self { code, modifiers })
+    }
+    pub fn matches(&self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        // Ctrl+Space reaches a terminal without the kitty protocol as NUL (`ctrl+@`).
+        let space = self.code == KeyCode::Char(' ') && self.modifiers == KeyModifiers::CONTROL;
+        if space && modifiers == KeyModifiers::CONTROL && matches!(code, KeyCode::Char(' ' | '@')) {
+            return true;
+        }
+        let code = match code {
+            KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
+            other => other,
+        };
+        code == self.code && modifiers == self.modifiers
+    }
+}
+
+#[cfg(test)]
+mod hotkey_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn default_ctrl_space_matches_the_nul_spelling_terminals_deliver() {
+        let hotkey = Presentation::default().dictation_hotkey.unwrap();
+        assert!(hotkey.matches(KeyCode::Char(' '), KeyModifiers::CONTROL));
+        assert!(hotkey.matches(KeyCode::Char('@'), KeyModifiers::CONTROL));
+        assert!(!hotkey.matches(KeyCode::Char(' '), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn configured_spellings_parse_and_malformed_ones_bind_nothing() {
+        let read = |value: Value| {
+            let effective = json!({ "stt_hotkey": value });
+            Presentation::from_effective(effective.as_object().unwrap())
+        };
+        let alt_r = read(json!("alt+r")).unwrap().dictation_hotkey.unwrap();
+        assert!(alt_r.matches(KeyCode::Char('r'), KeyModifiers::ALT));
+        assert!(!alt_r.matches(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        let f9 = read(json!("f9")).unwrap().dictation_hotkey.unwrap();
+        assert!(f9.matches(KeyCode::F(9), KeyModifiers::NONE));
+        assert_eq!(read(json!("hyper+q")).unwrap().dictation_hotkey, None);
+        assert_eq!(read(json!("ctrl+")).unwrap().dictation_hotkey, None);
+        assert!(read(json!("")).unwrap().dictation_hotkey.is_some());
+        assert!(read(json!(7)).is_err());
     }
 }
