@@ -10456,11 +10456,13 @@ class LiteTUI(App):
         """Owner mode, every backend: one system message each time the context rises through 70%."""
         if getattr(self, "_owner_memory_dir", None) is None:
             return
-        crossed = bool(value and self.ctx_max
-                       and value * 100 >= self.ctx_max * owner_mode.REMINDER_AT_PERCENT)
+        # An unknown reading (None) or window is not "below 70%": it must not re-arm (T0483-C).
+        if value is None or not self.ctx_max:
+            return
+        crossed = value * 100 >= self.ctx_max * owner_mode.REMINDER_AT_PERCENT
         if crossed and not self._owner_reminded:
             self._owner_reminded = True
-            self._system(owner_mode.CONTEXT_REMINDER)
+            self._system(owner_mode.context_reminder(value * 100 // self.ctx_max))
         elif not crossed:
             self._owner_reminded = False
 
