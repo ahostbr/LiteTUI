@@ -155,10 +155,9 @@ class NativePolicy:
             return denial(f"Tool {canonical} is disabled in LiteTUI")
         profile = ticket.profile if ticket else getattr(self.app, "_active_tool_profile", None)
         registered = self.app.plugins.policy_for(name)
-        options = {"workspace": workspace(self.app)}
-        if ticket:
-            options["profile"] = ticket.profile
-        refusal = await self.app._authorize_action(canonical, args, registered or policy, **options)
+        options = {"profile": ticket.profile} if ticket else {}
+        refusal = await self.app._authorize_action(
+            canonical, args, registered or policy, workspace=workspace(self.app), **options)
         if refusal:
             return denial(str(refusal[0]))
         captured = None

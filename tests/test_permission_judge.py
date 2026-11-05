@@ -667,8 +667,10 @@ def test_stands_in_is_called_from_one_place():
     assert {name: n for name, n in sites.items() if n} == {"app.py": 1}
     users = [path.name for path in _modules() if path.name != "permission_judge.py"
              and "permission_judge" in path.read_text(encoding="utf-8")]
-    assert sorted(users) == ["app.py", "settings.py", "settings_scope.py", "settings_screen.py",
-                             "settings_ui_model.py"], users
+    # native_agent_preferences edits the `permission_judge` SETTING (F10 A), like the settings
+    # screens; it neither imports nor calls the judge, which the two pins below still hold.
+    assert sorted(users) == ["app.py", "native_agent_preferences.py", "settings.py", "settings_scope.py",
+                             "settings_screen.py", "settings_ui_model.py"], users
     importers = [path.name for path in _modules()
                  if any(isinstance(node, ast.ImportFrom) and node.module == "litetui"
                         and any(alias.name == "permission_judge" for alias in node.names)
@@ -689,12 +691,13 @@ def test_stands_in_is_called_from_one_place():
         "hook_test", "policy", "route", "source", "workspace"]
     lines = (SRC / "app.py").read_text(encoding="utf-8").splitlines()
     route_line = next(i for i, line in enumerate(lines)
-                      if line.strip() == "route = seat_authority.confirm_route(self)"
+                      if line.strip() == "route = ticket.route if ticket else seat_authority.confirm_route(self)"
                       and i + 1 > doors[0].lineno)
     branch_line = next(i for i, line in enumerate(lines)
                        if line.strip() == 'if route in ("spawner", "refuse"):' and i > route_line)
     assert route_line + 1 < call.lineno < branch_line + 1, "between the route and the branch on it"
-    assert branch_line - route_line == 12, "eleven lines were inserted and nothing else"
+    # the judge's eleven lines plus the five-line prewrite route gate (89d82b40), nothing else
+    assert branch_line - route_line == 17, "eleven lines were inserted and nothing else"
 
 
 def test_the_check_is_called_from_the_judge_only():
