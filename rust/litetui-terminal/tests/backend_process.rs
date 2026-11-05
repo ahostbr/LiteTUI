@@ -15,8 +15,10 @@ const GENERIC: &[&str] = &[
 ];
 fn launch(backend: &str, case: &str, gpu: &str, flags: &[&str]) -> (Output, PathBuf) {
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python required");
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let actual = std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate_root.join("../.."))
         .canonicalize()
         .unwrap();
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -42,7 +44,7 @@ fn launch(backend: &str, case: &str, gpu: &str, flags: &[&str]) -> (Output, Path
     // actual CLI flag and creates/settings-marks its own fresh data root.
     fs::write(package.join("cli.py"),format!(
         "import os, runpy\nos.environ['RUST_BACKEND_SOURCE'] = {}\nos.environ['RUST_BACKEND_CASE'] = {}\nos.environ['RUST_BACKEND_GPU'] = {}\nos.environ['RUST_BACKEND_DRIVER'] = 'rpc'\nos.environ['FIXTURE_BACKEND_KEY'] = 'synthetic-only-token'\nrunpy.run_path({}, run_name='__main__')\n",
-        quote(&actual.to_string_lossy()),quote(case),quote(gpu),quote(&actual.join("rust/litetui-terminal/tests/fixtures/backend_runtime.py").to_string_lossy()))).unwrap();
+        quote(&actual.to_string_lossy()),quote(case),quote(gpu),quote(&crate_root.join("tests/fixtures/backend_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
     let mut command = Command::new(env!("CARGO_BIN_EXE_litetui-rs"));
     command

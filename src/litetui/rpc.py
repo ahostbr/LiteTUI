@@ -109,6 +109,19 @@ def _target_id(cmd: dict[str, Any], key: str) -> tuple[str, str]:
     return str(cmd.get("id") or ""), "id"
 
 
+def publish_management_result(app: LiteTUI, cmd: dict[str, Any], result: Any) -> None:
+    """Keep admission closed until the exact successful response has been written."""
+    from litetui import background_input
+
+    try:
+        ticket = background_input.prepare_publication(app, cmd, result)
+    except Exception as exc:  # noqa: BLE001 - a rejected barrier must never publish success
+        _respond(cmd.get("id"), ok=False, error=str(exc))
+        return
+    _respond(cmd.get("id"), ok=True, result=result)
+    background_input.finish_publication(app, ticket)
+
+
 def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     """Route a command on the app loop. T4 will expand this table."""
     cmd_type = cmd.get("type", "")
@@ -126,17 +139,12 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             _respond(cmd_id, ok=False, error=str(exc))
             return
         async def manage():
-            from litetui import background_input
             try:
                 result = await async_dispatch(app, cmd)
-                ticket = background_input.prepare_publication(app, cmd, result)
             except Exception as exc:  # noqa: BLE001 - isolate malformed management requests at the wire boundary
                 _respond(cmd_id, ok=False, error=str(exc))
                 return
-            # Keep the admission barrier until the exact readback response is on
-            # the wire. No await may separate publication from the one-use release.
-            _respond(cmd_id, ok=True, result=result)
-            background_input.finish_publication(app, ticket)
+            publish_management_result(app, cmd, result)
         worker = app.run_worker(manage(), group="gui-management", exit_on_error=False)
         if reservation is not None:
             reservation.worker = worker

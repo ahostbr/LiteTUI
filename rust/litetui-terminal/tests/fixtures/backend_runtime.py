@@ -23,7 +23,7 @@ from unittest.mock import patch
 source = Path(os.environ["RUST_BACKEND_SOURCE"])
 root = Path(os.environ["LITETUI_DATA_ROOT"])
 sys.path.insert(0, str(source / "src"))
-sys.path.insert(0, str(source / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests"))
 from _isolated_home import isolated_environment
 
 home = root / "Users" / "fixture"
@@ -126,6 +126,7 @@ async def inference(transport, *, purpose="turn", retry_notice=None, **request):
 async def serve(app):
     global ready, authority_snapshot
     from litetui import gui_rpc, hook_host, rpc
+    assert Path(rpc.__file__).resolve() == (source / "src/litetui/rpc.py").resolve()
 
     ready = asyncio.Event()
     authority_snapshot = {"backend": app._agent_session.authority.backend,
@@ -154,7 +155,7 @@ async def serve(app):
                         if request["type"].startswith("gui."):
                             try:
                                 result = await gui_rpc.async_dispatch(app, request)
-                                rpc._respond(request.get("id"), ok=True, result=result)
+                                rpc.publish_management_result(app, request, result)
                             except Exception as exc:  # noqa: BLE001 - same isolation as the source RPC management boundary
                                 rpc._respond(request.get("id"), ok=False, error=str(exc))
                         else:

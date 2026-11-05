@@ -152,6 +152,7 @@ def identity(app):
 async def serve(app):
     global ready
     from litetui import gui_rpc, hook_host, rpc, settings_service, store_identity
+    assert Path(rpc.__file__).resolve() == (source / "src/litetui/rpc.py").resolve()
     from litetui.conversation import ConversationRepository
 
     ready = asyncio.Event()
@@ -239,7 +240,7 @@ async def serve(app):
                         if cmd["type"].startswith("gui."):
                             try:
                                 value = await management(cmd)
-                                rpc._respond(cmd["id"], ok=True, result=value)
+                                rpc.publish_management_result(app, cmd, value)
                             except Exception as exc:  # noqa: BLE001 - mirror the actual RPC error boundary
                                 rpc._respond(cmd["id"], ok=False, error=str(exc))
                         else:
