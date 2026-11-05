@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -53,7 +54,7 @@ def report_failure(app, event, message):
 async def invoke(app, hook, document, profile, *, allow_prompt=True, testing=False):
     try:
         async with native_runtime_controls.authorization(app, profile=profile, captured={
-                key: document.get(key) for key in ("source", "conversation_id", "turn_id")}) as ticket:
+                key: document.get(key) for key in ("source", "conversation_id", "turn_id")}, lifecycle_hook=True) as ticket:
             return await _invoke(app, hook, document, ticket.profile if ticket else profile,
                                  allow_prompt=allow_prompt, testing=testing)
     except native_runtime_controls.AuthorizationClosed as exc:
@@ -79,6 +80,7 @@ async def _invoke(app, hook, document, profile, *, allow_prompt, testing):
         hook.approval_name(workspace), args, tool_policy.SHELL_POLICY,
         profile=profile, workspace=workspace, allow_prompt=allow_prompt or prewrite is not None, stop_on_denial=not testing,
         **({"prewrite": prewrite} if prewrite is not None else {}),
+        **({"_reviewed_lifecycle_hook": True} if native_runtime_controls._LIFECYCLE_HOOK.get() else {}),
         hook_test=testing,  # T1049-B K1: the one caller a relay refusal must not stop
     )
     if refusal:
@@ -132,7 +134,7 @@ async def dispatch(app, event, data, *, profile=None, captured=None,
     if not matches:
         return hooks.HookResult(True)
     try:
-        async with native_runtime_controls.authorization(app, profile=profile, captured=captured) as ticket:
+        async with native_runtime_controls.authorization(app, profile=profile, captured=captured, lifecycle_hook=True) as ticket:
             if ticket is not None:
                 ctx, profile = ticket.context, ticket.profile
                 matches = state.matching(event, ctx["source"], data.get("tool", ""))
@@ -167,13 +169,25 @@ def queue_lifecycle(app, event, conversation_id=None):
         app.run_worker(drain_lifecycle(app), group="hooks", exit_on_error=False)
 
 
-async def drain_lifecycle(app):
+async def drain_lifecycle(app, *, reviewed=None):
     async with app._hook_lock:
+        drained = False
         while app._hook_lifecycle:
+            if reviewed is not None and (drained or len(app._hook_lifecycle) != 1):
+                raise ValueError("Reviewed transition requires exactly its queued lifecycle event")
             event, ctx, state = app._hook_lifecycle.pop(0)
-            await dispatch(app, event, {}, captured=ctx, selected=state,
-                           allow_prompt=event != "app_shutdown" and not getattr(app, "_hook_shutting_down", False)
-                           and getattr(app, "_conversation_transition_hook_outcomes", None) is None)
+            scope = nullcontext()
+            if reviewed is not None:
+                owner, review, expected_event, session_id = reviewed
+                if (event != expected_event or ctx["conversation_id"] != session_id
+                        or ctx["source"] != review.hook_source or state is not review.hooks):
+                    raise ValueError("Queued lifecycle hook differs from the reviewed event")
+                scope = native_runtime_controls.reviewed_lifecycle_hook(app, owner, review, event, session_id)
+            with scope:
+                await dispatch(app, event, {}, captured=ctx, selected=state,
+                               allow_prompt=event != "app_shutdown" and not getattr(app, "_hook_shutting_down", False)
+                               and getattr(app, "_conversation_transition_hook_outcomes", None) is None)
+            drained = True
 
 
 def leave_conversation(app):

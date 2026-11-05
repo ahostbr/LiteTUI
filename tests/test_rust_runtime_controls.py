@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -176,3 +177,44 @@ async def test_unreviewed_document_write_is_uncertain_even_if_selected_value_mat
     assert not readback["verified"] and readback["release"] == "close"
     proof = (await controls.shutdown(app))["runtime_controls_shutdown"]
     assert proof["effect_attempted"] and proof["disposition"] == "uncertain" and proof["readback_published"]
+
+
+async def test_retired_epoch_only_allows_its_reviewed_lifecycle_task(armed):
+    app, _ = armed
+    owner = asyncio.current_task()
+    before = app.convo_id
+    context = SimpleNamespace(session=app._agent_session, store=app.store, backend=app.backend)
+    review = SimpleNamespace(context=context, hooks=object())
+    app._conversation_transition_task = owner
+    app._conversation_transition_pending = True
+    app._conversation_transition_hook_snapshot = review.hooks
+    app._conversation_transition_shutdown_identity = {
+        "action": "new", "from_session_id": before, "target_session_id": "another-session",
+    }
+    await work.before_identity_transition(app)
+
+    async def authorize(hook):
+        async with controls.authorization(app, lifecycle_hook=hook) as ticket:
+            return ticket
+
+    with (pytest.raises(controls.AuthorizationClosed),
+          controls.reviewed_lifecycle_hook(app, owner, review, "conversation_resume", before)):
+        pytest.fail("unreviewed Open hook acquired authority")
+
+    with controls.reviewed_lifecycle_hook(app, owner, review, "conversation_leave", before):
+        assert await authorize(True) is None
+        with pytest.raises(controls.AuthorizationClosed):
+            await authorize(False)
+        with pytest.raises(controls.AuthorizationClosed):
+            await asyncio.create_task(authorize(True))
+        app._stop_requested = True
+        with pytest.raises(controls.AuthorizationClosed):
+            await authorize(True)
+        app._stop_requested = False
+        app._conversation_transition_pending = False
+        with pytest.raises(controls.AuthorizationClosed):
+            await authorize(True)
+
+    with pytest.raises(controls.AuthorizationClosed):
+        await authorize(True)
+    assert not controls._state(app).tickets and not controls._state(app).waiters

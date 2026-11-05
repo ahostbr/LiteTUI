@@ -315,7 +315,7 @@ async def serve(app):
     original_release = app.store.release
 
     def emit(row):
-        if row.get("type") == "response" and row.get("id") == "session-shutdown":
+        if row.get("type") == "response" and row.get("id") in {"session-shutdown", "rust-live-shutdown"}:
             events.append({"effect": "shutdown-ack", "ok": row.get("ok"),
                            "pending": getattr(app, "_conversation_transition_pending", False),
                            "hook_alive": any(process.poll() is None for process in hook_processes),
@@ -354,7 +354,9 @@ async def serve(app):
                     stale_used = True
                 apply_target = app._agent_session.conversation_directory(command["target_session_id"])
             with patch.object(Path, "open", open_file):
-                result = await asyncio.create_task(gui_rpc.async_dispatch(app, command))
+                operation_call = gui_rpc.async_dispatch(app, command)
+                # Wire owners publish this exact object in their request task.
+                result = await operation_call if driver == "rpc" else await asyncio.create_task(operation_call)
             results.append({"command": copy.deepcopy(command), "result": copy.deepcopy(result)})
             with (root / "session-mutation-results.jsonl").open("a", encoding="utf-8") as output:
                 output.write(json.dumps(results[-1]) + "\n")
@@ -392,10 +394,10 @@ async def serve(app):
             await dispatch({"type": "shutdown", "id": "session-shutdown"})
         await asyncio.wait_for(asyncio.shield(app._conversation_shutdown_exit_task), 8)
 
-    async def respond_apply(command):
+    async def respond_management(command):
         try:
             value = await dispatch(command)
-            rpc._respond(command.get("id"), ok=True, result=value)
+            rpc.publish_management_result(app, command, value)
         except Exception as exc:  # noqa: BLE001 - actual wire isolation
             rpc._respond(command.get("id"), ok=False, error=str(exc))
 
@@ -465,17 +467,19 @@ async def serve(app):
                     while line := await asyncio.to_thread(sys.stdin.readline):
                         command = json.loads(line)
                         if case in all_closing_cases and command["type"] == "gui.conversations.native_apply":
-                            pending_apply = asyncio.create_task(respond_apply(command))
+                            pending_apply = asyncio.create_task(respond_management(command))
                             continue
                         try:
-                            value = await dispatch(command)
                             if command["type"].startswith("gui."):
-                                rpc._respond(command.get("id"), ok=True, result=value)
+                                await asyncio.create_task(respond_management(command))
+                            else:
+                                await dispatch(command)
                         except Exception as exc:  # noqa: BLE001 - actual RPC isolation boundary
                             rpc._respond(command.get("id"), ok=False, error=str(exc))
                         if command["type"] == "shutdown":
                             if case in all_closing_cases:
-                                await asyncio.wait_for(asyncio.shield(app._conversation_shutdown_exit_task), 8)
+                                exit_task = getattr(app, "_conversation_rewrite_exit_task", None) or app._conversation_shutdown_exit_task
+                                await asyncio.wait_for(asyncio.shield(exit_task), 8)
                                 assert pending_apply is not None
                                 await pending_apply
                             break

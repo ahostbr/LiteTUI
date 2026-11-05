@@ -5,7 +5,7 @@ import asyncio
 import copy
 import secrets
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import wraps
@@ -23,6 +23,7 @@ MAX_BODY = 262144
 MAX_GENERATION = 9007199254740991
 CLOSE_REQUIRED = "Runtime control publication is uncertain; close without replay"
 _SCOPE: ContextVar[Any] = ContextVar("runtime_control_authorization", default=None)
+_LIFECYCLE_HOOK: ContextVar[Any] = ContextVar("reviewed_lifecycle_hook", default=None)
 _APPLY: ContextVar[Any] = ContextVar("runtime_control_apply", default=None)
 
 
@@ -790,10 +791,56 @@ def _release_ticket(ticket):
         ticket.done.set()
 
 
+@contextmanager
+def reviewed_lifecycle_hook(app, owner, review, event, session_id):
+    """Run only this reviewed lifecycle event between the old and new Work epochs."""
+    state = _state(app)
+    if not enabled(app) or not state.closing:
+        yield
+        return
+    identity = getattr(app, "_conversation_transition_shutdown_identity", {}) or {}
+    destination = {"new": "conversation_start", "open": "conversation_resume"}.get(identity.get("action"))
+    expected = identity.get("from_session_id") if event == "conversation_leave" else identity.get("target_session_id")
+    if destination is None or event not in ("conversation_leave", destination) or expected != session_id:
+        raise AuthorizationClosed("Lifecycle event does not match the reviewed conversation transition")
+    if getattr(state.bridge, "transition_proof", None) is None or state.shutdown is None or state.error:
+        raise AuthorizationClosed("Lifecycle hook lacks the settled Work epoch")
+
+    def check_owner():
+        if (owner is not app._conversation_transition_task or not app._conversation_transition_pending
+                or app._conversation_transition_hook_snapshot is not review.hooks or _state(app) is not state
+                or work.bridge(app) is not state.bridge or app._agent_session is not review.context.session
+                or app.store is not review.context.store or app.backend is not review.context.backend
+                or app.store.convo_id != session_id or not app.store.owned or app.store.pending
+                or work.identity(app) != {**state.bridge.identity, "session_id": session_id}):
+            raise AuthorizationClosed("Reviewed lifecycle hook lost its conversation owner")
+        if (getattr(app, "_gui_quitting", False) or getattr(app, "_conversation_transition_shutdown_requested", False)
+                or getattr(app, "_stop_requested", False)):
+            raise AuthorizationClosed("Conversation stopped before lifecycle hook authorization")
+        app._validate_owned_identity()
+
+    check_owner()
+    token = _LIFECYCLE_HOOK.set((app, asyncio.current_task(), check_owner))
+    try:
+        yield
+    finally:
+        _LIFECYCLE_HOOK.reset(token)
+
+
 @asynccontextmanager
-async def authorization(app, *, origin=None, profile=None, captured=None):
+async def authorization(app, *, origin=None, profile=None, captured=None, lifecycle_hook=False):
     """Wait before reading authority. Only the exact original task or registered
     child can continue an already captured decision through a publication hold."""
+    scope = _LIFECYCLE_HOOK.get() if lifecycle_hook else None
+    if scope is not None:
+        scoped_app, hook_task, check_owner = scope
+        if scoped_app is not app or hook_task is not asyncio.current_task():
+            raise AuthorizationClosed("Reviewed lifecycle hook belongs to another task")
+        check_owner()
+        # The old Work epoch stays closed. The reviewed hook still passes through
+        # canonical shell policy and approval with its current conversation profile.
+        yield None
+        return
     if not enabled(app):
         yield None
         return
@@ -856,7 +903,8 @@ def tool_authorization(method):
     @wraps(method)
     async def wrapped(app, name, *args, **kwargs):
         try:
-            async with authorization(app, profile=kwargs.get("profile")):
+            async with authorization(app, profile=kwargs.get("profile"),
+                                     lifecycle_hook=kwargs.pop("_reviewed_lifecycle_hook", False)):
                 return await method(app, name, *args, **kwargs)
         except AuthorizationClosed as exc:
             from litetui.textfmt import tool_denied

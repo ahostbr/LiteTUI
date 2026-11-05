@@ -293,7 +293,10 @@ async def _joined(awaitable, *, cancel=False):
 
 
 async def _settle_hooks(app, review, event, session_id, offset):
-    await _joined(hook_host.drain_lifecycle(app), cancel=True)
+    owner = asyncio.current_task()
+    if owner is not app._conversation_transition_task:
+        raise ValueError("Reviewed lifecycle hook requires its conversation transition owner")
+    await _joined(hook_host.drain_lifecycle(app, reviewed=(owner, review, event, session_id)), cancel=True)
     expected = _matching(review.hooks, event, review.hook_source)
     records = app._conversation_transition_hook_outcomes[offset:]
     actual = [(row["scope"], row["id"]) for row in records

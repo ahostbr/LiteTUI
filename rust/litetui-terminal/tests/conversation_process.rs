@@ -53,11 +53,17 @@ fn model_for(case: &str) -> &'static str {
 fn native(case: &str) -> bool {
     matches!(backend_for(case), "claude" | "codex")
 }
-fn launch(case: &str) -> (Interactive, PathBuf) {
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+fn runtime_source() -> PathBuf {
+    std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .canonicalize()
-        .unwrap();
+        .unwrap()
+}
+
+fn launch(case: &str) -> (Interactive, PathBuf) {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let actual = runtime_source();
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target/conversation-process-tests")
         .join(format!(
@@ -88,7 +94,7 @@ s = json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True, footer_task_manager=False, tts_enabled=False, sidecar_enabled=False, autocompact_enabled=False, tool_auto_background_s=0, max_tokens_chat=101, max_tokens_tools=202, custom_context_length=8192)
 p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
-"#,quote(&actual.to_string_lossy()),quote(case),quote(action_for(case).as_str()),quote(&actual.join("rust/litetui-terminal/tests/fixtures/session_mutation_runtime.py").to_string_lossy()))).unwrap();
+"#,quote(&actual.to_string_lossy()),quote(case),quote(action_for(case).as_str()),quote(&crate_root.join("tests/fixtures/session_mutation_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
     let mut args = vec![
         "--python".into(),
@@ -231,10 +237,18 @@ fn confirm(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
     send(runtime, app)
 }
 fn report(root: &Path) -> Value {
-    serde_json::from_str(
+    let r: Value = serde_json::from_str(
         &fs::read_to_string(root.join("session-mutation-fresh-report.json")).unwrap(),
     )
-    .unwrap()
+    .unwrap();
+    assert_eq!(
+        Path::new(r["source_app"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        runtime_source().join("src/litetui/app.py")
+    );
+    assert_eq!(r["pending_after_teardown"], false);
+    r
 }
 fn commands(root: &Path) -> Vec<Value> {
     fs::read_to_string(root.join("session-mutation-commands.jsonl"))
@@ -333,6 +347,39 @@ fn scenario(case: &str) {
     }
     let r = report(&root);
     assert!(r["denied"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(
+        r["store_owned_after_teardown"],
+        case == "claude-cleanup-failed"
+    );
+    if case == "hooks-success" {
+        let executed: Vec<_> = r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["effect"] == "hook")
+            .map(|row| {
+                (
+                    &row["document"]["event"],
+                    &row["document"]["conversation_id"],
+                )
+            })
+            .collect();
+        assert_eq!(executed.len(), 2);
+        assert_eq!(executed[0].0, "conversation_leave");
+        assert_eq!(executed[0].1, &r["before"]["session_id"]);
+        assert_eq!(executed[1].0, "conversation_start");
+        assert_eq!(executed[1].1, &r["after"]["session_id"]);
+    }
+    if case == "hooks-approval" {
+        assert!(r["hook_process_codes"].as_array().unwrap().is_empty());
+        assert!(
+            r["proof"]["hook_results"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|result| result["allowed"] == false)
+        );
+    }
     let log = commands(&root);
     assert_eq!(
         log.iter().filter(|c| c["type"] == "prompt").count(),
@@ -473,6 +520,20 @@ fn quit_during_new_joins_hook_and_never_publishes_completion_or_follows_readback
         .unwrap();
     assert!(log[at + 1..].iter().all(|v| v["type"] == "shutdown"));
     let r = report(&root);
+    assert_eq!(r["shutdown"]["pending_at_close"], true);
+    for field in [
+        "worker_settled",
+        "lifecycle_settled",
+        "native_cleanup_settled",
+    ] {
+        assert_eq!(r["shutdown"][field], true);
+    }
+    assert_eq!(r["shutdown"]["effects_verified"], false);
+    assert_eq!(r["store_owned_after_teardown"], false);
+    assert_eq!(r["hook_process_codes"], serde_json::json!([-15]));
+    let events = r["events"].as_array().unwrap();
+    let pos = |kind: &str| events.iter().position(|e| e["effect"] == kind).unwrap();
+    assert!(pos("hook-kill") < pos("shutdown-ack") && pos("shutdown-ack") < pos("lease-release"));
     assert!(r["requests"].as_array().unwrap().is_empty());
     assert!(r["denied"].as_array().unwrap().is_empty());
 }
