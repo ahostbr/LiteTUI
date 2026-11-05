@@ -126,7 +126,6 @@ def _references(app):
         app.store,
         app.backend,
         app.settings,
-        app.conversation,
         app.plugins,
         manager.enabled,
         manager.cache,

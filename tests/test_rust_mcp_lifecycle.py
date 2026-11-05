@@ -878,3 +878,15 @@ async def test_mcp_retires_only_verified_finished_prior_runtime_control(
         and controls._state(app).attempt is None
         and controls._state(app).generation == (1 if refused else 2)
     )
+
+
+async def test_rebinding_the_conversation_list_keeps_the_captured_owner(armed, monkeypatch):
+    # Compaction, rewrite, edit and New legitimately replace app.conversation with a new list.
+    # The lifecycle owner is the session/store/backend/settings/plugins/manager, not that list:
+    # a rebind once made every later authorization refuse as "lost its captured runtime owner".
+    app = armed
+    await change(app, monkeypatch, "enable")
+    app.conversation = list(app.conversation)
+    mcp.require_inventory(app)
+    snapshot = await call(app, monkeypatch, "snapshot")
+    assert snapshot["enabled"]
