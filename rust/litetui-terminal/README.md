@@ -2,6 +2,12 @@
 
 **Interactive text chat is implemented; full parity is not complete.** `--interactive` connects the existing composer and transcript to one real owned Python runtime for multiple turns. `--live` remains the one-prompt streaming smoke path. Default / `--preview` remains an explicitly offline mock conversation.
 
+## Attach an image to a live prompt
+
+Press Ctrl+O, enter or paste an absolute local PNG, JPEG or WebP file path, and press Enter to inspect it. The review shows the detected format, dimensions, normalized PNG size and how the chosen backend receives it. Press Enter again to attach. Return to the composer and press Enter to send. An empty draft asks “Describe this image.” To clear the attachment, press Ctrl+O and Delete. Escape dismisses the picker.
+
+The source holds one reviewed image in memory for the current conversation. It accepts still files up to 8 MiB and 16 million pixels, resizes the longest side to 1536 pixels, and checks inline images against the remaining 8 MiB native history context and saved transcript budgets. Codex and compatible chat backends receive image content. Claude receives a conversation-owned file path and requires tools. A loaded text-only LM Studio model refuses the attachment. Other models need vision support to interpret the image.
+
 ## Runtime management connection
 
 Live startup requires matching protocol/data versions, advertised hello/state operations, and a valid idle snapshot whose session, backend, model and profile match readiness. This read does not grant authority or prove persistence, and a fresh pending store may report writable false. Only bounded startup facts are retained; the snapshot's raw settings are not displayed or retained in view state.

@@ -955,7 +955,7 @@ def operation_allowed(app, cmd):
     if op == "prompt":
         state = _state(app)
         policy = cmd.get("runtime_policy")
-        if (cmd.keys() != {"type", "id", "message", "runtime_policy"} or not isinstance(cmd["message"], str)
+        if (cmd.keys() - {"native_image"} != {"type", "id", "message", "runtime_policy"} or not isinstance(cmd["message"], str)
                 or not isinstance(cmd["id"], str) or not cmd["id"] or type(policy) is not dict
                 or policy.keys() != {"version", "work_instance", "generation"}
                 or type(policy["version"]) is not int or policy["version"] != VERSION

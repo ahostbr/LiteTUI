@@ -24,6 +24,7 @@ pub enum Request {
     },
     Context(crate::context::Request),
     ContextEdit(Box<crate::context_edit::Request>),
+    Image(crate::image::Request),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
@@ -56,6 +57,7 @@ pub enum Data {
     ManualReview(Box<crate::scheduled_transition::ManualReview>),
     Context(Box<crate::context::Page>),
     ContextEdit(Box<crate::context_edit::Reply>),
+    Image(Option<crate::image::Review>),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
         action: execution::Action,
@@ -118,6 +120,7 @@ pub struct View {
     pub calendar: Option<Calendar>,
     pub tail: Option<Tail>,
     context: crate::context_view::View,
+    pub image: crate::image::Picker,
     section: usize,
     selected: usize,
     page_back: Vec<usize>,
@@ -152,6 +155,12 @@ impl View {
             self.notice="A newer scheduled proposal replaced this review. Refresh Work before running a job.".into();
         }
     }
+    pub fn open_image(&mut self) {
+        if !self.owns_input() {
+            self.open = true;
+            self.image.open();
+        }
+    }
     pub fn context_open(&self) -> bool {
         self.context.is_open()
     }
@@ -166,10 +175,12 @@ impl View {
         self.refresh();
     }
     pub fn hide(&mut self) {
+        self.image.hide();
         self.context.hide();
         self.visible = false;
     }
     pub fn close(&mut self) {
+        self.image.close();
         self.context.close();
         self.open = false;
         self.hide();
@@ -186,7 +197,9 @@ impl View {
     }
     pub fn finish(&mut self) {
         let generation = self.generation;
+        let attached = self.image.attached.take();
         *self = Self::default();
+        self.image.attached = attached;
         self.generation = generation;
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
@@ -284,6 +297,7 @@ impl View {
                 | (Request::ControlApply(_), Data::ControlSaved { .. })
                 | (Request::DeferredValidate, Data::DeferredReview(_))
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
+                | (Request::Image(_), Data::Image(_))
                 | (Request::Context(_), Data::Context(_))
                 | (Request::ContextEdit(_), Data::ContextEdit(_))
                 | (Request::Snapshot, Data::Snapshot(_))
@@ -308,6 +322,20 @@ impl View {
             Data::ContextEdit(reply) => self.context.edit_reply(*reply),
             Data::Rejected(reason) if matches!(pending, Request::ContextEdit(_)) => {
                 self.context.edit_rejected(&reason)
+            }
+            Data::Image(value) => {
+                self.image.result(value);
+                self.open = self.image.open;
+                self.notice = if self.open {
+                    "Review the inspected image."
+                } else {
+                    "Image cleared. Draft kept."
+                }
+                .into();
+            }
+            Data::Rejected(reason) if matches!(pending, Request::Image(_)) => {
+                self.image.notice = reason.clone();
+                self.notice = reason;
             }
             Data::Context(page) => {
                 if self.context.is_open() {
@@ -557,6 +585,9 @@ impl View {
         if self.context.editing() {
             return !self.waiting && self.context.accepts_paste();
         }
+        if self.image.open {
+            return !self.waiting && self.image.editing();
+        }
         self.open
             && self.visible
             && !self.waiting
@@ -573,6 +604,12 @@ impl View {
             }
             return;
         }
+        if self.image.open {
+            if !self.waiting {
+                self.image.paste(text);
+            }
+            return;
+        }
         if self.open
             && self.visible
             && !self.waiting
@@ -584,6 +621,15 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.image.open {
+            if let Some(request) = self.image.key(key, self.waiting) {
+                self.request(Request::Image(request));
+            }
+            if !self.image.open {
+                self.open = false;
+            }
+            return;
+        }
         if self.context.is_open() {
             let editing = self.context.editing();
             if !self.waiting
@@ -941,6 +987,9 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.image.open {
+            return;
+        }
         if self.context.is_open() {
             if !self.context.editing()
                 && !self.waiting
@@ -1206,6 +1255,10 @@ impl View {
         self.current_row().map_or_else(Vec::new, Row::details)
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.image.open {
+            self.image.draw(frame, area, theme, self.waiting);
+            return;
+        }
         self.visible = false;
         if !self.owns_input() {
             return;

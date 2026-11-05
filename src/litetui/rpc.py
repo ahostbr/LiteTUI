@@ -211,9 +211,20 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         except OSError as exc:
             _respond(cmd_id, ok=False, error=str(exc))
             return
+        attachment = None
+        if "native_image" in cmd:
+            from litetui import native_image
+            try:
+                attachment = native_image.consume(app, cmd)
+            except ValueError as exc:
+                _respond(cmd_id, ok=True, result={"turn": "image_refused", "reason": str(exc)})
+                return
         app._gui_next_operation_id = cmd_id
         try:
-            app._submit_text(str(message), alt_chord=False, source="rpc")
+            if attachment is None:
+                app._submit_text(str(message), alt_chord=False, source="rpc")
+            else:
+                app._submit_text(str(message), alt_chord=False, source="rpc", image_attachment=attachment)
         finally:
             app._gui_next_operation_id = None
         _respond(cmd_id, ok=True, result={"turn": "accepted"})

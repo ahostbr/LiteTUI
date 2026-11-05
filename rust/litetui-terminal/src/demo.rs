@@ -456,6 +456,27 @@ impl Demo {
             .as_ref()
             .is_some_and(|chat| chat.work.owns_input())
     }
+    pub fn open_image(&mut self) {
+        if self.has_live_input() || self.viewport_too_small {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || chat.queue_pending()
+                || chat.rewrite_pending()
+                || chat.engine.pending()
+            {
+                self.notice = "Wait for the current turn before selecting an image.".into();
+                return;
+            }
+            chat.work.open_image();
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
     pub fn open_work(&mut self) {
         if self.has_live_input() {
             return;
@@ -851,7 +872,20 @@ impl Demo {
         } else {
             self.composer.text().trim().to_string()
         };
+        let attached = self
+            .live
+            .as_ref()
+            .is_some_and(|chat| chat.work.image.attached.is_some());
+        let text = if attached && text.trim().is_empty() {
+            "Describe this image.".into()
+        } else {
+            text
+        };
         if text.trim().is_empty() {
+            return;
+        }
+        if attached && text.trim_start().starts_with('/') {
+            self.notice = "Clear the selected image before running a slash command.".into();
             return;
         }
         if text.trim_start().starts_with('/') && self.live.is_some() {
@@ -876,7 +910,7 @@ impl Demo {
             return;
         }
         if let Some(chat) = &mut self.live {
-            if let Err(error) = chat.submit(&text) {
+            if let Err(error) = chat.submit_composer(&text) {
                 self.notice = error.to_string();
                 return;
             }

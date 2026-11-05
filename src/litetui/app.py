@@ -8616,7 +8616,7 @@ class LiteTUI(App):
         self._rpc_emit({"type": "submit_refused", "reason": reason,
                         "detail": detail})
 
-    def _submit_text(self, value: str, alt_chord: bool, *, source="typed") -> None:
+    def _submit_text(self, value: str, alt_chord: bool, *, source="typed", image_attachment=None) -> None:
         # Keep the re-clickable path local to this submission, including queued
         # and interrupted turns; unrelated bubbles never share attachment state.
         from litetui.backend_transition import submission_refusal
@@ -8650,7 +8650,7 @@ class LiteTUI(App):
             return
 
         # Check if input names an image file (optionally followed by a prompt)
-        image_b64 = self.pending_image
+        image_b64 = image_attachment if image_attachment is not None else self.pending_image
         if text and not image_b64:
             path, rest = self._split_image_path(text)
             if path is not None:

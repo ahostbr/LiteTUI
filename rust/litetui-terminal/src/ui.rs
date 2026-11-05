@@ -687,6 +687,15 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize)) 
                     ));
                 }
             }
+            if let Some(name) = &row.image_name {
+                tool_body(
+                    t,
+                    &mut lines,
+                    &format!("[Image: {}]", display_safe(name)),
+                    t.tool_text,
+                    width,
+                );
+            }
             if let Some(source) = &row.source {
                 work_source(t, &mut lines, source, width);
             }
@@ -1016,7 +1025,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     frame.render_widget(
         Paragraph::new(format!(
-            " {} · scroll {}/{}",
+            " {}{} · scroll {}/{}",
+            app.live
+                .as_ref()
+                .and_then(|c| c.work.image.attached.as_ref())
+                .map(|r| format!("[Image: {} · Ctrl+O] ", display_safe(r.name())))
+                .unwrap_or_default(),
             display_safe(&app.notice),
             app.scroll,
             app.max_scroll

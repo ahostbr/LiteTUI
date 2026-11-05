@@ -97,6 +97,7 @@ impl ToolView {
     }
 }
 pub struct Row {
+    pub image_name: Option<String>,
     pub source_owned: bool,
     pub source: Option<WorkSource>,
     pub inputs: Vec<WorkInput>,
@@ -186,6 +187,8 @@ pub struct Chat {
     pub backend_controls: crate::backend_controls::View,
     pub browser: crate::conversation_browser::View,
     pending: Option<String>,
+    pending_image: Option<crate::image::Review>,
+    forwarded_image: Option<crate::image::Review>,
     submission_id: Option<String>,
     queue_pending: bool,
     recovered_inputs: std::collections::HashSet<String>,
@@ -250,6 +253,8 @@ impl Chat {
             backend_controls: crate::backend_controls::View::default(),
             browser: crate::conversation_browser::View::default(),
             pending: None,
+            pending_image: None,
+            forwarded_image: None,
             submission_id: None,
             queue_pending: false,
             recovered_inputs: std::collections::HashSet::new(),
@@ -292,6 +297,7 @@ impl Chat {
             && !self.commands.owns_input()
             && !self.themes.owns_input()
             && !self.saved_history.owns_input()
+            && self.work.image.attached.is_none()
             && (manual || !self.work.owns_input())
             && !self.settings.owns_input()
             && !self.backend_controls.owns_input()
@@ -347,6 +353,26 @@ impl Chat {
 
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
         self.reserve_row(prompt, false)
+    }
+    pub fn submit_composer(&mut self, prompt: &str) -> io::Result<()> {
+        let label = self
+            .work
+            .image
+            .attached
+            .as_ref()
+            .map(|r| format!("\n[Image: {}]", r.name()))
+            .unwrap_or_default();
+        if !label.is_empty() {
+            self.prompt_budget(&format!("{prompt}{label}"))?;
+        }
+        self.reserve_row(prompt, false)?;
+        if let Some(attachment) = self.work.image.attached.take() {
+            self.rows.last_mut().expect("reserved row").image_name = Some(attachment.name().into());
+            self.retained_bytes += label.len();
+            self.retained_units += display_units(&label)?;
+            self.pending_image = Some(attachment);
+        }
+        Ok(())
     }
     fn reserve_row(&mut self, prompt: &str, recovered: bool) -> io::Result<()> {
         self.reserve_row_inner(prompt, recovered, false)
@@ -406,6 +432,7 @@ impl Chat {
         self.stop_requests = 0;
         self.stops_sent = 0;
         self.rows.push(Row {
+            image_name: None,
             source_owned: false,
             source: None,
             inputs: Vec::new(),
@@ -467,6 +494,7 @@ impl Chat {
         self.retained_bytes += entry.content.len();
         self.recovered_inputs.insert(entry.id.clone());
         self.rows.push(Row {
+            image_name: None,
             source_owned: false,
             source: None,
             inputs: Vec::new(),
@@ -633,7 +661,20 @@ impl Chat {
         launch.stop_sent = true;
         Some(launch.action_id.clone())
     }
+    fn restore_unsent_image(&mut self) {
+        if let Some(image) = self.forwarded_image.take() {
+            self.work.image.attached = Some(image);
+        }
+    }
+    pub fn take_image_submission(&mut self) -> Option<(String, crate::image::Review)> {
+        let image = self.pending_image.take()?;
+        self.forwarded_image = Some(image.clone());
+        Some((self.pending.take().expect("pending image prompt"), image))
+    }
     pub fn take_submission(&mut self) -> Option<String> {
+        if self.pending_image.is_some() {
+            return None;
+        }
         self.pending.take()
     }
     pub fn cancelling(&self) -> bool {
@@ -666,6 +707,9 @@ impl Chat {
             return Ok(());
         }
         if self.pending.take().is_some() {
+            if let Some(image) = self.pending_image.take() {
+                self.work.image.attached = Some(image);
+            }
             return self.settle(crate::live::TerminalOutcome::Cancelled(
                 "Cancelled before sending to the runtime.".into(),
             ));
@@ -695,6 +739,9 @@ impl Chat {
         history: crate::resume::History,
         queue: crate::restored_queue::Snapshot,
     ) {
+        self.work.image = crate::image::Picker::default();
+        self.pending_image = None;
+        self.forwarded_image = None;
         self.backend = snapshot.backend.clone();
         self.model = snapshot.model.clone();
         self.runtime_state.opened(snapshot);
@@ -1273,6 +1320,7 @@ impl Chat {
                         model: changed.snapshot.model.clone(),
                     })?;
                 self.backend = changed.snapshot.backend.clone();
+                self.work.image = crate::image::Picker::default();
                 self.model = changed.snapshot.model.clone();
                 self.runtime_state.opened(changed.snapshot);
                 self.saved_history.finish();
@@ -1297,6 +1345,7 @@ impl Chat {
                 self.schedule_proposal = Some(id);
             }
             Observation::ScheduledLocalNotSent { prompt, reason } => {
+                self.restore_unsent_image();
                 let index = self.rows.len().checked_sub(1).ok_or_else(|| {
                     io::Error::other("Scheduled refusal has no forwarded local prompt")
                 })?;
@@ -1425,6 +1474,7 @@ impl Chat {
                 self.history = Some(history);
             }
             Observation::Submission { id } => {
+                self.forwarded_image = None;
                 if !self.compact_active {
                     self.pending_row()?;
                 }
@@ -1463,6 +1513,9 @@ impl Chat {
             }
             Observation::Controls(update) => {
                 if let crate::model_controls::Update::Choices(menu) = &update {
+                    if self.model != menu.model {
+                        self.work.image = crate::image::Picker::default();
+                    }
                     self.model = menu.model.clone();
                 }
                 self.controls.observe(update);
@@ -1598,6 +1651,7 @@ impl Chat {
             ),
         };
         self.rows.push(Row {
+            image_name: None,
             source_owned: true,
             source: Some(input.source),
             inputs: Vec::new(),
@@ -1928,6 +1982,7 @@ impl Chat {
                 self.suspended_rows.remove(&operation);
             }
             WorkExecution::LocalNotSent { reason } => {
+                self.restore_unsent_image();
                 let row = self
                     .forwarded_row
                     .ok_or_else(|| io::Error::other("Local refusal has no parked unsent prompt"))?;
@@ -2020,6 +2075,7 @@ impl Chat {
         self.retained_bytes += prompt.len();
         let index = self.rows.len();
         self.rows.push(Row {
+            image_name: None,
             source_owned: true,
             source: None,
             inputs: Vec::new(),

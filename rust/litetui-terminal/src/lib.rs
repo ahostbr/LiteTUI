@@ -69,6 +69,7 @@ pub mod context_view;
 pub mod context_edit;
 mod context_edit_view;
 pub mod history;
+pub mod image;
 pub mod history_view;
 pub mod inspection;
 

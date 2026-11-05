@@ -77,7 +77,8 @@ async def test_owned_first_hello_reaches_native_turn_after_model_choice(tmp_path
     monkeypatch.setenv("LITETUI_DISABLE_UPDATE_CHECK", "1")
     dispatched, notices = [], []
 
-    async def native(app):
+    async def native(app, *, origin):
+        assert origin.execution_id
         dispatched.append((app.model_id, app.conversation[-1]["content"]))
 
     monkeypatch.setattr(claude_turn, "stream_turn", native)

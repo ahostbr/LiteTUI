@@ -125,7 +125,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 && !app.has_live_question()
                 && let Some(chat) = app.live.as_mut()
             {
-                if chat.work.context_open() {
+                if chat.work.context_open() || chat.work.image.open {
                     chat.work.key(key);
                     return false;
                 }
@@ -455,6 +455,13 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
 
 fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
     match key.code {
+        KeyCode::Char('o')
+            if app.live.is_some()
+                && key.kind == KeyEventKind::Press
+                && key.modifiers == KeyModifiers::CONTROL =>
+        {
+            app.open_image();
+        }
         KeyCode::Char('t' | 'p')
             if app.live.is_some()
                 && key.kind == KeyEventKind::Press
@@ -1549,6 +1556,13 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                     app.finish_live(view_failure.clone());
                     let _ = runtime.quit();
                 }
+            }
+            if let Some((prompt, image)) = app.live.as_mut().expect("live").take_image_submission()
+                && let Err(error) = runtime.submit_image(prompt, image)
+            {
+                view_failure = Some(error.to_string());
+                app.finish_live(view_failure.clone());
+                let _ = runtime.quit();
             }
             if let Some(prompt) = app.live.as_mut().expect("live").take_submission()
                 && let Err(error) = runtime.submit(prompt)
@@ -4962,6 +4976,28 @@ mod execution_keys_tests {
 
 #[cfg(test)]
 mod live_keyboard_navigation_tests {
+    #[test]
+    fn image_shortcut_keeps_draft_and_repeats_out_of_composer() {
+        let mut app = Demo::live("custom".into(), "model".into());
+        app.live.as_mut().unwrap().ready = true;
+        app.insert_text("keep these words");
+        let mut router = KeyRouter::default();
+        press(&mut app, &mut router, 'o');
+        assert!(draw(&mut app, 100, 30).contains("Local image file"));
+        paste(&mut app, "C:\\chosen.png");
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.has_live_input());
+        router.handle(
+            &mut app,
+            KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Repeat),
+        );
+        assert_eq!(app.composer.text(), "keep these words");
+        assert!(app.live.as_ref().unwrap().rows.is_empty());
+        app.open_work();
+        press(&mut app, &mut router, 'o');
+        assert!(!app.live.as_ref().unwrap().work.image.open);
+    }
+
     use super::*;
     use litetui_terminal::{
         conversation_actions::{Action, Intent},

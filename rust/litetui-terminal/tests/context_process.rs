@@ -577,3 +577,106 @@ fn context_edits_keep_draft_through_stale_review_and_verify_exact_publication() 
         true
     );
 }
+
+#[test]
+#[ignore = "real Interactive with generated local image, dependency Python and controlled provider"]
+fn image_selection_clear_and_explicit_submission_use_the_reviewed_pixels() {
+    let (runtime, data) = launch("image_runtime.py");
+    let path = data.join("selected image.png");
+    let mut digest = String::new();
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        app.insert_text("Inspect these pixels.");
+        app.open_image();
+        draw(&mut app);
+        let work=&mut app.live.as_mut().unwrap().work;
+        work.paste(data.join("missing.png").to_str().unwrap());
+        work.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE));
+        runtime.work(work.take_intent().unwrap())?;
+        loop {
+            let event=runtime.events.recv_timeout(Duration::from_secs(20)).map_err(io::Error::other)?;
+            let refused=matches!(&event,Observation::Work(update) if matches!(&update.data,Data::Rejected(reason) if reason.contains("does not exist")));
+            app.observe_live(event)?;
+            if refused {break;}
+        }
+        assert!(draw(&mut app).contains("does not exist"));
+        key(runtime,&mut app,KeyCode::Esc)?;
+        assert_eq!(app.composer.text(),"Inspect these pixels.");
+        for clear in [true, false] {
+            app.open_image();
+            assert!(draw(&mut app).contains("Local image file"));
+            app.live
+                .as_mut()
+                .unwrap()
+                .work
+                .paste(path.to_str().unwrap());
+            let screen = key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                screen.contains("selected image.png")
+                    && screen.contains("1920 × 1080")
+                    && screen.contains("1536 × 864")
+                    && screen.contains("Enter attaches"),
+                "{screen}"
+            );
+            key(runtime, &mut app, KeyCode::Enter)?;
+            let image = app
+                .live
+                .as_ref()
+                .unwrap()
+                .work
+                .image
+                .attached
+                .as_ref()
+                .unwrap();
+            assert!(image.wire()["png_bytes"].as_u64().unwrap() > 384 * 1024);
+            digest = image.wire()["png_sha256"].as_str().unwrap().into();
+            assert_eq!(app.composer.text(), "Inspect these pixels.");
+            assert!(app.live.as_ref().unwrap().rows.is_empty());
+            if clear {
+                app.open_image();
+                assert!(key(runtime, &mut app, KeyCode::Delete)?.contains("Image cleared"));
+                assert!(app.live.as_ref().unwrap().work.image.attached.is_none());
+            }
+        }
+        // A subsequent replacement of the local file cannot change the already reviewed image.
+        fs::remove_file(&path)?;
+        app.submit();
+        let chat = app.live.as_mut().unwrap();
+        assert!(chat.take_submission().is_none());
+        let (text, image) = chat.take_image_submission().unwrap();
+        runtime.submit_image(text, image)?;
+        observe(runtime, &mut app, |e| matches!(e, Observation::Complete))?;
+        assert!(draw(&mut app).contains("selected image.png"));
+        Ok(())
+    });
+    result.unwrap();
+    let saved = json_file(&data.join("image-resume-reader.json"));
+    assert_eq!(saved["digest"], digest);
+    assert_eq!(saved["text"], "Inspect these pixels.");
+    assert_eq!(saved["pending_image"], false);
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"].as_array().unwrap().len(), 1);
+    let messages = report["requests"][0]["messages"].as_array().unwrap();
+    let user = messages
+        .iter()
+        .rev()
+        .find(|row| row["role"] == "user")
+        .unwrap();
+    assert_eq!(user["content"][1]["text"], "Inspect these pixels.");
+    assert!(
+        user["content"][0]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    assert_eq!(
+        report["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["type"] == "prompt")
+            .count(),
+        1
+    );
+}

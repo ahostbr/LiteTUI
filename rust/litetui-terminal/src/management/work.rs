@@ -118,6 +118,7 @@ impl Management {
             view::Request::ControlApply(_) => controls::APPLY,
             view::Request::DeferredValidate => deferred::VALIDATE,
             view::Request::DeferredApply(_) => deferred::DISCARD,
+            view::Request::Image(_) => crate::image::OPERATION,
             view::Request::Context(_) => crate::context::OPERATION,
             view::Request::ContextEdit(request) => {
                 if crate::context_edit::OPERATIONS
@@ -171,6 +172,8 @@ impl Management {
             self.work.deferred_review = None;
             self.work.control_review = None;
             self.work.context_review = None;
+            identity.request()
+        } else if matches!(&intent.request, view::Request::Image(_)) {
             identity.request()
         } else {
             let snapshot = self
@@ -305,6 +308,9 @@ impl Management {
                     self.work.context_review = None;
                 }
                 command = request.command(&identity, self.context_instance()?)?;
+            }
+            view::Request::Image(request) => {
+                command = request.command(&identity, self.context_instance()?);
             }
             view::Request::Context(request) => {
                 command = request.command(&identity, self.context_instance()?);
@@ -483,6 +489,15 @@ impl Management {
                 self.work.manual_review = Some(review.clone());
                 view::Data::ManualReview(Box::new(review))
             }
+            view::Request::Image(request) => match crate::image::parse(
+                value,
+                &self.work_identity()?,
+                self.context_instance()?,
+                request,
+            ) {
+                Ok(review) => view::Data::Image(review),
+                Err(error) => view::Data::Rejected(error.to_string()),
+            },
             view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_) => {
                 unreachable!()
             }
@@ -532,6 +547,7 @@ impl Management {
                         }
                         view::Data::ContextEdit(Box::new(reply))
                     }
+                    view::Request::Image(_) => unreachable!(),
                     view::Request::Context(request) => match crate::context::Page::parse(
                         value,
                         &snapshot.identity,

@@ -343,6 +343,7 @@ pub struct Turn {
     policy: Option<crate::tool_mode::Expected>,
     runtime_policy: Option<crate::runtime_controls::Policy>,
     ordinary_runtime_prompt: bool,
+    image_prompt: bool,
     aborts: crate::cancellation::Ledger,
     stop_requests: usize,
     stop_acknowledged: bool,
@@ -553,6 +554,7 @@ impl Turn {
     fn reset_operation(&mut self, operation: String) -> io::Result<()> {
         self.work.reserve_operation(&operation)?;
         self.command_id = operation;
+        self.image_prompt = false;
         self.ordinary_runtime_prompt = false;
         self.continued_input = None;
         self.rewrite_input = None;
@@ -1260,6 +1262,30 @@ impl Turn {
                     }
                     return Ok(Observation::Approval(event));
                 }
+                if self.image_prompt
+                    && event["id"] == self.command_id
+                    && self.sent
+                    && !self.acknowledged
+                    && event["ok"] == true
+                    && event["result"]["turn"] == "image_refused"
+                {
+                    if self.started || self.terminal.is_some() {
+                        return Err(fail("Image refused after execution started"));
+                    }
+                    let reason = event["result"]["reason"]
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.len() <= 4096)
+                        .ok_or_else(|| fail("Missing image refusal reason"))?
+                        .to_owned();
+                    self.acknowledged = true;
+                    self.admission_refused = true;
+                    self.terminal = Some(TerminalOutcome::Refused(reason));
+                    return Ok(if self.can_settle() {
+                        self.settle()
+                    } else {
+                        Observation::Information("Image refused; waiting for stop receipts.".into())
+                    });
+                }
                 if let Some(review) = &self.compact_input
                     && event["id"] == self.command_id
                     && self.sent
@@ -1380,6 +1406,24 @@ impl Turn {
                     self.settle()
                 } else {
                     Observation::Information("prompt acknowledged (not completion)".into())
+                })
+            }
+            "submit_refused"
+                if self.image_prompt && self.sent && !self.started && self.terminal.is_none() =>
+            {
+                let reason = event["detail"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 4096)
+                    .ok_or_else(|| fail("Missing source image refusal detail"))?
+                    .to_owned();
+                self.admission_refused = true;
+                self.terminal = Some(TerminalOutcome::Refused(reason));
+                Ok(if self.can_settle() {
+                    self.settle()
+                } else {
+                    Observation::Information(
+                        "Source refused the image; waiting for its command receipt.".into(),
+                    )
                 })
             }
             "cache_warning" | "turn_refused"
@@ -2629,7 +2673,12 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             ))?,
                         }
                     }
-                    Input::Prompt(prompt) => {
+                    input @ (Input::Prompt(_) | Input::ImagePrompt(_, _)) => {
+                        let (prompt, image) = match input {
+                            Input::Prompt(prompt) => (prompt, None),
+                            Input::ImagePrompt(prompt, image) => (prompt, Some(image)),
+                            _ => unreachable!(),
+                        };
                         if management.schedule_pending()
                             || (schedule_deadline.is_some() && !management.ready())
                         {
@@ -2654,7 +2703,16 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 },
                             )))?;
                         } else {
-                            let value = turn.submit(&prompt)?;
+                            let mut value = turn.submit(&prompt)?;
+                            if let Some(image) = image {
+                                if !turn.ordinary_runtime_prompt {
+                                    return Err(io::Error::other(
+                                        "Image requires a published runtime policy",
+                                    ));
+                                }
+                                value["native_image"] = image.wire().clone();
+                                turn.image_prompt = true;
+                            }
                             let id = value["id"].as_str().expect("reserved ID").to_owned();
                             management.prompt(&id)?;
                             owned
@@ -3476,6 +3534,7 @@ pub enum Input {
     Settings(crate::settings_view::Intent),
     Backend(crate::backend_controls::Intent),
     Browser(crate::conversation_browser::Intent),
+    ImagePrompt(String, crate::image::Review),
     Prompt(String),
     Abort { prompt_id: String },
     Approve(crate::approvals::Decision),
@@ -3795,6 +3854,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Prompt(prompt))
+            .map_err(io::Error::other)
+    }
+    pub fn submit_image(&self, prompt: String, image: crate::image::Review) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::ImagePrompt(prompt, image))
             .map_err(io::Error::other)
     }
     pub fn approve(&self, decision: crate::approvals::Decision) -> io::Result<()> {

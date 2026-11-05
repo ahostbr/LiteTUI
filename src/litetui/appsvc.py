@@ -90,7 +90,7 @@ def load_skills(app):
     skills_mod.write_cache(paths.data_root(), found, app.settings.skill_roots)
     return (found, 0.0)
 
-def load_image_file(app, path: Path) -> str | None:
+def load_image_file(app, path: Path | io.BytesIO) -> str | None:
     try:
         from PIL import Image as PILImage
         img = PILImage.open(path)

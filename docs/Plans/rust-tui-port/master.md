@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Local image files in the native composer - 2026-11-04
+
+Ctrl+O opens image selection. The review shows the source and transmitted dimensions, size, digest, and delivery mode. Enter attaches the reviewed bytes to the current composer. Delete clears them. An ordinary submission can include text or use the image-only prompt. The source checks the actual remaining history budget before inline delivery. Claude uses a conversation-owned file with tools enabled.
+
+The integrated checkout passed 964 Rust tests, strict Clippy and 37 source tests covering image, Codex and Claude submission. A controlled child submitted a 1920 × 1080 test photograph after the original file was removed, then independently found the normalized image in saved history. Four process tests passed against the relocated runtime. The launcher verified all 365 payload files afterward.
+
 ## Reviewed agent memory edits - 2026-11-04
 
 F1 Work → I → E opens an editor for the current agent’s memory, soul or handoff document. The editor requires the displayed review, preserves the draft on a stale base, and independently rereads the published UTF-8 bytes. Creating an absent document refuses to overwrite a file that appears during publication. For an existing file, a program that bypasses the agent lease can still race the final reread and replace.
