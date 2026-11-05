@@ -57,6 +57,8 @@ OPERATIONS = (
     "images.attach", "images.clear", "images.native_prepare", "images.native_clipboard", "images.native_preview", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
     "context.native_page", "inspection.native_status",
+    "context.native_topic_page", "context.native_topic_edit", "context.native_topic_review",
+    "context.native_topic_apply", "context.native_topic_readback",
     "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback",
     "system.get", "system.set", "tools.execute", "glassbox.get", "glassbox.start", "glassbox.stop",
     "work.get", "work.cancel",
@@ -554,10 +556,11 @@ def dispatch(app, cmd):
     if operation == "inspection.native_status":
         from litetui import native_inspection
         return native_inspection.status(app, cmd)
-    if operation in {"context.native_edit", "context.native_review", "context.native_apply", "context.native_readback"}:
+    if operation in {"context.native_topic_edit", "context.native_topic_review", "context.native_topic_apply",
+                     "context.native_topic_readback", "context.native_edit", "context.native_review", "context.native_apply", "context.native_readback"}:
         from litetui import native_context_edit
         return native_context_edit.dispatch(app, cmd)
-    if operation == "context.native_page":
+    if operation in {"context.native_page", "context.native_topic_page"}:
         from litetui import native_context
         return native_context.page(app, cmd)
     if operation in {"work.native_execution_validate", "work.native_execution_readback"}:

@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## F1 nested memory topics and F6 saved embedded images - 2026-11-04
+
+In F1 Context, Topics lists the active agent’s nested Markdown memory files. Creating or editing one requires a separate review. An external edit makes the review stale, and reloading keeps the proposed text. F6 can also preview an embedded image from a saved conversation using the exact history snapshot and attachment position, including two images in the same message.
+
+The integrated checkout passed 978 ordinary Rust tests, strict Clippy and formatting. Thirty focused source tests and all ten Context child-process groups passed. The relocated package verified 375 payload files after the runs. The nested-memory case used a real leased temporary agent folder. The saved-image case used distinct embedded images and refused a stale snapshot.
+
 ## Review sample hooks and prewrite approvals - 2026-11-04
 
 The F1 Hooks view can test an existing command with one reviewed sample event when normal command policy allows it. The receipt shows outcome, output sizes, truncation and whether the owned process exited. A timeout now waits on the original process handle after a verified termination. F6 Edit and Retry can ask for a one-time owned-terminal decision before publishing the replacement. The receipt records the exact request beside the conversation and is read back before settlement.

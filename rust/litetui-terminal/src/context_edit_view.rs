@@ -184,8 +184,13 @@ impl Editor {
                 } else {
                     &r.draft
                 };
+                let path = if let crate::context::Document::Topic(name) = &r.base.document {
+                    format!("{}\n\n", ui::display_safe(name))
+                } else {
+                    String::new()
+                };
                 let rendered = format!(
-                    "Before\n{}\n\nAfter\n{}",
+                    "{path}Before\n{}\n\nAfter\n{}",
                     ui::display_safe(before),
                     ui::display_safe(after)
                 );
@@ -249,7 +254,7 @@ impl Editor {
             Mode::Review(r) => (
                 format!(
                     "Review {}  ·  {} → {} bytes  ·  lines {}–{} of {}",
-                    r.base.document.key(),
+                    ui::display_safe(r.base.document.key()),
                     r.base.text.len(),
                     r.draft.len(),
                     self.scroll + 1,
@@ -265,7 +270,7 @@ impl Editor {
             Mode::Edit => (
                 format!(
                     "Edit {}  ·  {} bytes",
-                    self.base.document.key(),
+                    ui::display_safe(self.base.document.key()),
                     self.draft.text().len()
                 ),
                 "F6 review · F5 reload base, keep draft · Esc return · ← → move · Home / End",

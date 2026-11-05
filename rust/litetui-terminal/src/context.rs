@@ -5,10 +5,11 @@ use sha2::{Digest, Sha256};
 use std::io;
 
 pub const OPERATION: &str = "gui.context.native_page";
+pub const TOPIC_PAGE: &str = "gui.context.native_topic_page";
 pub const PAGE_BYTES: usize = 4096;
 pub const MAX_DOCUMENT_BYTES: usize = 262_144;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Document {
     #[default]
     System,
@@ -17,21 +18,67 @@ pub enum Document {
     Handoff,
     Hooks,
     Plugins,
+    Topics,
+    Topic(String),
 }
 
 impl Document {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::System,
         Self::Memory,
         Self::Soul,
         Self::Handoff,
         Self::Hooks,
         Self::Plugins,
+        Self::Topics,
     ];
 
-    pub fn key(self) -> &'static str {
+    pub fn topic(name: &str) -> io::Result<Self> {
+        let parts: Vec<_> = name.split('/').collect();
+        if name.len() > 512
+            || !(2..=17).contains(&parts.len())
+            || parts[0] != "memories"
+            || !name.ends_with(".md")
+            || parts[1..].iter().any(|s| {
+                let stem = s.split('.').next().unwrap_or("").to_uppercase();
+                s.is_empty()
+                    || s.trim() != *s
+                    || s.ends_with('.')
+                    || s.encode_utf16().count() > 255
+                    || s.chars()
+                        .any(|c| c.is_control() || r#"<>:"\|?*"#.contains(c))
+                    || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                    || ["COM", "LPT"].iter().any(|prefix| {
+                        stem.strip_prefix(prefix).is_some_and(|n| {
+                            matches!(
+                                n,
+                                "1" | "2"
+                                    | "3"
+                                    | "4"
+                                    | "5"
+                                    | "6"
+                                    | "7"
+                                    | "8"
+                                    | "9"
+                                    | "¹"
+                                    | "²"
+                                    | "³"
+                            )
+                        })
+                    })
+            })
+        {
+            return Err(work::bad(
+                "Use a portable relative Markdown topic under memories/",
+            ));
+        }
+        Ok(Self::Topic(name.into()))
+    }
+    pub fn key(&self) -> &str {
         match self {
             Self::System => "system",
+            Self::Topics => "topics",
+            Self::Topic(name) => name,
             Self::Memory => "memory.md",
             Self::Soul => "soul.md",
             Self::Handoff => "handoff.md",
@@ -40,11 +87,12 @@ impl Document {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> &str {
         match self {
             Self::System => "System prompt",
             Self::Hooks => "Hooks",
             Self::Plugins => "Plugins",
+            Self::Topics => "Topics",
             other => other.key(),
         }
     }
@@ -58,6 +106,13 @@ pub struct Request {
 }
 
 impl Request {
+    pub fn operation(&self) -> &'static str {
+        if matches!(self.document, Document::Topics | Document::Topic(_)) {
+            TOPIC_PAGE
+        } else {
+            OPERATION
+        }
+    }
     pub fn first(document: Document) -> Self {
         Self {
             document,
@@ -68,7 +123,7 @@ impl Request {
 
     pub fn command(&self, identity: &Identity, work_instance: &str) -> Value {
         let mut command = identity.request();
-        command["type"] = json!(OPERATION);
+        command["type"] = json!(self.operation());
         command["work_instance"] = json!(work_instance);
         command["document"] = json!(self.document.key());
         command["offset"] = json!(self.offset);
@@ -152,7 +207,7 @@ impl Page {
             .filter(|text| text.len() <= PAGE_BYTES)
             .ok_or_else(|| work::bad("Context page exceeds its UTF-8 byte budget or lacks text"))?;
         let mut page = Self {
-            document: request.document,
+            document: request.document.clone(),
             status,
             revision: None,
             total_bytes: None,

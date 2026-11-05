@@ -211,8 +211,10 @@ fn context_pages_current_system_and_agent_files_without_sending_or_mutating() {
         assert!(plugins.contains("Context · Plugins") && plugins.contains("fixture-parser"));
         assert!(plugins.contains("disabled") && plugins.contains("load order"));
         frames.push(plugins);
+        assert!(key(runtime, &mut app, KeyCode::Right)?.contains("No memory topics."));
         let system = key(runtime, &mut app, KeyCode::Right)?;
         assert!(system.contains("CURRENT SYSTEM ROW"));
+        assert!(key(runtime, &mut app, KeyCode::Left)?.contains("No memory topics."));
         assert!(key(runtime, &mut app, KeyCode::Left)?.contains("fixture-parser"));
         frames.push(key(runtime, &mut app, KeyCode::Esc)?);
         assert!(app.live.as_ref().unwrap().work.owns_input());
@@ -1165,4 +1167,96 @@ fn f6_saved_images_project_exact_sibling_pixels_refuse_stale_and_preserve_draft(
     assert_ne!(previews[0]["snapshot"], previews[3]["snapshot"]);
     assert_eq!(report["requests"].as_array().unwrap().len(), 0);
     assert_eq!(report["shutdown"]["ok"], true);
+}
+
+#[test]
+#[ignore = "real leased topic writer through Interactive; requires LITETUI_AUTHORITY_PYTHON"]
+fn nested_topics_browse_create_and_edit_the_current_agents_file() {
+    let (runtime, data) = launch("context_runtime.py");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        let seed = json_file(&data.join("context-seed.json"));
+        let dir = PathBuf::from(seed["directory"].as_str().unwrap()).canonicalize()?;
+        assert!(dir.starts_with(data.canonicalize()?));
+        let target = dir.join("memories/project/nested/detail.md");
+        app.insert_text("Keep ordinary draft");
+        app.open_work();
+        drain(runtime, &mut app)?;
+        key(runtime, &mut app, KeyCode::Char('i'))?;
+        let list = key(runtime, &mut app, KeyCode::Left)?;
+        assert!(list.contains("Topics") && list.contains("n new"), "{list}");
+        let new_path = key(runtime, &mut app, KeyCode::Char('n'))?;
+        assert!(
+            new_path.contains("Topic path beneath memories/"),
+            "{new_path}"
+        );
+        let work = &mut app.live.as_mut().unwrap().work;
+        assert!(work.accepts_paste());
+        work.paste("project/nested/detail.md");
+        let missing = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(missing.contains("absent"), "{missing}");
+        key(runtime, &mut app, KeyCode::Char('e'))?;
+        let draft = "Decision\r\n雪\n";
+        app.live.as_mut().unwrap().work.paste(draft);
+        let preview = key(runtime, &mut app, KeyCode::F(6))?;
+        assert!(
+            preview.contains("(absent)") && preview.contains("Decision"),
+            "{preview}"
+        );
+        assert!(!target.parent().unwrap().exists());
+        key(runtime, &mut app, KeyCode::Esc)?;
+        assert!(!target.exists());
+        key(runtime, &mut app, KeyCode::F(6))?;
+        assert!(key(runtime, &mut app, KeyCode::F(6))?.contains("Saved and verified"));
+        assert_eq!(fs::read(&target)?, draft.as_bytes());
+        key(runtime, &mut app, KeyCode::Esc)?;
+        let listed = key(runtime, &mut app, KeyCode::Esc)?;
+        assert!(listed.contains("project/nested/detail.md"), "{listed}");
+        let read = key(runtime, &mut app, KeyCode::Enter)?;
+        assert!(read.contains("Decision"), "{read}");
+        key(runtime, &mut app, KeyCode::Char('e'))?;
+        app.live.as_mut().unwrap().work.paste("more");
+        key(runtime, &mut app, KeyCode::F(6))?;
+        fs::write(&target, b"another author")?;
+        assert!(
+            key(runtime, &mut app, KeyCode::F(6))
+                .unwrap_err()
+                .to_string()
+                .contains("changed since review")
+        );
+        assert_eq!(fs::read(&target)?, b"another author");
+        assert!(key(runtime, &mut app, KeyCode::F(5))?.contains("Current file reloaded"));
+        key(runtime, &mut app, KeyCode::F(6))?;
+        assert!(key(runtime, &mut app, KeyCode::F(6))?.contains("Saved and verified"));
+        let saved = fs::read_to_string(&target)?;
+        assert!(
+            saved.contains("more") && saved.contains(draft),
+            "saved {saved:?}"
+        );
+        assert_eq!(app.composer.text(), "Keep ordinary draft");
+        Ok(())
+    });
+    result.unwrap_or_else(|e| panic!("Nested topics failed in {}: {e}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"].as_array().unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|v| v["type"] == "gui.context.native_topic_apply")
+            .count(),
+        3
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|v| v["type"] == "gui.context.native_topic_readback")
+            .count(),
+        2
+    );
+    assert!(!commands.iter().any(|v| v["type"] == "prompt"));
+    assert_eq!(
+        report["shutdown"]["result"]["work_shutdown"]["worker_settled"],
+        true
+    );
 }

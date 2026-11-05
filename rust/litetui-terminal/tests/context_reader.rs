@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use litetui_terminal::{
-    context::{Document, MAX_DOCUMENT_BYTES, OPERATION, PAGE_BYTES, Page, Request, Status},
+    context::{Document, MAX_DOCUMENT_BYTES, PAGE_BYTES, Page, Request, Status},
     context_view::View,
     theme::builtin_themes,
     work_protocol::Identity,
@@ -26,7 +26,7 @@ fn wire(req: &Request, doc: &str) -> Value {
     let mut response = req.command(&identity(), INSTANCE);
     assert_eq!(
         response.as_object_mut().unwrap().remove("type"),
-        Some(json!(OPERATION))
+        Some(json!(req.operation()))
     );
     response["kind"] = json!("context_page");
     response["status"] = json!(if doc.is_empty() { "empty" } else { "page" });
@@ -376,5 +376,39 @@ fn memory_parser_checks_full_identity_revision_bytes_and_readback_correlation() 
     );
     for doc in [Document::System, Document::Hooks] {
         assert!(Edit::Open(doc, None).command(&id, INSTANCE).is_err());
+    }
+}
+
+#[test]
+fn topics_require_complete_verified_catalog_before_selecting_a_safe_exact_path() {
+    let mut view = View::default();
+    let names: Vec<_> = (0..72)
+        .map(|id| format!("memories/project/{id:02}-{}.md", "雪".repeat(24)))
+        .collect();
+    let catalog = names.join("\n");
+    let req = view.open_document(Document::Topics);
+    assert_eq!(req.operation(), "gui.context.native_topic_page");
+    view.apply(parsed(&req, &catalog));
+    let second = view.continue_topics().unwrap();
+    draw(&mut view, 90, 20);
+    assert!(view.key(key(KeyCode::Enter)).is_none());
+    view.apply(parsed(&second, &catalog));
+    draw(&mut view, 90, 20);
+    view.key(key(KeyCode::End));
+    let selected = view.key(key(KeyCode::Enter)).unwrap();
+    assert_eq!(selected.document.key(), names.last().unwrap());
+    assert_eq!(selected.operation(), "gui.context.native_topic_page");
+    for invalid in [
+        "memories/../outside.md",
+        "memories/x/CON.md",
+        "memories/one.md\nmemories/one.md",
+        "memories/a.md\n",
+        "memories/x.md\nmemories/a.md",
+    ] {
+        let req = view.open_document(Document::Topics);
+        view.apply(parsed(&req, invalid));
+        assert!(view.notice().contains("Invalid"), "{invalid}");
+        draw(&mut view, 90, 20);
+        assert!(view.key(key(KeyCode::Enter)).is_none());
     }
 }

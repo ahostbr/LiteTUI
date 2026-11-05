@@ -13,6 +13,12 @@ pub const REVIEW: &str = "gui.context.native_review";
 pub const APPLY: &str = "gui.context.native_apply";
 pub const READBACK: &str = "gui.context.native_readback";
 pub const OPERATIONS: [&str; 4] = [OPEN, REVIEW, APPLY, READBACK];
+pub const TOPIC_OPERATIONS: [&str; 4] = [
+    "gui.context.native_topic_edit",
+    "gui.context.native_topic_review",
+    "gui.context.native_topic_apply",
+    "gui.context.native_topic_readback",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Base {
@@ -39,10 +45,10 @@ pub enum Reply {
     Saved(Base),
 }
 
-pub fn editable(document: Document) -> bool {
+pub fn editable(document: &Document) -> bool {
     matches!(
         document,
-        Document::Memory | Document::Soul | Document::Handoff
+        Document::Memory | Document::Soul | Document::Handoff | Document::Topic(_)
     )
 }
 fn digest(text: &str) -> String {
@@ -50,18 +56,26 @@ fn digest(text: &str) -> String {
 }
 
 impl Request {
-    pub fn document(&self) -> Document {
+    pub fn document(&self) -> &Document {
         match self {
-            Self::Open(doc, _) => *doc,
-            Self::Review(base, _) => base.document,
-            Self::Apply(r) => r.base.document,
+            Self::Open(doc, _) => doc,
+            Self::Review(base, _) => &base.document,
+            Self::Apply(r) => &r.base.document,
         }
     }
     pub fn operation(&self) -> &'static str {
+        let ops = self.operations();
         match self {
-            Self::Open(..) => OPEN,
-            Self::Review(..) => REVIEW,
-            Self::Apply(_) => APPLY,
+            Self::Open(..) => ops[0],
+            Self::Review(..) => ops[1],
+            Self::Apply(_) => ops[2],
+        }
+    }
+    pub fn operations(&self) -> &'static [&'static str; 4] {
+        if matches!(self.document(), Document::Topic(_)) {
+            &TOPIC_OPERATIONS
+        } else {
+            &OPERATIONS
         }
     }
     pub fn command(&self, identity: &Identity, instance: &str) -> io::Result<Value> {
@@ -171,7 +185,7 @@ impl Request {
                     ));
                 }
                 Ok(Reply::Opened(Base {
-                    document: *document,
+                    document: document.clone(),
                     revision: revision.clone(),
                     text: text.into(),
                 }))
@@ -198,7 +212,7 @@ impl Request {
                     apply_id.ok_or_else(|| life::bad("Missing memory application ID"))?,
                 )?;
                 Ok(Reply::Saved(Base {
-                    document: r.base.document,
+                    document: r.base.document.clone(),
                     revision: Some(digest(&r.draft)),
                     text: r.draft.clone(),
                 }))
@@ -221,7 +235,7 @@ impl Request {
         )?;
         self.publication(v, apply_id)?;
         let mut command = self.command(id, instance)?;
-        command["type"] = json!(READBACK);
+        command["type"] = json!(self.operations()[3]);
         command["apply_id"] = json!(apply_id);
         Ok(command)
     }

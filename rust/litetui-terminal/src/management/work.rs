@@ -125,10 +125,11 @@ impl Management {
             view::Request::DeferredValidate => deferred::VALIDATE,
             view::Request::DeferredApply(_) => deferred::DISCARD,
             view::Request::Image(request) => request.operation(),
-            view::Request::Context(_) => crate::context::OPERATION,
+            view::Request::Context(r) => r.operation(),
             view::Request::Hook(request) => request.operation(),
             view::Request::ContextEdit(request) => {
-                if crate::context_edit::OPERATIONS
+                if request
+                    .operations()
                     .iter()
                     .any(|op| !self.operations.iter().any(|v| v == op))
                 {

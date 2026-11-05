@@ -54,17 +54,22 @@ def dispatch(app, cmd):
     operation = cmd["type"]
     fields = {"gui.context.native_edit": ("revision",), "gui.context.native_review": ("revision", "text"),
               "gui.context.native_apply": ("token",), "gui.context.native_readback": ("token", "apply_id")}
-    bridge, binding = native_context.read_binding(app, cmd, operation, "document", *fields[operation])
+    topic = operation.startswith("gui.context.native_topic_")
+    kind = operation.replace("native_topic_", "native_") if topic else operation
+    bridge, binding = native_context.read_binding(app, cmd, operation, "document", *fields[kind])
     document = cmd["document"]
-    if type(document) is not str or document not in MEMORY_FILES:
+    if topic:
+        from litetui import native_context_topics as topics
+        topics.checked_path(app, document)
+    elif type(document) is not str or document not in MEMORY_FILES:
         raise ValueError("Only the current agent's memory, soul and handoff documents can be edited")
     if getattr(app, "_owner_memory_dir", None) is not None:
         raise ValueError("Owner memory overrides cannot be edited here")
-    if operation in ("gui.context.native_edit", "gui.context.native_review"):
+    if kind in ("gui.context.native_edit", "gui.context.native_review"):
         gui_rpc._idle(app)
         app._native_context_review = None
         before = _expect(app, document, cmd["revision"])
-        if operation == "gui.context.native_edit":
+        if kind == "gui.context.native_edit":
             return _reply(binding, document, "context_edit", revision=cmd["revision"], text=(before or b"").decode("utf-8"))
         text = cmd["text"]
         if type(text) is not str or len(text) > native_context.MAX_DOCUMENT:
@@ -85,7 +90,7 @@ def dispatch(app, cmd):
     if (not isinstance(pending, Reviewed) or pending.instance != bridge.instance or pending.document != document
             or type(cmd["token"]) is not str or cmd["token"] != pending.token):
         raise ValueError("Review the current memory draft again")
-    if operation == "gui.context.native_apply":
+    if kind == "gui.context.native_apply":
         gui_rpc._idle(app)
         if pending.apply_id is None:
             # A consumed capability never retries on an uncertain publication.

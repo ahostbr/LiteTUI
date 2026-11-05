@@ -23,6 +23,9 @@ def _stamp(info):
 def _memory(app, document):
     if getattr(app, "_owner_memory_dir", None) is not None:
         raise ValueError("Owner memory overrides are outside this current-agent view")
+    if document.startswith("memories/"):
+        from litetui import native_context_topics as topics
+        return _regular_file(topics.checked_path(app, document))
     return _regular_file(app._agent_session.memory_root / document)
 
 
@@ -147,15 +150,22 @@ def read_binding(app, cmd, operation, *fields):
 
 
 def page(app, cmd):
-    bridge, binding = read_binding(app, cmd, OPERATION, "document", "offset", "revision")
+    from litetui import native_context_topics as topics
+
+    topic = cmd.get("type") == topics.PAGE
+    bridge, binding = read_binding(app, cmd, topics.PAGE if topic else OPERATION, "document", "offset", "revision")
     document, offset, expected = cmd["document"], cmd["offset"], cmd["revision"]
-    if type(document) is not str or document not in DOCUMENTS:
+    if topic and document != topics.INDEX:
+        topics.valid_topic(document)
+    if not topic and (type(document) is not str or document not in DOCUMENTS):
         raise ValueError("Unknown current context document")
     if type(offset) is not int or not 0 <= offset < MAX_DOCUMENT or (expected is None and offset != 0):
         raise ValueError("Invalid context byte offset")
     if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
         raise ValueError("Invalid context document revision")
-    if document == "system":
+    if topic and document == topics.INDEX:
+        status, data = topics.catalog(app)
+    elif document == "system":
         status, data = _system(app)
     elif document == "hooks":
         status, data = _hooks(app)

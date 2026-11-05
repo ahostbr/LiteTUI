@@ -19,6 +19,10 @@ use sha2::{Digest, Sha256};
 pub struct View {
     editor: Option<crate::context_edit_view::Editor>,
     editor_visible: bool,
+    topic_index: String,
+    topics: Option<Vec<Document>>,
+    topic_selected: usize,
+    topic_name: Option<crate::prepared_skill::BoundedDraft<512>>,
     reloading_draft: bool,
     open: bool,
     document: Document,
@@ -40,13 +44,23 @@ impl View {
         self.editor.is_some()
     }
     pub fn accepts_paste(&self) -> bool {
-        self.editor_visible
-            && self
-                .editor
-                .as_ref()
-                .is_some_and(|editor| editor.accepts_paste())
+        self.topic_name.is_some() && self.body.is_some()
+            || self.editor_visible
+                && self
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.accepts_paste())
     }
     pub fn paste(&mut self, text: &str) {
+        if let Some(name) = self.topic_name.as_mut() {
+            if self.body.is_some()
+                && !text.chars().any(char::is_control)
+                && let Err(e) = name.insert(text)
+            {
+                self.notice = e.to_string();
+            }
+            return;
+        }
         if let Some(editor) = self.editor.as_mut() {
             editor.paste(text);
         }
@@ -67,27 +81,28 @@ impl View {
             && key.kind == KeyEventKind::Press
             && key.code == KeyCode::Char('e')
             && key.modifiers.is_empty()
-            && crate::context_edit::editable(self.document)
+            && crate::context_edit::editable(&self.document)
             && let Some(page) = self
                 .page
                 .as_ref()
                 .filter(|p| matches!(p.status, Status::Page | Status::Empty | Status::Missing))
         {
             return Some(crate::context_edit::Request::Open(
-                self.document,
+                self.document.clone(),
                 page.revision.clone(),
             ));
         }
         None
     }
     pub fn reload_draft(&mut self, key: KeyEvent) -> Option<Request> {
-        if self.accepts_paste()
+        if self.editor.is_some()
+            && self.accepts_paste()
             && key.kind == KeyEventKind::Press
             && key.modifiers.is_empty()
             && key.code == KeyCode::F(5)
         {
             self.reloading_draft = true;
-            Some(self.select(self.document))
+            Some(self.select(self.document.clone()))
         } else {
             None
         }
@@ -102,7 +117,7 @@ impl View {
             .filter(|p| matches!(p.status, Status::Page | Status::Empty | Status::Missing))
         {
             return Some(crate::context_edit::Request::Open(
-                self.document,
+                self.document.clone(),
                 page.revision.clone(),
             ));
         }
@@ -110,7 +125,7 @@ impl View {
         None
     }
     pub fn reload(&mut self) -> Request {
-        self.select(self.document)
+        self.select(self.document.clone())
     }
     pub fn edit_reply(&mut self, reply: crate::context_edit::Reply) {
         use crate::context_edit::Reply;
@@ -163,7 +178,7 @@ impl View {
         self.open
     }
     pub fn document(&self) -> Document {
-        self.document
+        self.document.clone()
     }
     pub fn page(&self) -> Option<&Page> {
         self.page.as_ref()
@@ -183,7 +198,10 @@ impl View {
     }
 
     fn select(&mut self, document: Document) -> Request {
-        self.document = document;
+        self.topic_name = None;
+        self.topics = None;
+        self.topic_index.clear();
+        self.document = document.clone();
         self.page = None;
         self.width = None;
         self.wrapped.clear();
@@ -202,6 +220,8 @@ impl View {
     pub fn reject(&mut self, reason: &str) {
         if self.open {
             self.page = None;
+            self.topic_index.clear();
+            self.topics = None;
             self.pending = None;
             self.wrapped.clear();
             self.width = None;
@@ -262,15 +282,62 @@ impl View {
             ),
             Status::Empty => "This document is empty.".into(),
             Status::Missing => "This document is absent.".into(),
+            Status::Oversize if self.document == Document::Topics => {
+                "Topic list exceeds its directory, depth or file-count limit.".into()
+            }
             Status::Oversize => "Document exceeds the 256 KiB reader limit.".into(),
             Status::Changed => "Document changed. Press F5 to read its current contents.".into(),
         };
         self.width = None;
         self.wrapped.clear();
         self.scroll = 0;
+        if self.document == Document::Topics && matches!(page.status, Status::Page | Status::Empty)
+        {
+            if page.total_bytes.is_some_and(|total| total > 256 * 513) {
+                self.reject("Topic list exceeds the source limits");
+                return;
+            }
+            if self.topic_index.len() != page.offset {
+                self.reject("Topic index did not progress from a verified boundary");
+                return;
+            }
+            self.topic_index.push_str(&page.text);
+            if page.next_offset.is_none() {
+                let result = if self.topic_index.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    self.topic_index
+                        .split('\n')
+                        .take(257)
+                        .map(Document::topic)
+                        .collect::<std::io::Result<Vec<_>>>()
+                };
+                match result {
+                    Ok(rows)
+                        if rows.len() <= 256
+                            && rows.windows(2).all(|w| w[0].key() < w[1].key()) =>
+                    {
+                        self.topic_selected = self.topic_selected.min(rows.len().saturating_sub(1));
+                        self.topics = Some(rows);
+                        self.notice.clear();
+                    }
+                    _ => {
+                        self.reject("Invalid or duplicate names in the topic index");
+                        return;
+                    }
+                }
+            }
+        }
         self.page = Some(page);
     }
 
+    pub fn continue_topics(&mut self) -> Option<Request> {
+        if self.document == Document::Topics && self.topics.is_none() {
+            self.adjacent(true)
+        } else {
+            None
+        }
+    }
     fn adjacent(&mut self, forward: bool) -> Option<Request> {
         let page = self.page.as_ref()?;
         let offset = if forward {
@@ -284,7 +351,7 @@ impl View {
         };
         let revision = page.revision.clone()?;
         Some(self.read(Request {
-            document: self.document,
+            document: self.document.clone(),
             offset,
             revision: Some(revision),
         }))
@@ -301,10 +368,40 @@ impl View {
         if !self.open || event.kind == KeyEventKind::Release {
             return None;
         }
+        if self.topic_name.is_some() {
+            if (self.body.is_none() && event.code != KeyCode::Esc)
+                || event.kind != KeyEventKind::Press
+            {
+                return None;
+            }
+            let name = self.topic_name.as_mut().expect("active topic name");
+            match (event.code, event.modifiers) {
+                (KeyCode::Esc, KeyModifiers::NONE) => {
+                    self.topic_name = None;
+                    self.notice.clear();
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    let full = format!("memories/{}", name.text());
+                    match Document::topic(&full) {
+                        Ok(doc) => return Some(self.select(doc)),
+                        Err(e) => self.notice = e.to_string(),
+                    }
+                }
+                (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    self.paste(c.encode_utf8(&mut [0; 4]))
+                }
+                (code, KeyModifiers::NONE) => name.key(code),
+                _ => {}
+            }
+            return None;
+        }
         if event.code == KeyCode::Esc
             && event.modifiers.is_empty()
             && event.kind == KeyEventKind::Press
         {
+            if matches!(self.document, Document::Topic(_)) {
+                return Some(self.select(Document::Topics));
+            }
             self.close();
             return None;
         }
@@ -317,6 +414,52 @@ impl View {
         if !event.modifiers.is_empty() && !previous {
             return None;
         }
+        if self.document == Document::Topics
+            && let Some(rows) = &self.topics
+        {
+            match event.code {
+                KeyCode::Up => {
+                    self.topic_selected = self.topic_selected.saturating_sub(1);
+                    return None;
+                }
+                KeyCode::Down => {
+                    self.topic_selected =
+                        (self.topic_selected + 1).min(rows.len().saturating_sub(1));
+                    return None;
+                }
+                KeyCode::Home => {
+                    self.topic_selected = 0;
+                    return None;
+                }
+                KeyCode::End => {
+                    self.topic_selected = rows.len().saturating_sub(1);
+                    return None;
+                }
+                KeyCode::PageUp => {
+                    self.topic_selected =
+                        self.topic_selected.saturating_sub(usize::from(body.height));
+                    return None;
+                }
+                KeyCode::PageDown => {
+                    self.topic_selected = (self.topic_selected + usize::from(body.height))
+                        .min(rows.len().saturating_sub(1));
+                    return None;
+                }
+                KeyCode::Char('[' | ']') => return None,
+                KeyCode::Enter if event.kind == KeyEventKind::Press => {
+                    return rows
+                        .get(self.topic_selected)
+                        .cloned()
+                        .map(|doc| self.select(doc));
+                }
+                KeyCode::Char('n') if event.kind == KeyEventKind::Press => {
+                    self.topic_name = Some(Default::default());
+                    self.notice.clear();
+                    return None;
+                }
+                _ => {}
+            }
+        }
         match event.code {
             KeyCode::Up => self.scroll_by(-1),
             KeyCode::Down => self.scroll_by(1),
@@ -325,17 +468,24 @@ impl View {
             KeyCode::Home => self.scroll = 0,
             KeyCode::End => self.scroll_by(isize::MAX),
             _ if event.kind != KeyEventKind::Press => {}
-            KeyCode::F(5) => return Some(self.select(self.document)),
+            KeyCode::F(5) => return Some(self.select(self.document.clone())),
             KeyCode::Char('[') => return self.adjacent(false),
             KeyCode::Char(']') => return self.adjacent(true),
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
-                let index = Document::ALL.iter().position(|doc| *doc == self.document)?;
+                let tab = if matches!(self.document, Document::Topic(_)) {
+                    &Document::Topics
+                } else {
+                    &self.document
+                };
+                let index = Document::ALL.iter().position(|doc| doc == tab)?;
                 let step = if previous || event.code == KeyCode::Left {
                     Document::ALL.len() - 1
                 } else {
                     1
                 };
-                return Some(self.select(Document::ALL[(index + step) % Document::ALL.len()]));
+                return Some(
+                    self.select(Document::ALL[(index + step) % Document::ALL.len()].clone()),
+                );
             }
             _ => {}
         }
@@ -344,15 +494,41 @@ impl View {
 
     pub fn mouse(&mut self, event: MouseEvent) -> Option<Request> {
         let body = self.body?;
-        if self.pending.is_some() || !event.modifiers.is_empty() {
+        if self.pending.is_some() || self.topic_name.is_some() || !event.modifiers.is_empty() {
             return None;
         }
         let at = Position::new(event.column, event.row);
+        if let Some(rows) = self.topics.as_ref()
+            && body.contains(at)
+        {
+            let end = rows.len().saturating_sub(1);
+            match event.kind {
+                MouseEventKind::ScrollUp => {
+                    self.topic_selected = self.topic_selected.saturating_sub(3)
+                }
+                MouseEventKind::ScrollDown => {
+                    self.topic_selected = (self.topic_selected + 3).min(end)
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let first = self
+                        .topic_selected
+                        .saturating_sub(usize::from(body.height).saturating_sub(1));
+                    self.topic_selected = (first + usize::from(at.y - body.y)).min(end);
+                }
+                _ => {}
+            }
+            return None;
+        }
         match event.kind {
             MouseEventKind::ScrollUp if body.contains(at) => self.scroll_by(-3),
             MouseEventKind::ScrollDown if body.contains(at) => self.scroll_by(3),
             MouseEventKind::Down(MouseButton::Left) => {
-                let doc = self.tabs.iter().find(|(_, tab)| tab.contains(at))?.0;
+                let doc = self
+                    .tabs
+                    .iter()
+                    .find(|(_, tab)| tab.contains(at))?
+                    .0
+                    .clone();
                 if doc != self.document {
                     return Some(self.select(doc));
                 }
@@ -389,7 +565,10 @@ impl View {
             return;
         }
         let block = Block::bordered()
-            .title(format!(" Context · {} ", self.document.label()))
+            .title(format!(
+                " Context · {} ",
+                ui::display_safe(self.document.label())
+            ))
             .style(Style::default().fg(theme.foreground).bg(theme.panel));
         let inner = block.inner(rect);
         frame.render_widget(Clear, rect);
@@ -408,7 +587,9 @@ impl View {
                 break;
             }
             let tab = Rect::new(x, inner.y, width, 1);
-            let style = if doc == self.document {
+            let style = if doc == self.document
+                || doc == Document::Topics && matches!(self.document, Document::Topic(_))
+            {
                 Style::default().fg(theme.background).bg(theme.primary)
             } else {
                 Style::default().fg(theme.title)
@@ -450,9 +631,67 @@ impl View {
             .join("\n");
         frame.render_widget(Paragraph::new(lines), body);
         self.body = Some(body);
-        let keys = if self.document == Document::Hooks && inner.width >= 48 {
+        if self.document == Document::Topics {
+            let (content, help) = if let Some(name) = &self.topic_name {
+                let (before, after) = name.text().split_at(name.cursor());
+                (
+                    format!(
+                        "Topic path beneath memories/\n{}▏{}\n{}",
+                        ui::display_safe(before),
+                        ui::display_safe(after),
+                        ui::display_safe(&self.notice)
+                    ),
+                    "Enter open path · Esc cancel",
+                )
+            } else if let Some(rows) = &self.topics {
+                let start = self
+                    .topic_selected
+                    .saturating_sub(usize::from(body.height).saturating_sub(1));
+                let visible = rows
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(usize::from(body.height))
+                    .map(|(index, doc)| {
+                        format!(
+                            "{} {}",
+                            if index == self.topic_selected {
+                                "›"
+                            } else {
+                                " "
+                            },
+                            ui::display_safe(doc.key().strip_prefix("memories/").unwrap())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (
+                    if rows.is_empty() {
+                        "No memory topics.".into()
+                    } else {
+                        visible
+                    },
+                    "↑ ↓ select · Enter open · n new · F5 refresh",
+                )
+            } else {
+                (
+                    ui::display_safe(&self.notice),
+                    "F5 refresh · Esc returns to Work",
+                )
+            };
+            frame.render_widget(Clear, body);
+            frame.render_widget(Paragraph::new(content), body);
+            frame.render_widget(
+                Paragraph::new(help).style(Style::default().fg(theme.title)),
+                Rect::new(inner.x, inner.bottom() - 2, inner.width, 2),
+            );
+            return;
+        }
+        let keys = if matches!(self.document, Document::Topic(_)) {
+            "e edit or create · [ ] pages · Esc topics"
+        } else if self.document == Document::Hooks && inner.width >= 48 {
             "← → / Tab documents · E manage hook toggles\n↑ ↓ scroll · F5 refresh · Esc returns to Work"
-        } else if crate::context_edit::editable(self.document) && inner.width >= 48 {
+        } else if crate::context_edit::editable(&self.document) && inner.width >= 48 {
             "← → / Tab documents · [ ] pages · e edit\n↑ ↓ / PgUp PgDn scroll · F5 refresh · Esc returns to Work"
         } else if inner.width >= 48 {
             "← → / Tab documents · [ ] pages · F5 refresh\n↑ ↓ / PgUp PgDn scroll · Esc returns to Work"

@@ -392,7 +392,9 @@ impl View {
             Data::Context(page) => {
                 if self.context.is_open() {
                     self.context.apply(*page);
-                    if let Some(request) = self.context.continue_draft_reload() {
+                    if let Some(request) = self.context.continue_topics() {
+                        self.request(Request::Context(request));
+                    } else if let Some(request) = self.context.continue_draft_reload() {
                         self.request(Request::ContextEdit(Box::new(request)));
                     }
                 }
@@ -482,7 +484,7 @@ impl View {
                 self.snapshot = Some(*snapshot);
                 self.notice = "Captured Work facts · Tab categories · Enter details".into();
                 if self.open {
-                    if let Some(document) = self.context_after_snapshot {
+                    if let Some(document) = self.context_after_snapshot.clone() {
                         let request = self.context.open_document(document);
                         self.request(Request::Context(request));
                     } else {
@@ -642,7 +644,7 @@ impl View {
         if self.hooks.open {
             return false;
         }
-        if self.context.editing() {
+        if self.context.is_open() {
             return !self.waiting && self.context.accepts_paste();
         }
         if self.image.open {
@@ -661,7 +663,7 @@ impl View {
         if self.hooks.open {
             return;
         }
-        if self.context.editing() {
+        if self.context.is_open() {
             if !self.waiting {
                 self.context.paste(text);
             }
