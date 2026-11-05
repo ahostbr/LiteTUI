@@ -2,6 +2,7 @@
 pub mod approvals;
 mod cancellation;
 pub mod clipboard;
+pub mod color_picker;
 pub mod compact_display;
 pub mod completion;
 pub mod composer;

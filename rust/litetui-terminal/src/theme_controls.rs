@@ -1,5 +1,10 @@
 //! Source-owned theme selection and editing. No filesystem or runtime mutation.
-use crate::{live::terminal_text, prepared_skill::Draft, theme::Theme};
+use crate::{
+    color_picker::{Pick, Picker},
+    live::terminal_text,
+    prepared_skill::Draft,
+    theme::Theme,
+};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -837,6 +842,7 @@ pub struct View {
     geometry: Option<Rect>,
     pressed: Option<(u16, u16, usize)>,
     intent: Option<Intent>,
+    picker: Option<Picker>,
 }
 impl View {
     pub fn open(&mut self) {
@@ -844,6 +850,7 @@ impl View {
             return;
         }
         self.open = true;
+        self.picker = None;
         self.editor = false;
         self.detail = false;
         self.invalid = false;
@@ -882,11 +889,15 @@ impl View {
     pub fn hide(&mut self) {
         self.visible = false;
         self.pressed = None;
+        if let Some(p) = self.picker.as_mut() {
+            p.disarm();
+        }
         self.page = 0;
         self.seen.clear();
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.picker = None;
         if self.intent.take().is_some() {
             self.waiting = false;
             self.executing = false;
@@ -1036,12 +1047,60 @@ impl View {
                 .expect("bounded source token");
         }
         self.editor = true;
+        self.picker = None;
         self.detail = false;
         self.field = 0;
         self.offset = 0;
         self.notice =
             "Edit name and colors. Enter requests source review; Esc keeps the catalog.".into();
         self.hide();
+    }
+    fn open_picker(&mut self) {
+        if self.field == 0 {
+            self.notice = "Tab to a color token, then F8 opens the picker.".into();
+            return;
+        }
+        let key = TOKENS[self.field - 1];
+        self.picker = Some(Picker::new(self.fields[self.field - 1].text(), key));
+        self.notice = "Picking a color. Nothing is saved; Enter only fills the field.".into();
+        self.hide();
+    }
+    /// The picker yields a candidate hex for the one field being edited. It feeds the
+    /// ordinary draft; review, explicit confirmation and readback are untouched.
+    fn picker_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
+            self.picker = None;
+            self.hide();
+            self.notice = "Picker closed; the field is unchanged.".into();
+            return;
+        }
+        if !self.visible
+            || self.waiting
+            || key.code == KeyCode::Enter && key.kind != KeyEventKind::Press
+        {
+            return;
+        }
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        match picker.key(key.code) {
+            Pick::Pending => {}
+            Pick::Cancel => {
+                self.picker = None;
+                self.hide();
+            }
+            Pick::Accept(hex) => {
+                let token = TOKENS[self.field - 1];
+                self.fields[self.field - 1]
+                    .set(&hex)
+                    .expect("bounded picked color");
+                self.picker = None;
+                self.hide();
+                self.notice = format!(
+                    "Picked {hex} for {token}; nothing is saved. Enter requests source review."
+                );
+            }
+        }
     }
     pub fn paste(&mut self, text: &str) {
         if !self.open
@@ -1051,6 +1110,10 @@ impl View {
             || self.detail
             || self.invalid
         {
+            return;
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            picker.paste(text);
             return;
         }
         let draft = if self.editor {
@@ -1088,6 +1151,10 @@ impl View {
                 && matches!(key.code, KeyCode::Char(_) | KeyCode::BackTab))
         {
             self.hide();
+            return;
+        }
+        if self.picker.is_some() && !self.waiting {
+            self.picker_key(key);
             return;
         }
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
@@ -1182,6 +1249,7 @@ impl View {
         }
         if self.editor {
             match key.code {
+                KeyCode::F(8) if key.kind == KeyEventKind::Press => self.open_picker(),
                 KeyCode::Tab | KeyCode::Down => self.field = (self.field + 1) % 16,
                 KeyCode::BackTab | KeyCode::Up => self.field = (self.field + 15) % 16,
                 KeyCode::Char(c) if !c.is_control() => self.paste(&c.to_string()),
@@ -1229,6 +1297,10 @@ impl View {
         }
         if !event.modifiers.is_empty() || !self.area.contains((event.column, event.row).into()) {
             self.hide();
+            return;
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            picker.mouse(event);
             return;
         }
         if self.review.is_some() || self.detail {
@@ -1420,6 +1492,10 @@ impl View {
             );
             return;
         }
+        if let Some(picker) = self.picker.as_mut() {
+            self.visible = picker.draw(frame, inner, theme);
+            return;
+        }
         if self.review.is_some() || self.detail {
             let text = match (&self.review, self.detail) {
                 (Some(review), true) => Self::review_details(review),
@@ -1600,7 +1676,7 @@ impl View {
             }
         }
         let help = if self.editor {
-            "Tab field · Enter review · Esc back\nF5 refresh · F6 source details"
+            "Tab field · Enter review · Esc back\nF5 refresh · F6 details · F8 picker"
         } else {
             "Enter review · F2 new · F3 edit\nF6 detail · F7 skipped · F5 read · Esc"
         };
