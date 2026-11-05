@@ -1088,6 +1088,7 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             self.failures[name] = f"stop failed: {type(e).__name__}: {e}"
             return True
         self._stop_failed.discard(name)   # a clean stop resolves any quarantine
+        self.failures.pop(name, None)
         return True
 
     # ── exclusion claim (short lock) + public claim-guarded wrappers ─────────
@@ -1246,7 +1247,9 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
         # one fact the user needs, which is that a restart will not bring
         # this back. Naming the state is the only way the row can say so.
         srv_error = getattr(srv, "error", None) if srv is not None else None
-        if invalid_entry:
+        if name in self._stop_failed:
+            state, error = "failed", "stop not confirmed; retained for explicit cleanup retry"
+        elif invalid_entry:
             state, error = "failed", "invalid config entry (not an object)"
         elif srv is not None and srv_error:
             # A running transport that has POISONED at runtime is not healthy;
@@ -1519,30 +1522,31 @@ stdio or HTTP by entry shape — and exposes specs + a dispatch map."""
             with self._servers_lock:
                 servers = list(self.servers.items())   # name -> server snapshot
             # do NOT clear up front: retention below decides what stays.
-        for name, s in servers:
-            try:
-                s.stop()
-            except Exception as e:
-                # Uncertain cleanup: the child may be live. RETAIN the handle +
-                # quarantine so a later stop can confirm; a lie ("stopped") would
-                # be worse than keeping the reference.
-                runtime_log.record(
-                    "mcp_server_stop_failed",
-                    site="mcp.manager.stop_all",
-                    component="mcp",
-                    server=name,
-                    operation="stop",
-                    error_type=type(e).__name__,
-                )
+            for name, s in servers:
+                try:
+                    s.stop()
+                except Exception as e:
+                    # Uncertain cleanup: the child may be live. RETAIN the handle +
+                    # quarantine so a later stop can confirm; a lie ("stopped") would
+                    # be worse than keeping the reference.
+                    runtime_log.record(
+                        "mcp_server_stop_failed",
+                        site="mcp.manager.stop_all",
+                        component="mcp",
+                        server=name,
+                        operation="stop",
+                        error_type=type(e).__name__,
+                    )
+                    with self._servers_lock:
+                        self.servers[name] = s
+                    self._stop_failed.add(name)
+                    self.failures[name] = f"stop failed: {type(e).__name__}: {e}"
+                    continue
                 with self._servers_lock:
-                    self.servers[name] = s
-                self._stop_failed.add(name)
-                self.failures[name] = f"stop failed: {type(e).__name__}: {e}"
-                continue
-            with self._servers_lock:
-                self.servers.pop(name, None)
-            self._stop_failed.discard(name)
-            self.failures.pop(name, None)
+                    if self.servers.get(name) is s:
+                        self.servers.pop(name, None)
+                self._stop_failed.discard(name)
+                self.failures.pop(name, None)
         if self._log_handle:
             try:
                 self._log_handle.close()

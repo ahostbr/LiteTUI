@@ -22,6 +22,7 @@ _ROUTES = {
     ("misc", "/think"): "thinking",
     ("misc", "/quit"): "quit",
     ("misc", "/pause"): "chat_pause",
+    ("glassbox", "glassbox"): "glassbox",
     ("convo", "/convos"): "conversations",
     ("convo", "/resume"): "conversations",
     ("convo", "/new"): "conversation_new",
@@ -81,7 +82,7 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "help": _text(help_text, 4096, empty=True), "group": _text(group, 128),
         "group_label": _text(plugins.PALETTE_GROUP_LABELS.get(group, group.title()), 256),
         "order": _order(order), "tokens": tokens, "palette": palette,
-        "native_action": action, "accepts_arguments": (action in {"skill_prepare", "conversation_rename"}
+        "native_action": action, "accepts_arguments": (action in {"skill_prepare", "conversation_rename", "glassbox"}
                                                      or kind == "command" and action in _WORK_INSPECTION),
         "unavailable_reason": "" if action else "This contribution has no native action adapter yet.",
     }
@@ -244,6 +245,8 @@ def resolve(app, cmd):
         # Prefill only; canonical normalization and mutation require a new review.
         arguments = validate_title_input(arguments)
     action = selected["native_action"]
+    if action == "glassbox" and arguments.strip().lower() not in {"", "status", "start", "on", "stop", "off"}:
+        raise ValueError("Glassbox accepts status, start/on or stop/off only; mutations require a fresh review")
     if arguments and action in _WORK_INSPECTION:
         verb = arguments.strip()
         if (verb if action == "work_tasks" else verb.lower()) not in _WORK_INSPECTION[action]:

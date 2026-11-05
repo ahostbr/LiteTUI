@@ -32,6 +32,7 @@ CHOICES = {
     "stt_model": ("tiny.en", "base.en", "small.en"),
     "tts_engine": ("pyttsx3", "edge"),
     "tts_litesuite_first": (False, True),
+    "tts_enabled": (False, True),
 }
 
 

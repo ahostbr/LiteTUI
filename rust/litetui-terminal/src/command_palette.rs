@@ -43,6 +43,7 @@ pub(crate) fn token(v: &Value, key: &str) -> io::Result<String> {
 pub enum Action {
     Engine,
     ChatPause,
+    Glassbox,
     Models,
     Thinking,
     Conversations,
@@ -63,6 +64,7 @@ impl Action {
             None if v.is_null() => None,
             Some("engine") => Some(Self::Engine),
             Some("chat_pause") => Some(Self::ChatPause),
+            Some("glassbox") => Some(Self::Glassbox),
             Some("models") => Some(Self::Models),
             Some("thinking") => Some(Self::Thinking),
             Some("conversations") => Some(Self::Conversations),
@@ -216,7 +218,7 @@ impl Catalog {
                 || arguments
                     != (matches!(
                         action,
-                        Some(Action::SkillPrepare | Action::ConversationRename)
+                        Some(Action::SkillPrepare | Action::ConversationRename | Action::Glassbox)
                     ) || kind == "command"
                         && matches!(action, Some(Action::Work(dest)) if !matches!(dest, crate::work_view::Destination::Calendar | crate::work_view::Destination::Plugins)))
                 || (action == Some(Action::SkillPrepare)) != (kind == "skill")
@@ -339,6 +341,14 @@ impl Route {
         let arguments = text(v, "arguments", 65536)?;
         if Some(action) != entry.action || (!arguments.is_empty() && !entry.arguments) {
             return Err(fail("Resolved command contradicts selected adapter"));
+        }
+        if action == Action::Glassbox
+            && !matches!(
+                arguments.trim().to_ascii_lowercase().as_str(),
+                "" | "status" | "start" | "on" | "stop" | "off"
+            )
+        {
+            return Err(fail("Unknown Glassbox review command argument"));
         }
         if let Action::Work(destination) = action
             && !arguments.is_empty()

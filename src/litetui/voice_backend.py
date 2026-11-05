@@ -22,6 +22,8 @@ Remote dispatch instead waits briefly for the Voice API acknowledgement.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import importlib.util
 from litetui import litesuite_tts, optional_python
 import os
@@ -46,7 +48,7 @@ def stop(owner=None) -> None:
                 pass
 
 
-def _reap(proc, timeout, script=None):
+def _reap(proc, timeout, script=None, completed=None):
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -56,10 +58,14 @@ def _reap(proc, timeout, script=None):
         except (OSError, subprocess.TimeoutExpired):
             pass
     finally:
-        with _active_lock:
-            _active.discard(proc)
-        if script is not None:
-            Path(script).unlink(missing_ok=True)
+        try:
+            if script is not None:
+                Path(script).unlink(missing_ok=True)
+        finally:
+            with _active_lock:
+                _active.discard(proc)
+            if completed is not None:
+                completed.set()
 
 
 #: The engines the Voice settings tab offers. `pyttsx3` first = the default.
@@ -160,24 +166,34 @@ asyncio.run(go())
 """
 
 
+@dataclass(frozen=True)
+class Dispatch:
+    route: str
+    process: subprocess.Popen | None = None
+    completed: threading.Event | None = None
+
+
 def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeout: int = 300, owner=None, litesuite_first: bool = True) -> bool:
-    """True means LiteSuite acknowledged dispatch or a local child launched.
-    The Voice API uses short socket timeouts; synthesis/playback is asynchronous.
-    False includes uncertain remote dispatch: callers must not retry automatically.
-    Local-only callers can opt out, e.g. testing their selected fallback voice.
-    """
+    """True means acknowledged LiteSuite dispatch or local child launch."""
+    result = dispatch_speech(text, engine=engine, voice=voice, timeout=timeout,
+                             owner=owner, litesuite_first=litesuite_first)
+    return result.route in {"queued", "local"}
+
+
+def dispatch_speech(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeout: int = 300, owner=None, litesuite_first: bool = True) -> Dispatch:
+    """Return the route and local completion ownership for one explicit utterance."""
     if type(timeout) is not int or timeout <= 0:
-        return False
+        return Dispatch("unavailable")
     text = clean_for_speech(text, limit=len(text))
     if not text:
-        return False
+        return Dispatch("unavailable")
     if litesuite_first:
         result = litesuite_tts.speak(text)
         if result is not None:
-            return result
+            return Dispatch("queued" if result else "uncertain")
     executable = optional_python.resolve(*(("edge_tts", "playsound") if engine == "edge" else ("pyttsx3",)))
     if not executable:
-        return False
+        return Dispatch("unavailable")
     if engine == "edge":
         child = _EDGE_CHILD.format(text=text, voice=voice or DEFAULT_EDGE_VOICE)
     else:
@@ -197,12 +213,13 @@ def speak(text: str, *, engine: str = "pyttsx3", voice: str | None = None, timeo
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             proc._speech_owner = owner
             _active.add(proc)
-        threading.Thread(target=_reap, args=(proc, timeout, script), daemon=True).start()
-        return True
+        completed = threading.Event()
+        threading.Thread(target=_reap, args=(proc, timeout, script, completed), daemon=True).start()
+        return Dispatch("local", proc, completed)
     except Exception:
         if script is not None:
             Path(script).unlink(missing_ok=True)
-        return False
+        return Dispatch("unavailable")
 
 
 if __name__ == "__main__":  # ponytail self-check: no framework, one assert path

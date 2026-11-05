@@ -1843,6 +1843,7 @@ class LiteTUI(App):
         self._mcp_servers = mcp_servers
         self._mcp_lazy = mcp_lazy
         self.mcp = mcp_client.MCPManager(paths.data_root(), seat_servers=mcp_servers, lazy=mcp_lazy)
+        self._owned_mcp_manager = self.mcp
         self.mcp.enabled = lambda name: (self.settings.mcp_enabled
                                         and name not in (self.settings.mcp_disabled_servers or ()))
         if self.settings.mcp_enabled:
@@ -2430,6 +2431,11 @@ class LiteTUI(App):
         await conversation_rewrite.settle_before_shutdown(self)
         await conversation_shutdown.settle_before_shutdown(self)
         await native_engine_shutdown.settle_before_shutdown(self)
+        from litetui import native_glassbox, native_model_lifecycle
+        await native_model_lifecycle.settle_before_shutdown(self)
+        await native_glassbox.settle_before_shutdown(self)
+        from litetui import native_mcp_shutdown
+        await native_mcp_shutdown.settle_before_shutdown(self)
         try:
             # Block NEW model loads on every retained backend admission session BEFORE any
             # await below can yield the loop — a load dispatched during async teardown
@@ -5686,7 +5692,8 @@ class LiteTUI(App):
                     self._system(f"Claude cleanup: {cleanup_failure}")
             timeout = getattr(getattr(self, '_launch_options', None), 'timeout', 600)
             async with asyncio.timeout(timeout):
-                status = await prepare(self)
+                from litetui import native_model_lifecycle
+                status = await native_model_lifecycle.connection_read(self, prepare(self))
             if self.backend is not backend or self.conversation is not conversation:
                 return
             if status != "ok":
@@ -5711,7 +5718,7 @@ class LiteTUI(App):
             # same-endpoint reconnect keeps the client, and this revalidates it
             # against the new backend's type and endpoint.
             self._client_binding = model_transport.bind_client(self.client, self.backend)
-            rows = await backend.list_models()
+            rows = await native_model_lifecycle.connection_read(self, backend.list_models())
             if self.backend is not backend or self.conversation is not conversation:
                 return
             if getattr(self, "_native_history_open_capture", None) is not None:
@@ -5794,6 +5801,9 @@ class LiteTUI(App):
                     )
                 self._update_header()
                 context_worker = self._fetch_ctx_window()
+                from litetui import native_model_lifecycle
+                if native_model_lifecycle.track_connection_worker(self, context_worker):
+                    await context_worker.wait()
                 from litetui import native_history
                 if native_history.track_connection_worker(self, context_worker):
                     from litetui.conversation_transition import _joined
@@ -6901,7 +6911,8 @@ class LiteTUI(App):
         mid = self.model_id
         backend = self.backend
         try:
-            got = await backend.model_info(mid)
+            from litetui import native_model_lifecycle
+            got = await native_model_lifecycle.connection_read(self, backend.model_info(mid), context=True)
         except Exception:
             got = None  # server hiccup — footer just shows "?" for the window size
         if self.backend is not backend or self.model_id != mid:

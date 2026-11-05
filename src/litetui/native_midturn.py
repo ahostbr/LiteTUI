@@ -36,11 +36,17 @@ def dispatch(app, cmd):
     extended = operation in (SEND_REVIEW, SEND_APPLY)
     apply = operation in (APPLY, SEND_APPLY)
     fields = ("origin", "chord", "text", "profile", "policy_epoch") + (("review",) if apply else ())
+    if apply and app.backend.name == "claude":
+        fields += ("native",)
     bridge, binding = read_binding(app, cmd, operation, *fields)
     pending = bridge.user_queue_review
     bridge.user_queue_review = None
-    if not controls.enabled(app) or bridge.provider != "host":
+    if not controls.enabled(app) or bridge.provider not in {"host", "claude"}:
         raise ValueError("Mid-turn composer queueing requires a captured host-managed stream")
+    native = None
+    if bridge.provider == "claude":
+        from litetui.native_claude_queue import Binding
+        native = Binding.capture(app)
     state = controls._state(app)
     if reason := work.prompt_refusal(app):
         raise ValueError(reason)
@@ -67,6 +73,8 @@ def dispatch(app, cmd):
     if type(swapped) is not bool:
         raise ValueError("The effective Enter behavior is unavailable")
     behavior = midturn_action(swapped, chord == "alternate")
+    if behavior == "interrupt" and native is not None:
+        raise ValueError("Claude queue does not interrupt. Use the other send key to queue for the next turn.")
     if behavior == "interrupt" and not extended:
         raise ValueError("This key would interrupt the turn. Use the other send key to queue, or stop the turn explicitly.")
     profile = seat_authority.seat_profile(app)
@@ -78,14 +86,31 @@ def dispatch(app, cmd):
     value = {"version": 1, **binding, "origin": origin.envelope_fields(), "chord": chord, "text": message,
              "behavior": behavior, "enter_interrupts": swapped, "profile": profile,
              "policy_epoch": epoch, "payload_sha256": work.digest(work.encoded(payload))}
+    if native is not None:
+        value["native"] = native.value()
+        if apply and cmd["native"] != value["native"]:
+            raise ValueError("The reviewed Claude native delivery changed")
     if behavior == "interrupt":
         value["prior_inputs"] = interrupt_queue(app, bridge)
     if not apply:
         value.update(kind="midturn_review", review=work.ident())
-        bridge.user_queue_review = (worker, work.encoded([extended, value]))
+        bridge.user_queue_review = (worker, work.encoded([extended, value]), native)
         return value
     value.update(kind="midturn_review", review=cmd["review"])
-    if pending != (worker, work.encoded([extended, value])):
+    if pending is None or pending[:2] != (worker, work.encoded([extended, value])):
         raise ValueError("The queue review is stale or consumed")
-    producer, entry = work.queue_user_input(app, origin, value["review"], payload, interrupt=behavior == "interrupt")
-    return {**value, "kind": "midturn_queued", "operation_id": cmd["id"], "producer": producer, "input": entry}
+    if native is not None:
+        pending[2].check(app)
+        native = pending[2]
+    producer, entry = work.queue_user_input(app, origin, value["review"], payload,
+        interrupt=behavior == "interrupt", claude=native)
+    result = {**value, "kind": "midturn_queued", "operation_id": cmd["id"], "producer": producer, "input": entry}
+    if native is not None:
+        try:
+            result["native_delivery"] = native.receipt(app, bridge.inputs[entry["input_id"]].item, value["review"])
+            from litetui.native_claude_queue import stage_publication
+            stage_publication(app, cmd, result, native, bridge.inputs[entry["input_id"]])
+        except Exception as exc:
+            bridge.error = "Claude queue confirmation is uncertain; close and inspect retained input"
+            raise ValueError(bridge.error) from exc
+    return result

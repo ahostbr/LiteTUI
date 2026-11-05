@@ -1,5 +1,21 @@
 # LiteTUI Rust terminal port
 
+## Model lifecycle, Glassbox, speech and Claude queueing - November 5, 2026
+
+F10 → L now reviews current-model load, unload and reconnect through the existing backend operations, then verifies model and client state independently. Reconnect retains a replaced HTTP client until its close has completed. A failed close remains owned for shutdown retry and prevents successful cleanup acknowledgement while unresolved.
+
+F10 → G and the registered Glassbox command review Start and Stop. Recording and listener status are read back independently, including partial Start after a bind failure. Stop and Quit join the owned listener and accepted client handlers. F6 → S selects a complete saved assistant answer, reviews the exact cleaned speech text and explicitly submits playback through the configured voice route. F10 Voice can enable response speech through a reviewed device preference.
+
+During a Claude reply, the queue action prepares one durable input against the exact SDK session and segment. Its next turn waits for foreground completion and successful publication of the queue receipt. Failed publication retains the input for recovery. The shared RPC publisher now propagates actual write and flush failures for every owned publication ticket. The regression matrix reproduced fourteen failures before the fix and passed all twenty-seven cases afterward, including scheduled activation and existing runtime controls.
+
+Shutdown now joins the constructor-owned MCP manager before native Quit acknowledgement and storage release. Failed server stops retain their handles and visible failure state for retry. Cancelled legacy MCP operations join their captured work and refresh the same manager's tool dispatch before returning. Native MCP enable/connect/reload controls remain ongoing implementation work.
+
+The integrated checkout passed 1,013 ordinary Rust tests, formatting and strict all-target Clippy. The selected twenty-five-file source matrix passed all 447 cases, and the seven new or extended native control modules passed Ruff and mypy. All 37 relocated-package process tests passed using the fresh runtime-only Python environment. The final launcher verification checked every one of the 391 payload files.
+
+Three hidden pseudoconsole keyboard flows passed against the fresh relocated executable. Glassbox exercised a busy-port partial Start, retry, Stop, restart and Quit with open event-feed clients. Model lifecycle exercised canonical reconnect. Playback enabled a previously disabled preference, selected the second saved answer, reviewed its full cleaned text and finished the contained helper. All three preserved the unsent draft, joined workers, sent zero model prompts and retained identical package hashes. The exact runner, parsed screens and reports are in `target/native-controls-keys-SqKC5R`, and package provenance is in `target/controls-wave-final-clean-package.json`.
+
+The source review independently reproduced twenty-seven older MCP constructor-fixture failures and one older RPC script-inventory fixture failure. The live E2E cases in the adjacent RPC suite stayed skipped. Authenticated providers, physical audio devices, both terminal hosts and release acceptance remain open.
+
 ## Model preferences and explicit dictation - November 4, 2026
 
 F10 → P edits the current model's conversation-scoped temperature, Top P and response-token override. Each save has a separate review and independent saved/effective readback. Choosing Inherit removes the model override. The view distinguishes requested values, adapter-reported loaded state, context and the parameters used by the next request.

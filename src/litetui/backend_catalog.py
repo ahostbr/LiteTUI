@@ -130,7 +130,7 @@ def _disk_hash(path, limit):
     return hashlib.sha256(data).hexdigest()
 
 
-def fingerprint(app, context, result):
+def fingerprint(app, context, result, *, include_pending=True):
     """Bind a selection to current owned disk, runtime, policy and launch facts."""
     from litetui import store_identity
     from litetui.gui_rpc import _tool_policy
@@ -150,7 +150,7 @@ def fingerprint(app, context, result):
         "effective_thinking": getattr(app, "_cli_effective_thinking", None),
         "thinking": getattr(app, "_thinking_level", None),
         "hold": getattr(app, "_hold_restored_input", False),
-        "pending_count": len(getattr(app, "_pending_input", ())),
+        "pending_count": len(getattr(app, "_pending_input", ())) if include_pending else None,
         "history": hashlib.sha256(_encoded(app.conversation, 8 * 1024 * 1024)).hexdigest(),
         "files": [
             _disk_hash(context.session.store.data_root / "settings.json", 1024 * 1024),

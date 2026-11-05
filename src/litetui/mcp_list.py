@@ -328,8 +328,9 @@ class MCPListBody(Widget):
             op = lambda: mcp0.connect(name)
             describe = lambda err: f"could not connect {name}: {err}" if err else f"connected {name}"
         elif verb == "disconnect":
+            from litetui.plugins.mcp_manage import _disconnect_message
             op = lambda: mcp0.disconnect(name)
-            describe = lambda was: f"disconnected {name}" if was else f"{name} was not running"
+            describe = lambda was: _disconnect_message(mcp0, name, was)
         elif verb == "reconnect":
             def op():
                 mcp0.reload_configs()   # pick up config edits before reconnecting

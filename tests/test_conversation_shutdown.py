@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from litetui import conversation_rewrite, native_engine_shutdown, runtime_log
 from litetui import conversation_shutdown as shutdown
-from litetui import native_engine_shutdown
 
 OLD = "11111111-1111-4111-8111-111111111111"
 NEW = "22222222-2222-4222-8222-222222222222"
@@ -186,7 +186,7 @@ def shutdown_method():
     tree = ast.parse(path.read_text(encoding="utf-8"))
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "LiteTUI")
     method = next(node for node in cls.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_shutdown")
-    scope = {"asyncio": asyncio}
+    scope = {"asyncio": asyncio, "conversation_rewrite": conversation_rewrite, "runtime_log": runtime_log}
     base = ast.parse("class Base:\n    async def _shutdown(self): self.events.append('base')\n").body[0]
     subject = ast.ClassDef(name="Subject", bases=[ast.Name(id="Base", ctx=ast.Load())], keywords=[], body=[method], decorator_list=[])
     module = ast.fix_missing_locations(ast.Module(body=[base, subject], type_ignores=[]))

@@ -150,6 +150,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             }
             if app.has_live_history() {
                 let chat = app.live.as_mut().expect("saved history");
+                if chat.saved_history.playback.open {
+                    chat.saved_history.key(key);
+                    return false;
+                }
                 chat.saved_history.close();
                 chat.browser.hide();
                 return false;
@@ -1864,6 +1868,55 @@ mod tests {
             assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
             assert!(app.live.as_mut().unwrap().take_submission().is_none());
         }
+    }
+
+    #[test]
+    fn playback_overlay_preserves_draft_and_routes_small_viewport_escape_to_source() {
+        use litetui_terminal::{history_view, playback};
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.live.as_mut().unwrap().ready = true;
+        app.insert_text("Playback draft");
+        let mut router = KeyRouter::default();
+        router.handle(&mut app, KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+        let view = &mut app.live.as_mut().unwrap().saved_history;
+        let read = view.take_intent().unwrap();
+        view.observe(history_view::Update::Rejected {
+            key: read.key().clone(),
+            reason: "Fixture history".into(),
+        })
+        .unwrap();
+        view.playback.begin(
+            "a".repeat(64),
+            playback::Selection {
+                block: 1,
+                block_id: "b".repeat(64),
+                message: 2,
+                message_hash: "c".repeat(64),
+            },
+        );
+        view.playback.reply(playback::State{token:"12345678-1234-4123-8123-123456789012".into(),
+            text:"Exact response".into(),text_hash:"d".repeat(64),preferences:serde_json::json!({"engine":"pyttsx3","voice":"","timeout":300,"litesuite_first":false}),status:"review".into(),outcome:None});
+        paste(&mut app, "Must stay out of the composer");
+        router.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "Playback draft");
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        app.viewport_too_small = true;
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let history_view::Intent::Speech { request, .. } = app
+            .live
+            .as_mut()
+            .unwrap()
+            .saved_history
+            .take_intent()
+            .unwrap()
+        else {
+            panic!("missing owned close")
+        };
+        assert_eq!(request.action, "close");
+        assert!(router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
     }
 
     #[test]

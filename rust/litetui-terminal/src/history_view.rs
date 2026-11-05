@@ -30,6 +30,10 @@ pub struct ReadKey {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
+    Speech {
+        key: ReadKey,
+        request: crate::playback::Request,
+    },
     Image {
         key: ReadKey,
         snapshot: String,
@@ -53,7 +57,8 @@ pub enum Intent {
 impl Intent {
     pub fn key(&self) -> &ReadKey {
         match self {
-            Self::Image { key, .. }
+            Self::Speech { key, .. }
+            | Self::Image { key, .. }
             | Self::Inspect { key, .. }
             | Self::Refresh { key, .. }
             | Self::Page { key, .. } => key,
@@ -62,6 +67,10 @@ impl Intent {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
+    Speech {
+        key: ReadKey,
+        state: crate::playback::State,
+    },
     Image {
         key: ReadKey,
         selected: ImageSelection,
@@ -84,7 +93,8 @@ pub enum Update {
 impl Update {
     pub fn key(&self) -> &ReadKey {
         match self {
-            Self::Image { key, .. }
+            Self::Speech { key, .. }
+            | Self::Image { key, .. }
             | Self::Loaded { key, .. }
             | Self::Page { key, .. }
             | Self::Rejected { key, .. } => key,
@@ -130,6 +140,8 @@ pub struct View {
     pending: Option<ReadKey>,
     loaded_key: Option<ReadKey>,
     selected_user: Option<(u64, String)>,
+    speech_choice: Option<usize>,
+    pub playback: crate::playback::View,
     selected_image: Option<ImageSelection>,
     thumbnail: Option<crate::image::Thumbnail>,
     rewrite: Option<(RewriteAction, RewriteSelection)>,
@@ -257,6 +269,11 @@ impl View {
         self.stale
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
+        if self.intent.is_none()
+            && let Some(request) = self.playback.poll(self.waiting)
+        {
+            self.speech_request(request);
+        }
         self.intent.take()
     }
     pub fn selected_message(&self) -> Option<(u64, &str)> {
@@ -390,6 +407,7 @@ impl View {
         self.pressed = None;
     }
     pub fn close(&mut self) {
+        self.speech_choice = None;
         self.selected_image = None;
         self.thumbnail = None;
         self.open = false;
@@ -452,7 +470,7 @@ impl View {
                 verify_loaded(snapshot, page)?;
                 verify_target(&self.target, snapshot)?;
             }
-            Update::Image { .. } | Update::Rejected { .. } => {}
+            Update::Speech { .. } | Update::Image { .. } | Update::Rejected { .. } => {}
         }
         self.waiting = false;
         self.pending = None;
@@ -463,6 +481,13 @@ impl View {
             return Ok(());
         }
         match update {
+            Update::Speech { state, .. } => {
+                if let Some(notice) = self.playback.reply(state) {
+                    self.notice = notice;
+                    self.speech_choice = None;
+                }
+            }
+            Update::Rejected { reason, .. } if self.playback.open => self.playback.reject(reason),
             Update::Loaded {
                 key,
                 snapshot,
@@ -566,6 +591,21 @@ impl View {
             self.anchor = None;
         }
     }
+    fn answers(&self) -> Vec<&Fragment> {
+        let mut answers: Vec<_> = self
+            .page
+            .iter()
+            .flat_map(|p| p.fragments.iter())
+            .filter(|f| crate::playback::Selection::from_fragment(f).is_some())
+            .collect();
+        answers.dedup_by_key(|f| f.block_index);
+        answers
+    }
+    fn speech_request(&mut self, request: crate::playback::Request) {
+        if let Some(key) = self.begin_read() {
+            self.intent = Some(Intent::Speech { key, request });
+        }
+    }
     fn images(&self) -> Vec<&Fragment> {
         let mut images: Vec<_> = self
             .page
@@ -610,6 +650,43 @@ impl View {
         });
     }
     pub fn key(&mut self, event: KeyEvent) {
+        if self.playback.open {
+            if let Some(request) = self.playback.key(event, self.waiting) {
+                self.speech_request(request);
+            }
+            return;
+        }
+        if self.speech_choice.is_some()
+            && event.kind == KeyEventKind::Press
+            && event.modifiers.is_empty()
+            && !self.waiting
+        {
+            let answers = self.answers();
+            let count = answers.len();
+            let chosen = self.speech_choice.unwrap();
+            match event.code {
+                KeyCode::Esc => {
+                    self.speech_choice = None;
+                    self.hide();
+                }
+                KeyCode::Left if count > 0 => {
+                    self.speech_choice = Some((chosen + count - 1) % count)
+                }
+                KeyCode::Right if count > 0 => self.speech_choice = Some((chosen + 1) % count),
+                KeyCode::Enter if self.visible && !self.stale => {
+                    if let Some(selected) = answers
+                        .get(chosen)
+                        .and_then(|f| crate::playback::Selection::from_fragment(f))
+                        && let Some(snapshot) = self.snapshot.as_ref().filter(|s| s.materialized)
+                    {
+                        let request = self.playback.begin(snapshot.token.clone(), selected);
+                        self.speech_request(request);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if event.kind == KeyEventKind::Release {
             return;
         }
@@ -643,6 +720,14 @@ impl View {
             return;
         }
         match event.code {
+            KeyCode::Char('s')
+                if event.kind == KeyEventKind::Press
+                    && !self.stale
+                    && !self.answers().is_empty() =>
+            {
+                self.speech_choice = Some(0);
+                self.hide();
+            }
             KeyCode::Char('i') if event.kind == KeyEventKind::Press => self.open_image(0),
             KeyCode::Tab if event.kind == KeyEventKind::Press => self.choose_user(false),
             KeyCode::BackTab if event.kind == KeyEventKind::Press => self.choose_user(true),
@@ -670,6 +755,9 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.playback.open || self.speech_choice.is_some() {
+            return;
+        }
         if self.selected_image.is_some() {
             return;
         }
@@ -713,6 +801,22 @@ impl View {
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if !self.open {
             self.hide();
+            return;
+        }
+        if self.playback.open {
+            self.playback.draw(frame, area, self.waiting);
+            return;
+        }
+        if let Some(chosen) = self.speech_choice {
+            self.visible = true;
+            frame.render_widget(Clear, area);
+            let text = self
+                .answers()
+                .get(chosen)
+                .map(|f| f.text.as_str())
+                .unwrap_or("");
+            frame.render_widget(Paragraph::new(crate::live::terminal_text(text)).wrap(ratatui::widgets::Wrap{trim:false})
+                .block(Block::bordered().title(" Select saved answer · ← → answers · Enter reviews full speech · Esc returns ")),area);
             return;
         }
         if self.geometry != Some(area) {
@@ -799,10 +903,14 @@ impl View {
                 .is_some_and(|p| p.fragments.iter().any(Fragment::embedded_image))
         {
             if self.rewrite_reason().is_none() {
-                "I image · Tab user · E edit · R retry · C compact"
+                "S speak · I image · Tab user · E edit · R retry · C compact"
             } else {
-                "I previews saved images"
+                "S selects an answer to speak · I previews saved images"
             }
+        } else if !self.answers().is_empty()
+            && self.snapshot.as_ref().is_some_and(|s| s.materialized)
+        {
+            "S selects an answer · Tab user · E edit · R retry · C compact"
         } else if self.rewrite_reason().is_none() {
             "Tab selects a user message · E edit · R retry · C compact"
         } else {

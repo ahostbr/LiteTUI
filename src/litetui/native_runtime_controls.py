@@ -299,6 +299,10 @@ def _context(app):
 
 
 def mutation_hold(app):
+    if getattr(app, "_native_claude_queue_publication", None) is not None:
+        return "Claude queued input owns its exact confirmation publication"
+    if getattr(app, "_native_model_lifecycle_hold", False):
+        return "A reviewed model operation owns admission until its independent readback"
     state = _state(app)
     if state is not None:
         if state.error:
@@ -308,6 +312,9 @@ def mutation_hold(app):
     from litetui import native_dictation
     if native_dictation.blocking(app):
         return "Dictation owns capture and its exact release publication"
+    from litetui import native_playback
+    if native_playback.blocking(app):
+        return "Response playback owns its exact release publication"
     return None
 
 
@@ -864,6 +871,8 @@ async def authorization(app, *, origin=None, profile=None, captured=None, lifecy
     parked = False
     try:
         while True:
+            if getattr(app, "_native_model_lifecycle_hold", False) and getattr(app, "_backend_transition_error", None):
+                raise AuthorizationClosed(app._backend_transition_error)
             if (state.closing or state.error or not enabled(app) or _state(app) is not state
                     or getattr(app, "_stop_requested", False) and (parked or origin is not None)):
                 raise AuthorizationClosed("Runtime stopped before authorization")
@@ -1030,6 +1039,9 @@ def operation_allowed(app, cmd):
         if touches(cmd):
             raise ValueError("Use the reviewed runtime control for this setting")
     if why := mutation_hold(app):
+        from litetui import native_model_lifecycle
+        if native_model_lifecycle.readback_allowed(app, cmd):
+            return
         from litetui import native_schedule
         if op not in {*OPERATIONS, *native_schedule.INSPECTION, "shutdown", "abort",
                        "gui.work.native_settled", "approve", "answer"}:

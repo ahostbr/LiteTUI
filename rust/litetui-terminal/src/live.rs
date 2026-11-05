@@ -2624,6 +2624,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let voice = matches!(intent, crate::settings_view::Intent::Voice(_));
                         let model_preferences =
                             matches!(intent, crate::settings_view::Intent::ModelPreferences(_));
+                        let model_lifecycle =
+                            matches!(intent, crate::settings_view::Intent::ModelLifecycle(_));
                         let mcp = matches!(intent, crate::settings_view::Intent::Mcp(_));
                         let runtime_status =
                             matches!(intent, crate::settings_view::Intent::RuntimeStatus);
@@ -2654,7 +2656,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 deadline = Some(Instant::now() + options.timeout);
                             }
                             Err(error) => {
-                                frontend.observe(Observation::Settings(if model_preferences {
+                                frontend.observe(Observation::Settings(if model_lifecycle {
+                                    crate::settings_view::Update::ModelLifecycle(Err(
+                                        error.to_string()
+                                    ))
+                                } else if model_preferences {
                                     crate::settings_view::Update::ModelPreferences(Err(
                                         error.to_string()
                                     ))

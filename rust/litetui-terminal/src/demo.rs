@@ -229,6 +229,7 @@ impl Demo {
                 Action::Work(destination) => self.show_work(Some(destination)),
                 Action::Engine => self.open_engine(),
                 Action::ChatPause => self.open_chat_pause(),
+                Action::Glassbox => self.open_glassbox(&route_arguments),
                 Action::Models => self.open_models(crate::model_controls::Kind::Model),
                 Action::Thinking => self.open_models(crate::model_controls::Kind::Thinking),
                 Action::Backend => self.open_backend(),
@@ -602,6 +603,22 @@ impl Demo {
         self.live
             .as_ref()
             .is_some_and(|chat| chat.settings.owns_input())
+    }
+    fn open_glassbox(&mut self, arguments: &str) {
+        if self.has_live_input() {
+            return;
+        }
+        self.open_settings();
+        if let Some(chat) = self.live.as_mut()
+            && chat.settings.open
+        {
+            let action = match arguments.trim().to_ascii_lowercase().as_str() {
+                "start" | "on" => Some("start"),
+                "stop" | "off" => Some("stop"),
+                _ => None,
+            };
+            chat.settings.open_glassbox(action);
+        }
     }
     pub fn open_settings(&mut self) {
         if self.has_live_input() {

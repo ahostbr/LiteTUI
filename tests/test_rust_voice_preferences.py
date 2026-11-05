@@ -56,16 +56,22 @@ def block_audio(stack):
 
 @pytest.mark.parametrize(
     "field,value",
-    [("stt_model", "small.en"), ("tts_engine", "edge"), ("tts_litesuite_first", False)],
+    [("stt_model", "small.en"), ("tts_engine", "edge"), ("tts_litesuite_first", False), ("tts_enabled", True)],
 )
 async def test_registered_voice_preference_saves_only_reviewed_device_key(
     armed, field, value
 ):
     owner = armed
     path = owner._agent_session.store.data_root / "settings.json"
+    if field == "tts_enabled":
+        owner.settings.tts_enabled = False
+        path.write_text(json.dumps({**json.loads(path.read_bytes()), "tts_enabled": False}), encoding="utf8")
     original = json.loads(path.read_bytes())
+    refreshes = []
     with ExitStack() as guard:
         block_audio(guard)
+        guard.enter_context(patch.object(owner, "_refresh_prompt_controls",
+            lambda: refreshes.append(owner.settings.tts_enabled)))
         current = call(owner, "preferences")
         review = call(
             owner, "review", revision=current["revision"], field=field, value=value
@@ -84,6 +90,7 @@ async def test_registered_voice_preference_saves_only_reviewed_device_key(
         )
         assert json.loads(path.read_bytes()) == {**original, field: value}
         assert observed["after"] != current["revision"]
+        assert refreshes == ([True] if field == "tts_enabled" else [])
 
 
 async def test_environment_capture_and_unrelated_revision_refuse_stale_edits(

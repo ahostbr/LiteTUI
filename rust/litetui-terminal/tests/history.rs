@@ -828,3 +828,143 @@ mod rewrite_selection {
         assert!(view.take_compact().is_some());
     }
 }
+
+#[cfg(test)]
+mod playback_review {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use litetui_terminal::{history_view, playback, theme::builtin_themes};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn paint(view: &mut playback::View, width: u16, height: u16) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| view.draw(f, f.area(), false)).unwrap();
+    }
+    fn value(request: &playback::Request, snapshot: &Snapshot, text: &str) -> Value {
+        let mut value = request.command(snapshot);
+        let v = value.as_object_mut().unwrap();
+        v.remove("type");
+        v.remove("action");
+        v.insert("kind".into(), json!("response_playback"));
+        v.insert("playback".into(), json!(SESSION));
+        v.insert("text".into(), json!(text));
+        v.insert("text_sha256".into(), json!(sha(text)));
+        v.insert("preferences".into(),json!({"engine":"pyttsx3","voice":"Fixture voice","timeout":300,"litesuite_first":true}));
+        v.insert("status".into(), json!("review"));
+        v.insert("outcome".into(), Value::Null);
+        value
+    }
+    #[test]
+    fn playback_receipt_requires_exact_selected_identity_text_voice_and_remote_ownership() {
+        let snapshot = snapshot();
+        let selected = playback::Selection {
+            block: 1,
+            block_id: "d".repeat(64),
+            message: 901,
+            message_hash: "e".repeat(64),
+        };
+        let mut view = playback::View::default();
+        let request = view.begin(snapshot.token.clone(), selected);
+        let wire = value(&request, &snapshot, "Full selected response");
+        let state = request.parse(&wire, &snapshot, None).unwrap();
+        for (field, changed) in [
+            ("snapshot", json!("0".repeat(64))),
+            ("block_index", json!(0)),
+            ("message_sha256", json!("0".repeat(64))),
+            ("text", json!("substitution")),
+            ("text_sha256", json!("0".repeat(64))),
+            ("agent_id", json!(TARGET)),
+            ("extra", json!(true)),
+        ] {
+            let mut drift = wire.clone();
+            drift[field] = changed;
+            assert!(request.parse(&drift, &snapshot, None).is_err(), "{field}");
+        }
+        view.reply(state.clone());
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(view.key(enter, false).is_none());
+        paint(&mut view, 120, 40);
+        let start = view.key(enter, false).unwrap();
+        let mut receipt = wire;
+        receipt["status"] = json!("queued");
+        assert!(start.parse(&receipt, &snapshot, Some(&state)).is_ok());
+        receipt["preferences"]["voice"] = json!("Other voice");
+        assert!(start.parse(&receipt, &snapshot, Some(&state)).is_err());
+    }
+    #[test]
+    fn playback_long_review_requires_every_page_and_resets_after_resize() {
+        let snapshot = snapshot();
+        let mut view = playback::View::default();
+        let request = view.begin(
+            snapshot.token.clone(),
+            playback::Selection {
+                block: 1,
+                block_id: "d".repeat(64),
+                message: 901,
+                message_hash: "e".repeat(64),
+            },
+        );
+        let wire = value(&request, &snapshot, &"Reviewed words. ".repeat(130));
+        view.reply(request.parse(&wire, &snapshot, None).unwrap());
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        paint(&mut view, 60, 12);
+        assert!(view.key(enter, false).is_none());
+        for _ in 0..40 {
+            view.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), false);
+            paint(&mut view, 60, 12);
+        }
+        assert_eq!(view.key(enter, false).unwrap().action, "start");
+        paint(&mut view, 65, 12);
+        assert!(view.key(enter, false).is_none());
+        let mut repeat = enter;
+        repeat.kind = KeyEventKind::Repeat;
+        assert!(view.key(repeat, false).is_none());
+        assert_eq!(
+            view.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), false)
+                .unwrap()
+                .action,
+            "close"
+        );
+    }
+    #[test]
+    fn history_chooses_exact_answer_among_identical_text_without_starting_playback() {
+        let snapshot = snapshot();
+        let page = Page::parse(
+            &page(
+                vec![
+                    fragment(0, "Same answer", 0, 11),
+                    fragment(1, "Same answer", 0, 11),
+                ],
+                true,
+                true,
+            ),
+            &snapshot,
+        )
+        .unwrap();
+        let mut view = history_view::View::default();
+        view.open();
+        let key = view.take_intent().unwrap().key().clone();
+        view.observe(history_view::Update::Loaded {
+            key,
+            snapshot: Box::new(snapshot),
+            page: Box::new(page),
+        })
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        let theme = builtin_themes().remove(0);
+        terminal.draw(|f| view.draw(f, f.area(), &theme)).unwrap();
+        view.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(view.take_intent().is_none());
+        terminal.draw(|f| view.draw(f, f.area(), &theme)).unwrap();
+        view.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        terminal.draw(|f| view.draw(f, f.area(), &theme)).unwrap();
+        view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let history_view::Intent::Speech { request, .. } = view.take_intent().unwrap() else {
+            panic!("missing speech review")
+        };
+        assert_eq!(request.selected.block, 1);
+        assert_eq!(request.selected.message, 901);
+        assert_eq!(request.action, "review");
+        assert!(request.playback.is_none());
+    }
+}

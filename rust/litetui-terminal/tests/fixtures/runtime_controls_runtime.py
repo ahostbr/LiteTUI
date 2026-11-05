@@ -162,6 +162,14 @@ def seed(app):
     app.conversation = [{'role': 'system', 'content': 'Runtime policy controls fixture'},
         {'role': 'user', 'content': 'Preserve earlier user input'},
         {'role': 'assistant', 'content': 'Preserve earlier answer'}]
+    if case.startswith('playback-'):
+        app.conversation.append({'role':'assistant','content':'Selected second answer with '+chr(96)+'inline code'+chr(96)+' and a final sentence.'})
+        app.settings.tts_enabled = case != 'playback-disabled'
+        app.settings.tts_engine = 'edge' if case == 'playback-edge' else 'pyttsx3'
+        app.settings.tts_voice = 'Private fixture voice'
+        app.settings.tts_edge_voice = 'Private edge voice'
+        app.settings.tts_litesuite_first = case in ('playback-queued','playback-uncertain')
+        app.settings.tts_timeout = 10
     app._prompt_store_identity, app._store_injected = store_identity.capture(app), True
     app._materialise_convo()
     app.store.record_snapshot(app.conversation, store_identity=app._prompt_store_identity, store_injected=True)
@@ -222,6 +230,17 @@ async def serve(app):
 
     async def management(owner, command):
         operation = command['type']
+        if operation == 'gui.voice.native_playback':
+            result = await actual_gui(owner, command)
+            report.setdefault('playback', []).append(copy.deepcopy(result))
+            if command['action'] in ('start','close'):
+                try:
+                    await actual_gui(owner, {**command,'id':str(uuid.uuid4())})
+                except ValueError:
+                    report.setdefault('playback_replay_refused', []).append(command['action'])
+                else:
+                    raise AssertionError('Playback repeated a consumed operation')
+            return result
         if operation == 'gui.voice.native_dictation':
             result = await actual_gui(owner, command)
             report.setdefault('dictation', []).append(copy.deepcopy(result))
@@ -348,6 +367,9 @@ async def serve(app):
         if not seeded:
             return
         bridge = background_input.bridge(app)
+        if case.startswith('playback-'):
+            report['playback_retired'] = getattr(app, '_native_playback', None) is None
+            report['playback_directories_removed'] = all(not Path(p).exists() for p in report.get('playback_directories', []))
         if case.startswith('dictation-'):
             report['dictation_retired'] = getattr(app, '_native_dictation', None) is None
             report['dictation_directories_removed'] = all(not Path(p).exists() for p in report.get('dictation_directories', []))
@@ -386,6 +408,32 @@ async def serve(app):
             await asyncio.sleep(0.01)
 
     with ExitStack() as stack:
+        if case.startswith('playback-'):
+            from litetui import native_playback
+            script = root / 'device_free_playback.py'
+            remote = True if case == 'playback-queued' else False if case == 'playback-uncertain' else None
+            delay = 8 if case in ('playback-stop','playback-quit') else 0.05
+            child = f"import pathlib,time\ntime.sleep({delay})\npathlib.Path({str(root/'speech-completed')!r}).touch()\n"
+            script.write_text(
+                "import sys,json,pathlib\n"
+                "from litetui import native_playback_worker as w\n"
+                "v=w.voice_backend\n"
+                "p=pathlib.Path(sys.argv[1])\n"
+                f"(pathlib.Path({str(root/'speech-parameters.json')!r})).write_bytes((p/'parameters.json').read_bytes())\n"
+                f"v.litesuite_tts.speak=lambda text:{remote!r}\n"
+                "v.optional_python.resolve=lambda *modules:sys.executable\n"
+                "v._speaker=lambda executable:(sys.executable,0)\n"
+                f"v._SAPI_CHILD={child!r}\nv._EDGE_CHILD={child!r}\n"
+                "w.run(p)\n", encoding='utf8')
+            def command(directory):
+                report.setdefault('playback_directories', []).append(str(directory))
+                return [sys.executable, '-B', str(script), str(directory)]
+            def popen(argv, **kwargs):
+                assert argv[:3] == [sys.executable, '-B', str(script)]
+                assert kwargs['cwd'] == Path(argv[3]) and kwargs['creationflags'] & 4
+                return real_popen(argv, **kwargs)
+            stack.enter_context(patch.object(native_playback, '_command', command))
+            stack.enter_context(patch.object(subprocess, 'Popen', popen))
         if case.startswith('dictation-'):
             from litetui import native_dictation
             script = root / 'device_free_capture.py'

@@ -318,3 +318,42 @@ async def test_unicode_alias_shadowing_matches_canonical_lowercase_dispatch(comm
         assert result["native_action"] == "skill_prepare" and result["row_id"] == rows["\u00df"]["id"]
         assert result["command"] == token
     assert tree(app) == before
+
+
+@pytest.mark.asyncio
+async def test_registered_glassbox_routes_only_inspect_or_prefill_review(command_app, monkeypatch):
+    from litetui.plugins import glassbox_plugin as gb
+
+    app = command_app
+    catalog = read(app)
+    row = next(r for r in catalog["entries"] if r["native_action"] == "glassbox")
+    assert row["tokens"] == ["glassbox", "/glassbox"]
+    assert row["palette"] and row["title"] == "Glass box feed" and row["accepts_arguments"]
+    assert app.plugins.commands["glassbox"] is app.plugins.commands["/glassbox"]
+    assert app.plugins.commands["glassbox"].handler is gb._cmd_glassbox
+    request = selection(app, catalog, "glassbox")
+    before = tree(app)
+    enabled, server, recorder = gb._ENABLED, gb.SERVER, gb._RECORDER
+    monkeypatch.setattr(gb.Server, "start", forbidden)
+    monkeypatch.setattr(gb.Server, "stop", forbidden)
+    for arguments in ("", "status", "START", "on", "stop", "off", "  on  "):
+        assert command_surface.resolve(app, {**request, "arguments": arguments})["arguments"] == arguments
+        raw = {k: v for k, v in request.items() if k != "row_id"}
+        route = command_surface.resolve(app, {**raw, "command": "/glassbox " + arguments})
+        assert route["native_action"] == "glassbox"
+    for arguments in ("reload", "start now", "status stop", "--port 9999", "on\x85off"):
+        with pytest.raises(ValueError, match="Glassbox accepts"):
+            command_surface.resolve(app, {**request, "arguments": arguments})
+    assert gb._ENABLED is enabled and gb.SERVER is server and gb._RECORDER is recorder
+    assert tree(app) == before
+    old = app.plugins.commands["glassbox"]
+    replacement = replace(old, handler=forbidden)
+    for token in old.tokens:
+        app.plugins.commands[token] = replacement
+    with pytest.raises(ValueError, match="stale"):
+        command_surface.resolve(app, request)
+    foreign = replace(old, owner="foreign-plugin")
+    for token in old.tokens:
+        app.plugins.commands[token] = foreign
+    changed = read(app)
+    assert next(r for r in changed["entries"] if "/glassbox" in r["tokens"])["native_action"] is None

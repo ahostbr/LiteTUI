@@ -214,6 +214,14 @@ def _claim_and_run(app, coro, *, report=None) -> bool:
     return submit_op(app, coro, report=report)
 
 
+def _disconnect_message(manager, target, was) -> str:
+    """The bool means a handle existed, not that its stop was confirmed."""
+    if target in getattr(manager, "_stop_failed", ()):
+        return f"Stop of {target!r} is unconfirmed; its handle is retained. Retry disconnect to confirm cleanup."
+    return (f"Disconnected {target!r}. It stays declared — /mcp connect {target} brings it back."
+            if was else f"{target!r} was not running.")
+
+
 def _schedule_mutation(app, op, describe) -> None:
     """Run one MCP mutation off-loop through the coordinator. A fresh completion
     Event is what a concurrent turn's _stream gate awaits."""
@@ -384,10 +392,10 @@ def _cmd_mcp(app, name: str, arg: str) -> None:
         return
 
     if verb in ("disconnect", "stop"):
+        manager = app.mcp
         _schedule_mutation(
-            app, lambda: app.mcp.disconnect(target),
-            lambda was: (f"Disconnected {target!r}. It stays declared — /mcp connect {target} brings it back."
-                         if was else f"{target!r} was not running."))
+            app, lambda: manager.disconnect(target),
+            lambda was: _disconnect_message(manager, target, was))
         return
 
     if verb == "reconnect":

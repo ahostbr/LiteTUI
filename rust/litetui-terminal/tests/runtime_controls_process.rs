@@ -47,8 +47,12 @@ fn launch(case: &str) -> (Interactive, PathBuf) {
         ),
     )
     .unwrap();
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/runtime_controls_runtime.py");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if case.starts_with("claude-queue-") {
+            "tests/fixtures/claude_queue_runtime.py"
+        } else {
+            "tests/fixtures/runtime_controls_runtime.py"
+        });
     fs::write(package.join("cli.py"),format!(r#"import json,os,runpy
 from pathlib import Path
 os.environ['RUST_RUNTIME_CONTROLS_SOURCE']={}
@@ -63,7 +67,7 @@ runpy.run_path({},run_name='__main__')
     let root = base.join("data");
     let workspace = base.join("workspace");
     fs::create_dir(&workspace).unwrap();
-    let args = vec![
+    let mut args = vec![
         "--python".into(),
         std::env::var("LITETUI_AUTHORITY_PYTHON").expect("controlled dependency Python"),
         "--workspace".into(),
@@ -73,9 +77,17 @@ runpy.run_path({},run_name='__main__')
         "--data-root".into(),
         root.to_string_lossy().into_owned(),
         "--backend".into(),
-        "custom".into(),
+        if case.starts_with("claude-queue-") {
+            "claude".into()
+        } else {
+            "custom".into()
+        },
         "--model".into(),
-        "switch-old".into(),
+        if case.starts_with("claude-queue-") {
+            "claude-fixture".into()
+        } else {
+            "switch-old".into()
+        },
         "--tool-profile".into(),
         if case.starts_with("host-") {
             "autonomous".into()
@@ -83,7 +95,7 @@ runpy.run_path({},run_name='__main__')
             "strict".into()
         },
         "--tools".into(),
-        if case.starts_with("host-") {
+        if case.starts_with("host-") || case == "claude-queue-tools" {
             "on".into()
         } else {
             "off".into()
@@ -99,6 +111,9 @@ runpy.run_path({},run_name='__main__')
         "--server-mode".into(),
         "connect".into(),
     ];
+    if case.starts_with("claude-queue-") {
+        args.truncate(args.len() - 4);
+    }
     (Interactive::start(Options::parse(&args).unwrap()), root)
 }
 fn next(runtime: &mut Interactive) -> io::Result<Observation> {
@@ -1652,4 +1667,358 @@ fn dictation_send(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
             })?,
     )?;
     wait(runtime, app, |e| matches!(e, Observation::Work(_)))
+}
+
+#[test]
+#[ignore = "real registered source and pinned SDK fixture, no live provider"]
+fn claude_queue_preserves_draft_and_delivers_only_after_original_turn_settles() {
+    for case in [
+        "claude-queue-normal",
+        "claude-queue-tools",
+        "claude-queue-stale",
+        "claude-queue-quit",
+        "claude-queue-uncertain",
+        "claude-queue-emission",
+    ] {
+        let (runtime, root) = launch(case);
+        let draft = "  Claude queued input 雪  ";
+        let result=runtime.with_cleanup(|runtime| {
+            let mut app=Demo::live("claude".into(),"claude-fixture".into());
+            wait(runtime,&mut app,|e| matches!(e,Observation::Ready))?;
+            let chat=app.live.as_mut().unwrap();
+            chat.submit("Original controlled Claude input")?;
+            runtime.submit(chat.take_submission().unwrap())?;
+            stage(runtime,&mut app,&root,"stream-active")?;
+            app.insert_text(draft);
+            app.composer.move_cursor(Motion::WordLeft,true);
+            let caret=(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned());
+            // The alternate chord is explicitly refused; it cannot silently interrupt.
+            app.submit_chord(true);
+            dispatch_midturn(runtime,&mut app)?;
+            assert!(draw(&mut app).contains("does not interrupt"));
+            app.live.as_mut().unwrap().work.key(KeyEvent::new(KeyCode::Esc,KeyModifiers::NONE));
+            for cancel in [true,false] {
+                assert_eq!(app.composer.text(),draft);
+                assert_eq!(caret,(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned()));
+                app.submit_chord(false);
+                dispatch_midturn(runtime,&mut app)?;
+                let screen=draw(&mut app);
+                assert!(screen.contains("next Claude turn") && screen.contains("does not interrupt"),"{screen}");
+                assert_eq!(app.composer.text(),draft);
+                if cancel {
+                    app.live.as_mut().unwrap().work.key(KeyEvent::new(KeyCode::Esc,KeyModifiers::NONE));
+                    continue;
+                }
+                if case=="claude-queue-stale" {
+                    fs::write(root.join("release-stream"),b"retire before Apply")?;
+                    while app.live.as_ref().unwrap().busy { app.observe_live(next(runtime)?)?; }
+                }
+                app.live.as_mut().unwrap().work.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE));
+                if case=="claude-queue-emission" {
+                    let intent=app.live.as_mut().unwrap().work.take_intent().expect("reviewed Apply");
+                    runtime.work(intent)?;
+                    stage(runtime,&mut app,&root,"queue-emission-failed")?;
+                    assert_eq!(app.composer.text(),draft);
+                    assert_eq!(caret,(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned()));
+                    return runtime.quit();
+                }
+                dispatch_midturn(runtime,&mut app)?;
+                if case=="claude-queue-stale" {
+                    assert_eq!(app.composer.text(),draft);
+                    assert_eq!(caret,(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned()));
+                    return runtime.quit();
+                }
+                if case=="claude-queue-uncertain" {
+                    assert!(draw(&mut app).contains("uncertain"));
+                    assert_eq!(app.composer.text(),draft);
+                    assert_eq!(caret,(app.composer.before_cursor().to_owned(),app.composer.selected_text().to_owned()));
+                    return runtime.quit();
+                }
+                assert_eq!(app.composer.text(),"");
+            }
+            if case=="claude-queue-quit" { return runtime.quit(); }
+            fs::write(root.join("release-stream"),b"finish original before second query")?;
+            let mut settled=false;
+            for _ in 0..160 {
+                let event=next(runtime)?;
+                settled |=matches!(&event,Observation::WorkExecution(update) if matches!(update.as_ref(),litetui_terminal::live::WorkExecution::Settled{..}));
+                app.observe_live(event)?;
+                if settled && !app.live.as_ref().unwrap().busy { return runtime.quit(); }
+            }
+            Err(io::Error::other("Claude queued input did not settle"))
+        });
+        assert!(result.is_ok(), "{case}: {result:?} {}", root.display());
+        let r: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(r["denied"], json!([]));
+        assert_eq!(r["sdk_retired"], true);
+        assert_eq!(r["reader_retired"], true);
+        assert!(
+            r["workers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["finished"] == true)
+        );
+        let queries = r["claude_queries"].as_array().unwrap();
+        let inputs = r["work"]["inputs"].as_array().unwrap();
+        if case == "claude-queue-stale" {
+            assert_eq!(queries.len(), 1);
+            assert!(inputs.is_empty());
+            continue;
+        }
+        if case == "claude-queue-uncertain" {
+            assert_eq!(queries.len(), 1);
+            assert!(inputs.is_empty());
+            let segment = r["claude_ledger"]["selected_segment"].as_str().unwrap();
+            let prepared = r["claude_ledger"]["segments"][segment]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["state"] == "prepared")
+                .collect::<Vec<_>>();
+            assert_eq!(prepared.len(), 1);
+            assert_eq!(prepared[0]["content"], draft);
+            assert!(
+                !r["wire"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["result"]["kind"] == "midturn_queued")
+            );
+            continue;
+        }
+        let wire = r["wire"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["result"]["kind"] == "midturn_queued")
+            .unwrap();
+        let delivery = &wire["result"]["native_delivery"];
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(delivery["state"], "prepared");
+        let segment = delivery["segment_id"].as_str().unwrap();
+        let entry = r["claude_ledger"]["segments"][segment]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == delivery["id"])
+            .unwrap();
+        assert_eq!(entry["content"], draft);
+        if matches!(case, "claude-queue-quit" | "claude-queue-emission") {
+            assert_eq!(queries.len(), 1);
+            if case == "claude-queue-emission" {
+                assert_eq!(r["queue_emission_failed"], true);
+            }
+            assert_eq!(inputs[0]["state"], "held");
+            assert_eq!(entry["state"], "prepared");
+            let recovered = r["queue_recovered"].as_array().unwrap();
+            assert_eq!(recovered.len(), 1);
+            assert_eq!(recovered[0]["input"], inputs[0]["ref"]);
+            assert_eq!(recovered[0]["state"], "held");
+        } else {
+            assert_eq!(queries.len(), 2);
+            assert_eq!(queries[0]["tools_enabled"], case == "claude-queue-tools");
+            assert_eq!(queries[0]["tools_enabled"], queries[1]["tools_enabled"]);
+            assert_eq!(queries[0]["tools"], queries[1]["tools"]);
+            assert_eq!(queries[0]["generation"], queries[1]["generation"]);
+            assert!(queries[1]["text"].as_str().unwrap().ends_with(draft));
+            assert_eq!(
+                queries[1]["delivery"]["_claude_entry"]["id"],
+                delivery["id"]
+            );
+            assert_eq!(inputs[0]["admission"]["mode"], "new_turn");
+            assert_eq!(
+                inputs[0]["admission"]["provider_delivery"]["id"],
+                delivery["id"]
+            );
+            assert_eq!(inputs[0]["state"], "settled");
+            assert_eq!(entry["state"], "terminal");
+        }
+    }
+}
+
+#[test]
+#[ignore = "actual source-owned response playback through synthetic device-free speech helpers"]
+fn selected_response_playback_reviews_exact_text_and_preserves_remote_ownership() {
+    for case in [
+        "playback-local",
+        "playback-edge",
+        "playback-queued",
+        "playback-uncertain",
+        "playback-stop",
+        "playback-quit",
+        "playback-disabled",
+    ] {
+        let (runtime, root) = launch(case);
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve my unsent playback draft");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let original = (
+                app.composer.text().to_owned(),
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned(),
+            );
+            app.open_history();
+            playback_send(runtime, &mut app)?;
+            let history_screen = draw(&mut app);
+            assert!(
+                history_screen.contains("S speak")
+                    || history_screen.contains("S selects an answer"),
+                "{history_screen}"
+            );
+            playback_key(&mut app, KeyCode::Char('s'));
+            assert!(
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .saved_history
+                    .take_intent()
+                    .is_none()
+            );
+            assert!(draw(&mut app).contains("Select saved answer"));
+            playback_key(&mut app, KeyCode::Right);
+            assert!(draw(&mut app).contains("Selected second answer"));
+            playback_key(&mut app, KeyCode::Enter);
+            playback_send(runtime, &mut app)?;
+            let screen = draw(&mut app);
+            if case == "playback-disabled" {
+                assert!(screen.contains("Enable response speech"), "{screen}");
+                playback_key(&mut app, KeyCode::Esc);
+                return runtime.quit();
+            }
+            assert!(
+                screen.contains("Selected second answer with and a final sentence."),
+                "{screen}"
+            );
+            assert!(!screen.contains("inline code"));
+            assert!(screen.contains("Read every page"));
+            playback_key(&mut app, KeyCode::Enter);
+            playback_send(runtime, &mut app)?;
+            let expected = match case {
+                "playback-queued" => "LiteSuite acknowledged queued speech",
+                "playback-uncertain" => "Speech acknowledgement is uncertain",
+                "playback-stop" | "playback-quit" => "Local playback is active",
+                _ => "local playback helper finished",
+            };
+            for _ in 0..120 {
+                if draw(&mut app).contains(expected) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                if let Some(intent) = app.live.as_mut().unwrap().saved_history.take_intent() {
+                    runtime.history(intent)?;
+                    wait(runtime, &mut app, |e| {
+                        matches!(e, Observation::SavedHistory(_))
+                    })?;
+                }
+            }
+            assert!(
+                draw(&mut app).contains(expected),
+                "{case} {}",
+                draw(&mut app)
+            );
+            assert_eq!(
+                original,
+                (
+                    app.composer.text().to_owned(),
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
+            assert!(app.live.as_mut().unwrap().take_submission().is_none());
+            if case == "playback-quit" {
+                return runtime.quit();
+            }
+            // A second Enter never resubmits a queued, uncertain, or completed response.
+            if !matches!(case, "playback-stop") {
+                playback_key(&mut app, KeyCode::Enter);
+                assert!(
+                    app.live
+                        .as_mut()
+                        .unwrap()
+                        .saved_history
+                        .take_intent()
+                        .is_none()
+                );
+            }
+            playback_key(&mut app, KeyCode::Esc);
+            playback_send(runtime, &mut app)?;
+            if case == "playback-queued" {
+                assert!(app.notice.contains("owns its queue"), "{}", app.notice)
+            }
+            runtime.quit()
+        });
+        assert!(result.is_ok(), "{case} {result:?} {}", root.display());
+        let report: Value =
+            serde_json::from_slice(&fs::read(root.join("runtime-controls-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["denied"], json!([]));
+        assert_eq!(report["requests"], json!([]));
+        assert_eq!(report["playback_retired"], true);
+        assert_eq!(report["playback_directories_removed"], true);
+        if case == "playback-disabled" {
+            assert!(report["playback_directories"].is_null());
+        } else {
+            assert_eq!(report["playback_directories"].as_array().unwrap().len(), 1);
+            let parameters: Value =
+                serde_json::from_slice(&fs::read(root.join("speech-parameters.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                parameters["text"],
+                "Selected second answer with and a final sentence."
+            );
+            assert_eq!(
+                parameters["engine"],
+                if case == "playback-edge" {
+                    "edge"
+                } else {
+                    "pyttsx3"
+                }
+            );
+            assert_eq!(
+                parameters["voice"],
+                if case == "playback-edge" {
+                    "Private edge voice"
+                } else {
+                    "Private fixture voice"
+                }
+            );
+            assert_eq!(parameters["timeout"], 10);
+            if matches!(case, "playback-stop" | "playback-quit") {
+                std::thread::sleep(Duration::from_millis(8100));
+                assert!(
+                    !root.join("speech-completed").exists(),
+                    "local speech descendant escaped cancellation"
+                );
+            }
+            if matches!(case, "playback-queued" | "playback-uncertain") {
+                assert!(
+                    !root.join("speech-completed").exists(),
+                    "remote dispatch replayed locally"
+                );
+            }
+        }
+    }
+}
+fn playback_key(app: &mut Demo, code: KeyCode) {
+    app.live
+        .as_mut()
+        .unwrap()
+        .saved_history
+        .key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+fn playback_send(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+    let intent = app
+        .live
+        .as_mut()
+        .unwrap()
+        .saved_history
+        .take_intent()
+        .ok_or_else(|| io::Error::other("Missing playback/history intent"))?;
+    runtime.history(intent)?;
+    wait(runtime, app, |e| matches!(e, Observation::SavedHistory(_)))
 }

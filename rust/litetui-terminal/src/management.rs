@@ -386,6 +386,7 @@ struct ConversationPending {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum HistoryPhase {
+    Speech(crate::playback::Request),
     Image(crate::history::ImageSelection),
     Locate,
     Snapshot,
@@ -402,13 +403,17 @@ struct SavedHistoryPending {
     prior: Option<crate::history::Page>,
 }
 enum PreferencesRequest {
+    Glassbox(Box<crate::glassbox_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
+    ModelLifecycle(Box<crate::model_lifecycle::Request>),
     Voice(Box<crate::voice_preferences::Request>),
 }
 enum PreferencesReply {
+    Glassbox(Box<crate::glassbox_controls::Update>),
     Mcp(Box<crate::mcp_config::Update>),
     ModelPreferences(Box<crate::model_preferences::Update>),
+    ModelLifecycle(Box<crate::model_lifecycle::Update>),
     Voice(Box<crate::voice_preferences::Update>),
     Next(PreferencesRequest),
 }
@@ -417,6 +422,8 @@ impl PreferencesRequest {
         match self {
             Self::Mcp(_) => &crate::mcp_config::OPERATIONS,
             Self::ModelPreferences(_) => &crate::model_preferences::OPERATIONS,
+            Self::Glassbox(_) => &crate::glassbox_controls::OPERATIONS,
+            Self::ModelLifecycle(_) => &crate::model_lifecycle::OPERATIONS,
             Self::Voice(_) => &crate::voice_preferences::OPERATIONS,
         }
     }
@@ -424,6 +431,8 @@ impl PreferencesRequest {
         match self {
             Self::Mcp(r) => matches!(**r, crate::mcp_config::Request::Apply(_, _)),
             Self::ModelPreferences(r) => matches!(**r, crate::model_preferences::Request::Apply(_)),
+            Self::Glassbox(r) => matches!(**r, crate::glassbox_controls::Request::Apply(_)),
+            Self::ModelLifecycle(r) => matches!(**r, crate::model_lifecycle::Request::Apply(_)),
             Self::Voice(r) => matches!(**r, crate::voice_preferences::Request::Apply(_)),
         }
     }
@@ -431,6 +440,8 @@ impl PreferencesRequest {
         match self {
             Self::Mcp(r) => r.command(id, instance),
             Self::ModelPreferences(r) => r.command(id, instance),
+            Self::Glassbox(r) => r.command(id, instance),
+            Self::ModelLifecycle(r) => r.command(id, instance),
             Self::Voice(r) => r.command(id, instance),
         }
     }
@@ -439,6 +450,10 @@ impl PreferencesRequest {
             Self::Mcp(_) => |reason| crate::settings_view::Update::Mcp(Err(reason)),
             Self::ModelPreferences(_) => {
                 |reason| crate::settings_view::Update::ModelPreferences(Err(reason))
+            }
+            Self::Glassbox(_) => |reason| crate::settings_view::Update::Glassbox(Err(reason)),
+            Self::ModelLifecycle(_) => {
+                |reason| crate::settings_view::Update::ModelLifecycle(Err(reason))
             }
             Self::Voice(_) => |reason| crate::settings_view::Update::Voice(Err(reason)),
         }
@@ -451,6 +466,14 @@ impl PreferencesRequest {
         command_id: &str,
     ) -> io::Result<PreferencesReply> {
         Ok(match self {
+            Self::Glassbox(r) => match r.response(v, id, instance, command_id)? {
+                crate::glassbox_controls::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::Glassbox(Box::new(next)))
+                }
+                crate::glassbox_controls::Reply::Update(update) => {
+                    PreferencesReply::Glassbox(Box::new(update))
+                }
+            },
             Self::Mcp(r) => match r.response(v, id, instance, command_id)? {
                 crate::mcp_config::Reply::Next(next) => {
                     PreferencesReply::Next(Self::Mcp(Box::new(next)))
@@ -463,6 +486,14 @@ impl PreferencesRequest {
                 }
                 crate::model_preferences::Reply::Update(update) => {
                     PreferencesReply::ModelPreferences(Box::new(update))
+                }
+            },
+            Self::ModelLifecycle(r) => match r.response(v, id, instance, command_id)? {
+                crate::model_lifecycle::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::ModelLifecycle(Box::new(next)))
+                }
+                crate::model_lifecycle::Reply::Update(update) => {
+                    PreferencesReply::ModelLifecycle(Box::new(update))
                 }
             },
             Self::Voice(r) => match r.response(v, id, instance, command_id)? {
@@ -494,6 +525,7 @@ pub struct Management {
     history_projection: bool,
     saved_history: Option<SavedHistoryPending>,
     history_snapshot: Option<crate::history::Snapshot>,
+    playback: Option<crate::playback::State>,
     history_page: Option<crate::history::Page>,
     history_target: Option<(crate::history_view::Target, crate::history::Identity)>,
     history_generation: u64,
@@ -576,6 +608,7 @@ impl Default for Management {
             history_projection: false,
             saved_history: None,
             history_snapshot: None,
+            playback: None,
             history_page: None,
             history_target: None,
             history_generation: 0,
@@ -784,6 +817,7 @@ impl Management {
         self.conversation_snapshot = None;
         self.conversation_review = None;
         self.history_snapshot = None;
+        self.playback = None;
         self.history_page = None;
         self.history_target = None;
         self.compact.invalidate();
@@ -2882,6 +2916,12 @@ impl Management {
             crate::settings_view::Intent::ModelPreferences(r) => {
                 (Some(PreferencesRequest::ModelPreferences(r)), false)
             }
+            crate::settings_view::Intent::Glassbox(r) => {
+                (Some(PreferencesRequest::Glassbox(r)), false)
+            }
+            crate::settings_view::Intent::ModelLifecycle(r) => {
+                (Some(PreferencesRequest::ModelLifecycle(r)), false)
+            }
             crate::settings_view::Intent::Voice(r) => (Some(PreferencesRequest::Voice(r)), false),
             crate::settings_view::Intent::RuntimeStatus => (None, true),
             _ => (None, false),
@@ -2976,6 +3016,12 @@ impl Management {
                 Ok(PreferencesReply::Mcp(update)) => crate::settings_view::Update::Mcp(Ok(update)),
                 Ok(PreferencesReply::ModelPreferences(update)) => {
                     crate::settings_view::Update::ModelPreferences(Ok(update))
+                }
+                Ok(PreferencesReply::Glassbox(update)) => {
+                    crate::settings_view::Update::Glassbox(Ok(update))
+                }
+                Ok(PreferencesReply::ModelLifecycle(update)) => {
+                    crate::settings_view::Update::ModelLifecycle(Ok(update))
                 }
                 Ok(PreferencesReply::Voice(update)) => {
                     crate::settings_view::Update::Voice(Ok(update))
@@ -4482,7 +4528,45 @@ impl Management {
             .history_target
             .as_ref()
             .is_some_and(|(target, owner)| target == &key.target && owner == &active);
+        let mutating = matches!(&intent,Intent::Speech{request,..} if matches!(request.action,"start"|"close"));
         let (phase, identity, descriptor, position, prior, mut command) = match intent {
+            Intent::Speech { request, .. } => {
+                if !self
+                    .operations
+                    .iter()
+                    .any(|op| op == crate::playback::OPERATION)
+                {
+                    return Err(fail("Source does not support reviewed response playback"));
+                }
+                let descriptor = self
+                    .history_snapshot
+                    .as_ref()
+                    .filter(|s| {
+                        admitted
+                            && s.token == request.snapshot
+                            && s.materialized
+                            && Self::history_target_matches(&s.identity, &key.target, &active)
+                    })
+                    .ok_or_else(|| fail("Refresh history before reviewing playback"))?
+                    .clone();
+                if !self.history_page.as_ref().is_some_and(|p| {
+                    p.fragments.iter().any(|f| {
+                        crate::playback::Selection::from_fragment(f).as_ref()
+                            == Some(&request.selected)
+                    })
+                }) {
+                    return Err(fail("Select a complete answer in the current history page"));
+                }
+                let command = request.command(&descriptor);
+                (
+                    HistoryPhase::Speech(request),
+                    descriptor.identity.clone(),
+                    Some(descriptor),
+                    PageRequest::Anchor(Anchor::Head),
+                    None,
+                    command,
+                )
+            }
             Intent::Inspect {
                 revision, session, ..
             } => {
@@ -4586,10 +4670,12 @@ impl Management {
                 )
             }
         };
-        let id = self
-            .wire
-            .register_read()
-            .map_err(|_| fail("Cannot reserve history read"))?;
+        let id = if mutating {
+            self.wire.register_request()
+        } else {
+            self.wire.register_read()
+        }
+        .map_err(|_| fail("Cannot reserve history operation"))?;
         command["id"] = id.to_value();
         // A read-only inspection cannot retain a previously offered Open review.
         self.browser_preview = None;
@@ -4656,8 +4742,10 @@ impl Management {
         if frame["ok"] != true {
             // The frontend retains its previous page as stale. No cached cursor
             // may authorize another read until an explicit refresh succeeds.
-            self.history_snapshot = None;
-            self.history_page = None;
+            if !matches!(pending.phase, HistoryPhase::Speech(_)) {
+                self.history_snapshot = None;
+                self.history_page = None;
+            }
             return Ok(Step::SavedHistory(Update::Rejected {
                 key: pending.key,
                 reason: text(&frame, "error", 4096)?.into(),
@@ -4665,6 +4753,21 @@ impl Management {
         }
         let result = &frame["result"];
         let mut command = match pending.phase {
+            HistoryPhase::Speech(request) => {
+                let snapshot = pending
+                    .descriptor
+                    .ok_or_else(|| fail("Playback lost its history descriptor"))?;
+                let state = request.parse(result, &snapshot, self.playback.as_ref())?;
+                self.playback = if state.status == "closed" {
+                    None
+                } else {
+                    Some(state.clone())
+                };
+                return Ok(Step::SavedHistory(Update::Speech {
+                    key: pending.key,
+                    state,
+                }));
+            }
             HistoryPhase::Locate => {
                 let Target::Saved { session } = &pending.key.target else {
                     return Err(fail("Current history cannot use a saved locator"));

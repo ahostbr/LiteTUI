@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import threading
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from litetui.thinking_capabilities import set_thinking, thinking_capabilities
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 _real_stdout = os.fdopen(os.dup(1), "w", encoding="utf-8", closefd=True)
 _real_stdin = sys.__stdin__
+_required_publication = ContextVar("rpc_required_publication", default=False)
 
 def rpc_emit(data: dict[str, Any]) -> None:
     """Write one JSON line to fd 1 (the real stdout, immune to Textual's replacement)."""
@@ -32,7 +34,7 @@ def rpc_emit(data: dict[str, Any]) -> None:
         _real_stdout.flush()
     except (BrokenPipeError, OSError):
         result = data.get("result")
-        if isinstance(result, dict) and "runtime_controls_version" in result:
+        if _required_publication.get() or isinstance(result, dict) and "runtime_controls_version" in result:
             raise  # A publication ticket can release only after the actual response flush.
 
 
@@ -118,7 +120,13 @@ def publish_management_result(app: LiteTUI, cmd: dict[str, Any], result: Any) ->
     except Exception as exc:  # noqa: BLE001 - a rejected barrier must never publish success
         _respond(cmd.get("id"), ok=False, error=str(exc))
         return
-    _respond(cmd.get("id"), ok=True, result=result)
+    # Every owned ticket requires a successful write and flush, regardless of
+    # its result schema. Keep the ordinary emitter API and reset on all exits.
+    token = _required_publication.set(ticket is not None or _required_publication.get())
+    try:
+        _respond(cmd.get("id"), ok=True, result=result)
+    finally:
+        _required_publication.reset(token)
     background_input.finish_publication(app, ticket)
 
 

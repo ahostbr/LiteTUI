@@ -6,7 +6,7 @@
 
 During a host-managed reply, enter a plain text draft of up to 16 KiB. Enter queues it at the next safe tool boundary or as the next turn. Ctrl+Shift+Enter (Ctrl+J in Windows terminals) interrupts the current reply and sends the draft first in a fresh turn. “Enter interrupts mid-turn” swaps the two keys. Both actions open a review. Read each page, then press Enter to confirm a queue or I to confirm an interrupt. Escape keeps the draft.
 
-Interruption keeps partial output and earlier tool effects. The review shows how many queued messages the draft will precede. LiteTUI clears the composer after the source confirms the exact text in the Work ledger. Closing before delivery retains the input in F1 Work. An older source can offer queueing alone. Provider-managed Codex and Claude turns and attachments require their own delivery contracts and currently decline both mid-turn actions.
+Interruption keeps partial output and earlier tool effects. The review shows how many queued messages the draft will precede. LiteTUI clears the composer after the source confirms the exact text in the Work ledger. Closing before delivery retains the input in F1 Work. An older source can offer queueing alone. Claude replies support reviewed next-turn queueing. The source binds the message to the active SDK session and prepares its durable entry before confirming. Delivery waits for the current reply to finish and for that exact confirmation to be published. A failed publication retains the input for recovery. Claude interruption, Codex mid-turn actions and queued attachments still require their own delivery contracts.
 
 ## Attach an image to a live prompt
 
@@ -102,7 +102,7 @@ To edit `memory.md`, `soul.md` or `handoff.md`, select the document in Context a
 
 In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, cached MCP server information, and the existing Glassbox recorder/listener state. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
 
-Press **V** in F10 to inspect voice and dictation preferences. Use the arrows to choose an editable value and Enter to review the change. After saving, the panel rereads the preference. Opening the panel leaves audio devices idle.
+Press **V** in F10 to inspect voice and dictation preferences. Use the arrows to choose an editable value and Enter to review the change. Response speech enables later explicit playback of a selected saved answer. After saving, the panel rereads the preference. Opening the panel leaves audio devices idle.
 
 Press M in F10 to inspect MCP server declarations in the shared LiteTUI data folder. Use the arrows to select a declaration. E reviews enabling or disabling an editable entry in `.mcp.json`. Enter saves the reviewed change and rereads the file. A matching `mcp.json` entry takes precedence. The setting takes effect at a later explicit MCP startup.
 
@@ -216,7 +216,7 @@ Or double-click **`open-chat.cmd`** for a new dark Windows Terminal window. Both
 - Type a prompt; **Enter** sends it. Replies stream into the existing themed assistant-card geometry. Subsequent prompts retain the real Python/Claude conversation.
 - **Esc** while a turn is active opens stop confirmation; **Ctrl+Esc** reaches it during a question or approval. Keep going is selected by default. A second confirmed stop forces interruption. The session waits for source settlement before accepting another prompt, retains partial output, and never replays the stopped prompt. Stopping does not undo earlier tool effects.
 - **Ctrl+Q** requests shutdown and waits for the contained runtime process tree. Draw/input errors also run an unconditional cleanup epilogue; UI and cleanup failures are both preserved.
-- While a turn is busy, another Enter preserves the draft rather than queueing/retrying it. Live submission preserves composer whitespace. History, editing, selection, clipboard and scrolling reuse the existing implementations. **F4** now uses source-owned theme selection and persistence.
+- While a turn is busy, Enter opens the available source-owned Queue or Interrupt review described above. A refusal keeps the draft editable. Live submission preserves composer whitespace. History, editing, selection, clipboard and scrolling reuse the existing implementations. **F4** now uses source-owned theme selection and persistence.
 - The footer now projects validated runtime facts: reported model, conversation prefix, optional thinking level, context counts and optional settled token rate. A ready context ceiling is labelled `max`, never used as a percentage denominator. Only a confirmed usage maximum enables percent; a later missing maximum clears it. Unknown seat/authority/plan/cache/task facts stay absent. The thinking action opens the verified selector; other footer actions remain inert, and closed sessions clear controls. This is the source-default ordering, not user-preference transport or complete footer parity.
 - Reported reasoning now uses the existing dashed thinking-card geometry. Claude's additive `reconcile: append|replace` wire field keeps authoritative snapshots from duplicating a prefix; older ambiguous Claude reasoning fails visibly rather than guessing. Generic unannotated deltas remain append-only. Reasoning never substitutes for an answer or completion receipt. It shares answer-text limits; no timing/token counts are fabricated. Thinking fold controls, preferences and timing remain open.
 - Native tool **display records** now retain per-turn IDs, input snapshots, nullable reported failure and first-seen transcript position between assistant cards. Explicit `card_index` ownership keeps late answer/reasoning corrections on their original card. Orphan results say the request is unavailable; pending tools become incomplete at turn end/closure. These observations never dispatch tools or grant approval. Tool folding/timing and live-provider tool verification remain open.
@@ -562,3 +562,41 @@ faster-whisper model must already be installed. This bounded native route
 supports the canonical Windows ffmpeg recorder. Controlled subprocess tests use
 private simulated audio boundaries. Physical microphone and model acceptance
 remain pending.
+
+
+### Current model preferences
+
+F10 → P shows the current model's temperature, Top P and response-token override. Up and Down select a field. E enters a number, and I chooses the conversation default. Enter opens the review, then a fresh Enter saves after the complete review is visible. The panel rereads the saved override and the effective next-request value. F5 refreshes the current model facts.
+
+### Current model lifecycle
+
+F10 → L shows the current model, endpoint, loaded state and saved load context. L reviews Load, U reviews Unload and R reviews Reconnect. Read the complete review, then press Enter to apply once. The panel independently verifies the resulting model and client binding.
+
+LM Studio applies the saved context length when loading. An existing connect-only llama router uses its configured preset. Custom endpoints support reconnect at the reviewed address. Load and Unload can affect other clients sharing that server. F12 provides the separate NInfer and Strata engine controls. Quit joins an in-flight operation and its cleanup before releasing the conversation.
+
+### Glassbox controls
+
+F10 → G opens the registered Glassbox controls. S reviews Start and T reviews Stop. Read every page, then Enter confirms the exact action. The review displays the owned artifacts/glassbox.jsonl recording path and configured loopback endpoint. F5 reads current state. The registered /glassbox command and F11 entry open the same panel. /glassbox start and /glassbox stop open the corresponding review, and require a separate confirmation.
+
+Start enables future event recording and attempts to bind the loopback listener. If binding fails, the panel shows recording enabled and the listener unavailable. A separate source readback verifies each outcome. Stop disables recording and joins the listener plus its accepted client handlers. A failed join retains the exact handles for another Stop or bounded process cleanup. Quit joins them before acknowledgement.
+
+### Speak a selected saved response
+
+F6 opens history. S selects a complete assistant answer on the visible page.
+Left and Right choose between answers, then Enter opens a source-owned review of
+the full speech text and current Voice settings. Read every review page before
+pressing Enter to speak once. Canonical speech cleaning removes code and long
+paths. This native route accepts up to 16 KiB of cleaned text and requires a
+configured timeout from 1 to 3600 seconds.
+
+F5 refreshes status. During local playback, Enter stops the selected response's
+helper. Escape returns to history after joining local cleanup. Ctrl+Q joins that
+cleanup before conversation release. LiteSuite owns acknowledged queued speech,
+and the local controls leave that queue under LiteSuite's ownership. Uncertain
+remote acknowledgements produce a visible status and receive no automatic retry.
+
+The existing enable switch, LiteSuite-first choice, fallback engine, selected
+voice and timeout remain authoritative. The composer draft stays unsent. Automatic
+Work input waits through the playback lifetime and exact Close publication.
+Controlled tests replace audio and network boundaries with disposable helpers.
+Physical speaker and live LiteSuite queue acceptance remain pending.

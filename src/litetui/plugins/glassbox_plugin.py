@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import json
 import queue
+import socket
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -46,6 +48,8 @@ QUEUE_MAX = 256
 #: Loopback only, always. This publishes what the model is thinking about.
 HOST = "127.0.0.1"
 DEFAULT_PORT = 7580
+MAX_CLIENTS = 32
+STOP_SECONDS = 2.0
 
 
 class Hub:
@@ -133,7 +137,7 @@ def sse_frame(event: dict) -> str:
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def do_GET(self) -> None:                      # noqa: N802 — stdlib name
+    def do_GET(self) -> None:
         if self.path.split("?")[0] != "/events":
             self.send_error(404)
             return
@@ -142,112 +146,273 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
 
-        q = HUB.subscribe()
+        hub = self.server.hub
+        with self.server.clients_lock:
+            if self.server.stopping.is_set():
+                return
+            q = hub.subscribe()
+            self.server.subscribers.add(q)
         try:
-            while True:
+            while not self.server.stopping.is_set():
                 try:
                     event = q.get(timeout=15.0)
+                    if event is None or self.server.stopping.is_set():
+                        break
                     self.wfile.write(sse_frame(event).encode("utf-8"))
                 except queue.Empty:
                     # A comment frame. Without it an idle feed looks identical
                     # to a dead one to every intermediary and to the browser's
                     # own reconnect logic.
+                    if self.server.stopping.is_set():
+                        break
                     self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass                                    # the tab closed. normal.
         finally:
-            HUB.unsubscribe(q)
+            with self.server.clients_lock:
+                self.server.subscribers.discard(q)
+            hub.unsubscribe(q)
 
     def log_message(self, *_args) -> None:
         """Silence. The stdlib default writes to stderr, which in this app is
         a TUI — see the standing rule about never spraying a terminal."""
 
 
+class _OwnedHTTPServer(ThreadingHTTPServer):
+    """Retain accepted sockets and handlers until bounded joined retirement."""
+
+    block_on_close = False
+
+    def __init__(self, address):
+        super().__init__(address, _Handler)
+        self.timeout = 0.1
+        self.stopping = threading.Event()
+        self.hub = HUB
+        self.clients: dict[threading.Thread, socket.socket] = {}
+        self.clients_lock = threading.Lock()
+        self.subscribers: set[queue.Queue] = set()
+
+    def process_request(self, request, client_address):
+        with self.clients_lock:
+            self.clients = {t: sock for t, sock in self.clients.items() if t.is_alive()}
+            if self.stopping.is_set() or len(self.clients) >= MAX_CLIENTS:
+                self.shutdown_request(request)
+                return
+            request.settimeout(0.25)
+            thread = threading.Thread(
+                target=self.process_request_thread,
+                args=(request, client_address),
+                name="glassbox-client",
+                daemon=True,
+            )
+            self.clients[thread] = request
+            try:
+                thread.start()
+            except RuntimeError:
+                self.clients.pop(thread, None)
+                self.shutdown_request(request)
+                raise
+
+    def run(self):
+        try:
+            while not self.stopping.is_set():
+                self.handle_request()
+        except (OSError, ValueError):
+            if not self.stopping.is_set():
+                runtime_log.record_error(
+                    "glassbox_listener_failed",
+                    detail="Listener loop ended unexpectedly",
+                )
+            self.stopping.set()
+
+    def handle_error(self, _request, _address):
+        runtime_log.record_error(
+            "glassbox_handler_failed", detail="An owned request handler failed"
+        )
+
+    def stop_clients(self):
+        with self.clients_lock:
+            clients = tuple(self.clients.items())
+            subscribers = tuple(self.subscribers)
+        for subscriber in subscribers:
+            try:
+                subscriber.put_nowait(None)
+            except queue.Full:
+                pass  # A reader with queued data observes stopping before its next write.
+        for _thread, connection in clients:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
+        return tuple(thread for thread, _ in clients)
+
+
 class Server:
-    """Start/stop, idempotent in both directions."""
+    """Retain the exact listener and request threads until every owner joins."""
 
     def __init__(self) -> None:
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: _OwnedHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._lock = threading.RLock()
         self.port: int | None = None
+        self.owner = None
+        self.instance: str | None = None
 
     @property
     def running(self) -> bool:
-        return self._httpd is not None
-
-    def start(self, port: int = DEFAULT_PORT) -> str:
-        if self._httpd is not None:
-            return f"already serving on http://{HOST}:{self.port}/events"
-        try:
-            self._httpd = ThreadingHTTPServer((HOST, port), _Handler)
-        except OSError as e:
-            self._httpd = None
-            # T137: the raw WinError (usually 10048 — port busy) goes to the
-            # sink; the line names what seems wrong and what to do.
-            runtime_log.record_error(
-                "glassbox_bind_failed",
-                detail=f"bind {HOST}:{port}: {type(e).__name__}: {e}",
-                exc=e,
+        with self._lock:
+            return (
+                self._httpd is not None
+                and not self._httpd.stopping.is_set()
+                and self._httpd.socket.fileno() >= 0
+                and self._thread is not None
+                and self._thread.is_alive()
             )
-            return ("[error] could not start the glassbox server — its port is "
-                    "probably busy. Close whatever holds it and retry.")
-        self.port = port
-        self._thread = threading.Thread(
-            target=self._httpd.serve_forever, name="glassbox-sse", daemon=True
-        )
-        self._thread.start()
-        return f"serving http://{HOST}:{port}/events"
 
-    def stop(self) -> str:
-        if self._httpd is None:
-            return "not running"
-        self._httpd.shutdown()
-        self._httpd.server_close()
-        self._httpd = None
-        self._thread = None
-        port, self.port = self.port, None
-        return f"stopped (was {HOST}:{port})"
+    def snapshot(self) -> dict:
+        with self._lock:
+            state = (
+                "running"
+                if self.running
+                else "stopped"
+                if self._httpd is None
+                else "stopping"
+            )
+            return {
+                "state": state,
+                "port": self.port if state == "running" else None,
+                "listener": self.instance,
+            }
 
+    def start(self, port: int | None = None, *, owner=None) -> str:
+        with self._lock:
+            if self._httpd is not None:
+                if self.owner is not owner:
+                    return "[error] listener belongs to another app"
+                if self.running:
+                    return f"already serving on http://{HOST}:{self.port}/events"
+                return "[error] previous listener is still stopping"
+            port = DEFAULT_PORT if port is None else port
+            try:
+                listener = _OwnedHTTPServer((HOST, port))
+            except OSError as exc:
+                runtime_log.record_error(
+                    "glassbox_bind_failed",
+                    detail=f"bind {HOST}:{port}: {type(exc).__name__}: {exc}",
+                    exc=exc,
+                )
+                return "[error] could not bind the glassbox listener"
+            thread = threading.Thread(
+                target=listener.run, name="glassbox-sse", daemon=True
+            )
+            self._httpd, self._thread = listener, thread
+            self.owner, self.instance = owner, str(uuid.uuid4())
+            self.port = listener.server_address[1]
+            try:
+                thread.start()
+            except RuntimeError:
+                listener.server_close()
+                self._httpd = self._thread = None
+                self.owner = self.instance = self.port = None
+                return "[error] could not start the glassbox listener worker"
+            return f"serving http://{HOST}:{self.port}/events"
+
+    def stop(self, *, owner=None) -> str:
+        with self._lock:
+            if self._httpd is None:
+                return "not running"
+            if owner is not None and self.owner is not owner:
+                return "[error] listener belongs to another app"
+            listener, thread = self._httpd, self._thread
+            listener.stopping.set()
+            listener.server_close()
+            deadline = time.monotonic() + STOP_SECONDS
+            clients = listener.stop_clients()
+            if thread is not None:
+                thread.join(max(0, deadline - time.monotonic()))
+            # The joined accept loop makes this the final admitted set.
+            clients = tuple(set(clients) | set(listener.stop_clients()))
+            for client in clients:
+                client.join(max(0, deadline - time.monotonic()))
+            if (
+                thread is not None
+                and thread.is_alive()
+                or any(t.is_alive() for t in clients)
+            ):
+                return "[error] glassbox shutdown retains unfinished workers"
+            self._httpd = self._thread = None
+            self.owner = self.instance = None
+            port, self.port = self.port, None
+            return f"stopped (was {HOST}:{port})"
 
 SERVER = Server()
 
 
 def cached_status() -> dict:
-    """Use only the in-process recorder flag and the bound loopback socket address."""
+    """Sample the in-process recording choice and actual retained listener."""
     listener = SERVER._httpd
     port = None
     if listener is not None:
         host, port = listener.server_address
         if host != HOST or type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("Glassbox listener has an unexpected address")
+        stopping = getattr(listener, "stopping", None)
+        if stopping is not None and stopping.is_set():
+            port = None
     return {"recording": _ENABLED, "port": port}
 
 
 def _cmd_glassbox(app, name: str, arg: str) -> None:
-    global _ENABLED
+    global _ENABLED, _CONTROL_REVISION
+    retained = getattr(app, "_glassbox_owned_server", None)
+    if (
+        _RECORDER_OWNER is not app
+        or SERVER._httpd is not None
+        and SERVER.owner is not app
+        or retained is not None
+        and retained._httpd is not None
+        and retained is not SERVER
+    ):
+        raise ValueError(
+            "Glassbox registration belongs to another app or retained listener"
+        )
     action = (arg or "").strip().lower()
     if action in ("start", "on", ""):
+        app._glassbox_owned_server = SERVER
         _ENABLED = True
-        app.system_message(f"[glassbox] {SERVER.start()}")
+        _CONTROL_REVISION += 1
+        app.system_message(f"[glassbox] {SERVER.start(owner=app)}")
         app.system_message(f"[glassbox] recording to {_RECORDER.path}")
     elif action in ("stop", "off"):
         _ENABLED = False
-        app.system_message(f"[glassbox] {SERVER.stop()}")
+        _CONTROL_REVISION += 1
+        app.system_message(f"[glassbox] {SERVER.stop(owner=app)}")
     elif action == "status":
-        where = f"http://{HOST}:{SERVER.port}/events" if SERVER.running else "not running"
-        app.system_message(f"[glassbox] {where}\n[glassbox] recording to {_RECORDER.path}")
+        where = (
+            f"http://{HOST}:{SERVER.port}/events" if SERVER.running else "not running"
+        )
+        app.system_message(
+            f"[glassbox] {where}\n[glassbox] recording to {_RECORDER.path}"
+        )
     else:
         app.system_message("[glassbox] usage: /glassbox [start|stop|status]")
 
-
 _RECORDER = Recorder(Path("glassbox.jsonl"))
+_RECORDER_OWNER = None
+_CONTROL_REVISION = 0
 
 
 def register(ctx, root: Path | None = None) -> None:
     """One observer, two sinks. Registered unconditionally: the recorder is
     cheap and the hub is free until someone subscribes."""
-    global _RECORDER
+    global _RECORDER, _RECORDER_OWNER, _ENABLED
+    if SERVER.owner is not None and SERVER.owner is not ctx.app:
+        raise ValueError("Another app owns the Glassbox listener")
+    if _RECORDER_OWNER is not ctx.app:
+        _ENABLED = False
+    _RECORDER_OWNER = ctx.app
     base = Path(root) if root is not None else _default_root(ctx)
     _RECORDER = Recorder(base / "glassbox.jsonl")
 
@@ -262,19 +427,37 @@ def register(ctx, root: Path | None = None) -> None:
         # loads this plugin and therefore ALWAYS had an observer. The property
         # the test named was true of the registry and false of the product.
         # Trade accepted: no post-hoc record of a turn you did not anticipate.
-        if not _ENABLED:
+        if not _ENABLED or _RECORDER_OWNER is not ctx.app:
             return
         _RECORDER.write(event)
         HUB.publish(event)
 
     ctx.observe(_on_event)
     ctx.command(
-        ("glassbox",), _cmd_glassbox,
+        ("glassbox", "/glassbox"), _cmd_glassbox,
         palette="Glass box feed",
         help="start/stop the live SSE feed the brain page reads",
         group="automation",
     )
 
+
+def stop_owned(app):
+    """Disable this app's recorder and join only its exact retained listener."""
+    global _ENABLED, _CONTROL_REVISION, _RECORDER_OWNER
+    if _RECORDER_OWNER is app and _ENABLED:
+        _ENABLED = False
+        _CONTROL_REVISION += 1
+    retained = getattr(app, "_glassbox_owned_server", None)
+    server = retained if retained is not None else SERVER
+    if server.owner is app:
+        server.stop(owner=app)
+        if server._httpd is not None:
+            raise RuntimeError(
+                "Glassbox retains unfinished listener or handler workers"
+            )
+    app._glassbox_owned_server = None
+    if _RECORDER_OWNER is app:
+        _RECORDER_OWNER = None
 
 def _default_root(ctx) -> Path:
     try:

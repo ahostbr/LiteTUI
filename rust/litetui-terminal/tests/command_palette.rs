@@ -645,3 +645,66 @@ fn rename_route_bound_and_command_specific_argument_policy_remain_strict() {
     d["entries"][0]["native_action"] = json!("themes");
     assert!(Catalog::parse(&d, SESSION, AGENT, "custom", "model").is_err());
 }
+
+#[test]
+fn glassbox_registered_routes_prefill_review_only_and_preserve_draft() {
+    use litetui_terminal::{glassbox_controls::Request, settings_view};
+    for (arguments, expected) in [
+        ("", Request::Snapshot),
+        ("status", Request::Snapshot),
+        ("start", Request::Review("start".into())),
+        (" ON ", Request::Review("start".into())),
+        ("stop", Request::Review("stop".into())),
+        ("off", Request::Review("stop".into())),
+    ] {
+        let mut d = data();
+        d["entries"][0]["native_action"] = json!("glassbox");
+        d["entries"][0]["accepts_arguments"] = json!(true);
+        d["entries"][0]["tokens"] = json!(["glassbox", "/glassbox"]);
+        let c = Catalog::parse(&d, SESSION, AGENT, "custom", "model").unwrap();
+        let raw = format!("/glassbox {arguments}");
+        let mut rv = route_data(&c, Some(&raw));
+        rv["native_action"] = json!("glassbox");
+        rv["arguments"] = json!(arguments);
+        let route = Route::parse(&rv, &c, None, Some(&raw), "").unwrap();
+        assert_eq!(route.action, Action::Glassbox);
+        let mut app = Demo::live("custom".into(), "model".into());
+        app.live.as_mut().unwrap().ready = true;
+        app.insert_text("Exact draft 雪 ");
+        app.composer
+            .move_cursor(litetui_terminal::composer::Motion::WordLeft, true);
+        let caret = (
+            app.composer.before_cursor().to_owned(),
+            app.composer.selected_text().to_owned(),
+        );
+        app.live.as_mut().unwrap().commands.raw(&raw);
+        app.live.as_mut().unwrap().commands.take_intent();
+        app.observe_live(Observation::Commands(Update::Route {
+            catalog: c.clone(),
+            route,
+        }))
+        .unwrap();
+        assert_eq!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            Some(settings_view::Intent::Glassbox(Box::new(expected)))
+        );
+        app.live.as_mut().unwrap().settings.key(key(KeyCode::Enter));
+        assert_eq!(
+            app.live.as_mut().unwrap().settings.take_intent(),
+            None,
+            "no hidden apply before review result"
+        );
+        assert_eq!(app.composer.text(), "Exact draft 雪 ");
+        assert_eq!(
+            caret,
+            (
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned()
+            )
+        );
+        for invalid in ["reload", "start now", "--port 9999", "status stop"] {
+            rv["arguments"] = json!(invalid);
+            assert!(Route::parse(&rv, &c, None, Some(&raw), "").is_err());
+        }
+    }
+}

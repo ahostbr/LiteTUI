@@ -186,7 +186,7 @@ class Bridge:
         self.uncertain_inputs: set[str] = set()
         self.uncertain_error_owned = False
         self.pending_readbacks: dict[str, dict] = {}
-        self.user_queue_review: tuple[Any, bytes] | None = None
+        self.user_queue_review: tuple[Any, bytes, Any] | None = None
         self.close_event = None
         self.shutdown_task = None
         self.owner = (app._agent_session, app.store, app.backend, app.model_id, app.convo_id)
@@ -653,7 +653,8 @@ def _begin(app, entry, in_turn):
         raise ValueError("Work input changed before admission")
     if not app._pending_input or app._pending_input[0] is not entry.item:
         raise ValueError("Only the oldest exact queued Work input may be claimed")
-    if in_turn and entry.producer.ref["kind"] == "user_interrupt":
+    if in_turn and (entry.producer.ref["kind"] == "user_interrupt"
+                    or value.provider == "claude" and entry.producer.ref["kind"] == "user_queue"):
         raise ValueError("Interrupting text requires a fresh turn after the interrupted worker retires")
     if in_turn and current_origin(app) is None:
         raise ValueError("Safe-boundary Work admission lacks its exact execution")
@@ -937,7 +938,8 @@ def begin_close(app):
 
 async def settle_before_shutdown(app):
     cutoff = begin_close(app)
-    from litetui import native_dictation
+    from litetui import native_dictation, native_playback
+    await native_playback.retire(app, closing=True)
     await native_dictation.retire(app, closing=True)
     if cutoff is None:
         return None
@@ -1350,7 +1352,8 @@ def validate_document(document):
         validate_payload(payload)
         producer = producers[i["producer_id"]]
         if producer["kind"] in {"user_queue", "user_interrupt"} and (
-                epoch["provider"] != "host" or epoch["instance"] != producer["owner_instance"]
+                (epoch["provider"] != "host" and not (epoch["provider"] == "claude" and producer["kind"] == "user_queue"))
+                or epoch["instance"] != producer["owner_instance"]
                 or set(payload) != {"content", "text", "source", "tool_profile"} or payload["source"] != "rpc"
                 or type(payload["content"]) is not str or payload["text"] != payload["content"]):
             raise ValueError("Queued composer input lost its captured text or host epoch")
@@ -1395,7 +1398,7 @@ def validate_document(document):
         if origin["session_id"] != owner["session_id"] or origin["operation_id"] != a["operation_id"]:
             raise ValueError("Foreign Work admission origin")
         canonical_id(origin["execution_id"])
-        if producer["kind"] == "user_interrupt" and (a["mode"] != "new_turn"
+        if (producer["kind"] == "user_interrupt" or producer["kind"] == "user_queue" and epoch["provider"] == "claude") and (a["mode"] != "new_turn"
                 or a["operation_id"] == producer["causal_operation_id"]
                 or origin["execution_id"] == producer["causal_execution_id"]):
             raise ValueError("Interrupt delivery did not begin a fresh turn")
@@ -1811,7 +1814,7 @@ async def _run_job(app, job, manual=False):
         release(app, reservation)
 
 
-def queue_user_input(app, parent, review, payload, *, interrupt=False):
+def queue_user_input(app, parent, review, payload, *, interrupt=False, claude=None):
     """Capture one reviewed reply under the actual GUI worker and canonical FIFO."""
     from textual.worker import get_current_worker
 
@@ -1827,9 +1830,15 @@ def queue_user_input(app, parent, review, payload, *, interrupt=False):
         token = _PRODUCER.set((app, producer, _task()))
         try:
             item = dict(payload)
+            if claude is not None:
+                if interrupt or value.provider != "claude":
+                    raise ValueError("Only Claude next-turn queue may prepare native input")
+                item.update(claude.prepare(app, payload, review))
             entry = enqueue(app, producer, item)
             if entry.state != "queued" or _read(value.path) != value.raw:
                 raise ValueError("Queued composer input lacks an exact persisted ledger record")
+            if claude is not None:
+                claude.receipt(app, item, review)
             item["bubble"] = app._user_bubble(payload["content"], False, queued=not interrupt)
             if interrupt:
                 # These consecutive synchronous steps mirror the host send chord. Signal the
@@ -1915,6 +1924,9 @@ def cancel_deferred(app):
 
 
 def prompt_refusal(app):
+    from litetui import native_playback
+    if native_playback.blocking(app):
+        return "Close response playback before submitting a prompt"
     from litetui import native_dictation
     if native_dictation.blocking(app):
         return "Finish or cancel dictation before sending a prompt"
@@ -2618,6 +2630,16 @@ def prepare_publication(app, cmd, result):
     if ticket is None:
         from litetui import native_dictation
         ticket = native_dictation.prepare_publication(app, cmd, result)
+    if (ticket is None and cmd.get("backend") == "claude"
+            and cmd.get("type") in {"gui.prompt.native_queue_apply", "gui.prompt.native_send_apply"}):
+        from litetui import native_claude_queue
+        ticket = native_claude_queue.prepare_publication(app, cmd, result)
+    if ticket is None:
+        from litetui import native_model_lifecycle
+        ticket = native_model_lifecycle.prepare_publication(app, cmd, result)
+    if ticket is None:
+        from litetui import native_playback
+        ticket = native_playback.prepare_publication(app, cmd, result)
     if ticket is None:
         ticket = native_work_execution.prepare_publication(app, cmd, result)
     if ticket is None:
@@ -2630,9 +2652,17 @@ def prepare_publication(app, cmd, result):
 def finish_publication(app, ticket):
     from litetui import native_deferred, native_schedule, native_work_execution
     from litetui import native_runtime_controls
-    from litetui import native_dictation
+    if ticket is not None and getattr(app, "_native_claude_queue_publication", None) is ticket:
+        from litetui import native_claude_queue
+        native_claude_queue.finish_publication(app, ticket)
+        return
+    from litetui import native_dictation, native_model_lifecycle, native_playback
     if isinstance(ticket, native_dictation.Publication):
         native_dictation.finish_publication(app, ticket)
+    elif isinstance(ticket, native_model_lifecycle.Publication):
+        native_model_lifecycle.finish_publication(app, ticket)
+    elif isinstance(ticket, native_playback.Publication):
+        native_playback.finish_publication(app, ticket)
     elif isinstance(ticket, native_runtime_controls.Publication):
         native_runtime_controls.finish_publication(app, ticket)
     elif isinstance(ticket, native_work_execution.Publication):

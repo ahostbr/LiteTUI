@@ -903,13 +903,18 @@ impl Capture {
             if matches!(
                 producer.kind,
                 ProducerKind::UserQueue | ProducerKind::UserInterrupt
-            ) && (epoch.provider != Provider::Host
+            ) && ((epoch.provider != Provider::Host
+                && !(epoch.provider == Provider::Claude
+                    && producer.kind == ProducerKind::UserQueue))
                 || producer.owner != epoch.instance
                 || input.source != "rpc")
             {
-                return Err(bad("Recovered composer input lost its captured host epoch"));
+                return Err(bad(
+                    "Recovered composer input lost its captured provider epoch",
+                ));
             }
-            if producer.kind == ProducerKind::UserInterrupt
+            if (producer.kind == ProducerKind::UserInterrupt
+                || producer.kind == ProducerKind::UserQueue && epoch.provider == Provider::Claude)
                 && admission
                     .as_ref()
                     .is_some_and(|a| !producer.fresh_interrupt(a))
@@ -1740,10 +1745,12 @@ impl Ledger {
         if matches!(
             p.kind,
             ProducerKind::UserQueue | ProducerKind::UserInterrupt
-        ) && (self.capture.provider != Provider::Host || p.owner != self.capture.instance)
+        ) && ((self.capture.provider != Provider::Host
+            && !(self.capture.provider == Provider::Claude && p.kind == ProducerKind::UserQueue))
+            || p.owner != self.capture.instance)
         {
             return Err(bad(
-                "Queued composer input belongs to a different host epoch",
+                "Queued composer input belongs to a different provider epoch",
             ));
         }
         let state = match text(e, "phase", 32)?.as_str() {
@@ -1956,7 +1963,10 @@ impl Ledger {
             .expect("input producer")
             .producer;
         let committed = matches!(payload.delivery, Delivery::CommittedHistory(_));
-        if p.kind == ProducerKind::UserInterrupt && !p.fresh_interrupt(&a) {
+        if (p.kind == ProducerKind::UserInterrupt
+            || p.kind == ProducerKind::UserQueue && self.capture.provider == Provider::Claude)
+            && !p.fresh_interrupt(&a)
+        {
             return Err(bad(
                 "Interrupting text requires a fresh turn after its foreground worker",
             ));

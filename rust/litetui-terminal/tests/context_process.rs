@@ -17,6 +17,8 @@ use std::{
 };
 
 fn launch(fixture_file: &str) -> (Interactive, PathBuf) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ordinal = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
         .map(PathBuf::from)
@@ -29,7 +31,7 @@ fn launch(fixture_file: &str) -> (Interactive, PathBuf) {
         .as_nanos();
     let directory = crate_root
         .join("target/context-process-tests")
-        .join(format!("{}-{epoch}", std::process::id()));
+        .join(format!("{}-{epoch}-{ordinal}", std::process::id()));
     let wrapper = directory.join("source/src/litetui");
     let data = directory.join("data");
     fs::create_dir_all(&wrapper).unwrap();
@@ -366,6 +368,8 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
             );
             let path = data.join("settings.json");
             let mut expected = json_file(&path);
+            assert_eq!(expected["tts_enabled"], false);
+            assert!(opened.contains("Response speech: off"), "{opened}");
             for (index, (name, value, label)) in [
                 ("stt_model", json!("small.en"), "Dictation model"),
                 ("tts_engine", json!("edge"), "Fallback speech engine"),
@@ -374,6 +378,7 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
                     json!(false),
                     "Prefer LiteSuite speech",
                 ),
+                ("tts_enabled", json!(true), "Response speech"),
             ]
             .into_iter()
             .enumerate()
@@ -396,7 +401,8 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
                 expected[name] = value;
                 assert_eq!(json_file(&path), expected);
             }
-            settings_key(runtime, &mut app, KeyCode::F(5))?;
+            let refreshed = settings_key(runtime, &mut app, KeyCode::F(5))?;
+            assert!(refreshed.contains("Response speech: on"), "{refreshed}");
             settings_key(runtime, &mut app, KeyCode::Esc)?;
             settings_key(runtime, &mut app, KeyCode::Esc)?;
             assert_eq!(app.composer.text(), "Preserve the draft and selection.");
@@ -425,9 +431,13 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
             "review",
             "apply",
             "readback",
+            "review",
+            "apply",
+            "readback",
             "preferences"
         ]
     );
+    assert!(report["requests"].as_array().unwrap().is_empty());
     assert_eq!(json_file(&data.join("voice-guards.json")), json!([]));
 }
 
@@ -1659,4 +1669,547 @@ fn model_preferences_review_reread_and_reach_the_normal_request_consumer() {
             .all(|w| w["finished"] == true)
     );
     eprintln!("Model preference process evidence: {}", data.display());
+}
+
+#[test]
+#[ignore = "real private loopback Glassbox control, subscribers and joined Quit"]
+fn glassbox_controls_review_bind_failure_stop_and_quit_join_exact_listener_workers() {
+    let (runtime, data) = launch("glassbox_controls_runtime.py");
+    let draft = "  Preserve Glassbox composer 雪  ";
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        app.insert_text(draft);
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let caret = (
+            app.composer.before_cursor().to_owned(),
+            app.composer.selected_text().to_owned(),
+        );
+        app.open_settings();
+        settings_drain(runtime, &mut app)?;
+        let screen = settings_key(runtime, &mut app, KeyCode::Char('g'))?;
+        assert!(
+            screen.contains("Event recording disabled") && screen.contains("Listener stopped"),
+            "{screen}"
+        );
+        let review = settings_key(runtime, &mut app, KeyCode::Char('s'))?;
+        assert!(review.contains("Start enables event recording"), "{review}");
+        settings_key(runtime, &mut app, KeyCode::Esc)?;
+        let fresh = settings_key(runtime, &mut app, KeyCode::Char('g'))?;
+        assert!(
+            fresh.contains("Event recording disabled") && fresh.contains("Listener stopped"),
+            "{fresh}"
+        );
+        for expected in ["partial", "applied", "stopped", "applied"] {
+            let action = if expected == "stopped" { 't' } else { 's' };
+            let screen = settings_key(runtime, &mut app, KeyCode::Char(action))?;
+            assert!(
+                screen
+                    .chars()
+                    .filter(|c| !c.is_whitespace() && *c != '│')
+                    .collect::<String>()
+                    .contains("glassbox.jsonl")
+                    && screen.contains(if action == 't' {
+                        "Stop disables recording"
+                    } else {
+                        "Start enables event recording"
+                    }),
+                "{screen}"
+            );
+            let screen = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            match expected {
+                "partial" => assert!(
+                    screen.contains("listener did not reach")
+                        && screen.contains("Event recording enabled"),
+                    "{screen}"
+                ),
+                "stopped" => assert!(
+                    screen.contains("Verified requested state.")
+                        && screen.contains("Event recording disabled")
+                        && screen.contains("Listener stopped"),
+                    "{screen}"
+                ),
+                _ => assert!(
+                    screen.contains("Verified requested state.")
+                        && screen.contains("Listener running"),
+                    "{screen}"
+                ),
+            }
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(
+                caret,
+                (
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
+        }
+        runtime.quit()
+    });
+    assert!(result.is_ok(), "{result:?} {}", data.display());
+    let evidence = json_file(&data.join("glassbox-controls.json"));
+    assert_eq!(evidence["exit_joined"], true);
+    assert_eq!(evidence["recording"], false);
+    assert!(evidence["threads"].as_array().unwrap().len() >= 4);
+    assert!(
+        evidence["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["alive"] == false)
+    );
+    assert_eq!(
+        evidence["file_preserved"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("private fixture event"))
+            .count(),
+        2
+    );
+    let requests = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(requests["requests"], json!([]));
+    assert_eq!(requests["denied"], json!([]));
+    let commands = requests["commands"].as_array().unwrap();
+    for (operation, expected) in [
+        ("gui.glassbox.native_review", 5),
+        ("gui.glassbox.native_apply", 4),
+        ("gui.glassbox.native_readback", 4),
+    ] {
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command["type"] == operation)
+                .count(),
+            expected,
+            "{operation}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "registered source reader, real connection workers and exact model lifecycle readback"]
+fn model_lifecycle_reconnect_review_preserves_draft_and_owned_runtime() {
+    let (runtime, data) = launch("model_lifecycle_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Retain this model lifecycle draft.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selection = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            let opened = settings_key(runtime, &mut app, KeyCode::Char('l'))?;
+            assert!(opened.contains("Current model lifecycle"), "{opened}");
+            assert!(opened.contains("http://127.0.0.1:45120/v1"), "{opened}");
+            assert!(opened.contains("Reported loaded: unknown"), "{opened}");
+            let refused = settings_key(runtime, &mut app, KeyCode::Char('l'))?;
+            assert!(refused.contains("no standard model load"), "{refused}");
+            let review = settings_key(runtime, &mut app, KeyCode::Char('r'))?;
+            assert!(review.contains("Review reconnect"), "{review}");
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Char('r'))?;
+            let settled = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                settled.contains("Operation and connection verified by independent readback."),
+                "{settled}"
+            );
+            settings_key(runtime, &mut app, KeyCode::F(5))?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Retain this model lifecycle draft.");
+            assert_eq!(app.composer.before_cursor(), selection);
+            Ok(())
+        })
+        .unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["initial_documents"], report["final_documents"]);
+    assert_eq!(report["initial_history"], report["history"]);
+    assert_eq!(report["before"], report["after"]);
+    assert!(report["requests"].as_array().unwrap().is_empty());
+    assert!(report["denied"].as_array().unwrap().is_empty());
+    let commands = report["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| {
+            c["type"]
+                .as_str()?
+                .strip_prefix("gui.models.native_lifecycle_")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        [
+            "snapshot", "review", "review", "apply", "readback", "snapshot"
+        ]
+    );
+    assert_eq!(
+        report["shutdown"]["result"]["work_shutdown"]["worker_settled"],
+        true
+    );
+    assert_eq!(report["reader_retired"], true);
+    assert!(
+        report["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["finished"] == true)
+    );
+    eprintln!("Model lifecycle process evidence: {}", data.display());
+}
+
+#[test]
+#[ignore = "registered source Quit joins a controlled synchronous model metadata read"]
+fn model_lifecycle_quit_joins_inflight_metadata_before_shutdown_receipt() {
+    let (runtime, data) = launch("model_lifecycle_quit_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            runtime.settings(litetui_terminal::settings_view::Intent::ModelLifecycle(
+                Box::new(litetui_terminal::model_lifecycle::Request::List),
+            ))?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !data.join("stage-model-read-enter.json").is_file() {
+                assert!(Instant::now() < deadline, "Metadata thread did not start");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            app.live.as_mut().unwrap().begin_quit();
+            runtime.quit()?;
+            Ok(())
+        })
+        .unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let events = report["events"].as_array().unwrap();
+    let exited = events
+        .iter()
+        .position(|e| e["kind"] == "stage" && e["stage"] == "model-read-exit")
+        .unwrap();
+    let shutdown = events
+        .iter()
+        .position(|e| e["kind"] == "wire" && e["frame"] == report["shutdown"])
+        .unwrap();
+    assert!(exited < shutdown);
+    assert_eq!(report["shutdown"]["ok"], true);
+    assert_eq!(report["reader_retired"], true);
+    assert!(
+        report["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["finished"] == true)
+    );
+    assert!(report["requests"].as_array().unwrap().is_empty());
+    eprintln!("Model lifecycle Quit evidence: {}", data.display());
+}
+#[test]
+#[ignore = "registered source Quit joins a controlled synchronous model metadata read"]
+fn model_lifecycle_quit_joins_canonical_connection_read_before_shutdown_receipt() {
+    let (runtime, data) = launch("model_lifecycle_quit_connect_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('l'))?;
+            settings_key(runtime, &mut app, KeyCode::Char('r'))?;
+            let settings = &mut app.live.as_mut().unwrap().settings;
+            settings.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            runtime.settings(settings.take_intent().unwrap())?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !data.join("stage-model-read-enter.json").is_file() {
+                assert!(Instant::now() < deadline, "Metadata thread did not start");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            app.live.as_mut().unwrap().begin_quit();
+            runtime.quit()?;
+            Ok(())
+        })
+        .unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let events = report["events"].as_array().unwrap();
+    let exited = events
+        .iter()
+        .position(|e| e["kind"] == "stage" && e["stage"] == "model-read-exit")
+        .unwrap();
+    let shutdown = events
+        .iter()
+        .position(|e| e["kind"] == "wire" && e["frame"] == report["shutdown"])
+        .unwrap();
+    assert!(exited < shutdown);
+    assert_eq!(report["shutdown"]["ok"], true);
+    assert_eq!(report["reader_retired"], true);
+    assert!(
+        report["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["finished"] == true)
+    );
+    assert!(report["requests"].as_array().unwrap().is_empty());
+    eprintln!("Model lifecycle Quit evidence: {}", data.display());
+}
+
+#[test]
+#[ignore = "registered Glassbox commands and F11 against private loopback source"]
+fn registered_glassbox_commands_and_palette_require_fresh_visible_review() {
+    use litetui_terminal::command_palette;
+    fn commands(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+        while let Some(intent) = app.live.as_mut().unwrap().commands.take_intent() {
+            runtime.commands(intent)?;
+            observe(runtime, app, |e| matches!(e, Observation::Commands(_)))?;
+        }
+        Ok(())
+    }
+    fn close(app: &mut Demo) {
+        for _ in 0..2 {
+            draw(app);
+            app.live
+                .as_mut()
+                .unwrap()
+                .settings
+                .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        assert!(!app.has_live_input());
+    }
+    let (runtime, data) = launch("glassbox_controls_runtime.py");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        let draft = "  Original palette draft 雪  ";
+        app.insert_text(draft);
+        app.composer.move_cursor(Motion::WordLeft, true);
+        let caret = (
+            app.composer.before_cursor().to_owned(),
+            app.composer.selected_text().to_owned(),
+        );
+        app.open_commands(); // The same public entry used by F11.
+        commands(runtime, &mut app)?;
+        draw(&mut app);
+        app.live.as_mut().unwrap().commands.paste("Glass box feed");
+        draw(&mut app);
+        app.live
+            .as_mut()
+            .unwrap()
+            .commands
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        commands(runtime, &mut app)?;
+        settings_drain(runtime, &mut app)?;
+        let screen = draw(&mut app);
+        assert!(
+            screen.contains("Event recording disabled") && screen.contains("Listener stopped"),
+            "{screen}"
+        );
+        assert_eq!(app.composer.text(), draft);
+        assert_eq!(
+            caret,
+            (
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned()
+            )
+        );
+        close(&mut app);
+        for (raw, outcome) in [
+            ("/glassbox", "inspect"),
+            ("/glassbox STATUS", "inspect"),
+            ("/glassbox start now", "reject"),
+            ("/glassbox on", "decline"),
+            ("/glassbox START", "partial"),
+            ("/glassbox on", "running"),
+            ("/glassbox off", "stopped"),
+            ("/glassbox stop", "decline"),
+            ("/glassbox start", "running"),
+        ] {
+            app.composer.clear();
+            app.insert_text(raw);
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let caret = (
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned(),
+            );
+            app.submit();
+            commands(runtime, &mut app)?;
+            if outcome == "reject" {
+                assert!(draw(&mut app).contains("Glassbox accepts"));
+                assert!(app.live.as_mut().unwrap().settings.take_intent().is_none());
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .commands
+                    .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                continue;
+            }
+            // A queued Enter before the source review arrives cannot apply.
+            app.live
+                .as_mut()
+                .unwrap()
+                .settings
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            settings_drain(runtime, &mut app)?;
+            app.live
+                .as_mut()
+                .unwrap()
+                .settings
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(
+                app.live.as_mut().unwrap().settings.take_intent().is_none(),
+                "hidden review cannot apply"
+            );
+            let review = draw(&mut app);
+            if outcome == "inspect" {
+                assert!(
+                    review.contains("Event recording disabled")
+                        && review.contains("Listener stopped")
+                );
+            } else {
+                assert!(
+                    review.contains(if raw.contains("stop") || raw.contains("off") {
+                        "Stop disables recording"
+                    } else {
+                        "Start enables event recording"
+                    }),
+                    "{review}"
+                );
+                let mut repeat = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                repeat.kind = crossterm::event::KeyEventKind::Repeat;
+                app.live.as_mut().unwrap().settings.key(repeat);
+                assert!(app.live.as_mut().unwrap().settings.take_intent().is_none());
+                if outcome != "decline" {
+                    let verified = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                    assert!(
+                        verified.contains(match outcome {
+                            "partial" => "listener did not reach",
+                            "stopped" => "Listener stopped",
+                            _ => "Listener running",
+                        }),
+                        "{verified}"
+                    );
+                }
+            }
+            assert_eq!(app.composer.text(), raw);
+            assert_eq!(
+                caret,
+                (
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
+            close(&mut app);
+        }
+        // Retain the exact source catalog route in normal discovery.
+        assert!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .commands
+                .catalog
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .any(|row| row.owner == "glassbox"
+                    && row.action == Some(command_palette::Action::Glassbox)
+                    && row.tokens == ["glassbox", "/glassbox"])
+        );
+        runtime.quit()
+    });
+    assert!(result.is_ok(), "{result:?} {}", data.display());
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"], json!([]));
+    assert_eq!(report["denied"], json!([]));
+    let commands = report["commands"].as_array().unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| c["type"] == "gui.glassbox.native_apply")
+            .count(),
+        4
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| c["type"] == "gui.glassbox.native_readback")
+            .count(),
+        4
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| c["type"] == "gui.glassbox.native_review")
+            .count(),
+        6
+    );
+    let proof = json_file(&data.join("glassbox-controls.json"));
+    assert_eq!(proof["exit_joined"], true);
+    assert_eq!(proof["recording"], false);
+    assert!(
+        proof["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["alive"] == false)
+    );
+    assert!(
+        proof["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["status"] == "partial")
+    );
+    eprintln!("Glassbox registered command evidence: {}", data.display());
+}
+
+#[test]
+#[ignore = "disposable source-owned MCP child; retained stop retry and joined native Quit"]
+fn mcp_owned_shutdown_joins_retained_stdio_server_before_ack_and_lease_release() {
+    let (runtime, data) = launch("mcp_shutdown_runtime.py");
+    let draft = "Preserve MCP cleanup draft 雪";
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        observe(runtime, &mut app, |event| {
+            matches!(event, Observation::Ready)
+        })?;
+        app.insert_text(draft);
+        app.open_settings();
+        settings_drain(runtime, &mut app)?;
+        let screen = settings_key(runtime, &mut app, KeyCode::Char('i'))?;
+        assert!(
+            screen.contains("private") && screen.contains("failed"),
+            "{screen}"
+        );
+        assert_eq!(app.composer.text(), draft);
+        runtime.quit()
+    });
+    assert!(result.is_ok(), "{result:?} {}", data.display());
+    let proof = json_file(&data.join("mcp-shutdown.json"));
+    for field in [
+        "exit_joined",
+        "lease_joined",
+        "proc_exited",
+        "reader_joined",
+    ] {
+        assert_eq!(proof[field], true, "{field}: {proof}");
+    }
+    assert_eq!(proof["spawns"], 1);
+    assert_eq!(proof["stop_calls"], 2);
+    assert_eq!(proof["mcp_enabled"], false);
+    assert_eq!(proof["retained"]["servers"][0]["state"], "failed");
+    let transport = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(transport["requests"], json!([]));
+    assert_eq!(transport["denied"], json!([]));
+    assert!(
+        !transport["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| {
+                command["type"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("gui.mcp.") || name == "prompt")
+            })
+    );
+    eprintln!("MCP owned shutdown evidence: {}", data.display());
 }

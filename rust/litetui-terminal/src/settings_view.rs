@@ -33,8 +33,10 @@ pub struct Snapshot {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
+    Glassbox(Box<crate::glassbox_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
+    ModelLifecycle(Box<crate::model_lifecycle::Request>),
     Voice(Box<crate::voice_preferences::Request>),
     RuntimeStatus,
     Read,
@@ -43,8 +45,10 @@ pub enum Intent {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
+    Glassbox(Result<Box<crate::glassbox_controls::Update>, String>),
     Mcp(Result<Box<crate::mcp_config::Update>, String>),
     ModelPreferences(Result<Box<crate::model_preferences::Update>, String>),
+    ModelLifecycle(Result<Box<crate::model_lifecycle::Update>, String>),
     Voice(Result<Box<crate::voice_preferences::Update>, String>),
     RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
@@ -199,9 +203,11 @@ fn display(value: &str) -> String {
 
 #[derive(Default)]
 pub struct View {
+    glassbox: crate::glassbox_controls::View,
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
     model_preferences: crate::model_preferences::View,
+    model_lifecycle: crate::model_lifecycle::View,
     voice: crate::voice_preferences::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
@@ -230,6 +236,15 @@ impl View {
         self.notice = "Reading current settings…".into();
         self.hide();
     }
+    pub(crate) fn open_glassbox(&mut self, action: Option<&str>) {
+        self.hide();
+        self.glassbox.open();
+        self.waiting = true;
+        self.intent = Some(Intent::Glassbox(Box::new(match action {
+            Some(action) => crate::glassbox_controls::Request::Review(action.into()),
+            None => crate::glassbox_controls::Request::Snapshot,
+        })));
+    }
     pub fn runtime_status_open(&self) -> bool {
         self.runtime_status.is_open()
     }
@@ -238,6 +253,8 @@ impl View {
             || self.mcp.open
             || self.voice.open
             || self.model_preferences.open
+            || self.glassbox.open
+            || self.model_lifecycle.open
     }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting || self.editor.owns_input() || self.compaction.owns_input()
@@ -250,8 +267,10 @@ impl View {
             .or_else(|| self.intent.take())
     }
     pub fn hide(&mut self) {
+        self.glassbox.hide();
         self.mcp.hide();
         self.model_preferences.hide();
+        self.model_lifecycle.hide();
         self.voice.hide();
         self.runtime_status.hide();
         self.editor.hide();
@@ -265,8 +284,10 @@ impl View {
         self.voice.dictation_key(key)
     }
     pub fn close(&mut self) {
+        self.glassbox = Default::default();
         self.mcp = Default::default();
         self.model_preferences = Default::default();
+        self.model_lifecycle = Default::default();
         self.voice = Default::default();
         self.runtime_status.close();
         self.editor.close();
@@ -332,8 +353,12 @@ impl View {
             Update::ModelPreferences(result) => {
                 self.model_preferences.update(result.map(|update| *update))
             }
+            Update::ModelLifecycle(result) => {
+                self.model_lifecycle.update(result.map(|update| *update))
+            }
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
+            Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
             Update::RuntimeStatus(status) => {
                 if self.runtime_status.is_open() {
                     match status {
@@ -380,6 +405,20 @@ impl View {
             if let Some(request) = self.model_preferences.key(key) {
                 self.waiting = true;
                 self.intent = Some(Intent::ModelPreferences(Box::new(request)));
+            }
+            return;
+        }
+        if self.glassbox.open {
+            if let Some(request) = self.glassbox.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Glassbox(Box::new(request)));
+            }
+            return;
+        }
+        if self.model_lifecycle.open {
+            if let Some(request) = self.model_lifecycle.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::ModelLifecycle(Box::new(request)));
             }
             return;
         }
@@ -438,6 +477,17 @@ impl View {
                 )));
                 self.hide();
             }
+            KeyCode::Char('g') if key.kind == KeyEventKind::Press => {
+                self.open_glassbox(None);
+            }
+            KeyCode::Char('l') if key.kind == KeyEventKind::Press => {
+                self.model_lifecycle.open();
+                self.waiting = true;
+                self.intent = Some(Intent::ModelLifecycle(Box::new(
+                    crate::model_lifecycle::Request::List,
+                )));
+                self.hide();
+            }
             KeyCode::Char('v') if key.kind == KeyEventKind::Press => {
                 self.voice.open();
                 self.waiting = true;
@@ -479,7 +529,12 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.mcp.open || self.voice.open || self.model_preferences.open {
+        if self.mcp.open
+            || self.voice.open
+            || self.model_preferences.open
+            || self.glassbox.open
+            || self.model_lifecycle.open
+        {
             return;
         }
         if self.runtime_status.is_open() {
@@ -536,6 +591,14 @@ impl View {
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if self.model_preferences.open {
             self.model_preferences.draw(frame, area, theme);
+            return;
+        }
+        if self.glassbox.open {
+            self.glassbox.draw(frame, area, theme);
+            return;
+        }
+        if self.model_lifecycle.open {
+            self.model_lifecycle.draw(frame, area, theme);
             return;
         }
         if self.voice.open {
@@ -707,7 +770,7 @@ impl View {
         );
         frame.render_widget(
             Paragraph::new(
-                "P model · V voice · M MCP declarations · I status · E edit · C compaction · R refresh · Esc close",
+                "P preferences · L model lifecycle · V voice · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
             ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );

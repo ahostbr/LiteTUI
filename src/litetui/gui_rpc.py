@@ -35,7 +35,8 @@ def current_operation(app):
 
 
 OPERATIONS = (
-    "hello", "state", "voice.native_dictation", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
+    "glassbox.native_snapshot", "glassbox.native_review", "glassbox.native_apply", "glassbox.native_readback",
+    "hello", "state", "voice.native_dictation", "voice.native_playback", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -57,6 +58,7 @@ OPERATIONS = (
     "calendar.list", "diagnostics.get", "host_tools.register", "host_tools.unregister", "host_tools.result",
     "images.attach", "images.clear", "images.native_prepare", "images.native_clipboard", "images.native_preview", "screen.mark", "subagents.list", "subagents.kill", "subagents.tail",
     "models.load", "models.unload", "models.config", "models.configure",
+    "models.native_lifecycle_snapshot", "models.native_lifecycle_review", "models.native_lifecycle_apply", "models.native_lifecycle_readback",
     "models.native_preferences_snapshot", "models.native_preferences_review",
     "models.native_preferences_apply", "models.native_preferences_readback",
     "plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback",
@@ -676,6 +678,9 @@ def dispatch(app, cmd):
             thinking = {"levels": ["default", *("off" if x == "none" else x for x in levels)],
                         "source": "connected backend model metadata"}
         return {"backend": backend, "model": model, "thinking": thinking}
+    if operation in {"glassbox.native_snapshot", "glassbox.native_review", "glassbox.native_apply", "glassbox.native_readback"}:
+        from litetui import native_glassbox
+        return native_glassbox.dispatch(app, cmd)
     domain, action = operation.split(".", 1)
     if domain == "restored_input":
         _idle(app)
@@ -933,7 +938,13 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    from litetui import native_dictation
+    from litetui import native_dictation, native_playback
+    if operation == native_playback.OPERATION:
+        if native_dictation.blocking(app):
+            raise ValueError("Finish or cancel dictation before playback")
+        return await native_playback.dispatch(app, cmd)
+    if native_playback.blocking(app):
+        raise ValueError("Close response playback before another management action")
     if operation == native_dictation.OPERATION:
         return await native_dictation.dispatch(app, cmd)
     if native_dictation.blocking(app):
@@ -986,7 +997,7 @@ async def async_dispatch(app, cmd):
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
     blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
-    if operation.startswith("gui.models.native_preferences_"):
+    if operation.startswith(("gui.models.native_preferences_", "gui.models.native_lifecycle_")):
         blocking = True
     if operation == "gui.models.select":
         from litetui import background_input
@@ -1021,6 +1032,9 @@ async def _async_dispatch(app, cmd):
     native_schedule.operation_allowed(app, operation)
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
+    if operation.startswith("gui.models.native_lifecycle_"):
+        from litetui import native_model_lifecycle
+        return await native_model_lifecycle.dispatch(app, cmd)
     if operation.startswith("gui.models.native_preferences_"):
         from litetui import native_model_preferences
         return await native_model_preferences.dispatch(app, cmd)
@@ -1292,26 +1306,35 @@ async def _async_dispatch(app, cmd):
             app._active_tool_profile = prior
     if operation in {"gui.mcp.list", "gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect",
                      "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}:
+        from litetui.agent_preparation import await_preparation
+        manager = app.mcp
         action = operation.rsplit(".", 1)[1]
         if action == "list":
-            return app.mcp.describe()
+            return manager.describe()
         _idle(app)
-        if action == "reload":
-            app.mcp.reload_configs()
-        else:
-            name = cmd.get("name")
-            if not isinstance(name, str) or not name:
-                raise ValueError("name is required")
-            if action == "add":
-                result = await asyncio.to_thread(app.mcp.add, name, cmd.get("config"))
-            elif action in ("connect", "disconnect", "reconnect", "remove"):
-                result = await asyncio.to_thread(getattr(app.mcp, action), name)
+        try:
+            if action == "reload":
+                manager.reload_configs()
             else:
-                raise ValueError("Unknown MCP operation")
-            if isinstance(result, str) and result:
-                raise ValueError(result)
-        app.rebuild_mcp_dispatch()
-        return app.mcp.describe()
+                name = cmd.get("name")
+                if not isinstance(name, str) or not name:
+                    raise ValueError("name is required")
+                if action == "add":
+                    result = await await_preparation(lambda: manager.add(name, cmd.get("config")))
+                elif action in ("connect", "disconnect", "reconnect", "remove"):
+                    result = await await_preparation(lambda: getattr(manager, action)(name))
+                else:
+                    raise ValueError("Unknown MCP operation")
+                if isinstance(result, str) and result:
+                    raise ValueError(result)
+        finally:
+            if app.mcp is manager:
+                app.rebuild_mcp_dispatch()
+        if app.mcp is not manager:
+            raise ValueError("MCP manager changed; refresh to inspect the captured operation outcome")
+        if action == "disconnect" and name in getattr(manager, "_stop_failed", ()):
+            raise ValueError("MCP stop is unconfirmed; the owned server is retained for explicit cleanup retry")
+        return manager.describe()
     if operation == "gui.hooks.native_test_run":
         from litetui import native_hook_test
         return await native_hook_test.run(app, cmd)

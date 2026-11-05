@@ -39,6 +39,7 @@ pub struct Review {
     pub id: String,
     pub payload_hash: String,
     pub prior_inputs: Option<Vec<String>>,
+    native: Option<Value>,
     wire: Value,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +119,9 @@ impl Request {
                 return Err(bad());
             }
             v["review"] = json!(r.id);
+            if let Some(native) = &r.native {
+                v["native"] = native.clone();
+            }
         }
         Ok(v)
     }
@@ -148,6 +152,33 @@ impl Request {
         }
         expected["review"] = json!(review_id);
         expected["kind"] = json!("midturn_review");
+        let native = if identity.backend == "claude" {
+            let n = &v["native"];
+            let valid_hex = |v: &Value| {
+                v.as_str().is_some_and(|s| {
+                    s.len() == 32
+                        && s.bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+            };
+            if n.as_object().map(|o| o.len()) != Some(5)
+                || n["provider"] != "claude"
+                || n["generation"]
+                    .as_u64()
+                    .filter(|n| *n > 0 && *n <= 9007199254740991)
+                    .is_none()
+                || crate::stream::required_uuid4(n, "native_session").is_err()
+                || !valid_hex(&n["segment"])
+                || !valid_hex(&n["active_input"])
+                || v["behavior"] != "queue"
+            {
+                return Err(bad());
+            }
+            expected["native"] = n.clone();
+            Some(n.clone())
+        } else {
+            None
+        };
         let prior_inputs = match v["behavior"].as_str() {
             Some("queue") => None,
             Some("interrupt") => {
@@ -186,6 +217,7 @@ impl Request {
                 id: review_id,
                 payload_hash,
                 prior_inputs,
+                native,
                 wire: expected,
             }))),
             Self::Apply(r) if r.wire == expected => {
@@ -195,6 +227,20 @@ impl Request {
                 expected["operation_id"] = json!(id);
                 expected["producer"] = v["producer"].clone();
                 expected["input"] = v["input"].clone();
+                if let Some(native) = &r.native {
+                    let d = &v["native_delivery"];
+                    let ident = d["id"].as_str().ok_or_else(bad)?;
+                    if ident.len() != 32
+                        || !ident
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                        || d != &json!({"id":ident,"segment_id":native["segment"],"state":"prepared","operation_id":r.id})
+                    {
+                        return Err(bad());
+                    }
+                    expected["native_delivery"] = d.clone();
+                }
+
                 if expected != *v
                     || producer.kind
                         != if r.prior_inputs.is_some() {
@@ -304,6 +350,12 @@ impl View {
                     "Interrupt the current reply. Keep its partial output and earlier tool effects. Send this draft first after the worker stops, ahead of {} queued message(s).",
                     prior.len()
                 )
+            } else if let Some(native) = &r.native {
+                format!(
+                    "Queue this message for the next Claude turn, after the current reply finishes. This does not interrupt or steer the running reply.\nClaude session: {}\nSegment: {}",
+                    native["native_session"].as_str().unwrap_or_default(),
+                    native["segment"].as_str().unwrap_or_default()
+                )
             } else {
                 "Queue this message at the next safe boundary of the running reply, or as the next turn.".into()
             };
@@ -380,6 +432,116 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::{Terminal, backend::TestBackend};
     const HOOK: &str = "3aab1c4f-4e72-422c-88f2-d770df1eb65f";
+    #[test]
+    fn claude_queue_requires_native_owner_and_prepared_delivery_and_never_interrupts() {
+        let identity = Identity {
+            session: HOOK.into(),
+            agent: "agent".into(),
+            backend: "claude".into(),
+            model: "fixture".into(),
+        };
+        let origin = Origin {
+            session: HOOK.into(),
+            operation: "op".into(),
+            hook: Some(HOOK.into()),
+            source: "rpc".into(),
+            execution: HOOK.into(),
+        };
+        let draft = Draft {
+            text: "Next Claude input 雪".into(),
+            alternate: false,
+            operation: "op".into(),
+        };
+        let request = Request::Review(draft.clone());
+        let payload =
+            json!({"content":draft.text,"text":draft.text,"source":"rpc","tool_profile":"strict"});
+        let native = json!({"provider":"claude","generation":1,"native_session":HOOK,"segment":"a".repeat(32),"active_input":"b".repeat(32)});
+        let good = json!({"version":1,"kind":"midturn_review","session_id":HOOK,"agent_id":"agent","backend":"claude","model":"fixture","work_instance":&"a".repeat(64),
+            "origin":origin.value(),"chord":"enter","text":draft.text,"behavior":"queue","enter_interrupts":false,
+            "profile":"strict","policy_epoch":1,"payload_sha256":format!("{:x}",Sha256::digest(serde_json::to_vec(&payload).unwrap())),"review":HOOK,"native":native});
+        let parse = |v: &Value| {
+            request.parse(
+                &identity,
+                &"a".repeat(64),
+                &origin,
+                "review",
+                (1, Profile::Strict),
+                v,
+            )
+        };
+        for (key, value) in [
+            ("provider", json!("codex")),
+            ("generation", json!(0)),
+            ("native_session", json!("foreign")),
+            ("segment", json!("wrong")),
+            ("active_input", Value::Null),
+        ] {
+            let mut v = good.clone();
+            v["native"][key] = value;
+            assert!(parse(&v).is_err(), "{key}");
+        }
+        let mut interrupt = good.clone();
+        interrupt["behavior"] = json!("interrupt");
+        interrupt["prior_inputs"] = json!([]);
+        assert!(parse(&interrupt).is_err());
+        let Reply::Review(review) = parse(&good).unwrap() else {
+            panic!("review")
+        };
+        let apply = Request::Apply(review.clone());
+        assert_eq!(
+            apply.command(&identity, &"a".repeat(64), &origin).unwrap()["native"],
+            native
+        );
+        let mut queued = good.clone();
+        queued["kind"] = json!("midturn_queued");
+        queued["operation_id"] = json!("apply");
+        queued["producer"] = json!({"producer_id":HOOK,"kind":"user_queue","object_id":HOOK,"producer_session_id":HOOK,"owner_instance":&"a".repeat(64),"owner_created":null,"generation":1,"causal_action_id":null,"causal_operation_id":"op","causal_execution_id":HOOK});
+        queued["input"] = json!({"input_id":HOOK,"producer_id":HOOK,"payload_sha256":good["payload_sha256"],"source":"rpc","requested_profile":"strict","delivery_session_id":HOOK,"queue_revision":1});
+        queued["native_delivery"] = json!({"id":"c".repeat(32),"segment_id":native["segment"],"state":"prepared","operation_id":HOOK});
+        let accepted = |v: &Value| {
+            apply.parse(
+                &identity,
+                &"a".repeat(64),
+                &origin,
+                "apply",
+                (1, Profile::Strict),
+                v,
+            )
+        };
+        assert!(accepted(&queued).is_ok());
+        for (key, value) in [
+            ("state", json!("submitted")),
+            ("operation_id", json!("foreign")),
+            ("segment_id", json!("d".repeat(32))),
+            ("id", json!("not-native")),
+        ] {
+            let mut v = queued.clone();
+            v["native_delivery"][key] = value;
+            assert!(accepted(&v).is_err(), "{key}");
+        }
+        let mut view = View::default();
+        view.begin();
+        view.reply(Reply::Review(review));
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| view.draw(f, f.area(), false)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("next Claude turn") && text.contains("does not interrupt"));
+        assert!(
+            view.key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), false)
+                .is_none()
+        );
+        assert!(
+            view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false)
+                .is_some()
+        );
+    }
+
     #[test]
     fn review_rejects_changed_owner_chord_text_scope_and_policy_and_requires_every_painted_page() {
         let identity = Identity {

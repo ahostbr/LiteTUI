@@ -31,7 +31,12 @@ const FIELDS: [&str; 9] = [
     "tts_edge_voice",
     "tts_timeout",
 ];
-const EDITABLE: [&str; 3] = ["stt_model", "tts_engine", "tts_litesuite_first"];
+const EDITABLE: [&str; 4] = [
+    "stt_model",
+    "tts_engine",
+    "tts_litesuite_first",
+    "tts_enabled",
+];
 fn bad() -> io::Error {
     io::Error::other("Voice preference response differs from its reviewed device settings")
 }
@@ -39,13 +44,14 @@ fn choices(key: &str) -> Vec<Value> {
     match key {
         "stt_model" => vec![json!("tiny.en"), json!("base.en"), json!("small.en")],
         "tts_engine" => vec![json!("pyttsx3"), json!("edge")],
-        "tts_litesuite_first" => vec![json!(false), json!(true)],
+        "tts_enabled" | "tts_litesuite_first" => vec![json!(false), json!(true)],
         _ => vec![],
     }
 }
 fn label(key: &str) -> &'static str {
     match key {
         "stt_model" => "Dictation model",
+        "tts_enabled" => "Response speech",
         "tts_engine" => "Fallback speech engine",
         "tts_litesuite_first" => "Prefer LiteSuite speech",
         _ => "Voice preference",
@@ -465,7 +471,7 @@ impl View {
         } else if let Some(s) = &self.data {
             lines.extend([format!("Dictation (faster-whisper)   Model: {}",s.shown("stt_model","default")),
                 format!("Microphone: {}   Python shortcut: {}",s.shown("stt_mic","first available"),s.shown("stt_hotkey","default")),
-                format!("Python reply Speak button: {}   Prefer LiteSuite: {}",s.shown("tts_enabled","default"),s.shown("tts_litesuite_first","default")),
+                format!("Response speech: {}   Prefer LiteSuite: {}",s.shown("tts_enabled","default"),s.shown("tts_litesuite_first","default")),
                 format!("Fallback engine: {}   Local timeout: {} s",s.shown("tts_engine","default"),s.shown("tts_timeout","default")),
                 format!("Windows voice: {}   Edge voice: {}",s.shown("tts_voice","Windows default"),s.shown("tts_edge_voice","default")),
                 format!("Qwen2-Audio listen tool registered: {}. It handles audio separately from dictation.",s.listen),
@@ -577,6 +583,52 @@ mod tests {
             *drift.pointer_mut(path).unwrap() = value;
             assert!(Snapshot::parse(&drift, &id, "i").is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn disabled_response_speech_can_be_chosen_and_requires_visible_review() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (id, doc) = fixture();
+        let snapshot = Snapshot::parse(&doc, &id, "i").unwrap();
+        assert_eq!(snapshot.fields["tts_enabled"].effective, json!(false));
+        let mut view = View::default();
+        view.open();
+        view.update(Ok(Update::List(snapshot)));
+        let theme = crate::theme::builtin_themes().remove(0);
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        let paint = |view: &mut View, terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| view.draw(frame, frame.area(), &theme))
+                .unwrap();
+        };
+        paint(&mut view, &mut terminal);
+        for _ in 0..3 {
+            assert!(
+                view.key(KeyEvent::new(
+                    KeyCode::Down,
+                    crossterm::event::KeyModifiers::NONE
+                ))
+                .is_none()
+            );
+        }
+        assert!(
+            view.key(KeyEvent::new(
+                KeyCode::Right,
+                crossterm::event::KeyModifiers::NONE
+            ))
+            .is_none()
+        );
+        let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+        assert!(view.key(enter).is_none());
+        paint(&mut view, &mut terminal);
+        let request = view.key(enter).unwrap().command(&id, "i").unwrap();
+        assert_eq!(request["type"], "gui.voice.native_review");
+        assert_eq!(request["field"], "tts_enabled");
+        assert_eq!(request["value"], true);
+        assert_eq!(
+            view.data.as_ref().unwrap().fields["tts_enabled"].effective,
+            false
+        );
     }
 
     #[test]
