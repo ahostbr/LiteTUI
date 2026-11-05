@@ -36,6 +36,7 @@ def current_operation(app):
 
 OPERATIONS = (
     "hello", "state", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
+    "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
     "conversations.native_snapshot", "conversations.native_validate", "conversations.native_apply",
@@ -683,6 +684,9 @@ def dispatch(app, cmd):
         if action == "resolve":
             return restored_input.resolve(app, cmd)
         raise ValueError("Continuation requires asynchronous dispatch")
+    if operation in {"prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback"}:
+        from litetui import native_chat_pause
+        return native_chat_pause.dispatch(app, cmd)
     if operation in {"prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply"}:
         from litetui import native_midturn
         return native_midturn.dispatch(app, cmd)

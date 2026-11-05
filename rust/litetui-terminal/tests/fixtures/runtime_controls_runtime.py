@@ -194,6 +194,7 @@ async def serve(app):
         gui_rpc,
         hook_host,
         native_runtime_controls,
+        native_chat_pause,
         rpc,
         seat_authority,
         settings_runtime,
@@ -203,7 +204,7 @@ async def serve(app):
     from litetui.app import LiteTUI
     from litetui.conversation import ConversationRepository
     modules = {'app': app_module, 'background_input': background_input, 'gui_rpc': gui_rpc, 'rpc': rpc,
-        'native_runtime_controls': native_runtime_controls, 'hook_host': hook_host, 'seat_authority': seat_authority,
+        'native_runtime_controls': native_runtime_controls, 'native_chat_pause': native_chat_pause, 'hook_host': hook_host, 'seat_authority': seat_authority,
         'settings_runtime': settings_runtime, 'tool_approval': tool_approval, 'tool_policy': tool_policy}
     for name, module in modules.items():
         assert module.__file__ is not None and Path(module.__file__).resolve() == source/('src/litetui/'+name+'.py')
@@ -219,6 +220,16 @@ async def serve(app):
 
     async def management(owner, command):
         operation = command['type']
+        if operation.startswith('gui.prompt.native_pause_'):
+            if (case == 'host-pause-readback-error' and operation.endswith('_readback')
+                    and not report.get('pause_readback_error')):
+                report['pause_readback_error'] = True
+                raise ValueError('Controlled unavailable pause readback')
+            result = await actual_gui(owner, command)
+            record('chat-pause', result=result, requests=len(report['requests']))
+            if result['stage'] == 'held':
+                assert owner._chat_pause_waiter is not None
+            return result
         if operation == 'gui.prompt.native_send_review' and case == 'midturn-interrupt-priority' and command['chord'] == 'alternate':
             try:
                 await actual_gui(owner, {**command, 'type': 'gui.prompt.native_queue_review', 'id': str(uuid.uuid4())})
@@ -358,6 +369,13 @@ async def serve(app):
             assert not active and not report['questions'] and not report['approvals']
         return actual_release(repository, *args, **kwargs)
 
+    async def observe_pause_boundary():
+        while not exited.is_set():
+            if getattr(app, '_chat_pause_waiter', None) is not None:
+                mark('chat-held', requests=len(report['requests']))
+                return
+            await asyncio.sleep(0.01)
+
     with ExitStack() as stack:
         for owner, name, replacement in ((gui_rpc, 'async_dispatch', management), (rpc, '_dispatch', dispatch),
                 (rpc, 'rpc_emit', emit), (app, '_authorize_action', authorize), (app, '_execute_tool', execute_tool),
@@ -381,6 +399,8 @@ async def serve(app):
                               initial_history=copy.deepcopy(app.conversation), launch_arguments=sys.argv[1:])
                 reader = threading.Thread(target=rpc._reader_loop, args=(app,), name='runtime-controls-rpc-reader', daemon=True)
                 reader.start()
+                if 'pause-' in case:
+                    helpers.append(asyncio.create_task(observe_pause_boundary()))
                 await asyncio.wait_for(exited.wait(), 125)
                 collect()
         finally:
@@ -407,7 +427,7 @@ if __name__ == '__main__':
     original_register = plugins.register_plugins
     def controlled_register(app, registry, order=None, disabled=frozenset()):
         assert order is None
-        value = original_register(app, registry, order=('litetui.plugins.core_tools', 'litetui.plugins.convo', 'litetui.plugins.self_compact'), disabled=disabled)
+        value = original_register(app, registry, order=('litetui.plugins.core_tools', 'litetui.plugins.convo', 'litetui.plugins.self_compact', 'litetui.plugins.misc'), disabled=disabled)
         registry.add_tool('runtime-controls-fixture', {'type': 'function', 'function': {'name': 'runtime_fixture_tool',
             'description': 'Controlled in-memory policy boundary fixture', 'parameters': {'type': 'object',
             'properties': {'ordinal': {'type': 'integer'}}, 'required': ['ordinal']}}}, controlled_tool,

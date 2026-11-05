@@ -21,6 +21,7 @@ _ROUTES = {
     ("model-switch", "/backend"): "backend",
     ("misc", "/think"): "thinking",
     ("misc", "/quit"): "quit",
+    ("misc", "/pause"): "chat_pause",
     ("convo", "/convos"): "conversations",
     ("convo", "/resume"): "conversations",
     ("convo", "/new"): "conversation_new",

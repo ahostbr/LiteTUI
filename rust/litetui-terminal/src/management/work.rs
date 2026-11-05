@@ -24,6 +24,8 @@ pub(super) struct Control {
     hook_review: Option<crate::hook_toggle::Review>,
     hook_test: Option<crate::hook_toggle::TestReview>,
     queue_review: Option<crate::midturn::Review>,
+    pause_review: Option<crate::chat_pause::Review>,
+    pause_origin: Option<crate::work_lifecycle::Origin>,
     queue_origin: Option<crate::work_lifecycle::Origin>,
     queue_policy: Option<(u64, crate::tool_mode::Profile)>,
 }
@@ -164,6 +166,15 @@ impl Management {
                     r.operation()
                 }
             }
+            view::Request::ChatPause(r) => {
+                if crate::chat_pause::OPERATIONS
+                    .iter()
+                    .any(|op| !self.operations.iter().any(|v| v == op))
+                {
+                    return Err(fail("Source lacks verified host chat-loop pause"));
+                }
+                r.operation()
+            }
             view::Request::Context(r) => r.operation(),
             view::Request::Plugin(request) => {
                 if !crate::plugin_reload::OPERATIONS
@@ -246,7 +257,7 @@ impl Management {
             identity.request()
         } else if matches!(
             &intent.request,
-            view::Request::Image(_) | view::Request::Midturn(_)
+            view::Request::Image(_) | view::Request::Midturn(_) | view::Request::ChatPause(_)
         ) {
             identity.request()
         } else {
@@ -446,6 +457,26 @@ impl Management {
                 }
                 command = request.command(&identity, self.context_instance()?)?;
             }
+            view::Request::ChatPause(request) => {
+                if let crate::chat_pause::Request::Apply(r) = request.as_ref()
+                    && self.work.pause_review.take().as_ref() != Some(r.as_ref())
+                {
+                    return Err(fail("Chat pause review is stale"));
+                }
+                let origin = if matches!(
+                    request.as_ref(),
+                    crate::chat_pause::Request::Review { active: true }
+                ) {
+                    Some(
+                        self.known_work_origin()
+                            .ok_or_else(|| fail("The foreground turn has no captured execution"))?,
+                    )
+                } else {
+                    None
+                };
+                command = request.command(&identity, self.context_instance()?, origin.as_ref())?;
+                self.work.pause_origin = origin;
+            }
             view::Request::Midturn(request) => {
                 if let crate::midturn::Request::Apply(r) = request.as_ref()
                     && self.work.queue_review.take().as_ref() != Some(r.as_ref())
@@ -558,13 +589,29 @@ impl Management {
             }
         }
         command["type"] = json!(op);
-        let id = if matches!(&intent.request,view::Request::Midturn(r) if matches!(r.as_ref(),crate::midturn::Request::Apply(_))) || matches!(&intent.request,view::Request::Plugin(r) if matches!(r.as_ref(),crate::plugin_reload::Request::Apply(_))) || matches!(&intent.request,view::Request::Hook(r) if matches!(r.as_ref(),crate::hook_toggle::Request::Apply(_))) || matches!(&intent.request,view::Request::ContextEdit(r) if matches!(r.as_ref(),crate::context_edit::Request::Apply(_))) || matches!(
-            &intent.request,
+        let mutating = match &intent.request {
+            view::Request::ChatPause(request) => {
+                matches!(request.as_ref(), crate::chat_pause::Request::Apply(_))
+            }
+            view::Request::Midturn(request) => {
+                matches!(request.as_ref(), crate::midturn::Request::Apply(_))
+            }
+            view::Request::Plugin(request) => {
+                matches!(request.as_ref(), crate::plugin_reload::Request::Apply(_))
+            }
+            view::Request::Hook(request) => {
+                matches!(request.as_ref(), crate::hook_toggle::Request::Apply(_))
+            }
+            view::Request::ContextEdit(request) => {
+                matches!(request.as_ref(), crate::context_edit::Request::Apply(_))
+            }
             view::Request::PauseApply(_)
-                | view::Request::StopApply(_)
-                | view::Request::DeferredApply(_)
-                | view::Request::ControlApply(_)
-        ) {
+            | view::Request::StopApply(_)
+            | view::Request::DeferredApply(_)
+            | view::Request::ControlApply(_) => true,
+            _ => false,
+        };
+        let id = if mutating {
             self.wire.register_request()
         } else {
             self.wire.register_read()
@@ -588,6 +635,14 @@ impl Management {
         let mut pending = self.work.pending.take().expect("Work request");
         if frame["ok"] != true {
             let mut reason = text(&frame, "error", 4096)?.to_owned();
+            if matches!(&pending.request, view::Request::ChatPause(_)) {
+                self.work.pause_review = None;
+                self.work.pause_origin = None;
+                if matches!(&pending.request, view::Request::ChatPause(r) if matches!(r.as_ref(),crate::chat_pause::Request::Apply(_)))
+                {
+                    reason = format!("Chat pause outcome needs a fresh review. {reason}");
+                }
+            }
             if matches!(&pending.request, view::Request::Plugin(_)) {
                 self.work.plugin_review = None;
                 if pending.context_apply_id.is_some() {
@@ -657,6 +712,38 @@ impl Management {
                 )?;
                 self.work.manual_review = Some(review.clone());
                 view::Data::ManualReview(Box::new(review))
+            }
+            view::Request::ChatPause(request) => {
+                let identity = self.work_identity()?;
+                let instance = self.context_instance()?;
+                if matches!(request.as_ref(), crate::chat_pause::Request::Apply(_))
+                    && pending.context_apply_id.is_none()
+                {
+                    let op = text(&frame, "id", 128)?.to_owned();
+                    let mut command = request.readback(value, &identity, instance, &op)?;
+                    let id = self
+                        .wire
+                        .register_read()
+                        .map_err(|_| fail("Cannot reserve chat pause readback"))?;
+                    command["id"] = id.to_value();
+                    pending.id = id;
+                    pending.context_apply_id = Some(op);
+                    self.work.pending = Some(pending);
+                    return Ok(Step::Write(command));
+                }
+                let reply = request.reply(
+                    value,
+                    &identity,
+                    instance,
+                    self.work.pause_origin.as_ref(),
+                    pending.context_apply_id.as_deref(),
+                )?;
+                self.work.pause_origin = None;
+                self.work.pause_review = match &reply {
+                    crate::chat_pause::Reply::Review(r) => Some(r.as_ref().clone()),
+                    _ => None,
+                };
+                view::Data::ChatPause(Box::new(reply))
             }
             view::Request::Midturn(request) => {
                 let parent = self
@@ -736,7 +823,7 @@ impl Management {
                     return Err(fail("Work reply belongs to an old conversation"));
                 }
                 match request {
-                    view::Request::Midturn(_) => unreachable!(),
+                    view::Request::Midturn(_) | view::Request::ChatPause(_) => unreachable!(),
                     view::Request::Plugin(request) => {
                         let instance = self.context_instance()?;
                         if matches!(request.as_ref(), crate::plugin_reload::Request::Apply(_))

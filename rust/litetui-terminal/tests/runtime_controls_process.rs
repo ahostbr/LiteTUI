@@ -1278,3 +1278,220 @@ fn dispatch_midturn(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()>
     runtime.work(intent)?;
     wait(runtime, app, |e| matches!(e, Observation::Work(_)))
 }
+
+fn pause_key(app: &mut Demo, code: KeyCode) {
+    app.live
+        .as_mut()
+        .unwrap()
+        .work
+        .key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+fn pause_send(runtime: &Interactive, app: &mut Demo) -> io::Result<()> {
+    let intent = app
+        .live
+        .as_mut()
+        .unwrap()
+        .work
+        .take_intent()
+        .ok_or_else(|| io::Error::other(format!("No chat pause intent: {}", app.notice)))?;
+    runtime.work(intent)
+}
+fn pause_review(runtime: &mut Interactive, app: &mut Demo) -> io::Result<String> {
+    app.open_chat_pause();
+    pause_send(runtime, app)?;
+    wait(runtime, app, |e| matches!(e, Observation::Work(_)))?;
+    Ok(draw(app))
+}
+fn pause_confirm(runtime: &mut Interactive, app: &mut Demo) -> io::Result<String> {
+    pause_key(app, KeyCode::Enter);
+    pause_send(runtime, app)?;
+    wait(runtime, app, |e| matches!(e, Observation::Work(_)))?;
+    Ok(draw(app))
+}
+#[test]
+#[ignore = "actual host pause round boundary, explicit resume, Stop and Quit"]
+fn host_chat_pause_holds_next_round_and_preserves_draft_through_resume_stop_and_quit() {
+    for case in [
+        "pause-idle",
+        "host-pause-resume",
+        "host-pause-stop",
+        "host-pause-quit",
+        "host-pause-readback-error",
+    ] {
+        let (runtime, root) = launch(case);
+        let draft = "  Preserved pause draft 雪  ";
+        let result = runtime.with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text(draft);
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let caret = (
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned(),
+            );
+            if case != "pause-idle" {
+                let chat = app.live.as_mut().unwrap();
+                chat.submit("One model round, two controlled tools, then one continuation")?;
+                runtime.submit(chat.take_submission().unwrap())?;
+                stage(runtime, &mut app, &root, "old-tool-running")?;
+            }
+            let screen = pause_review(runtime, &mut app)?;
+            assert!(
+                screen.contains("Pause before the next host model round?"),
+                "{screen}"
+            );
+            let screen = pause_confirm(runtime, &mut app)?;
+            if case == "host-pause-readback-error" {
+                assert!(
+                    screen.contains("needs a fresh review") && !screen.contains("Verified."),
+                    "{screen}"
+                );
+            } else {
+                assert!(screen.contains("Verified."), "{screen}");
+            }
+            if case == "pause-idle" {
+                assert!(
+                    screen.contains("The next host model round will wait"),
+                    "{screen}"
+                );
+                pause_key(&mut app, KeyCode::Esc);
+                let chat = app.live.as_mut().unwrap();
+                chat.submit("Prompt admitted while paused")?;
+                runtime.submit(chat.take_submission().unwrap())?;
+            } else {
+                if case != "host-pause-readback-error" {
+                    assert!(screen.contains("Pause requested"), "{screen}");
+                }
+                pause_key(&mut app, KeyCode::Esc);
+                fs::write(
+                    root.join("release-tool"),
+                    b"finish existing tools, hold next model round",
+                )?;
+            }
+            stage(runtime, &mut app, &root, "chat-held")?;
+            let screen = pause_review(runtime, &mut app)?;
+            assert!(
+                screen.contains("Paused at the next model-round boundary."),
+                "{screen}"
+            );
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(
+                caret,
+                (
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
+            if case == "host-pause-quit" {
+                return runtime.quit();
+            }
+            if case == "host-pause-stop" {
+                app.live.as_mut().unwrap().request_stop()?;
+                send(runtime, &mut app)?;
+                while app.live.as_ref().unwrap().busy {
+                    app.observe_live(next(runtime)?)?;
+                }
+                pause_key(&mut app, KeyCode::Esc);
+                assert!(pause_review(runtime, &mut app)?.contains("Resume the host chat loop?"));
+            }
+            let screen = pause_confirm(runtime, &mut app)?;
+            assert!(screen.contains("Verified. Running."), "{screen}");
+            pause_key(&mut app, KeyCode::Esc);
+            while app.live.as_ref().unwrap().busy {
+                app.observe_live(next(runtime)?)?;
+            }
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(
+                caret,
+                (
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
+            runtime.quit()
+        });
+        assert!(result.is_ok(), "{case}: {result:?} {}", root.display());
+        let r = collect(&root);
+        let requests = r["requests"].as_array().unwrap();
+        assert_eq!(
+            requests.len(),
+            if matches!(case, "host-pause-resume" | "host-pause-readback-error") {
+                2
+            } else {
+                1
+            }
+        );
+        let pauses = r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "chat-pause")
+            .collect::<Vec<_>>();
+        assert!(pauses.iter().any(|e| e["result"]["stage"] == "held"));
+        let held = pauses
+            .iter()
+            .find(|e| e["result"]["stage"] == "held")
+            .unwrap();
+        assert_eq!(held["requests"], if case == "pause-idle" { 0 } else { 1 });
+        let exits = r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "tool-exit")
+            .count();
+        assert_eq!(exits, if case == "pause-idle" { 0 } else { 2 });
+    }
+}
+
+#[test]
+#[ignore = "actual stale host pause owner and declined pause review"]
+fn host_chat_pause_refuses_retired_review_without_changing_prompt_or_pause() {
+    let (runtime, root) = launch("host-pause-stale");
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = Demo::live("custom".into(), "switch-old".into());
+        wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+        app.insert_text(" /pause ");
+        let chat = app.live.as_mut().unwrap();
+        chat.submit("Finish this exact foreground turn")?;
+        runtime.submit(chat.take_submission().unwrap())?;
+        stage(runtime, &mut app, &root, "old-tool-running")?;
+        app.submit_chord(false);
+        pause_send(runtime, &mut app)?;
+        wait(runtime, &mut app, |e| matches!(e, Observation::Work(_)))?;
+        assert!(draw(&mut app).contains("Pause before the next host model round?"));
+        pause_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.composer.text(), " /pause ");
+        app.submit_chord(false);
+        pause_send(runtime, &mut app)?;
+        wait(runtime, &mut app, |e| matches!(e, Observation::Work(_)))?;
+        assert!(draw(&mut app).contains("Pause before the next host model round?"));
+        fs::write(
+            root.join("release-tool"),
+            b"Retire the reviewed source execution",
+        )?;
+        while app.live.as_ref().unwrap().busy {
+            app.observe_live(next(runtime)?)?;
+        }
+        let screen = pause_confirm(runtime, &mut app)?;
+        assert!(
+            screen.contains("reviewed chat pause state changed") && !screen.contains("Verified."),
+            "{screen}"
+        );
+        assert_eq!(app.composer.text(), " /pause ");
+        pause_key(&mut app, KeyCode::F(5));
+        pause_send(runtime, &mut app)?;
+        wait(runtime, &mut app, |e| matches!(e, Observation::Work(_)))?;
+        assert!(draw(&mut app).contains("Running. Host model rounds may proceed."));
+        runtime.quit()
+    });
+    assert!(result.is_ok(), "{result:?} {}", root.display());
+    let r = collect(&root);
+    assert_eq!(r["requests"].as_array().unwrap().len(), 2);
+    assert!(
+        !r["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "chat-pause" && e["result"]["paused"] == true)
+    );
+}

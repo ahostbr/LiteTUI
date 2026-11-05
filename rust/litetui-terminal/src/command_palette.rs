@@ -42,6 +42,7 @@ pub(crate) fn token(v: &Value, key: &str) -> io::Result<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Engine,
+    ChatPause,
     Models,
     Thinking,
     Conversations,
@@ -61,6 +62,7 @@ impl Action {
         Ok(match v.as_str() {
             None if v.is_null() => None,
             Some("engine") => Some(Self::Engine),
+            Some("chat_pause") => Some(Self::ChatPause),
             Some("models") => Some(Self::Models),
             Some("thinking") => Some(Self::Thinking),
             Some("conversations") => Some(Self::Conversations),

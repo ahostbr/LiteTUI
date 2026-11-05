@@ -498,6 +498,13 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
                 chat.work.read_clipboard_image();
             }
         }
+        KeyCode::Char('p')
+            if app.live.is_some()
+                && key.kind == KeyEventKind::Press
+                && key.modifiers == KeyModifiers::ALT =>
+        {
+            app.open_chat_pause();
+        }
         KeyCode::Char('t' | 'p')
             if app.live.is_some()
                 && key.kind == KeyEventKind::Press
@@ -1746,7 +1753,7 @@ fn main() -> io::Result<()> {
         [flag] if flag == "--preview" => run(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>] [--owner <name> --memory <absolute directory>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>] [--owner <name> --memory <absolute directory>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: Ctrl+G compact view | Ctrl+O clipboard image (F2 chooses file) | Ctrl+Shift+O image file | Ctrl+L new conversation | F1 Work (I opens context) | F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings (I opens runtime status) | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
+                "LiteTUI Rust — live vertical path / offline visual preview\n\nUsage: litetui-rs [--preview]\n       litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> [--timeout <seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>] [--owner <name> --memory <absolute directory>]\n       litetui-rs --live --python <exe> --source <repo> --data-root <absolute directory> --backend <custom|lmstudio|llamacpp|ninfer|strata|codex|claude|cline|free> --model <slug> --prompt <text> [--timeout <1..600 seconds>] [--tools on|off] [--tool-profile strict|interactive|autonomous] [--workspace <directory>] [--resume <conversation-uuid>] [--owner <name> --memory <absolute directory>]\n\n--interactive: real composer/transcript, serialized multi-turn, Ctrl+Q waits cleanup; optional source-authorized tools.\nLive keys: Alt+P host chat Pause/Resume | Ctrl+G compact view | Ctrl+O clipboard image (F2 chooses file) | Ctrl+Shift+O image file | Ctrl+L new conversation | F1 Work (I opens context) | F3 models | F4 themes | F6 saved history | selector Tab thinking | F7 held input | F8 conversations | F9 backend/model | F10 settings (I opens runtime status) | F11 commands/skills | F12 owned engine | Enter applies the visible choice | Esc closes.\n--live: Windows-only real owned Python child, one prompt, streamed reply; cannot answer questions or approvals.\nTools default off. Missing profiles prompt before Python starts; redirected launches require --tool-profile. Tools on requires an absolute existing --workspace. External MCP remains off.\nLocal backends connect by default. Server/model start requires explicit --start-server/--load-model; no fallback.\n--engine-management: interactive NInfer/Strata management when unavailable; no prompt or implicit start/load.\nInvocation options: --base-url <url> | --server-mode connect|start | --start-server | --load-model | --context-length <tokens> | --max-tokens <tokens> | --server-executable <path> | --model-path <path> | --server-command <JSON argv> | --api-key-env <variable name> | --server-timeout <seconds> | --codex-engine native|http | --thinking-level <source-supported level>.\nThe data root must be new unless --resume is supplied.\n--resume: reopen an existing Rust-owned root without rewriting settings. Match saved backend/model/tools; Python keeps saved thinking and owns all locks. No prompt is replayed.\n--preview (default): no runtime/model/registration/persistence.\nPreview keys: Tab select tool | F2 expand | F4 themes | F6 mock approval | F5 replay\nType /pre: mock completions (Tab accepts) | Up/Down: history or completion\nLeft/Right/Home/End: edit | PgUp/PgDn/mouse wheel: scroll | Enter: local mock turn | Ctrl+Q: quit"
             );
             Ok(())
         }
@@ -5517,5 +5524,59 @@ mod live_keyboard_navigation_tests {
         assert!(app.live.as_ref().unwrap().work.owns_input());
         assert_eq!(app.composer.selected_text(), selection);
         assert_eq!(app.composer.text(), "draft stays");
+    }
+}
+
+#[cfg(test)]
+mod chat_pause_router_tests {
+    use super::*;
+    use litetui_terminal::{chat_pause, live::Observation, work_view};
+    #[test]
+    fn host_pause_shortcut_and_live_slash_preserve_composer_and_stop_quit_precedence() {
+        for slash in [false, true] {
+            let mut app = Demo::live("custom".into(), "fixture".into());
+            app.observe_live(Observation::Ready).unwrap();
+            app.live.as_mut().unwrap().busy = true;
+            let draft = if slash {
+                " /pause "
+            } else {
+                "  Unsent draft 雪  "
+            };
+            app.insert_text(draft);
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let caret = (
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned(),
+            );
+            if slash {
+                app.submit_chord(false);
+            } else {
+                key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+                );
+            }
+            let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
+            assert!(
+                matches!(&intent.request,work_view::Request::ChatPause(r) if matches!(r.as_ref(),chat_pause::Request::Review{active:true}))
+            );
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(
+                caret,
+                (
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
+            assert!(key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+            ));
+            key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::CONTROL));
+            assert!(app.stop_open());
+            assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+            assert!(app.live.as_mut().unwrap().take_submission().is_none());
+            assert_eq!(app.composer.text(), draft);
+        }
     }
 }

@@ -55,6 +55,7 @@ pub mod runtime_launch;
 pub mod settings_editor;
 pub mod settings_view;
 
+pub mod chat_pause;
 pub mod command_palette;
 pub mod prepared_skill;
 

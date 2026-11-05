@@ -181,6 +181,7 @@ impl Demo {
         };
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
+        chat.work.chat_pause.foreground(chat.busy);
         if let Some(draft) = chat.work.midturn.queued.take()
             && self.composer.text() == draft.text
         {
@@ -210,6 +211,7 @@ impl Demo {
             match action {
                 Action::Work(destination) => self.show_work(Some(destination)),
                 Action::Engine => self.open_engine(),
+                Action::ChatPause => self.open_chat_pause(),
                 Action::Models => self.open_models(crate::model_controls::Kind::Model),
                 Action::Thinking => self.open_models(crate::model_controls::Kind::Thinking),
                 Action::Backend => self.open_backend(),
@@ -245,6 +247,30 @@ impl Demo {
         self.live
             .as_ref()
             .is_some_and(|chat| chat.runtime_controls.owns_input())
+    }
+    pub fn open_chat_pause(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.closed
+                || chat.quitting
+                || chat.cancelling()
+                || chat.execution_pending()
+                || chat.queue_pending()
+                || chat.rewrite_pending()
+                || chat.engine.pending()
+                || chat.runtime_controls.pending()
+            {
+                self.notice = "Finish the pending action before changing chat pause.".into();
+                return;
+            }
+            chat.work.review_chat_pause(chat.busy);
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
     }
     pub fn open_runtime_controls(&mut self, field: crate::runtime_controls_view::Field) {
         if self.has_live_input() {
@@ -902,6 +928,10 @@ impl Demo {
         self.submit_chord(false);
     }
     pub fn submit_chord(&mut self, alternate: bool) {
+        if self.live.is_some() && self.composer.text().trim().eq_ignore_ascii_case("/pause") {
+            self.open_chat_pause();
+            return;
+        }
         if self.live.as_ref().is_some_and(|chat| chat.busy) && !self.has_live_input() {
             let text = self.composer.text();
             match self

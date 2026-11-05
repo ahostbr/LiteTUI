@@ -4798,6 +4798,7 @@ class LiteTUI(App):
         if on == self.paused:
             return False
         self.paused = on
+        self._chat_pause_revision = getattr(self, "_chat_pause_revision", 0) + 1
         try:
             for btn in self.query(PauseButton):
                 btn.set_paused(on)
@@ -9370,8 +9371,15 @@ class LiteTUI(App):
             # running finish, the next request does not go out. Esc still
             # ends it: the wait wakes on _stop_requested and the check below
             # takes it. Polled, not an Event: nothing to arm or forget.
-            while self.paused and not self._stop_requested:
-                await asyncio.sleep(0.25)
+            if self.paused:
+                # The requested flag can also be set during a running model or tool.
+                # Only this exact worker crossing the boundary proves a held round.
+                self._chat_pause_waiter = asyncio.current_task()
+                try:
+                    while self.paused and not self._stop_requested:
+                        await asyncio.sleep(0.25)
+                finally:
+                    self._chat_pause_waiter = None
             if self._stop_requested:
                 # NOT the iteration cap. Reaching the bottom of this function
                 # prints "reached N tool iterations — raise it in /settings",

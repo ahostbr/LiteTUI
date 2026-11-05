@@ -38,6 +38,7 @@ pub enum Request {
     Plugin(Box<crate::plugin_reload::Request>),
     Image(crate::image::Request),
     Midturn(Box<crate::midturn::Request>),
+    ChatPause(Box<crate::chat_pause::Request>),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
@@ -74,6 +75,7 @@ pub enum Data {
     Plugin(Box<crate::plugin_reload::Reply>),
     Image(Option<crate::image::Review>),
     Midturn(Box<crate::midturn::Reply>),
+    ChatPause(Box<crate::chat_pause::Reply>),
     ImagePreview(crate::image::Thumbnail),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
@@ -150,6 +152,7 @@ pub struct View {
     plugin_reload: crate::plugin_reload::View,
     pub image: crate::image::Picker,
     pub midturn: crate::midturn::View,
+    pub chat_pause: crate::chat_pause::View,
     section: usize,
     selected: usize,
     page_back: Vec<usize>,
@@ -199,6 +202,15 @@ impl View {
             self.request(Request::Image(self.image.clipboard_request()));
         }
     }
+    pub fn review_chat_pause(&mut self, active: bool) {
+        if !self.owns_input() {
+            self.open = true;
+            self.chat_pause.begin(active);
+            self.request(Request::ChatPause(Box::new(
+                crate::chat_pause::Request::Review { active },
+            )));
+        }
+    }
     pub fn review_queued_text(&mut self, draft: crate::midturn::Draft) {
         if !self.owns_input() {
             self.open = true;
@@ -243,6 +255,7 @@ impl View {
         self.refresh();
     }
     pub fn hide(&mut self) {
+        self.chat_pause.hide();
         self.image.hide();
         self.hooks.hide();
         self.plugin_reload.hide();
@@ -253,6 +266,7 @@ impl View {
         self.context_after_snapshot = None;
         self.image.close();
         self.midturn.open = false;
+        self.chat_pause.open = false;
         self.hooks.close();
         self.plugin_reload.close();
         self.context.close();
@@ -375,6 +389,7 @@ impl View {
                 | (Request::DeferredValidate, Data::DeferredReview(_))
                 | (Request::DeferredApply(_), Data::DeferredDiscarded(_))
                 | (Request::Midturn(_), Data::Midturn(_))
+                | (Request::ChatPause(_), Data::ChatPause(_))
                 | (Request::Image(_), Data::Image(_))
                 | (
                     Request::Image(crate::image::Request::Preview(_)),
@@ -403,6 +418,13 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update.data {
+            Data::ChatPause(reply) => {
+                self.chat_pause.reply(*reply);
+                self.open = self.chat_pause.open;
+            }
+            Data::Rejected(reason) if matches!(pending, Request::ChatPause(_)) => {
+                self.chat_pause.reject(reason)
+            }
             Data::Midturn(reply) => {
                 let interrupted = reply.interrupted().is_some();
                 self.midturn.reply(*reply);
@@ -722,7 +744,7 @@ impl View {
         self.notice = error;
     }
     pub fn paste(&mut self, text: &str) {
-        if self.midturn.open || self.hooks.open || self.plugin_reload.open {
+        if self.chat_pause.open || self.midturn.open || self.hooks.open || self.plugin_reload.open {
             return;
         }
         if self.context.is_open() {
@@ -748,6 +770,13 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.chat_pause.open {
+            if let Some(req) = self.chat_pause.key(key, self.waiting) {
+                self.request(Request::ChatPause(Box::new(req)));
+            }
+            self.open = self.chat_pause.open;
+            return;
+        }
         if self.midturn.open {
             if key.kind == KeyEventKind::Press {
                 if let Some(req) = self.midturn.key(key, self.waiting) {
@@ -1162,7 +1191,7 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.midturn.open || self.hooks.open || self.plugin_reload.open {
+        if self.chat_pause.open || self.midturn.open || self.hooks.open || self.plugin_reload.open {
             return;
         }
         if self.image.open {
@@ -1433,6 +1462,10 @@ impl View {
         self.current_row().map_or_else(Vec::new, Row::details)
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.chat_pause.open {
+            self.chat_pause.draw(frame, area, self.waiting);
+            return;
+        }
         if self.midturn.open {
             self.midturn.draw(frame, area, self.waiting);
             return;

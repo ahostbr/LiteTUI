@@ -1,5 +1,13 @@
 # LiteTUI Rust terminal port
 
+## Host chat-loop pause and fresh dependencies - November 4, 2026
+
+The native `/pause` command and Alt+P open a review of the host chat-loop state. Apply changes the canonical pause flag and independently reads it back. The panel distinguishes a requested pause from a worker actually waiting between model rounds. Resume, Stop and Quit remain reachable while held. The composer retains its text, caret and selection.
+
+The integrated checkout passed 994 ordinary Rust tests, formatting and strict all-target Clippy. All 68 selected source regressions and both relocated-package pause process groups passed. The process groups covered six child lifetimes, including declined and stale reviews, uncertain readback, explicit Resume, Stop and Quit. The launcher verified all 382 payload files after those runs.
+
+A separate fresh Python 3.11 environment was populated from the staged package's frozen lockfile, including Claude SDK 0.2.159. Public PyPI supplied the hash-verified runtime wheels missing from the local cache. All runtime imports passed with pytest absent. The five controlled backend process tests then passed using that interpreter and the verified package from checkpoint 89b6046d. Every package filename and file hash matched afterward. Retained proof is in `rust/litetui-terminal/target/clean-dependencies-d73a66c7/process-proof.json`. Installer, upgrade, authenticated-provider, physical-device and both-host acceptance remain open.
+
 ## Frontend comparison and November 4 integration
 
 Five interleaved warm trials per frontend used a private 120×40 Windows pseudoconsole, identical staged Python code and dependency interpreter, separate fresh data roots and a controlled two-chunk answer. Timing ended when the terminal parser observed the expected cells. Values below are medians across runs, with memory summed over each frontend's observed process tree.
