@@ -209,7 +209,7 @@ impl View {
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
                 let index = Document::ALL.iter().position(|doc| *doc == self.document)?;
                 let step = if previous || event.code == KeyCode::Left {
-                    3
+                    Document::ALL.len() - 1
                 } else {
                     1
                 };

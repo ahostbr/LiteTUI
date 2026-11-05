@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 import pytest_asyncio
@@ -122,6 +123,60 @@ async def test_linked_memory_is_refused(armed, tmp_path):
         pytest.skip(f"Test filesystem cannot create a symbolic link: {exc}")
     with pytest.raises(StoreError, match="Linked"):
         native_context.page(armed, request(armed, target.name))
+
+
+async def test_hooks_show_effective_scope_without_execution_details(armed, tmp_path, monkeypatch):
+    from litetui import lifecycle_hooks as hooks
+
+    config = hooks.HookConfig(tmp_path / "global.json", tmp_path / "project.json")
+    monkeypatch.setattr(armed, "hook_config", config)
+    monkeypatch.delenv("LITETUI_HOOKS", raising=False)
+    command = request(armed, "hooks")
+    locks = set(tmp_path.glob("*.json.lock"))
+    assert "No lifecycle hooks" in native_context.page(armed, command)["text"]
+    assert set(tmp_path.glob("*.json.lock")) == locks
+
+    hook = {"id": "check", "events": ["tool_before"], "mode": "gate", "executable": "private-executable",
+            "argv": ["private-argument"], "env": {"KEY": "private-credential"}, "tools": ["private-filter"]}
+    config.global_path.write_text(json.dumps({"version": 1, "hooks": [hook]}), encoding="utf-8-sig")
+    config.project_path.write_text(json.dumps({"version": 1, "hooks": [
+        {**hook, "enabled": False, "sources": ["rpc"]},
+        {**hook, "id": "second\nentry", "mode": "observe"}]}), encoding="utf-8")
+    before = config.project_path.read_bytes()
+    page = native_context.page(armed, command)
+    assert 'project/"check"  disabled  gate' in page["text"] and "global/" not in page["text"]
+    assert r'second\nentry' in page["text"] and "Sources: rpc" in page["text"] and "Events: tool_before" in page["text"]
+    assert "Tool filters: 1" in page["text"] and "private-" not in page["text"]
+    assert config.project_path.read_bytes() == before and set(tmp_path.glob("*.json.lock")) == locks
+    config.project_path.unlink()
+    assert native_context.page(armed, {**command, "revision": page["revision"]})["status"] == "changed"
+    assert 'global/"check"  enabled  gate' in native_context.page(armed, command)["text"]
+    monkeypatch.setenv("LITETUI_HOOKS", "off")
+    config.global_path.write_bytes(b"invalid json")
+    assert "hooks are off" in native_context.page(armed, command)["text"]
+
+
+async def test_hooks_reject_malformed_linked_and_oversize_config(armed, tmp_path, monkeypatch):
+    from litetui import lifecycle_hooks as hooks
+
+    config = hooks.HookConfig(tmp_path / "global.json", tmp_path / "project.json")
+    monkeypatch.setattr(armed, "hook_config", config)
+    monkeypatch.delenv("LITETUI_HOOKS", raising=False)
+    command = request(armed, "hooks")
+    config.global_path.write_bytes(b"bad private text")
+    with pytest.raises(ValueError, match="could not be inspected"):
+        native_context.page(armed, command)
+    config.global_path.write_text('{"version": 1, "hooks": [{}]}', encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid lifecycle hook configuration"):
+        native_context.page(armed, command)
+    config.global_path.write_bytes(b"x" * (native_context.MAX_DOCUMENT + 1))
+    assert native_context.page(armed, command)["status"] == "oversize"
+    config.global_path.unlink()
+    outside = tmp_path / "sensitive"
+    outside.write_bytes(b"private outside content")
+    config.global_path.hardlink_to(outside)
+    with pytest.raises(ValueError, match="could not be inspected"):
+        native_context.page(armed, command)
 
 
 async def test_negotiated_rpc_uses_the_canonical_page(armed, monkeypatch):

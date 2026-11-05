@@ -186,11 +186,12 @@ class HookConfig:
             raise HookError(f"{scope}: duplicate hook IDs")
         return hooks
 
-    def snapshot(self) -> Snapshot:
+    def snapshot(self, *, read_scope=None) -> Snapshot:
         if os.environ.get("LITETUI_HOOKS", "").lower() == "off":
             return Snapshot(disabled=True)
         try:
-            global_hooks, project = self.read("global"), self.read("project")
+            read = self.read if read_scope is None else read_scope
+            global_hooks, project = read("global"), read("project")
             overrides = {h.id for h in project}
             return Snapshot(tuple(h for h in global_hooks if h.id not in overrides) + project)
         except HookError as exc:

@@ -40,7 +40,15 @@ def files(directory):
 
 def seed(app):
     from litetui import store_identity
+    from litetui.lifecycle_hooks import HookConfig
+
     original_seed(app)
+    app.hook_config = HookConfig(root / "inspection-hooks.json", root / "empty-project-hooks.json")
+    os.environ["LITETUI_HOOKS"] = "on"
+    app.hook_config.global_path.write_text(json.dumps({"version": 1, "hooks": [{
+        "id": "audit-review", "events": ["tool_before"], "enabled": False,
+        "executable": "private-test-executable", "env": {"TEST": "private-test-value"},
+    }]}), encoding="utf-8")
     directory = app._agent_session.memory_root
     (directory / "memory.md").write_bytes(initial_memory.encode("utf-8"))
     (directory / "soul.md").write_bytes(b"")

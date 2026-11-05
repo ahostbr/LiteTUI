@@ -198,6 +198,13 @@ fn context_pages_current_system_and_agent_files_without_sending_or_mutating() {
         frames.push(key(runtime, &mut app, KeyCode::Right)?); // handoff.md does not exist
         fs::write(owner.join("handoff.md"), vec![b'x'; 262_145])?;
         frames.push(key(runtime, &mut app, KeyCode::F(5))?); // refuse oversized bytes
+        let hooks = key(runtime, &mut app, KeyCode::Right)?;
+        assert!(hooks.contains(r#"global/"audit-review"  disabled  observe"#));
+        assert!(hooks.contains("tool_before") && !hooks.contains("private-test"));
+        frames.push(hooks);
+        let system = key(runtime, &mut app, KeyCode::Right)?;
+        assert!(system.contains("CURRENT SYSTEM ROW"));
+        assert!(key(runtime, &mut app, KeyCode::Left)?.contains("audit-review"));
         frames.push(key(runtime, &mut app, KeyCode::Esc)?);
         assert!(app.live.as_ref().unwrap().work.owns_input());
         frames.push(key(runtime, &mut app, KeyCode::Esc)?);
@@ -226,7 +233,7 @@ fn context_pages_current_system_and_agent_files_without_sending_or_mutating() {
         .iter()
         .filter(|c| c["type"] == "gui.context.native_page")
         .collect::<Vec<_>>();
-    assert_eq!(owned.len(), 9);
+    assert_eq!(owned.len(), 12);
     let wire = report["wire"].as_array().unwrap();
     let expected = [
         ("system", "page"),
@@ -238,6 +245,9 @@ fn context_pages_current_system_and_agent_files_without_sending_or_mutating() {
         ("soul.md", "empty"),
         ("handoff.md", "missing"),
         ("handoff.md", "oversize"),
+        ("hooks", "page"),
+        ("system", "page"),
+        ("hooks", "page"),
     ];
     for (command, (document, status)) in owned.iter().zip(expected) {
         let frame = wire

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -12,7 +13,7 @@ from litetui.agent_store import MEMORY_FILES, _unlinked
 OPERATION = "gui.context.native_page"
 MAX_DOCUMENT = 262144
 PAGE_BYTES = 4096
-DOCUMENTS = MEMORY_FILES | {"system"}
+DOCUMENTS = MEMORY_FILES | {"system", "hooks"}
 
 
 def _stamp(info):
@@ -22,26 +23,71 @@ def _stamp(info):
 def _memory(app, document):
     if getattr(app, "_owner_memory_dir", None) is not None:
         raise ValueError("Owner memory overrides are outside this current-agent view")
-    path = _unlinked(app._agent_session.memory_root / document)
+    return _regular_file(app._agent_session.memory_root / document)
+
+
+def _regular_file(path):
+    path = _unlinked(path)
     try:
         before = path.lstat()
     except FileNotFoundError:
         return "missing", None
     if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
             or getattr(before, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
-        raise ValueError("Agent memory must be a regular unlinked file")
+        raise ValueError("Context requires a regular unlinked file")
     if before.st_size > MAX_DOCUMENT:
         return "oversize", None
     with path.open("rb") as stream:
         opened = os.fstat(stream.fileno())
         if _stamp(before) != _stamp(opened):
-            raise ValueError("Agent memory changed before it could be read")
+            raise ValueError("Context file changed before it could be read")
         data = stream.read(MAX_DOCUMENT + 1)
         finished = os.fstat(stream.fileno())
     after = _unlinked(path).lstat()
     if not (_stamp(before) == _stamp(finished) == _stamp(after)) or len(data) != before.st_size:
-        raise ValueError("Agent memory changed while reading")
+        raise ValueError("Context file changed while reading")
     return "content", data
+
+
+def _hooks(app):
+    from litetui import lifecycle_hooks as hooks
+
+    config = getattr(app, "hook_config", None)
+    if not isinstance(config, hooks.HookConfig):
+        raise ValueError("Lifecycle hook configuration is unavailable")
+
+    def read_scope(scope):
+        status, data = _regular_file(config.path(scope))
+        if status == "missing":
+            return ()
+        if status == "oversize":
+            raise OverflowError
+        return config.parse_document(json.loads(data.decode("utf-8-sig")), scope)
+
+    try:
+        snapshot = config.snapshot(read_scope=read_scope)
+    except OverflowError:
+        return "oversize", None
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError("Lifecycle hook configuration could not be inspected") from exc
+    if snapshot.error:
+        raise ValueError("Invalid lifecycle hook configuration")
+    if snapshot.disabled:
+        return "content", b"Lifecycle hooks are off (LITETUI_HOOKS=off)."
+    if not snapshot.hooks:
+        return "content", b"No lifecycle hooks are configured."
+    lines = ["Effective lifecycle hooks (project IDs override global IDs)", ""]
+    for hook in snapshot.hooks:
+        state = "enabled" if hook.enabled else "disabled"
+        # Quote IDs to keep control characters from impersonating another entry.
+        lines.append(f"{hook.scope}/{json.dumps(hook.id)}  {state}  {hook.mode}")
+        lines.append("  Events: " + ", ".join(dict.fromkeys(hook.events)))
+        if hook.sources:
+            lines.append("  Sources: " + ", ".join(dict.fromkeys(hook.sources)))
+        if hook.tools:
+            lines.append(f"  Tool filters: {len(hook.tools)}")
+    data = "\n".join(lines).encode("utf-8")
+    return ("oversize", None) if len(data) > MAX_DOCUMENT else ("content", data)
 
 
 def _system(app):
@@ -83,7 +129,12 @@ def page(app, cmd):
         raise ValueError("Invalid context byte offset")
     if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
         raise ValueError("Invalid context document revision")
-    status, data = _system(app) if document == "system" else _memory(app, document)
+    if document == "system":
+        status, data = _system(app)
+    elif document == "hooks":
+        status, data = _hooks(app)
+    else:
+        status, data = _memory(app, document)
     bridge.check()
     response = {"version": 1, "kind": "context_page", **binding, "document": document, "offset": offset,
                 "status": status, "revision": None, "total_bytes": None, "next_offset": None, "text": ""}

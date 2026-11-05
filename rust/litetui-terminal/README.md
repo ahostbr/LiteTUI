@@ -72,7 +72,7 @@ A saved or partial result is shown only after independent source and runtime rea
 
 ## Read conversation context and runtime status
 
-In **F1 Work**, press **I** to read the current system prompt or the active agent’s `memory.md`, `soul.md`, and `handoff.md`. Tab or Left/Right switches documents. Use `[` and `]` to load adjacent pages, the arrow keys to scroll, and F5 to refresh a changed document. The reader distinguishes missing and empty documents and accepts documents up to 256 KiB.
+In **F1 Work**, press **I** to read the current system prompt or the active agent’s `memory.md`, `soul.md`, and `handoff.md`. The Hooks tab lists the effective project and global lifecycle hooks, their events and their enabled state. Project hooks take precedence when an ID appears in both scopes. Tab or Left/Right switches documents. Use `[` and `]` to load adjacent pages, the arrow keys to scroll, and F5 to refresh a changed document. The reader distinguishes missing and empty documents and accepts documents up to 256 KiB.
 
 In **F10 Settings**, press **I** for the runtime version, current session and model, persistence status, and cached MCP server information. F5 refreshes the display. Escape returns to the parent panel with your draft intact.
 
