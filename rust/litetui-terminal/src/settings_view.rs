@@ -39,6 +39,7 @@ pub enum Intent {
     ModelPreferences(Box<crate::model_preferences::Request>),
     ModelLifecycle(Box<crate::model_lifecycle::Request>),
     Voice(Box<crate::voice_preferences::Request>),
+    Presentation(Box<crate::presentation_preferences::Request>),
     RuntimeStatus,
     Read,
     Editor(crate::settings_editor::Intent),
@@ -52,6 +53,7 @@ pub enum Update {
     ModelPreferences(Result<Box<crate::model_preferences::Update>, String>),
     ModelLifecycle(Result<Box<crate::model_lifecycle::Update>, String>),
     Voice(Result<Box<crate::voice_preferences::Update>, String>),
+    Presentation(Result<Box<crate::presentation_preferences::Update>, String>),
     RuntimeStatus(Result<Box<crate::inspection::Snapshot>, String>),
     Snapshot(Snapshot),
     Rejected(String),
@@ -65,6 +67,16 @@ pub enum Update {
         update: crate::settings_editor::Update,
         inspection: Snapshot,
     },
+}
+
+impl Update {
+    /// Verified effective interface preferences the renderer should adopt, if this carries any.
+    pub fn presentation(&self) -> Option<crate::presentation::Presentation> {
+        match self {
+            Self::Presentation(Ok(update)) => update.effective(),
+            _ => None,
+        }
+    }
 }
 
 fn fail(message: &str) -> io::Error {
@@ -212,6 +224,7 @@ pub struct View {
     model_preferences: crate::model_preferences::View,
     model_lifecycle: crate::model_lifecycle::View,
     voice: crate::voice_preferences::View,
+    presentation: crate::presentation_preferences::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
     pub open: bool,
@@ -267,6 +280,7 @@ impl View {
             || self.mcp.open
             || self.mcp_lifecycle.open
             || self.voice.open
+            || self.presentation.open
             || self.model_preferences.open
             || self.glassbox.open
             || self.model_lifecycle.open
@@ -288,6 +302,7 @@ impl View {
         self.model_preferences.hide();
         self.model_lifecycle.hide();
         self.voice.hide();
+        self.presentation.hide();
         self.runtime_status.hide();
         self.editor.hide();
         self.compaction.hide();
@@ -306,6 +321,7 @@ impl View {
         self.model_preferences = Default::default();
         self.model_lifecycle = Default::default();
         self.voice = Default::default();
+        self.presentation = Default::default();
         self.runtime_status.close();
         self.editor.close();
         self.compaction.close();
@@ -382,6 +398,7 @@ impl View {
                 }
             }
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
+            Update::Presentation(result) => self.presentation.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::McpLifecycle(result) => self.mcp_lifecycle.update(result.map(|update| *update)),
             Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
@@ -452,6 +469,13 @@ impl View {
             if let Some(request) = self.voice.key(key) {
                 self.waiting = true;
                 self.intent = Some(Intent::Voice(Box::new(request)));
+            }
+            return;
+        }
+        if self.presentation.open {
+            if let Some(request) = self.presentation.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Presentation(Box::new(request)));
             }
             return;
         }
@@ -546,6 +570,14 @@ impl View {
                 )));
                 self.hide();
             }
+            KeyCode::Char('u') if key.kind == KeyEventKind::Press => {
+                self.presentation.open();
+                self.waiting = true;
+                self.intent = Some(Intent::Presentation(Box::new(
+                    crate::presentation_preferences::Request::List,
+                )));
+                self.hide();
+            }
             KeyCode::Char('m') if key.kind == KeyEventKind::Press => {
                 self.mcp.open();
                 self.waiting = true;
@@ -581,6 +613,7 @@ impl View {
     pub fn mouse(&mut self, event: MouseEvent) {
         if self.mcp.open
             || self.voice.open
+            || self.presentation.open
             || self.model_preferences.open
             || self.glassbox.open
             || self.model_lifecycle.open
@@ -653,6 +686,10 @@ impl View {
         }
         if self.voice.open {
             self.voice.draw(frame, area, theme);
+            return;
+        }
+        if self.presentation.open {
+            self.presentation.draw(frame, area, theme);
             return;
         }
         if self.mcp_lifecycle.open {
@@ -824,7 +861,7 @@ impl View {
         );
         frame.render_widget(
             Paragraph::new(
-                "P preferences · L model lifecycle · V voice · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
+                "P preferences · L model lifecycle · V voice · U interface · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
             ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );

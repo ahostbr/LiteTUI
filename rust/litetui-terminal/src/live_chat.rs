@@ -115,6 +115,7 @@ pub struct Row {
     pub items: Vec<Item>,
     pub state: ReplyState,
     pub stop_reason: Option<String>,
+    pub timing: crate::presentation::TurnTiming,
 }
 impl Row {
     pub(crate) fn tool_provider(&self) -> &'static str {
@@ -495,6 +496,7 @@ impl Chat {
             items: vec![Item::Card(0)],
             state: ReplyState::Sending,
             stop_reason: None,
+            timing: crate::presentation::TurnTiming::started(),
         });
         self.busy = true;
         self.notice = "Sending prompt (not yet admitted)…".into();
@@ -557,6 +559,7 @@ impl Chat {
             items: Vec::new(),
             state: ReplyState::Reconciled,
             stop_reason: None,
+            timing: Default::default(),
         });
         Ok(())
     }
@@ -1373,6 +1376,9 @@ impl Chat {
                 self.notice = self.work.notice.clone();
             }
             Observation::Settings(update) => {
+                if let Some(presentation) = update.presentation() {
+                    self.runtime_state.set_presentation(presentation);
+                }
                 self.settings.observe(update);
                 self.notice = self.settings.notice.clone();
             }
@@ -1739,6 +1745,7 @@ impl Chat {
             items: vec![Item::Card(0)],
             state: ReplyState::Sending,
             stop_reason: None,
+            timing: crate::presentation::TurnTiming::started(),
         });
         index
     }
@@ -1771,9 +1778,11 @@ impl Chat {
             let reason = reason.as_deref().unwrap_or("");
             self.replace_cost((0, 0), (reason.len(), display_units(reason)?))?;
         }
+        let rate = self.runtime_state.rate();
         let row = &mut self.rows[index];
         row.state = state;
         row.stop_reason = reason;
+        row.timing.settle(rate);
         for tool in &mut row.tools {
             tool.finish();
         }
@@ -2163,6 +2172,7 @@ impl Chat {
             items: vec![Item::Card(0)],
             state,
             stop_reason: None,
+            timing: crate::presentation::TurnTiming::started(),
         });
         Ok(index)
     }
@@ -2253,6 +2263,7 @@ impl Chat {
         self.retained_units += units;
         self.retained_bytes += reason.len();
         let index = self.current_row_index()?;
+        let rate = self.runtime_state.rate();
         let row = &mut self.rows[index];
         self.last_activity_summary = Some(
             match state {
@@ -2266,6 +2277,7 @@ impl Chat {
         );
         row.state = state;
         row.stop_reason = stop_reason;
+        row.timing.settle(rate);
         for tool in &mut row.tools {
             tool.finish();
         }

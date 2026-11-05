@@ -87,6 +87,8 @@ pub mod model_lifecycle;
 pub mod model_preferences;
 pub mod playback;
 pub mod plugin_reload;
+pub mod presentation;
+pub mod presentation_preferences;
 pub mod transcript_selection;
 pub mod voice_preferences;
 

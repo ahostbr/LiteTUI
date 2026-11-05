@@ -130,6 +130,7 @@ pub struct State {
     ready: Option<ReadyFacts>,
     usage: Option<(u64, Option<u64>)>,
     rate: Option<f64>,
+    presentation: crate::presentation::Presentation,
 }
 impl State {
     pub fn install_runtime_policy(&mut self, facts: crate::runtime_controls::Facts) {
@@ -148,9 +149,21 @@ impl State {
             ready.context_ceiling = None;
             ready.thinking = None;
         }
+        self.presentation = (*snapshot.presentation).clone();
         self.startup = Some(snapshot);
         self.usage = None;
         self.rate = None;
+    }
+    pub fn presentation(&self) -> &crate::presentation::Presentation {
+        &self.presentation
+    }
+    /// Adopt verified interface preferences from the F10 editor.
+    pub fn set_presentation(&mut self, presentation: crate::presentation::Presentation) {
+        self.presentation = presentation;
+    }
+    /// The last settled generation rate, for the turn stop line.
+    pub fn rate(&self) -> Option<f64> {
+        self.rate
     }
 
     pub fn apply(&mut self, update: Update) {
@@ -169,7 +182,10 @@ impl State {
                     }
                 }
             }
-            UpdateKind::Startup(snapshot) => self.startup = Some(snapshot),
+            UpdateKind::Startup(snapshot) => {
+                self.presentation = (*snapshot.presentation).clone();
+                self.startup = Some(snapshot);
+            }
             UpdateKind::Held(count) => {
                 if let Some(snapshot) = &mut self.startup {
                     snapshot.held_restored_input = Some(count);
@@ -218,8 +234,8 @@ impl State {
             return Vec::new();
         };
         let mut fields = Vec::new();
-        // Source default order; dynamic preference/visibility transport is still
-        // pending. Missing facts do not become fabricated zeroes or authority.
+        // Facts are collected in source default order, then the effective device switches and
+        // footer order arrange them. Missing facts do not become fabricated zeroes or authority.
         if let Some((used, Some(maximum))) = self.usage {
             fields.push(F::new(
                 K::Percent,
@@ -282,7 +298,7 @@ impl State {
         }
         // No seat registration, plan, cache or background facts
         // are available in these events. Never infer them from launch arguments.
-        fields
+        self.presentation.arrange(fields)
     }
 }
 fn label(value: &str) -> String {

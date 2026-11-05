@@ -2633,6 +2633,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                     }
                     Input::Settings(intent) => {
                         let voice = matches!(intent, crate::settings_view::Intent::Voice(_));
+                        let presentation =
+                            matches!(intent, crate::settings_view::Intent::Presentation(_));
                         let model_preferences =
                             matches!(intent, crate::settings_view::Intent::ModelPreferences(_));
                         let model_lifecycle =
@@ -2677,6 +2679,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     ))
                                 } else if voice {
                                     crate::settings_view::Update::Voice(Err(error.to_string()))
+                                } else if presentation {
+                                    crate::settings_view::Update::Presentation(Err(
+                                        error.to_string()
+                                    ))
                                 } else if mcp {
                                     crate::settings_view::Update::Mcp(Err(error.to_string()))
                                 } else if runtime_status {

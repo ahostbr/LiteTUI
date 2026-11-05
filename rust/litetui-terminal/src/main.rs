@@ -5398,9 +5398,19 @@ mod live_keyboard_navigation_tests {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    fn show_key_hints(app: &mut Demo) {
+        let effective = serde_json::json!({"footer_show_key_hints": true});
+        app.live.as_mut().unwrap().runtime_state.set_presentation(
+            litetui_terminal::presentation::Presentation::from_effective(
+                effective.as_object().unwrap(),
+            )
+            .unwrap(),
+        );
+    }
     #[test]
     fn compact_display_hysteresis_sticky_override_and_routed_profile_preserve_the_draft() {
         let mut app = Demo::live("claude".into(), "m".into());
+        show_key_hints(&mut app);
         let mut keys = KeyRouter::default();
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("draft selection");
@@ -5429,6 +5439,9 @@ mod live_keyboard_navigation_tests {
         assert_eq!(app.composer.text(), "draft selection");
         assert_eq!(app.composer.selected_text(), selected);
         let mut first = Demo::live("custom".into(), "m".into());
+        // Keyboard hints are off by default (source `footer_show_key_hints`).
+        assert!(!draw(&mut first, 99, 42).contains("^G view"));
+        show_key_hints(&mut first);
         assert!(draw(&mut first, 99, 42).contains("^G view"));
     }
     #[test]

@@ -611,6 +611,7 @@ fn live_state(session: &str) -> litetui_terminal::management::Snapshot {
         conversations: 1,
         jobs: 0,
         tasks: 0,
+        presentation: Default::default(),
     }
 }
 #[test]

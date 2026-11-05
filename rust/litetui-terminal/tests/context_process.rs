@@ -460,6 +460,117 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
 }
 
 #[test]
+#[ignore = "compiled Settings Interface preferences against registered source RPC"]
+fn presentation_preferences_review_save_and_reread_change_what_is_rendered() {
+    let (runtime, data) = launch("presentation_preferences_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve the draft and selection.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selected = app.composer.before_cursor().to_owned();
+            // The real startup state carried the effective values, and they are the source defaults.
+            let startup = app.live.as_ref().unwrap().runtime_state.startup().unwrap();
+            assert_eq!(startup.presentation, Default::default());
+            assert!(app.presentation().show_thinking && !app.presentation().sidebar_dialogs);
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            let opened = settings_key(runtime, &mut app, KeyCode::Char('u'))?;
+            assert!(
+                opened.contains("Interface preferences on this device")
+                    && opened.contains("Show thinking blocks: on"),
+                "{opened}"
+            );
+            let path = data.join("settings.json");
+            let mut expected = json_file(&path);
+            // Cancelling a review writes nothing; the draft survives for another try.
+            settings_key(runtime, &mut app, KeyCode::Right)?;
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(review.contains("Save Show thinking blocks?"), "{review}");
+            assert!(
+                review.contains("Requested: off") && review.contains("immediately"),
+                "{review}"
+            );
+            assert_eq!(json_file(&path), expected);
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(json_file(&path), expected);
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(saved.contains("Saved and verified on disk."), "{saved}");
+            expected["show_thinking"] = json!(false);
+            assert_eq!(json_file(&path), expected);
+            assert!(!app.presentation().show_thinking);
+
+            for _ in 0..5 {
+                settings_key(runtime, &mut app, KeyCode::Down)?;
+            }
+            settings_key(runtime, &mut app, KeyCode::Right)?;
+            settings_key(runtime, &mut app, KeyCode::Enter)?;
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(saved.contains("Saved and verified on disk."), "{saved}");
+            expected["dialog_style"] = json!("sidebar");
+            assert_eq!(json_file(&path), expected);
+            assert!(app.presentation().sidebar_dialogs);
+
+            for _ in 0..13 {
+                settings_key(runtime, &mut app, KeyCode::Down)?;
+            }
+            for _ in 0..7 {
+                settings_key(runtime, &mut app, KeyCode::Right)?;
+            }
+            let draft = settings_key(runtime, &mut app, KeyCode::Char('['))?;
+            assert!(
+                draft.contains("[tps] cache") && draft.contains("(draft)"),
+                "{draft}"
+            );
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                review.contains("Save Footer order?") && review.contains("Requested:"),
+                "{review}"
+            );
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(saved.contains("Saved and verified on disk."), "{saved}");
+            let disk = json_file(&path);
+            assert_eq!(disk["footer_order"][6], "tps");
+            assert_eq!(disk["footer_order"][7], "cache");
+            assert_eq!(app.presentation().order()[6], "tps");
+            settings_key(runtime, &mut app, KeyCode::F(5))?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Preserve the draft and selection.");
+            assert_eq!(app.composer.before_cursor(), selected);
+            Ok(())
+        })
+        .unwrap_or_else(|err| panic!("{}: {err}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let commands = report["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["type"].as_str()?.strip_prefix("gui.presentation.native_"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        [
+            "preferences",
+            "review",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "preferences"
+        ]
+    );
+    assert_eq!(json_file(&data.join("presentation-guards.json")), json!([]));
+}
+
+#[test]
 #[ignore = "compiled Settings MCP declaration review; dependency Python required"]
 fn shared_mcp_declaration_requires_review_and_fresh_disk_readback() {
     let (runtime, data) = launch("mcp_declaration_runtime.py");

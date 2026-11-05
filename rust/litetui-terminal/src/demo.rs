@@ -154,8 +154,10 @@ impl Demo {
     pub fn observe_live(&mut self, observation: crate::live::Observation) -> std::io::Result<()> {
         // A rebased/replaced row must never inherit a press on an older rendered header.
         self.compact_display.clear_hits();
-        let following = self.scroll >= self.max_scroll
-            || matches!(&observation, crate::live::Observation::Opened(_));
+        // An unlocked reader (autoscroll off) is never yanked to the newest output.
+        let following = self.presentation().autoscroll
+            && (self.scroll >= self.max_scroll
+                || matches!(&observation, crate::live::Observation::Opened(_)));
         if matches!(
             observation,
             crate::live::Observation::Approval(crate::approvals::Event::Requested(_))
@@ -858,6 +860,13 @@ impl Demo {
         self.notice = chat.notice.clone();
         self.footer_fields.clear();
     }
+    /// Effective device interface preferences; source defaults before a runtime reports any.
+    pub fn presentation(&self) -> crate::presentation::Presentation {
+        self.live
+            .as_ref()
+            .map(|chat| chat.runtime_state.presentation().clone())
+            .unwrap_or_default()
+    }
     pub fn palette(&self) -> &crate::theme::Theme {
         self.live
             .as_ref()
@@ -1118,7 +1127,9 @@ impl Demo {
             self.notice = chat.notice.clone();
             self.composer.push_history(&text);
             self.composer.clear();
-            self.scroll = usize::MAX;
+            if chat.runtime_state.presentation().autoscroll {
+                self.scroll = usize::MAX;
+            }
             return;
         }
         self.composer.push_history(&text);

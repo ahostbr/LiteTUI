@@ -149,6 +149,8 @@ pub struct Snapshot {
     pub conversations: usize,
     pub jobs: usize,
     pub tasks: usize,
+    /// Effective device presentation preferences; defaults when the runtime reports none.
+    pub presentation: Box<crate::presentation::Presentation>,
 }
 impl Snapshot {
     fn parse(value: &Value) -> io::Result<Self> {
@@ -182,6 +184,12 @@ impl Snapshot {
             conversations: rows(value, "conversations")?,
             jobs: rows(value, "jobs")?,
             tasks: rows(value, "tasks")?,
+            presentation: match value["settings"]["effective"].as_object() {
+                Some(effective) => Box::new(crate::presentation::Presentation::from_effective(
+                    effective,
+                )?),
+                None => Default::default(),
+            },
         })
     }
 }
@@ -409,6 +417,7 @@ enum PreferencesRequest {
     ModelPreferences(Box<crate::model_preferences::Request>),
     ModelLifecycle(Box<crate::model_lifecycle::Request>),
     Voice(Box<crate::voice_preferences::Request>),
+    Presentation(Box<crate::presentation_preferences::Request>),
 }
 enum PreferencesReply {
     Glassbox(Box<crate::glassbox_controls::Update>),
@@ -417,6 +426,7 @@ enum PreferencesReply {
     ModelPreferences(Box<crate::model_preferences::Update>),
     ModelLifecycle(Box<crate::model_lifecycle::Update>),
     Voice(Box<crate::voice_preferences::Update>),
+    Presentation(Box<crate::presentation_preferences::Update>),
     Next(PreferencesRequest),
 }
 impl PreferencesRequest {
@@ -428,6 +438,7 @@ impl PreferencesRequest {
             Self::Glassbox(_) => &crate::glassbox_controls::OPERATIONS,
             Self::ModelLifecycle(_) => &crate::model_lifecycle::OPERATIONS,
             Self::Voice(_) => &crate::voice_preferences::OPERATIONS,
+            Self::Presentation(_) => &crate::presentation_preferences::OPERATIONS,
         }
     }
     fn is_apply(&self) -> bool {
@@ -438,6 +449,9 @@ impl PreferencesRequest {
             Self::Glassbox(r) => matches!(**r, crate::glassbox_controls::Request::Apply(_)),
             Self::ModelLifecycle(r) => matches!(**r, crate::model_lifecycle::Request::Apply(_)),
             Self::Voice(r) => matches!(**r, crate::voice_preferences::Request::Apply(_)),
+            Self::Presentation(r) => {
+                matches!(**r, crate::presentation_preferences::Request::Apply(_))
+            }
         }
     }
     fn command(&self, id: &crate::work_protocol::Identity, instance: &str) -> io::Result<Value> {
@@ -448,6 +462,7 @@ impl PreferencesRequest {
             Self::Glassbox(r) => r.command(id, instance),
             Self::ModelLifecycle(r) => r.command(id, instance),
             Self::Voice(r) => r.command(id, instance),
+            Self::Presentation(r) => r.command(id, instance),
         }
     }
     fn rejected(&self) -> fn(String) -> crate::settings_view::Update {
@@ -464,6 +479,9 @@ impl PreferencesRequest {
                 |reason| crate::settings_view::Update::ModelLifecycle(Err(reason))
             }
             Self::Voice(_) => |reason| crate::settings_view::Update::Voice(Err(reason)),
+            Self::Presentation(_) => {
+                |reason| crate::settings_view::Update::Presentation(Err(reason))
+            }
         }
     }
     fn response(
@@ -525,6 +543,14 @@ impl PreferencesRequest {
                 }
                 crate::voice_preferences::Reply::Update(update) => {
                     PreferencesReply::Voice(Box::new(update))
+                }
+            },
+            Self::Presentation(r) => match r.response(v, id, instance, command_id)? {
+                crate::presentation_preferences::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::Presentation(Box::new(next)))
+                }
+                crate::presentation_preferences::Reply::Update(update) => {
+                    PreferencesReply::Presentation(Box::new(update))
                 }
             },
         })
@@ -2953,6 +2979,9 @@ impl Management {
                 (Some(PreferencesRequest::ModelLifecycle(r)), false)
             }
             crate::settings_view::Intent::Voice(r) => (Some(PreferencesRequest::Voice(r)), false),
+            crate::settings_view::Intent::Presentation(r) => {
+                (Some(PreferencesRequest::Presentation(r)), false)
+            }
             crate::settings_view::Intent::RuntimeStatus => (None, true),
             _ => (None, false),
         };
@@ -3064,6 +3093,9 @@ impl Management {
                 }
                 Ok(PreferencesReply::Voice(update)) => {
                     crate::settings_view::Update::Voice(Ok(update))
+                }
+                Ok(PreferencesReply::Presentation(update)) => {
+                    crate::settings_view::Update::Presentation(Ok(update))
                 }
                 Err(reason) if fatal_mcp => {
                     return Err(fail(&format!("MCP mutation did not settle: {reason}")));
@@ -4904,5 +4936,34 @@ impl Management {
         pending.id = id;
         self.saved_history = Some(pending);
         Ok(Step::Write(command))
+    }
+}
+
+#[cfg(test)]
+mod presentation_state_tests {
+    use super::Snapshot;
+    use serde_json::{Value, json};
+
+    fn state(effective: Value) -> Value {
+        json!({"session_id":"s","busy":false,"mode":"normal","tool_profile":"strict",
+            "model":{"backend":"custom","model":"m"},
+            "ownership":{"data_version":1,"writable":true,"agent_id":"a"},
+            "restored_input":{"policy":"hold","held":0},"schedules_paused":false,
+            "conversations":[],"jobs":[],"tasks":[],"active_work":[],"pending_approvals":[],
+            "pending_questions":[],"pending_model_loads":[],
+            "settings":{"effective":effective}})
+    }
+
+    #[test]
+    fn startup_state_carries_the_effective_presentation_or_source_defaults() {
+        let defaults = Snapshot::parse(&state(json!({}))).unwrap();
+        assert_eq!(defaults.presentation, Default::default());
+        let changed = Snapshot::parse(&state(
+            json!({"show_thinking":false,"footer_show_key_hints":true,"dialog_style":"sidebar"}),
+        ))
+        .unwrap();
+        assert!(!changed.presentation.show_thinking && changed.presentation.key_hints);
+        assert!(changed.presentation.sidebar_dialogs);
+        assert!(Snapshot::parse(&state(json!({"show_thinking":"no"}))).is_err());
     }
 }

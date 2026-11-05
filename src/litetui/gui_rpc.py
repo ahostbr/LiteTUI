@@ -64,6 +64,7 @@ OPERATIONS = (
     "plugins.native_list", "plugins.native_review", "plugins.native_apply", "plugins.native_readback",
     "context.native_page", "inspection.native_status", "inspection.native_status_with_glassbox",
     "voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback",
+    "presentation.native_preferences", "presentation.native_review", "presentation.native_apply", "presentation.native_readback",
     "mcp.native_lifecycle_snapshot", "mcp.native_lifecycle_review", "mcp.native_lifecycle_apply", "mcp.native_lifecycle_readback",
     "mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_add_review", "mcp.native_config_remove_review",
     "mcp.native_config_apply", "mcp.native_config_readback",
@@ -571,6 +572,9 @@ def dispatch(app, cmd):
     if operation in {"voice.native_preferences", "voice.native_review", "voice.native_apply", "voice.native_readback"}:
         from litetui import native_voice_preferences
         return native_voice_preferences.dispatch(app, cmd)
+    if operation in {"presentation.native_preferences", "presentation.native_review", "presentation.native_apply", "presentation.native_readback"}:
+        from litetui import native_presentation_preferences
+        return native_presentation_preferences.dispatch(app, cmd)
     if operation in {"inspection.native_status", "inspection.native_status_with_glassbox"}:
         from litetui import native_inspection
         return native_inspection.status(app, cmd)

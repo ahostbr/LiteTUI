@@ -321,6 +321,7 @@ impl Management {
             | view::Intent::McpLifecycle(_)
             | view::Intent::ModelPreferences(_)
             | view::Intent::Voice(_)
+            | view::Intent::Presentation(_)
             | view::Intent::Glassbox(_)
             | view::Intent::ModelLifecycle(_) => {
                 return Err(fail("Expected a reviewed settings editor operation"));

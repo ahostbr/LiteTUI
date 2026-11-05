@@ -594,9 +594,23 @@ fn native_tool(
 }
 
 type ThinkingHeaders = Vec<(usize, crate::compact_display::ThinkingHit)>;
+/// The settled line below a turn's last card (source `format_turn_stop_line`).
+fn stop_line(
+    row: &crate::live_chat::Row,
+    presentation: &crate::presentation::Presentation,
+) -> Option<String> {
+    use crate::{live_chat::ReplyState, presentation::Ending};
+    let ending = match row.state {
+        ReplyState::Complete => Ending::Completed,
+        ReplyState::Cancelled | ReplyState::ApprovalStopped | ReplyState::Failed => Ending::Stopped,
+        _ => return None,
+    };
+    row.timing.line(ending, presentation)
+}
 fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), ThinkingHeaders) {
     let mut headers = Vec::new();
     let t = app.palette();
+    let presentation = app.presentation();
     if let Some(chat) = &app.live {
         let mut lines = Vec::new();
         let mut selected = (0, 0);
@@ -741,8 +755,17 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                     "Previously accepted · verified in provider history · not resent"
                 }
             };
+            let settled = stop_line(row, &presentation);
+            let state_text = match &settled {
+                Some(line) => format!("{state}\n{line}"),
+                None => state.to_owned(),
+            };
+            let last_card = row.items.iter().rev().find_map(|item| match item {
+                crate::live_chat::Item::Card(index) => Some(*index),
+                _ => None,
+            });
             if row.cards.is_empty() {
-                tool_body(t, &mut lines, state, t.tool_text, width);
+                tool_body(t, &mut lines, &state_text, t.tool_text, width);
                 lines.push(Line::raw(""));
             }
             for item in &row.items {
@@ -778,7 +801,8 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                         let expanded = card
                             .reasoning_expanded
                             .unwrap_or(!app.compact_display.active());
-                        if !card.reasoning.is_empty() {
+                        let thinking = presentation.show_thinking && !card.reasoning.is_empty();
+                        if thinking {
                             headers.push((
                                 lines.len() + if expanded { 3 } else { 2 },
                                 crate::compact_display::ThinkingHit {
@@ -791,7 +815,7 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                             t,
                             &mut lines,
                             &format!("Assistant · {}", display_safe(&chat.model)),
-                            &if card.reasoning.is_empty() {
+                            &if !thinking {
                                 Vec::new()
                             } else if expanded {
                                 vec!["▾ Thinking".to_owned(), display_safe(&card.reasoning)]
@@ -809,7 +833,11 @@ fn transcript(app: &Demo, width: usize) -> (Vec<Line<'static>>, (usize, usize), 
                                 )]
                             },
                             &display_safe(&card.answer),
-                            state,
+                            if last_card == Some(index) {
+                                &state_text
+                            } else {
+                                state
+                            },
                             width,
                         );
                     }
@@ -913,6 +941,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         app.compact_display.resize(area.width);
     }
     let compact = app.live.is_some() && app.compact_display.active();
+    let presentation = app.presentation();
     frame.render_widget(
         Block::default().style(style(t.foreground, t.background)),
         area,
@@ -1021,11 +1050,32 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     } else {
         0
     };
+    // A sidebar dialog takes its edge and the chat reflows narrower beside it instead of
+    // being covered. Too narrow a terminal falls back to the modal placement.
+    let dock = (presentation.sidebar_dialogs
+        && (app.has_live_approval() || app.has_live_question())
+        && area.width >= 80)
+        .then(|| {
+            let width = (area.width / 3).clamp(36, 52);
+            let x = if presentation.dialogs_left {
+                area.x
+            } else {
+                area.right() - width
+            };
+            Rect::new(x, areas[1].y, width, areas[1].height + areas[2].height)
+        });
+    let mut body = areas[2];
+    if let Some(dock) = dock {
+        body.width -= dock.width;
+        if presentation.dialogs_left {
+            body.x += dock.width;
+        }
+    }
     let viewport = Rect::new(
-        areas[2].x + 1,
-        areas[2].y,
-        areas[2].width.saturating_sub(2),
-        areas[2].height.saturating_sub(picker_height),
+        body.x + 1,
+        body.y,
+        body.width.saturating_sub(2),
+        body.height.saturating_sub(picker_height),
     );
     let (lines, selected, headers) = transcript(app, viewport.width as usize);
     let height = viewport.height as usize;
@@ -1229,13 +1279,13 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             areas[4].y + 1,
         ));
     }
-    let hint = if compact {
+    let hint = if compact && presentation.key_hints {
         "^G view · ^B select · ^E open"
     } else {
         ""
     };
     let footer_width = usize::from(areas[5].width.saturating_sub(1));
-    let status_width = footer_width.saturating_sub(hint.width() + usize::from(compact));
+    let status_width = footer_width.saturating_sub(hint.width() + usize::from(!hint.is_empty()));
     let footer = crate::footer::FooterLayout::with_status_width(
         &app.footer_fields,
         status_width,
@@ -1271,7 +1321,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         Paragraph::new(vec![row(&footer.status), row(&footer.permission)]).style(footer_style),
         areas[5],
     );
-    if compact {
+    if !hint.is_empty() {
         let w = hint.width().min(usize::from(areas[5].width)) as u16;
         frame.render_widget(
             Paragraph::new(hint).style(footer_style),
@@ -1282,9 +1332,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         approval(frame, app, area);
     }
     if app.has_live_approval() {
-        live_approval(frame, app, area);
+        live_approval(frame, app, dock.unwrap_or(area), dock.is_some());
     } else if app.has_live_question() {
-        live_question(frame, app, area);
+        live_question(frame, app, dock.unwrap_or(area), dock.is_some());
     }
     if app.themes_open {
         theme_picker(frame, app, area);
@@ -1712,23 +1762,35 @@ fn theme_picker(frame: &mut Frame, app: &Demo, area: Rect) {
     );
 }
 
-fn live_approval(frame: &mut Frame, app: &mut Demo, area: Rect) {
+/// Modal dialogs are centered; a docked (sidebar) dialog fills the rectangle it was given.
+fn dialog_rect(area: Rect, width: u16, height: u16, docked: bool) -> Rect {
+    if docked {
+        return area;
+    }
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
+}
+
+fn live_approval(frame: &mut Frame, app: &mut Demo, area: Rect, docked: bool) {
     let t = app.palette().clone();
     let chat = app.live.as_mut().expect("live approval");
     let count = chat.approvals.len();
     let current = chat.approvals.current_mut().expect("visible approval");
-    let width = area.width.saturating_sub(4).min(78);
+    let width = if docked {
+        area.width
+    } else {
+        area.width.saturating_sub(4).min(78)
+    };
     let lines = wrap(
         &display_safe(&current.request.display_text()),
         width.saturating_sub(4) as usize,
     );
     let height = (lines.len() + 8).min(usize::from(area.height) * 85 / 100) as u16;
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
+    let rect = dialog_rect(area, width, height, docked);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1781,7 +1843,7 @@ fn live_approval(frame: &mut Frame, app: &mut Demo, area: Rect) {
     );
 }
 
-fn live_question(frame: &mut Frame, app: &mut Demo, area: Rect) {
+fn live_question(frame: &mut Frame, app: &mut Demo, area: Rect, docked: bool) {
     use crate::questions::{Hit, HitTarget};
     let t = app.palette().clone();
     let pending = app
@@ -1793,12 +1855,7 @@ fn live_question(frame: &mut Frame, app: &mut Demo, area: Rect) {
         .expect("visible question");
     let width = area.width.saturating_sub(4).min(88);
     let height = area.height.saturating_sub(2).min(32);
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
+    let rect = dialog_rect(area, width, height, docked);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(" Question ")
