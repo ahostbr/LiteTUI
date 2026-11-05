@@ -17,8 +17,10 @@ use std::{
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 fn launch(case: &str, tools: bool) -> (Interactive, PathBuf) {
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let actual = std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate_root.join("../.."))
         .canonicalize()
         .unwrap();
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -53,7 +55,7 @@ s = json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True, skills_enabled=True, skill_roots=[], footer_task_manager=False, tts_enabled=False, sidecar_enabled=False, autocompact_enabled=False, tool_auto_background_s=0, custom_context_length=8192, max_tokens_chat=101, max_tokens_tools=202)
 p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
-"#,quote(&actual.to_string_lossy()),quote(case),quote(if tools{"max_tokens_tools"}else{"max_tokens_chat"}),quote(&actual.join("rust/litetui-terminal/tests/fixtures/command_skill_runtime.py").to_string_lossy()))).unwrap();
+"#,quote(&actual.to_string_lossy()),quote(case),quote(if tools{"max_tokens_tools"}else{"max_tokens_chat"}),quote(&crate_root.join("tests/fixtures/command_skill_runtime.py").to_string_lossy()))).unwrap();
     let root = base.join("data");
     let mut args = vec![
         "--python".into(),
@@ -371,6 +373,23 @@ fn route_scenario(case: &str, raw: &str, action: &str) {
                 "quit" => assert!(app.command_quit),
                 "skills" => assert!(app.has_live_commands()),
                 "refused" => assert!(app.has_live_commands()),
+                "Tasks" | "Scheduled jobs" | "Loops" | "Goal" | "Calendar" => {
+                    assert!(app.has_live_work());
+                    while let Some(intent) = app.live.as_mut().unwrap().work.take_intent() {
+                        runtime.work(intent)?;
+                        wait(runtime, &mut app, |e| matches!(e, Observation::Work(_)))?;
+                    }
+                    let mut t = Terminal::new(TestBackend::new(100, 32)).unwrap();
+                    t.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+                    let displayed = t.backend().buffer().content.chunks(100).any(|row| {
+                        row.iter()
+                            .map(|cell| cell.symbol())
+                            .collect::<String>()
+                            .contains(&format!("{action} · Schedules "))
+                    });
+                    assert!(displayed, "Expected Work section {action} for {raw}");
+                    assert_eq!(app.composer.text(), raw);
+                }
                 _ => panic!(),
             }
         }
@@ -452,6 +471,22 @@ fn raw_aliases_route_only_to_verified_native_controls() {
         route_scenario("success", raw, action);
     }
 }
+#[test]
+#[ignore = "controlled real source runtime"]
+fn work_commands_open_the_selected_section_without_running_actions() {
+    for (raw, section) in [
+        ("/tasks list", "Tasks"),
+        ("/cron LS", "Scheduled jobs"),
+        ("/cal", "Calendar"),
+        ("/loop status", "Loops"),
+        ("/goal SHOW", "Goal"),
+        ("/cron run example", "refused"),
+        ("/goal clear", "refused"),
+    ] {
+        route_scenario("work-routes", raw, section);
+    }
+}
+
 #[test]
 #[ignore = "controlled real source runtime"]
 fn raw_unknown_unsupported_arguments_and_cancel_never_fall_back() {

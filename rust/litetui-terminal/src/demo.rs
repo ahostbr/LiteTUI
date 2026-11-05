@@ -184,6 +184,7 @@ impl Demo {
         if let Some(action) = route {
             use crate::command_palette::Action;
             match action {
+                Action::Work(destination) => self.show_work(Some(destination)),
                 Action::Engine => self.open_engine(),
                 Action::Models => self.open_models(crate::model_controls::Kind::Model),
                 Action::Thinking => self.open_models(crate::model_controls::Kind::Thinking),
@@ -478,6 +479,9 @@ impl Demo {
         }
     }
     pub fn open_work(&mut self) {
+        self.show_work(None);
+    }
+    fn show_work(&mut self, destination: Option<crate::work_view::Destination>) {
         if self.has_live_input() {
             return;
         }
@@ -492,7 +496,11 @@ impl Demo {
                 self.notice = "Wait for the owned runtime before opening Work.".into();
                 return;
             }
-            chat.work.open();
+            if let Some(destination) = destination {
+                chat.work.open_at(destination);
+            } else {
+                chat.work.open();
+            }
             self.themes_open = false;
             self.completion.dismiss();
             self.footer.leave();

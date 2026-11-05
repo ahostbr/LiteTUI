@@ -90,6 +90,8 @@ In **F10 Settings**, press **I** for the runtime version, current session and mo
 
 ## Work inspection (in progress)
 
+From the composer or F11, `/tasks`, `/cron`, `/loop`, `/goal` and `/calendar` (also `/cal`) open the corresponding Work section. The list and status spellings select the same view, including `/tasks list`, `/cron ls`, `/loop status` and `/goal show`. Choose any changes inside Work, where the selected row and proposed action can be reviewed.
+
 F1 opens Work during ordinary chat. Tab/Shift+Tab switch between host tasks, provider activity, scheduled jobs, loops, the current goal and the calendar. Enter opens complete details; T reads a selected finished host task's bounded output suffix. N/PageDown and B/PageUp follow actual source page offsets, including pages shortened to fit their byte budget. Calendar Left/Right changes month and Enter opens the selected day's complete schedule entries. F5 refreshes the captured facts.
 
 Unavailable sources are labelled separately from empty lists. Host task ownership is descriptive, not permission to kill a process. Task output uses the canonical log path and reports omitted bytes and replacement decoding. These inspection operations preserve the ordinary composer draft, caret and selection; approvals, questions and Stop take priority. Closing a dispatched request waits for its correlated reply before releasing the composer.

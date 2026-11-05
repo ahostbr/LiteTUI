@@ -52,10 +52,12 @@ pub enum Action {
     SkillPrepare,
     ConversationNew,
     ConversationRename,
+    Work(crate::work_view::Destination),
     Themes,
 }
 impl Action {
     fn parse(v: &Value) -> io::Result<Option<Self>> {
+        use crate::work_view::Destination;
         Ok(match v.as_str() {
             None if v.is_null() => None,
             Some("engine") => Some(Self::Engine),
@@ -70,6 +72,11 @@ impl Action {
             Some("conversation_new") => Some(Self::ConversationNew),
             Some("conversation_rename") => Some(Self::ConversationRename),
             Some("themes") => Some(Self::Themes),
+            Some("work_tasks") => Some(Self::Work(Destination::Tasks)),
+            Some("work_jobs") => Some(Self::Work(Destination::Jobs)),
+            Some("work_loops") => Some(Self::Work(Destination::Loops)),
+            Some("work_goal") => Some(Self::Work(Destination::Goal)),
+            Some("work_calendar") => Some(Self::Work(Destination::Calendar)),
             _ => return Err(fail("Unknown native command action")),
         })
     }
@@ -204,10 +211,11 @@ impl Catalog {
             let unavailable = text(row, "unavailable_reason", 4096)?;
             if action.is_some() != unavailable.is_empty()
                 || arguments
-                    != matches!(
+                    != (matches!(
                         action,
                         Some(Action::SkillPrepare | Action::ConversationRename)
-                    )
+                    ) || kind == "command"
+                        && matches!(action, Some(Action::Work(dest)) if dest != crate::work_view::Destination::Calendar))
                 || (action == Some(Action::SkillPrepare)) != (kind == "skill")
             {
                 return Err(fail("Command availability contradicts adapter policy"));
@@ -328,6 +336,23 @@ impl Route {
         let arguments = text(v, "arguments", 65536)?;
         if Some(action) != entry.action || (!arguments.is_empty() && !entry.arguments) {
             return Err(fail("Resolved command contradicts selected adapter"));
+        }
+        if let Action::Work(destination) = action
+            && !arguments.is_empty()
+        {
+            use crate::work_view::Destination;
+            let verb = arguments.trim();
+            let lower = verb.to_ascii_lowercase();
+            let inspection = match destination {
+                Destination::Tasks => verb == "list",
+                Destination::Jobs => matches!(lower.as_str(), "list" | "ls"),
+                Destination::Loops => matches!(lower.as_str(), "list" | "ls" | "status"),
+                Destination::Goal => matches!(lower.as_str(), "status" | "show"),
+                Destination::Calendar => false,
+            };
+            if !inspection {
+                return Err(fail("Work inspection cannot authorize this command"));
+            }
         }
         if action == Action::ConversationRename
             && (arguments.len() > 4096 || arguments.contains('\0'))

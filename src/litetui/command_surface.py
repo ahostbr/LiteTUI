@@ -27,9 +27,19 @@ _ROUTES = {
     ("convo", "/rename"): "conversation_rename",
     ("settings-ui", "/settings"): "settings",
     ("skills", "/skills"): "skills",
+    ("tasks", "/tasks"): "work_tasks",
+    ("scheduler", "/cron"): "work_jobs",
+    ("scheduler", "/calendar"): "work_calendar",
+    ("goal-loop", "/loop"): "work_loops",
+    ("goal-loop", "/goal"): "work_goal",
 }
-# Only this canonical palette contribution opens the reviewed theme control.
-_PALETTE_ROUTES = {("settings-ui", "Theme"): "themes"}
+_PALETTE_ROUTES = {("settings-ui", "Theme"): "themes", ("scheduler", "Scheduled jobs"): "work_jobs"}
+_WORK_INSPECTION = {
+    "work_tasks": {"list"},
+    "work_jobs": {"list", "ls"},
+    "work_loops": {"list", "ls", "status"},
+    "work_goal": {"status", "show"},
+}
 
 
 def _text(value, limit=1024, *, empty=False):
@@ -69,7 +79,8 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "help": _text(help_text, 4096, empty=True), "group": _text(group, 128),
         "group_label": _text(plugins.PALETTE_GROUP_LABELS.get(group, group.title()), 256),
         "order": _order(order), "tokens": tokens, "palette": palette,
-        "native_action": action, "accepts_arguments": action in {"skill_prepare", "conversation_rename"},
+        "native_action": action, "accepts_arguments": (action in {"skill_prepare", "conversation_rename"}
+                                                     or kind == "command" and action in _WORK_INSPECTION),
         "unavailable_reason": "" if action else "This contribution has no native action adapter yet.",
     }
     row["id"] = _digest([binding, row])
@@ -230,6 +241,11 @@ def resolve(app, cmd):
 
         # Prefill only; canonical normalization and mutation require a new review.
         arguments = validate_title_input(arguments)
+    action = selected["native_action"]
+    if arguments and action in _WORK_INSPECTION:
+        verb = arguments.strip()
+        if (verb if action == "work_tasks" else verb.lower()) not in _WORK_INSPECTION[action]:
+            raise ValueError("Open Work and review this action there. This command accepts inspection verbs only.")
     if arguments != "" and not selected["accepts_arguments"]:
         raise ValueError("This native control adapter does not accept command arguments")
     result = {"version": VERSION, "kind": "command_route", "session_id": current["session_id"],

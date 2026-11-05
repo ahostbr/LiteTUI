@@ -82,7 +82,15 @@ def state(app):
 
 
 async def serve(app):
-    from litetui import gui_rpc, hook_host, plugins, rpc, skills, store_identity
+    from litetui import (
+        background_input,
+        gui_rpc,
+        hook_host,
+        plugins,
+        rpc,
+        skills,
+        store_identity,
+    )
 
     boundary.__dict__["ready"] = asyncio.Event()
     report = {}
@@ -185,10 +193,13 @@ async def serve(app):
                 await asyncio.wait_for(boundary.settle_workers(app), 5)
                 ready = next(row for row in boundary.records if row.get("type") == "ready")
                 assert ready["launch_status"] == "ready", ready
-                manifests = plugins.register_plugins(app, app.plugins, order=(
-                    "litetui.plugins.misc", "litetui.plugins.convo", "litetui.plugins.model_switch",
-                    "litetui.plugins.settings_ui", "litetui.plugins.skills_plugin"))
-                assert {manifest.id for manifest in manifests} == {"misc", "convo", "model-switch", "settings-ui", "skills"}
+                modules = ("misc", "convo", "model_switch", "settings_ui", "skills_plugin")
+                expected = {"misc", "convo", "model-switch", "settings-ui", "skills"}
+                if case == "work-routes":
+                    modules += ("tasks_plugin", "scheduler_plugin", "goal_loop_plugin")
+                    expected.update(("tasks", "scheduler", "goal-loop"))
+                manifests = plugins.register_plugins(app, app.plugins, order=tuple("litetui.plugins." + m for m in modules))
+                assert {manifest.id for manifest in manifests} == expected
                 assert {skill.name for skill in app.skills} >= set(files), "Actual startup must discover fixture skills"
                 watched = {getattr(entry.handler, "__code__", None) for entry in app.plugins.commands.values()}
                 watched |= {getattr(entry.run, "__code__", None) for entry in app.plugins.palette_rows}
@@ -217,9 +228,12 @@ async def serve(app):
                         if command["type"].startswith("gui."):
                             try:
                                 result = await dispatch(command)
-                                rpc._respond(command.get("id"), ok=True, result=result)
+                                ticket = background_input.prepare_publication(app, command, result)
                             except Exception as exc:  # noqa: BLE001 - actual RPC error boundary
                                 rpc._respond(command.get("id"), ok=False, error=str(exc))
+                            else:
+                                rpc._respond(command.get("id"), ok=True, result=result)
+                                background_input.finish_publication(app, ticket)
                         else:
                             await dispatch(command)
                             if command["type"] == "shutdown":

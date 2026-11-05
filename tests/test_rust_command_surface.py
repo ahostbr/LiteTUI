@@ -61,13 +61,32 @@ async def test_live_catalog_tracks_canonical_palette_and_routes_without_executio
     textual = LiteTUICommands._commands(provider)
     native = sorted((row for row in rows if row["palette"]), key=lambda row: row["palette_order"])
     assert [row["title"] for row in native] == [row[0].split(" · ")[0] for row in textual]
-    for action in ("models", "backend", "thinking", "conversations", "settings", "quit"):
+    for action in ("models", "backend", "thinking", "conversations", "settings", "quit",
+                   "work_tasks", "work_jobs", "work_calendar", "work_loops", "work_goal"):
         request = selection(app, result, action)
         route = command_surface.resolve(app, request)
         assert route == {"version": 1, "kind": "command_route", "session_id": app.convo_id,
                          "agent_id": result["agent_id"], "snapshot": result["snapshot"],
                          "row_id": request["row_id"], "native_action": action,
                          "backend": result["backend"], "model": result["model"], "arguments": ""}
+    assert tree(app) == before
+
+
+@pytest.mark.asyncio
+async def test_work_routes_only_accept_inspection_and_preserve_callback_ownership(command_app):
+    app = command_app
+    catalog = read(app)
+    request = {k: v for k, v in selection(app, catalog).items() if k != "row_id"}
+    before = tree(app)
+    for command, action in (("/tasks list", "work_tasks"), ("/cron LS", "work_jobs"),
+                            ("/loop status", "work_loops"), ("/goal show", "work_goal"), ("/cal", "work_calendar")):
+        route = command_surface.resolve(app, {**request, "command": command})
+        assert (route["command"], route["native_action"]) == (command, action)
+    jobs = next(e for e in catalog["entries"] if e["kind"] == "palette" and e["title"] == "Scheduled jobs")
+    assert command_surface.resolve(app, {**request, "row_id": jobs["id"]})["native_action"] == "work_jobs"
+    for command in ("/cron run saved", "/tasks kill id", "/loop clear", "/goal start something", "/cal run"):
+        with pytest.raises(ValueError, match="inspection|arguments"):
+            command_surface.resolve(app, {**request, "command": command})
     assert tree(app) == before
 
 

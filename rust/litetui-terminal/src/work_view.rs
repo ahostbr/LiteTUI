@@ -12,6 +12,15 @@ use ratatui::{
     style::Style,
     widgets::{Block, Clear, Paragraph},
 };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    Tasks = 0,
+    Jobs = 2,
+    Loops = 3,
+    Goal = 4,
+    Calendar = 5,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     ManualReview {
@@ -166,6 +175,12 @@ impl View {
     }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
+    }
+    pub fn open_at(&mut self, destination: Destination) {
+        if !self.waiting {
+            self.section = destination as usize;
+            self.open();
+        }
     }
     pub fn open(&mut self) {
         if self.waiting {
