@@ -20,7 +20,7 @@ os.environ["LITETUI_DISABLE_UPDATE_CHECK"] = "1"
 
 # Supplied by the test package initializer, never part of the product launcher.
 source = Path(__import__("litetui").__path__[-1]).parents[1]
-sys.path.insert(0, str(source / "tests"))
+sys.path.insert(0, __import__("litetui")._test_support)
 
 
 def emit(event):
@@ -30,6 +30,9 @@ def emit(event):
 async def main():
     import httpx
     from _owned_seat import owned_app, release_all
+
+    import litetui.rpc
+    assert Path(litetui.rpc.__file__).resolve() == (source / "src/litetui/rpc.py").resolve()
 
     from litetui import (
         background_input,

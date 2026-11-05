@@ -21,7 +21,7 @@ continue_fixture = Path(__file__).with_name("fixture-continue-input").exists()
 reconcile_fixture = Path(__file__).with_name("fixture-reconcile-input").exists()
 claude_fixture = Path(__file__).with_name("fixture-claude-input").exists()
 fail_query_fixture = Path(__file__).with_name("fixture-fail-query").exists()
-sys.path.insert(0, str(source / "tests"))
+sys.path.insert(0, __import__("litetui")._test_support)
 
 
 def forbidden(*_args, **_kwargs):
@@ -39,6 +39,8 @@ async def serve(app):
         store_identity,
     )
     from litetui.event_origin import EventOrigin
+
+    assert Path(rpc.__file__).resolve() == (source / "src/litetui/rpc.py").resolve()
 
     # Visual/fleet/hook observers are not the subject; CLI, session acquisition,
     # _resume_cli_conversation, _resume, settings adoption and store are real.
@@ -58,6 +60,7 @@ async def serve(app):
         app._prompt_store_identity = store_identity.capture(app)
         app._store_injected = True
     reconciliation_count = 0
+    actual_stream = app._stream
     if reconcile_fixture:
         from types import SimpleNamespace
 
@@ -87,14 +90,14 @@ async def serve(app):
         nonlocal continuation_worker
         from types import SimpleNamespace
 
-        captured = origin.scheduled()
         retire.clear()
-        async def execute():
+        async def execute(captured):
             if claude_fixture:
-                from test_claude_turn import FakeBubble
+                from _assistant_bubble import FakeBubble
 
                 from litetui import claude_turn
                 from litetui.claude_events import ClaudeEvent
+                from litetui.claude_tools import ClaudeTools
 
                 class Session:
                     session_id = "controlled-native-session"
@@ -122,12 +125,12 @@ async def serve(app):
                         forbidden()
 
                 async def session_for(_app, _backend, _segment, _effort):
-                    bridge = SimpleNamespace(stop=lambda: None)
+                    bridge = ClaudeTools(_app, _backend, _segment["id"], workspace=Path.cwd())
                     normalizer = SimpleNamespace(push=lambda _: [
                         ClaudeEvent(kind="text_delta", text="Controlled continued reply", message_id="continued-answer"),
                         ClaudeEvent(kind="result", is_error=False, data={"subtype": "success"}),
                     ])
-                    return Session(), bridge, normalizer
+                    return _backend.session, bridge, normalizer
 
                 app._assistant_bubble = FakeBubble
                 app._elapsed = SimpleNamespace(start=lambda *_a, **_kw: None, stop_body=lambda: None)
@@ -136,7 +139,8 @@ async def serve(app):
                 app._scroll_down = lambda **_kw: None
                 app.set_timer = lambda *_a, **_kw: SimpleNamespace(stop=lambda: None)
                 app._autocompact_due = lambda: None
-                with patch.object(claude_turn, "session_for", session_for), \
+                with patch.object(app.backend, "session", Session()), \
+                        patch.object(claude_turn, "session_for", session_for), \
                         patch.object(claude_turn, "after_turn", lambda *_: None):
                     await claude_turn.stream_turn(app, origin=captured)
             else:
@@ -156,15 +160,15 @@ async def serve(app):
                           if claude_fixture else None),
                 "delivered": [m for m in app.conversation if m.get("claude_delivery" if claude_fixture else "codex_delivery")],
             }), encoding="utf-8")
-        task = asyncio.create_task(execute())
-        continuation_worker = task
-        async def wait():
-            await task
-        return SimpleNamespace(wait=wait)
+        # Replace the provider body only. The real Textual worker and its
+        # captured execution remain bound until the caller requests settlement.
+        with patch.object(app, "_stream_worker", execute), app._context():
+            continuation_worker = actual_stream(origin=origin)
+        return continuation_worker
 
     if continue_fixture:
         app._stream = stream
-        app._chat_running = lambda: continuation_worker is not None and not continuation_worker.done()
+        app._chat_running = lambda: continuation_worker is not None and not continuation_worker.is_finished
 
     async def check_held():
         if claude_fixture and app._cli_convo_id:
@@ -203,10 +207,18 @@ async def serve(app):
             forbidden()
         server = SimpleNamespace(start=denied, request=denied)
         app._flush_pending_input()
-        steering = codex_steering.HostSteering(
-            app, server, "held-thread", "held-turn", {"steering": before}, forbidden)
-        with patch.object(steering, "admit", denied):
-            await steering.run()
+        # This fixture drives the UI from outside a registered provider worker.
+        # Both startup and a later synthetic explicit turn must reject steering.
+        expected = ("Native steering lacks its exact captured parent execution"
+                    if background_input.enabled(app)
+                    else "Work startup capture and activation are required before execution")
+        try:
+            codex_steering.HostSteering(
+                app, server, "held-thread", "held-turn", {"steering": before}, forbidden)
+        except ValueError as exc:
+            assert str(exc) == expected, exc
+        else:
+            raise AssertionError("Steering acquired a lane outside the registered provider worker")
         assert not await codex_steering.recover_queue_head(app, server)
         after = [item["_codex_entry"] for item in app._pending_input]
         assert after == before, "held input changed delivery evidence"
@@ -243,11 +255,10 @@ async def serve(app):
             with (root / "resume-commands.jsonl").open("a", encoding="utf-8") as log:
                 log.write(json.dumps(command) + "\n")
             if command["type"] == "shutdown":
-                work_proof = await background_input.settle_before_shutdown(app)
-                result = {"ok": True}
-                if work_proof is not None:
-                    result["work_shutdown"] = work_proof
-                rpc._respond(command["id"], ok=True, result=result)
+                exited = asyncio.Event()
+                with patch.object(app, "exit", side_effect=exited.set):
+                    rpc._dispatch(app, command)
+                    await asyncio.wait_for(exited.wait(), 15)
                 break
             if command["type"] in {"gui.conversations.read", "gui.history.native_snapshot"} and (root / "hold-history").exists():
                 continue
@@ -256,7 +267,7 @@ async def serve(app):
                     reconciliation_count += 1
                 if (continue_fixture and command["type"] == "gui.restored_input.settled"
                         and continuation_worker is not None):
-                    assert not continuation_worker.done(), "settlement did not wait for worker retirement"
+                    assert not continuation_worker.is_finished, "settlement did not wait for worker retirement"
                     retire.set()
                 if continue_fixture and command["type"] == "gui.restored_input.continue":
                     continuation_count += 1
@@ -281,7 +292,7 @@ async def serve(app):
                 if continue_fixture and command["type"] == "gui.restored_input.settled":
                     with (root / "settled-receipts.jsonl").open("a", encoding="utf-8") as log:
                         log.write(json.dumps(result) + "\n")
-                rpc._respond(command["id"], ok=True, result=result)
+                rpc.publish_management_result(app, command, result)
                 continue
             assert command["type"] == "prompt"
             previous = [m["content"] for m in app.conversation if m["role"] == "user"]

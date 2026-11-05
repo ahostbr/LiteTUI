@@ -1560,18 +1560,7 @@ fn authority_runtime(mode: &str) -> (litetui_terminal::live::Interactive, PathBu
     // setup itself uses the stdlib fixture interpreter variable.
     let (command, root) = setup("success");
     let source = root.parent().unwrap().join("source");
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../src/litetui")
-        .canonicalize()
-        .unwrap();
-    fs::write(
-        source.join("src/litetui/__init__.py"),
-        format!(
-            "__path__.append({})\n",
-            serde_json::to_string(&actual.to_string_lossy()).unwrap()
-        ),
-    )
-    .unwrap();
+    link_owned_fixture_source(&source);
     fs::write(
         source.join("src/litetui/cli.py"),
         include_str!("fixtures/native_authority_runtime.py")
@@ -1798,18 +1787,7 @@ fn saved_conversation_process(mode: SavedInput) {
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
     let (command, root) = setup("success");
     let source = root.parent().unwrap().join("source");
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../src/litetui")
-        .canonicalize()
-        .unwrap();
-    fs::write(
-        source.join("src/litetui/__init__.py"),
-        format!(
-            "__path__.append({})\n",
-            serde_json::to_string(&actual.to_string_lossy()).unwrap()
-        ),
-    )
-    .unwrap();
+    link_owned_fixture_source(&source);
     fs::write(
         source.join("src/litetui/cli.py"),
         include_str!("fixtures/resume_runtime.py"),
@@ -1877,7 +1855,7 @@ fn saved_conversation_process(mode: SavedInput) {
     let mut prior_continuation_id = String::new();
     for pass in 0..if restart_refusal { 3 } else { 2 } {
         let mut options = Options::parse(&args).unwrap();
-        options.timeout = Duration::from_secs(15);
+        options.timeout = Duration::from_secs(45);
         options.resume = if pass == 0 {
             None
         } else {
@@ -1891,7 +1869,7 @@ fn saved_conversation_process(mode: SavedInput) {
                 loop {
                     let event = runtime
                         .events
-                        .recv_timeout(Duration::from_secs(20))
+                        .recv_timeout(Duration::from_secs(50))
                         .map_err(std::io::Error::other)?;
                     let ready = matches!(&event, Observation::Ready);
                     let done = matches!(&event, Observation::Complete);
@@ -2523,10 +2501,10 @@ fn saved_conversation_process(mode: SavedInput) {
     let before = fs::read(root.join("resume-commands.jsonl")).unwrap();
     let mut timeout = Options::parse(&args).unwrap();
     timeout.resume = Some(session.clone());
-    // This deadline includes Python imports and owned startup. Four seconds
-    // sometimes expired before gui.hello, measuring startup instead of the
-    // deliberately missing history response. Keep explicit phase assertions.
-    timeout.timeout = Duration::from_secs(15);
+    // The deadline also covers dependency imports and store acquisition. Leave
+    // enough time for a loaded Windows host to reach the withheld history read.
+    // The assertions below require that exact stage before accepting a timeout.
+    timeout.timeout = Duration::from_secs(35);
     let error = refused_resume(timeout);
     assert!(
         error.contains("deadline elapsed") && error.contains("cleanup=Ok"),
@@ -2715,9 +2693,10 @@ fn continue_saved_input(
 
 fn refused_resume(options: litetui_terminal::live::Options) -> String {
     use litetui_terminal::live::{Interactive, Observation};
+    let wait = options.timeout + Duration::from_secs(5);
     Interactive::start(options)
         .with_cleanup(|runtime| {
-            while let Ok(event) = runtime.events.recv_timeout(Duration::from_secs(20)) {
+            while let Ok(event) = runtime.events.recv_timeout(wait) {
                 if matches!(event, Observation::Ready | Observation::History(_)) {
                     return Err(std::io::Error::other("Unexpected resume activation"));
                 }
@@ -2865,6 +2844,26 @@ fn one_shot_cache_refusal_is_failure_and_warning_alone_cannot_finish() {
     }
 }
 
+fn link_owned_fixture_source(root: &std::path::Path) {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let package = std::env::var_os("LITETUI_TEST_RUNTIME_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate_dir.join("../.."))
+        .join("src/litetui")
+        .canonicalize()
+        .unwrap();
+    let helpers = crate_dir.join("../../tests").canonicalize().unwrap();
+    fs::write(
+        root.join("src/litetui/__init__.py"),
+        format!(
+            "__path__.append({})\n_test_support = {}\n",
+            serde_json::to_string(&package.to_string_lossy()).unwrap(),
+            serde_json::to_string(&helpers.to_string_lossy()).unwrap(),
+        ),
+    )
+    .unwrap();
+}
+
 fn owned_browser_process(fault: &str) {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use litetui_terminal::{
@@ -2879,18 +2878,7 @@ fn owned_browser_process(fault: &str) {
     let python = std::env::var_os("LITETUI_AUTHORITY_PYTHON").expect("dependency Python");
     let (command, root) = setup("success");
     let source = root.parent().unwrap().join("source");
-    let actual = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../src/litetui")
-        .canonicalize()
-        .unwrap();
-    fs::write(
-        source.join("src/litetui/__init__.py"),
-        format!(
-            "__path__.append({})\n",
-            serde_json::to_string(&actual.to_string_lossy()).unwrap()
-        ),
-    )
-    .unwrap();
+    link_owned_fixture_source(&source);
     fs::write(
         source.join("src/litetui/cli.py"),
         include_str!("fixtures/browser_runtime.py"),
@@ -3133,7 +3121,7 @@ fn owned_browser_process(fault: &str) {
             error.contains(if fault == "failure" {
                 "Controlled browser connection failure"
             } else {
-                "tool mode/profile/approval route differs"
+                "Runtime policy differs from the exact launch/current boundary; no prompt sent"
             }),
             "{error}"
         );

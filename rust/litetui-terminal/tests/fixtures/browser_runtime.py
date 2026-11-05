@@ -16,7 +16,7 @@ os.environ["HOME"] = os.environ["USERPROFILE"] = str(home)
 os.environ["LITETUI_NO_HARNESS"] = "1"
 os.environ["LITETUI_DISABLE_UPDATE_CHECK"] = "1"
 source = Path(__import__("litetui").__path__[-1]).parents[1]
-sys.path.insert(0, str(source / "tests"))
+sys.path.insert(0, __import__("litetui")._test_support)
 
 
 def forbidden(*_args, **_kwargs):
@@ -27,8 +27,6 @@ async def serve(app):
     import uuid
 
     from litetui import (
-        background_input,
-        conversation_shutdown,
         gui_rpc,
         native_history,
         restored_input,
@@ -38,6 +36,8 @@ async def serve(app):
     )
     from litetui.conversation import ConversationRepository
     from litetui.event_origin import EventOrigin
+
+    assert Path(rpc.__file__).resolve() == (source / "src/litetui/rpc.py").resolve()
 
     app._system = lambda *_: None
     app._refresh_ctx_label = lambda: None
@@ -133,14 +133,10 @@ async def serve(app):
             with (root / "browser-commands.jsonl").open("a", encoding="utf-8") as log:
                 log.write(json.dumps(command) + "\n")
             if command["type"] == "shutdown":
-                proof = await conversation_shutdown.settle_before_shutdown(app)
-                result = {"ok": True}
-                if proof is not None:
-                    result["conversation_shutdown"] = proof
-                work_proof = await background_input.settle_before_shutdown(app)
-                if work_proof is not None:
-                    result["work_shutdown"] = work_proof
-                rpc._respond(command["id"], ok=True, result=result)
+                exited = asyncio.Event()
+                with patch.object(app, "exit", side_effect=exited.set):
+                    rpc._dispatch(app, command)
+                    await asyncio.wait_for(exited.wait(), 15)
                 break
             if command["type"].startswith("gui."):
                 try:
@@ -158,7 +154,7 @@ async def serve(app):
                     if command["type"] == "gui.restored_input.list":
                         assert (root / "open-complete").exists()
                         (root / "browser-held.json").write_text(json.dumps(result), encoding="utf-8")
-                    rpc._respond(command["id"], ok=True, result=result)
+                    rpc.publish_management_result(app, command, result)
                 except (ValueError, OSError) as exc:
                     rpc._respond(command["id"], ok=False, error=str(exc))
                 continue
