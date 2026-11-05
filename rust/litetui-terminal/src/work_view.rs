@@ -14,6 +14,14 @@ use ratatui::{
 };
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    ManualReview {
+        section: Section,
+        row: Box<Row>,
+    },
+    ManualDecision {
+        review: Box<crate::scheduled_transition::ManualReview>,
+        accept: bool,
+    },
     Context(crate::context::Request),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
@@ -44,6 +52,7 @@ pub struct Intent {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
+    ManualReview(Box<crate::scheduled_transition::ManualReview>),
     Context(Box<crate::context::Page>),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
@@ -75,6 +84,7 @@ pub struct Update {
 }
 #[derive(Clone)]
 enum Review {
+    Manual(Box<crate::scheduled_transition::ManualReview>),
     Execution(Box<execution::Review>),
     Control(Box<controls::Review>),
     Deferred(Box<crate::deferred_control::Review>),
@@ -84,6 +94,10 @@ enum Review {
 impl Review {
     fn request(&self) -> Request {
         match self {
+            Self::Manual(review) => Request::ManualDecision {
+                review: review.clone(),
+                accept: true,
+            },
             Self::Execution(review) => Request::ExecutionApply(review.clone()),
             Self::Control(review) => Request::ControlApply(review.clone()),
             Self::Deferred(review) => Request::DeferredApply(review.clone()),
@@ -125,6 +139,17 @@ pub struct View {
     intent: Option<Intent>,
 }
 impl View {
+    pub fn manual_decision_pending(&self) -> bool {
+        matches!(self.pending, Some(Request::ManualDecision { .. }))
+    }
+    pub fn expire_manual(&mut self) {
+        if matches!(self.review, Some(Review::Manual(_))) && !self.waiting {
+            self.review = None;
+            self.seen.clear();
+            self.hide();
+            self.notice="A newer scheduled proposal replaced this review. Refresh Work before running a job.".into();
+        }
+    }
     pub fn context_open(&self) -> bool {
         self.context.is_open()
     }
@@ -250,7 +275,8 @@ impl View {
         let pending = self.pending.take().expect("pending");
         let compatible = matches!(
             (&pending, &update.data),
-            (Request::ExecutionValidate(_), Data::ExecutionReview(_))
+            (Request::ManualReview { .. }, Data::ManualReview(_))
+                | (Request::ExecutionValidate(_), Data::ExecutionReview(_))
                 | (Request::ExecutionApply(_), Data::ExecutionVerified { .. })
                 | (Request::ControlValidate(_), Data::ControlReview(_))
                 | (Request::ControlApply(_), Data::ControlSaved { .. })
@@ -284,6 +310,15 @@ impl View {
             Data::Rejected(reason) if matches!(pending, Request::Context(_)) => {
                 if self.context.is_open() {
                     self.context.reject(&reason);
+                }
+            }
+            Data::ManualReview(review) => {
+                if self.open {
+                    self.review = Some(Review::Manual(review));
+                    self.review_page = 0;
+                    self.seen.clear();
+                    self.notice =
+                        "Read every page before running this job in a new conversation.".into();
                 }
             }
             Data::ExecutionReview(review) => {
@@ -580,6 +615,15 @@ impl View {
             return;
         }
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
+            if let Some(Review::Manual(review)) = self.review.as_ref()
+                && !self.waiting
+            {
+                self.request(Request::ManualDecision {
+                    review: review.clone(),
+                    accept: false,
+                });
+                return;
+            }
             if self.review.is_some() && !self.waiting {
                 self.review = None;
                 self.seen.clear();
@@ -670,7 +714,23 @@ impl View {
                 }
                 KeyCode::Char('r') if matches!(self.section, 2 | 3) => {
                     if let Some(row) = self.current_row().cloned() {
-                        self.execution(execution::Action::JobRun, Some(row), serde_json::json!({}));
+                        if row.raw["new_conversation"] == true {
+                            let section = if self.section == 2 {
+                                Section::Jobs
+                            } else {
+                                Section::Loops
+                            };
+                            self.request(Request::ManualReview {
+                                section,
+                                row: Box::new(row),
+                            });
+                        } else {
+                            self.execution(
+                                execution::Action::JobRun,
+                                Some(row),
+                                serde_json::json!({}),
+                            );
+                        }
                     } else {
                         self.notice = "Select the exact job to review Run.".into();
                     }
@@ -877,6 +937,7 @@ impl View {
     }
     fn review_lines(&self) -> Vec<String> {
         let r = match self.review.as_ref().unwrap() {
+            Review::Manual(review) => return review.details.clone(),
             Review::Execution(review) => return review.detail_lines(),
             Review::Control(review) => return vec![
                 review.edit.action.label().into(),review.consequence.clone(),

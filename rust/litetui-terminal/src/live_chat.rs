@@ -263,6 +263,10 @@ impl Chat {
     }
     pub fn decide_schedule(&mut self, external_idle: bool) -> Option<(String, bool)> {
         let id = self.schedule_proposal.take()?;
+        let idle = self.reserve_schedule_if_idle(external_idle, false);
+        Some((id, idle))
+    }
+    fn reserve_schedule_if_idle(&mut self, external_idle: bool, manual: bool) -> bool {
         let idle = external_idle
             && self.launch.is_none()
             && self.ready
@@ -288,7 +292,7 @@ impl Chat {
             && !self.commands.owns_input()
             && !self.themes.owns_input()
             && !self.saved_history.owns_input()
-            && !self.work.owns_input()
+            && (manual || !self.work.owns_input())
             && !self.settings.owns_input()
             && !self.backend_controls.owns_input()
             && !self.browser.owns_input()
@@ -299,7 +303,7 @@ impl Chat {
             self.ready = false;
             self.notice = "Scheduled job is preparing its new conversation; draft kept.".into();
         }
-        Some((id, idle))
+        idle
     }
     fn newest_tool_before(&self, end: usize) -> Option<(usize, usize)> {
         self.rows[..end]
@@ -569,6 +573,18 @@ impl Chat {
         self.rewrite_pending || self.rewrite.blocks_composer() || self.compact.blocks_composer()
     }
     pub fn prepare_work(&mut self, intent: &crate::work_view::Intent) -> io::Result<()> {
+        if let crate::work_view::Request::ManualDecision { accept, .. } = &intent.request {
+            if *accept
+                && (self.schedule_reserved
+                    || self.schedule_proposal.is_some()
+                    || !self.reserve_schedule_if_idle(true, true))
+            {
+                return Err(io::Error::other(
+                    "Finish other owned work before confirming this manual job",
+                ));
+            }
+            return Ok(());
+        }
         let crate::work_view::Request::ExecutionApply(review) = &intent.request else {
             return Ok(());
         };
@@ -1219,6 +1235,14 @@ impl Chat {
                 self.notice = self.themes.notice.clone();
             }
             Observation::Work(update) => {
+                if self.work.manual_decision_pending()
+                    && self.work.pending_generation() == Some(update.generation)
+                    && matches!(update.data, crate::work_view::Data::Rejected(_))
+                    && self.schedule_reserved
+                {
+                    self.schedule_reserved = false;
+                    self.ready = !self.closed && !self.quitting;
+                }
                 if self.work.pending_generation() == Some(update.generation)
                     && matches!(update.data, crate::work_view::Data::Paused)
                 {
@@ -1262,6 +1286,7 @@ impl Chat {
                 self.notice = self.browser.notice.clone();
             }
             Observation::ScheduledProposal(id) => {
+                self.work.expire_manual();
                 if self.schedule_proposal.is_some() || self.schedule_reserved {
                     return Err(io::Error::other("Repeated scheduled frontend proposal"));
                 }
@@ -1306,6 +1331,9 @@ impl Chat {
                 self.ready = false;
             }
             Observation::ScheduledHeld(reason) => {
+                if self.work.manual_decision_pending() {
+                    self.work.finish();
+                }
                 if (self.schedule_reserved || self.schedule_prompt_held)
                     && !self.quitting
                     && !self.closed
@@ -1318,6 +1346,9 @@ impl Chat {
                 self.notice = reason;
             }
             Observation::ScheduledConversationChanged(changed) => {
+                if self.work.manual_decision_pending() {
+                    self.work.finish();
+                }
                 if !self.schedule_reserved
                     || self.schedule_prompt_held
                     || self.busy

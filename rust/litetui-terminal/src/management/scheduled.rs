@@ -64,6 +64,30 @@ impl Management {
         }
         let ready = self.ready();
         let id = proposal.id.clone();
+        self.work.manual_review = None;
+        self.reserve_schedule(proposal);
+        if self.closing {
+            self.scheduled.pending = None;
+            return Ok(Step::Ignore);
+        }
+        if !ready {
+            return self.decide_schedule(&id, false, false).map(Step::Write);
+        }
+        Ok(Step::ScheduledProposal(id))
+    }
+    pub(super) fn begin_manual_schedule(
+        &mut self,
+        proposal: schedule::Proposal,
+        accept: bool,
+    ) -> io::Result<Value> {
+        if self.schedule_pending() || self.closing {
+            return Err(fail("Another conversation handoff owns this decision"));
+        }
+        let id = proposal.id.clone();
+        self.reserve_schedule(proposal);
+        self.decide_schedule(&id, accept, true)
+    }
+    fn reserve_schedule(&mut self, proposal: schedule::Proposal) {
         self.scheduled.pending = Some(Pending {
             id: None,
             proposal,
@@ -76,14 +100,6 @@ impl Management {
             history: None,
             queue: None,
         });
-        if self.closing {
-            self.scheduled.pending = None;
-            return Ok(Step::Ignore);
-        }
-        if !ready {
-            return self.decide_schedule(&id, false, false).map(Step::Write);
-        }
-        Ok(Step::ScheduledProposal(id))
     }
     /// The frontend's decision is evidence of current UI quiescence only.
     /// The supervisor independently rechecks actual Turn and management owners.

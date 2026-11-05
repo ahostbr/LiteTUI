@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Manual Run in a new conversation - 2026-11-04
+
+In F1 Work, R on a saved New-conversation job or loop opens a review of the exact prompt, tool profile, source and destination, and run count. Confirmation verifies the stored job before stamping the acceptance time. A loop computes its next fire from that time. The single invocation starts after the new conversation becomes active and the saved result is read back. Escape and stale selections preserve the original conversation and draft.
+
+The branch passed 114 source tests and the relocated scheduler matrix passed all eight process tests across 18 child lifetimes. The matrix covers manual accept, decline, concurrent edits, automatic handoff, quit, crash recovery and publication deadlines. The executable now disables Python bytecode generation in the child even when launched directly. After the final run, the package launcher verified all 361 payload files in the relocated 362-file package.
+
 ## Inspect configured lifecycle hooks - 2026-11-04
 
 F1 Work → I → Hooks lists the effective hooks in execution order. It shows project overrides, disabled entries, event filters and the configured gate or observe mode. The source uses the normal hook parser and scope precedence. Only the selected metadata reaches the terminal. Reading and refreshing the inventory preserves the draft and hook files.

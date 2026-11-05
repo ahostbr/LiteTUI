@@ -147,7 +147,7 @@ fn projected(v: &Value, fields: &[&str]) -> io::Result<Value> {
     }
     Ok(Value::Object(out))
 }
-fn canonical(v: &Value, action: Action) -> io::Result<Value> {
+pub(crate) fn canonical(v: &Value, action: Action) -> io::Result<Value> {
     let fields = if action == Action::JobRun {
         work_controls::JOB
     } else {
@@ -178,7 +178,7 @@ fn saved(v: &Value, action: Action) -> io::Result<()> {
     }
 }
 
-fn second(s: &str) -> io::Result<i64> {
+pub(crate) fn second(s: &str) -> io::Result<i64> {
     if !s.is_ascii()
         || s.len() != 19
         || s.as_bytes()[16] != b':'

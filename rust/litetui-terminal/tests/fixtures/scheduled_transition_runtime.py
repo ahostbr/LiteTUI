@@ -26,7 +26,8 @@ spec = importlib.util.spec_from_file_location('_scheduled_support', Path(__file_
 assert spec and spec.loader
 history: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(history)
-report: dict[str, Any] = {'commands': [], 'wire': [], 'requests': [], 'lease_release': [], 'epochs': []}
+report: dict[str, Any] = {'commands': [], 'wire': [], 'requests': [], 'lease_release': [], 'epochs': [],
+                          'bytecode_disabled': sys.dont_write_bytecode}
 workers: list[Any] = []
 streams: list[Any] = []
 helpers: list[Any] = []
@@ -178,7 +179,7 @@ async def serve(app):
             await asyncio.wait_for(human_done.wait(), 30)
         phase = {'gui.work.native_schedule_accept': 'accept', 'gui.work.native_schedule_readback': 'readback',
                  'gui.work.native_capture': 'capture', 'gui.work.native_activate': 'activate'}.get(op)
-        if case == 'mutate' and phase == 'accept':
+        if case in {'mutate', 'manual-stale'} and phase == 'accept':
             app.jobs[0].label = 'Changed after native proposal'
             scheduler.save(app.jobs, root)
             report['expected_refusal_jobs'] = json.loads(scheduler.jobs_path(root).read_text(encoding='utf-8'))
@@ -291,6 +292,8 @@ async def serve(app):
                     report['original_before'] = original_path.read_text(encoding='utf-8')
                     job = scheduler.Job(prompt='CANONICAL SCHEDULED INPUT Δ', schedule='* * * * *', id='native-scheduled',
                                         new_conversation=True, tool_profile='strict')
+                    if case.startswith('manual-'):
+                        job.enabled = False
                     if case == 'loop':
                         job.kind, job.owner_convo_id, job.interval_minutes = 'loop', app.convo_id, 1
                         job.next_run_at = (datetime.now() - timedelta(minutes=1)).isoformat(timespec='seconds')  # noqa: DTZ005 - canonical scheduler uses local wall time
@@ -301,7 +304,7 @@ async def serve(app):
                 seeded = True
                 reader = threading.Thread(target=rpc._reader_loop, args=(app,), name='scheduled-rpc-reader', daemon=True)
                 reader.start()
-                if not recovery:
+                if not recovery and not case.startswith('manual-'):
                     helpers.append(asyncio.create_task(tick()))
                 await asyncio.wait_for(exited.wait(), 90)
                 collect()

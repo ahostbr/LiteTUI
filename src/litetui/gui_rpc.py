@@ -60,6 +60,7 @@ OPERATIONS = (
     "runtime.native_snapshot", "runtime.native_validate", "runtime.native_apply", "runtime.native_readback",
     "work.native_capture", "work.native_activate", "work.native_settled",
     "work.native_execution_validate", "work.native_execution_apply", "work.native_execution_readback", "work.native_execution_stop",
+    "work.native_schedule_manual_review",
     "work.native_schedule_accept", "work.native_schedule_decline", "work.native_schedule_readback",
     "work.native_deferred_validate", "work.native_deferred_discard", "work.native_deferred_readback",
     "work.native_snapshot", "work.native_page", "work.native_tail", "work.native_calendar",
@@ -555,6 +556,9 @@ def dispatch(app, cmd):
     if operation.startswith("work.native_deferred_"):
         from litetui import native_deferred
         return getattr(native_deferred, operation.removeprefix("work.native_deferred_"))(app, cmd)
+    if operation == "work.native_schedule_manual_review":
+        from litetui import native_manual_schedule
+        return native_manual_schedule.review(app, cmd)
     if operation in {"work.native_schedule_decline", "work.native_schedule_readback"}:
         return getattr(native_schedule, operation.removeprefix("work.native_schedule_"))(app, cmd)
     if operation == "work.native_schedule_accept":

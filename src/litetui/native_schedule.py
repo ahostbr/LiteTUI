@@ -149,6 +149,8 @@ class PendingScheduledTransition:
     result_bytes: bytes | None = None
     stamp: dict | None = None
     stamp_attempted: bool = False
+    manual_raw_before: bytes | None = None
+    manual_raw_after: bytes | None = None
     result_published: bool = False
     readback_published: bool = False
     decision_command: bytes | None = None
@@ -175,6 +177,7 @@ def _retired_owner(app, pending):
 
 def retire_proposal(app, value):
     """Keep one inert proposal until its late no-effect decision is published."""
+    app._native_schedule_manual_review = None
     pending = getattr(app, "_native_schedule_pending", None)
     if (not isinstance(pending, PendingScheduledTransition) or pending.app is not app
             or pending.bridge is not value or pending.state not in {"proposed", "declined", "refused"}
@@ -182,6 +185,15 @@ def retire_proposal(app, value):
         return
     pending.retired = True
     _retired_owner(app, pending)
+
+
+def job_proposal(job, snapshot, transition, *, trigger, slot):
+    from litetui import scheduler
+    return {"proposal_id": work.ident(), "proposal_token": secrets.token_hex(32),
+            "trigger": trigger, "job_id": job.id, "kind": job.kind,
+            "source": "scheduled", "requested_profile": scheduler.level_of(job.tool_profile),
+            "due_slot": slot, "prior_run_count": job.run_count,
+            "job_snapshot": snapshot.decode("utf-8"), "job_sha256": work.digest(snapshot), "transition": transition}
 
 
 def offer(app, job, *, manual=False):
@@ -246,11 +258,7 @@ def offer(app, job, *, manual=False):
             review, wire = conversation_transition.build_review(app, {**common, "snapshot": state["snapshot"], "action": "new"})
             if native_work_controls.read_jobs(path)[1] != revision:
                 raise ValueError("Canonical scheduler file changed during proposal review")
-            proposal = {"proposal_id": work.ident(), "proposal_token": secrets.token_hex(32),
-                        "trigger": "automatic", "job_id": candidate.id, "kind": candidate.kind,
-                        "source": "scheduled", "requested_profile": scheduler.level_of(candidate.tool_profile),
-                        "due_slot": slot, "prior_run_count": candidate.run_count,
-                        "job_snapshot": snapshot.decode("utf-8"), "job_sha256": job_hash, "transition": wire}
+            proposal = job_proposal(candidate, snapshot, wire, trigger="automatic", slot=slot)
             row = {"type": "work_transition_proposed", "version": work.VERSION, "instance": value.instance,
                    "sequence": value.sequence + 1, "identity": value.identity,
                    "scheduled_transition_version": VERSION, "proposal": proposal}
@@ -259,6 +267,7 @@ def offer(app, job, *, manual=False):
             if len(work.encoded(envelope)) > work.LIMITS["envelope_bytes"]:
                 raise ValueError("Scheduled proposal exceeds the negotiated event byte bound")
             pending = PendingScheduledTransition(app, value, review, job, proposal, work.encoded(proposal))
+        app._native_schedule_manual_review = None
         app._native_schedule_pending = pending
         value.emit("work_transition_proposed", scheduled_transition_version=VERSION, proposal=proposal)
         return True
@@ -362,17 +371,24 @@ def preflight(app, job, *, manual, now):
         return None
     value = pending.bridge
     value.check()
-    if manual or work.bridge(app) is not value or not enabled(app) or getattr(app, "_gui_quitting", False):
+    is_manual = pending.manual_raw_before is not None
+    if manual != is_manual or work.bridge(app) is not value or not enabled(app) or getattr(app, "_gui_quitting", False):
         raise ValueError("Scheduled acceptance lost its exact automatic runtime")
     proposal = pending.proposal
-    if (pending.proposal_bytes != work.encoded(proposal) or scheduler.slot_of(now) != proposal["due_slot"]
+    if (pending.proposal_bytes != work.encoded(proposal) or not is_manual and scheduler.slot_of(now) != proposal["due_slot"]
             or work.encoded(asdict(job)).decode("utf-8") != proposal["job_snapshot"]):
         raise ValueError("Scheduled proposal expired or canonical PRE job changed")
     rows, _revision = native_work_controls.read_jobs(scheduler.jobs_path(paths.data_root()))
     row = next((row for row in rows if row["id"] == job.id), None)
     if row is None or work.encoded(native_work._job(row)["row"]).decode("utf-8") != proposal["job_snapshot"]:
         raise ValueError("Scheduled canonical PRE row changed")
-    if not scheduler.due([job], now) or not job.new_conversation:
+    if is_manual:
+        from litetui import seat_authority
+        if (work.encoded(row) != pending.manual_raw_before or not job.new_conversation
+                or job.kind == "loop" and job.owner_convo_id != app.convo_id
+                or seat_authority.withheld(app, scheduler.level_of(job.tool_profile))):
+            raise ValueError("Manual New Run lost its raw row, loop owner or requested authority")
+    elif not scheduler.due([job], now) or not job.new_conversation:
         raise ValueError("Scheduled automatic job is no longer due")
     state = conversation_transition.snapshot(app, {"version": 1, **work.identity(app)})
     if state["snapshot"] != proposal["transition"]["snapshot"] or not state["actions"]["new"]["eligible"]:
@@ -388,6 +404,8 @@ def stamped(app, job):
         snapshot = work.encoded(asdict(job)).decode("utf-8")
         pending.stamp = {"slot": job.last_fired_slot, "run_count": job.run_count,
                          "job_snapshot": snapshot, "job_sha256": work.digest(snapshot.encode("utf-8"))}
+        if pending.manual_raw_after is not None:
+            pending.stamp["raw_sha256"] = work.digest(pending.manual_raw_after)
 
 
 def _command(app, cmd, action, extras, pending=None):
@@ -403,6 +421,12 @@ def _command(app, cmd, action, extras, pending=None):
 
 def _selected(app, cmd, action):
     pending = getattr(app, "_native_schedule_pending", None)
+    candidate = getattr(app, "_native_schedule_manual_review", None)
+    manual = (isinstance(candidate, PendingScheduledTransition) and candidate.proposal["proposal_id"] == cmd.get("proposal_id"))
+    if manual:
+        if pending is not None:
+            raise ValueError("A scheduled decision owns the current handoff")
+        pending = candidate
     _command(app, cmd, action, ("instance", "proposal_id", "proposal_token", *(("reason",) if action == "decline" else ())), pending)
     if (not isinstance(pending, PendingScheduledTransition) or pending.app is not app
             or pending.state != "proposed" or cmd["instance"] != pending.bridge.instance
@@ -414,6 +438,11 @@ def _selected(app, cmd, action):
             or app._agent_session is not pending.review.context.session
             or app.store is not pending.review.context.store or app.backend is not pending.review.context.backend):
         raise ValueError("Unknown, changed or consumed scheduled proposal")
+    if manual:
+        if action == "decline":
+            work.text(cmd["reason"], 2048)
+        app._native_schedule_manual_review = None
+        app._native_schedule_pending = pending
     return pending
 
 
@@ -460,7 +489,7 @@ async def accept(app, cmd):
         pending.task = work._task()
         try:
             app._validate_owned_execution()
-            result = await work.run_job(app, pending.job, manual=False)
+            result = await work.run_job(app, pending.job, manual=pending.manual_raw_before is not None)
             deferred = getattr(app, "_native_work_deferred", None)
             if (not isinstance(result, dict) or result.get("awaiting_work_capture") is not True
                     or deferred is None or pending.stamp is None or getattr(pending, "transition", None) is None):
@@ -527,6 +556,10 @@ def readback(app, cmd):
                 raise ValueError("Staged job was removed before readback")
             snapshot = work.encoded(native_work._job(row)["row"]).decode("utf-8")
         job_readback = {"job_snapshot": snapshot, "job_sha256": work.digest(snapshot.encode("utf-8"))}
+        if pending.manual_raw_after is not None:
+            if work.encoded(row) != pending.manual_raw_after:
+                raise ValueError("Selected raw POST row changed after manual New Run")
+            job_readback["raw_sha256"] = work.digest(work.encoded(row))
         if any(job_readback[key] != stamp[key] for key in job_readback):
             raise ValueError("Staged canonical POST job changed")
         deferred_readback = {"document_sha256": work.digest(deferred.raw), "record": deferred.document["record"],

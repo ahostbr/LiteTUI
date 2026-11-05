@@ -1960,6 +1960,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         .env("PYTHONPATH", source.join("src"))
         .env("PYTHONUTF8", "1")
         .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .args([
             "-m",
             "litetui.cli",
@@ -2368,6 +2369,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             _ => None,
                         };
                         let permitted = match &intent.request {
+                            crate::work_view::Request::ManualReview { .. }
+                            | crate::work_view::Request::ManualDecision { accept: true, .. } => {
+                                turn.can_manage()
+                            }
                             crate::work_view::Request::ExecutionValidate(_)
                             | crate::work_view::Request::ExecutionApply(_) => turn.can_manage(),
                             crate::work_view::Request::ControlValidate(_)

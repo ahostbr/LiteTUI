@@ -57,7 +57,6 @@ fn launch_owned(case: &str, resume: Option<(&Path, &str)>) -> (Interactive, Path
 from pathlib import Path
 os.environ['RUST_SCHEDULE_SOURCE'] = {}
 os.environ['RUST_SCHEDULE_CASE'] = {}
-os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 p = Path(os.environ['LITETUI_DATA_ROOT']) / 'settings.json'
 s = json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True, skills_enabled=False, footer_task_manager=False, tts_enabled=False, sidecar_enabled=False, autocompact_enabled=False, tool_auto_background_s=0, custom_context_length=1000000)
@@ -152,6 +151,7 @@ fn report(root: &Path) -> Value {
     let r: Value =
         serde_json::from_slice(&fs::read(root.join("scheduled-transition-report.json")).unwrap())
             .unwrap();
+    assert_eq!(r["bytecode_disabled"], true);
     for name in [
         "app",
         "background_input",
@@ -867,5 +867,138 @@ fn competing_human_new_retires_or_declines_old_proposal_without_scheduled_effect
                 "Controlled human New failure after old Work closed"
             );
         }
+    }
+}
+
+fn drain_manual_review(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+    while let Some(intent) = app.live.as_mut().unwrap().work.take_intent() {
+        app.live.as_mut().unwrap().prepare_work(&intent)?;
+        runtime.work(intent)?;
+        loop {
+            let event = next_event(runtime, Instant::now() + Duration::from_secs(30))?;
+            if let Observation::Work(update) = &event
+                && let work::Data::Rejected(reason) = &update.data
+            {
+                return Err(io::Error::other(reason.clone()));
+            }
+            let arrived = matches!(event, Observation::Work(_));
+            app.observe_live(event)?;
+            if arrived {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "controlled actual-source manual job Review/Accept/Decline; dependency Python required"]
+fn manual_new_job_requires_its_painted_review_and_verified_handoff() {
+    for case in ["manual-accept", "manual-decline", "manual-stale"] {
+        let (runtime, root) = launch(case);
+        let accepted = case == "manual-accept";
+        runtime.with_cleanup(|runtime| {
+            let mut app = ready(runtime)?;
+            let draft_state = |app: &Demo| (
+                app.composer.text().to_owned(),
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned(),
+            );
+            let press = |app: &mut Demo, code| {
+                app.live.as_mut().unwrap().work.key(KeyEvent::new(code, KeyModifiers::NONE));
+            };
+            let draft = draft_state(&app);
+            app.open_work();
+            drain_manual_review(runtime, &mut app)?;
+            for _ in 0..2 {
+                draw(&mut app);
+                press(&mut app, KeyCode::Tab);
+                drain_manual_review(runtime, &mut app)?;
+            }
+            draw(&mut app);
+            press(&mut app, KeyCode::Char('r'));
+            drain_manual_review(runtime, &mut app)?;
+            // A press received before the review is painted cannot confirm it.
+            press(&mut app, KeyCode::Enter);
+            assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
+            let first = draw(&mut app);
+            assert!(first.contains("new conversation"), "{first}");
+            let decline = case == "manual-decline";
+            let decision = if decline {
+                press(&mut app, KeyCode::Esc);
+                app.live.as_mut().unwrap().work.take_intent().unwrap()
+            } else {
+                let mut screens = Vec::new();
+                loop {
+                    screens.push(draw(&mut app));
+                    press(&mut app, KeyCode::Enter);
+                    if let Some(intent) = app.live.as_mut().unwrap().work.take_intent() {
+                        let review = screens.join("\n");
+                        assert!(review.contains("CANONICAL SCHEDULED INPUT Δ"));
+                        assert!(review.contains("disabled job") && review.contains("Tool profile  strict"));
+                        assert!(!review.contains("raw_before_sha256"));
+                        break intent;
+                    }
+                    assert!(screens.len() < 20, "Manual job review did not terminate");
+                }
+            };
+            assert!(matches!(&decision.request, work::Request::ManualDecision { accept, .. } if *accept != decline));
+            app.live.as_mut().unwrap().prepare_work(&decision)?;
+            runtime.work(decision)?;
+            if accepted {
+                pump(runtime, &mut app, |event| matches!(event, Observation::ScheduledConversationChanged(_)))?;
+                pump(runtime, &mut app, |event| matches!(event, Observation::WorkExecution(update)
+                    if matches!(update.as_ref(), WorkExecution::Settled { .. })))?;
+                let rows = &app.live.as_ref().unwrap().rows;
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0].source_owned);
+                assert_eq!(rows[0].cards[0].answer, "CONTROLLED SCHEDULED ANSWER");
+            } else {
+                pump(runtime, &mut app, |event| matches!(event, Observation::ScheduledHeld(_)))?;
+                assert!(app.live.as_ref().unwrap().rows.is_empty());
+                assert!(app.live.as_ref().unwrap().ready);
+            }
+            assert_eq!(draft, draft_state(&app));
+            Ok(())
+        }).unwrap_or_else(|e| panic!("{case}: {e}; {}", root.display()));
+        let r = report(&root);
+        let commands = r["commands"].as_array().unwrap();
+        let frame = |op: &str| {
+            let cmd = commands.iter().find(|c| c["type"] == op).unwrap();
+            &r["wire"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["type"] == "response" && x["id"] == cmd["id"])
+                .unwrap()["result"]
+        };
+        let review = frame("gui.work.native_schedule_manual_review");
+        assert_eq!(review["proposal"]["trigger"], "manual");
+        assert!(review["proposal"]["due_slot"].is_null());
+        assert_eq!(
+            r["requests"].as_array().unwrap().len(),
+            usize::from(accepted)
+        );
+        assert_eq!(r["jobs_after"][0]["run_count"], u64::from(accepted));
+        let changes = r["identity"]["session_id"] != r["original_identity"]["session_id"];
+        assert_eq!(changes, accepted);
+        let wire = r["wire"].as_array().unwrap();
+        assert!(!wire.iter().any(|f| f["type"] == "work_schedule_proposal"));
+        assert_eq!(
+            wire.iter()
+                .filter(|f| f["type"] == "work_admission")
+                .count(),
+            usize::from(accepted)
+        );
+        assert!(frame("gui.work.native_schedule_readback")["verified"] == true);
+        if accepted {
+            let accept = frame("gui.work.native_schedule_accept");
+            assert_eq!(
+                accept["stamp"]["raw_sha256"],
+                frame("gui.work.native_schedule_readback")["job_readback"]["raw_sha256"]
+            );
+            assert!(accept["stamp"]["slot"].as_str().is_some());
+        }
+        eprintln!("Manual new job {case}: {}", root.display());
     }
 }

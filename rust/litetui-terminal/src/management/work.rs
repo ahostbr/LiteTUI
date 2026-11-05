@@ -16,6 +16,7 @@ pub(super) struct Control {
     pub(super) generation: u64,
     deferred_review: Option<deferred::Review>,
     control_review: Option<controls::Review>,
+    pub(super) manual_review: Option<crate::scheduled_transition::ManualReview>,
 }
 pub(super) struct Pending {
     pub id: CommandId,
@@ -29,6 +30,7 @@ pub(super) struct Pending {
 }
 impl Management {
     pub(super) fn invalidate_work_selection(&mut self) {
+        self.work.manual_review = None;
         self.invalidate_execution_review();
         self.work.snapshot = None;
         self.work.page = None;
@@ -87,7 +89,25 @@ impl Management {
             return Err(fail("Stale Work request"));
         }
         let identity = self.work_identity()?;
+        if let view::Request::ManualDecision { review, accept } = &intent.request {
+            let retained = self
+                .work
+                .manual_review
+                .take()
+                .filter(|stored| stored == review.as_ref())
+                .ok_or_else(|| fail("This manual job review expired; refresh Work"))?;
+            if self.context_instance()? != retained.proposal.instance || self.schedule_pending() {
+                return Err(fail(
+                    "Manual job review no longer belongs to this Work session",
+                ));
+            }
+            self.work.generation = intent.generation;
+            return self.begin_manual_schedule(retained.proposal, *accept);
+        }
+        self.work.manual_review = None;
         let op = match &intent.request {
+            view::Request::ManualReview { .. } => crate::scheduled_transition::MANUAL_REVIEW,
+            view::Request::ManualDecision { .. } => unreachable!(),
             view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_) => {
                 unreachable!()
             }
@@ -149,6 +169,45 @@ impl Management {
             snapshot.request()
         };
         match &intent.request {
+            view::Request::ManualDecision { .. } => unreachable!(),
+            view::Request::ManualReview { section, row } => {
+                let ledger = self
+                    .execution_ledger()
+                    .filter(|ledger| {
+                        ledger.scheduled_transitions_active()
+                            && ledger.capture().execution_receipt.is_some()
+                    })
+                    .ok_or_else(|| {
+                        fail("Manual Run requires active scheduled and execution Work capabilities")
+                    })?;
+                let snapshot = self
+                    .work
+                    .snapshot
+                    .as_ref()
+                    .ok_or_else(|| fail("Refresh Work before Run"))?;
+                if snapshot.busy
+                    || snapshot.paused
+                    || snapshot.quitting
+                    || row.raw["new_conversation"] != true
+                    || !matches!(section, protocol::Section::Jobs | protocol::Section::Loops)
+                    || !self.work.page.as_ref().is_some_and(|page| {
+                        page.section == *section && page.rows.contains(row.as_ref())
+                    })
+                {
+                    return Err(fail(
+                        "Select the exact idle new-conversation job before Run",
+                    ));
+                }
+                command = identity.request();
+                command["version"] = json!(1);
+                command["schedule_version"] = json!(1);
+                command["instance"] = json!(ledger.capture().instance);
+                command["inspection_instance"] = json!(snapshot.instance);
+                command["snapshot"] = json!(snapshot.token);
+                command["section"] = json!(section.key());
+                command["target_id"] = json!(row.id);
+                command["target_revision"] = json!(row.revision);
+            }
             view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_) => {
                 unreachable!()
             }
@@ -376,6 +435,28 @@ impl Management {
         }
         let value = &frame["result"];
         let data = match &pending.request {
+            view::Request::ManualDecision { .. } => unreachable!(),
+            view::Request::ManualReview { section, row } => {
+                let snapshot = self
+                    .work
+                    .snapshot
+                    .as_ref()
+                    .ok_or_else(|| fail("Manual review lost its Work inspection"))?;
+                let ledger = self
+                    .execution_ledger()
+                    .ok_or_else(|| fail("Manual review lost its Work ledger"))?;
+                let review = crate::scheduled_transition::ManualReview::parse(
+                    value,
+                    snapshot,
+                    *section,
+                    row,
+                    &ledger.capture().instance,
+                    ledger.capture().provider,
+                    text(&frame, "id", 128)?,
+                )?;
+                self.work.manual_review = Some(review.clone());
+                view::Data::ManualReview(Box::new(review))
+            }
             view::Request::ExecutionValidate(_) | view::Request::ExecutionApply(_) => {
                 unreachable!()
             }
@@ -621,6 +702,8 @@ impl Management {
                         }
                     }
                     view::Request::Snapshot
+                    | view::Request::ManualReview { .. }
+                    | view::Request::ManualDecision { .. }
                     | view::Request::ExecutionValidate(_)
                     | view::Request::ExecutionApply(_) => unreachable!(),
                 }

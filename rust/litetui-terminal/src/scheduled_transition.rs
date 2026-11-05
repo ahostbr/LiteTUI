@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io;
 
+pub const MANUAL_REVIEW: &str = "gui.work.native_schedule_manual_review";
 pub const ACCEPT: &str = "gui.work.native_schedule_accept";
 pub const DECLINE: &str = "gui.work.native_schedule_decline";
 pub const READBACK: &str = "gui.work.native_schedule_readback";
@@ -355,6 +356,164 @@ impl NewReview {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManualReview {
+    pub proposal: Proposal,
+    pub wire: Value,
+    pub(crate) details: Vec<String>,
+}
+impl ManualReview {
+    pub fn parse(
+        v: &Value,
+        snapshot: &crate::work_protocol::Snapshot,
+        section: crate::work_protocol::Section,
+        row: &crate::work_protocol::Row,
+        instance: &str,
+        provider: life::Provider,
+        operation_id: &str,
+    ) -> io::Result<Self> {
+        use crate::work_protocol::Section;
+        bounded(v, life::REPLY_BYTES)?;
+        keys(
+            v,
+            &[
+                "kind",
+                "version",
+                "schedule_version",
+                "identity",
+                "instance",
+                "operation_id",
+                "inspection_instance",
+                "snapshot",
+                "section",
+                "target_revision",
+                "raw_before",
+                "raw_before_sha256",
+                "proposal",
+            ],
+        )?;
+        version(v, "version")?;
+        version(v, "schedule_version")?;
+        let identity = Identity::parse(&v["identity"])?;
+        if !matches!(section, Section::Jobs | Section::Loops)
+            || v["kind"] != "work_schedule_manual_review"
+            || identity.value()
+                != json!({"session_id":snapshot.identity.session,"agent_id":snapshot.identity.agent,
+                                           "backend":snapshot.identity.backend,"model":snapshot.identity.model})
+            || hash(v, "instance")? != instance
+            || hash(v, "inspection_instance")? != snapshot.instance
+            || hash(v, "snapshot")? != snapshot.token
+            || text(v, "operation_id", 128)? != operation_id
+            || v["section"] != section.key()
+            || hash(v, "target_revision")? != row.revision
+        {
+            return Err(bad("Manual Run review changed its selected Work request"));
+        }
+        let raw = text(v, "raw_before", life::PAYLOAD_BYTES)?;
+        if format!("{:x}", Sha256::digest(raw.as_bytes())) != hash(v, "raw_before_sha256")? {
+            return Err(bad("Manual Run raw PRE digest changed"));
+        }
+        let raw_before = crate::deferred_control::strict_object(&raw)?;
+        let canonical = crate::work_execution_controls::canonical(
+            &raw_before,
+            crate::work_execution_controls::Action::JobRun,
+        )?;
+        crate::work_controls::job(&canonical)?;
+        let expected_kind = if section == Section::Jobs {
+            "cron"
+        } else {
+            "loop"
+        };
+        if canonical != row.raw
+            || canonical["id"] != row.id
+            || canonical["kind"] != expected_kind
+            || expected_kind == "loop" && canonical["owner_convo_id"] != identity.session
+        {
+            return Err(bad(
+                "Manual Run PRE differs from the inspected job or loop owner",
+            ));
+        }
+        let proposal = Proposal::parse_origin(
+            &v["proposal"],
+            &identity,
+            instance,
+            provider,
+            Some(raw_before),
+        )?;
+        let selected = json!({"kind":expected_kind, "effective_tool_profile":proposal.requested.as_str(), "row":canonical});
+        if digest(&selected)? != row.revision
+            || crate::deferred_control::strict_object(&proposal.job_snapshot)? != canonical
+        {
+            return Err(bad(
+                "Manual Run proposal changed its reviewed canonical job",
+            ));
+        }
+        let next_count = proposal
+            .prior_run_count
+            .checked_add(1)
+            .ok_or_else(|| bad("Manual Run count exceeds its supported range"))?;
+        let effects = &proposal.transition.wire["effects"];
+        let mut details = vec![
+            "Run this job manually in a new conversation".into(),
+            format!(
+                "Job {} · {} · {}",
+                proposal.job_id,
+                proposal.kind,
+                canonical["schedule"].as_str().expect("validated schedule")
+            ),
+            format!("Current conversation  {}", identity.session),
+            format!("New conversation      {}", proposal.transition.target),
+            format!(
+                "Agent {} · {} / {}",
+                identity.agent, identity.backend, identity.model
+            ),
+            format!("Tool profile  {}", proposal.requested.as_str()),
+            format!(
+                "Recorded runs  {} → {}",
+                proposal.prior_run_count, next_count
+            ),
+        ];
+        if let Some(label) = canonical["label"].as_str().filter(|text| !text.is_empty()) {
+            details.insert(2, format!("Label  {label}"));
+        }
+        if canonical["enabled"] == false {
+            details.push("This explicit Run fires the disabled job once.".into());
+        }
+        if proposal.kind == "loop" {
+            details.push(format!(
+                "The next loop time is set {} minutes after confirmation.",
+                canonical["interval_minutes"]
+            ));
+        }
+        if effects["lifecycle_hooks"] == true {
+            details.push(
+                "Conversation lifecycle hooks may run with their existing permissions.".into(),
+            );
+        }
+        if effects["provider_cleanup"] == true {
+            details.push("The source will close the current provider session.".into());
+        }
+        details.extend([
+            "Confirmation saves the current conversation and records the run at acceptance time.".into(),
+            "The scheduled prompt starts after the saved job and the new conversation are verified. Your draft stays in the composer.".into(),
+            String::new(),
+            "Prompt".into(),
+            canonical["prompt"].as_str().expect("validated prompt").to_owned(),
+        ]);
+        Ok(Self {
+            proposal,
+            wire: v.clone(),
+            details,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Trigger {
+    Automatic { due_slot: String },
+    Manual { raw_before: Value },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Proposal {
     pub identity: Identity,
     pub instance: String,
@@ -364,7 +523,7 @@ pub struct Proposal {
     pub job_id: String,
     pub kind: String,
     pub requested: Profile,
-    pub due_slot: String,
+    trigger: Trigger,
     pub prior_run_count: u64,
     pub job_snapshot: String,
     pub job_sha256: String,
@@ -377,7 +536,24 @@ impl Proposal {
         instance: &str,
         provider: life::Provider,
     ) -> io::Result<Self> {
-        bounded(v, life::ENVELOPE_BYTES)?;
+        Self::parse_origin(v, identity, instance, provider, None)
+    }
+
+    fn parse_origin(
+        v: &Value,
+        identity: &Identity,
+        instance: &str,
+        provider: life::Provider,
+        manual_raw: Option<Value>,
+    ) -> io::Result<Self> {
+        bounded(
+            v,
+            if manual_raw.is_some() {
+                life::REPLY_BYTES
+            } else {
+                life::ENVELOPE_BYTES
+            },
+        )?;
         keys(
             v,
             &[
@@ -406,12 +582,10 @@ impl Proposal {
             .ok_or_else(|| bad("Invalid stored job profile"))?;
         let effective = Profile::parse(raw_profile).unwrap_or(Profile::Interactive);
         if !matches!(kind.as_str(), "cron" | "loop")
-            || v["trigger"] != "automatic"
             || v["source"] != "scheduled"
             || job["id"] != job_id
             || job["kind"] != kind
             || job["new_conversation"] != true
-            || job["enabled"] != true
             || number(&job, "run_count", false)? != prior_run_count
             || effective != requested
             || job["prompt"]
@@ -420,10 +594,28 @@ impl Proposal {
         {
             return Err(bad("Scheduled proposal changed canonical job projection"));
         }
-        let due_slot = slot(v, "due_slot")?;
-        if job["last_fired_slot"] == due_slot {
-            return Err(bad("Scheduled proposal already consumed its slot"));
-        }
+        let trigger = match manual_raw {
+            Some(raw_before) => {
+                if v["trigger"] != "manual" || !v["due_slot"].is_null() {
+                    return Err(bad(
+                        "Manual Run requires a manual proposal without a due slot",
+                    ));
+                }
+                Trigger::Manual { raw_before }
+            }
+            None => {
+                let due_slot = slot(v, "due_slot")?;
+                if v["trigger"] != "automatic"
+                    || job["enabled"] != true
+                    || job["last_fired_slot"] == due_slot
+                {
+                    return Err(bad(
+                        "Automatic proposal is disabled, consumed, or has a different trigger",
+                    ));
+                }
+                Trigger::Automatic { due_slot }
+            }
+        };
         Ok(Self {
             identity: identity.clone(),
             instance: instance.into(),
@@ -433,7 +625,7 @@ impl Proposal {
             job_id,
             kind,
             requested,
-            due_slot,
+            trigger,
             prior_run_count,
             job_snapshot,
             job_sha256,
@@ -479,14 +671,31 @@ pub struct Stamp {
 }
 impl Stamp {
     fn parse(v: &Value, p: &Proposal) -> io::Result<Self> {
-        keys(v, &["slot", "run_count", "job_snapshot", "job_sha256"])?;
+        let actual_slot = slot(v, "slot")?;
+        match &p.trigger {
+            Trigger::Automatic { due_slot } => {
+                keys(v, &["slot", "run_count", "job_snapshot", "job_sha256"])?;
+                if &actual_slot != due_slot {
+                    return Err(bad("Automatic stamp changed its proposed due slot"));
+                }
+            }
+            Trigger::Manual { .. } => keys(
+                v,
+                &[
+                    "slot",
+                    "run_count",
+                    "job_snapshot",
+                    "job_sha256",
+                    "raw_sha256",
+                ],
+            )?,
+        }
         let (job_snapshot, job_sha256, job) = job_snapshot(v)?;
         let generation = number(v, "run_count", true)?;
-        if slot(v, "slot")? != p.due_slot
-            || Some(generation) != p.prior_run_count.checked_add(1)
+        if Some(generation) != p.prior_run_count.checked_add(1)
             || job["id"] != p.job_id
             || job["kind"] != p.kind
-            || job["last_fired_slot"] != p.due_slot
+            || job["last_fired_slot"] != actual_slot
             || job["run_count"] != generation
         {
             return Err(bad("Scheduled stamp changed canonical invocation"));
@@ -506,8 +715,26 @@ impl Stamp {
         if after != previous {
             return Err(bad("Scheduled stamp changed unrelated job fields"));
         }
+        if let Trigger::Manual { raw_before } = &p.trigger {
+            if p.kind == "loop" {
+                let next =
+                    crate::work_execution_controls::second(&text(&job, "next_run_at", 128)?)? / 60;
+                let interval = i64::try_from(number(&before, "interval_minutes", true)?)
+                    .map_err(|_| bad("Manual loop interval overflows"))?;
+                if next.checked_sub(interval) != Some(local_minute(&actual_slot)?) {
+                    return Err(bad("Manual loop stamp changed its acceptance-time cadence"));
+                }
+            }
+            let mut expected = raw_before.clone();
+            for (key, value) in job.as_object().expect("validated canonical job") {
+                expected[key] = value.clone();
+            }
+            if hash(v, "raw_sha256")? != digest(&expected)? {
+                return Err(bad("Manual Run stamp changed a raw job extension"));
+            }
+        }
         Ok(Self {
-            slot: p.due_slot.clone(),
+            slot: actual_slot,
             generation,
             job_snapshot,
             job_sha256,
@@ -753,7 +980,15 @@ impl Readback {
         if d.status == Status::Staged {
             let s = d.stamp.as_ref().unwrap();
             let j = &v["job_readback"];
-            keys(j, &["job_snapshot", "job_sha256"])?;
+            match &d.proposal.trigger {
+                Trigger::Automatic { .. } => keys(j, &["job_snapshot", "job_sha256"])?,
+                Trigger::Manual { .. } => {
+                    keys(j, &["job_snapshot", "job_sha256", "raw_sha256"])?;
+                    if hash(j, "raw_sha256")? != d.wire["stamp"]["raw_sha256"] {
+                        return Err(bad("Independent manual raw stamp changed"));
+                    }
+                }
+            }
             if j["job_snapshot"] != s.job_snapshot || j["job_sha256"] != s.job_sha256 {
                 return Err(bad("Independent scheduled stamp changed"));
             }

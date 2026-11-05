@@ -2951,7 +2951,7 @@ class LiteTUI(App):
         accepted = native_schedule.preflight(self, job, manual=manual, now=now) if _work_prepare else None
         from litetui import native_work_execution
         execution = native_work_execution.preflight_job(self, job, manual=manual) if _work_prepare else None
-        if accepted is not None:
+        if accepted is not None and accepted.manual_raw_before is None:
             accepted.stamp_attempted = True
         blocked = sched_mod.prepare_fire(job, getattr(self, "convo_id", ""), now)
         if blocked:
@@ -2966,7 +2966,11 @@ class LiteTUI(App):
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
-            sched_mod.save(self.jobs, paths.data_root())
+            if accepted is not None and accepted.manual_raw_before is not None:
+                from litetui import native_manual_schedule
+                native_manual_schedule.stamp(self, accepted, job)
+            else:
+                sched_mod.save(self.jobs, paths.data_root())
         except OSError:
             if accepted is not None or execution is not None:
                 raise  # Attempted durable owned stamp is never rolled back or replayed.
