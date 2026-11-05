@@ -20,10 +20,10 @@ PREFIX = "gui.settings.native_compact_"
 VALUES = {
     "compact_keep_recent": 2, "compact_max_tokens": 1024, "compact_max_tool_iters": 3,
     "compact_thinking_level": "high", "wake_after_compact": True,
-    "clear_screen_after_compact": False,
+    "clear_screen_after_compact": False, "autocompact_enabled": False, "autocompact_at_percent": 60,
 }
 BOUNDS = {"compact_keep_recent": (0, 1000000), "compact_max_tokens": (256, 2147483647),
-          "compact_max_tool_iters": (1, 512)}
+          "compact_max_tool_iters": (1, 512), "autocompact_at_percent": (1, 99)}
 CHOICES = ["default", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 
@@ -137,7 +137,7 @@ async def test_exact_single_destination_save_preserves_unknowns_and_other_revisi
 
 VALID_EDGES: list[tuple[str, Any]] = [(field, value) for field, pair in BOUNDS.items() for value in pair]
 VALID_EDGES += [("compact_thinking_level", value) for value in CHOICES]
-VALID_EDGES += [(field, value) for field in ("wake_after_compact", "clear_screen_after_compact")
+VALID_EDGES += [(field, value) for field in ("wake_after_compact", "clear_screen_after_compact", "autocompact_enabled")
                 for value in (False, True)]
 
 
@@ -153,7 +153,7 @@ async def test_boundaries_and_exact_choice_vocabulary_validate_without_effects(s
 INVALID: list[tuple[str, Any]] = [(field, value) for field, (low, high) in BOUNDS.items()
            for value in (low - 1, high + 1, True, False, None, "3", 1.5)]
 BAD_BOOLEAN: tuple[Any, ...] = (0, 1, "true", None, [], {})
-INVALID += [(field, value) for field in ("wake_after_compact", "clear_screen_after_compact")
+INVALID += [(field, value) for field in ("wake_after_compact", "clear_screen_after_compact", "autocompact_enabled")
             for value in BAD_BOOLEAN]
 BAD_CHOICE: tuple[Any, ...] = ("none", "HIGH", "", True, 1, None, [], {})
 INVALID += [("compact_thinking_level", value) for value in BAD_CHOICE]
@@ -367,6 +367,8 @@ async def test_absent_conversation_review_stays_absent_and_device_save_does_not_
     ("conversation", "compact_max_tokens", "1024"), ("conversation", "compact_max_tokens", True),
     ("conversation", "compact_keep_recent", False), ("conversation", "compact_thinking_level", "none"),
     ("conversation", "wake_after_compact", 1), ("global", "clear_screen_after_compact", 0),
+    ("conversation", "autocompact_at_percent", 100), ("conversation", "autocompact_at_percent", 0),
+    ("conversation", "autocompact_at_percent", True), ("conversation", "autocompact_enabled", 1),
     ("global-inherited", "compact_max_tool_iters", "3")])
 async def test_invalid_raw_saved_preferences_are_not_silently_coerced(switch_app, location, field, value):
     app = switch_app
@@ -493,3 +495,26 @@ async def test_post_apply_client_replacement_cannot_claim_verified_save(switch_a
     finally:
         app.client = client
     assert result["status"] == "failed" and result["mutated"] and result["close_required"], json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_autocompact_trigger_edits_change_only_the_next_threshold_check(switch_app, monkeypatch):
+    """Saving the trigger preferences takes effect at the source's next threshold test and starts nothing."""
+    app = switch_app
+    monkeypatch.setattr(app, "_compact", forbidden)
+    monkeypatch.setattr(app, "_handle_command", forbidden)
+    app.ctx_max, app.ctx_used, app.ctx_loaded = 1000, 700, True
+    app._autocompact_failed_at = None
+    state = await call(app, "snapshot")
+    assert (state["fields"]["autocompact_enabled"]["saved"], state["fields"]["autocompact_at_percent"]["saved"]) == (True, 80)
+    assert app._autocompact_due() is None
+    result = await save(app, await reviewed(app, "autocompact_at_percent", 60))
+    assert result["status"] == "saved" and result["effective"] == 60, json.dumps(result)
+    assert app.settings.autocompact_at_percent == 60 and app._autocompact_due() == 70
+    result = await save(app, await reviewed(app, "autocompact_enabled", False))
+    assert result["status"] == "saved" and result["effective"] is False, json.dumps(result)
+    assert app._autocompact_due() is None
+    for field, value in (("autocompact_at_percent", 0), ("autocompact_at_percent", 100)):
+        with pytest.raises(ValueError):
+            await reviewed(app, field, value)
+    assert app.settings.autocompact_at_percent == 60

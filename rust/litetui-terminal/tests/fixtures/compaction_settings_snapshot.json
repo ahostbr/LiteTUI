@@ -103,6 +103,32 @@
       "effective": true,
       "editable": true,
       "reason": null
+    },
+    "autocompact_enabled": {
+      "type": "boolean",
+      "scope": "conversation",
+      "apply_timing": "next_turn",
+      "destination": "conversation",
+      "minimum": null,
+      "maximum": null,
+      "choices": [],
+      "saved": true,
+      "effective": true,
+      "editable": true,
+      "reason": null
+    },
+    "autocompact_at_percent": {
+      "type": "integer",
+      "scope": "conversation",
+      "apply_timing": "next_turn",
+      "destination": "conversation",
+      "minimum": 1,
+      "maximum": 99,
+      "choices": [],
+      "saved": 80,
+      "effective": 80,
+      "editable": true,
+      "reason": null
     }
   },
   "tools": {

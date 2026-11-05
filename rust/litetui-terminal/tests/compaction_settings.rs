@@ -16,15 +16,18 @@ fn data() -> Value {
         json!("low"),
         json!(false),
         json!(true),
+        json!(true),
+        json!(80),
     ];
     for (i, name) in edit::FIELDS.iter().enumerate() {
         let (minimum, maximum) = match i {
             0 => (json!(0), json!(1_000_000)),
             1 => (json!(256), json!(2_147_483_647)),
             2 => (json!(1), json!(512)),
+            7 => (json!(1), json!(99)),
             _ => (Value::Null, Value::Null),
         };
-        fields.insert((*name).into(),json!({"type":if i<3{"integer"}else if i==3{"choice"}else{"boolean"},"scope":if i==5{"device"}else{"conversation"},"apply_timing":if i==5{"immediate"}else{"next_turn"},"destination":if i==5{"global"}else{"conversation"},"minimum":minimum,"maximum":maximum,"choices":if i==3{json!(edit::LEVELS)}else{json!([])},"saved":values[i],"effective":values[i],"editable":true,"reason":null}));
+        fields.insert((*name).into(),json!({"type":if i<3||i==7{"integer"}else if i==3{"choice"}else{"boolean"},"scope":if i==5{"device"}else{"conversation"},"apply_timing":if i==5{"immediate"}else{"next_turn"},"destination":if i==5{"global"}else{"conversation"},"minimum":minimum,"maximum":maximum,"choices":if i==3{json!(edit::LEVELS)}else{json!([])},"saved":values[i],"effective":values[i],"editable":true,"reason":null}));
     }
     json!({"version":1,"kind":"compaction_settings_snapshot","session_id":SESSION,"agent_id":AGENT,"backend":"custom","model":"test","snapshot":"a".repeat(64),"revisions":{"global":"a".repeat(64),"conversation":"absent","agent":"b".repeat(64)},"destinations":{"global":"C:/owned/settings.json","conversation":format!("C:/owned/agents/{AGENT}/conversations/{SESSION}/settings.json")},"fields":fields,"tools":{"effective":false,"editable":false,"reason":"Tools are shared turn authority; this editor does not change them."},"reasoning":{"available":true,"reason":null,"source":"canonical compaction request adapter","supported_levels":["none","minimal","low","medium","high","xhigh","max"],"saved":"low","effective":"low"}})
 }
@@ -163,9 +166,9 @@ fn confirm(v: &mut View) -> (u64, Review) {
     panic!("Review did not become confirmable")
 }
 #[test]
-fn all_six_fields_preserve_exact_scope_types_bounds_and_saved_reasoning_preference() {
+fn all_eight_fields_preserve_exact_scope_types_bounds_and_saved_reasoning_preference() {
     let s = snapshot(&data());
-    assert_eq!(s.fields.len(), 6);
+    assert_eq!(s.fields.len(), 8);
     assert_eq!(s.effective("clear_screen_after_compact").unwrap(), true);
     assert_eq!(s.fields[5].scope, "device");
     assert_eq!(s.fields[5].apply_timing, "immediate");
@@ -199,6 +202,24 @@ fn all_six_fields_preserve_exact_scope_types_bounds_and_saved_reasoning_preferen
             edit::FIELDS[5],
             vec![json!(true), json!(false)],
             vec![Value::Null],
+        ),
+        (
+            edit::FIELDS[6],
+            vec![json!(true), json!(false)],
+            vec![json!(0), json!(1), json!("false"), Value::Null],
+        ),
+        (
+            edit::FIELDS[7],
+            vec![json!(1), json!(80), json!(99)],
+            vec![
+                json!(0),
+                json!(100),
+                json!(-1),
+                json!(true),
+                json!(80.5),
+                json!("80"),
+                Value::Null,
+            ],
         ),
     ] {
         for value in valid {
@@ -348,6 +369,8 @@ fn every_field_saved_and_partial_receipt_requires_exact_independent_readback() {
         json!("ultra"),
         json!(true),
         json!(false),
+        json!(false),
+        json!(99),
     ]) {
         let r = review(field, value);
         for partial in [false, true] {
@@ -827,4 +850,80 @@ fn partial_receipts_require_canonical_runtime_action_pairs() {
             );
         }
     }
+}
+fn trigger_view(field: &str) -> View {
+    let mut v = View::default();
+    v.open_field(field);
+    let generation = read(&mut v);
+    v.observe(Update::Snapshot {
+        generation,
+        snapshot: Box::new(snapshot(&data())),
+    });
+    draw(&mut v, 90, 30);
+    assert_eq!(v.selected_field(), field);
+    v
+}
+fn review_pages(v: &mut View, field: &str, value: &Value) -> String {
+    let (generation, review) = validate(v);
+    assert_eq!((review.field.as_str(), &review.value), (field, value));
+    v.observe(Update::Review {
+        generation,
+        review: Box::new(review),
+    });
+    let mut seen = String::new();
+    for _ in 0..20 {
+        seen.push_str(&draw(v, 48, 20));
+        v.key(key(KeyCode::PageDown));
+    }
+    seen.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+#[test]
+fn autocompact_percent_outside_one_through_ninety_nine_never_leaves_the_editor() {
+    let mut v = trigger_view("autocompact_at_percent");
+    assert_eq!(v.draft(), "80");
+    assert!(v.accepts_paste());
+    for bad in ["0", "00", "100", "9999999999"] {
+        replace(&mut v, bad);
+        draw(&mut v, 90, 30);
+        v.key(key(KeyCode::Enter));
+        assert!(v.take_intent().is_none(), "{bad} must be refused locally");
+        assert!(!v.waiting, "{bad}");
+        assert!(draw(&mut v, 90, 30).contains("invalid scalar type or value"));
+        assert_eq!(v.draft(), bad);
+    }
+    for (good, expected) in [("1", 1), ("99", 99), ("0080", 80)] {
+        let mut v = trigger_view("autocompact_at_percent");
+        replace(&mut v, good);
+        let (_, r) = validate(&mut v);
+        assert_eq!(r.value, json!(expected));
+    }
+}
+#[test]
+fn autocompact_toggle_is_a_boolean_and_its_review_states_the_real_threshold_check() {
+    let mut v = trigger_view("autocompact_enabled");
+    assert_eq!(v.draft(), "true");
+    assert!(!v.accepts_paste());
+    v.key(key(KeyCode::Right));
+    assert_eq!(v.draft(), "false");
+    let painted = review_pages(&mut v, "autocompact_enabled", &json!(false));
+    for text in [
+        "applies: next_turn",
+        "tested after a turn and between tool rounds",
+        "saving never starts one",
+        "Codex engine owns its own context",
+    ] {
+        let expected: String = text.chars().filter(|c| c.is_alphanumeric()).collect();
+        assert!(painted.contains(&expected), "missing {text}");
+    }
+}
+#[test]
+fn only_the_autocompact_reviews_carry_the_threshold_disclosure() {
+    let mut v = trigger_view("autocompact_at_percent");
+    replace(&mut v, "65");
+    let painted = review_pages(&mut v, "autocompact_at_percent", &json!(65));
+    assert!(painted.contains("Autocompactistestedafteraturn"));
+    let mut other = view();
+    replace(&mut other, "8");
+    let painted = review_pages(&mut other, "compact_keep_recent", &json!(8));
+    assert!(!painted.contains("Autocompactistested"));
 }

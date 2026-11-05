@@ -14,24 +14,28 @@ pub const READ: &str = "gui.settings.native_compact_snapshot";
 pub const VALIDATE: &str = "gui.settings.native_compact_validate";
 pub const SAVE: &str = "gui.settings.native_compact_save";
 pub const MAX_BYTES: usize = 65_536;
-pub const FIELDS: [&str; 6] = [
+pub const FIELDS: [&str; 8] = [
     "compact_keep_recent",
     "compact_max_tokens",
     "compact_max_tool_iters",
     "compact_thinking_level",
     "wake_after_compact",
     "clear_screen_after_compact",
+    "autocompact_enabled",
+    "autocompact_at_percent",
 ];
 pub const LEVELS: [&str; 9] = [
     "default", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
-const LABELS: [&str; 6] = [
+const LABELS: [&str; 8] = [
     "Recent messages to keep",
     "Summary token cap",
     "Compaction tool rounds",
     "Compaction thinking preference",
     "Wake after compaction",
     "Clear prior display after compaction",
+    "Auto-compact when context fills",
+    "Auto-compact at percent of window",
 ];
 fn fail(s: &str) -> io::Error {
     io::Error::other(s.to_owned())
@@ -72,6 +76,7 @@ fn bounds(i: usize) -> Option<(u64, u64)> {
         0 => Some((0, 1_000_000)),
         1 => Some((256, 2_147_483_647)),
         2 => Some((1, 512)),
+        7 => Some((1, 99)),
         _ => None,
     }
 }
@@ -202,7 +207,7 @@ pub struct Snapshot {
     pub token: String,
     pub revisions: Value,
     pub destinations: Value,
-    pub fields: [Setting; 6],
+    pub fields: [Setting; 8],
     pub tools: Value,
     pub reasoning: Reasoning,
 }
@@ -238,8 +243,8 @@ impl Snapshot {
         }
         let rows = v["fields"]
             .as_object()
-            .filter(|o| o.len() == 6)
-            .ok_or_else(|| fail("Compaction preferences must contain exactly six fields"))?;
+            .filter(|o| o.len() == FIELDS.len())
+            .ok_or_else(|| fail("Compaction preferences must contain exactly eight fields"))?;
         let mut fields = Vec::new();
         for (i, key) in FIELDS.iter().enumerate() {
             let f = rows
@@ -247,7 +252,7 @@ impl Snapshot {
                 .ok_or_else(|| fail("Missing compaction preference"))?;
             let (min, max) =
                 bounds(i).map_or((Value::Null, Value::Null), |(a, b)| (json!(a), json!(b)));
-            let kind = if i < 3 {
+            let kind = if bounds(i).is_some() {
                 "integer"
             } else if i == 3 {
                 "choice"
@@ -299,7 +304,7 @@ impl Snapshot {
             token: settings_editor::token(v, "snapshot")?,
             revisions: settings_editor::revisions(&v["revisions"])?,
             destinations: v["destinations"].clone(),
-            fields: fields.try_into().expect("six fields"),
+            fields: fields.try_into().expect("eight fields"),
             tools: v["tools"].clone(),
             reasoning,
         })
@@ -642,7 +647,7 @@ pub struct View {
     pub notice: String,
     pub snapshot: Option<Snapshot>,
     selected: usize,
-    drafts: [Draft; 6],
+    drafts: [Draft; 8],
     initialized: bool,
     review: Option<Review>,
     intent: Option<Intent>,
@@ -697,7 +702,7 @@ impl View {
                 .is_some_and(|s| s.fields[self.selected].editable)
     }
     pub fn accepts_paste(&self) -> bool {
-        self.editing() && self.selected < 3
+        self.editing() && bounds(self.selected).is_some()
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.intent.take()
@@ -825,7 +830,7 @@ impl View {
         }
     }
     fn value(&self) -> io::Result<Value> {
-        let value = if self.selected < 3 {
+        let value = if bounds(self.selected).is_some() {
             json!(
                 self.draft()
                     .parse::<u64>()
@@ -926,13 +931,13 @@ impl View {
                 return;
             }
             KeyCode::Tab | KeyCode::Down => {
-                self.selected = (self.selected + 1) % 6;
+                self.selected = (self.selected + 1) % FIELDS.len();
                 self.page = 0;
                 self.seen.clear();
                 return;
             }
             KeyCode::Up => {
-                self.selected = (self.selected + 5) % 6;
+                self.selected = (self.selected + FIELDS.len() - 1) % FIELDS.len();
                 self.page = 0;
                 self.seen.clear();
                 return;
@@ -967,10 +972,10 @@ impl View {
                     Err(e) => self.notice = e.to_string(),
                 }
             }
-            KeyCode::Char(c) if self.selected < 3 && c.is_ascii_digit() => {
+            KeyCode::Char(c) if bounds(self.selected).is_some() && c.is_ascii_digit() => {
                 self.paste(&c.to_string())
             }
-            code if self.selected < 3 => self.drafts[self.selected].key(code),
+            code if bounds(self.selected).is_some() => self.drafts[self.selected].key(code),
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
                 let options: Vec<&str> = if self.selected == 3 {
                     LEVELS.to_vec()
@@ -1070,6 +1075,9 @@ impl View {
                 ));
             }
             lines.extend(disclosures().into_iter().map(str::to_owned));
+            if review.field.starts_with("autocompact_") {
+                lines.push(AUTOCOMPACT_DISCLOSURE.into());
+            }
         } else {
             for (i, label) in LABELS.iter().enumerate() {
                 lines.push(format!(
@@ -1193,6 +1201,7 @@ fn display_value(v: &Value) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| v.to_string())
 }
+const AUTOCOMPACT_DISCLOSURE: &str = "Auto-compact is tested after a turn and between tool rounds against the percent of the context window in use. The next such test uses the saved value and may start a compaction if the context is already past it; saving never starts one. The official Codex engine owns its own context, so this does not apply there.";
 fn disclosures() -> [&'static str; 5] {
     [
         "Saving preferences does not run compaction, wake a turn, or clear the display now.",

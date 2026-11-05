@@ -661,7 +661,7 @@ fn scenario(case: &str, field: &str, value: Value, via_c: bool) {
 }
 #[test]
 #[ignore = "controlled actual-source preference edits; dependency Python required"]
-fn f10_six_typed_scoped_preferences_save_without_inference_and_keep_composer() {
+fn f10_eight_typed_scoped_preferences_save_without_inference_and_keep_composer() {
     for (i, (field, value)) in edit::FIELDS
         .iter()
         .zip([
@@ -671,6 +671,8 @@ fn f10_six_typed_scoped_preferences_save_without_inference_and_keep_composer() {
             json!("high"),
             json!(true),
             json!(false),
+            json!(true),
+            json!(65),
         ])
         .enumerate()
     {
@@ -730,6 +732,38 @@ fn f10_editor_review_cancel_and_refresh_keep_drafts_without_publishing() {
             }
         );
     }
+}
+#[test]
+#[ignore = "controlled actual-source preference edits; dependency Python required"]
+fn f10_autocompact_percent_out_of_range_is_refused_before_any_source_operation() {
+    let (runtime, root) = launch("cancel", "autocompact_at_percent", &json!(100));
+    let result = runtime.with_cleanup(|runtime| {
+        let mut app = start(runtime)?;
+        let original = editor(&app);
+        open(runtime, &mut app, "autocompact_at_percent", true)?;
+        for bad in [0, 100] {
+            set_value(&mut app, &json!(bad));
+            draw(&mut app);
+            key(&mut app, KeyCode::Enter);
+            assert!(
+                app.live.as_mut().unwrap().settings.take_intent().is_none(),
+                "{bad} must be refused before the source is asked"
+            );
+            let prefs = &app.live.as_ref().unwrap().settings.compaction;
+            assert!(!prefs.waiting && prefs.open);
+            assert_eq!(prefs.draft(), bad.to_string());
+            assert!(prefs.notice.contains("invalid scalar type or value"));
+        }
+        parent_selection(&mut app, "autocompact_at_percent");
+        assert_eq!(editor(&app), original);
+        Ok(())
+    });
+    assert!(result.is_ok(), "{result:?} at {}", root.display());
+    let r = report(&root);
+    assert_eq!(count(&r, edit::VALIDATE), 0);
+    assert_eq!(count(&r, edit::SAVE), 0);
+    assert_only_idle_ledger_published(&r, &root, &r["initial_disk"]);
+    assert_eq!(r["before"], r["after"]);
 }
 #[test]
 #[ignore = "controlled actual-source preference edits; dependency Python required"]

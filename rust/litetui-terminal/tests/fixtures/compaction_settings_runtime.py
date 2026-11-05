@@ -34,7 +34,8 @@ FIELD = os.environ.get("RUST_COMPACT_SETTINGS_FIELD", "compact_max_tokens")
 VALUE = json.loads(os.environ.get("RUST_COMPACT_SETTINGS_VALUE", "768"))
 PREFIX = "gui.settings.native_compact_"
 FIELDS = ("compact_keep_recent", "compact_max_tokens", "compact_max_tool_iters",
-          "compact_thinking_level", "wake_after_compact", "clear_screen_after_compact")
+          "compact_thinking_level", "wake_after_compact", "clear_screen_after_compact",
+          "autocompact_enabled", "autocompact_at_percent")
 SYSTEM = "Independent compaction preference system 雪."
 SUMMARY = "Saved compaction preferences reached the actual canonical consumer."
 report: dict[str, Any] = {"sdk_requests": [], "commands": [], "responses": [], "snapshots": [],

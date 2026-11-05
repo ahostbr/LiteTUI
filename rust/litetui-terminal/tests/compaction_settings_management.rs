@@ -136,6 +136,8 @@ fn each_scope_and_type_waits_for_independent_snapshot_and_runtime_readback() {
         json!("high"),
         json!(true),
         json!(false),
+        json!(false),
+        json!(60),
     ];
     for (field, value) in edit::FIELDS.into_iter().zip(values) {
         for partial in [false, true] {
@@ -170,7 +172,7 @@ fn each_scope_and_type_waits_for_independent_snapshot_and_runtime_readback() {
             };
             assert_eq!(generation, 3);
             assert_eq!(outcome.status, if partial { "partial" } else { "saved" });
-            assert_eq!(inspection.rows.len(), 6);
+            assert_eq!(inspection.rows.len(), edit::FIELDS.len());
             assert!(m.ready());
             assert!(
                 m.request_settings(view::Intent::Compaction(edit::Intent::Save {

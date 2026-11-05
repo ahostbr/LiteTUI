@@ -183,8 +183,9 @@ The native skill path does not invoke legacy gui.skills.use.
 ## Next bounded implementation packages
 
 F10 now provides reviewed compaction preferences: keep-recent, summary token budget,
-maximum tool rounds, thinking preference, wake and clear-screen. The first five use
-canonical conversation/next-turn persistence; clear-screen is device/immediate.
+maximum tool rounds, thinking preference, wake, clear-screen, auto-compact on/off and the
+auto-compact percent (1 through 99). All but clear-screen use canonical conversation/next-turn
+persistence; clear-screen is device/immediate.
 These controls reuse the existing settings publication/readback algorithm and compaction bounds.
 Tools enabled stays read-only because it also owns ordinary turn authority. Saved
 thinking differs from adapter-resolved side-call effort, and the shared compaction

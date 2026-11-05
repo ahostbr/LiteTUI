@@ -182,7 +182,7 @@ def _draft(app, cmd):
         raise ValueError('Compaction settings review is stale; refresh before editing')
     key = cmd.get('field')
     if not isinstance(key, str) or key not in FIELDS:
-        raise ValueError('Only the six compaction preferences are editable here')
+        raise ValueError('Only the eight compaction preferences are editable here')
     field = current['fields'][key]
     if not field['editable']:
         raise ValueError(field['reason'])
