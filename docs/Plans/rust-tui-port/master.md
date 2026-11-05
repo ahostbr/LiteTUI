@@ -1,5 +1,18 @@
 # LiteTUI Rust terminal port
 
+## Claude compaction with host tools, unattended compaction, judge pins - November 5, 2026
+
+- a99a03b1 (lane L12): a reviewed F6 Claude compaction can now run the bridged litetui MCP host tools. Each one is disclosed by name in the review, its schema digest is bound, and the reviewed worker runs it under the root execution. The plan's `host_tools` key is required on both the Python and Rust sides.
+- d8570620: an unreviewed Claude compaction under the native frontend owns its tool turn, and refuses any approval or question it cannot host, in words.
+- f103f520: restores the Stop watcher for a reviewed tools-on summary turn, which d8570620 had dropped (found in owner review, RED first).
+- 2d3d8342 / 942b100f: fix the scenario's wrapped-review assertion and keep its native-frontend Stop case. That case now asserts the close-and-inspect outcome, no host run and an unchanged ledger.
+- 92771549: restores three permission-judge source pins. Two of them had been stale since b3b06e53, which also fails them on the 2544c3e6 baseline; the third went stale with L4's preferences editor.
+
+Integrated gate at 942b100f, 2026-11-05. Every step went through the guarded runner (CARGO_BUILD_JOBS=4, free RAM >= 25 GB, free commit >= 8 GB).
+- Rust: fmt and strict all-target Clippy pass. 1,123 ordinary Rust tests pass, with 226 ignored. compact_process 12/12 and context_process 29/29.
+- runtime_controls_process: 15/17 on the first run. playback-stop failed, plus a new load failure, host-quit-parked. host-quit-parked then passed alone 2/2, and the whole suite passed 17/17 at 4 threads. Both stay open (remaining-parity.md).
+- Python: 21 modules, 875 passed, 2 failed. Both failures are the pre-existing eof-question flake.
+
 ## Nine parallel parity lanes - November 5, 2026
 
 A read-only scout turned the open remaining-parity rows into 19 concrete source-vs-native gaps; nine Sonnet builder lanes then ran in isolated worktrees and were reviewed and cherry-picked onto this branch by the owner seat:
