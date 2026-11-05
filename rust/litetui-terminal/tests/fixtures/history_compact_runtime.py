@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -21,6 +22,11 @@ history.report["sdk_requests"] = []
 
 CASE = os.environ.get("RUST_COMPACT_CASE", "compact")
 DRIVER = os.environ.get("RUST_COMPACT_DRIVER", "self")
+# A "slow-mark" case forces the marker interleaving instead of leaving it to scheduling: the thread that marks a
+# request stage is held between writing the marker file and recording the stage, until the EOF driver has read
+# "the last stage" (see mark and shutdown).
+SLOW_MARK = "slow-mark" in CASE
+stage_read = threading.Event()
 SNAPSHOT = "gui.conversations.native_compact_snapshot"
 VALIDATE = "gui.conversations.native_compact_validate"
 APPLY = "gui.conversations.native_compact_apply"
@@ -336,6 +342,8 @@ def mark(stage, **extra):
         "operation_id": history.report.get("apply_operation"),
         "root_execution_id": current.get("root_execution_id"), **extra}
     (history.root / "compact-stage.json").write_text(json.dumps(payload), encoding="utf-8")
+    if SLOW_MARK and stage in {"question", "approval"}:
+        stage_read.wait(1)
     history.report.setdefault("stages", []).append(payload)
 
 
@@ -612,9 +620,12 @@ async def serve(app):
         if row.get("type") == "gui.event":
             inner = row["event"]
             if inner.get("type") in {"user_input_requested", "tool_approval_requested"}:
-                history.report["input_request"] = copy.deepcopy(row)
+                # Record the stage BEFORE publishing the request: the driver (another thread) re-marks the last
+                # recorded stage as soon as it sees the request, so the reverse order let it re-publish the
+                # stage BEFORE this one over the marker the parent was waiting on.
                 mark("question" if inner["type"] == "user_input_requested" else "approval",
                     request_id=inner["id"], execution_id=row["execution_id"])
+                history.report["input_request"] = copy.deepcopy(row)
             if inner.get("type") == "turn_start" and inner.get("compact_segment"):
                 mark("wake", execution_id=row["execution_id"])
         return original_emit(row)
@@ -639,7 +650,11 @@ async def serve(app):
     async def shutdown(eof=False):
         if eof:
             reader_start()
-            mark(history.report.get("stages", [{}])[-1].get("stage", "shutdown"))
+            stage = history.report.get("stages", [{}])[-1].get("stage", "shutdown")
+            stage_read.set()
+            mark(stage)
+            if SLOW_MARK:
+                (history.root / "mark-settled").write_text("1", encoding="utf-8")
             await asyncio.wait_for(exited.wait(), 20)
         else:
             await call("shutdown")

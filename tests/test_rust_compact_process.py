@@ -64,6 +64,11 @@ def launch(tmp_path, case):
                 deadline = time.monotonic() + 35
                 expected_stage = "question" if "question" in case else "approval" if "approval" in case else "readiness" if "readiness" in case else "root-maintenance"
                 reached = False
+                if "slow-mark" in case:
+                    # The child forces the order of its marker writes (see SLOW_MARK in the fixture), so sample only
+                    # after its last write: the marker must still name the stage that was reached.
+                    while not (data / "mark-settled").exists() and process.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.01)
                 while process.poll() is None and time.monotonic() < deadline:
                     try:
                         reached = marker.exists() and json.loads(marker.read_text(encoding="utf-8"))["stage"] == expected_stage
@@ -505,7 +510,8 @@ def test_stop_joins_exact_pending_work_and_prevents_later_wake(tmp_path, case):
 
 
 @pytest.mark.parametrize("case", ["quit-stream", "eof-stream", "quit-readiness", "eof-readiness",
-    "quit-question", "eof-question", "quit-question-wake", "eof-question-wake", "quit-approval", "eof-approval", "quit-approval-wake", "eof-approval-wake"])
+    "quit-question", "eof-question", "quit-question-wake", "eof-question-wake", "quit-approval", "eof-approval", "quit-approval-wake", "eof-approval-wake",
+    "eof-slow-mark-question", "eof-slow-mark-question-wake"])
 def test_quit_and_real_pipe_eof_retire_workers_inputs_and_callbacks_before_lease_release(tmp_path, case):
     report = launch(tmp_path, case)
     if "input_request" in report:
