@@ -1,5 +1,25 @@
 # LiteTUI Rust terminal port
 
+## Frontend comparison and November 4 integration
+
+Five interleaved warm trials per frontend used a private 120×40 Windows pseudoconsole, identical staged Python code and dependency interpreter, separate fresh data roots and a controlled two-chunk answer. Timing ended when the terminal parser observed the expected cells. Values below are medians across runs, with memory summed over each frontend's observed process tree.
+
+| Measurement | Textual | Release Rust + Python |
+| --- | ---: | ---: |
+| Launch to first visible cells | 2,215 ms | 85 ms |
+| Launch to visible editable draft | 2,308 ms | 3,210 ms |
+| Enter to complete visible answer | 260 ms | 322 ms |
+| Idle private memory | 73.18 MiB | 81.00 MiB |
+| Idle working set | 88.93 MiB | 103.58 MiB |
+| Peak private memory | 74.61 MiB | 81.28 MiB |
+| Peak working set | 90.33 MiB | 104.21 MiB |
+
+Both paths wrote the same user message and answer and exited cleanly in all ten trials. Textual also requested a controlled card summary. Rust performed additional catalogue reads and retained its native frontend alongside the Python runtime and venv launcher. The sampler targeted 50 ms and observed a median interval of 52.1 ms (range 19–421 ms). Background host load varied. The run measured a warm startup and a controlled short turn. Physical terminal painting, live inference, sustained streaming and a numerical acceptance target remain open. The raw proof is `rust/litetui-terminal/target/next-process-baseline/runs-zdreMQ/performance-proof.json` (SHA-256 `b1d33dc61fbc9f196a65ee2bb1b9d5b16cd7723f49420b14e260d7458c384c6e`).
+
+The native terminal now supports manual compact display, reviewed device preferences, a reviewed static tool description refresh and explicit owner handoff during host compaction. F10 voice settings do not exercise recording or playback. Owner acceptance used a private real Git repository, tested stale documents and excluded unrelated changes from the commit. The packaged F10 and plugin controls passed against relocated source. The integrated Rust gate through the plugin change reported 986 ordinary tests passed, with strict Clippy and formatting clean.
+
+An independently frozen source export at `5ee2b86c` passed all 1,598 tests in the selected 66-file Python matrix. Its extended Rust process run exposed stale test harnesses and a lifecycle hook failure under Work retirement. Later fixes and acceptance belong to their own revisions.
+
 ## F10 shared MCP declarations - 2026-11-04
 
 Press M in Settings to inspect both shared MCP declaration files. An unshadowed editable entry in `.mcp.json` supports a reviewed enable/disable change with independent disk readback. The operation requires MCP disabled and zero unresolved or connected servers. Arguments, environment values and credentials stay out of the view. A later explicit MCP startup reads the saved flag.
