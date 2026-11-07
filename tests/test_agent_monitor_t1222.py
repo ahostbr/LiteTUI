@@ -361,6 +361,54 @@ def test_the_schema_matches_what_the_service_enforces():
 
 # ── the real app ────────────────────────────────────────────────────────────
 
+async def _real_funnel_app(tmp_path, monkeypatch, *, busy):
+    """A real owned app whose REAL `_deliver_inbox` runs; only the model turn
+    (`_stream`) and the bubble are stubbed, so what is observed is whether the
+    funnel started a turn with the event or held it."""
+    monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(paths, "CONVO_DIR", tmp_path / ".convos")
+    monkeypatch.setattr(LiteTUI, "connect", lambda self: None)
+    monkeypatch.setattr(am, "POLL_S", 0.03)
+    monkeypatch.setattr(am, "BATCH_S", 0.05)
+    app = owned_app()
+    app._connect = lambda: None
+    app._spawned_seat, app._owner_seat, app._pty_term = False, True, None
+    app.settings.tool_policy_profile = tool_policy.AUTONOMOUS
+    app._chat_running = lambda: busy
+    app._pending_input = []
+    streams, bubbles = [], []
+    app._stream = lambda *a, **k: streams.append(1)
+    app._user_bubble = lambda text, *a, **k: bubbles.append(text)
+    return app, streams, bubbles
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+async def test_an_event_wakes_an_idle_seat_and_waits_for_a_busy_one(tmp_path, monkeypatch, busy):
+    app, streams, bubbles = await _real_funnel_app(tmp_path, monkeypatch, busy=busy)
+    target = tmp_path / "wake.log"
+    target.write_text("", encoding="utf-8")
+    async with app.run_test(size=(100, 35)) as pilot:
+        result, ok = await app._execute_tool("monitor", {"path": str(target)})
+        assert ok and result.startswith("[monitor m-1 started")
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write("BUILD FAILED line 7\n")
+        for _ in range(200):
+            if bubbles:
+                break
+            await pilot.pause(0.05)
+        assert bubbles, "the event never reached the funnel"
+        assert "[inbox from monitor" in bubbles[0] and "BUILD FAILED line 7" in bubbles[0]
+        if busy:
+            # Held for the next idle: queued as input, no turn started under the running one.
+            assert streams == []
+            assert any("BUILD FAILED line 7" in item["content"] for item in app._pending_input)
+        else:
+            assert streams == [1], "an idle seat must be woken with a turn"
+            assert app._pending_input == []
+        app.agent_monitors.stop_all()
+
+
 @pytest.mark.asyncio
 async def test_a_file_event_reaches_the_ui_loop_through_the_inbox_funnel(tmp_path, monkeypatch):
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_path))
