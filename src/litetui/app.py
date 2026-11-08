@@ -10720,15 +10720,29 @@ class LiteTUI(App):
                     if compact_tools is not None and _context_exceeded(refused):
                         self._system("The full-context compaction request did not fit this engine's window; "
                                      "retrying with only the older messages.")
-                        ask = head_only_ask
-                        compact_tools = None
+                        # The head, rendered as the chat turns rendered it (message 0 untouched, the same tools array and
+                        # effort), so the server can still restore its stored prefix: the first fallback sent a different
+                        # system text and tools and re-read all 125,834 tokens from zero (request 13, TTFT 1m21s).
+                        ask, compact_tools = head_only_ask, None
+                        try:
+                            chat_prefix = self._request_messages()
+                            head_prefix = chat_prefix[:len(chat_prefix) - len(tail)] if tail else chat_prefix
+                            if len(head_prefix) >= 2 and getattr(self, "_last_chat_tools", None) is not None:
+                                live_block = appsvc.store_block(self, live=True) if system else ""
+                                ask = head_prefix + [{"role": "user", "content": (
+                                    compact_text + (f"\n\n{extra}" if extra else "")
+                                    + f"\n\nThe last {len(tail)} messages stay verbatim after your summary: summarize only what came before them."
+                                    + (f"\n\n{live_block}" if live_block else ""))}]
+                                compact_tools = self._last_chat_tools
+                        except Exception:
+                            ask, compact_tools = head_only_ask, None  # scoped-guidance error and the like: the plain head
                         kwargs = TurnEngine.compact_request(
                             model_id=self.model_id,
                             messages=ask,
                             max_tokens=kwargs["max_tokens"],
                             thinking_level=self.settings.compact_thinking_level,
                             tools_enabled=self.tools_enabled,
-                            tools=self._all_tools(),
+                            tools=compact_tools if compact_tools is not None else self._all_tools(),
                             backend_name=self.backend.name,
                             graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                             supported_reasoning_levels=(
@@ -10740,6 +10754,14 @@ class LiteTUI(App):
                                 if hasattr(self.backend, "request_overrides") else None
                             ),
                         )
+                        if compact_tools is not None:
+                            effort_body = dict(kwargs.get("extra_body") or {})
+                            chat_effort = getattr(self, "_last_chat_effort", None)
+                            if chat_effort:
+                                effort_body["reasoning_effort"] = chat_effort
+                            else:
+                                effort_body.pop("reasoning_effort", None)
+                            kwargs["extra_body"] = effort_body
                         kwargs["stream_options"] = {"include_usage": True}
                         self._eta.clear_prefill()
                         stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)

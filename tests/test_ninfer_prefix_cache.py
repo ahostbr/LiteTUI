@@ -156,8 +156,10 @@ async def test_ninfer_compaction_falls_back_to_the_head_when_the_full_prefix_doe
     assert len(calls) == 2, "one refusal, one resend"
     assert calls[0]["messages"][:len(sent_as_chat)] == sent_as_chat
     assert len(calls[1]["messages"]) < len(calls[0]["messages"]), "the resend drops the kept tail"
-    assert "stay verbatim after your summary" not in str(calls[1]["messages"][-1]["content"])
-    assert calls[1]["tools"] is not CHAT_TOOLS
+    kept = len(sent_as_chat) - 2  # compact_keep_recent=2
+    assert calls[1]["messages"][:kept] == sent_as_chat[:kept], "message 0 and the head are untouched, so the server can restore its stored prefix"
+    assert len(calls[1]["messages"]) == kept + 1 and calls[1]["messages"][-1]["role"] == "user", "the compaction rides in ONE final user message"
+    assert calls[1]["tools"] is CHAT_TOOLS, "the same tools array as the chat turns, or the stored prefix is lost (request 13 re-read 125,834 tokens)"
     assert any("the summary body" in str(m.get("content", "")) for m in a.conversation), "the compaction must land"
 
 
