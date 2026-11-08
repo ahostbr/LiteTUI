@@ -131,6 +131,9 @@ class Settings:
     ninfer_kv_capacity: str = ""
     #: --host-kv-mib (serving.md:786): pinned host RAM for spilled KV. None = engine default 8192.
     ninfer_host_kv_mib: int | None = None
+    #: Speed tier for a DeepSeek launch recipe (ninfer_engine.SPEED_PRESETS): fastest | fast | standard | recipe. It sets two flags of the
+    #: recipe, --expert-host-mib and --prefill-chunk. Startup flag: next /engine start.
+    ninfer_speed_preset: str = "fastest"
     #: Strata (https://github.com/Niko1221/Strata): Qwen3.8-Flash-Next on one GPU plus system
     #: RAM. Blank host = the chosen config's port on loopback (8080). Blank root = LiteSuite's
     #: install (~/.litesuite/llm/strata). Blank config = the ONE strata-<model>.json there;

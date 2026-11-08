@@ -59,6 +59,7 @@ from textual.widgets import (
 # by patching THIS module -- i.e. by touching the screen, which is the
 # exact thing the derivation exists to stop being necessary.
 from litetui import free_tier, gpu_gate, llm_backend, stt_backend, tool_policy, voice_backend
+from litetui import ninfer_engine
 from litetui import strata_options
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
@@ -940,6 +941,14 @@ class SettingsBody(Widget):
                                 placeholder="C:/Users/you/.litesuite/llm/ninfer-models/qwen3_8_27b_nvfp4.ninfer",
                             )
                             yield self._section_header("ninfer-envelope")
+                            yield from self._select_row(
+                                "ninfer_speed_preset", "NInfer: speed preset (DeepSeek recipes)",
+                                [(p.label, p.key) for p in ninfer_engine.SPEED_PRESETS.values()],
+                                "Sets the expert tier (--expert-host-mib) and --prefill-chunk of the model's launch recipe. Measured on the RTX 5090, "
+                                "first token on a cold prompt: old build 83K = 405 s. Fastest: 32K = 17-21 s, 83K = 60-71 s, RAM ~80%, decode 45-49 tok/s. "
+                                "Fast: 32K = 20-21 s, 83K = 51 s, RAM ~63%. Standard: 32K = 24 s, 83K = 54 s, RAM ~63%. Runs vary by about 25%. "
+                                "Fastest needs 70 GiB of free RAM at launch and drops to Fast when it is not free. Applies on the next /engine start.",
+                            )
                             yield from self._text_row(
                                 "ninfer_max_context", "NInfer: context length (--max-context)",
                                 "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",

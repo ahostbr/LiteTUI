@@ -225,9 +225,96 @@ def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
     )
 
 
+# ── speed presets for a DeepSeek launch recipe (Ryan 2026-11-08) ────────────
+#
+# Measured 2026-11-08 on the RTX 5090 / 96 GB box with the sync build (C:/Projects/.scratch/T1192/bench-*), DSpark, prefix reuse on, 131072 window.
+# The host tier is how many of the 7,680 experts sit in pinned RAM (8.19 MiB each); the rest are read from the SSD on every prefill pass.
+# Prefill times are first-token times on a cold prompt; run-to-run noise is about +-25%, so read the tiers as orders, not decimals.
+#   old build, live session: 83K prompt 405 s (206 tok/s)
+#   fastest  all 7,680 experts (62 GiB), chunk 4096: 32K prompt 17-21 s, 83K prompt 60-71 s, RAM ~80%, decode 45-49 tok/s
+#   fast     5,621 experts (45 GiB), chunk 4096:      32K prompt 20-21 s, 83K prompt 51 s,    RAM ~63%
+#   standard 5,621 experts (45 GiB), chunk 2048:      32K prompt 24 s,    83K prompt 54 s,    RAM ~63%
+SPEED_PRESET_DEFAULT = "fastest"
+
+
+@dataclass(frozen=True)
+class SpeedPreset:
+    key: str
+    label: str
+    host_mib: int | None        # --expert-host-mib; None leaves the recipe's value
+    prefill_chunk: int | None   # --prefill-chunk; None removes it (the engine's own 2048)
+    needs_free_ram_gib: float   # fall back one tier when less than this is free at launch
+    fallback: str | None
+
+
+SPEED_PRESETS: dict[str, SpeedPreset] = {
+    "fastest": SpeedPreset("fastest", "Fastest: all experts in RAM (62 GiB), chunk 4096", 63488, 4096, 70.0, "fast"),
+    "fast": SpeedPreset("fast", "Fast: 45 GiB of experts in RAM, chunk 4096", 46080, 4096, 52.0, "standard"),
+    "standard": SpeedPreset("standard", "Standard: 45 GiB of experts in RAM, chunk 2048", 46080, None, 0.0, None),
+    "recipe": SpeedPreset("recipe", "Recipe as written (the .launch.json flags, untouched)", None, None, 0.0, None),
+}
+
+
+def available_ram_gib() -> float | None:
+    """Free physical RAM in GiB, or None when Windows will not say. Never raises."""
+    try:
+        import ctypes
+
+        class _Mem(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("x", ctypes.c_ulonglong)]
+
+        mem = _Mem()
+        mem.dwLength = ctypes.sizeof(_Mem)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+        return mem.ullAvailPhys / 2 ** 30
+    except Exception:
+        return None
+
+
+def _set_flag(args: list[str], flag: str, value: str | None) -> list[str]:
+    """`flag value` set to `value` (replaced in place, else appended); `value` None removes the pair."""
+    out = list(args)
+    if flag in out:
+        i = out.index(flag)
+        if value is None:
+            del out[i:i + 2]
+        elif i + 1 < len(out):
+            out[i + 1] = value
+        else:
+            out.append(value)
+    elif value is not None:
+        out += [flag, value]
+    return out
+
+
+def apply_speed_preset(args: list[str], preset: str | None, *, free_ram_gib: float | None = None) -> tuple[list[str], str]:
+    """The recipe args with the preset's two flags applied, and a one-line note for the log.
+
+    Only a recipe that streams experts from disk (`--expert-residency disk`) is touched: any other recipe (a Qwen artifact, residency host)
+    has no expert tier to size. A tier whose RAM is not free at launch falls back one tier instead of failing to pin."""
+    key = (preset or SPEED_PRESET_DEFAULT).strip().lower()
+    chosen = SPEED_PRESETS.get(key)
+    if chosen is None:
+        return list(args), f"speed preset {key!r} unknown: recipe flags kept"
+    if key == "recipe":
+        return list(args), "speed preset recipe: flags as written"
+    if "--expert-residency" not in args or args[args.index("--expert-residency") + 1:][:1] != ["disk"]:
+        return list(args), f"speed preset {key}: not applied (this recipe has no disk expert tier)"
+    note = ""
+    while free_ram_gib is not None and chosen.needs_free_ram_gib > free_ram_gib and chosen.fallback:
+        note += f"{chosen.key} needs {chosen.needs_free_ram_gib:.0f} GiB of free RAM, {free_ram_gib:.0f} free: "
+        chosen = SPEED_PRESETS[chosen.fallback]
+    out = _set_flag(args, "--expert-host-mib", str(chosen.host_mib) if chosen.host_mib else None)
+    out = _set_flag(out, "--prefill-chunk", str(chosen.prefill_chunk) if chosen.prefill_chunk else None)
+    return out, f"speed preset {note}{chosen.key}: --expert-host-mib {chosen.host_mib}, --prefill-chunk {chosen.prefill_chunk or 'engine default'}"
+
+
 def build_recipe_args(
     artifact: Path, port: int, model_id: str, recipe: LaunchRecipe, *,
-    host: str = "127.0.0.1", user_max_context: int | None = None,
+    host: str = "127.0.0.1", user_max_context: int | None = None, speed_preset: str | None = None,
+    free_ram_gib: float | None = None, on_note=None,
 ) -> list[str]:
     """The recipe argv, and NOTHING else: no kv-dtype, preserve-thinking, spec, vision,
     concurrency or host-kv from settings. Context precedence (Sentinel, T0839): the recipe's
@@ -239,8 +326,11 @@ def build_recipe_args(
         ctx = user_max_context
     else:
         ctx = NINFER_DEFAULT_MAX_CONTEXT
+    tuned, note = apply_speed_preset(list(recipe.args), speed_preset, free_ram_gib=free_ram_gib)
+    if on_note is not None:
+        on_note(note)
     return [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id,
-            "--max-context", str(ctx), *recipe.args]
+            "--max-context", str(ctx), *tuned]
 
 
 def effective_executable(settings) -> Path:
@@ -690,7 +780,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     conc = getattr(settings, "ninfer_max_concurrency", None)
     if recipe:
         args = build_recipe_args(artifact, port, model_id, recipe,
-                                 user_max_context=ctx if isinstance(ctx, int) else None)
+                                 user_max_context=ctx if isinstance(ctx, int) else None,
+                                 speed_preset=getattr(settings, "ninfer_speed_preset", None),
+                                 free_ram_gib=available_ram_gib(), on_note=_log_event)
     else:
         args = build_ninfer_args(
             artifact, port, model_id,
