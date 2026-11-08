@@ -572,6 +572,20 @@ def _media_refused_for_good(e: object) -> bool:
     return code == "vision_disabled"
 
 
+def _context_exceeded(e: BaseException) -> bool:
+    """True when the engine itself refused the prompt as longer than its context.
+
+    REACTIVE, like `max_tokens_hint`: nothing estimates a prompt size, the server's own
+    `context_length_exceeded` is the only evidence read.
+    """
+    try:
+        from litetui.ninfer_backend import classify_ninfer_error
+    except Exception:  # noqa: BLE001 - never fail a compaction over a message
+        return False
+    code, _action = classify_ninfer_error(getattr(e, "body", None))
+    return code == "context_length_exceeded"
+
+
 def _decode_rate(timings: object) -> float | None:
     """The engine's own decode rate, when the chunk carries one (T806).
 
@@ -10622,6 +10636,7 @@ class LiteTUI(App):
         # while turns that reuse the prefix take 3 s). Send the conversation EXACTLY as the last turn did, the same tools
         # array, and put everything compaction adds in ONE final user message; only that message is new to the server.
         compact_tools = None
+        head_only_ask = ask  # the request without the cache-friendly full prefix: the fallback when the window is already full
         if self._prefix_cache_backend() and getattr(self, "_last_chat_tools", None) is not None:
             try:
                 prefix = self._request_messages()
@@ -10698,22 +10713,54 @@ class LiteTUI(App):
                 try:
                     stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 except Exception as refused:
-                    # REACTIVE ONLY: no prompt size is estimated anywhere. When a server
-                    # refuses max_tokens and names the room it has ("... at most 16300"),
-                    # believe it and retry once at that number. Anything else is raised as is.
-                    hint = TurnEngine.max_tokens_hint(str(refused))
-                    if not (hint and TurnEngine.COMPACT_MIN_RETRY_TOKENS <= hint < kwargs["max_tokens"]):
-                        raise
-                    if not said_cut:
-                        said_cut = True
-                        self._system(
-                            f"The server has room for {hint:,} tokens of summary, not "
-                            f"{kwargs['max_tokens']:,}; retrying with {hint:,}."
+                    # The cache-friendly request carries the WHOLE conversation plus the compaction prompt,
+                    # so a window that is already full (a turn of many large reads can take it from under the
+                    # threshold to 100%) overflows it. Believe the engine's refusal and resend the head only
+                    # (the tail stays verbatim), the way compaction worked before the prefix-cache request.
+                    if compact_tools is not None and _context_exceeded(refused):
+                        self._system("The full-context compaction request did not fit this engine's window; "
+                                     "retrying with only the older messages.")
+                        ask = head_only_ask
+                        compact_tools = None
+                        kwargs = TurnEngine.compact_request(
+                            model_id=self.model_id,
+                            messages=ask,
+                            max_tokens=kwargs["max_tokens"],
+                            thinking_level=self.settings.compact_thinking_level,
+                            tools_enabled=self.tools_enabled,
+                            tools=self._all_tools(),
+                            backend_name=self.backend.name,
+                            graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
+                            supported_reasoning_levels=(
+                                self.backend.reasoning_levels(self.model_id)
+                                if hasattr(self.backend, "reasoning_levels") else ()
+                            ),
+                            model_reasoning_effort=(
+                                self.backend.request_overrides(self.model_id).get("reasoning_effort")
+                                if hasattr(self.backend, "request_overrides") else None
+                            ),
                         )
-                    learned_cap = hint
-                    kwargs["max_tokens"] = hint
-                    self._eta.clear_prefill()
-                    stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
+                        kwargs["stream_options"] = {"include_usage": True}
+                        self._eta.clear_prefill()
+                        stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
+                        refused = None
+                    if refused is not None:
+                        # REACTIVE ONLY: no prompt size is estimated anywhere. When a server
+                        # refuses max_tokens and names the room it has ("... at most 16300"),
+                        # believe it and retry once at that number. Anything else is raised as is.
+                        hint = TurnEngine.max_tokens_hint(str(refused))
+                        if not (hint and TurnEngine.COMPACT_MIN_RETRY_TOKENS <= hint < kwargs["max_tokens"]):
+                            raise
+                        if not said_cut:
+                            said_cut = True
+                            self._system(
+                                f"The server has room for {hint:,} tokens of summary, not "
+                                f"{kwargs['max_tokens']:,}; retrying with {hint:,}."
+                            )
+                        learned_cap = hint
+                        kwargs["max_tokens"] = hint
+                        self._eta.clear_prefill()
+                        stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 provider_metadata = None
                 text_full = ""
                 tool_acc: dict = {}

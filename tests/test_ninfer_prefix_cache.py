@@ -126,3 +126,57 @@ async def test_other_backends_keep_the_old_compaction_request(monkeypatch):
     (purpose, kw), = [c for c in seen if c[0] == "compaction"][:1]
     assert kw["tools"] is not CHAT_TOOLS
     assert "stay verbatim after your summary" not in str(kw["messages"][-1]["content"])
+
+
+@pytest.mark.asyncio
+async def test_ninfer_compaction_falls_back_to_the_head_when_the_full_prefix_does_not_fit(monkeypatch):
+    """Seen 2026-11-08 11:05 on a fresh seat: one turn of large reads took the window from under the threshold to 100%, and the
+    full-prefix compaction request was refused as longer than the engine's context ('Compact failed - conversation unchanged').
+    The engine's own context_length_exceeded is believed (nothing estimated) and the head-only request is sent instead."""
+    a = _ninfer(_app(compact_keep_recent=2))
+    _seed(a)
+    a._last_chat_tools = CHAT_TOOLS
+    sent_as_chat = list(a._request_messages())
+    seen = []
+
+    class _Full(Exception):
+        body = {"error": {"code": "context_length_exceeded", "message": "prompt too long"}}
+
+    async def create(purpose=None, **kw):
+        seen.append((purpose, kw))
+        if len([c for c in seen if c[0] == "compaction"]) == 1:
+            raise _Full("prompt too long")
+        return _Stream("the summary body")
+
+    monkeypatch.setattr(model_transport, "for_app", lambda app: NS(create=create))
+
+    await _compact_with(a)
+
+    calls = [kw for purpose, kw in seen if purpose == "compaction"]
+    assert len(calls) == 2, "one refusal, one resend"
+    assert calls[0]["messages"][:len(sent_as_chat)] == sent_as_chat
+    assert len(calls[1]["messages"]) < len(calls[0]["messages"]), "the resend drops the kept tail"
+    assert "stay verbatim after your summary" not in str(calls[1]["messages"][-1]["content"])
+    assert calls[1]["tools"] is not CHAT_TOOLS
+    assert any("the summary body" in str(m.get("content", "")) for m in a.conversation), "the compaction must land"
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_refusal_is_still_raised_not_retried(monkeypatch):
+    a = _ninfer(_app(compact_keep_recent=2))
+    _seed(a)
+    a._last_chat_tools = CHAT_TOOLS
+    seen = []
+
+    class _Other(Exception):
+        body = {"error": {"code": "server_overloaded"}}
+
+    async def create(purpose=None, **kw):
+        seen.append(purpose)
+        raise _Other("busy")
+
+    monkeypatch.setattr(model_transport, "for_app", lambda app: NS(create=create))
+
+    await _compact_with(a)
+
+    assert seen.count("compaction") == 1, "only a context overflow earns the head-only resend"
