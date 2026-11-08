@@ -1075,6 +1075,65 @@ def _refuse_unsupported_local_lm(backend, *, remote_marker=None):
     )
 
 
+def _is_progress_chunk(chunk) -> bool:
+    """A NInfer prompt-progress report: no output yet, only the prefill state."""
+    if getattr(chunk, "prompt_progress", None) is not None:
+        return True
+    extra = getattr(chunk, "model_extra", None)
+    return bool(extra) and extra.get("prompt_progress") is not None
+
+
+class _ProgressFallbackStream:
+    """A stream that survives NInfer's prompt-progress state check failing AFTER the response has started.
+
+    NInfer 2026-11-08 12:34 (DS-pelican-4, compaction round 2, engine request 23): the engine opened the stream, then failed it while
+    rendering the first progress report, so the error arrived as an error event during iteration. `create` only saw failures raised by the
+    call itself, so its resend never ran and the compaction was lost. Until the first non-progress chunk has been handed on nothing but
+    the readout has been consumed, so the request is resent once without return_progress and iteration continues on the new stream.
+    Anything else, and any failure after output began, is raised as before."""
+
+    def __init__(self, stream, reopen, mark_broken):
+        self._stream = stream
+        self._reopen = reopen
+        self._mark_broken = mark_broken
+        self._delivered = False
+        self._retried = False
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        while True:
+            try:
+                async for chunk in self._stream:
+                    if not _is_progress_chunk(chunk):
+                        self._delivered = True
+                    yield chunk
+                return
+            except Exception as error:  # noqa: BLE001 - re-raised unless it is exactly the progress failure
+                body = getattr(error, "body", None)
+                detail = (str(body) if body is not None else "") + str(error)
+                if self._delivered or self._retried or "prompt-progress state" not in detail:
+                    raise
+                self._retried = True
+                self._mark_broken()
+                await self.close()
+                self._stream = await self._reopen()
+
+    async def close(self):
+        closer = getattr(self._stream, "close", None)
+        if closer is not None:
+            try:
+                result = closer()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:  # noqa: BLE001 - closing a dead stream must not mask the retry
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 class OpenAITransport:
     def __init__(self, client, *, backend=None, remote_marker=None):
         # `backend` is optional so a standalone OpenAITransport(client) keeps
@@ -1083,6 +1142,25 @@ class OpenAITransport:
         self.client = client
         self.backend = backend
         self.remote_marker = remote_marker
+
+    def _guard_progress_stream(self, created, kwargs):
+        """Wrap a streamed request that asked for prompt progress, see _ProgressFallbackStream."""
+        extra = kwargs.get("extra_body") or {}
+        if not (kwargs.get("stream") and extra.get("return_progress")):
+            return created
+
+        def mark_broken():
+            try:
+                self.backend._progress_broken = True
+            except Exception:  # noqa: BLE001 - a flag, never worth failing the retry
+                pass
+
+        async def reopen():
+            retry = dict(kwargs)
+            retry["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
+            return await self.client.chat.completions.create(**retry)
+
+        return _ProgressFallbackStream(created, reopen, mark_broken)
 
     async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
         _refuse_unsupported_local_lm(self.backend, remote_marker=self.remote_marker)
@@ -1095,7 +1173,8 @@ class OpenAITransport:
         if extra.get("return_progress") and getattr(self.backend, "_progress_broken", False):
             kwargs["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
         try:
-            return await self.client.chat.completions.create(**kwargs)
+            created = await self.client.chat.completions.create(**kwargs)
+            return self._guard_progress_stream(created, kwargs)
         except Exception as error:
             # Some routed models advertise no capability and reject 'none' only
             # at request time. Retry this precise refusal once, never a generic 400.
