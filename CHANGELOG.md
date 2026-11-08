@@ -18,6 +18,16 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-08
+
+Compaction on a nearly full window now works on NInfer, and the prefill readout counts the same tokens its percent does.
+
+### Fixed
+- **Compaction no longer fails when the window is nearly full.** The 0.29.0 compaction request carries the whole conversation, so at about 95% it was refused as longer than the engine's context ("Compact failed - conversation unchanged"). When the engine itself refuses it, LiteTUI resends the older messages only, rendered exactly as the chat turns were (same first message, tools and reasoning effort) so the engine still restores its prefix: measured on DeepSeek, 128,138 of 129,122 prompt tokens reused, 984 computed, 45 s in total, against 106 s with no reuse.
+- **A turn no longer dies when one round of large tool results overflows the window.** Below the 80% threshold, four large reads in one round could push the next request past the engine's context and end the turn with "the prompt is longer than this engine's context". On the engine's refusal LiteTUI now compacts and resumes the same turn. Nothing is estimated; the refusal is the evidence.
+- **The prefill readout no longer mixes cached and new tokens.** "prefill 0% - 105k/125k" counted the 105k the engine reused while the percent was of the 20k that was new. It now reads "prefill 0% - 0/20k new - 105k cached" (and the plain "prefill 40% - 8k/20k" when nothing was cached), on turns and on the compaction card.
+- **An engine "prompt-progress state" failure no longer loses the request.** NInfer can answer HTTP 500 with "invalid OpenAI Chat prompt-progress state" when it asked for progress reports; LiteTUI resends once without the progress flag and stops asking for it in that session.
+
 ## [0.29.0] - 2026-11-08
 
 NInfer gets a speed-preset dropdown and a prefix cache that survives compaction, the `monitor` tool lets a seat be woken by a command or a file, and `studio` reaches every LiteImage feature.
