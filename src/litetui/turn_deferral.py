@@ -25,3 +25,8 @@ class TurnDeferred(RuntimeError):
 #: result lets the worker end SUCCESS (→ on_worker_state_changed flushes/retries)
 #: while a parent wake still distinguishes "deferred" from "ran".
 STREAM_DEFERRED = object()
+
+#: _stream's result when owned-execution validation refused the turn before it ran
+#: (T0483-A). It was a bare `return` (None), which a driven owner STEP 1 read as
+#: "answered". Every other caller treats it as before: not STREAM_DEFERRED, so "ran".
+STREAM_REFUSED = object()

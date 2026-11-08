@@ -276,8 +276,9 @@ async def test_real_fleet_extension_prefix(tmp_path, monkeypatch, build, change,
 @pytest.mark.parametrize("current,expected", [
     ("", "extension"),
     ("launch \n", "launch\n\nextension"),
-    ("\n\n" + appsvc.STORE_HEADER, "\n\nextension\n\n" + appsvc.STORE_HEADER),
-    ("launch \n\n" + appsvc.STORE_HEADER, "launch\n\nextension\n\n" + appsvc.STORE_HEADER),
+    # A bare store marker is ordinary text, not an injected snapshot boundary.
+    ("\n\n" + appsvc.STORE_HEADER, "\n\n" + appsvc.STORE_HEADER + "\n\nextension"),
+    ("launch \n\n" + appsvc.STORE_HEADER, "launch \n\n" + appsvc.STORE_HEADER + "\n\nextension"),
 ])
 def test_shared_extension_join_preserves_existing_writer_output(current, expected):
     from types import SimpleNamespace

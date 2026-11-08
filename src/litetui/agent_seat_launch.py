@@ -26,7 +26,14 @@ async def open_seat(app, agent_id: str, conversation_id: str | None) -> str:
     seat = app.seat
     if not getattr(seat, 'registered', False) or not getattr(seat, 'agent_id', None):
         raise StoreError('Opening another seat requires registered caller identity')
-    command = [sys.executable, '-m', 'liteharness.cli', 'spawn', '--split', '--cli', 'litetui',
+    from litetui import harness
+    launcher = harness.liteharness_command()
+    if launcher is None:
+        raise StoreError(
+            'Cannot open another seat: the liteharness command was not found. It is not on PATH and not under '
+            f'{sys.base_prefix} (Scripts/liteharness.exe or bin/liteharness), and this LiteTUI environment '
+            'does not include it. Install liteharness for your user Python (pip install liteharness) or put it on PATH.')
+    command = [*launcher, 'spawn', '--split', '--cli', 'litetui',
                '--resume', agent.name, '--cwd', str(Path.cwd()),
                '--tier', seat.tier, '--spawned-by', seat.agent_id]
     if conversation_id is not None:

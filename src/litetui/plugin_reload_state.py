@@ -111,4 +111,5 @@ def transfer_session_state(live: PluginRegistry, candidate: PluginRegistry) -> N
     candidate.activated = set(live.activated)        # copied, not aliased
     candidate.deferred_static = live.deferred_static  # frozenset: immutable, safe to share
     candidate.defer_dynamic = live.defer_dynamic
+    candidate.static_resident = live.static_resident
     candidate.tools_disabled = live.tools_disabled    # the live provider, intentionally shared

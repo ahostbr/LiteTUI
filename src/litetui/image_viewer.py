@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
 import sys
 from pathlib import Path
@@ -176,6 +177,14 @@ def init_image_backend() -> Any:
 
     from textual_image._terminal import CellSize, get_cell_size
 
+    # T1194: a terminal that never answers CSI 16 t (LiteSuite's xterm) makes
+    # textual-image log its VT340 fallback as a WARNING with a full traceback.
+    # With no logging configured, Python's last-resort handler printed that to
+    # stderr at startup, and it showed after every /quit. The fallback is
+    # handled (here and in the dependency), so mute that logger for the probe.
+    probe_log = logging.getLogger("textual_image._terminal")
+    previous_level = probe_log.level
+    probe_log.setLevel(logging.ERROR)
     try:
         get_cell_size()  # seed the cache while we still own stdin
     except Exception:
@@ -193,6 +202,8 @@ def init_image_backend() -> Any:
         except ValueError:
             cell = CellSize(10, 20)
         get_cell_size.__dict__["_result"] = cell
+    finally:
+        probe_log.setLevel(previous_level)
 
     from textual_image import widget as ti_widget
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from litetui import strata_options
+
 SettingScope = Literal["conversation", "defaults", "device", "app", "mixed"]
 
 
@@ -134,6 +136,9 @@ FIELD_DESCRIPTIONS = {
     "ninfer_host": "Address of an NInfer server started separately; blank discovers LiteSuite's engine.",
     "ninfer_executable": "NInfer server executable used by the next /engine start.",
     "ninfer_artifact": "Model artifact served at the next NInfer engine start.",
+    "ninfer_speed_preset": "DeepSeek speed tier: how many experts stay in RAM and the prefill chunk; Fastest default, falls back when RAM is short.",
+    "ninfer_auto_long_anchors": "Experimental, off: NInfer keeps checkpoints at message boundaries so a compacted conversation resumes from one; costs a saved state each.",
+    "ninfer_derive_session_keys": "Experimental, off: NInfer derives a session key per conversation so its checkpoints stay retained.",
     "ninfer_max_context": "Context tokens requested at NInfer startup; larger windows use more GPU memory.",
     "ninfer_max_concurrency": "Requests decoded together by NInfer; parallel requests share its context pool.",
     "ninfer_kv_dtype": "NInfer cache format; higher precision needs more memory, smaller formats save it.",
@@ -227,11 +232,19 @@ FIELD_DESCRIPTIONS = {
     "llama_load_settings": "Saved loading parameters applied when opening llama.cpp models.",
     "llama_presets": "Named llama.cpp configurations available for later model loads.",
     "model_infer_overrides": "Inference parameters saved for individual models instead of all models.",
+    "model_context_overrides": "Context length chosen for each model when you pick it with /model; the backend's own context setting follows the latest choice.",
     "mcp_disabled_servers": "Configured MCP server names prevented from starting.",
     "plugins_disabled": "Plugin names skipped when LiteTUI loads extensions.",
     "user_name_asked": "Remember that the first-run name question was already shown.",
     "custom_themes": "Custom color palettes stored for reuse in the theme picker.",
 }
+
+
+# Strata's run options are one catalog (strata_options.py); its words are registered here, not repeated.
+FIELD_LABELS.update({o.field: o.label for o in strata_options.OPTIONS})
+FIELD_LABELS[strata_options.EXTRA_FIELD] = strata_options.EXTRA_LABEL
+FIELD_DESCRIPTIONS.update({o.field: o.full_help() for o in strata_options.OPTIONS})
+FIELD_DESCRIPTIONS[strata_options.EXTRA_FIELD] = strata_options.EXTRA_HELP
 
 
 def _field_description(name: str) -> str:
@@ -331,12 +344,21 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "ninfer", "NInfer", "ninfer-envelope", "Runtime envelope",
         "The startup flags that shape memory and parallel work.",
-        ("ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
+        ("ninfer_speed_preset", "ninfer_auto_long_anchors", "ninfer_derive_session_keys", "ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV", "speed", "preset", "prefill", "fastest", "experts", "RAM"),
     ),
     _section(
         "strata", "Strata", "strata-engine", "Engine",
         "Qwen3.8-Flash-Next on one GPU plus system RAM (github.com/Niko1221/Strata).",
         ("strata_host", "strata_root", "strata_config", "strata_max_context"), scope="device", keywords=("Qwen", "Flash-Next", "engine", "RAM", "context"),
+    ),
+    *(
+        _section(
+            "strata", "Strata", sec.section_id, sec.title, sec.summary,
+            tuple(o.field for o in strata_options.options_for(sec.section_id))
+            + ((strata_options.EXTRA_FIELD,) if sec.section_id == "strata-extra" else ()),
+            scope="device", keywords=sec.keywords,
+        )
+        for sec in strata_options.SECTIONS
     ),
     _section(
         "xolotl", "Xolotl", "xolotl-engine", "Engine",
@@ -495,7 +517,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
 # These are current Settings fields that the earlier planned IA omitted.
 _EXTRA_FIELDS = (
     ("model", "Model", "model-extra", "Connections & saved engines", "Choose where LiteTUI connects and what it remembers.",
-     ("backend_chosen", "claude_executable", "custom_api_key_env", "custom_base_url", "custom_context_length", "llama_load_settings", "llama_presets", "model_infer_overrides")),
+     ("backend_chosen", "claude_executable", "custom_api_key_env", "custom_base_url", "custom_context_length", "llama_load_settings", "llama_presets", "model_context_overrides", "model_infer_overrides")),
     ("capabilities", "Capabilities", "cap-extra", "Connected extensions", "Choose which extensions and servers can run.",
      ("mcp_disabled_servers", "plugins_disabled", "user_name_asked")),
     ("themes", "Themes", "theme-saved", "Saved themes", "Your custom palettes live here.", ("custom_themes",)),

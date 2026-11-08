@@ -36,10 +36,22 @@ THE TWO REQUEST BUILDERS ARE SEPARATE ON PURPOSE
 
 from __future__ import annotations
 
+import re
+
 from litetui import llm_backend
 
 
 _EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def is_deepseek_model(model_id: str | None) -> bool:
+    """True when a served model id names a DeepSeek model.
+
+    Case-insensitive substring on the id, which is the one name NInfer serves
+    (`deepseek-v4.1-flash-coder-ninfer`). Shared by the NInfer thinking levels
+    and the NInfer effort fold so the two cannot disagree about which vocabulary applies.
+    """
+    return "deepseek" in (model_id or "").lower()
 
 
 def side_call_reasoning_effort(
@@ -102,6 +114,19 @@ def _resolve_reasoning_effort(
     if level == "off":
         return "none"
     if backend_name == "ninfer":
+        # Folds mirror NInfer's own nearest-accepted mapping for the served template
+        # (ninfer frontend/chat_template.cpp). DeepSeek-V4 takes none/low/high/max, so
+        # its `none` must be sent explicitly: an omitted effort defaults to thinking on.
+        if is_deepseek_model(model_id):
+            return {
+                "none": "none",
+                "minimal": "low",
+                "low": "low",
+                "medium": "high",
+                "high": "high",
+                "xhigh": "max",
+                "max": "max",
+            }.get(level)
         return {
             "minimal": "low",
             "low": "low",
@@ -260,6 +285,24 @@ class TurnEngine:
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
+
+    #: A summary under this many tokens is not worth retrying for.
+    COMPACT_MIN_RETRY_TOKENS = 1024
+
+    @staticmethod
+    def max_tokens_hint(message: str) -> int | None:
+        """The ceiling a server names in its own refusal of max_tokens, or None.
+
+        REACTIVE ONLY: nothing here estimates a prompt size. Strata says
+        "... Send a smaller max_tokens (at most 16300 here)"; OpenAI says "max_tokens is too
+        large ... supports at most 16384 completion tokens". A message that does not talk
+        about max_tokens / completion tokens is not read, so an unrelated "at most" is ignored.
+        """
+        text = message or ""
+        if not re.search(r"max[_ ]tokens|completion tokens", text, re.IGNORECASE):
+            return None
+        found = re.search(r"at most (\d[\d,]*)", text)
+        return int(found.group(1).replace(",", "")) if found else None
 
     @staticmethod
     def compact_request(

@@ -57,6 +57,8 @@ def _register(ctx) -> None:
     reg = app.plugins
     reg.deferred_static = DEFAULT_DEFERRED
     reg.defer_dynamic = True
+    # NInfer: the built-ins ride from the first request (see PluginRegistry.static_resident); MCP tools stay deferred.
+    reg.static_resident = lambda: bool(getattr(app, "_prefix_cache_backend", lambda: False)())
     mcp = getattr(app, "mcp", None)
     ctx.tool(tool_schemas.load("tool_search"), lambda args: _run(reg, args, mcp), policy=READ_POLICY)
 

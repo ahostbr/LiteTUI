@@ -46,6 +46,7 @@ from pathlib import Path
 from . import ninfer_engine
 from .engine_lifecycle import OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
+from .turn_engine import is_deepseek_model
 
 #: Where LiteSuite keeps the config that names the live engine. The env var is
 #: LiteSuite's own override, honoured so a test (or a second install) points
@@ -248,6 +249,13 @@ def format_timings(timings: object) -> str | None:
 #: the user's 2026-09-21 contract is the template-safe set below. `none` is the
 #: wire spelling; the shared thinking UI renders it as `off`.
 NINFER_REASONING_LEVELS = ("none", "low", "medium", "xhigh")
+
+#: DeepSeek-V4 chat template (`ds-source-small/chat_template.jinja`, lines 12-38)
+#: takes `reasoning_effort` low / high / max (or an integer 1-100), default high.
+#: `none` is off via `thinking_mode` "chat". minimal, medium and xhigh are not in
+#: its set; NInfer maps them to the nearest accepted value, and the fold in
+#: `turn_engine._resolve_reasoning_effort` does the same before the wire.
+NINFER_DEEPSEEK_REASONING_LEVELS = ("none", "low", "high", "max")
 
 
 # ── the backend ──────────────────────────────────────────────────────────────
@@ -594,7 +602,7 @@ class NInferBackend(OwnedEngineLifecycle):
     # -- capabilities -----------------------------------------------------
 
     def reasoning_levels(self, model: str | None = None) -> list[str]:
-        """The template-safe thinking levels LiteTUI offers for NInfer.
+        """The template-safe thinking levels LiteTUI offers for NInfer, per served model.
 
         🔴 THE USER, 12:1x: *"agents have seem to try to rebuild every system for
         every backend over and again ... were writing the same code to do the
@@ -612,11 +620,17 @@ class NInferBackend(OwnedEngineLifecycle):
         `off` to the wire's `none`, and folds stale wider-vocabulary values from
         older conversations onto this set before they reach the template.
 
-        ⬜ THE MODEL ARGUMENT IS ACCEPTED AND UNUSED, DELIBERATELY. One artifact
-        per process: the model cannot differ from the one this engine serves, so
-        a per-model answer would be the same answer with a false implication
-        that it varies.
+        ⬜ THE MODEL ARGUMENT NOW VARIES, AND THE SERVED ID IS THE SIGNAL. One
+        artifact per process, so the engine's vocabulary is the served model's.
+        Qwen3.8 and DeepSeek-V4 take different efforts (DeepSeek has no medium or
+        xhigh), so a single tuple offered levels the template rejects. The
+        answer is decided from the id the caller passes, else the id cached from
+        `/v1/models` by `_list_sync`. No network call here: this is read on the
+        synchronous `/think` path.
         """
+        served = model or self._model_id
+        if is_deepseek_model(served):
+            return list(NINFER_DEEPSEEK_REASONING_LEVELS)
         return list(NINFER_REASONING_LEVELS)
 
     def reload_hint(self, rec: dict | None = None) -> str:
@@ -638,10 +652,8 @@ class NInferBackend(OwnedEngineLifecycle):
         behaviour with no edit to `llm_backend.py` — the file Sentinel is adding
         the BACKENDS registry to this hour.
         """
-        return (
-            "start the NInfer engine from LiteSuite's Model Hub (Settings → NInfer); "
-            "LiteTUI attaches to it and cannot start it itself"
-        )
+        return ("/engine start on the NInfer backend, or start the engine from LiteSuite's "
+                "Model Hub (Settings → NInfer)")
 
     # -- per-request, and the seat -----------------------------------------
     #
@@ -729,35 +741,39 @@ class NInferBackend(OwnedEngineLifecycle):
         }
 
     def seat_suspend(self, rec: dict) -> str | None:
-        """Refuse by name. THE PROCESS IS THE MODEL -- there is no unload.
+        """THE PROCESS IS THE MODEL -- there is no unload (the binary's routes are
+        /health and /v1/models). So an engine LiteTUI started is STOPPED for the
+        generation and started again by `seat_resume` (T0702, the shared
+        `stop_for_seat`); one it did not start is refused by name.
 
-        ⬜ THE REFUSAL IS THE DESIGNED PATH, NOT A FAILURE.
-        `seat_guard.suspend` returns this sentence to the caller
-        (`studio_tool.py:273`, `listen_tool.py:424`), which then decides whether
-        to generate without freeing the seat -- exactly what an ATTACHED llama
-        server does today (`llm_backend.py:1455`). Raising instead, or returning
-        None as though VRAM had been freed, would both be lies: the second one
-        would let an image job start against a full card.
+        ⬜ THE REFUSAL IS A DESIGNED PATH, NOT A FAILURE. `seat_guard.suspend`
+        returns the sentence to the caller (`studio_tool`, `listen_tool`), which
+        does not start the job. Returning None as though VRAM had been freed would
+        let an image job start against a full card.
         """
-        return (
-            "suspend unsupported: ninfer-serve holds its artifact for the life "
-            "of the process — stop the engine itself (LiteSuite's Model Hub) to "
-            "free that VRAM"
-        )
+        if self._owned is None:
+            return ("suspend unsupported: ninfer-serve holds its artifact for the life of the process "
+                    "and this engine was not started by this LiteTUI — stop it where it was started "
+                    "(LiteSuite's Model Hub) to free that VRAM")
+        return self.stop_for_seat()
 
     def seat_resume(self, rec: dict) -> str | None:
-        """None when the engine is still serving it; a sentence when it is not.
+        """None when the engine is serving the seat again; a sentence when it is not.
 
-        ⬜ REACHABLE EVEN THOUGH `seat_suspend` ALWAYS REFUSES. `resume` runs
-        from the breadcrumb path too, after a crash nobody here observed -- so
-        "nothing was suspended" is an assumption, not a fact, and this asks.
+        ⬜ IT ASKS FIRST. `resume` also runs after a crash nobody here observed, so
+        "the engine is down because we stopped it" is checked, not assumed: only an
+        engine `seat_suspend` stopped is started again.
         """
-        if self.seat_snapshot(rec.get("identifier") or "") is not None:
+        key = rec.get("identifier") or ""
+        if self.seat_snapshot(key) is not None:
             return None
-        return (
-            "the NInfer engine is no longer serving "
-            f"{rec.get('identifier')!r} — " + self.reload_hint(rec)
-        )
+        if self._stopped_for_seat:
+            err = self.start_after_seat()
+            if err:
+                return err
+            if self.seat_snapshot(key) is not None:
+                return None
+        return f"the NInfer engine is no longer serving {key!r} — " + self.reload_hint(rec)
 
     # -- control, which this engine does not have -------------------------
 

@@ -246,6 +246,8 @@ class ClaudeBackend:
             "extra_args": {"no-chrome": None, "disable-slash-commands": None, "replay-user-messages": None},
             "env": {**cache_env(), **AUTOCOMPACT_ENV, **AUTO_MEMORY_ENV},
         }
+        # env is merged, not replaced: a caller's identity overlay must not drop the cache pins above.
+        defaults["env"] = {**defaults["env"], **values.pop("env", {})}
         defaults.update(values)
         return sdk.ClaudeAgentOptions(**defaults)
 

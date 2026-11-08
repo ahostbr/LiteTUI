@@ -110,6 +110,29 @@ def artifacts_dir() -> Path:
     return litesuite_llm_dir() / "ninfer-models"
 
 
+def extra_artifact_roots() -> list[Path]:
+    """`ninferArtifactRoots` in `~/.litesuite/llm/config.json` (T0839): more folders to
+    scan for top-level `*.ninfer`. LiteSuite reads the same key the same way. Anything
+    that is not a list of non-empty strings is ignored; a missing folder is skipped
+    by the scan, not here."""
+    try:
+        body = json.loads(_config_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no file / bad JSON: no extra roots
+        return []
+    roots = body.get("ninferArtifactRoots") if isinstance(body, dict) else None
+    if not isinstance(roots, list):
+        return []
+    return [Path(r.strip()) for r in roots if isinstance(r, str) and r.strip()]
+
+
+def _same_path_key(path: Path) -> str:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    return os.path.normcase(str(resolved))
+
+
 def list_ninfer_artifacts() -> list[Path]:
     """Every `.ninfer` on disk, sorted. THE MODEL LIST FOR THIS BACKEND.
 
@@ -120,11 +143,215 @@ def list_ninfer_artifacts() -> list[Path]:
     T860 nothing in the TUI could ask it: `/model` and `/load` both list server
     models, and the only way to choose was typing a path into /settings.
 
+    T0839: the default folder PLUS `ninferArtifactRoots` (config.json). Deduped by
+    resolved path; a missing folder is ignored. Ryan's DeepSeek artifact lives on G:
+    and the picker showed only the two in the default folder.
+
     Extracted so the picker and `ninfer_artifact` below cannot disagree about
     where artifacts live.
     """
-    root = artifacts_dir()
-    return sorted(root.glob("*.ninfer")) if root.is_dir() else []
+    seen: set[str] = set()
+    found: list[Path] = []
+    for root in [artifacts_dir(), *extra_artifact_roots()]:
+        if not root.is_dir():
+            continue
+        for path in root.glob("*.ninfer"):
+            key = _same_path_key(path)
+            if key not in seen:
+                seen.add(key)
+                found.append(path)
+    return sorted(found)
+
+
+def in_default_artifacts_dir(path: Path) -> bool:
+    return _same_path_key(path.parent) == _same_path_key(artifacts_dir())
+
+
+# ── launch recipes: `<artifact>.launch.json` (T0839) ────────────────────────
+
+RECIPE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class LaunchRecipe:
+    path: Path
+    executable: Path
+    model_id: str | None
+    max_context: int | None
+    args: tuple[str, ...]
+
+
+def recipe_path(artifact: Path) -> Path:
+    return artifact.with_name(artifact.name + ".launch.json")
+
+
+def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
+    """The artifact's launch recipe, or None when it has no sidecar.
+
+    🔴 A SIDECAR THAT EXISTS IS ALWAYS OBEYED OR REFUSED, NEVER SKIPPED. One that does
+    not parse (or fails the checks below) raises BackendError naming the file: falling
+    back to the computed flags would start a different engine than the one the recipe
+    describes (the DeepSeek recipe REPLACES the app's tuning; its flags are measured)."""
+    sidecar = recipe_path(artifact)
+    if not sidecar.is_file():
+        return None
+
+    def bad(why: str) -> BackendError:
+        return BackendError(f"launch recipe {sidecar} is unusable: {why} — fix or delete it; nothing was started.")
+
+    try:
+        body = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise bad(f"cannot read it as JSON ({exc})") from exc
+    if not isinstance(body, dict):
+        raise bad("the top level is not an object")
+    if body.get("version") != RECIPE_VERSION:
+        raise bad(f"version is {body.get('version')!r}, this build reads {RECIPE_VERSION}")
+    exe = body.get("executable")
+    if not isinstance(exe, str) or not exe.strip():
+        raise bad("`executable` is missing")
+    args = body.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise bad("`args` must be a list of strings")
+    model_id = body.get("modelId")
+    if model_id is not None and (not isinstance(model_id, str) or not model_id.strip()):
+        raise bad("`modelId` must be a non-empty string")
+    max_context = body.get("maxContext")
+    if max_context is not None and (not isinstance(max_context, int) or isinstance(max_context, bool) or max_context <= 0):
+        raise bad("`maxContext` must be a positive integer")
+    return LaunchRecipe(
+        path=sidecar, executable=Path(exe.strip()),
+        model_id=model_id.strip() if model_id else None, max_context=max_context, args=tuple(args),
+    )
+
+
+# ── speed presets for a DeepSeek launch recipe (Ryan 2026-11-08) ────────────
+#
+# Measured 2026-11-08 on the RTX 5090 / 96 GB box with the sync build (C:/Projects/.scratch/T1192/bench-*), DSpark, prefix reuse on, 131072 window.
+# The host tier is how many of the 7,680 experts sit in pinned RAM (8.19 MiB each); the rest are read from the SSD on every prefill pass.
+# Prefill times are first-token times on a cold prompt; run-to-run noise is about +-25%, so read the tiers as orders, not decimals.
+#   old build, live session: 83K prompt 405 s (206 tok/s)
+#   fastest  all 7,680 experts (62 GiB), chunk 4096: 32K prompt 17-21 s, 83K prompt 60-71 s, RAM ~80%, decode 45-49 tok/s
+#   fast     5,621 experts (45 GiB), chunk 4096:      32K prompt 20-21 s, 83K prompt 51 s,    RAM ~63%
+#   standard 5,621 experts (45 GiB), chunk 2048:      32K prompt 24 s,    83K prompt 54 s,    RAM ~63%
+SPEED_PRESET_DEFAULT = "fastest"
+
+
+@dataclass(frozen=True)
+class SpeedPreset:
+    key: str
+    label: str
+    host_mib: int | None        # --expert-host-mib; None leaves the recipe's value
+    prefill_chunk: int | None   # --prefill-chunk; None removes it (the engine's own 2048)
+    needs_free_ram_gib: float   # fall back one tier when less than this is free at launch
+    fallback: str | None
+
+
+SPEED_PRESETS: dict[str, SpeedPreset] = {
+    "fastest": SpeedPreset("fastest", "Fastest: all experts in RAM (62 GiB), chunk 4096", 63488, 4096, 70.0, "fast"),
+    "fast": SpeedPreset("fast", "Fast: 45 GiB of experts in RAM, chunk 4096", 46080, 4096, 52.0, "standard"),
+    "standard": SpeedPreset("standard", "Standard: 45 GiB of experts in RAM, chunk 2048", 46080, None, 0.0, None),
+    "recipe": SpeedPreset("recipe", "Recipe as written (the .launch.json flags, untouched)", None, None, 0.0, None),
+}
+
+
+def cache_flags(settings) -> list[str]:
+    """The opt-in context-cache flags the user switched on in Settings, both OFF by default."""
+    out: list[str] = []
+    if getattr(settings, "ninfer_auto_long_anchors", False) is True:
+        out.append("--auto-long-anchors")
+    if getattr(settings, "ninfer_derive_session_keys", False) is True:
+        out.append("--derive-session-keys")
+    return out
+
+
+def available_ram_gib() -> float | None:
+    """Free physical RAM in GiB, or None when Windows will not say. Never raises."""
+    try:
+        import ctypes
+
+        class _Mem(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("x", ctypes.c_ulonglong)]
+
+        mem = _Mem()
+        mem.dwLength = ctypes.sizeof(_Mem)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+        return mem.ullAvailPhys / 2 ** 30
+    except Exception:
+        return None
+
+
+def _set_flag(args: list[str], flag: str, value: str | None) -> list[str]:
+    """`flag value` set to `value` (replaced in place, else appended); `value` None removes the pair."""
+    out = list(args)
+    if flag in out:
+        i = out.index(flag)
+        if value is None:
+            del out[i:i + 2]
+        elif i + 1 < len(out):
+            out[i + 1] = value
+        else:
+            out.append(value)
+    elif value is not None:
+        out += [flag, value]
+    return out
+
+
+def apply_speed_preset(args: list[str], preset: str | None, *, free_ram_gib: float | None = None) -> tuple[list[str], str]:
+    """The recipe args with the preset's two flags applied, and a one-line note for the log.
+
+    Only a recipe that streams experts from disk (`--expert-residency disk`) is touched: any other recipe (a Qwen artifact, residency host)
+    has no expert tier to size. A tier whose RAM is not free at launch falls back one tier instead of failing to pin."""
+    key = (preset or SPEED_PRESET_DEFAULT).strip().lower()
+    chosen = SPEED_PRESETS.get(key)
+    if chosen is None:
+        return list(args), f"speed preset {key!r} unknown: recipe flags kept"
+    if key == "recipe":
+        return list(args), "speed preset recipe: flags as written"
+    if "--expert-residency" not in args or args[args.index("--expert-residency") + 1:][:1] != ["disk"]:
+        return list(args), f"speed preset {key}: not applied (this recipe has no disk expert tier)"
+    note = ""
+    while free_ram_gib is not None and chosen.needs_free_ram_gib > free_ram_gib and chosen.fallback:
+        note += f"{chosen.key} needs {chosen.needs_free_ram_gib:.0f} GiB of free RAM, {free_ram_gib:.0f} free: "
+        chosen = SPEED_PRESETS[chosen.fallback]
+    out = _set_flag(args, "--expert-host-mib", str(chosen.host_mib) if chosen.host_mib else None)
+    out = _set_flag(out, "--prefill-chunk", str(chosen.prefill_chunk) if chosen.prefill_chunk else None)
+    return out, f"speed preset {note}{chosen.key}: --expert-host-mib {chosen.host_mib}, --prefill-chunk {chosen.prefill_chunk or 'engine default'}"
+
+
+def build_recipe_args(
+    artifact: Path, port: int, model_id: str, recipe: LaunchRecipe, *,
+    host: str = "127.0.0.1", user_max_context: int | None = None, speed_preset: str | None = None,
+    free_ram_gib: float | None = None, on_note=None,
+) -> list[str]:
+    """The recipe argv, and NOTHING else: no kv-dtype, preserve-thinking, spec, vision,
+    concurrency or host-kv from settings. Context precedence (Sentinel, T0839): the recipe's
+    `maxContext`, else the user's `ninfer_max_context`, else the app default. The setting is
+    global across artifacts; the recipe is per-artifact and more specific."""
+    if recipe.max_context:
+        ctx = recipe.max_context
+    elif isinstance(user_max_context, int) and not isinstance(user_max_context, bool) and user_max_context > 0:
+        ctx = user_max_context
+    else:
+        ctx = NINFER_DEFAULT_MAX_CONTEXT
+    tuned, note = apply_speed_preset(list(recipe.args), speed_preset, free_ram_gib=free_ram_gib)
+    if on_note is not None:
+        on_note(note)
+    return [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id,
+            "--max-context", str(ctx), *tuned]
+
+
+def effective_executable(settings) -> Path:
+    """The binary the next start will run: the chosen artifact's recipe executable when it
+    has a valid sidecar, else the setting / default. Never raises (a status line calls it)."""
+    try:
+        art = ninfer_artifact(settings)
+        recipe = read_launch_recipe(art) if art is not None else None
+    except BackendError:
+        recipe = None
+    return recipe.executable if recipe else ninfer_executable(settings)
 
 
 def ninfer_artifact(settings) -> Path | None:
@@ -530,12 +757,22 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     if reason:
         _log_event(f"REFUSED: {reason}")
         raise BackendError(reason)
-    exe = ninfer_executable(settings)
+    # T0839: the artifact's launch recipe (if any) names its own executable, so it is read
+    # before the executable check. A recipe that is present and unusable refuses here.
+    artifact = ninfer_artifact(settings)
+    try:
+        recipe = read_launch_recipe(artifact) if artifact is not None and artifact.is_file() else None
+    except BackendError as exc:
+        _log_event(f"REFUSED: {exc}")
+        raise
+    exe = recipe.executable if recipe else ninfer_executable(settings)
     if not exe.is_file():
-        msg = f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable."
+        if recipe:
+            msg = f"launch recipe {recipe.path} names {exe}, which does not exist — fix the recipe; nothing was started."
+        else:
+            msg = f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable."
         _log_event(f"REFUSED: {msg}")
         raise BackendError(msg)
-    artifact = ninfer_artifact(settings)
     if artifact is None or not artifact.is_file():
         msg = "no NInfer artifact chosen — set ninfer_artifact to a .ninfer file (LiteSuite's Model Hub pulls one)."
         _log_event(f"REFUSED: {msg} (ninfer_artifact={getattr(settings, 'ninfer_artifact', None)!r})")
@@ -545,23 +782,34 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     # running MoE advertise itself as qwen3.8-27b in every picker. The file's own name is
     # the honest label when the header says nothing.
     model_id = artifact_model_id(directory, fallback=artifact.stem)
+    if recipe and recipe.model_id:
+        model_id = recipe.model_id   # the id a client sees (/model, conversations)
     port = free_port()
     host = f"http://127.0.0.1:{port}"
     ctx = getattr(settings, "ninfer_max_context", None)
     conc = getattr(settings, "ninfer_max_concurrency", None)
-    args = build_ninfer_args(
-        artifact, port, model_id,
-        max_context=ctx if isinstance(ctx, int) else None,
-        max_concurrency=conc if isinstance(conc, int) else None,
-        components=artifact_components(directory),
-        kv_dtype=getattr(settings, "ninfer_kv_dtype", None) or NINFER_DEFAULT_KV_DTYPE,
-        kv_capacity=getattr(settings, "ninfer_kv_capacity", None),
-        host_kv_mib=getattr(settings, "ninfer_host_kv_mib", None),
-    )
+    if recipe:
+        args = build_recipe_args(artifact, port, model_id, recipe,
+                                 user_max_context=ctx if isinstance(ctx, int) else None,
+                                 speed_preset=getattr(settings, "ninfer_speed_preset", None),
+                                 free_ram_gib=available_ram_gib(), on_note=_log_event)
+        # Only a recipe names its own (sync-build) executable; the stock exe may not know these flags.
+        args += [f for f in cache_flags(settings) if f not in args]
+    else:
+        args = build_ninfer_args(
+            artifact, port, model_id,
+            max_context=ctx if isinstance(ctx, int) else None,
+            max_concurrency=conc if isinstance(conc, int) else None,
+            components=artifact_components(directory),
+            kv_dtype=getattr(settings, "ninfer_kv_dtype", None) or NINFER_DEFAULT_KV_DTYPE,
+            kv_capacity=getattr(settings, "ninfer_kv_capacity", None),
+            host_kv_mib=getattr(settings, "ninfer_host_kv_mib", None),
+        )
     lp = log_path()
     lp.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(lp, "a", encoding="utf-8", errors="replace")  # noqa: SIM115 - the process writes here for its whole life
-    log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')} ---\n{exe} {' '.join(args)}\n")
+    note = f" (launch recipe {recipe.path.name})" if recipe else ""
+    log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')}{note} ---\n{exe} {' '.join(args)}\n")
     log_file.flush()
     # 14:1x 2026-09-17: the log is APPENDED across spawns, so a marker from an earlier run
     # must not count — only bytes written after this spawn's header are this engine's.

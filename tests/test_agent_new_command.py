@@ -29,13 +29,25 @@ def test_a_new_name_relaunches_this_window_as_a_created_agent(seat):
     app = _app(seat)
     convo._cmd_agent_new(app, '/agent-new', '  Scout  ')
     argv = app._relaunch_argv
-    assert argv[:5] == [sys.executable, '-m', 'litetui', '--create-agent', 'Scout']
+    assert argv[:5] == [sys.executable, '-m', 'litetui.cli', '--create-agent', 'Scout']
     auth = seat.authority
     flags = dict(zip(argv[5::2], argv[6::2]))
     assert flags == {'--agent-id': flags['--agent-id'], '--backend': auth.backend, '--model': 'home-model',
                      '--thinking-level': auth.thinking_level}
     assert flags['--agent-id'] != auth.agent_id
     assert app.said[-1] == 'EXIT'
+
+
+@pytest.mark.parametrize('agent_launched,inherits', [(False, False), (True, True)])
+def test_the_child_drops_the_agent_shell_marker_only_for_a_hand_launched_seat(seat, monkeypatch, agent_launched, inherits):
+    from litetui import harness
+    monkeypatch.setenv(harness.AGENT_SHELL_MARKER, '1')    # this app exports it into its own environment
+    app = _app(seat, _agent_launched=agent_launched, _spawned_seat=False)
+    convo._cmd_agent_new(app, '/agent-new', 'Scout')
+    if inherits:
+        assert app._relaunch_env is None                    # inherit: the marker reaches the child, as before
+    else:
+        assert harness.AGENT_SHELL_MARKER not in app._relaunch_env
 
 
 def test_slash_new_with_a_name_is_the_same_command_and_plain_new_is_not(seat):
@@ -113,7 +125,7 @@ def test_the_cli_relaunches_only_after_this_window_has_released_its_home(tmp_pat
         def run(self, **kwargs):
             self._relaunch_argv = ["child", "--create-agent", "Scout"]
 
-    def call(argv):
+    def call(argv, **kwargs):
         # By now the parent's home must be free: the child will want its own lease, and this one proves it.
         with acquire(tmp_path, "LiteTUI") as reopened:
             seen.append((argv, reopened.authority.name))
@@ -158,3 +170,76 @@ def test_the_relaunch_arguments_are_accepted_by_the_cli_and_create_the_agent(sea
     auth = seat.authority
     assert created == [('Scout', auth.backend, 'home-model', auth.thinking_level)]
     assert (tmp_path / '.agents' / 'Scout' / 'settings.json').is_file()
+
+
+# ── T0703: both commands dropped the window straight back to the shell ─────────────────────────
+# Root cause: the relaunch ran `python -m litetui ...`, and the package has no __main__, so the child
+# exited at once ("No module named litetui.__main__"). Every test above stubbed the child away.
+
+@pytest.mark.parametrize('typed', ['/new', '/agent-new'])
+def test_the_relaunch_command_line_starts_a_real_litetui_process(seat, typed):
+    """Run the exact interpreter and module the command builds; only the tail is swapped for --version."""
+    import subprocess
+
+    app = _app(seat)
+    convo._cmd_new(app, typed, 'Scout') if typed == '/new' else convo._cmd_agent_new(app, typed, 'Scout')
+    argv = app._relaunch_argv
+    done = subprocess.run([*argv[:3], '--version'], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith('litetui '), (done.stdout, done.stderr)
+
+
+@pytest.mark.parametrize('typed', ['/new Scout', '/agent-new Scout'])
+def test_a_failure_inside_the_command_is_said_in_the_app_and_the_app_stays_up(seat, monkeypatch, typed):
+    from litetui import agent_store
+
+    def broken(self):
+        raise RuntimeError('catalog exploded')
+
+    monkeypatch.setattr(agent_store.AgentStore, 'list_agents', broken)
+    app = _app(seat)
+    name, _, arg = typed.partition(' ')
+    (convo._cmd_new if name == '/new' else convo._cmd_agent_new)(app, name, arg)
+    assert 'RuntimeError: catalog exploded' in app.said[0] and 'nothing was changed' in app.said[0]
+    assert app._relaunch_argv is None and 'EXIT' not in app.said
+
+
+@pytest.mark.parametrize('outcome,fragment,code', [
+    (OSError('cannot start'), 'could not continue this window', 1),
+    (3, 'ended with exit code 3', 3),
+])
+def test_a_relaunch_that_fails_is_reported_on_the_terminal(tmp_path, monkeypatch, capsys, outcome, fragment, code):
+    import subprocess
+
+    from litetui import app as app_module
+    from litetui import cli, harness, image_viewer
+    from litetui.seat_authority import AGENT_SHELL_MARKERS
+
+    for name in (*AGENT_SHELL_MARKERS, harness.SPAWN_IDENTITY_MARKER, "LITESUITE_CANVAS_AGENT",
+                 "LITEHARNESS_TIER", "LITEHARNESS_AGENT_NAME", "LITEHARNESS_SPAWNED_BY"):
+        monkeypatch.delenv(name, raising=False)
+    cfg = settings.Settings()
+    cfg.default_model = "fixture-model"
+    cfg.user_name_asked = True
+    cfg.user_name = "Fixture"
+    monkeypatch.setattr(settings, "load", lambda: cfg)
+    monkeypatch.setattr(paths, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(image_viewer, "init_image_backend", lambda: None)
+    monkeypatch.setattr(cli.sys, "argv", ["litetui"])
+    monkeypatch.setattr(harness, "harness_disabled", lambda: True)
+
+    class OfflineApp(app_module.LiteTUI):
+        def run(self, **kwargs):
+            self._relaunch_argv = ["child"]
+
+    def call(argv, **kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(app_module, "LiteTUI", OfflineApp)
+    monkeypatch.setattr(subprocess, "call", call)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == code
+    assert fragment in capsys.readouterr().err

@@ -39,11 +39,22 @@ def _convo_meta_bits(path, msgs) -> tuple[str, int, str]:
 
 
 def _cmd_agent_new(app, _name: str, arg: str) -> None:
-    """/agent-new NAME (and /new NAME): create the agent home NAME and continue this window as that agent.
+    """/agent-new NAME (and /new NAME). Any failure is said in the chat: an exception that escaped a command
+    handler ended the whole app, which the user saw as a silent drop back to the shell."""
+    try:
+        _create_agent_and_relaunch(app, arg)
+    except Exception as exc:  # noqa: BLE001 - this is the boundary between a typed command and the process
+        app._relaunch_argv = None
+        app.system_message(f"/agent-new failed, nothing was changed: {type(exc).__name__}: {exc}")
+
+
+def _create_agent_and_relaunch(app, arg: str) -> None:
+    """Create the agent home NAME and continue this window as that agent.
 
     Same path as `litetui --create-agent NAME`: the new home takes this seat's backend, model and thinking
     level. The window is relaunched (the cli does it once this app has released its own home), because an
-    agent is one process's owned home and cannot be swapped under a running seat.
+    agent is one process's owned home and cannot be swapped under a running seat. The module is `litetui.cli`:
+    the package has no `__main__`, so `-m litetui` exits at once with "No module named litetui.__main__".
     """
     import sys
     import uuid
@@ -82,11 +93,52 @@ def _cmd_agent_new(app, _name: str, arg: str) -> None:
         app.system_message(f"An agent named {wanted} already exists. Open it with: litetui --agent {wanted}")
         return
     app._relaunch_argv = [
-        sys.executable, "-m", "litetui", "--create-agent", wanted, "--agent-id", str(uuid.uuid4()),
+        sys.executable, "-m", "litetui.cli", "--create-agent", wanted, "--agent-id", str(uuid.uuid4()),
         "--backend", authority.backend, "--model", authority.model,
         "--thinking-level", authority.thinking_level,
     ]
+    app._relaunch_env = _relaunch_env(app)
     app.system_message(f"Creating agent {wanted} ({authority.backend} / {authority.model}) and switching this window to it ...")
+    app.exit()
+
+
+def _relaunch_env(app):
+    """Environment for the relaunched agent window, or None to inherit this process's.
+
+    This app exports LITETUI_AGENT_SHELL=1 into its own environment (app.py, every seat), so an inherited
+    child reads itself as agent-launched and every CONFIRM is refused (T1049). A hand-launched seat's child is
+    a hand launch too: drop the marker. An agent-launched seat keeps it, and so does a spawned one.
+    """
+    if getattr(app, "_agent_launched", True) or getattr(app, "_spawned_seat", True):
+        return None
+    from litetui import harness
+    from litetui.agent_supervisor import child_process_env
+
+    env = child_process_env()
+    env.pop(harness.AGENT_SHELL_MARKER, None)
+    return env
+
+
+def _switch_window_to(app, agent_name: str, conversation_id: str | None) -> None:
+    """Continue this terminal as another owned agent, and its conversation when one was picked.
+
+    Same relaunch as /agent-new: cli.py runs `litetui.cli --agent NAME [--convo ID]` in this console after
+    this app releases its leases. No spawn, no split pane, no second window.
+    """
+    import sys
+
+    if getattr(app, "_chat_running", lambda: False)():
+        app.system_message("Finish or stop the current turn before switching agents.")
+        return
+    if getattr(app, "_rpc", False) or getattr(app, "_spawned_marker", False):
+        app.system_message("Switching agents is for a hand-launched window; a spawned or headless seat keeps its agent.")
+        return
+    argv = [sys.executable, "-m", "litetui.cli", "--agent", agent_name]
+    if conversation_id is not None:
+        argv.extend(["--convo", conversation_id])
+    app._relaunch_argv = argv
+    app._relaunch_env = _relaunch_env(app)
+    app.system_message(f"Switching this window to {agent_name} ...")
     app.exit()
 
 
@@ -169,27 +221,14 @@ def _open_convos_picker(app, agent_id=None) -> None:
         app.system_message(f'Agent catalog blocked: {exc}')
         return
     if session is None or session.authority.agent_id != agent.agent_id:
-        # Selecting another agent is an explicit process boundary, never a hot
-        # identity switch in this seat. The single action launches via harness.
+        # Another agent's conversation: this terminal switches to it, through the same relaunch /agent-new uses.
         items = [(row[0].parent.name, ConversationRepository.label(row[1], row[2])) for row in rows]
         if not items:
             items = [('new', 'Start a new conversation')]
         def choose(selected):
             if not selected:
                 return
-            def opened(action):
-                if action != 'open':
-                    return
-                async def launch():
-                    from litetui.agent_seat_launch import open_seat
-                    try:
-                        result = await open_seat(app, agent.agent_id, None if selected == 'new' else selected)
-                        app.system_message(result)
-                    except (StoreError, OSError, TimeoutError) as exc:
-                        app.system_message(f'Own-seat launch blocked: {exc}')
-                app.run_worker(launch(), name='open-owned-agent', group='open-owned-agent', exclusive=True)
-            pick(app, f'{agent.name}: separate agent seat',
-                 [('open', f'Open {agent.name} in its own seat')], opened)
+            _switch_window_to(app, agent.name, None if selected == 'new' else selected)
         pick(app, f'{agent.name}: choose a conversation', items, choose)
         return
     if not rows:

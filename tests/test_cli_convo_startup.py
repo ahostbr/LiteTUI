@@ -69,7 +69,11 @@ def test_actual_resume_restores_before_render_and_defers_native_history(tmp_path
     target.parent.mkdir()
     target.touch()
     messages = [{'role': 'user', 'content': 'saved message'}]
-    monkeypatch.setattr(ConversationRepository, 'read', lambda path: ({'id': 'saved'}, messages))
+    # _resume proves the saved store identity against the live app; a real app has a convo_dir to compare.
+    app.convo_dir = target.parent
+    app._ensure_legacy_store_notice = lambda *a, **k: None
+    recorded = {'version': 1, 'mode': 'home', 'folder': str(target.parent)}
+    monkeypatch.setattr(ConversationRepository, 'read', lambda path: ({'id': 'saved', 'store_identity': recorded}, messages))
     calls = []
     app.store = SimpleNamespace(acquire=lambda directory: calls.append('acquire'))
     app._pending_input = []

@@ -284,7 +284,7 @@ async def test_a_button_on_native_codex_is_refused(monkeypatch, tmp_path):
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
         srv = app.mcp.servers["web"]
-        app.backend = SimpleNamespace(app_server=object())   # native Codex thread
+        app._backend = SimpleNamespace(app_server=object())  # native Codex thread; the `backend` setter would persist it as the seat's authority
         body.query_one("#mcp-act-0-disconnect").press()
         await _settle(pilot)
         assert srv.stopped == 0

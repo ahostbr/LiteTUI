@@ -18,6 +18,35 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-08
+
+Compaction on a nearly full window now works on NInfer, and the prefill readout counts the same tokens its percent does.
+
+### Fixed
+- **Compaction no longer fails when the window is nearly full.** The 0.29.0 compaction request carries the whole conversation, so at about 95% it was refused as longer than the engine's context ("Compact failed - conversation unchanged"). When the engine itself refuses it, LiteTUI resends the older messages only, rendered exactly as the chat turns were (same first message, tools and reasoning effort) so the engine still restores its prefix: measured on DeepSeek, 128,138 of 129,122 prompt tokens reused, 984 computed, 45 s in total, against 106 s with no reuse.
+- **A turn no longer dies when one round of large tool results overflows the window.** Below the 80% threshold, four large reads in one round could push the next request past the engine's context and end the turn with "the prompt is longer than this engine's context". On the engine's refusal LiteTUI now compacts and resumes the same turn. Nothing is estimated; the refusal is the evidence.
+- **The prefill readout no longer mixes cached and new tokens.** "prefill 0% - 105k/125k" counted the 105k the engine reused while the percent was of the 20k that was new. It now reads "prefill 0% - 0/20k new - 105k cached" (and the plain "prefill 40% - 8k/20k" when nothing was cached), on turns and on the compaction card.
+- **An engine "prompt-progress state" failure no longer loses the request.** NInfer can answer HTTP 500 with "invalid OpenAI Chat prompt-progress state" when it asked for progress reports; LiteTUI resends once without the progress flag and stops asking for it in that session.
+
+## [0.29.0] - 2026-11-08
+
+NInfer gets a speed-preset dropdown and a prefix cache that survives compaction, the `monitor` tool lets a seat be woken by a command or a file, and `studio` reaches every LiteImage feature.
+
+### Added
+- **NInfer speed preset (Settings > NInfer).** Fastest (default), Fast, Standard or Recipe: it sets how many of a DeepSeek model's experts stay in pinned RAM and the prefill chunk of the model's launch recipe, with the measured first-token times in the help text. Fastest needs 70 GiB of free RAM at launch and falls back to Fast when it is not free; the choice is logged. Measured on an RTX 5090 with the new engine build: an 83K-token prompt in about 52-70 s, against 405 s before.
+- **Two experimental NInfer switches, both off by default:** `--auto-long-anchors` (the engine keeps checkpoints at message boundaries so a compacted conversation resumes from one) and `--derive-session-keys` (a session key per conversation). Each costs a saved model state.
+- **`monitor` tool.** A seat watches a command's output or a file's appended lines and is woken by each event: an idle seat at once, a busy one when it finishes its turn.
+- **`studio` reaches every LiteImage feature** (Generate, Face Swap, Character Sheet, video upscale and DLSS 5 upscale to an exact size) through LiteImage's bridge. Every LiteImage, Director, LiteSound and LiteModeler job runs with the seat out until it ends, and a local backend frees the seat or refuses by name.
+- **NInfer launch recipes** (`<artifact>.launch.json`, `ninferArtifactRoots`): a model that needs its own build and flags names them in a sidecar file; the recipe's `maxContext` beats the global setting. NInfer also offers the thinking levels the served model's template takes.
+- **Owner-approved self schedules** and a fail-closed deny floor for owner seats.
+- `/resume` into another agent's conversation switches this terminal to it.
+
+### Fixed
+- **NInfer's prefix cache is no longer thrown away.** Loading a deferred tool, changing the thinking level, a compaction request with a different system text or tools, and re-snapshotting the store into message 0 each made the server re-read the whole prompt (104-405 s at 25-83K tokens). On NInfer the built-in tools are advertised from the first request, a compaction sends the last turn's exact messages, tools and reasoning effort plus one final message, and message 0 stays byte-identical across a compaction. The first turn after a compaction now starts in 14 s, not 321 s.
+- Compaction: retries once at the number a server names for `max_tokens`, makes no prompt-size estimate, and a compacting seat persists to disk and stops instead of carrying on; an owner's STEP 1 turn refused by validation is no longer taken as answered, and a cancelled compaction's handoff commit lands first.
+- The context reminder names the real percentage; settings that start an engine are device-wide; a saved seat name is kept and an agent seat never writes its identity into shared settings; ordinary text containing snapshot markers is preserved; user file locks stay outside worktrees.
+- The cell-size fallback no longer prints a traceback after every `/quit`; the closed-app guard in a studio wait no longer divides by the poll interval; a failing GPU release never replaces a job's outcome.
+
 ## [0.28.0] - 2026-10-24
 
 Agents you can create from inside a window (`/agent-new`), and a run of fixes

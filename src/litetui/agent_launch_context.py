@@ -96,5 +96,14 @@ def apply_settings(session: AgentSession, settings) -> None:
     settings.backend = authority.backend
     settings.default_model = authority.model
     settings.thinking_level = authority.thinking_level
-    settings.seat_name = authority.name
     settings.backend_chosen = True
+    # These are the agent's values, not a preference edit. `settings.save` writes whatever differs
+    # from the baseline `load()` took, so leaving them as a difference made the first unrelated save
+    # from any agent seat write its backend/model/thinking into the settings.json shared with Ryan's
+    # own seat (T0836, same family as T1043 and the 2026-09-12 two-instances fix).
+    # `seat_name` is deliberately NOT copied: the seat's name is `authority.name`, while the setting is
+    # the name the NEXT default launch asks for -- Ryan's to set, and an agent must not overwrite it.
+    baseline = getattr(settings, '_baseline', None)
+    if baseline is not None:
+        baseline.update(backend=settings.backend, default_model=settings.default_model,
+                        thinking_level=settings.thinking_level, backend_chosen=True)

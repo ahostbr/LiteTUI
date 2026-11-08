@@ -170,6 +170,16 @@ def accept_prompt(app, item, *, native_accepted=False, restart_maintenance=None)
     refusing it here would leave the transcript and the thread disagreeing. A
     keyword, not item data, so no stored or forged state can reach the skip; and
     accept_steered never starts a stream."""
+    # T0495: hooks may await while the user switches conversations. Self-job
+    # metadata survives that wait; mismatch drops this occurrence, never queues
+    # it into the newly active conversation. Legacy prompts carry neither key.
+    if "owner_agent_id" in item or "owner_convo_id" in item:
+        from litetui.scheduler import self_target_matches
+        if (not item.get("owner_agent_id") or not self_target_matches(
+                item["owner_agent_id"], item.get("owner_convo_id"),
+                getattr(getattr(app, "seat", None), "agent_id", None), getattr(app, "convo_id", None))):
+            app._system("Self schedule dropped: its seat or conversation is no longer active.")
+            return False
     if (not native_accepted and not restart_checkpoint.maintenance_permitted(app, restart_maintenance)
             and restart_checkpoint.retain_prompt(app, item)):
         return False

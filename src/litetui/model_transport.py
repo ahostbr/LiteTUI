@@ -37,6 +37,23 @@ class ProviderError(BackendError):
     """Safe to render/log: bounded sanitized diagnostics, never raw bodies/auth."""
 
 
+class UnattendedRetryableError(ProviderError):
+    """Codex request failure; replay ONLY before the consumer executes any tool."""
+
+
+@dataclass
+class CodexRequestRetry:
+    """One request's budget, shared by HTTP retries and discarded stream attempts."""
+    used: int = 0
+
+    def take_delay(self) -> float | None:
+        if self.used >= 2:
+            return None
+        delay = (2.0, 4.0)[self.used]
+        self.used += 1
+        return delay
+
+
 class RetryableProviderError(ProviderError):
     """A transient provider failure that may safely replay this model request."""
 
@@ -54,9 +71,9 @@ _CONNECTION_FAILURES = (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
                         httpx.RemoteProtocolError)
 
 
-def _logged_provider_error(message: str) -> ProviderError:
+def _logged_provider_error(message: str, error_type=ProviderError) -> ProviderError:
     runtime_log.record_error("oauth.request_failed", detail=message)
-    return ProviderError(message)
+    return error_type(message)
 
 
 
@@ -140,7 +157,9 @@ def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
     details = [f"{key}={clean}" for key, value in fields if (clean := safe(value))]
     reason = "; ".join(details) or "no reason supplied by the server"
     return _logged_provider_error(
-        f"{provider.title()} {event['type']}: {reason}. The response was not replayed."
+        f"{provider.title()} {event['type']}: {reason}. The response was not replayed.",
+        UnattendedRetryableError if provider == "codex" and _provider_error_code(event) == "server_error"
+        else ProviderError,
     )
 
 
@@ -488,7 +507,8 @@ class ResponseStream:
     def _interrupted(self):
         return _logged_provider_error(
             f"{self.provider.title()} connection was interrupted. "
-            "The response was not replayed; check any completed tool effects before retrying."
+            "The response was not replayed; check any completed tool effects before retrying.",
+            UnattendedRetryableError if self.provider == "codex" else ProviderError,
         )
 
     async def _resend(self, cause):
@@ -848,8 +868,8 @@ class OAuthTransport:
             )
         return headers
 
-    async def create(self, *, purpose: str = "turn", retry_notice=None, **kwargs):
-        """`purpose` and `retry_notice` name local behavior; neither reaches the wire.
+    async def create(self, *, purpose: str = "turn", retry_notice=None, retry_budget=None, **kwargs):
+        """Purpose, retry notice and budget are local; none reaches the wire.
 
         🔴 T821. A test counted `create` calls to assert how many COMPLETIONS
         one turn costs. It was right on 2026-09-12 (4e873f7) and red by
@@ -892,6 +912,8 @@ class OAuthTransport:
         secrets = [credentials.access, credentials.account_id]
 
         budget = len(_CODEX_RETRY_DELAYS) if purpose == "turn" else _CODEX_SIDE_CALL_RETRIES
+        if self.provider != "codex" or purpose != "turn":
+            retry_budget = None
 
         async def pause_for_retry(cause: str):
             """`cause` names the failure in the notice and the final error:
@@ -899,7 +921,11 @@ class OAuthTransport:
             "connection failed" or "connection reset"."""
             nonlocal retries
             provider = self.provider.title()
-            if self.provider != "codex" or retries >= budget:
+            shared_delay = retry_budget.take_delay() if retry_budget is not None else None
+            if retry_budget is not None:
+                retries = retry_budget.used
+            if (self.provider != "codex" or (retry_budget is not None and shared_delay is None)
+                    or (retry_budget is None and retries >= budget)):
                 if cause.startswith("connection"):
                     message = (f"{provider} connection was interrupted before output, "
                                f"retried {retries} times. Check the connection and retry.")
@@ -910,10 +936,14 @@ class OAuthTransport:
             # Full jitter, uniform over [ceiling/2, ceiling], so clients do not
             # synchronise. The 2/4/8/16/32 s ceilings and ~5 attempts are the
             # T1019 card's spec (Orchestrator f43c6985), not the 0.154 reference's.
-            delay = random.uniform(ceiling / 2, ceiling)
-            retries += 1
+            delay = shared_delay if retry_budget is not None else random.uniform(ceiling / 2, ceiling)
+            if retry_budget is None:
+                retries += 1
             if retry_notice is not None:
-                retry_notice(f"{provider} {cause}; retrying in {max(1, round(delay))}s…")
+                # Neutral progress: app system messages containing "error" or
+                # "failed" notify the spawner, which must wait for exhaustion.
+                retry_notice(f"Retrying Codex request in {delay:g}s" if retry_budget is not None
+                             else f"{provider} {cause}; retrying in {max(1, round(delay))}s…")
             await asyncio.sleep(delay)
 
         # Only the agent loop's own requests belong to the turn. A side call
@@ -1061,6 +1091,9 @@ class OpenAITransport:
             {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
             for m in kwargs["messages"]
         ]
+        extra = kwargs.get("extra_body") or {}
+        if extra.get("return_progress") and getattr(self.backend, "_progress_broken", False):
+            kwargs["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
         try:
             return await self.client.chat.completions.create(**kwargs)
         except Exception as error:
@@ -1069,6 +1102,18 @@ class OpenAITransport:
             body = getattr(error, "body", None)
             detail = str(body) if body is not None else str(error)
             extra = kwargs.get("extra_body") or {}
+            # NInfer 2026-11-08 (compaction round 3, request 15: HTTP 500 "internal error response render"): with
+            # return_progress the engine validates each progress report against the reuse it announced at admission
+            # (openai_chat_response.cpp:363) and fails the request when they differ, which loses a turn or a whole
+            # compaction. The progress readout is a convenience, so drop it for this request and the rest of the session.
+            if extra.get("return_progress") and "prompt-progress state" in (detail + str(error)):
+                kwargs["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
+                if self.backend is not None:
+                    try:
+                        self.backend._progress_broken = True
+                    except Exception:  # noqa: BLE001 - a flag, never worth failing the retry
+                        pass
+                return await self.client.chat.completions.create(**kwargs)
             mandatory = "Reasoning is mandatory for this endpoint and cannot be disabled"
             if (purpose == "turn" or getattr(error, "status_code", None) != 400
                     or mandatory not in detail or extra.get("reasoning_effort") != "none"):
