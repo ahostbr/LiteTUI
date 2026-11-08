@@ -3145,6 +3145,15 @@ class LiteTUI(App):
             return tool_context.render_mask(name, raw, pointer)
         return tool_context.render_summary(name, raw, pointer, summary)
 
+    def _prefix_cache_backend(self) -> bool:
+        """True on a backend whose server keeps a prefix cache that any change to the prompt's start throws away (NInfer)."""
+        return getattr(self.backend, "name", "") == "ninfer"
+
+    def _remember_chat_tools(self) -> list[dict]:
+        """The tools a chat request advertises, kept so a compaction can send the SAME array (prefix cache)."""
+        self._last_chat_tools = self._all_tools()
+        return self._last_chat_tools
+
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
         return self.plugins.tool_specs()
@@ -9401,7 +9410,7 @@ class LiteTUI(App):
                 max_tokens_chat=self.settings.max_tokens_chat,
                 request_overrides=self._effective_request_overrides(),
                 thinking_level=self.thinking_level,
-                tools=self._all_tools(),  # advertised even when OFF — see turn_engine
+                tools=self._remember_chat_tools(),  # advertised even when OFF — see turn_engine
                 backend_name=self.backend.name,
                 graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
             )
@@ -10605,6 +10614,23 @@ class LiteTUI(App):
             # holds and update rather than duplicate.
             block = appsvc.store_block(self, live=True)
             ask.insert(0, {**system, "content": system.get("content", "") + block})
+        # NInfer prefix cache (Ryan 2026-11-08): the request above has a different system text (the live store appended),
+        # no tail and a different tools array, so the server re-read the whole 83k-token prompt from zero (~6 min, 0 reused,
+        # while turns that reuse the prefix take 3 s). Send the conversation EXACTLY as the last turn did, the same tools
+        # array, and put everything compaction adds in ONE final user message; only that message is new to the server.
+        compact_tools = None
+        if self._prefix_cache_backend() and getattr(self, "_last_chat_tools", None) is not None:
+            try:
+                prefix = self._request_messages()
+            except Exception:
+                prefix = None  # scoped-guidance error and the like: keep the old request
+            if prefix:
+                live_block = appsvc.store_block(self, live=True) if system else ""
+                ask = prefix + [{"role": "user", "content": (
+                    compact_text + (f"\n\n{extra}" if extra else "")
+                    + f"\n\nThe last {len(tail)} messages stay verbatim after your summary: summarize only what came before them."
+                    + (f"\n\n{live_block}" if live_block else ""))}]
+                compact_tools = self._last_chat_tools
 
         # Tools are passed so STEP 1 of COMPACT_PROMPT can actually happen.
         # Without them the instruction to persist is theatre: the model narrates
@@ -10640,7 +10666,7 @@ class LiteTUI(App):
                                 if learned_cap else self.settings.compact_max_tokens),
                     thinking_level=self.settings.compact_thinking_level,
                     tools_enabled=self.tools_enabled,
-                    tools=self._all_tools(),  # advertised even when OFF — see turn_engine
+                    tools=compact_tools if compact_tools is not None else self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
                     graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                     supported_reasoning_levels=(
@@ -10891,10 +10917,20 @@ class LiteTUI(App):
         ]
         if handoff is not None:
             pair[0]["content"] += "\n\n[Agent's pre-compaction handoff]\n" + handoff
+        # NInfer (Ryan 2026-11-08): the server reuses a prefix only at a stored checkpoint of exact tokens. Re-snapshotting
+        # the store rewrote the tail of message 0, so the system text and tools, about 11k of the 20k tokens after a
+        # compaction, were prefilled again from zero (321 s). Keep message 0 byte-identical and carry the fresh store in the
+        # summary message instead.
+        keep_system_bytes = self._prefix_cache_backend()
         if system and isinstance(system.get("content"), str):
-            # The kept message 0 carries the pre-compaction snapshot. Cut it so
-            # the next request injects the files as they are on disk now.
-            system = {**system, "content": appsvc.strip_store_block(system["content"])}
+            if keep_system_bytes:
+                fresh_store = appsvc.store_block(self, live=True)
+                if fresh_store:
+                    pair[0]["content"] += "\n\n[Your store as it is on disk now]" + fresh_store
+            else:
+                # The kept message 0 carries the pre-compaction snapshot. Cut it so
+                # the next request injects the files as they are on disk now.
+                system = {**system, "content": appsvc.strip_store_block(system["content"])}
         rebuilt: list[dict] = ([system] if system else []) + pair + tail
 
         # T832: ONE number for the size this conversation now is. It used to
@@ -10922,7 +10958,7 @@ class LiteTUI(App):
             "summary_chars": len(summary), "store_files": writes, "rounds": rounds,
         })
         self.conversation = rebuilt
-        if system:
+        if system and not keep_system_bytes:
             # Replay must equal memory now, not after the next request.
             self._store_injected = False
             self._edit(0, "store snapshot dropped at compaction")
