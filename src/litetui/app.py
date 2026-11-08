@@ -9414,6 +9414,9 @@ class LiteTUI(App):
                 backend_name=self.backend.name,
                 graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
             )
+            # The chat template prints the effort in the FIRST lines of the prompt ("Reasoning Effort: 50"), so a request with a
+            # different effort re-reads the whole prompt. A compaction on NInfer must send this exact value.
+            self._last_chat_effort = (kwargs.get("extra_body") or {}).get("reasoning_effort")
 
             if retry_kwargs is not None:
                 kwargs = retry_kwargs
@@ -10679,6 +10682,14 @@ class LiteTUI(App):
                     ),
                 )
 
+                if compact_tools is not None:
+                    effort_body = dict(kwargs.get("extra_body") or {})
+                    chat_effort = getattr(self, "_last_chat_effort", None)
+                    if chat_effort:
+                        effort_body["reasoning_effort"] = chat_effort
+                    else:
+                        effort_body.pop("reasoning_effort", None)
+                    kwargs["extra_body"] = effort_body
                 kwargs["stream_options"] = {"include_usage": True}
                 # Fresh request: drop the previous round's prefill so a stale
                 # 100% never shows while this prompt is still being sent

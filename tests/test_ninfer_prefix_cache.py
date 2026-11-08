@@ -8,7 +8,9 @@ instead: 104 s / 250 s / 281 s, the compaction (405 s for 83k tokens) and the fi
 The fixes, each with its control (the same call on a backend that has no prefix cache keeps the old request):
   1. on ninfer the built-in deferred tools are advertised from the first request (MCP tools stay deferred);
   2. on ninfer a compaction sends the conversation exactly as the last chat turn did, the same tools array, and ONE final user message;
-  3. on ninfer a compaction leaves message 0 byte-identical and carries the refreshed store in the summary message.
+  3. on ninfer a compaction leaves message 0 byte-identical and carries the refreshed store in the summary message;
+  4. on ninfer a compaction sends the chat turn's own reasoning effort (the template prints it in the first lines of the prompt:
+     a thinking-level change high -> low at 08:27:55 made the next request read 24,770 tokens again, 104 s).
 """
 from types import SimpleNamespace as NS
 
@@ -96,6 +98,20 @@ async def test_ninfer_compaction_leaves_message_zero_byte_identical(monkeypatch)
     assert a.conversation[0]["role"] == "system" and a.conversation[0]["content"] == system_before, \
         "message 0 must not change, or the server's cached system + tools prefix no longer matches"
     assert any("the summary body" in str(m.get("content", "")) for m in a.conversation), "the compaction itself must land"
+
+
+@pytest.mark.asyncio
+async def test_ninfer_compaction_sends_the_chat_turns_reasoning_effort(monkeypatch):
+    a = _ninfer(_app(compact_keep_recent=2, compact_thinking_level="low"))
+    _seed(a)
+    a._last_chat_tools = CHAT_TOOLS
+    a._last_chat_effort = "xhigh"
+    seen = _capture(monkeypatch)
+
+    await _compact_with(a)
+
+    (purpose, kw), = [c for c in seen if c[0] == "compaction"][:1]
+    assert kw["extra_body"]["reasoning_effort"] == "xhigh", "the prompt header carries the effort; a different one re-reads everything"
 
 
 @pytest.mark.asyncio
