@@ -949,6 +949,17 @@ class SettingsBody(Widget):
                                 "Fast: 32K = 20-21 s, 83K = 51 s, RAM ~63%. Standard: 32K = 24 s, 83K = 54 s, RAM ~63%. Runs vary by about 25%. "
                                 "Fastest needs 70 GiB of free RAM at launch and drops to Fast when it is not free. Applies on the next /engine start.",
                             )
+                            yield from self._switch_row(
+                                "ninfer_auto_long_anchors", "NInfer: anchor message boundaries (--auto-long-anchors), experimental",
+                                "Off by default. The engine keeps checkpoints at message boundaries of every request, so a compacted or edited "
+                                "conversation resumes from the nearest one instead of re-reading from the start. Each anchor costs one saved model state "
+                                "(VRAM or RAM). Measured first turn after a compaction without it: 20K tokens, 0% cache, 14 s. Applies on the next /engine start.",
+                            )
+                            yield from self._switch_row(
+                                "ninfer_derive_session_keys", "NInfer: derive session keys (--derive-session-keys), experimental",
+                                "Off by default. Gives each conversation a session key (Chat Completions carries none) so the engine keeps its "
+                                "checkpoints as a live session. A compaction rewrites the first message and starts a new key. Applies on the next /engine start.",
+                            )
                             yield from self._text_row(
                                 "ninfer_max_context", "NInfer: context length (--max-context)",
                                 "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",

@@ -11218,6 +11218,7 @@ class LiteTUI(App):
         # is restarted. Say that, or the control reads as broken.
         spawn = [c for c in changed if c in ("ninfer_max_context", "ninfer_max_concurrency",
                                             "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib", "ninfer_speed_preset",
+                                            "ninfer_auto_long_anchors", "ninfer_derive_session_keys",
                                             "ninfer_artifact", "ninfer_executable")]
         if spawn:
             note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "

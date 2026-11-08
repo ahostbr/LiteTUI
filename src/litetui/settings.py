@@ -134,6 +134,12 @@ class Settings:
     #: Speed tier for a DeepSeek launch recipe (ninfer_engine.SPEED_PRESETS): fastest | fast | standard | recipe. It sets two flags of the
     #: recipe, --expert-host-mib and --prefill-chunk. Startup flag: next /engine start.
     ninfer_speed_preset: str = "fastest"
+    #: --auto-long-anchors (serving.md, context cache): the engine anchors message boundaries of every request, so a compacted or edited
+    #: transcript resumes from the nearest anchor instead of from token 0. Costs one saved model state per anchor (VRAM/RAM). OFF by default.
+    ninfer_auto_long_anchors: bool = False
+    #: --derive-session-keys: a request with no session key (Chat Completions has none) gets one derived from its instruction messages and
+    #: first user message, so the conversation keeps a session lineage and live-session retention. A compaction starts a new key. OFF by default.
+    ninfer_derive_session_keys: bool = False
     #: Strata (https://github.com/Niko1221/Strata): Qwen3.8-Flash-Next on one GPU plus system
     #: RAM. Blank host = the chosen config's port on loopback (8080). Blank root = LiteSuite's
     #: install (~/.litesuite/llm/strata). Blank config = the ONE strata-<model>.json there;

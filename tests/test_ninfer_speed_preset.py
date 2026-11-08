@@ -76,3 +76,28 @@ def test_build_recipe_args_applies_the_preset_and_reports_it():
     assert notes and "fast" in notes[0]
     plain = ne.build_recipe_args(Path("a.ninfer"), 8151, "m", recipe, speed_preset="recipe")
     assert plain[plain.index("--max-context") + 2:] == LIVE
+
+
+# ── the two opt-in cache flags (Ryan 2026-11-08: "add those flags to settings default them to off") ──────────────────
+
+def test_the_cache_flags_default_off_and_add_nothing():
+    s = Settings()
+    assert s.ninfer_auto_long_anchors is False and s.ninfer_derive_session_keys is False
+    assert ne.cache_flags(s) == []
+
+
+def test_each_cache_flag_is_added_only_when_switched_on():
+    s = Settings()
+    s.ninfer_auto_long_anchors = True
+    assert ne.cache_flags(s) == ["--auto-long-anchors"]
+    s.ninfer_derive_session_keys = True
+    assert ne.cache_flags(s) == ["--auto-long-anchors", "--derive-session-keys"]
+    s.ninfer_auto_long_anchors = False
+    assert ne.cache_flags(s) == ["--derive-session-keys"]
+
+
+def test_a_truthy_non_bool_does_not_switch_a_flag_on():
+    class Fake:
+        ninfer_auto_long_anchors = "yes"
+        ninfer_derive_session_keys = 1
+    assert ne.cache_flags(Fake()) == []

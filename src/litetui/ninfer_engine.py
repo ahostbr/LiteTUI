@@ -255,6 +255,16 @@ SPEED_PRESETS: dict[str, SpeedPreset] = {
 }
 
 
+def cache_flags(settings) -> list[str]:
+    """The opt-in context-cache flags the user switched on in Settings, both OFF by default."""
+    out: list[str] = []
+    if getattr(settings, "ninfer_auto_long_anchors", False) is True:
+        out.append("--auto-long-anchors")
+    if getattr(settings, "ninfer_derive_session_keys", False) is True:
+        out.append("--derive-session-keys")
+    return out
+
+
 def available_ram_gib() -> float | None:
     """Free physical RAM in GiB, or None when Windows will not say. Never raises."""
     try:
@@ -783,6 +793,8 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
                                  user_max_context=ctx if isinstance(ctx, int) else None,
                                  speed_preset=getattr(settings, "ninfer_speed_preset", None),
                                  free_ram_gib=available_ram_gib(), on_note=_log_event)
+        # Only a recipe names its own (sync-build) executable; the stock exe may not know these flags.
+        args += [f for f in cache_flags(settings) if f not in args]
     else:
         args = build_ninfer_args(
             artifact, port, model_id,

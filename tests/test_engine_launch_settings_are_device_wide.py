@@ -14,7 +14,7 @@ from litetui.settings_scope import SETTING_SPECS, SettingScope
 from litetui.settings_service import SettingChange, SettingsService
 
 ENGINE_LAUNCH = ("ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype "
-                 "ninfer_kv_capacity ninfer_host_kv_mib ninfer_speed_preset strata_root strata_config strata_max_context "
+                 "ninfer_kv_capacity ninfer_host_kv_mib ninfer_speed_preset ninfer_auto_long_anchors ninfer_derive_session_keys strata_root strata_config strata_max_context "
                  "xolotl_root xolotl_config xolotl_max_context").split()
 
 

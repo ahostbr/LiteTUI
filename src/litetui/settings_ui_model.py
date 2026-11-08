@@ -137,6 +137,8 @@ FIELD_DESCRIPTIONS = {
     "ninfer_executable": "NInfer server executable used by the next /engine start.",
     "ninfer_artifact": "Model artifact served at the next NInfer engine start.",
     "ninfer_speed_preset": "DeepSeek speed tier: how many experts stay in RAM and the prefill chunk; Fastest default, falls back when RAM is short.",
+    "ninfer_auto_long_anchors": "Experimental, off: NInfer keeps checkpoints at message boundaries so a compacted conversation resumes from one; costs a saved state each.",
+    "ninfer_derive_session_keys": "Experimental, off: NInfer derives a session key per conversation so its checkpoints stay retained.",
     "ninfer_max_context": "Context tokens requested at NInfer startup; larger windows use more GPU memory.",
     "ninfer_max_concurrency": "Requests decoded together by NInfer; parallel requests share its context pool.",
     "ninfer_kv_dtype": "NInfer cache format; higher precision needs more memory, smaller formats save it.",
@@ -342,7 +344,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "ninfer", "NInfer", "ninfer-envelope", "Runtime envelope",
         "The startup flags that shape memory and parallel work.",
-        ("ninfer_speed_preset", "ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV", "speed", "preset", "prefill", "fastest", "experts", "RAM"),
+        ("ninfer_speed_preset", "ninfer_auto_long_anchors", "ninfer_derive_session_keys", "ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV", "speed", "preset", "prefill", "fastest", "experts", "RAM"),
     ),
     _section(
         "strata", "Strata", "strata-engine", "Engine",
