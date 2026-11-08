@@ -144,3 +144,33 @@ def test_note_prefill_ignores_malformed_observation():
     assert e.prefill_readout() is None
     e.note_prefill(None)
     assert e.prefill_readout() is None
+
+
+# --- the readout a person reads: percent and counter of the SAME tokens (Ryan 2026-11-08, twice) ---------
+def test_prefill_detail_names_the_cached_prefix_instead_of_counting_it():
+    """His screenshot: "prefill 0% - 105k/125k". 105k of the 125k were reused, so the percent was of the 20k that
+    is new while the counter was of everything. The detail gives new done / new total and the cached part apart."""
+    e = EtaState()
+    e.note_prefill({"total": 125000, "cache": 105000, "processed": 105000})
+    frac, done, total, cached = e.prefill_detail()
+    assert (frac, done, total, cached) == (0.0, 0, 20000, 105000)
+    e.note_prefill({"total": 125000, "cache": 105000, "processed": 113000})
+    frac, done, total, cached = e.prefill_detail()
+    assert abs(frac - 0.4) < 1e-9 and (done, total, cached) == (8000, 20000, 105000)
+
+
+def test_prefill_detail_without_a_cache_is_the_plain_counter_and_clamps():
+    e = EtaState()
+    e.note_prefill({"total": 100, "cache": 0, "processed": 250})
+    assert e.prefill_detail() == (1.0, 100, 100, 0)
+
+
+def test_prefill_detail_is_none_for_a_full_hit_before_progress_and_after_the_first_token():
+    e = EtaState()
+    assert e.prefill_detail() is None
+    e.note_prefill({"total": 8192, "cache": 8192, "processed": 8192})
+    assert e.prefill_detail() is None
+    e.note_prefill({"total": 100, "cache": 40, "processed": 60})
+    assert e.prefill_detail() is not None
+    e.record_first_delta()
+    assert e.prefill_detail() is None

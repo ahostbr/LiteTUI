@@ -28,6 +28,7 @@ from litetui.version import __version__
 from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
     TOOL_NAME_DEFAULT,
     _compact_tokens,
+    prefill_text,
     _markdown_to_text,
     is_reliable_rate_sample,
     load_prompt,
@@ -825,9 +826,7 @@ class CompactionCard(Vertical):
         if self._took is None:
             stamp += " \u2026"
             if self._prefill is not None:
-                frac, processed, total = self._prefill
-                stamp += (f" \u00b7 prefill {frac * 100:.0f}% \u00b7 "
-                          f"{_compact_tokens(processed)}/{_compact_tokens(total)}")
+                stamp += f" · {prefill_text(self._prefill)}"
         return Text.assemble(
             ("\U0001F5DC Compaction", "bold"),
             (f" \u00b7 {stamp}", "dim"),

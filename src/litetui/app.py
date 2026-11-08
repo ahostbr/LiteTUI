@@ -7565,7 +7565,7 @@ class LiteTUI(App):
                         self._elapsed.body_t0, now,
                         None if hasattr(self.backend, "app_server") else self._eta.estimate_tokens(),
                         None if hasattr(self.backend, "app_server") else self._eta.learned_rate(),
-                        prefill=self._eta.prefill_readout())
+                        prefill=self._eta.prefill_detail())
                 if self._thinking_live is not None:
                     # The app owns the tps reactive; the block only renders it.
                     # The reasoning half of TpsState's partition — not a
@@ -7580,7 +7580,7 @@ class LiteTUI(App):
                     # turn renders, so compaction reports "prefill XX%" too.
                     # None for backends that never stream progress (Codex) —
                     # the title then shows just the elapsed clock.
-                    card.tick(prefill=self._eta.prefill_readout())
+                    card.tick(prefill=self._eta.prefill_detail())
                 idle = 0.0
             else:
                 idle += 0.25
