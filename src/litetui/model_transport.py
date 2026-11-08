@@ -1091,6 +1091,9 @@ class OpenAITransport:
             {k: v for k, v in m.items() if k not in ("provider_metadata", "codex_delivery")}
             for m in kwargs["messages"]
         ]
+        extra = kwargs.get("extra_body") or {}
+        if extra.get("return_progress") and getattr(self.backend, "_progress_broken", False):
+            kwargs["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
         try:
             return await self.client.chat.completions.create(**kwargs)
         except Exception as error:
@@ -1099,6 +1102,18 @@ class OpenAITransport:
             body = getattr(error, "body", None)
             detail = str(body) if body is not None else str(error)
             extra = kwargs.get("extra_body") or {}
+            # NInfer 2026-11-08 (compaction round 3, request 15: HTTP 500 "internal error response render"): with
+            # return_progress the engine validates each progress report against the reuse it announced at admission
+            # (openai_chat_response.cpp:363) and fails the request when they differ, which loses a turn or a whole
+            # compaction. The progress readout is a convenience, so drop it for this request and the rest of the session.
+            if extra.get("return_progress") and "prompt-progress state" in (detail + str(error)):
+                kwargs["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
+                if self.backend is not None:
+                    try:
+                        self.backend._progress_broken = True
+                    except Exception:  # noqa: BLE001 - a flag, never worth failing the retry
+                        pass
+                return await self.client.chat.completions.create(**kwargs)
             mandatory = "Reasoning is mandatory for this endpoint and cannot be disabled"
             if (purpose == "turn" or getattr(error, "status_code", None) != 400
                     or mandatory not in detail or extra.get("reasoning_effort") != "none"):
