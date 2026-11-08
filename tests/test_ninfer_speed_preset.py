@@ -101,3 +101,16 @@ def test_a_truthy_non_bool_does_not_switch_a_flag_on():
         ninfer_auto_long_anchors = "yes"
         ninfer_derive_session_keys = 1
     assert ne.cache_flags(Fake()) == []
+
+
+def test_thinking_choices_keeps_a_saved_level_the_default_list_lacks():
+    """/settings crashed on mount (InvalidSelectValueError 'max') for a NInfer seat saved at thinking 'max': the default list
+    has no 'max', and Textual's Select refuses a value outside its options."""
+    from types import SimpleNamespace as NS
+
+    from litetui.settings_screen import THINKING_CHOICES, thinking_choices
+
+    rows = thinking_choices(NS(name="ninfer"), "deepseek", "max")
+    assert "max" in [value for _, value in rows], "the saved value must be selectable"
+    assert [value for _, value in rows][:len(THINKING_CHOICES)] == [value for _, value in THINKING_CHOICES]
+    assert thinking_choices(NS(name="ninfer"), "deepseek", "high") is THINKING_CHOICES, "a listed level changes nothing"

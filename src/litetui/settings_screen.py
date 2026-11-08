@@ -126,6 +126,10 @@ def thinking_choices(backend, model_id, current):
         if current not in [value for _, value in choices]:
             choices.append((f"{current} (saved; not supported by this model)", current))
         return choices
+    # A saved level this list does not carry (a NInfer/llama seat running at "max", as DS-pelican-4 did on 2026-11-08) must still
+    # be an option: Textual's Select raises InvalidSelectValueError for a value outside its options, and /settings died on mount.
+    if current and current not in [value for _, value in THINKING_CHOICES]:
+        return [*THINKING_CHOICES, (f"{current} (saved; not in this list)", current)]
     return THINKING_CHOICES
 
 def _theme_choices(custom: dict | None = None):
