@@ -7008,6 +7008,9 @@ class LiteTUI(App):
             return None  # The Codex engine owns context and automatic compaction.
         # Claude does NOT: its autocompact is off (claude_backend.AUTOCOMPACT_ENV)
         # and LiteTUI's threshold decides, from the native usage frames.
+        if getattr(self, "_compact_forced", False):
+            # The engine itself refused the last request as longer than its window, below the threshold: believe it.
+            return round(100 * self.ctx_used / self.ctx_max) if self.ctx_used and self.ctx_max else 100
         return TurnEngine.autocompact_due(
             enabled=self.settings.autocompact_enabled,
             at_percent=self.settings.autocompact_at_percent,
@@ -7058,6 +7061,7 @@ class LiteTUI(App):
             f"Auto-compacting - context at {pct}% of "
             f"{self.ctx_max:,} (threshold {self.settings.autocompact_at_percent}%)."
         )
+        self._compact_forced = False
         self._compact_is_auto = True
         self._handle_command("/compact")
 
@@ -9491,6 +9495,22 @@ class LiteTUI(App):
             except Exception as e:
                 if await retry_failed_request(e):
                     continue
+                if (_iteration and _context_exceeded(e) and not self._stop_requested
+                        and not native_loop):
+                    # Mid-turn, the last round's tool results took the next request past the engine's window (seen
+                    # 2026-11-08: 79% -> four 28k-char reads in one round -> "prompt exceeds Engine max_context", turn lost
+                    # at 104k of 131k, below the 80% threshold). The engine's refusal is the evidence, nothing is estimated:
+                    # leave through the same door as the in-turn pause, compact, and resume this turn.
+                    self._clear_retry_wait()
+                    self._elapsed.stop_body()
+                    self._thinking_done()
+                    try:
+                        widget.remove()
+                    except Exception:  # noqa: BLE001 - an empty bubble left behind is cosmetic
+                        pass
+                    self._compact_forced = True
+                    compact_due = True
+                    break
                 runtime_log.record(
                     "turn_stream_failed",
                     site="app.stream.open",
