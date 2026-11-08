@@ -116,7 +116,7 @@ def test_runtime_result_distinguishes_saved_from_effective(_service, tmp_path):
     snap = svc.create_conversation(A)
     app = SimpleNamespace(settings=snap.effective, convo_dir=svc.conversation_root / A,
                           _settings_service=svc, _agent_session=svc.agent_session)
-    result = svc.save_patch(A, [SettingChange('ninfer_max_context', 16384, 'conversation')], snap.revisions)
+    result = svc.save_patch(A, [SettingChange('ninfer_max_context', 16384, 'device')], snap.revisions)
     target = svc.snapshot(A).saved
     result = apply_saved_result(app, target, result)
     assert result.fully_saved
@@ -222,7 +222,7 @@ def test_reconnect_prepares_saved_endpoint_without_reverting_pending_restart(_se
     snap = svc.create_conversation(A)
     app = SimpleNamespace(settings=snap.effective, convo_dir=svc.conversation_root / A, _settings_service=svc, _agent_session=svc.agent_session)
     svc.save_patch(A, [SettingChange('lm_host', 'http://localhost:9999', 'conversation'),
-                         SettingChange('ninfer_max_context', 16384, 'conversation')], snap.revisions)
+                         SettingChange('ninfer_max_context', 16384, 'device')], snap.revisions)
     prepare_reconnect(app)
     assert app.settings.lm_host == 'http://localhost:9999'
     assert app.settings.ninfer_max_context == 32768

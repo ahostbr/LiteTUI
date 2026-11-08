@@ -253,7 +253,9 @@ def test_a_non_owner_codex_compact_is_unchanged(make_app, owner_dir, monkeypatch
 # ===================== the 70% reminder, on every backend =====================
 
 def _reminders(system):
-    return [m for m in system if m == owner_mode.CONTEXT_REMINDER]
+    # T0483-C: the reminder names the real percentage, so match the wording, not "70%".
+    return [m for m in system
+            if m.startswith("context ") and m.endswith("%: run /compact to write NOW.md first")]
 
 
 def _climb(app, values):
@@ -310,6 +312,40 @@ def test_an_unknown_window_never_reminds(make_app):
     assert _reminders(system) == []
 
 
+@pytest.mark.parametrize("codex", [True, False])
+def test_the_reminder_names_the_real_percentage_not_seventy(make_app, codex):
+    """T0483-C (WS4 N14): a first reading of 95% must say 95%, not the threshold."""
+    app = make_app(codex=codex)
+    system = _climb(app, [950])
+    assert _reminders(system) == ["context 95%: run /compact to write NOW.md first"]
+
+
+@pytest.mark.parametrize("codex", [True, False])
+def test_a_transient_unknown_reading_does_not_re_arm_the_reminder(make_app, codex):
+    """T0483-C (WS4 N14): a None ctx_used or ctx_max is 'unknown', not 'below 70%'."""
+    app = make_app(codex=codex)
+    system = []
+
+    async def body():
+        async with app.run_test(size=(120, 40)) as pilot:
+            app._system = lambda text, *a, **k: system.append(text)
+            app.ctx_max = 1000
+            app.ctx_used = 720
+            await pilot.pause()
+            app.ctx_used = None          # transient unknown reading
+            await pilot.pause()
+            app.ctx_used = 760
+            await pilot.pause()
+            app.ctx_max = None           # transient unknown window
+            app.ctx_used = 770
+            await pilot.pause()
+            app.ctx_max = 1000
+            app.ctx_used = 780
+            await pilot.pause()
+    _run(body())
+    assert len(_reminders(system)) == 1, system
+
+
 def test_a_refused_admission_of_the_driven_turn_runs_no_turn_and_no_compaction(make_app, owner_dir, monkeypatch):
     from litetui import hook_host
     monkeypatch.setattr(hook_host, "accept_prompt", lambda app, item: False)
@@ -318,3 +354,36 @@ def test_a_refused_admission_of_the_driven_turn_runs_no_turn_and_no_compaction(m
     events, calls, system = _drive(app, (True,), owner_dir, monkeypatch, handoff)
     assert "turn" not in events and "compact" not in events and handoff.calls == []
     assert any("not admitted" in m and "not compacted" in m for m in system)
+
+
+def test_a_turn_refused_by_owned_execution_is_not_taken_as_answered(make_app, owner_dir, monkeypatch):
+    """T0483-A (WS4 N7): _stream's validation refusal is a bare return; the driven STEP 1
+    must read it as 'not run', not as success, so no gate, no retry and no compaction follow."""
+    def refuse_in_stream(self, **kw):
+        if kw.get("chat_effort", True):      # _compact validates with chat_effort=False first
+            raise ValueError("Agent execution authority refused this turn")
+
+    app = make_app()
+    monkeypatch.setattr(app_mod.LiteTUI, "_validate_owned_execution", refuse_in_stream)
+    handoff = Handoff([])
+    events, calls, system = _drive(app, (True,), owner_dir, monkeypatch, handoff)
+    assert "turn" not in events, "the refused STEP 1 never reached the model"
+    assert handoff.calls == [], "no gate on a turn that did not run"
+    assert "compact" not in events, "nothing is compacted after a refused STEP 1"
+    assert not any("asking once more" in m for m in system), "no retry of a refused turn"
+    assert any("refused" in m and "not compacted" in m for m in system), system
+
+
+@pytest.mark.parametrize("writes_note", [True, False])
+def test_codex_missing_initial_note_does_not_block_compaction(make_app, owner_dir, monkeypatch, writes_note):
+    app = make_app()
+    (owner_dir / "NOW.md").unlink()
+    handoff = Handoff([])
+    events, _, system = _drive(app, (writes_note,), owner_dir, monkeypatch, handoff)
+    assert "compact" in events
+    assert len(handoff.calls) == int(writes_note)
+    if writes_note:
+        assert [event for event in events if event != "turn"] == ["write", "handoff", "compact"]
+        assert not any("NOT committed" in note for note in system)
+    else:
+        assert any("NOW.md was NOT committed: NOW.md cannot be read" in note for note in system)

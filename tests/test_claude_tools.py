@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -562,3 +563,55 @@ def test_only_bridged_host_tools_are_published_to_the_sdk():
     assert "litetui" in options["mcp_servers"]
     # read_file is in the app inventory but not in the bridge set.
     assert "read_file" not in HOST_TOOLS
+
+
+# -- T0706: the shell the model types into must know which seat it is --------
+# Native Bash runs inside claude.exe, started with {**os.environ, **options.env}. LiteTUI consumes its own
+# LITEHARNESS_AGENT_ID at launch, so without an overlay `liteharness` there fell back to the Claude session
+# id and refused `clerk forward` ("requires the Clerk's own identity").
+
+SEAT = "8be50e55-1111-4222-8333-444444444444"
+
+
+def _sdk_process_env(options_env, inherited):
+    """What the SDK hands claude.exe (subprocess_cli.py: inherited, then options.env on top)."""
+    return {**inherited, **options_env}
+
+
+def test_the_claude_process_gets_the_seat_id_in_its_env():
+    app = FakeApp()
+    app.seat = SimpleNamespace(agent_id=SEAT, current_spawner=lambda: None)
+    bridge, _ = make(app)
+    env = bridge.sdk_options()["env"]
+    assert env["LITEHARNESS_AGENT_ID"] == SEAT
+
+
+def test_without_a_seat_nothing_is_claimed(monkeypatch):
+    monkeypatch.delenv("LITEHARNESS_AGENT_ID", raising=False)
+    bridge, _ = make()
+    assert "LITEHARNESS_AGENT_ID" not in bridge.sdk_options()["env"]
+
+
+def test_the_seat_id_beats_an_inherited_identity_and_stale_ones_are_blanked(monkeypatch):
+    from litetui import harness
+    inherited = {"LITEHARNESS_AGENT_ID": "someone-else", "LITEHARNESS_AGENT_NAME": "Stale",
+                 "LITEHARNESS_TIER": "orchestrator", "LITESUITE_AGENT_ID": "suite-id", "PATH": "p"}
+    overlay = harness.claude_process_env(SEAT, inherited)
+    process = _sdk_process_env(overlay, inherited)
+    assert process["LITEHARNESS_AGENT_ID"] == SEAT
+    # liteharness.config.get_agent_id() reads each with `if value:`, so "" falls through to the seat id.
+    assert not process["LITEHARNESS_AGENT_NAME"] and not process["LITEHARNESS_TIER"]
+    assert not process["LITESUITE_AGENT_ID"]
+    assert process["PATH"] == "p" and "PATH" not in overlay
+
+
+@pytest.mark.asyncio
+async def test_the_overlay_rides_with_the_cache_pins_not_instead_of_them(monkeypatch):
+    from litetui import claude_backend as cb
+    seen = {}
+    monkeypatch.setattr(cb, "sdk_module", lambda: SimpleNamespace(ClaudeAgentOptions=lambda **kw: seen.update(kw) or kw))
+    backend = cb.ClaudeBackend.__new__(cb.ClaudeBackend)
+    backend.settings = SimpleNamespace(claude_executable="")
+    await backend._options(cwd=".", env={"LITEHARNESS_AGENT_ID": SEAT})
+    assert seen["env"]["LITEHARNESS_AGENT_ID"] == SEAT
+    assert seen["env"]["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "1h"

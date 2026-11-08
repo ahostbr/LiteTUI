@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from pathlib import Path
 
 from rich.text import Text
 
@@ -78,7 +79,8 @@ def request(extra: str = "", owner_dir=None, *, app=None) -> str:
             + (f"\n\n{extra}" if extra else ""))
 
 
-async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None) -> None:
+async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None,
+                  owner_before: owner_mode.NowSnapshot | None = None) -> None:
     """Summarise with Claude, then continue in a fresh session seeded with it."""
     # Consume once even on refusal/failure. Maintenance must not arm a later
     # unrelated /compact to resurrect this task.
@@ -87,10 +89,13 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     if resume is not None and not resume_current(app, resume):
         resume = None
     owner_dir = getattr(app, "_owner_memory_dir", None)
-    owner_t0 = None
-    if owner_dir is not None:
-        # Recorded by LiteTUI._compact at entry; a direct caller gets "now".
-        owner_t0 = getattr(app, "_owner_compact_t0", None) or time.time_ns()
+    if owner_dir is not None and owner_before is None:
+        # A direct caller snapshots this operation, never a previous compaction's app state.
+        await owner_mode.settle_inflight_handoff(owner_dir)   # T0483-B
+        try:
+            owner_before = (Path(owner_dir) / owner_mode.NOW).read_bytes()
+        except OSError:
+            owner_before = owner_mode.NowState.ABSENT
     prompt = request(extra, owner_dir, app=app)
     from litetui.claude_backend import settle_close
     from litetui.widgets import CompactionCard, ToolMessage
@@ -211,11 +216,11 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 failure = "Claude summary ended without a terminal result; no continuation was admitted"
 
         await turn(prompt)
-        if owner_t0 is not None and not failure and summary.strip() and not app._stop_requested:
+        if owner_before is not None and not failure and summary.strip() and not app._stop_requested:
             # Owner mode: before the session is closed or anything truncated, did the
             # seat rewrite NOW.md, and did `owner-handoff` commit it? Never for an empty
             # summary (the compaction is about to be reported failed) and never after Stop.
-            passed, why = await app._owner_gate(owner_t0)
+            passed, why = await app._owner_gate(owner_before)
             if not passed and not app._stop_requested:
                 owner_failure, first_summary = why, summary
                 app._system(f"NOW.md was not saved ({why}); asking Claude once more.")
@@ -225,7 +230,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                     owner_failure = f"{why} (the retry turn failed: {failure})"
                     failure, summary = None, first_summary
                 else:
-                    passed, why = await app._owner_gate(owner_t0)
+                    passed, why = await app._owner_gate(owner_before)
                     owner_failure = None if passed else why
         card.thinking_done()
         selected = ledger.selected

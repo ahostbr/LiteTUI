@@ -171,16 +171,30 @@ def _wire(monkeypatch, log, rec=None, resume_err=None):
                         lambda r, _b=None: log.append("resume") or resume_err)
 
 
+_RELEASES = ("/gpu/release", "/backend/unload")
+
+
+def _app(log, reply):
+    """The apps' transport: the GPU release the tool sends after a job (T0702) is logged
+    as its own step, so ORDER covers it too."""
+    def fake_http(method, url, body=None, timeout=0):
+        if url.endswith(_RELEASES):
+            log.append("release")
+            return {"ok": True}
+        return reply(method, url, body)
+    return fake_http
+
+
 def test_image_generate_suspends_generates_resumes_in_order(monkeypatch):
     log = []
     _wire(monkeypatch, log)
     monkeypatch.setattr(studio_tool, "_http",
-                        lambda *a, **k: log.append("generate") or {"imagePath": "x.png"})
+                        _app(log, lambda *a: log.append("generate") or {"imagePath": "x.png"}))
 
     out = studio_tool.run({"app": "image", "action": "generate",
                            "prompt": "a fox"}, seat_model="seat-x")
 
-    assert log == ["suspend", "generate", "resume"], log
+    assert log == ["suspend", "generate", "release", "resume"], log
     assert "x.png" in out
     assert "suspended for this generation" in out
     assert "slow first token" in out, "the model must know to expect the re-read"
@@ -196,13 +210,30 @@ def test_the_seat_comes_back_even_when_generation_raises(monkeypatch):
         log.append("generate")
         raise RuntimeError("generation exploded")
 
-    monkeypatch.setattr(studio_tool, "_http", boom)
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr(studio_tool, "_http", _app(log, boom))
+    with pytest.raises(RuntimeError, match="generation exploded"):
         studio_tool.run({"app": "image", "action": "generate",
                          "prompt": "x"}, seat_model="seat-x")
-    assert log == ["suspend", "generate", "resume"], (
+    assert log == ["suspend", "generate", "release", "resume"], (
         "resume must run whatever the generation did"
     )
+
+
+def test_a_failing_release_never_replaces_the_jobs_outcome_or_skips_the_resume(monkeypatch):
+    log = []
+    _wire(monkeypatch, log)
+
+    def fake_http(method, url, body=None, timeout=0):
+        if url.endswith(_RELEASES):
+            log.append("release")
+            raise RuntimeError("release exploded")
+        log.append("generate")
+        return {"imagePath": "x.png"}
+
+    monkeypatch.setattr(studio_tool, "_http", fake_http)
+    out = studio_tool.run({"app": "image", "action": "generate", "prompt": "x"}, seat_model="seat-x")
+    assert log == ["suspend", "generate", "release", "resume"]
+    assert "x.png" in out and "GPU release failed" in out
 
 
 def test_status_actions_never_touch_the_seat(monkeypatch):
@@ -252,20 +283,24 @@ def test_resume_problems_ride_on_the_result(monkeypatch):
 
 
 def test_sound_generation_is_waited_to_completion_inside_the_call(monkeypatch):
-    """The poller is the thing that got unloaded — the tool owns the wait."""
+    """The poller is the thing that got unloaded — the tool owns the wait.
+
+    The job shape is LiteSound's own (job-tracker.ts): `status` running -> complete, the file
+    in `outputPath`. This arm used to feed `state: done` and `file`, which LiteSound never
+    sends; the tool reads what the emitter writes (T0702)."""
     log = []
     _wire(monkeypatch, log)
-    states = iter([{"state": "running"}, {"state": "running"},
-                   {"state": "done", "file": "C:/out/track.mp3"}])
+    states = iter([{"ok": True, "status": "running"}, {"ok": True, "status": "running"},
+                   {"ok": True, "status": "complete", "outputPath": "C:/out/track.mp3"}])
 
-    def fake_http(method, url, body=None, timeout=0):
+    def reply(method, url, body):
         if url.endswith("/generate/music"):
             log.append("submit")
-            return {"job_id": "j-1"}
+            return {"ok": True, "job_id": "j-1"}
         log.append("poll")
         return next(states)
 
-    monkeypatch.setattr(studio_tool, "_http", fake_http)
+    monkeypatch.setattr(studio_tool, "_http", _app(log, reply))
     monkeypatch.setattr(studio_tool.time, "sleep", lambda _s: None)
 
     out = studio_tool.run({"app": "sound", "action": "generate",
@@ -274,5 +309,5 @@ def test_sound_generation_is_waited_to_completion_inside_the_call(monkeypatch):
 
     assert log[0] == "suspend" and log[1] == "submit"
     assert log.count("poll") == 3
-    assert log[-1] == "resume"
+    assert log[-2:] == ["release", "resume"]
     assert "track.mp3" in out

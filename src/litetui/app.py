@@ -552,35 +552,6 @@ def _detail_sentence(raw: object, *, limit: int = 200) -> str:
     return detail
 
 
-def _compaction_fit_note(used: int | None, mx: int | None, *, loaded: bool) -> str:
-    """Why a compaction was refused, in the numbers the app already holds.
-
-    A compaction sends the HISTORY PLUS a summary prompt, so it needs MORE
-    room than the conversation already occupies. Near the top of the window
-    that is arithmetically impossible, and the server answers 500 - a status
-    that describes the server's surprise and not the user's problem. The app
-    knew `ctx_used` and `ctx_max` the whole time and said neither.
-
-    🔴 `ctx_max` MAY BE THE MODEL'S CEILING RATHER THAN THE LOADED WINDOW, so
-    `loaded` gates every division here. A confident percentage computed
-    against a ceiling the server is not honouring is worse than silence: it
-    sends the reader to look for room that was never there.
-
-    Silent below 80%, where a refusal means something else and this sentence
-    would be a confident wrong lead.
-    """
-    if not (used and mx and loaded) or used < mx * 0.8:
-        return ""
-    return (
-        f"\nThe conversation is {used:,} tokens of a {mx:,} window ({used / mx:.0%}), and a "
-        f"compaction has to send the history PLUS a summary prompt — so it needs more room "
-        f"than the conversation already fills. That is what was refused.\n"
-        f"Free room with /truncate, or give the model a larger window. In LM Studio a "
-        f"PARALLEL setting of N splits the KV pool N ways, so each request gets 1/N of it — "
-        f"check that before raising the context size."
-    )
-
-
 def _media_refused_for_good(e: object) -> bool:
     """True when the engine will refuse this media for the life of the process.
 
@@ -1902,6 +1873,8 @@ class LiteTUI(App):
         # Connections start after mount; bind only the finalized owned seat.
         self.mcp.agent_id = self.seat.agent_id
         self.seat.spawned_by = self._spawner_id
+        # T0085: POPPED so no tool shell or child of this process inherits the id.
+        self.seat.provisional_id = (os.environ.pop(harness_mod.PROVISIONAL_ID_ENV, "") or "").strip() or None
         self._spawner_errors = spawner_errors.SpawnerErrorReporter()
         self._seat_started = False
         self._resumed_seat_name: str | None = None
@@ -2898,10 +2871,17 @@ class LiteTUI(App):
         self._user_bubble(text, False)
         hook_host.start_prompt(self, item)
 
+    def _self_job_here(self, job) -> bool:
+        return sched_mod.self_target_matches(
+            getattr(job, "owner_agent_id", ""), getattr(job, "owner_convo_id", ""),
+            getattr(getattr(self, "seat", None), "agent_id", None), getattr(self, "convo_id", None))
+
     def _fire_job(self, job, *, manual: bool = False) -> None:
         if restart_checkpoint.is_held(self):
             return
         from litetui.shared_state import Lease, OwnershipError
+        if not LiteTUI._self_job_here(self, job):
+            return  # another seat never takes the lease or consumes this job
         if getattr(self, "_gui_schedules_paused", False):
             return
         # T1082 (Dijkstra S1): a seat that cannot grant the job's level says so and
@@ -2921,6 +2901,10 @@ class LiteTUI(App):
                 if not manual and disk is None and job_path.exists():
                     return  # deleted after this process selected its candidate
                 if disk is not None:
+                    if not sched_mod.self_target_matches(
+                            disk.get("owner_agent_id", ""), disk.get("owner_convo_id", ""),
+                            getattr(getattr(self, "seat", None), "agent_id", None), self.convo_id):
+                        return  # re-read authority under the lease, even for a manual fire
                     if not manual and disk.get("kind") == "loop" and disk.get("owner_convo_id") not in ("", None, self.convo_id):
                         return  # a sibling must not pause the owning conversation's loop
                     if not manual and not disk.get("enabled", True):
@@ -2932,11 +2916,11 @@ class LiteTUI(App):
                     if (not manual and disk.get("kind") == "loop" and disk.get("next_run_at")
                             and datetime.fromisoformat(disk["next_run_at"]) > datetime.now()):  # noqa: DTZ005 - scheduler local wall time
                         return
-                    if not manual:
+                    if not manual or disk.get("owner_agent_id"):
                         for field in sched_mod.Job.__dataclass_fields__:
                             if field in disk:
                                 setattr(job, field, disk[field])
-                        if not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
+                        if not manual and not sched_mod.due([job], datetime.now()):  # noqa: DTZ005 - scheduler local wall time
                             return
                 return LiteTUI._fire_job_owned(self, job, manual=manual)
         except OwnershipError:
@@ -2963,7 +2947,20 @@ class LiteTUI(App):
         """
         if restart_checkpoint.is_held(self):
             return
+        if not LiteTUI._self_job_here(self, job):
+            return False
         now = datetime.now()
+        # Self jobs never enter the unscoped input queue. One persisted debt
+        # survives refresh and coalesces all busy occurrences until next idle.
+        if getattr(job, "owner_agent_id", "") and self._chat_running():
+            if not job.deferred_slot:
+                job.deferred_slot = sched_mod.slot_of(now)
+                try:
+                    sched_mod.save(self.jobs, paths.data_root())
+                except OSError:
+                    job.deferred_slot = None
+                    self._system("Self schedule could not record its deferred fire.")
+            return False
         # T1082: the level this job RECORDED at creation. Checked before
         # prepare_fire and the stamp, so a skipped job keeps its slot, run_count
         # and next_run_at for an instance that can run it (C5).
@@ -2984,12 +2981,15 @@ class LiteTUI(App):
             self._system(blocked)
             return
         prior_slot, prior_count = getattr(job, "last_fired_slot", None), job.run_count
+        prior_deferred = getattr(job, "deferred_slot", None)
+        job.deferred_slot = None
         job.last_fired_slot = sched_mod.slot_of(now)
         job.run_count += 1
         try:
             sched_mod.save(self.jobs, paths.data_root())
         except OSError:
             job.last_fired_slot, job.run_count = prior_slot, prior_count
+            job.deferred_slot = prior_deferred
             self._system("Scheduled work was not delivered because its execution stamp could not be saved.")
             return False
 
@@ -3017,7 +3017,7 @@ class LiteTUI(App):
         source = "loop" if getattr(job, "kind", "cron") == "loop" else "cron"
         header = f"{source} {label} \u00b7 {job.schedule}"
 
-        if job.new_conversation and not self._chat_running():
+        if job.new_conversation and not getattr(job, "owner_agent_id", "") and not self._chat_running():
             self._handle_command("/new")
 
         if self._chat_running():
@@ -3031,7 +3031,10 @@ class LiteTUI(App):
             )
             return True
         self._user_bubble(text, False, header=header)
-        hook_host.start_prompt(self, {"content": text, "tool_profile": profile, "source": "scheduled"})
+        item = {"content": text, "tool_profile": profile, "source": "scheduled"}
+        if getattr(job, "owner_agent_id", ""):
+            item.update(owner_agent_id=job.owner_agent_id, owner_convo_id=job.owner_convo_id)
+        hook_host.start_prompt(self, item)
         return True
 
     async def _contextualise_tool_result(self, name: str, raw: str) -> str:
@@ -3141,6 +3144,15 @@ class LiteTUI(App):
                 pass  # the record must never take the fallback down with it
             return tool_context.render_mask(name, raw, pointer)
         return tool_context.render_summary(name, raw, pointer, summary)
+
+    def _prefix_cache_backend(self) -> bool:
+        """True on a backend whose server keeps a prefix cache that any change to the prompt's start throws away (NInfer)."""
+        return getattr(self.backend, "name", "") == "ninfer"
+
+    def _remember_chat_tools(self) -> list[dict]:
+        """The tools a chat request advertises, kept so a compaction can send the SAME array (prefix cache)."""
+        self._last_chat_tools = self._all_tools()
+        return self._last_chat_tools
 
     def _all_tools(self) -> list[dict]:
         """Static tools + the `skill` tool + every MCP tool, as OpenAI specs."""
@@ -3489,6 +3501,13 @@ class LiteTUI(App):
         policy = self.plugins.policy_for(name)
         if policy is None:
             return tool_denied("no-metadata", app=self, name=name), False
+        if name == "write" and isinstance(args.get("path"), str) and args["path"]:
+            # Bind policy and execution to the same cwd-based target, even if cwd changes while approving.
+            from litetui.plugins.core_tools import _resolve_path
+            try:
+                args = {**args, "path": str(_resolve_path(args["path"]))}
+            except (OSError, RuntimeError, ValueError) as exc:
+                return f"[error] write path cannot be resolved: {exc}", False
         hook_profile = getattr(self, "_active_tool_profile", None) or tool_policy.STRICT
         authorize = getattr(self, "_authorize_action", partial(LiteTUI._authorize_action, self))
         refusal = await authorize(name, args, policy, profile=hook_profile)
@@ -3834,7 +3853,12 @@ class LiteTUI(App):
         base = self._system_prompt_text()
         floor = prompt_compiler.compile_prompt_file(
             paths.SYSTEM_PROMPT_FILE, root=paths.ROOT, user_name=self.settings.user_name).strip()
-        return {"role": "system", "content": base, "litetui_prompt_owner": 1, "litetui_prompt_version": 2,
+        # Fleet text is a suffix: request-time base recomposition must preserve it.
+        content = base
+        if getattr(getattr(self, "seat", None), "registered", False):
+            content = appsvc.extend_system_text(
+                base, self._fleet_identity_sentence() + load_prompt("harness-capabilities", app=self))
+        return {"role": "system", "content": content, "litetui_prompt_owner": 1, "litetui_prompt_version": 2,
                 "litetui_prompt_base": base, "litetui_prompt_ordinary_start": len(floor) + 2,
                 "litetui_ordinary_text": self._ordinary_prompt_text("ordinary-instructions").strip(),
                 "litetui_seat_text": self._ordinary_prompt_text("seat-instructions")}
@@ -4195,9 +4219,9 @@ class LiteTUI(App):
         current = self.conversation[0].get("content") or ""
         if text in current:
             return                      # idempotent across resume/re-register
-        # The store snapshot is always the LAST block (strip_store_block cuts
-        # from its header to the end), so late text goes in front of it.
-        cut = current.find("\n\n" + STORE_HEADER) if isinstance(current, str) else -1
+        # Use the same trailing snapshot boundary as strip_store_block so late
+        # text survives compaction, without treating user marker lines as blocks.
+        cut = appsvc.store_block_start(current) if isinstance(current, str) else -1
         if cut >= 0:
             merged = appsvc.extend_system_text(current[:cut], text) + current[cut:]
         else:
@@ -6211,7 +6235,7 @@ class LiteTUI(App):
             if (getattr(self, '_agent_session', None) is not None
                     and not await self._register_owned_startup()):
                 return
-            if self._cli_convo_id:
+            if getattr(self, '_cli_convo_id', None):
                 from litetui.seat_prompts import rehydrate
                 if not rehydrate(self):
                     self._cli_launch_error = "Launch text mismatch: exact supplied launch provenance could not be proved; resume with identical launch sources or start a new conversation (omit --convo). Nothing was sent"
@@ -7719,7 +7743,7 @@ class LiteTUI(App):
     def _card_summary_key(answer: str) -> str:
         """Stable id for a summary: a hash of the answer it describes.
 
-        Not the message index - compaction and /truncate renumber the list, and
+        Not the message index - compaction renumbers the list, and
         an index would re-point a stored summary at a different reply.
         """
         return hashlib.sha1((answer or "").strip().encode("utf-8")).hexdigest()[:16]
@@ -9214,7 +9238,8 @@ class LiteTUI(App):
                 LiteTUI._validate_owned_execution(self)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
-                return
+                from litetui.turn_deferral import STREAM_REFUSED
+                return STREAM_REFUSED  # T0483-A: refused, not run
         from litetui.turn_deferral import STREAM_DEFERRED, TurnDeferred
         try:
             if (restart_checkpoint.is_held(self)
@@ -9231,7 +9256,8 @@ class LiteTUI(App):
                 LiteTUI._validate_owned_execution(self)
             except (ValueError, OSError, llm_backend.BackendError) as exc:
                 self._system(str(exc))
-                return
+                from litetui.turn_deferral import STREAM_REFUSED
+                return STREAM_REFUSED  # T0483-A: refused, not run
         if getattr(self.backend, "owns_native_turns", False):
             from litetui.claude_turn import stream_turn
             await stream_turn(self)
@@ -9299,7 +9325,15 @@ class LiteTUI(App):
         native_loop = hasattr(self.backend, "app_server")
         if native_loop:
             self.tps = None
-        for _iteration in range(self.settings.tool_iterations):
+        # OAuth tools run only AFTER a whole stream succeeds. Native turns may
+        # already have effects mid-stream, so never replay those. Typed turns
+        # retain live RPC output; unattended panes stay live but RPC drafts wait.
+        recover_request = (self.backend.name == "codex" and not native_loop
+                           and getattr(self, "_hook_source", None) in tool_policy.UNATTENDED_SOURCES)
+        retry_budget = model_transport.CodexRequestRetry() if recover_request else None
+        retry_kwargs = None
+        _iteration = 0
+        while _iteration < self.settings.tool_iterations:
             # /pause: THE WHOLE LOOP HOLDS HERE. the user, 2026-09-18: "the entire
             # agent loop wrapped in a if not paused statement ... that i can
             # toggle with /pause". One gate covers every model round AND a
@@ -9318,7 +9352,7 @@ class LiteTUI(App):
                 # setting that had nothing to do with it.
                 stopped_early = True
                 break
-            if _iteration and self._autocompact_due() is not None:
+            if _iteration and retry_kwargs is None and self._autocompact_due() is not None:
                 # THE BUDGET IS SPENT INSIDE A TURN, SO IT MUST BE CHECKED
                 # INSIDE ONE. Both _maybe_autocompact calls below sit at
                 # `return` statements, so a turn that keeps calling tools
@@ -9376,10 +9410,56 @@ class LiteTUI(App):
                 max_tokens_chat=self.settings.max_tokens_chat,
                 request_overrides=self._effective_request_overrides(),
                 thinking_level=self.thinking_level,
-                tools=self._all_tools(),  # advertised even when OFF — see turn_engine
+                tools=self._remember_chat_tools(),  # advertised even when OFF — see turn_engine
                 backend_name=self.backend.name,
                 graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
             )
+            # The chat template prints the effort in the FIRST lines of the prompt ("Reasoning Effort: 50"), so a request with a
+            # different effort re-reads the whole prompt. A compaction on NInfer must send this exact value.
+            self._last_chat_effort = (kwargs.get("extra_body") or {}).get("reasoning_effort")
+
+            if retry_kwargs is not None:
+                kwargs = retry_kwargs
+            elif recover_request:
+                kwargs["retry_budget"] = retry_budget
+                retry_kwargs = kwargs
+            rpc_deltas = []
+
+            def emit_delta(event):
+                if recover_request:
+                    rpc_deltas.append(event)
+                else:
+                    self._rpc_emit(event)
+
+            async def retry_failed_request(error, failed_stream=None):
+                if (retry_budget is None or self._stop_requested
+                        or not isinstance(error, model_transport.UnattendedRetryableError)):
+                    return False
+                delay = retry_budget.take_delay()
+                if delay is None:
+                    return False
+                # Nothing from this failed request was appended or executed.
+                # Stop pending paints; retain only a visibly discarded pane card.
+                sink.cancel()
+                self._elapsed.stop_body()
+                self._thinking_done()
+                for msg in tool_msgs.values():
+                    self._tool_end(msg)
+                    msg.remove()
+                widget.border_title = "Discarded attempt"
+                widget.set_answer(
+                    f"Attempt {retry_budget.used} failed: {_detail_sentence(error)} "
+                    f"[discarded; retrying in {delay:g}s]")
+                widget.body.styles.text_style = "dim"
+                widget.settled = True
+                if failed_stream is not None and hasattr(failed_stream, "close"):
+                    await failed_stream.close()
+                self._retry_notice(f"Retrying Codex request in {delay:g}s…")
+                try:
+                    await asyncio.sleep(delay)
+                finally:
+                    self._clear_retry_wait()
+                return True
 
             self._tps.start()
             try:
@@ -9395,6 +9475,8 @@ class LiteTUI(App):
                     retry_notice=self._retry_notice, **kwargs
                 )
             except Exception as e:
+                if await retry_failed_request(e):
+                    continue
                 runtime_log.record(
                     "turn_stream_failed",
                     site="app.stream.open",
@@ -9554,7 +9636,7 @@ class LiteTUI(App):
                             self.tps = rate
                         self._glassbox_rate("thinking")
                         reasoning += token
-                        self._rpc_emit({"type": "reasoning_delta", "text": token})
+                        emit_delta({"type": "reasoning_delta", "text": token})
                         if thinking is None and self.settings.show_thinking:
                             thinking = ThinkingBlock()
                             self._thinking_live = thinking
@@ -9596,7 +9678,7 @@ class LiteTUI(App):
                         text_full += delta.content
                         visible_delta = recap_stream.feed(delta.content)
                         if visible_delta:
-                            self._rpc_emit({"type": "text_delta", "text": visible_delta})
+                            emit_delta({"type": "text_delta", "text": visible_delta})
                         sink.show(recap_stream.visible)
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
@@ -9647,6 +9729,8 @@ class LiteTUI(App):
                             tool_msgs[idx].set_args(tool_acc[idx]["arguments"])
                             self._scroll_down()
             except Exception as e:
+                if await retry_failed_request(e, stream):
+                    continue
                 runtime_log.record(
                     "turn_stream_failed",
                     site="app.stream.iterate",
@@ -9717,7 +9801,7 @@ class LiteTUI(App):
                 # reasoning would describe work the card never shows.
                 final_delta = recap_stream.finish()
                 if final_delta:
-                    self._rpc_emit({"type": "text_delta", "text": final_delta})
+                    emit_delta({"type": "text_delta", "text": final_delta})
                 sink.finish(recap_stream.visible)
                 # The completion hook may reject this draft or this may be a
                 # tool round. Keep recap pending until the terminal acceptance gate.
@@ -9732,6 +9816,12 @@ class LiteTUI(App):
                 else:
                     widget.body.styles.display = "none"
             self._scroll_down()
+
+            for event in rpc_deltas:
+                self._rpc_emit(event)
+            _iteration += 1  # failed requests do not spend the tool-round budget
+            retry_kwargs = None
+            retry_budget = model_transport.CodexRequestRetry() if recover_request else None
 
             # Record the assistant turn (content and/or tool_calls) so the
             # model keeps full context across the loop.
@@ -10317,14 +10407,14 @@ class LiteTUI(App):
             handoff=request.handoff,
         )
 
-    async def _owner_gate(self, t0_ns: int) -> tuple[bool, str]:
-        """Owner mode: (ok, reason) for "NOW.md was rewritten since t0 and owner-handoff committed it".
+    async def _owner_gate(self, before: owner_mode.NowSnapshot) -> tuple[bool, str]:
+        """Owner mode: (ok, reason) for "NOW.md changed during compaction and owner-handoff committed it".
 
         The single gate every backend calls AFTER STEP 1 and BEFORE anything is truncated.
         """
         session = getattr(self, "_agent_session", None)
         agent_id = session.authority.agent_id if session is not None else None
-        return await owner_mode.owner_gate(self._owner_memory_dir, t0_ns, agent_id)
+        return await owner_mode.owner_gate(self._owner_memory_dir, before, agent_id)
 
     async def _owner_drive_turn(self, text: str, *, restart_maintenance=None) -> bool:
         """Owner mode: send `text` as ONE normal user turn through the engine and wait for it.
@@ -10343,9 +10433,13 @@ class LiteTUI(App):
         if not hook_host.accept_prompt(self, item, **admission):
             self._system("The owner STEP 1 turn was not admitted; the context was not compacted.")
             return False
-        from litetui.turn_deferral import STREAM_DEFERRED
-        if await LiteTUI._stream.__wrapped__(self, restart_maintenance=restart_maintenance) is STREAM_DEFERRED:
+        from litetui.turn_deferral import STREAM_DEFERRED, STREAM_REFUSED
+        result = await LiteTUI._stream.__wrapped__(self, restart_maintenance=restart_maintenance)
+        if result is STREAM_DEFERRED:
             self._system("Owner maintenance was deferred; context was not compacted.")
+            return False
+        if result is STREAM_REFUSED:
+            self._system("The owner STEP 1 turn was refused; the context was not compacted.")
             return False
         if self._stop_requested:
             self._system("Stopped; the context was not compacted.")
@@ -10358,7 +10452,9 @@ class LiteTUI(App):
         Codex's own auto-compaction cannot be intercepted (named limit); this runs on a
         manual /compact, which is why the 70% reminder exists.
         """
-        owner_dir, t0 = self._owner_memory_dir, self._owner_compact_t0
+        owner_dir, before = self._owner_memory_dir, self._owner_compact_now
+        if before is None:
+            before = owner_mode.NowState.ABSENT
         text = owner_mode.compact_prompt(owner_dir, summary=False, app=self, fresh=True)
         why = None
         for attempt in (1, 2):
@@ -10368,7 +10464,7 @@ class LiteTUI(App):
                 self._system(f"NOW.md was not saved ({why}); asking once more.")
             if not await self._owner_drive_turn(text, restart_maintenance=restart_maintenance):
                 return False, None
-            passed, why = await self._owner_gate(t0)
+            passed, why = await self._owner_gate(before)
             if passed:
                 return True, None
             text = owner_mode.retry_text(why, owner_dir, summary=False)
@@ -10378,11 +10474,13 @@ class LiteTUI(App):
         """Owner mode, every backend: one system message each time the context rises through 70%."""
         if getattr(self, "_owner_memory_dir", None) is None:
             return
-        crossed = bool(value and self.ctx_max
-                       and value * 100 >= self.ctx_max * owner_mode.REMINDER_AT_PERCENT)
+        # An unknown reading (None) or window is not "below 70%": it must not re-arm (T0483-C).
+        if value is None or not self.ctx_max:
+            return
+        crossed = value * 100 >= self.ctx_max * owner_mode.REMINDER_AT_PERCENT
         if crossed and not self._owner_reminded:
             self._owner_reminded = True
-            self._system(owner_mode.CONTEXT_REMINDER)
+            self._system(owner_mode.context_reminder(value * 100 // self.ctx_max))
         elif not crossed:
             self._owner_reminded = False
 
@@ -10401,16 +10499,23 @@ class LiteTUI(App):
             await LiteTUI._compact_body(self, extra, handoff=handoff, restart_maintenance=restart_maintenance)
 
     async def _compact_body(self, extra: str = "", *, handoff: str | None = None, restart_maintenance=None) -> None:
-        # Owner mode: the time STEP 1 begins. The gate (owner_gate) accepts NOW.md only if it
-        # was rewritten at or after this, and runs before anything is truncated.
-        self._owner_compact_t0 = time.time_ns() if getattr(self, '_owner_memory_dir', None) is not None else None
+        # Snapshot before STEP 1: content, not filesystem clocks, proves a rewrite.
+        self._owner_compact_now: owner_mode.NowSnapshot | None = None
+        owner_dir = getattr(self, '_owner_memory_dir', None)
+        if owner_dir is not None:
+            # T0483-B: a cancelled compaction's handoff commit lands before this STEP 1 snapshots.
+            await owner_mode.settle_inflight_handoff(owner_dir)
+            try:
+                self._owner_compact_now = (Path(owner_dir) / owner_mode.NOW).read_bytes()
+            except OSError:
+                self._owner_compact_now = owner_mode.NowState.ABSENT
         if getattr(self.backend, "owns_native_turns", False):
             # LiteTUI's own compaction, adapted in the Claude layer (the user
             # 2026-09-24: "I want to only change Claude"). Nothing below runs.
             from litetui.claude_compact import compact
             auto = getattr(self, "_compact_is_auto", False)
             self._compact_is_auto = False
-            await compact(self, extra, auto=auto, handoff=handoff)
+            await compact(self, extra, auto=auto, handoff=handoff, owner_before=self._owner_compact_now)
             return
         if hasattr(getattr(self, "backend", None), "app_server"):
             self._stop_requested = False
@@ -10482,7 +10587,7 @@ class LiteTUI(App):
         # Owner mode swaps STEP 1 (NOW.md rewrite + DOMAIN.md append in the owner folder).
         owner_dir = getattr(self, '_owner_memory_dir', None)
         compact_text = owner_mode.compact_prompt(owner_dir, app=self, fresh=True) if owner_dir is not None else compact_prompt
-        owner_t0 = getattr(self, '_owner_compact_t0', None) if owner_dir is not None else None
+        owner_before = getattr(self, '_owner_compact_now', None) if owner_dir is not None else None
         owner_failure = None  # why NOW.md was not committed, once the one retry is spent
         owner_retried = False
         owner_first_summary = ""
@@ -10512,6 +10617,23 @@ class LiteTUI(App):
             # holds and update rather than duplicate.
             block = appsvc.store_block(self, live=True)
             ask.insert(0, {**system, "content": system.get("content", "") + block})
+        # NInfer prefix cache (Ryan 2026-11-08): the request above has a different system text (the live store appended),
+        # no tail and a different tools array, so the server re-read the whole 83k-token prompt from zero (~6 min, 0 reused,
+        # while turns that reuse the prefix take 3 s). Send the conversation EXACTLY as the last turn did, the same tools
+        # array, and put everything compaction adds in ONE final user message; only that message is new to the server.
+        compact_tools = None
+        if self._prefix_cache_backend() and getattr(self, "_last_chat_tools", None) is not None:
+            try:
+                prefix = self._request_messages()
+            except Exception:
+                prefix = None  # scoped-guidance error and the like: keep the old request
+            if prefix:
+                live_block = appsvc.store_block(self, live=True) if system else ""
+                ask = prefix + [{"role": "user", "content": (
+                    compact_text + (f"\n\n{extra}" if extra else "")
+                    + f"\n\nThe last {len(tail)} messages stay verbatim after your summary: summarize only what came before them."
+                    + (f"\n\n{live_block}" if live_block else ""))}]
+                compact_tools = self._last_chat_tools
 
         # Tools are passed so STEP 1 of COMPACT_PROMPT can actually happen.
         # Without them the instruction to persist is theatre: the model narrates
@@ -10533,6 +10655,8 @@ class LiteTUI(App):
             # A counter, not range(): the owner retry gets its OWN budget of rounds (below),
             # so STEP 1 spending all of compact_max_tool_iters cannot starve the retry.
             round_no, round_budget = 0, self.settings.compact_max_tool_iters
+            learned_cap = None  # the room a server once named; later rounds start from it
+            said_cut = False
             while round_no < round_budget:
                 round_no += 1
                 round_started = time.perf_counter()
@@ -10541,10 +10665,11 @@ class LiteTUI(App):
                 kwargs = TurnEngine.compact_request(
                     model_id=self.model_id,
                     messages=ask,
-                    max_tokens=self.settings.compact_max_tokens,
+                    max_tokens=(min(self.settings.compact_max_tokens, learned_cap)
+                                if learned_cap else self.settings.compact_max_tokens),
                     thinking_level=self.settings.compact_thinking_level,
                     tools_enabled=self.tools_enabled,
-                    tools=self._all_tools(),  # advertised even when OFF — see turn_engine
+                    tools=compact_tools if compact_tools is not None else self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
                     graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                     supported_reasoning_levels=(
@@ -10557,12 +10682,38 @@ class LiteTUI(App):
                     ),
                 )
 
+                if compact_tools is not None:
+                    effort_body = dict(kwargs.get("extra_body") or {})
+                    chat_effort = getattr(self, "_last_chat_effort", None)
+                    if chat_effort:
+                        effort_body["reasoning_effort"] = chat_effort
+                    else:
+                        effort_body.pop("reasoning_effort", None)
+                    kwargs["extra_body"] = effort_body
                 kwargs["stream_options"] = {"include_usage": True}
                 # Fresh request: drop the previous round's prefill so a stale
                 # 100% never shows while this prompt is still being sent
                 # (same rule as _stream's clear at request start).
                 self._eta.clear_prefill()
-                stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
+                try:
+                    stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
+                except Exception as refused:
+                    # REACTIVE ONLY: no prompt size is estimated anywhere. When a server
+                    # refuses max_tokens and names the room it has ("... at most 16300"),
+                    # believe it and retry once at that number. Anything else is raised as is.
+                    hint = TurnEngine.max_tokens_hint(str(refused))
+                    if not (hint and TurnEngine.COMPACT_MIN_RETRY_TOKENS <= hint < kwargs["max_tokens"]):
+                        raise
+                    if not said_cut:
+                        said_cut = True
+                        self._system(
+                            f"The server has room for {hint:,} tokens of summary, not "
+                            f"{kwargs['max_tokens']:,}; retrying with {hint:,}."
+                        )
+                    learned_cap = hint
+                    kwargs["max_tokens"] = hint
+                    self._eta.clear_prefill()
+                    stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 provider_metadata = None
                 text_full = ""
                 tool_acc: dict = {}
@@ -10638,10 +10789,10 @@ class LiteTUI(App):
                 if not tool_acc:
                     card.record_round(timing)
                     summary = text_full.strip()
-                    if owner_t0 is not None and summary:
+                    if owner_before is not None and summary:
                         # The model is done with STEP 1 and STEP 2. Before anything is
                         # truncated: did NOW.md change, and did owner-handoff commit it?
-                        passed, why = await self._owner_gate(owner_t0)
+                        passed, why = await self._owner_gate(owner_before)
                         owner_failure = None if passed else why
                         owner_retry_gated = owner_retried
                         if not passed and not owner_retried:
@@ -10712,10 +10863,10 @@ class LiteTUI(App):
                     card.fail("stopped — conversation unchanged")
                     self._system(self._stop_reason or "[stopped by you]")
                     return
-            if owner_t0 is not None and owner_retried and not owner_retry_gated:
+            if owner_before is not None and owner_retried and not owner_retry_gated:
                 # The retry spent its whole budget on tool calls and never summarised, so no
                 # gate has judged what it wrote. Judge it now, before anything is truncated.
-                passed, why = await self._owner_gate(owner_t0)
+                passed, why = await self._owner_gate(owner_before)
                 owner_failure = None if passed else why
         except Exception as e:
             self._autocompact_failed_at = self.ctx_used
@@ -10729,11 +10880,15 @@ class LiteTUI(App):
                 exc=e,
             )
             card.fail("failed \u2014 conversation unchanged")
+            said = _plain_backend_error(e, self.backend)
+            if said.startswith("Something went wrong talking to the model server"):
+                # The generic sentence hides what the server said; a compaction refusal
+                # is exactly when the server's own words are the useful part.
+                detail = _detail_sentence(e)
+                said = f"{said} The server said: {detail}" if detail else said
             self._system(
                 f"Compact failed — conversation unchanged.\n"
-                f"{_plain_backend_error(e, self.backend)}"
-                + _compaction_fit_note(self.ctx_used, self.ctx_max,
-                                       loaded=getattr(self, "ctx_loaded", False))
+                f"{said}"
             )
             self._emit_compaction("failed",
                                   tokens_before=self.ctx_used,
@@ -10773,10 +10928,20 @@ class LiteTUI(App):
         ]
         if handoff is not None:
             pair[0]["content"] += "\n\n[Agent's pre-compaction handoff]\n" + handoff
+        # NInfer (Ryan 2026-11-08): the server reuses a prefix only at a stored checkpoint of exact tokens. Re-snapshotting
+        # the store rewrote the tail of message 0, so the system text and tools, about 11k of the 20k tokens after a
+        # compaction, were prefilled again from zero (321 s). Keep message 0 byte-identical and carry the fresh store in the
+        # summary message instead.
+        keep_system_bytes = self._prefix_cache_backend()
         if system and isinstance(system.get("content"), str):
-            # The kept message 0 carries the pre-compaction snapshot. Cut it so
-            # the next request injects the files as they are on disk now.
-            system = {**system, "content": appsvc.strip_store_block(system["content"])}
+            if keep_system_bytes:
+                fresh_store = appsvc.store_block(self, live=True)
+                if fresh_store:
+                    pair[0]["content"] += "\n\n[Your store as it is on disk now]" + fresh_store
+            else:
+                # The kept message 0 carries the pre-compaction snapshot. Cut it so
+                # the next request injects the files as they are on disk now.
+                system = {**system, "content": appsvc.strip_store_block(system["content"])}
         rebuilt: list[dict] = ([system] if system else []) + pair + tail
 
         # T832: ONE number for the size this conversation now is. It used to
@@ -10804,7 +10969,7 @@ class LiteTUI(App):
             "summary_chars": len(summary), "store_files": writes, "rounds": rounds,
         })
         self.conversation = rebuilt
-        if system:
+        if system and not keep_system_bytes:
             # Replay must equal memory now, not after the next request.
             self._store_injected = False
             self._edit(0, "store snapshot dropped at compaction")
@@ -11052,7 +11217,8 @@ class LiteTUI(App):
         # /reconnect — a RUNNING engine keeps its current --max-context until it
         # is restarted. Say that, or the control reads as broken.
         spawn = [c for c in changed if c in ("ninfer_max_context", "ninfer_max_concurrency",
-                                            "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib",
+                                            "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib", "ninfer_speed_preset",
+                                            "ninfer_auto_long_anchors", "ninfer_derive_session_keys",
                                             "ninfer_artifact", "ninfer_executable")]
         if spawn:
             note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "

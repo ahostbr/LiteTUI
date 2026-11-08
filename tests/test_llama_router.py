@@ -295,16 +295,42 @@ def test_seat_cycle_on_router(stub, tmp_path):
     assert stub.models["seat"]["state"] == "loaded"
 
 
-def test_seat_refusal_when_attached(stub, tmp_path):
+def _attached(stub):
     s = Settings()
     s.llama_host = "http://127.0.0.1:1"
     s.llama_attach_hosts = [stub.host]
     b = LlamaCppBackend(s)
     _run(b.ensure_running())
-    stub.add("seat", state="loaded")
-    assert b.seat_snapshot("seat") is None, "an unmanageable seat must read as not-suspendable"
+    assert b.attached
+    return b
+
+
+def test_an_attached_seat_is_snapshotted_so_a_refusal_is_said_not_skipped(stub, tmp_path):
+    """T0702. A None snapshot meant "not resident" to the studio tool, which then generated
+    BESIDE the loaded model and said nothing. Ryan 2026-10-26 chose the router's own API over
+    that; a router nobody signed for is still refused — by name, so no generation starts."""
+    b = _attached(stub)
+    stub.add("seat", state="loaded", ctx=4096)
+    assert b.seat_snapshot("seat") == {"identifier": "seat", "context": 4096, "parallel": None,
+                                       "status": "idle", "queued": 0}
     err = b.seat_suspend({"identifier": "seat"})
     # T137 wording: the owner is read from router.json (this stub wrote none),
     # so it is honestly "another app" — never a baked-in LiteSuite guess.
     assert err and "another app owns" in err
     assert "LiteSuite" not in err
+    assert stub.models["seat"]["state"] == "loaded"
+
+
+def test_a_signed_attached_router_frees_the_seat_through_its_own_api(stub, tmp_path):
+    """Ryan 2026-10-26 (T0702), for LiteSuite's router: "Unload via the router API" — the seat's
+    model is unloaded with /models/unload and loaded again with /models/load; the router is
+    never restarted and its ini never rewritten (`_refuse_if_attached` keeps those refused)."""
+    b = _attached(stub)
+    b._attached_owner = "litesuite"
+    b._probe_shape = lambda: llm_backend._SHAPE_ROUTER
+    stub.add("seat", state="loaded", ctx=4096)
+    rec = b.seat_snapshot("seat")
+    assert b.seat_suspend(rec) is None and stub.models["seat"]["state"] == "unloaded"
+    assert b.seat_resume(rec) is None and stub.models["seat"]["state"] == "loaded"
+    assert [(m, p) for m, p, _ in stub.requests if m == "POST"] == [
+        ("POST", "/models/unload"), ("POST", "/models/load")]

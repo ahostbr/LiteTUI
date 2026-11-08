@@ -30,14 +30,28 @@ their rule something and so are mirrored; 4 ask it nothing and pass whatever the
 settings rule does (named at ASKS_NOTHING, and pinned). A case added to that
 file later is mirrored without an edit here.
 
+ADDED (T0306-S, cut S1): the rule asks the floor with every recognition it can
+add (deny_floor.MORE), so these are refused too: a copy, move or link of a file
+of that name INTO the folder (`cp other/settings.json <root>/`, robocopy and
+rsync included); a stream suffix on a FOLDER of a shell path word
+(`<root>::$INDEX_ALLOCATION/settings.json`); the file's own 8.3 short name in a
+writer's argument; `dd of=<file>`; `cp -l <file> alias`; Git pathspec magic
+(`:/settings.json`, `:(top)settings.json`); the path inside a .NET call
+(`[IO.File]::WriteAllText(...)`). The rule also reads the folder keys `workdir`,
+`working_directory` and `dir` beside `cwd`, and tries a string under ANY key as
+a path when its last segment is the name. And the data root's marker,
+`.litetui-data.json`, is guarded the same way (a root known only by its marker
+loses every guard once the marker is gone).
+
 NOT covered, by this rule or by the schedule file's (they share every one):
-- everything in the ceiling above;
-- a wildcard or a brace in the name (`settings.jso?`, `*.json`, `{settings,x}.json`);
+- everything in the ceiling above, except the short name and the folder stream
+  suffix, which the added recognitions now judge;
+- a wildcard or a brace in the name of the file WRITTEN (`settings.jso?`,
+  `*.json`, `{settings,x}.json`); a wildcard in a copy's SOURCE is judged;
 - a whole-folder copy, extract or clean that never names the file;
-- the data root's marker removed first, for a root known only by its marker;
-- a PowerShell expression that carries the path in a .NET call;
-- a path under an argument key the rule does not read (it reads `path`,
-  `file_path`, `notebook_path`, a `command`, and a patch's file headers);
+- a .NET call on a reader's result (`(Get-Item <file>).Delete()`), and a `file:`
+  URI under any key;
+- a folder key and a file-name key given apart (`output_dir` + `filename`);
 - a seat editing the installed source; the Claude Code hook path, which does not
   judge this file at all (only a LiteTUI seat does).
 A delete or a garbled file is not a lesser case of those: the file then loads as
@@ -76,20 +90,14 @@ When such a file takes effect, MEASURED on temp roots (the tests named
   reopened; garbled, it stops the agent from starting and, for as long as it
   is garbled, fails the ownership check of EVERY seat on the data root.
   THE RULE DOES NOT STAND BETWEEN A SEAT AND THAT STOP: an EMPTY FOLDER made
-  below `.agents`, or the initializing marker put in a seat's home, stops
-  every seat the same way, names no settings file, and the rule says nothing
-  about either (the catalog reads every folder below `.agents`);
+  below `.agents` stops every seat the same way, and the initializing marker
+  put in an agent's home stops that ONE agent; neither names a settings file,
+  and the rule says nothing about either (the catalog reads every folder below
+  `.agents`);
 - the legacy copy, <root>/.convos/<id>/settings.json, is never loaded: a seat
   refuses to resume a transcript outside its own agent. It is not in the rule.
 
 NOT covered for the files below `.agents`, beyond everything listed above:
-- a file of that name COPIED OR MOVED INTO the folder (`cp other/settings.json
-  <folder>/`): the name is in the source word only. Pinned as a known limit by
-  one test here; it holds for the device file and the schedule file too;
-- a folder spelled with a stream suffix in a SHELL command
-  (`.agents::$INDEX_ALLOCATION/...`): the `$` makes the recognizer read the path
-  as holding a variable. The write and edit tools are judged (tested here);
-- the file's own 8.3 short name in an argument word (`rm <folder>/SETTIN~1.JSO`);
 - a delete of the conversation's or the agent's whole folder, or of the file
   through a wildcard. A conversation whose file is missing or unreadable falls
   back to the device defaults, which are the autonomous profile, AND loses
@@ -249,6 +257,7 @@ def test_an_unprotected_write_never_asks_who_owns_the_seat(app, tmp_path, monkey
         raise AssertionError("the bridge was asked about a write that is not protected")
 
     monkeypatch.setattr(seat_authority, "pty_taint_clean", asked)
+    monkeypatch.setattr(seat_authority, "pty_taint_state", asked)
     assert seat_authority.settings_file_refusal(
         a, {"path": str(tmp_path / "notes.md"), "content": "x"}, tmp_path) is None
 
@@ -685,27 +694,277 @@ def test_the_folders_short_name_is_followed_when_the_volume_gives_one(app, tmp_p
         assert why and BELOW_WORDS in why, args
 
 
-def test_known_limit_a_same_named_file_copied_into_the_folder_is_not_refused_today(
-        app, tmp_path, monkeypatch):
-    """KNOWN LIMIT, PINNED ON PURPOSE. A copy or a move whose destination is the
-    FOLDER carries the file's name in its source word only, and the recognizer
-    looks at words that hold the name and resolve to the protected file. So this
-    replaces the file and is not refused, for a file below `.agents`, for the
-    device file and for the schedule file alike. A fix must change this test
-    knowingly; until then it says what is true."""
+def test_a_same_named_file_copied_into_the_folder_is_refused(app, tmp_path, monkeypatch):
+    """T0306-S closes what was pinned here as a known limit. A copy or a move
+    whose destination is the FOLDER carries the file's name in its source word
+    only; the floor's added recognition (copy-into) judges folder / the source's
+    name. For a file below `.agents`, for the device file and for the schedule
+    file alike; and only for a seat that is not the owner's."""
     a, _ = _agent(app, monkeypatch)
+    a.convo_dir.mkdir(parents=True)
     forms = ("cp other/NAME {dir}/", "mv other/NAME {dir}", "cp -t {dir} other/NAME",
              "Copy-Item other/NAME -Destination {dir}", "cd {dir} && cp ../other/NAME .")
     asked = [(SETTINGS, seat_authority.settings_file_refusal, folder)
              for folder in (tmp_path, a.convo_dir, tmp_path / ".agents" / "Probe")]
     asked.append((JOBS, seat_authority.jobs_file_refusal, tmp_path))
     for name, rule, folder in asked:
-        # CONTROL: the same rule does refuse a copy ONTO the file in that folder.
         assert rule(a, {"command": f"cp other/{name} {folder.as_posix()}/{name}"}, tmp_path)
         for form in forms:
             command = form.format(dir=folder.as_posix()).replace("NAME", name)
-            assert rule(a, {"command": command}, tmp_path) is None, (
-                command, "now refused: the limit is closed, change this test and the header")
+            why = rule(a, {"command": command}, tmp_path)
+            assert why and "T0306" in why or "T1085" in (why or ""), command
+            assert rule(_owners(a), {"command": command}, tmp_path) is None, "the owner's own seat"
+            a._spawned_seat, a._owner_seat = True, False
+        # CONTROL: a file of another name copied into the folder is not this file.
+        assert rule(a, {"command": f"cp other/notes.md {folder.as_posix()}/"}, tmp_path) is None
+
+
+# ── T0306-S: the floor's added recognitions, asked by the rule (MORE) ──
+
+#: (command, the file it writes): ROOT a data root, OTHER a plain folder, NAME the file.
+MORE_WRITES = [
+    "cp OTHER/NAME ROOT/", "mv OTHER/NAME ROOT",
+    "cp --target=ROOT OTHER/NAME", "cp -tROOT OTHER/NAME", "env cp OTHER/NAME ROOT/",
+    "timeout 20 cp OTHER/NAME ROOT/", "Copy-Item OTHER/NAME,OTHER/x.json ROOT",
+    "cp --li ROOT/NAME OTHER/alias",
+    'echo x > "ROOT::$INDEX_ALLOCATION/NAME"', 'rm "ROOT:$I30:$INDEX_ALLOCATION/NAME"',
+    "dd if=/dev/null of=ROOT/NAME", "cp -l ROOT/NAME OTHER/alias", "cp --link ROOT/NAME OTHER/alias",
+    "[IO.File]::WriteAllText('ROOT/NAME','x')", '[System.IO.File]::Delete("ROOT/NAME")',
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("template", MORE_WRITES)
+async def test_an_added_recognition_is_refused_for_a_seat_that_is_not_the_owners(
+        app, tmp_path, monkeypatch, profile, template):
+    a, sent = _agent(app, monkeypatch, profile)
+    other = tmp_path / "other"
+    other.mkdir()
+    for name, rule in ((SETTINGS, seat_authority.settings_file_refusal), (JOBS, seat_authority.jobs_file_refusal)):
+        command = template.replace("ROOT", tmp_path.as_posix()).replace("OTHER", other.as_posix()).replace("NAME", name)
+        denied = await _door(a, "bash", command, tmp_path)
+        assert denied and "may not" in denied[0], (command, "the write was allowed")
+        assert rule(a, {"command": command}, tmp_path), command
+        assert rule(_owners(a), {"command": command}, tmp_path) is None, "the owner's own seat"
+        a._spawned_seat, a._owner_seat = True, False
+    assert sent == []
+
+
+def test_the_short_name_and_the_pathspec_are_refused(app, tmp_path, monkeypatch):
+    """H, on a file that exists (the volume must give it a short name), and N
+    from a subfolder of a repository whose root is the data root."""
+    import ctypes
+    import os
+    a, _ = _agent(app, monkeypatch)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "sub").mkdir()
+    for name, rule in ((SETTINGS, seat_authority.settings_file_refusal), (JOBS, seat_authority.jobs_file_refusal)):
+        for command in (f"git checkout HEAD -- :/{name}", f"git checkout HEAD -- ':(top){name}'"):
+            why = rule(a, {"command": command, "cwd": "sub"}, tmp_path)
+            assert why, command
+            if name == SETTINGS:   # the floor's Git question answered it, not only the shell's
+                assert "run a Git command that writes" in why, why
+        if os.name != "nt":
+            continue
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+        buffer = ctypes.create_unicode_buffer(600)
+        ctypes.windll.kernel32.GetShortPathNameW(str(tmp_path / name), buffer, 600)
+        short = buffer.value.replace("\\", "/").rsplit("/", 1)[-1]
+        if short and short.lower() != name:
+            assert rule(a, {"command": f"rm {tmp_path.as_posix()}/{short}"}, tmp_path), short
+            assert rule(a, {"command": f"cat {tmp_path.as_posix()}/{short}"}, tmp_path) is None
+
+
+# ── T0306-S F: more folder keys, and a string under ANY key tried as a path ──
+
+@pytest.mark.parametrize("key", ["workdir", "working_directory", "dir", "cwd"])
+def test_a_folder_key_is_a_base(app, tmp_path, monkeypatch, key):
+    a, _ = _agent(app, monkeypatch)
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    args = {"cmd": f"echo x > {SETTINGS}", "command": f"echo x > {SETTINGS}", key: str(tmp_path)}
+    assert seat_authority.settings_file_refusal(a, args, tmp_path / "work"), key
+    assert seat_authority.settings_file_refusal(a, {**args, key: str(tmp_path / "work")},
+                                                tmp_path / "work") is None, "CONTROL: a plain folder"
+
+
+@pytest.mark.parametrize("args", [
+    {"output_path": "ROOT/NAME"}, {"destination": "ROOT/NAME", "source": "x.json"},
+    {"filePath": "ROOT/NAME", "content": "x"}, {"file": "ROOT/NAME"}, {"filename": "ROOT/NAME"},
+    {"paths": ["x.md", "ROOT/NAME"]}, {"target_file": "ROOT/NAME"}, {"nested": {"deeper": "ROOT/NAME"}},
+    {"target": "ROOT/agents-file/../NAME"},
+])
+def test_a_path_under_any_key_is_tried(app, tmp_path, monkeypatch, args):
+    a, _ = _agent(app, monkeypatch)
+    for name, rule in ((SETTINGS, seat_authority.settings_file_refusal), (JOBS, seat_authority.jobs_file_refusal)):
+        spelled = json.loads(json.dumps(args).replace("ROOT", tmp_path.as_posix()).replace("NAME", name))
+        assert rule(a, spelled, tmp_path), spelled
+        plain = json.loads(json.dumps(args).replace("ROOT", (tmp_path / "plain").as_posix()).replace("NAME", name))
+        assert rule(a, plain, tmp_path) is None, "CONTROL: not a data root"
+
+
+def test_a_read_only_tool_with_any_key_stays_exempt(app, tmp_path, monkeypatch):
+    a, _ = _agent(app, monkeypatch)
+    args = {"query": "x", "file": str(tmp_path / SETTINGS)}
+    assert seat_authority.settings_file_refusal(a, args, tmp_path, tool_policy.READ_POLICY) is None
+    assert seat_authority.settings_file_refusal(a, args, tmp_path, tool_policy.WRITE_POLICY)
+
+
+def test_a_string_that_is_not_the_name_is_not_tried(app, tmp_path, monkeypatch):
+    """Only a string whose last segment is the name is tried as a path, so
+    content that mentions the file is not a write of it."""
+    a, _ = _agent(app, monkeypatch)
+    for content in (f"see {tmp_path.as_posix()}/{SETTINGS} for the rules", f"{SETTINGS} is the device file",
+                    f"{tmp_path.as_posix()}/{SETTINGS}.bak"):
+        assert seat_authority.settings_file_refusal(
+            a, {"path": str(tmp_path / "notes.md"), "content": content}, tmp_path) is None, content
+
+
+# ── T0306-S D: the data root's marker is asked about as a third name ──
+
+MARKER = ".litetui-data.json"   # spelled here, not read from the rule: the rule's name is what is tested
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [
+    {"command": "rm ROOT/MARKER"}, {"command": "Remove-Item ROOT/MARKER"},
+    {"command": "echo x > ROOT/MARKER"}, {"command": "mv ROOT/MARKER ROOT/old.json"},
+    {"path": "ROOT/MARKER", "content": "{}"},
+])
+async def test_the_data_roots_marker_is_refused_for_a_seat_that_is_not_the_owners(
+        app, tmp_path, monkeypatch, args):
+    a, sent = _agent(app, monkeypatch)
+    (tmp_path / MARKER).write_text("{}", encoding="utf-8")
+    spelled = {k: v.replace("ROOT", tmp_path.as_posix()).replace("MARKER", MARKER) for k, v in args.items()}
+    why = seat_authority.settings_file_refusal(a, spelled, tmp_path)
+    assert why and "T0306" in why and "marks the folder as a LiteTUI data root" in why, spelled
+    policy = tool_policy.SHELL_POLICY if "command" in spelled else tool_policy.WRITE_POLICY
+    assert await a._authorize_action("bash" if "command" in spelled else "write", spelled, policy,
+                                     workspace=tmp_path)
+    assert seat_authority.settings_file_refusal(_owners(a), spelled, tmp_path) is None, "the owner's own seat"
+    assert sent == []
+
+
+def test_a_marker_in_a_folder_that_is_no_data_root_passes(app, tmp_path, monkeypatch):
+    """Planting a marker only ever over-blocks: a folder that is no data root
+    yet may get one, and another file's name there is not the marker."""
+    a, _ = _agent(app, monkeypatch)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    for args in ({"command": f"echo x > {plain.as_posix()}/{MARKER}"},
+                 {"path": str(plain / MARKER), "content": "{}"},
+                 {"command": f"rm {tmp_path.as_posix()}/{MARKER}.bak"}):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
+
+
+# ── T0306-S fix 1 (review R2): the owner's own seat and a bridge that does not answer ──
+
+#: (args, does the rule before T0306-S see it): ROOT the data root (the workspace).
+OWNER_ROWS = [
+    ({"command": "echo x > ROOT/settings.json"}, True),
+    ({"path": "ROOT/settings.json", "content": "{}"}, True),
+    ({"command": "cp OTHER/settings.json ROOT/"}, False),             # MORE: copy-into
+    ({"command": "env cp OTHER/settings.json ROOT/"}, False),
+    ({"path": "notes.md", "content": "settings.json"}, False),         # F: a value under any key
+    ({"files": ["settings.json"]}, False),
+    ({"query": ".litetui-data.json"}, False),                          # D: the marker
+    ({"command": "rm ROOT/.litetui-data.json"}, False),                # D: named, but new in T0306-S
+    ({"command": "echo x > ../settings.json", "workdir": "ROOT/sub"}, False),   # F: a folder key
+    ({"command": "rm ROOT/.litetui-data.json ROOT/settings.json"}, True),
+]
+
+
+def _rows(tmp_path):
+    other = tmp_path / "other"
+    other.mkdir(exist_ok=True)
+    for args, before in OWNER_ROWS:
+        yield json.loads(json.dumps(args).replace("ROOT", tmp_path.as_posix())
+                         .replace("OTHER", other.as_posix())), before
+
+
+def _owner_in_a_terminal(a, monkeypatch, answer):
+    """The owner's own seat in a LiteSuite terminal; the bridge answers `answer`
+    (True tainted, False untainted, None no answer). Every recheck is counted."""
+    _owners(a)
+    a._pty_term = "owner-terminal"
+    asked = []
+    monkeypatch.setattr(seat_authority, "pty_taint_state",
+                        lambda term, timeout=1.0: asked.append(term) or answer)
+    monkeypatch.setattr(seat_authority, "pty_taint_clean",
+                        lambda term, timeout=1.0: asked.append(term) or answer is False)
+    return asked
+
+
+def test_the_owners_seat_with_the_bridge_answering_is_not_refused(app, tmp_path, monkeypatch):
+    a = app
+    asked = _owner_in_a_terminal(a, monkeypatch, False)
+    monkeypatch.chdir(tmp_path)
+    for args, _ in _rows(tmp_path):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path) is None, args
+        assert a._owner_seat is True
+    assert len(asked) == len(OWNER_ROWS), "one recheck per recognized call"
+
+
+def test_a_silent_bridge_refuses_the_call_and_demotes_only_for_what_the_rule_saw_before(
+        app, tmp_path, monkeypatch):
+    """Pick 2: only seats that are not the owner's are refused. A write only the
+    added recognitions see may be refused while the bridge is silent (the
+    fail-safe), but it must not clear the owner mark; a write the rule saw before
+    clears it, as it always did."""
+    a = app
+    monkeypatch.chdir(tmp_path)
+    for args, before in _rows(tmp_path):
+        asked = _owner_in_a_terminal(a, monkeypatch, None)
+        why = seat_authority.settings_file_refusal(a, args, tmp_path)
+        assert why and "T0306" in why, (args, "refused while the bridge is silent")
+        assert a._owner_seat is (not before), (args, "the owner mark")
+        assert len(asked) == 1, (args, "one recheck for the call, the marker and the settings file together")
+
+
+def test_a_tainted_terminal_still_clears_the_mark_for_an_added_recognition(app, tmp_path, monkeypatch):
+    a = app
+    _owner_in_a_terminal(a, monkeypatch, True)
+    other = tmp_path / "other"
+    other.mkdir()
+    why = seat_authority.settings_file_refusal(
+        a, {"command": f"cp {other.as_posix()}/settings.json {tmp_path.as_posix()}/"}, tmp_path)
+    assert why and a._owner_seat is False
+
+
+@pytest.mark.parametrize("reply, state", [
+    (b'{"tainted": false}', False), (b'{"tainted": true}', True), (b'{}', None),
+    (b'{"tainted": "no"}', None), (b'not json', None), (OSError("refused"), None),
+])
+def test_the_bridges_answer_is_true_false_or_none(monkeypatch, tmp_path, reply, state):
+    """pty_taint_state tells "no answer" apart from "tainted"; pty_taint_clean is
+    still True only for a clear untainted answer."""
+    import io
+    import urllib.request
+
+    def urlopen(request, timeout):
+        if isinstance(reply, Exception):
+            raise reply
+        return io.BytesIO(reply)
+
+    monkeypatch.setenv("LITESUITE_BRIDGE_TOKEN", "tok")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert seat_authority.pty_taint_state("pty-1-1") is state
+    assert seat_authority.pty_taint_clean("pty-1-1") is (state is False)
+    monkeypatch.delenv("LITESUITE_BRIDGE_TOKEN")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", staticmethod(lambda: tmp_path))   # no token file
+    assert seat_authority.pty_taint_state("pty-1-1") is None
+
+
+def test_another_seat_is_refused_every_row(app, tmp_path, monkeypatch):
+    a, _ = _agent(app, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    for args, _ in _rows(tmp_path):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path), args
+    a._owner_seat, a._pty_term = True, None   # owner-marked, but spawned: still not the owner's
+    for args, _ in _rows(tmp_path):
+        assert seat_authority.settings_file_refusal(a, args, tmp_path), args
 
 
 def _born(a):
@@ -1100,7 +1359,7 @@ def test_the_mirror_can_fail_below_agents(app, tmp_path, monkeypatch, _mirror):
     monkeypatch.setattr(
         seat_authority, "settings_file_refusal",
         lambda app, args, workspace, policy=None, **kw: seat_authority._owned_file_refusal(
-            app, args, workspace, policy, SETTINGS, seat_authority._settings_words, **kw))
+            app, args, workspace, policy, ((SETTINGS, seat_authority._settings_words, (None,), False),), **kw))
     with pytest.raises(AssertionError, match="below .agents"):
         seat_authority.jobs_file_refusal(a, {"path": str(tmp_path / JOBS)}, tmp_path)
 

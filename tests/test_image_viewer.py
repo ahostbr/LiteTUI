@@ -349,6 +349,44 @@ def test_malformed_size_reply_is_cached_before_widget_import(monkeypatch, dimens
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_cell_size_fallback_warning_never_reaches_stderr():
+    """T1194: LiteSuite's terminal never answers CSI 16 t, so textual-image
+    logs its VT340 fallback as a WARNING with a full traceback. With no
+    logging configured, Python's last-resort handler printed it to stderr,
+    and Ryan saw it after every /quit. A fresh process has no logging config,
+    exactly like the real launch."""
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent('''
+        import logging
+        import os
+        import textual_image._terminal as terminal
+        import litetui.image_viewer as viewer
+
+        def unanswered_size_query():
+            if hasattr(unanswered_size_query, "_result"):
+                return unanswered_size_query._result
+            try:
+                raise TimeoutError("Timeout waiting for data")
+            except TimeoutError as e:
+                terminal.logger.warning(
+                    "Failed to get cell size via escape sequence, assuming VT340 sizes", exc_info=e)
+            unanswered_size_query._result = terminal.CellSize(10, 20)
+            return unanswered_size_query._result
+        terminal.get_cell_size = unanswered_size_query
+        os.environ["WT_SESSION"] = "t1194"
+        viewer._log_backend_init = lambda: None
+        viewer.init_image_backend()
+        assert logging.getLogger("textual_image._terminal").level == logging.NOTSET
+    ''')
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Failed to get cell size" not in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+
+
 def test_make_image_uses_env_selected_class(monkeypatch):
     """The composed widget is the env-selected class, with the #iv-img id."""
     import litetui.image_viewer as iv

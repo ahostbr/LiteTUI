@@ -243,7 +243,12 @@ nothing
 
 @pytest.mark.skipif(shutil.which("liteharness") is None or shutil.which("git") is None,
                     reason="liteharness and git are needed for the real handoff")
-def test_the_real_handoff_commits_the_two_files_and_never_the_lock(owner_dir):
+def test_the_real_handoff_commits_the_two_files_and_never_the_lock(owner_dir, monkeypatch):
+    # conftest gives every test an empty HOME, so no global git identity; the handoff subprocess inherits our env
+    # (run_handoff copies os.environ) and its own `git commit` needs one. The helper below only covers its own calls.
+    for who in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{who}_NAME", "t")
+        monkeypatch.setenv(f"GIT_{who}_EMAIL", "t@example.invalid")
     def git(*args):
         return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
                               cwd=owner_dir, capture_output=True, text=True, check=True).stdout

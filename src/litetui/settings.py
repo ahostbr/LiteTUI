@@ -131,6 +131,15 @@ class Settings:
     ninfer_kv_capacity: str = ""
     #: --host-kv-mib (serving.md:786): pinned host RAM for spilled KV. None = engine default 8192.
     ninfer_host_kv_mib: int | None = None
+    #: Speed tier for a DeepSeek launch recipe (ninfer_engine.SPEED_PRESETS): fastest | fast | standard | recipe. It sets two flags of the
+    #: recipe, --expert-host-mib and --prefill-chunk. Startup flag: next /engine start.
+    ninfer_speed_preset: str = "fastest"
+    #: --auto-long-anchors (serving.md, context cache): the engine anchors message boundaries of every request, so a compacted or edited
+    #: transcript resumes from the nearest anchor instead of from token 0. Costs one saved model state per anchor (VRAM/RAM). OFF by default.
+    ninfer_auto_long_anchors: bool = False
+    #: --derive-session-keys: a request with no session key (Chat Completions has none) gets one derived from its instruction messages and
+    #: first user message, so the conversation keeps a session lineage and live-session retention. A compaction starts a new key. OFF by default.
+    ninfer_derive_session_keys: bool = False
     #: Strata (https://github.com/Niko1221/Strata): Qwen3.8-Flash-Next on one GPU plus system
     #: RAM. Blank host = the chosen config's port on loopback (8080). Blank root = LiteSuite's
     #: install (~/.litesuite/llm/strata). Blank config = the ONE strata-<model>.json there;
@@ -140,6 +149,108 @@ class Settings:
     strata_root: str = ""
     strata_config: str = ""
     strata_max_context: int | None = None
+    #: Every Strata run option the install's config can carry (strata_options.py is the catalog and
+    #: the only place that explains them). None/blank = leave the config as it is; a value replaces
+    #: that flag or key in the copy LiteTUI launches. Device scope, applied at the next engine start.
+    strata_vram_reserve_mib: int | None = None
+    strata_expert_cache: str | None = None
+    strata_expert_cache_per_layer: str | None = None
+    strata_vram_elastic: str | None = None
+    strata_vram_segment_mib: int | None = None
+    strata_kv_resident: int | None = None
+    strata_kv_grow: str | None = None
+    strata_mmap_experts: str | None = None
+    strata_resident_cpu_experts: str | None = None
+    strata_resident_experts: str | None = None
+    strata_resident_budget_gib: int | None = None
+    strata_min_free_vram_mib: int | None = None
+    strata_kv: str | None = None
+    strata_rope_scaling: str | None = None
+    strata_rope_scale: float | None = None
+    strata_rope_freq_base: float | None = None
+    strata_rope_freq_scale: float | None = None
+    strata_yarn_orig_ctx: int | None = None
+    strata_yarn_ext_factor: float | None = None
+    strata_yarn_attn_factor: float | None = None
+    strata_yarn_beta_fast: float | None = None
+    strata_yarn_beta_slow: float | None = None
+    strata_spec: int | None = None
+    strata_spec_min_p: float | None = None
+    strata_suffix_draft: int | None = None
+    strata_mtp_max_t: int | None = None
+    strata_lookup_chain: int | None = None
+    strata_lookup_chain_min: int | None = None
+    strata_mtp_hnorm: str | None = None
+    strata_mtp_q4: str | None = None
+    strata_coupled_draft: str | None = None
+    strata_prefill: str | None = None
+    strata_short_read: int | None = None
+    strata_prompt_cache: int | None = None
+    strata_prompt_cache_every: int | None = None
+    strata_prompt_cache_tail: str | None = None
+    strata_conversation_cache_mib: int | None = None
+    strata_conversation_cache_slots: int | None = None
+    strata_conversation_cache_min_free_mib: int | None = None
+    strata_session_min_free_mib: int | None = None
+    strata_slot_save_path: str | None = None
+    strata_expert_profile: str | None = None
+    strata_expert_profile_save: str | None = None
+    strata_expert_profile_save_every: int | None = None
+    strata_pool_workers: int | None = None
+    strata_pool_tasks: int | None = None
+    strata_host_core: str | None = None
+    strata_pool_affinity: str | None = None
+    strata_no_pool: str | None = None
+    strata_no_host_worker: str | None = None
+    strata_adapt_async: int | None = None
+    strata_gpu: str | None = None
+    strata_parallel: int | None = None
+    strata_batch_mtp: str | None = None
+    strata_batch_groups: int | None = None
+    strata_pipeline_windows: int | None = None
+    strata_layer_split: str | None = None
+    strata_trim_stage_weights: str | None = None
+    strata_split_skip_if_fits: str | None = None
+    strata_peer_device: int | None = None
+    strata_peer_reserve_mib: int | None = None
+    strata_peer_slots: int | None = None
+    strata_peer_adapt_swaps: int | None = None
+    strata_peer_prefill_rows: int | None = None
+    strata_expert_cache_device1: str | None = None
+    strata_expert_cache_device2: str | None = None
+    strata_expert_cache_device3: str | None = None
+    strata_vision: str | None = None
+    strata_pack: str | None = None
+    strata_native: str | None = None
+    strata_ple_gguf: str | None = None
+    strata_ple_io: str | None = None
+    strata_ple_row_cache: int | None = None
+    strata_ple_inflight: int | None = None
+    strata_embd_gguf: str | None = None
+    strata_native_head_gguf: str | None = None
+    strata_mtp: str | None = None
+    strata_idle_unload_s: float | None = None
+    strata_lazy_load: str | None = None
+    strata_engine_silence_s: float | None = None
+    strata_api_monitor: str | None = None
+    strata_open_browser: str | None = None
+    strata_fit_max_tokens: str | None = None
+    strata_aliases: str | None = None
+    strata_anthropic_thinking: str | None = None
+    strata_effort_position: str | None = None
+    strata_reasoning_budget_tokens: int | None = None
+    strata_reasoning_loop_recovery: str | None = None
+    strata_reasoning_close_retry: str | None = None
+    strata_repeat_stop_tokens: int | None = None
+    strata_tool_call_recovery: str | None = None
+    strata_codex_thread_titles: str | None = None
+    strata_codex_compaction_cache: str | None = None
+    strata_temperature: float | None = None
+    strata_top_p: float | None = None
+    strata_top_k: int | None = None
+    strata_min_p: float | None = None
+    #: Engine flags not in the catalog, written as on a command line.
+    strata_extra_args: str | None = None
     #: Xolotl (https://github.com/Indras-Mirror/Xolotl): DeepSeek-V4.1-Flash on one GPU, a
     #: pinned RAM arena and NVMe, served by Strata's server. Blank host = the chosen config's
     #: port on loopback (8150). Blank root = LiteSuite's `xolotlRoot`, else ~/.litesuite/llm/xolotl.
@@ -238,6 +349,9 @@ class Settings:
     #: Per-model Inference-tab overrides, BOTH backends {model_key: {...}}.
     #: Unset field = inherit the global sampling settings below.
     model_infer_overrides: dict = field(default_factory=dict)
+    #: Context length chosen for a model at /model time, keyed "<backend>:<model>" (the model a backend serves:
+    #: its id, or an engine's artifact/config name). The backend's own context setting follows the last choice.
+    model_context_overrides: dict = field(default_factory=dict)
     #: Named presets {name: {"load": {...}, "inference": {...}}} — saved and
     #: applied from /modelcfg.
     llama_presets: dict = field(default_factory=dict)

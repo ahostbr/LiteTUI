@@ -33,8 +33,12 @@ def test_manual_local_compact_reads_idle_edit_once_and_retry_stays_pinned(make_a
     assert "OLD ACTIVE SNAPSHOT" in owner_mode.compact_prompt(owner_dir, app=app)
     app._system = lambda *args, **kwargs: None
 
+    writes = 0
+
     async def execute(name, args, hooks_enabled=True):
-        _write_now(owner_dir)
+        nonlocal writes
+        writes += 1
+        _write_now(owner_dir, f"Updated note {writes}")
         return "ok", True
 
     app._execute_tool = execute
@@ -87,7 +91,7 @@ def test_manual_codex_owner_step_reads_fresh_template_then_retry_consistently(ma
     import asyncio
     app = make_app()
     path, active = seed_idle_edit(app)
-    app._owner_compact_t0 = 123
+    app._owner_compact_now = b"initial NOW"
     app._system = lambda _: None
     seen = []
 
@@ -98,7 +102,7 @@ def test_manual_codex_owner_step_reads_fresh_template_then_retry_consistently(ma
 
     outcomes = iter([(False, "retry reason"), (True, "ok")])
 
-    async def gate(_timestamp):
+    async def gate(_before):
         return next(outcomes)
 
     app._owner_drive_turn, app._owner_gate = drive, gate

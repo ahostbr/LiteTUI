@@ -1,0 +1,19 @@
+{
+  "type": "function",
+  "function": {
+    "name": "monitor",
+    "description": "Watch a long-running command or a file and get WOKEN by it. Each event arrives as a message tagged [inbox from monitor] that wakes this seat when idle (while a turn is running it waits and is delivered when the turn ends). You do not poll and you do not write a watch script. action=start with exactly one of: `command` (run headless; every output line, stderr included, is an event, and lines within ~200 ms batch into one event) or `path` (watch a file: lines appended after you arm it are events; the file may not exist yet, and truncation or rotation is followed from the start of the new file; a rewrite with no growth is reported as one `modified` line). `timeout_ms` defaults to 300000 (5 min), max 3600000 (60 min); when it expires you get one notice and the monitor stops (re-arm if you still need it). A monitor that produces more than 30 events in 10 s is stopped with a notice (filter the source, e.g. grep --line-buffered). A command monitor also writes all of its output to a log file whose absolute path start returns; an event cut for length names that log. Monitors belong to this conversation and do not survive an app restart. action=list shows this conversation's monitors; action=stop with `id` ends one. At most 8 monitors run at once. Never point a monitor at an inbox or mail directory: it reads only what you name, and mail has its own delivery.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["start", "stop", "list"], "description": "Defaults to start."},
+        "command": {"type": "string", "description": "start: the long-lived command to run. Each line it prints is an event."},
+        "path": {"type": "string", "description": "start: the file to watch for appended lines or a change."},
+        "label": {"type": "string", "description": "start: a short name shown in events and in list."},
+        "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 3600000, "description": "start: lifetime in milliseconds. Default 300000."},
+        "id": {"type": "string", "description": "stop: the monitor id returned by start (m-1, m-2 ...)."}
+      },
+      "additionalProperties": false
+    }
+  }
+}
