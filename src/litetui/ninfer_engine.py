@@ -73,7 +73,10 @@ NINFER_MAX_DIRECTORY_BYTES = 64 * 1024 * 1024
 NINFER_DEFAULT_MAX_CONTEXT = 32768
 NINFER_DEFAULT_SPEC = "mtp"
 NINFER_DEFAULT_DRAFT_TOKENS = 3
-NINFER_DRAFT_TOKEN_RANGE = {"mtp": (1, 3), "dflash": (1, 7), "dflash2": (1, 7)}
+# dflash reaches 15: a DSpine draft (Tencent, 16-token blocks) rides the dflash component and was
+# measured at 15 draft tokens (ninfer-all fork 66931cd0, 2026-11-10). 15 is also the engine's
+# widest verified window.
+NINFER_DRAFT_TOKEN_RANGE = {"mtp": (1, 3), "dflash": (1, 15), "dflash2": (1, 7)}
 NINFER_DEFAULT_KV_DTYPE = "fp8"
 #: `--kv-dtype` choices (serving.md:775). fp8 stays the default: the envelope above
 #: (NINFER_MIN_FREE_MIB) was measured at fp8.
