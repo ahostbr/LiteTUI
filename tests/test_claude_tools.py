@@ -562,3 +562,41 @@ def test_only_bridged_host_tools_are_published_to_the_sdk():
     assert "litetui" in options["mcp_servers"]
     # read_file is in the app inventory but not in the bridge set.
     assert "read_file" not in HOST_TOOLS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "failed", "stopped", "inventory_changed"])
+async def test_sdk_host_result_preserves_failure_and_image_semantics(monkeypatch, outcome):
+    # Exercise the pinned SDK's real handler-to-CallToolResult wrapper. Capture its
+    # in-memory runner at server construction; no provider or transport is started.
+    import claude_agent_sdk as sdk
+
+    captured = {}
+
+    def capture_server(name, version, tools, run_tool):
+        captured["run"] = run_tool
+        return object()
+
+    monkeypatch.setattr(sdk, "build_tool_server", capture_server)
+
+    async def execute(name, args):
+        app._pending_tool_images.append(("owned.png", "TUlORQ=="))
+        return ("done", True) if outcome == "success" else ("[denied] fixture refusal", False)
+
+    bridge, app = make(FakeApp(execute=execute))
+    app._pending_tool_images = [("unrelated.png", "VU5SRUxBVEVE")]
+    bridge.sdk_options()
+    if outcome == "stopped":
+        bridge.stop()
+    elif outcome == "inventory_changed":
+        app._inventory = []
+
+    result = await captured["run"]("chrome", {"action": "status"})
+    wire = result.model_dump(by_alias=True)
+    assert wire["isError"] is (outcome != "success")
+    content = wire["content"]
+    assert [part["data"] for part in content if part["type"] == "image"] == (
+        ["TUlORQ=="] if outcome in {"success", "failed"} else []
+    )
+    assert len(app.executed) == int(outcome in {"success", "failed"})
+    assert app._pending_tool_images == [("unrelated.png", "VU5SRUxBVEVE")]

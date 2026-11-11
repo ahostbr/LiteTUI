@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from litetui import background_input as work
 from litetui import native_history as history
 from litetui import native_runtime_controls as controls
 from litetui import ttyguard, voice_backend
+from litetui.native_helper_cleanup import remove_directory
 
 OPERATION = "gui.voice.native_playback"
 SELECTION = ("snapshot", "block_index", "block_id", "message_index", "message_sha256")
@@ -158,21 +158,7 @@ async def _run(playback):
 
 
 async def _remove_directory(temporary):
-    """Remove the private helper directory once its job has drained.
-
-    The job can report no active process while Windows still pins the helper's working
-    directory (measured up to ~450 ms on an idle machine, longer under load). That sharing
-    violation is transient, so only it is retried, and only for DIRECTORY_RELEASE_WAIT_S;
-    a lock that never lifts, or any other error, still fails the close or shutdown."""
-    deadline = time.monotonic() + DIRECTORY_RELEASE_WAIT_S
-    while True:
-        try:
-            temporary.cleanup()
-            return
-        except PermissionError:
-            if time.monotonic() >= deadline:
-                raise
-        await asyncio.sleep(0.025)
+    await remove_directory(temporary, wait_seconds=DIRECTORY_RELEASE_WAIT_S)
 
 
 async def retire(app, *, closing=False):

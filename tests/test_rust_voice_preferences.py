@@ -56,7 +56,17 @@ def block_audio(stack):
 
 @pytest.mark.parametrize(
     "field,value",
-    [("stt_model", "small.en"), ("tts_engine", "edge"), ("tts_litesuite_first", False), ("tts_enabled", True)],
+    [
+        ("stt_model", "small.en"),
+        ("tts_engine", "edge"),
+        ("tts_litesuite_first", False),
+        ("tts_enabled", True),
+        ("stt_mic", "Microphone \u0394"),
+        ("stt_hotkey", "alt+r"),
+        ("tts_voice", "Configured SAPI Voice \u03a9"),
+        ("tts_edge_voice", "en-US-AriaNeural"),
+        ("tts_timeout", 450),
+    ],
 )
 async def test_registered_voice_preference_saves_only_reviewed_device_key(
     armed, field, value
@@ -65,13 +75,21 @@ async def test_registered_voice_preference_saves_only_reviewed_device_key(
     path = owner._agent_session.store.data_root / "settings.json"
     if field == "tts_enabled":
         owner.settings.tts_enabled = False
-        path.write_text(json.dumps({**json.loads(path.read_bytes()), "tts_enabled": False}), encoding="utf8")
+        path.write_text(
+            json.dumps({**json.loads(path.read_bytes()), "tts_enabled": False}),
+            encoding="utf8",
+        )
     original = json.loads(path.read_bytes())
     refreshes = []
     with ExitStack() as guard:
         block_audio(guard)
-        guard.enter_context(patch.object(owner, "_refresh_prompt_controls",
-            lambda: refreshes.append(owner.settings.tts_enabled)))
+        guard.enter_context(
+            patch.object(
+                owner,
+                "_refresh_prompt_controls",
+                lambda: refreshes.append(owner.settings.tts_enabled),
+            )
+        )
         current = call(owner, "preferences")
         review = call(
             owner, "review", revision=current["revision"], field=field, value=value
@@ -158,3 +176,72 @@ async def test_refuse_recording_wrong_scalar_and_changed_post_save_readback(arme
     path.write_bytes(saved)
     with pytest.raises(ValueError, match="again"):
         call(armed, "readback", token=review["token"], apply_id=applied["apply_id"])
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("tts_timeout", 0),
+        ("tts_timeout", True),
+        ("tts_timeout", 2147483648),
+        ("tts_voice", "x" * 513),
+        ("stt_mic", "bad\nname"),
+        ("tts_edge_voice", "bad\u202ename"),
+        ("stt_hotkey", "hyper+q"),
+        ("stt_hotkey", "ctrl+"),
+        ("stt_hotkey", "f25"),
+        ("stt_hotkey", "x" * 65),
+    ],
+)
+async def test_new_voice_values_refuse_before_persistence_or_audio(armed, field, value):
+    path = armed._agent_session.store.data_root / "settings.json"
+    original = path.read_bytes()
+    with ExitStack() as guard:
+        block_audio(guard)
+        current = call(armed, "preferences")
+        with pytest.raises(ValueError):
+            call(
+                armed, "review", revision=current["revision"], field=field, value=value
+            )
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "ctrl+space", "alt+r", "f9", "ctrl+shift+d", "ctrl++", "Control+PageDown"],
+)
+async def test_supported_shortcut_grammar_and_editor_metadata(armed, value):
+    assert native_voice_preferences._checked("stt_hotkey", value) == value
+    current = call(armed, "preferences")
+    assert current["fields"]["stt_hotkey"]["editor"] == {
+        "kind": "hotkey",
+        "choices": [],
+        "max_bytes": 64,
+        "minimum": None,
+        "maximum": None,
+    }
+    assert current["fields"]["tts_timeout"]["editor"]["maximum"] == 2147483647
+    assert all(row["editable"] for row in current["fields"].values())
+
+
+@pytest.mark.parametrize(
+    "field", ["stt_mic", "stt_hotkey", "tts_voice", "tts_edge_voice"]
+)
+async def test_voice_identifier_clear_restores_default_without_discovery(armed, field):
+    path = armed._agent_session.store.data_root / "settings.json"
+    document = json.loads(path.read_bytes())
+    document[field] = "alt+r" if field == "stt_hotkey" else "configured"
+    path.write_text(json.dumps(document), encoding="utf8")
+    setattr(armed.settings, field, document[field])
+    with ExitStack() as guard:
+        block_audio(guard)
+        current = call(armed, "preferences")
+        review = call(
+            armed, "review", revision=current["revision"], field=field, value=""
+        )
+        applied = call(armed, "apply", token=review["token"])
+        observed = call(
+            armed, "readback", token=review["token"], apply_id=applied["apply_id"]
+        )
+    assert observed["preferences"]["fields"][field]["effective"] == ""
+    assert json.loads(path.read_bytes()) == {**document, field: ""}

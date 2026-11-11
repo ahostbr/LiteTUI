@@ -25,7 +25,7 @@ async def serve(app):
 
     import httpx
 
-    from litetui import gui_rpc, settings_runtime
+    from litetui import gui_rpc, llm_backend, settings_runtime
 
     actual = gui_rpc.dispatch
 
@@ -51,6 +51,8 @@ async def serve(app):
                 (owner.backend, "list_models"),
                 (owner.backend, "ensure_running"),
                 (settings_runtime, "prepare_reconnect"),
+                (llm_backend, "scan_models"),
+                (llm_backend, "_scan_roots"),
             ):
                 guard.enter_context(patch.object(target, name, forbidden))
             result = actual(owner, command)
@@ -62,6 +64,12 @@ async def serve(app):
                     "saved": {
                         key: execution.get(key)
                         for key in ("lm_host", "pin_default_model", "custom_api_key_env")
+                    },
+                    "discovery": {
+                        "saved": {key: json.loads((owner._agent_session.store.data_root / "settings.json").read_bytes()).get(key)
+                                  for key in ("llama_scan_litesuite", "llama_scan_lmstudio", "llama_scan_hf_cache", "llama_models_dirs")},
+                        "effective": {key: getattr(owner.settings, key)
+                                      for key in ("llama_scan_litesuite", "llama_scan_lmstudio", "llama_scan_hf_cache", "llama_models_dirs")},
                     },
                     "effective": {
                         key: getattr(owner.settings, key)

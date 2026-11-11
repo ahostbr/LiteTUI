@@ -4,7 +4,7 @@ use crate::{
     work_lifecycle::{hash, keys},
     work_protocol::Identity,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -31,11 +31,16 @@ const FIELDS: [&str; 9] = [
     "tts_edge_voice",
     "tts_timeout",
 ];
-const EDITABLE: [&str; 4] = [
+const EDITABLE: [&str; 9] = [
     "stt_model",
     "tts_engine",
     "tts_litesuite_first",
     "tts_enabled",
+    "stt_mic",
+    "stt_hotkey",
+    "tts_voice",
+    "tts_edge_voice",
+    "tts_timeout",
 ];
 fn bad() -> io::Error {
     io::Error::other("Voice preference response differs from its reviewed device settings")
@@ -48,9 +53,66 @@ fn choices(key: &str) -> Vec<Value> {
         _ => vec![],
     }
 }
+fn editor(key: &str) -> Value {
+    let kind = if !choices(key).is_empty() {
+        "choice"
+    } else if key == "tts_timeout" {
+        "integer"
+    } else if key == "stt_hotkey" {
+        "hotkey"
+    } else {
+        "text"
+    };
+    json!({"kind":kind,"choices":choices(key),"max_bytes":max_bytes(key),
+        "minimum":if key == "tts_timeout" {Some(1)} else {None},
+        "maximum":if key == "tts_timeout" {Some(2_147_483_647_u64)} else {None}})
+}
+fn max_bytes(key: &str) -> usize {
+    if key == "stt_hotkey" { 64 } else { 512 }
+}
+fn editable_value(key: &str, value: &Value) -> bool {
+    if !choices(key).is_empty() {
+        return choices(key).contains(value);
+    }
+    if key == "tts_timeout" {
+        return value
+            .as_u64()
+            .is_some_and(|n| (1..=2_147_483_647).contains(&n));
+    }
+    value.as_str().is_some_and(|text| {
+        text.len() <= max_bytes(key)
+            && !text.chars().any(crate::display_control)
+            && (key != "stt_hotkey"
+                || text.trim().is_empty()
+                || crate::presentation::Hotkey::parse(text).is_some())
+    })
+}
+fn parse_text(key: &str, text: &str) -> Result<Value, &'static str> {
+    let value = if key == "tts_timeout" {
+        json!(
+            text.parse::<u64>()
+                .map_err(|_| "Enter a whole number of seconds from 1 to 2147483647.")?
+        )
+    } else {
+        json!(text)
+    };
+    if !editable_value(key, &value) {
+        return Err(if key == "stt_hotkey" {
+            "Enter a supported shortcut, such as ctrl+space, alt+r or f9."
+        } else {
+            "Enter a supported value within the displayed bounds."
+        });
+    }
+    Ok(value)
+}
 fn label(key: &str) -> &'static str {
     match key {
         "stt_model" => "Dictation model",
+        "stt_mic" => "Microphone",
+        "stt_hotkey" => "Dictation shortcut",
+        "tts_voice" => "Windows voice",
+        "tts_edge_voice" => "Edge voice",
+        "tts_timeout" => "Local speech timeout",
         "tts_enabled" => "Response speech",
         "tts_engine" => "Fallback speech engine",
         "tts_litesuite_first" => "Prefer LiteSuite speech",
@@ -117,7 +179,13 @@ impl Snapshot {
         let mut fields = BTreeMap::new();
         for key in FIELDS {
             let raw = &v["fields"][key];
-            keys(raw, &["saved", "effective", "editable", "overridden"])?;
+            keys(
+                raw,
+                &["saved", "effective", "editable", "overridden", "editor"],
+            )?;
+            if raw["editor"] != editor(key) {
+                return Err(bad());
+            }
             let saved = raw["saved"].clone();
             let effective = raw["effective"].clone();
             for value in [&saved, &effective] {
@@ -136,7 +204,10 @@ impl Snapshot {
             }
             let editable = raw["editable"].as_bool().ok_or_else(bad)?;
             let overridden = raw["overridden"].as_bool().ok_or_else(bad)?;
-            if editable != (!overridden && saved == effective && choices(key).contains(&effective))
+            if editable
+                != (!overridden
+                    && saved == effective
+                    && (choices(key).is_empty() || choices(key).contains(&effective)))
             {
                 return Err(bad());
             }
@@ -209,7 +280,7 @@ impl Request {
                     .get(&e.key)
                     .filter(|r| r.editable)
                     .ok_or_else(bad)?;
-                if r.effective == e.value || !choices(&e.key).contains(&e.value) {
+                if r.effective == e.value || !editable_value(&e.key, &e.value) {
                     return Err(bad());
                 }
                 cmd["revision"] = json!(e.before.revision);
@@ -319,6 +390,7 @@ pub struct View {
     data: Option<Snapshot>,
     selected: usize,
     draft: Option<Value>,
+    text: Option<String>,
     review: Option<Review>,
     note: String,
     scroll: usize,
@@ -332,6 +404,7 @@ impl View {
             && !self.waiting
             && self.review.is_none()
             && self.draft.is_none()
+            && self.text.is_none()
             && key.kind == KeyEventKind::Press
             && key.modifiers.is_empty()
             && matches!(key.code, KeyCode::Char('d' | 'D'))
@@ -346,6 +419,33 @@ impl View {
     pub fn hide(&mut self) {
         self.visible = false;
     }
+    pub fn accepts_paste(&self) -> bool {
+        self.open && !self.waiting && self.review.is_none() && self.text.is_some()
+    }
+    pub fn clipboard_error(&mut self, error: String) {
+        if self.accepts_paste() {
+            self.note = crate::live::terminal_text(&error)
+                .chars()
+                .take(512)
+                .collect();
+            self.hide();
+        }
+    }
+    pub fn paste(&mut self, pasted: &str) {
+        if !self.accepts_paste() {
+            return;
+        }
+        let text = self.text.as_mut().expect("editing text");
+        if pasted.chars().any(crate::display_control)
+            || text.len() + pasted.len() > max_bytes(EDITABLE[self.selected])
+        {
+            self.note = "Paste refused: use one line within the displayed byte limit.".into();
+        } else {
+            text.push_str(pasted);
+            self.note.clear();
+        }
+        self.hide();
+    }
     pub fn update(&mut self, r: Result<Update, String>) {
         if !self.open || !self.waiting {
             return;
@@ -359,29 +459,36 @@ impl View {
                 self.data = Some(s);
                 self.review = None;
                 self.draft = None;
+                self.text = None;
             }
             Ok(Update::Review(r)) => self.review = Some(r),
             Ok(Update::Saved(s)) => {
                 self.data = Some(s);
                 self.review = None;
                 self.draft = None;
+                self.text = None;
                 self.note = "Saved and verified on disk.".into();
             }
             Err(reason) => {
                 self.data = None;
                 self.review = None;
                 self.draft = None;
+                self.text = None;
                 self.note = crate::live::terminal_text(&reason);
             }
         }
     }
     pub fn key(&mut self, key: KeyEvent) -> Option<Request> {
-        if key.kind != KeyEventKind::Press || !key.modifiers.is_empty() || self.waiting {
+        if key.kind != KeyEventKind::Press
+            || !key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+            || self.waiting
+        {
             return None;
         }
         if key.code == KeyCode::Esc {
-            if self.review.take().is_some() || self.draft.take().is_some() {
+            if self.review.take().is_some() || self.draft.take().is_some() || self.text.is_some() {
                 self.draft = None;
+                self.text = None;
                 self.scroll = 0;
                 self.hide()
             } else {
@@ -401,6 +508,58 @@ impl View {
             return None;
         }
         let field = EDITABLE[self.selected];
+        if self.review.is_none()
+            && let Some(text) = &mut self.text
+        {
+            match key.code {
+                KeyCode::Char(c) if !crate::display_control(c) => {
+                    if text.len() + c.len_utf8() <= max_bytes(field) {
+                        text.push(c);
+                        self.note.clear();
+                    } else {
+                        self.note = "Value exceeds the displayed byte limit.".into();
+                    }
+                    self.hide();
+                    return None;
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.note.clear();
+                    self.hide();
+                    return None;
+                }
+                KeyCode::Delete => {
+                    text.clear();
+                    self.note.clear();
+                    self.hide();
+                    return None;
+                }
+                KeyCode::Enter if self.visible => {
+                    let before = self.data.clone()?;
+                    return match parse_text(field, text) {
+                        Ok(value) if value != before.fields[field].effective => {
+                            self.waiting = true;
+                            self.scroll = 0;
+                            self.hide();
+                            Some(Request::Review(Edit {
+                                before,
+                                key: field.into(),
+                                value,
+                            }))
+                        }
+                        Ok(_) => {
+                            self.note = "Choose a different value.".into();
+                            None
+                        }
+                        Err(why) => {
+                            self.note = why.into();
+                            None
+                        }
+                    };
+                }
+                _ => return None,
+            }
+        }
         let req = match key.code {
             KeyCode::F(5) if self.review.is_none() => Request::List,
             KeyCode::Up | KeyCode::Down if self.review.is_none() => {
@@ -410,8 +569,23 @@ impl View {
                     (self.selected + 1).min(EDITABLE.len() - 1)
                 };
                 self.draft = None;
+                self.text = None;
                 self.scroll = 0;
                 self.hide();
+                return None;
+            }
+            KeyCode::Char('e' | 'E') if self.review.is_none() && choices(field).is_empty() => {
+                let row = self.data.as_ref()?.fields.get(field)?;
+                if row.editable {
+                    self.text = Some(
+                        row.effective
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| row.effective.to_string()),
+                    );
+                    self.note.clear();
+                    self.hide();
+                }
                 return None;
             }
             KeyCode::Left | KeyCode::Right if self.review.is_none() => {
@@ -482,12 +656,27 @@ impl View {
             lines.push(format!(
                 "{}: {}",
                 label(key),
-                self.draft
+                self.text
                     .as_ref()
-                    .map(|v| display(v, "default"))
+                    .map(|s| format!("{s}_"))
+                    .or_else(|| self.draft.as_ref().map(|v| display(v, "default")))
                     .unwrap_or_else(|| s.shown(key, "default"))
             ));
-            lines.push(if row.editable {
+            if choices(key).is_empty() {
+                lines.push(match key {
+                    "stt_mic" => "Enter an exact configured microphone name; blank uses the first available. No device discovery.",
+                    "tts_voice" => "Enter a configured Windows voice name; blank uses the system default. No voice discovery.",
+                    "tts_edge_voice" => "Enter the Edge voice identifier; blank uses the fallback default. No network check.",
+                    "stt_hotkey" => "Shortcut spelling: ctrl+space, alt+r or f9; blank restores ctrl+space. No key is captured.",
+                    _ => "Maximum local speech child lifetime: 1 to 2147483647 seconds. LiteSuite's queue is separate.",
+                }.into());
+                lines.push(format!("Input limit: {} UTF-8 bytes.", max_bytes(key)));
+            }
+            lines.push(if self.text.is_some() {
+                "Type value   Backspace delete   Delete clear   Enter review   Esc cancel".into()
+            } else if row.editable && choices(key).is_empty() {
+                "↑/↓ field   E edit   F5 refresh   Esc back".into()
+            } else if row.editable {
                 "↑/↓ field   ←/→ choose   Enter review   F5 refresh   Esc back".into()
             } else {
                 "Current field is read-only   ↑/↓ field   F5 refresh   Esc back".into()
@@ -562,7 +751,7 @@ mod tests {
             ("tts_edge_voice", json!("default")),
             ("tts_timeout", json!(300)),
         ] {
-            root["fields"][key] = json!({"effective":val,"saved":val,"editable":EDITABLE.contains(&key),"overridden":false});
+            root["fields"][key] = json!({"effective":val,"saved":val,"editable":EDITABLE.contains(&key),"overridden":false,"editor":editor(key)});
         }
         (id, root)
     }
@@ -687,5 +876,106 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn typed_voice_values_have_matching_source_bounds_and_shortcut_grammar() {
+        for (key, value) in [
+            ("stt_mic", json!("Microphone \u{0394}")),
+            ("stt_hotkey", json!("alt+r")),
+            ("tts_voice", json!("Configured voice \u{03a9}")),
+            ("tts_edge_voice", json!("en-US-AriaNeural")),
+            ("tts_timeout", json!(450)),
+        ] {
+            assert!(editable_value(key, &value));
+        }
+        for spelling in [
+            "",
+            "ctrl+space",
+            "alt+r",
+            "f9",
+            "ctrl+shift+d",
+            "ctrl++",
+            "Control+PageDown",
+        ] {
+            assert!(editable_value("stt_hotkey", &json!(spelling)), "{spelling}");
+        }
+        for (key, value) in [
+            ("stt_hotkey", json!("hyper+q")),
+            ("stt_hotkey", json!("ctrl+")),
+            ("stt_hotkey", json!("f25")),
+            ("tts_timeout", json!(0)),
+            ("tts_timeout", json!(true)),
+            ("tts_timeout", json!(2147483648_u64)),
+            ("tts_voice", json!("x".repeat(513))),
+            ("stt_mic", json!("bad\nname")),
+        ] {
+            assert!(!editable_value(key, &value), "{key}: {value}");
+        }
+        assert!(parse_text("tts_timeout", "1.5").is_err());
+    }
+
+    #[test]
+    fn voice_editor_metadata_is_bound_and_invalid_current_shortcut_can_be_repaired() {
+        let (id, doc) = fixture();
+        for (path, value) in [
+            ("/fields/stt_hotkey/editor/max_bytes", json!(4096)),
+            ("/fields/tts_timeout/editor/maximum", json!(4294967295_u64)),
+            ("/fields/tts_voice/editor/kind", json!("choice")),
+        ] {
+            let mut changed = doc.clone();
+            *changed.pointer_mut(path).unwrap() = value;
+            assert!(Snapshot::parse(&changed, &id, "i").is_err());
+        }
+        let mut invalid = doc;
+        invalid["fields"]["stt_hotkey"]["saved"] = json!("invalid+shortcut");
+        invalid["fields"]["stt_hotkey"]["effective"] = json!("invalid+shortcut");
+        let before = Snapshot::parse(&invalid, &id, "i").unwrap();
+        let request = Request::Review(Edit {
+            before,
+            key: "stt_hotkey".into(),
+            value: json!("alt+r"),
+        });
+        assert_eq!(request.command(&id, "i").unwrap()["value"], "alt+r");
+    }
+
+    #[test]
+    fn text_editor_preserves_exact_paste_cancels_and_requires_painted_review() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (id, doc) = fixture();
+        let mut view = View::default();
+        view.open();
+        view.update(Ok(Update::List(Snapshot::parse(&doc, &id, "i").unwrap())));
+        view.selected = 4;
+        let theme = crate::theme::builtin_themes().remove(0);
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        let paint = |view: &mut View, terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| view.draw(frame, frame.area(), &theme))
+                .unwrap();
+        };
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        paint(&mut view, &mut terminal);
+        assert!(view.key(key(KeyCode::Char('e'))).is_none());
+        assert!(view.accepts_paste());
+        view.paste("Microphone \u{0394}");
+        assert!(!view.dictation_key(key(KeyCode::Char('d'))));
+        let original = view.text.clone();
+        view.paste("\nsecond line");
+        assert_eq!(view.text, original);
+        view.paste(&"x".repeat(513));
+        assert_eq!(view.text, original);
+        assert!(view.key(key(KeyCode::Enter)).is_none());
+        paint(&mut view, &mut terminal);
+        let request = view.key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            request.command(&id, "i").unwrap()["value"],
+            "Microphone \u{0394}"
+        );
+        view.waiting = false;
+        view.key(key(KeyCode::Esc));
+        assert!(view.text.is_none());
+        assert!(!view.accepts_paste());
+        assert!(view.open);
     }
 }

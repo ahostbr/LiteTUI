@@ -15,6 +15,7 @@ from test_rust_context_reader import switch_app as owned_switch_app
 from litetui import background_input as work
 from litetui import (
     gui_rpc,
+    llm_backend,
     native_connection_preferences,
     settings_runtime,
     settings_scope,
@@ -63,6 +64,8 @@ def block_network_and_processes(stack, owner):
         (owner.backend, "list_models"),
         (owner.backend, "ensure_running"),
         (settings_runtime, "prepare_reconnect"),
+        (llm_backend, "scan_models"),
+        (llm_backend, "_scan_roots"),
     ):
         stack.enter_context(patch.object(target, name, forbidden))
 
@@ -133,6 +136,10 @@ async def test_secret_values_never_reach_a_response_or_error(armed):
         ("llama_attach_hosts", ["http://127.0.0.1:19996", "https://example.test:8443"]),
         ("llama_models_max", 3),
         ("lms_load_timeout_s", 900),
+        ("llama_scan_litesuite", False),
+        ("llama_scan_lmstudio", False),
+        ("llama_scan_hf_cache", False),
+        ("llama_models_dirs", ["C:/models, local", "D:/models/\u96ea"]),
     ],
 )
 async def test_review_save_readback_follows_registry_timing_without_side_effects(
@@ -211,6 +218,14 @@ async def test_default_context_length_save_does_not_reload_the_model_unlike_the_
         ("llama_models_max", 0),
         ("lms_load_timeout_s", 29),
         ("pin_default_model", 1),
+        ("llama_scan_litesuite", 1),
+        ("llama_models_dirs", "C:/models"),
+        ("llama_models_dirs", [""]),
+        ("llama_models_dirs", [" padded "]),
+        ("llama_models_dirs", ["same", "same"]),
+        ("llama_models_dirs", ["bad\npath"]),
+        ("llama_models_dirs", ["x" * 1025]),
+        ("llama_models_dirs", [str(i) for i in range(17)]),
         ("default_model", "x/y"),
         ("claude_executable", "bad\nline"),
         ("claude_executable", " padded "),
@@ -302,3 +317,30 @@ async def test_active_work_blocks_review(armed):
     armed._pending_input = ["queued"]
     with pytest.raises(ValueError):
         call(armed, "review", revision=current["revision"], field="pin_default_model", value=True)
+
+
+async def test_discovery_save_preserves_conversation_and_unrelated_device_keys(armed):
+    owner = armed
+    device = path_of(owner, "device")
+    original = json.loads(device.read_bytes())
+    original["unrelated_discovery_note"] = {"keep": ["exact", 91]}
+    device.write_text(json.dumps(original), encoding="utf-8")
+    conversation = path_of(owner, "conversation").read_bytes()
+    paths = ["C:/models, local", "D:/models/\u96ea"]
+    with ExitStack() as guard:
+        block_network_and_processes(guard, owner)
+        current = call(owner, "preferences")
+        row = current["fields"]["llama_models_dirs"]
+        assert row["scope"] == "device" and row["timing"] == "immediate"
+        assert "next model-list refresh" in row["effect"]
+        assert "does not scan" in row["effect"]
+        review = call(owner, "review", revision=current["revision"], field="llama_models_dirs", value=paths)
+        applied = call(owner, "apply", token=review["token"])
+        observed = call(owner, "readback", token=review["token"], apply_id=applied["apply_id"])
+    after = json.loads(device.read_bytes())
+    assert {k:v for k,v in after.items() if k != "llama_models_dirs"} == {
+        k:v for k,v in original.items() if k != "llama_models_dirs"
+    }
+    assert path_of(owner, "conversation").read_bytes() == conversation
+    assert observed["preferences"]["fields"]["llama_models_dirs"]["effective"] == paths
+    assert after["llama_models_dirs"] == paths

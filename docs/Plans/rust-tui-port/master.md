@@ -1,5 +1,15 @@
 # LiteTUI Rust terminal port
 
+## Voice preferences, discovery settings and runtime fixes - November 11, 2026
+
+Resumed from cb19517f after reconciling the later owner-seat commits. F10 Voice now edits all nine configured preferences, including microphone/SAPI voice names, shortcut, Edge voice and timeout. The native text editor preserves exact bounded paste, exposes clipboard errors and requires review plus independent saved/effective readback. Device/voice discovery and key capture are separate remaining work. F10 Connections now saves the three model-discovery switches and extra model folders at device scope, without a scan, connection or load; JSON list editing preserves commas and Unicode.
+
+Dictation and playback share bounded cleanup after the helper tree joins. Deterministic private directory holders reproduce the old Windows sharing-violation failure on Dictation Apply, Cancel and Quit; the new code retains ownership through retry and propagates other permission errors. Claude host results now preserve the SDK's is_error flag alongside isError, including refusal results and scoped images. A regression through the pinned SDK's actual in-memory wrapper reproduced three failure-to-success misreports before the fix.
+
+Frozen integrated evidence: 1,178 ordinary Rust tests pass with 229 ignored; formatting and strict all-target Clippy pass. The six-file source gate passes 218 tests, and all changed/new source modules pass Ruff and mypy. The compiled controlled-child gate passes all 60 tests across compact_process (13), context_process (30) and runtime_controls_process (17), including playback-stop and held-control Quit cases. Separate adjacent Claude source checks pass 194 tests. Exact file hashes, command/exit reports and logs are under target/resume-20261111; no authenticated provider, physical device or desktop interaction was used.
+
+This is an implementation checkpoint, not complete parity or release acceptance. The refreshed remaining-parity.md identifies the remaining contracts. Python 3.14 also exposed an existing path-stat versus handle-stat creation/change-time discrepancy; its fix is being developed separately, and this checkpoint's source/process proof uses Python 3.11.9.
+
 ## Claude compaction with host tools, unattended compaction, judge pins - November 5, 2026
 
 - a99a03b1 (lane L12): a reviewed F6 Claude compaction can now run the bridged litetui MCP host tools. Each one is disclosed by name in the review, its schema digest is bound, and the reviewed worker runs it under the root execution. The plan's `host_tools` key is required on both the Python and Rust sides.

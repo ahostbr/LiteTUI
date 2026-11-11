@@ -60,6 +60,10 @@ SPECS = {
     "llama_attach_hosts": Spec("url_list", "conversation", "restart"),
     "llama_models_max": Spec("int", "conversation", "restart", 1, MAX_INT),
     "lms_load_timeout_s": Spec("int", "conversation", "next_turn", 30, MAX_INT),
+    "llama_scan_litesuite": Spec("bool", "device", "immediate"),
+    "llama_scan_lmstudio": Spec("bool", "device", "immediate"),
+    "llama_scan_hf_cache": Spec("bool", "device", "immediate"),
+    "llama_models_dirs": Spec("path_list", "device", "immediate"),
 }
 FIELDS = tuple(SPECS)
 _ENV_UPPER = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
@@ -157,6 +161,13 @@ def _normalize(key, value):
         if len(set(urls)) != len(urls):
             raise ValueError("Server URLs must be distinct")
         return urls
+    if kind == "path_list":
+        if type(value) is not list or len(value) > 16:
+            raise ValueError("Enter a JSON list of up to 16 model folders")
+        paths = [_text(item, 1024) for item in value]
+        if any(not item for item in paths) or len(set(paths)) != len(paths):
+            raise ValueError("Model folders must be nonempty and distinct")
+        return paths
     if kind == "env_name":
         return _env_name(value)
     return _text(value, 1024) if value != "" else value
@@ -173,7 +184,7 @@ def _shape(key, value):
         else value is None or type(value) is int
         if kind == "optional_int"
         else type(value) is list and all(type(item) is str for item in value)
-        if kind == "url_list"
+        if kind in ("url_list", "path_list")
         else type(value) is str
     )
     if not ok:
@@ -229,6 +240,11 @@ def _display(key, raw):
             return [], False
         rows = [_redacted(item) if text(item)[1] else (HIDDEN, False) for item in raw]
         return [row[0] for row in rows], all(row[1] for row in rows)
+    if kind == "path_list":
+        if type(raw) is not list or len(raw) > 16:
+            return [], False
+        rows = [text(item, 1024) for item in raw]
+        return [row[0] for row in rows], all(row[1] for row in rows)
     return text(raw, 1024 if kind == "path" else 64)
 
 
@@ -252,6 +268,9 @@ def _effect(key):
         "custom_api_key_env": " Only the variable name is saved; the key is never read here.",
         "llama_executable": " The path is checked as a file but never run.",
     }.get(key, "")
+    if key.startswith("llama_scan_") or key == "llama_models_dirs":
+        when = "Updates the active discovery preference now; used on the next model-list refresh."
+        extra = " Saving does not scan folders or refresh the model list."
     return (
         f"Saves to {where}. {when} Saving never reconnects, contacts a server, "
         f"loads a model or starts a process.{extra}"

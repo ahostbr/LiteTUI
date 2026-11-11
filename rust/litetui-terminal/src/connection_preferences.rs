@@ -23,7 +23,7 @@ pub const OPERATIONS: [&str; 4] = [
     "gui.connection.native_apply",
     "gui.connection.native_readback",
 ];
-const FIELDS: [&str; 12] = [
+const FIELDS: [&str; 16] = [
     "lm_host",
     "pin_default_model",
     "default_context_length",
@@ -36,6 +36,10 @@ const FIELDS: [&str; 12] = [
     "llama_attach_hosts",
     "llama_models_max",
     "lms_load_timeout_s",
+    "llama_scan_litesuite",
+    "llama_scan_lmstudio",
+    "llama_scan_hf_cache",
+    "llama_models_dirs",
 ];
 /// The free-tier key settings. Their values are secrets and are never part of this wire.
 const KEY_SETTINGS: [&str; 12] = [
@@ -64,18 +68,23 @@ enum Kind {
     Url,
     UrlOrBlank,
     UrlList,
+    PathList,
     EnvName,
     Path,
 }
 impl Kind {
     fn of(key: &str) -> Self {
         match key {
-            "pin_default_model" => Self::Bool,
+            "pin_default_model"
+            | "llama_scan_litesuite"
+            | "llama_scan_lmstudio"
+            | "llama_scan_hf_cache" => Self::Bool,
             "custom_context_length" | "llama_models_max" | "lms_load_timeout_s" => Self::Int,
             "default_context_length" => Self::OptionalInt,
             "lm_host" | "llama_host" => Self::Url,
             "custom_base_url" => Self::UrlOrBlank,
             "llama_attach_hosts" => Self::UrlList,
+            "llama_models_dirs" => Self::PathList,
             "custom_api_key_env" => Self::EnvName,
             _ => Self::Path,
         }
@@ -88,6 +97,7 @@ impl Kind {
             Self::Url => "url",
             Self::UrlOrBlank => "url_or_blank",
             Self::UrlList => "url_list",
+            Self::PathList => "path_list",
             Self::EnvName => "env_name",
             Self::Path => "path",
         }
@@ -110,6 +120,10 @@ fn label(key: &str) -> &'static str {
         "llama_attach_hosts" => "llama.cpp attach addresses",
         "llama_models_max" => "Resident model limit (router)",
         "lms_load_timeout_s" => "LM Studio load timeout (seconds)",
+        "llama_scan_litesuite" => "Scan LiteSuite models",
+        "llama_scan_lmstudio" => "Scan LM Studio models",
+        "llama_scan_hf_cache" => "Scan HuggingFace cache",
+        "llama_models_dirs" => "Extra model folders",
         _ => "Connection preference",
     }
 }
@@ -189,6 +203,9 @@ fn displayable(kind: Kind, v: &Value, exact: bool) -> bool {
                 && a.iter()
                     .all(|i| i.as_str().is_some_and(|s| url_ok(s, !exact)))
         }),
+        Kind::PathList => v.as_array().is_some_and(|a| {
+            a.len() <= 16 && a.iter().all(|i| i.as_str().is_some_and(|s| plain(s, 1024)))
+        }),
         Kind::EnvName => v
             .as_str()
             .is_some_and(|s| if exact { env_name_ok(s) } else { plain(s, 64) }),
@@ -204,6 +221,15 @@ fn requestable(kind: Kind, min: Option<i64>, max: Option<i64>, v: &Value) -> boo
         Kind::Int => int_in(v, min, max),
         Kind::OptionalInt => v.is_null() || int_in(v, min, max),
         Kind::Url => v.as_str().is_some_and(|s| url_ok(s, false)),
+        Kind::PathList => {
+            displayable(kind, v, true)
+                && v.as_array().is_some_and(|a| {
+                    a.iter().enumerate().all(|(i, x)| {
+                        x.as_str().is_some_and(|s| !s.is_empty() && s == s.trim())
+                            && a.iter().skip(i + 1).all(|y| x != y)
+                    })
+                })
+        }
         Kind::UrlList => {
             displayable(kind, v, true)
                 && v.as_array().is_some_and(|a| {
@@ -224,6 +250,7 @@ fn show(kind: Kind, v: &Value) -> String {
         Value::String(s) if kind.urls() => redact_url(s),
         Value::String(s) => crate::ui::display_safe(s),
         Value::Array(a) if a.is_empty() => "none".into(),
+        Value::Array(_) if kind == Kind::PathList => crate::ui::display_safe(&v.to_string()),
         Value::Array(a) => a
             .iter()
             .filter_map(Value::as_str)
@@ -234,7 +261,10 @@ fn show(kind: Kind, v: &Value) -> String {
     }
 }
 /// The editable text for a stored value.
-fn draft_of(v: &Value) -> String {
+fn draft_of(kind: Kind, v: &Value) -> String {
+    if kind == Kind::PathList {
+        return v.to_string();
+    }
     match v {
         Value::String(s) => s.clone(),
         Value::Array(a) => a
@@ -266,6 +296,8 @@ fn parse_draft(
                 .map(|n| json!(n))
                 .map_err(|_| "Enter a smaller number")?
         }
+        Kind::PathList => serde_json::from_str(trimmed)
+            .map_err(|_| "Enter a JSON list of folder paths; [] clears the list")?,
         Kind::UrlList => json!(
             trimmed
                 .split(',')
@@ -284,6 +316,7 @@ fn parse_draft(
             }
             Kind::EnvName => "Enter the variable NAME (letters, digits, underscore), never the key",
             Kind::Path => "Enter one line of at most 1024 bytes",
+            Kind::PathList => "Enter up to 16 distinct nonempty folders, at most 1024 bytes each",
             _ => "Value is outside the allowed range",
         })
     }
@@ -629,9 +662,14 @@ impl View {
         if !self.accepts_paste() {
             return;
         }
+        let limit = if Kind::of(FIELDS[self.selected]) == Kind::PathList {
+            32768
+        } else {
+            2048
+        };
         if let Some(text) = &mut self.text {
             for c in pasted.chars().filter(|c| !crate::display_control(*c)) {
-                if text.len() + c.len_utf8() <= 2048 {
+                if text.len() + c.len_utf8() <= limit {
                     text.push(c);
                 }
             }
@@ -707,12 +745,13 @@ impl View {
         }
         let field = FIELDS[self.selected];
         let kind = Kind::of(field);
+        let limit = if kind == Kind::PathList { 32768 } else { 2048 };
         if self.review.is_none()
             && let Some(text) = &mut self.text
         {
             match key.code {
                 KeyCode::Char(c) if !crate::display_control(c) => {
-                    if text.len() + c.len_utf8() <= 2048 {
+                    if text.len() + c.len_utf8() <= limit {
                         text.push(c);
                     }
                     self.note.clear();
@@ -769,8 +808,13 @@ impl View {
             KeyCode::Char('e') if self.review.is_none() && kind != Kind::Bool => {
                 let row = self.data.as_ref()?.fields.get(field)?;
                 if row.editable {
-                    self.text = Some(draft_of(&row.saved));
-                    self.note = "Type the new value. Enter reviews. Esc cancels.".into();
+                    self.text = Some(draft_of(kind, &row.saved));
+                    self.note = if kind == Kind::PathList {
+                        "Enter a JSON list of folders; [] clears it. Enter reviews. Esc cancels."
+                    } else {
+                        "Type the new value. Enter reviews. Esc cancels."
+                    }
+                    .into();
                     self.hide();
                 }
                 return None;
@@ -976,6 +1020,8 @@ mod tests {
             "llama_host" => json!("http://localhost:7470"),
             "llama_attach_hosts" => json!(["http://localhost:8088"]),
             "llama_models_max" => json!(2),
+            "llama_scan_litesuite" | "llama_scan_lmstudio" | "llama_scan_hf_cache" => json!(true),
+            "llama_models_dirs" => json!([]),
             _ => json!(600),
         }
     }
@@ -984,6 +1030,10 @@ mod tests {
             "default_context_length" => "reload",
             "llama_executable" | "llama_attach_hosts" | "llama_models_max" => "restart",
             "lms_load_timeout_s" => "next_turn",
+            "llama_scan_litesuite"
+            | "llama_scan_lmstudio"
+            | "llama_scan_hf_cache"
+            | "llama_models_dirs" => "immediate",
             _ => "reconnect",
         }
     }
@@ -1011,7 +1061,7 @@ mod tests {
                 _ => 1,
             };
             root["fields"][key] = json!({
-                "scope": if key == "claude_executable" { "device" } else { "conversation" },
+                "scope": if key == "claude_executable" || timing(key) == "immediate" { "device" } else { "conversation" },
                 "timing": timing(key), "kind": kind.name(),
                 "minimum": if ranged { json!(min) } else { Value::Null },
                 "maximum": if ranged { json!(MAX_INT) } else { Value::Null },
@@ -1045,6 +1095,28 @@ mod tests {
         view.open();
         view.update(Ok(Update::List(Snapshot::parse(doc, id, "i").unwrap())));
         view
+    }
+
+    #[test]
+    fn folder_list_edit_keeps_commas_unicode_and_windows_separators() {
+        let paths = json!([r"C:\models, local", "D:/models/\u{96ea}"]);
+        let draft = draft_of(Kind::PathList, &paths);
+        assert_eq!(
+            parse_draft(Kind::PathList, None, None, &draft),
+            Ok(paths.clone())
+        );
+        assert_eq!(show(Kind::PathList, &paths), paths.to_string());
+        assert_eq!(parse_draft(Kind::PathList, None, None, "[]"), Ok(json!([])));
+        for invalid in [
+            json!([""]),
+            json!(["x", "x"]),
+            json!([" padded "]),
+            json!(["bad\npath"]),
+            json!(vec!["x"; 17]),
+            json!(["x".repeat(1025)]),
+        ] {
+            assert!(parse_draft(Kind::PathList, None, None, &invalid.to_string()).is_err());
+        }
     }
 
     #[test]
@@ -1203,8 +1275,8 @@ mod tests {
         assert_eq!(parse_draft(Kind::UrlOrBlank, None, None, ""), Ok(json!("")));
         assert!(parse_draft(Kind::Url, None, None, "").is_err());
         assert!(parse_draft(Kind::Path, None, None, "bad\nline").is_err());
-        assert_eq!(draft_of(&json!(["a", "b"])), "a, b");
-        assert_eq!(draft_of(&Value::Null), "");
+        assert_eq!(draft_of(Kind::UrlList, &json!(["a", "b"])), "a, b");
+        assert_eq!(draft_of(Kind::OptionalInt, &Value::Null), "");
     }
 
     #[test]

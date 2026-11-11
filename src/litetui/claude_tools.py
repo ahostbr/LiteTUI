@@ -39,9 +39,12 @@ UNATTENDED_HOST = ("[denied] Host tools are unavailable during an unattended com
                    "action to attribute them to; use the native tools.")
 
 
-def _host_result(text, *, error=True):
-    # The SDK's tool wrapper reads `is_error` (mcp's own field is `isError`); a refusal must reach Claude as one.
-    return {"content": [{"type": "text", "text": text}], "isError": error, "is_error": error}
+def _host_result(text, *, error=True, images=()):
+    # The SDK consumes is_error, while existing host callers consume isError.
+    # Every refusal and dispatched result must preserve the same verdict for both.
+    content = [{"type": "text", "text": text}]
+    content.extend({"type": "image", "data": image, "mimeType": "image/png"} for _, image in images)
+    return {"content": content, "isError": error, "is_error": error}
 
 
 @dataclass(eq=False)
@@ -460,7 +463,7 @@ class ClaudeTools:
                     raise controls.AuthorizationClosed("Claude host callback expired")
                 return await self._host_call(name, args, spec, ticket)
         except controls.AuthorizationClosed as exc:
-            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+            return _host_result(str(exc))
 
     async def _reviewed_host_call(self, name, spec, args):
         """The SDK's side of a host call during a reviewed compaction: authorize nothing, run nothing.
@@ -537,19 +540,16 @@ class ClaudeTools:
             except jsonschema.ValidationError:
                 error = "Invalid host arguments"
         if error:
-            return {"content": [{"type": "text", "text": error}], "isError": True}
+            return _host_result(error)
         names = {s["function"]["name"] for s in self.app._all_tools() if s.get("type") == "function"}
         if not self.current() or name not in names:
-            return {"content": [{"type": "text", "text": "Host inventory changed or callback expired"}], "isError": True}
+            return _host_result("Host inventory changed or callback expired")
         # Serialize host calls and scope the shared image staging buffer to
         # this result; never borrow images from an unrelated tool call.
         previous = self.app._pending_tool_images
         self.app._pending_tool_images = []
         try:
             text, ok = await self.app._execute_tool(name, dict(args))
-            content = [{"type": "text", "text": text}]
-            for _, image in self.app._pending_tool_images:
-                content.append({"type": "image", "data": image, "mimeType": "image/png"})
-            return {"content": content, "isError": not ok}
+            return _host_result(text, error=not ok, images=self.app._pending_tool_images)
         finally:
             self.app._pending_tool_images = previous

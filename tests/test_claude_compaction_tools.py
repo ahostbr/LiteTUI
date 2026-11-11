@@ -305,7 +305,7 @@ def test_a_disclosed_host_tool_runs_on_the_reviewed_worker_task_and_answers_the_
         sdk = asyncio.create_task(world.bridge.host_call("convo_search", {"query": "x"}, HOST_SPEC))
         result = await sdk
         await worker
-        assert result == {"content": [{"type": "text", "text": "found it"}], "isError": False}
+        assert result == {"content": [{"type": "text", "text": "found it"}], "isError": False, "is_error": False}
         (name, args, ran_in), = world.ran
         assert (name, args) == ("convo_search", {"query": "x"})
         assert ran_in is worker and ran_in is not sdk, "the tool must run on the worker's task, never the SDK's"
@@ -469,3 +469,19 @@ def test_the_history_tolerance_strips_only_approval_metadata(tmp_path, monkeypat
     messages[0]["content"] = "one"
     app.conversation = list(messages)
     assert not action.audit_history_only(app, review), "a different list object is a different conversation"
+
+
+def test_a_dispatched_host_failure_retains_its_sdk_error_flag_through_the_reviewed_lane():
+    async def scenario():
+        async def fail(name, args):
+            return "[denied] reviewed tool refused", False
+
+        world = host_world(execute=fail)
+        worker = asyncio.create_task(worker_serves(world))
+        result = await world.bridge.host_call("convo_search", {"query": "x"}, HOST_SPEC)
+        await worker
+        assert result["isError"] is True and result["is_error"] is True
+        assert result["content"] == [{"type": "text", "text": "[denied] reviewed tool refused"}]
+        assert not world.lane.pending
+
+    asyncio.run(scenario())

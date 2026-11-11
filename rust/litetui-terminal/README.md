@@ -559,6 +559,23 @@ confirmation, and /rename can prefill its title editor. These routes only open
 controls; another explicit review/save is required before changing saved state.
 
 
+### Voice and model discovery preferences
+
+F10 then V edits all nine device voice preferences. Use Left/Right for choices.
+For a microphone name, Windows voice, Edge voice, dictation shortcut or timeout,
+press E, edit the value, then Enter to review and Enter again to save.
+Delete clears a text draft; empty microphone/voice fields retain the source
+default. Paste preserves the exact line or refuses it as a whole if it contains
+controls or exceeds the displayed limit. These are configured-name editors:
+device/voice discovery and shortcut capture remain separate work.
+
+F10 then N also reviews the LiteSuite, LM Studio and HuggingFace discovery
+switches and extra model folders. Extra folders use a JSON list, preserving
+commas and Unicode in each path; [] clears the list. These shared device
+preferences affect the next explicit model-list refresh. Saving does not scan
+folders, reconnect or load a model. Both controls reread the saved and active
+values independently and preserve the ordinary chat draft.
+
 ### Explicit dictation to the composer
 
 In a live idle conversation, F10 opens Settings, V opens Voice and D opens

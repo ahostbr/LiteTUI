@@ -326,3 +326,114 @@ async def test_c1_transcript_controls_become_typed_failure(armed, monkeypatch, t
     released = await gui_rpc.async_dispatch(runtime, cancel)
     work.finish_publication(runtime, work.prepare_publication(runtime, cancel, released))
     assert runtime._native_dictation is None
+
+
+async def pin_capture_directory(capture):
+    """A contained, device-free test process pins only this private cwd.
+
+    The product's drained job cannot own this holder: it simulates the directory
+    reference that can outlive the helper process. The test always joins it.
+    """
+    marker = capture.directory / "pin-ready"
+    holder = REAL_POPEN([sys.executable, "-B", "-c",
+        "import pathlib,sys,time;pathlib.Path(sys.argv[1]).touch();time.sleep(30)",
+        str(marker)], cwd=capture.directory, creationflags=subprocess.CREATE_NO_WINDOW)
+    def release():
+        if holder.poll() is None:
+            holder.kill()
+        holder.wait(timeout=5)
+    try:
+        for _ in range(200):
+            if marker.exists():
+                return release
+            assert holder.poll() is None, "Private directory holder exited before readiness"
+            await asyncio.sleep(0.025)
+        raise AssertionError("Private directory holder did not become ready")
+    except BaseException:
+        release()
+        raise
+
+
+async def ready_capture(runtime, monkeypatch):
+    async def private_result(capture):
+        capture.status, capture.transcript = "ready", "Private completed dictation"
+    monkeypatch.setattr(voice, "_run", private_result)
+    review = await voice.dispatch(runtime, command(runtime, "review"))
+    await voice.dispatch(runtime, command(runtime, "start", review))
+    await runtime._native_dictation.task
+    return await voice.dispatch(runtime, command(runtime, "status", review))
+
+
+@pytest.mark.parametrize("action", ["apply", "cancel", "shutdown"])
+async def test_dictation_outlasts_a_late_helper_directory_release(armed, monkeypatch, action):
+    runtime, _ = armed
+    result = await ready_capture(runtime, monkeypatch)
+    capture = runtime._native_dictation
+    temporary = capture.temporary
+    release_pin = await pin_capture_directory(capture)
+    # Establish the actual failure of the old one-shot cleanup before exercising
+    # the public release path. A second TemporaryDirectory.cleanup is supported.
+    with pytest.raises(PermissionError) as original:
+        temporary.cleanup()
+    assert original.value.winerror == 32
+    released = asyncio.Event()
+    async def late_release():
+        await asyncio.sleep(0.15)
+        assert runtime._native_dictation is capture and capture.temporary is temporary
+        assert voice.blocking(runtime) and capture.release_result is None
+        release_pin()
+        released.set()
+    holder = asyncio.create_task(late_release())
+    try:
+        if action == "shutdown":
+            assert await work.settle_before_shutdown(runtime) is not None
+            assert runtime._native_dictation is None
+        else:
+            request = command(runtime, action, result)
+            accepted = await voice.dispatch(runtime, request)
+            assert accepted["status"] == ("applied" if action == "apply" else "cancelled")
+            assert runtime._native_dictation is capture and voice.blocking(runtime)
+            work.finish_publication(runtime, work.prepare_publication(runtime, request, accepted))
+            assert runtime._native_dictation is None
+        assert released.is_set() and capture.task.done() and not capture.unsettled
+        assert capture.temporary is None and not capture.directory.exists()
+        await voice.retire(runtime)  # Already retired is idempotent.
+    finally:
+        release_pin()
+        await holder
+
+
+async def test_dictation_retains_failed_cleanup_until_joined_shutdown_retry(armed, monkeypatch):
+    runtime, _ = armed
+    result = await ready_capture(runtime, monkeypatch)
+    capture = runtime._native_dictation
+    temporary = capture.temporary
+    release_pin = await pin_capture_directory(capture)
+    monkeypatch.setattr(voice, "DIRECTORY_RELEASE_WAIT_S", 0.06)
+    try:
+        with pytest.raises(PermissionError) as refused:
+            await voice.dispatch(runtime, command(runtime, "cancel", result))
+        assert refused.value.winerror == 32
+        assert capture.task.done() and not capture.unsettled
+        assert runtime._native_dictation is capture and capture.temporary is temporary
+        assert capture.directory.exists() and voice.blocking(runtime)
+        assert capture.release_result is None and capture.publication is None
+    finally:
+        release_pin()
+    assert await work.settle_before_shutdown(runtime) is not None
+    assert runtime._native_dictation is None and capture.temporary is None
+    assert not capture.directory.exists()
+
+
+async def test_dictation_cleanup_does_not_retry_unrelated_permission_errors(monkeypatch):
+    from types import SimpleNamespace
+
+    attempts = []
+    denied = PermissionError(13, "controlled access denial")
+    denied.winerror = 5
+    def cleanup():
+        attempts.append(True)
+        raise denied
+    with pytest.raises(PermissionError) as failure:
+        await voice._remove_directory(SimpleNamespace(cleanup=cleanup))
+    assert failure.value is denied and attempts == [True]

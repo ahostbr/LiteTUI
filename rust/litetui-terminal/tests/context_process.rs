@@ -397,6 +397,15 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
                     "Prefer LiteSuite speech",
                 ),
                 ("tts_enabled", json!(true), "Response speech"),
+                ("stt_mic", json!("Microphone \u{0394}"), "Microphone"),
+                ("stt_hotkey", json!("alt+r"), "Dictation shortcut"),
+                (
+                    "tts_voice",
+                    json!("Configured SAPI Voice \u{03a9}"),
+                    "Windows voice",
+                ),
+                ("tts_edge_voice", json!("en-US-AriaNeural"), "Edge voice"),
+                ("tts_timeout", json!(450), "Local speech timeout"),
             ]
             .into_iter()
             .enumerate()
@@ -404,7 +413,19 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
                 if index > 0 {
                     settings_key(runtime, &mut app, KeyCode::Down)?;
                 }
-                settings_key(runtime, &mut app, KeyCode::Right)?;
+                if index < 4 {
+                    settings_key(runtime, &mut app, KeyCode::Right)?;
+                } else {
+                    settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+                    settings_key(runtime, &mut app, KeyCode::Delete)?;
+                    let text = value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string());
+                    assert!(app.live.as_ref().unwrap().settings.accepts_paste());
+                    app.live.as_mut().unwrap().settings.paste(&text);
+                    draw(&mut app);
+                }
                 let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
                 assert!(review.contains(&format!("Save {label}?")), "{review}");
                 assert_eq!(json_file(&path), expected);
@@ -452,6 +473,21 @@ fn voice_preferences_review_and_reread_device_values_without_audio() {
             "review",
             "apply",
             "readback",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
+            "review",
+            "apply",
+            "readback",
             "preferences"
         ]
     );
@@ -477,6 +513,70 @@ fn settings_files(data: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     walk(data, &mut out);
     out.sort();
     out
+}
+
+#[test]
+#[ignore = "compiled discovery settings against private source with scan and network tripwires"]
+fn discovery_preferences_review_device_scope_without_scanning() {
+    let (runtime, data) = launch("connection_preferences_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Keep discovery draft \u{96ea}, selection.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let draft = app.composer.text().to_owned();
+            let cursor = app.composer.before_cursor().to_owned();
+            let before = settings_files(&data);
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('n'))?;
+            for _ in 0..12 {
+                settings_key(runtime, &mut app, KeyCode::Down)?;
+            }
+            for _ in 0..3 {
+                settings_key(runtime, &mut app, KeyCode::Right)?;
+                let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(
+                    review.contains("Scope: device") && review.contains("next model-list refresh"),
+                    "{review}"
+                );
+                let done = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(done.contains("Saved and verified on disk."), "{done}");
+                settings_key(runtime, &mut app, KeyCode::Down)?;
+            }
+            settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+            for _ in 0..10 {
+                settings_key(runtime, &mut app, KeyCode::Backspace)?;
+            }
+            let paths = json!([r"C:\models, local", "D:/models/\u{96ea}"]);
+            for c in paths.to_string().chars() {
+                settings_key(runtime, &mut app, KeyCode::Char(c))?;
+            }
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(
+                review.contains("Extra model folders")
+                    && review.contains("C:")
+                    && review.contains("models, local"),
+                "{review}"
+            );
+            let done = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(done.contains("Saved and verified on disk."), "{done}");
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), draft);
+            assert_eq!(app.composer.before_cursor(), cursor);
+            assert_ne!(settings_files(&data), before);
+            Ok(())
+        })
+        .unwrap_or_else(|err| panic!("{}: {err}", data.display()));
+    assert_eq!(json_file(&data.join("connection-guards.json")), json!([]));
+    let report = json_file(&data.join("connection-saved.json"));
+    assert_eq!(report.as_array().unwrap().len(), 4);
+    let expected = json!({"llama_scan_litesuite":false, "llama_scan_lmstudio":false,
+        "llama_scan_hf_cache":false, "llama_models_dirs":[r"C:\models, local", "D:/models/\u{96ea}"]});
+    assert_eq!(report[3]["discovery"]["saved"], expected);
+    assert_eq!(report[3]["discovery"]["effective"], expected);
 }
 
 #[test]

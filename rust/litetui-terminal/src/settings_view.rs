@@ -397,10 +397,13 @@ impl View {
             || self.editor.editing()
             || self.compaction.accepts_paste()
             || self.connection.accepts_paste()
+            || self.voice.accepts_paste()
     }
     pub fn paste(&mut self, text: &str) {
         if self.mcp.open {
             self.mcp.paste(text);
+        } else if self.voice.accepts_paste() {
+            self.voice.paste(text);
         } else if self.connection.accepts_paste() {
             self.connection.paste(text);
         } else if self.compaction.owns_input() {
@@ -410,7 +413,9 @@ impl View {
         }
     }
     pub fn clipboard_error(&mut self, error: String) {
-        if self.compaction.owns_input() {
+        if self.voice.accepts_paste() {
+            self.voice.clipboard_error(error);
+        } else if self.compaction.owns_input() {
             self.compaction.notice = error;
         } else {
             self.editor.notice = error;

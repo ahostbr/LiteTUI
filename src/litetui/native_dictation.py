@@ -17,8 +17,10 @@ from litetui import native_runtime_controls as controls
 from litetui import ttyguard
 from litetui.native_context import read_binding
 from litetui.native_dictation_worker import MAX_RECORDING, MAX_TEXT
+from litetui.native_helper_cleanup import remove_directory
 
 OPERATION = "gui.voice.native_dictation"
+DIRECTORY_RELEASE_WAIT_S = 10.0
 
 
 @dataclass
@@ -133,6 +135,10 @@ async def _run(capture):
         capture.failure = str(error)
 
 
+async def _remove_directory(temporary):
+    await remove_directory(temporary, wait_seconds=DIRECTORY_RELEASE_WAIT_S)
+
+
 async def retire(app, *, closing=False):
     capture = getattr(app, "_native_dictation", None)
     if capture is None:
@@ -146,7 +152,7 @@ async def retire(app, *, closing=False):
     if capture.unsettled:
         raise RuntimeError("Dictation descendant retirement is unproven")
     if capture.temporary is not None:
-        capture.temporary.cleanup()
+        await _remove_directory(capture.temporary)
         capture.temporary = None
     if closing:
         bridge = work.bridge(app)

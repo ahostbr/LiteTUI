@@ -28,6 +28,8 @@ FIELDS = (
     "tts_edge_voice",
     "tts_timeout",
 )
+MAX_TEXT = 512
+MAX_HOTKEY = 64
 CHOICES = {
     "stt_model": ("tiny.en", "base.en", "small.en"),
     "tts_engine": ("pyttsx3", "edge"),
@@ -65,11 +67,76 @@ def _value(name, value):
     )
 
 
+def _hotkey(value):
+    # Match presentation.Hotkey's pure parser. Empty restores the default chord.
+    spelling = value.strip().translate(
+        str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+    )
+    if not spelling:
+        return True
+    parts = spelling.split("+")
+    if spelling.endswith("++"):
+        parts, key = parts[:-2], "+"
+    else:
+        key = parts.pop()
+    if any(part not in ("ctrl", "control", "shift", "alt", "meta") for part in parts):
+        return False
+    named = {
+        "space",
+        "enter",
+        "tab",
+        "escape",
+        "backspace",
+        "delete",
+        "insert",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "up",
+        "down",
+        "left",
+        "right",
+    }
+    if key in named or len(key) == 1 and key.isprintable():
+        return True
+    return (
+        len(key) > 1
+        and key[0] == "f"
+        and key[1:].isascii()
+        and key[1:].isdigit()
+        and 1 <= int(key[1:]) <= 24
+    )
+
+
+def _editor(field):
+    return {
+        "kind": "choice"
+        if field in CHOICES
+        else "integer"
+        if field == "tts_timeout"
+        else "hotkey"
+        if field == "stt_hotkey"
+        else "text",
+        "choices": list(CHOICES.get(field, ())),
+        "max_bytes": MAX_HOTKEY if field == "stt_hotkey" else MAX_TEXT,
+        "minimum": 1 if field == "tts_timeout" else None,
+        "maximum": 2147483647 if field == "tts_timeout" else None,
+    }
+
+
 def _checked(field, value):
-    if field not in CHOICES or not any(
+    if field not in FIELDS:
+        raise ValueError("Select a supported voice preference")
+    if field in CHOICES and not any(
         type(value) is type(item) and value == item for item in CHOICES[field]
     ):
         raise ValueError("Select a supported voice preference")
+    _value(field, value)
+    if field == "stt_hotkey" and (
+        len(value.encode("utf-8")) > MAX_HOTKEY or not _hotkey(value)
+    ):
+        raise ValueError("Enter a supported shortcut, such as ctrl+space, alt+r or f9")
     return value
 
 
@@ -102,10 +169,10 @@ def _snapshot(app, binding):
             "saved": saved,
             "effective": effective,
             "overridden": overridden,
-            "editable": key in CHOICES
-            and not overridden
+            "editor": _editor(key),
+            "editable": not overridden
             and saved == effective
-            and effective in CHOICES[key],
+            and (key not in CHOICES or effective in CHOICES[key]),
         }
     result = {
         "kind": "voice_preferences",
