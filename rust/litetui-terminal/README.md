@@ -566,8 +566,11 @@ For a microphone name, Windows voice, Edge voice, dictation shortcut or timeout,
 press E, edit the value, then Enter to review and Enter again to save.
 Delete clears a text draft; empty microphone/voice fields retain the source
 default. Paste preserves the exact line or refuses it as a whole if it contains
-controls or exceeds the displayed limit. These are configured-name editors:
-device/voice discovery and shortcut capture remain separate work.
+controls or exceeds the displayed limit. On the microphone or Windows voice row,
+C explicitly starts discovery, F5 reads progress, and Up/Down selects an exact
+name. Enter closes the helper and prefills a draft for the ordinary review/save.
+K on the shortcut row captures the next supported key as a draft. Escape cancels.
+Opening preferences never probes devices; Close and Quit join any discovery helper.
 
 F10 then N also reviews the LiteSuite, LM Studio and HuggingFace discovery
 switches and extra model folders. Extra folders use a JSON list, preserving
@@ -597,7 +600,7 @@ remain pending.
 
 ### Current model preferences
 
-F10 → P shows the current model's temperature, Top P and response-token override. Up and Down select a field. E enters a number, and I chooses the conversation default. Enter opens the review, then a fresh Enter saves after the complete review is visible. The panel rereads the saved override and the effective next-request value. F5 refreshes the current model facts.
+F10 → P shows all 36 current-model inference and load preferences, with unsupported fields marked by backend. Up and Down select a field; E edits a typed value (including the listed choices). I inherits the conversation or agent default, while D selects the server default where supported. Reasoning effort preserves that distinction and keeps an actual CLI override read-only. Enter opens the review, then a fresh Enter saves after the complete review is visible. Independent readback checks the saved override and effective next-request value; load settings remain pending until a load. F5 refreshes current facts.
 
 ### Current model lifecycle
 

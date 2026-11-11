@@ -33,6 +33,7 @@ class LaunchOptions:
     history_projection_version: int | None = None
     work_lifecycle_version: int | None = None
     mcp_lifecycle_version: int | None = None
+    thinking_explicit: bool | None = None
 
     def validate_mcp_lifecycle(self) -> None:
         version = self.mcp_lifecycle_version
@@ -223,7 +224,9 @@ def from_args(args):
                             getattr(args, 'engine_management', False),
                             getattr(args, 'history_projection_version', None),
                             getattr(args, 'work_lifecycle_version', None),
-                            getattr(args, 'mcp_lifecycle_version', None))
+                            getattr(args, 'mcp_lifecycle_version', None),
+                            getattr(args, 'reasoning_effort', None) is not None
+                            or getattr(args, 'thinking_level', None) is not None)
     options.validate_history_projection()
     options.validate_work_lifecycle()
     options.validate_mcp_lifecycle()

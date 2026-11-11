@@ -215,7 +215,8 @@ async def transition(app, cmd):
                                if name not in {"codex", "claude"} else None,
                                history_projection_version=getattr(old_launch, "history_projection_version", None),
                                work_lifecycle_version=getattr(old_launch, "work_lifecycle_version", None),
-                               mcp_lifecycle_version=getattr(old_launch, "mcp_lifecycle_version", None))
+                               mcp_lifecycle_version=getattr(old_launch, "mcp_lifecycle_version", None),
+                               thinking_explicit=getattr(old_launch, "thinking_explicit", None))
         candidate = llm_backend.make_backend(settings)
         if name == "llamacpp":
             candidate.require_existing_server()
@@ -275,7 +276,7 @@ async def transition(app, cmd):
         app._user_model_choice = model
         app._launch_backend, app._launch_options, app._launch_prepared = name, launch, False
         app._model_thinking_levels = None
-        app._cli_effective_thinking = authority.thinking_level
+        # Only a real invocation flag pins effort across an explicit backend switch.
         app._thinking_level = None if authority.thinking_level == "default" else authority.thinking_level
         app.backend = candidate
         app.model_id = model

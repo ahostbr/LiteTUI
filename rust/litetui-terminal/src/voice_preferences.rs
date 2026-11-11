@@ -14,11 +14,12 @@ use ratatui::{
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io};
 
-pub const OPERATIONS: [&str; 4] = [
+pub const OPERATIONS: [&str; 5] = [
     "gui.voice.native_preferences",
     "gui.voice.native_review",
     "gui.voice.native_apply",
     "gui.voice.native_readback",
+    "gui.voice.native_catalog",
 ];
 const FIELDS: [&str; 9] = [
     "stt_model",
@@ -251,8 +252,56 @@ pub struct Review {
     token: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Catalog {
+    before: Snapshot,
+    key: String,
+    token: Option<String>,
+    status: String,
+    items: Vec<String>,
+}
+fn captured_key(event: KeyEvent) -> Option<String> {
+    if !(event.modifiers - (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT))
+        .is_empty()
+    {
+        return None;
+    }
+    let name = match event.code {
+        KeyCode::Char(' ') => "space".into(),
+        KeyCode::Char(c) if !crate::display_control(c) => c.to_ascii_lowercase().to_string(),
+        KeyCode::F(n) if (1..=24).contains(&n) => format!("f{n}"),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Tab => "tab".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Insert => "insert".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::PageUp => "pageup".into(),
+        KeyCode::PageDown => "pagedown".into(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        _ => return None,
+    };
+    let mut pieces = Vec::new();
+    for (modifier, text) in [
+        (KeyModifiers::CONTROL, "ctrl"),
+        (KeyModifiers::ALT, "alt"),
+        (KeyModifiers::SHIFT, "shift"),
+    ] {
+        if event.modifiers.contains(modifier) {
+            pieces.push(text);
+        }
+    }
+    pieces.push(&name);
+    let result = pieces.join("+");
+    editable_value("stt_hotkey", &json!(result)).then_some(result)
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     List,
+    Catalog(Catalog, &'static str, Option<String>),
     Review(Edit),
     Apply(Review),
     Readback(Review, String, String),
@@ -260,6 +309,8 @@ pub enum Request {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
     List(Snapshot),
+    Catalog(Catalog),
+    CatalogClosed(Snapshot, Option<String>),
     Review(Review),
     Saved(Snapshot),
 }
@@ -273,6 +324,25 @@ impl Request {
         cmd["work_instance"] = json!(instance);
         cmd["type"] = json!(match self {
             Self::List => OPERATIONS[0],
+            Self::Catalog(catalog, action, selected) => {
+                if !["stt_mic", "tts_voice"].contains(&catalog.key.as_str())
+                    || !catalog.before.fields[&catalog.key].editable
+                    || !["start", "status", "close"].contains(action)
+                    || (*action == "start") != catalog.token.is_none()
+                    || selected.as_ref().is_some_and(|item| {
+                        *action != "close"
+                            || catalog.status != "ready"
+                            || !item.is_empty() && !catalog.items.contains(item)
+                    })
+                {
+                    return Err(bad());
+                }
+                cmd["action"] = json!(action);
+                cmd["catalog"] = json!(catalog.token);
+                cmd["field"] = json!(catalog.key);
+                cmd["revision"] = json!(catalog.before.revision);
+                OPERATIONS[4]
+            }
             Self::Review(e) => {
                 let r = e
                     .before
@@ -307,12 +377,83 @@ impl Request {
         instance: &str,
         cmd_id: &str,
     ) -> io::Result<Reply> {
+        if let Self::Catalog(mut catalog, action, selected) = self {
+            verify_binding(v, id, instance, "voice_catalog")?;
+            keys(
+                v,
+                &[
+                    "version",
+                    "kind",
+                    "scope",
+                    "session_id",
+                    "agent_id",
+                    "backend",
+                    "model",
+                    "work_instance",
+                    "catalog",
+                    "before",
+                    "field",
+                    "status",
+                    "items",
+                ],
+            )?;
+            let token = crate::stream::required_uuid4(v, "catalog")
+                .map_err(|_| bad())?
+                .to_string();
+            let status = v["status"].as_str().ok_or_else(bad)?;
+            let raw = v["items"]
+                .as_array()
+                .filter(|a| a.len() <= 64)
+                .ok_or_else(bad)?;
+            let mut items = Vec::new();
+            for item in raw {
+                let text = item
+                    .as_str()
+                    .filter(|s| {
+                        !s.is_empty() && s.len() <= 512 && !s.chars().any(crate::display_control)
+                    })
+                    .ok_or_else(bad)?
+                    .to_string();
+                if items.contains(&text) {
+                    return Err(bad());
+                }
+                items.push(text);
+            }
+            if v["version"] != 1
+                || serde_json::to_vec(v)?.len() > 65536
+                || v["field"] != catalog.key
+                || v["before"] != catalog.before.revision
+                || catalog.token.as_ref().is_some_and(|old| old != &token)
+                || !["starting", "ready", "failed", "cancelled", "closed"].contains(&status)
+                || (action == "close") != (status == "closed")
+                || action == "start" && status != "starting"
+                || ["starting", "failed", "cancelled"].contains(&status) && !items.is_empty()
+                || catalog.status == "ready"
+                    && (items != catalog.items || !["ready", "closed"].contains(&status))
+                || selected
+                    .as_ref()
+                    .is_some_and(|item| !item.is_empty() && !items.contains(item))
+            {
+                return Err(bad());
+            }
+            if action == "close" {
+                return Ok(Reply::Update(Update::CatalogClosed(
+                    catalog.before,
+                    selected,
+                )));
+            }
+            catalog.token = Some(token);
+            catalog.status = status.into();
+            catalog.items = items;
+            return Ok(Reply::Update(Update::Catalog(catalog)));
+        }
         let (kind, e, token, applied) = match &self {
             Self::List => {
                 return Ok(Reply::Update(Update::List(Snapshot::parse(
                     v, id, instance,
                 )?)));
             }
+            Self::Catalog(..) => unreachable!(),
             Self::Review(e) => ("voice_review", e, None, None),
             Self::Apply(r) => ("voice_applied", &r.edit, Some(&r.token), Some(cmd_id)),
             Self::Readback(r, apply, _) => {
@@ -391,6 +532,9 @@ pub struct View {
     selected: usize,
     draft: Option<Value>,
     text: Option<String>,
+    capturing: bool,
+    catalog: Option<Catalog>,
+    catalog_selected: usize,
     review: Option<Review>,
     note: String,
     scroll: usize,
@@ -405,6 +549,8 @@ impl View {
             && self.review.is_none()
             && self.draft.is_none()
             && self.text.is_none()
+            && self.catalog.is_none()
+            && !self.capturing
             && key.kind == KeyEventKind::Press
             && key.modifiers.is_empty()
             && matches!(key.code, KeyCode::Char('d' | 'D'))
@@ -420,7 +566,12 @@ impl View {
         self.visible = false;
     }
     pub fn accepts_paste(&self) -> bool {
-        self.open && !self.waiting && self.review.is_none() && self.text.is_some()
+        self.open
+            && !self.waiting
+            && self.review.is_none()
+            && self.catalog.is_none()
+            && !self.capturing
+            && self.text.is_some()
     }
     pub fn clipboard_error(&mut self, error: String) {
         if self.accepts_paste() {
@@ -461,6 +612,19 @@ impl View {
                 self.draft = None;
                 self.text = None;
             }
+            Ok(Update::Catalog(catalog)) => {
+                self.catalog = Some(catalog);
+            }
+            Ok(Update::CatalogClosed(snapshot, selected)) => {
+                self.catalog = None;
+                self.data = Some(snapshot);
+                self.text = selected;
+                self.note = if self.text.is_some() {
+                    "Selected name is a draft. Enter reviews the setting change.".into()
+                } else {
+                    "Voice discovery closed; helper joined.".into()
+                };
+            }
             Ok(Update::Review(r)) => self.review = Some(r),
             Ok(Update::Saved(s)) => {
                 self.data = Some(s);
@@ -479,11 +643,52 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) -> Option<Request> {
+        if key.kind == KeyEventKind::Press && !self.waiting && self.capturing {
+            if key.code == KeyCode::Esc {
+                self.capturing = false;
+            } else if let Some(spelling) = captured_key(key) {
+                self.text = Some(spelling);
+                self.capturing = false;
+                self.note = "Captured into draft. Enter reviews; Esc cancels.".into();
+            } else {
+                self.note = "Unsupported key; use Ctrl, Alt or Shift with a normal key.".into();
+            }
+            self.hide();
+            return None;
+        }
         if key.kind != KeyEventKind::Press
             || !key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
             || self.waiting
         {
             return None;
+        }
+        if let Some(catalog) = &self.catalog {
+            let (action, selected) = match key.code {
+                KeyCode::F(5) => ("status", None),
+                KeyCode::Esc => ("close", None),
+                KeyCode::Enter if self.visible && catalog.status == "ready" => (
+                    "close",
+                    Some(if self.catalog_selected == 0 {
+                        String::new()
+                    } else {
+                        catalog.items.get(self.catalog_selected - 1)?.clone()
+                    }),
+                ),
+                KeyCode::Up | KeyCode::Down if catalog.status == "ready" => {
+                    self.catalog_selected = if key.code == KeyCode::Up {
+                        self.catalog_selected.saturating_sub(1)
+                    } else {
+                        (self.catalog_selected + 1).min(catalog.items.len())
+                    };
+                    self.hide();
+                    return None;
+                }
+                _ => return None,
+            };
+            let request = Request::Catalog(catalog.clone(), action, selected);
+            self.waiting = true;
+            self.hide();
+            return Some(request);
         }
         if key.code == KeyCode::Esc {
             if self.review.take().is_some() || self.draft.take().is_some() || self.text.is_some() {
@@ -562,6 +767,33 @@ impl View {
         }
         let req = match key.code {
             KeyCode::F(5) if self.review.is_none() => Request::List,
+            KeyCode::Char('c' | 'C')
+                if self.review.is_none() && ["stt_mic", "tts_voice"].contains(&field) =>
+            {
+                let before = self.data.clone()?;
+                if !before.fields[field].editable {
+                    return None;
+                }
+                self.catalog_selected = 0;
+                Request::Catalog(
+                    Catalog {
+                        before,
+                        key: field.into(),
+                        token: None,
+                        status: "starting".into(),
+                        items: Vec::new(),
+                    },
+                    "start",
+                    None,
+                )
+            }
+            KeyCode::Char('k' | 'K') if self.review.is_none() && field == "stt_hotkey" => {
+                if self.data.as_ref()?.fields[field].editable {
+                    self.capturing = true;
+                    self.hide();
+                }
+                return None;
+            }
             KeyCode::Up | KeyCode::Down if self.review.is_none() => {
                 self.selected = if key.code == KeyCode::Up {
                     self.selected.saturating_sub(1)
@@ -631,7 +863,36 @@ impl View {
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let mut lines = vec!["Voice preferences on this device".to_owned()];
-        if let Some(review) = &self.review {
+        if let Some(catalog) = &self.catalog {
+            lines.push(format!("Discover {} names", label(&catalog.key)));
+            lines.push(
+                "Discovery only: no audio is recorded or played. Close joins the helper.".into(),
+            );
+            lines.push(format!("Status: {}", catalog.status));
+            if catalog.status == "ready" {
+                lines.push(format!(
+                    "Choice {} of {}",
+                    self.catalog_selected + 1,
+                    catalog.items.len() + 1
+                ));
+                lines.push(if self.catalog_selected == 0 {
+                    "Use the default (empty configured name)".into()
+                } else {
+                    catalog.items[self.catalog_selected - 1].clone()
+                });
+                if catalog.items.is_empty() {
+                    lines.push("No names returned; the provider may be unavailable. Exact-name editing remains available.".into());
+                }
+                lines.push("Up/Down choose   Enter copies to draft and closes   Esc close".into());
+            } else {
+                lines.push("F5 refresh progress   Esc cancel and join".into());
+            }
+        } else if self.capturing {
+            lines.extend([
+                "Press the dictation shortcut to capture it into the draft.".into(),
+                "Esc cancels. Global Quit/Stop keys keep their existing priority.".into(),
+            ]);
+        } else if let Some(review) = &self.review {
             lines.extend([
                 format!("Save {}?", label(&review.edit.key)),
                 format!(
@@ -663,11 +924,19 @@ impl View {
                     .unwrap_or_else(|| s.shown(key, "default"))
             ));
             if choices(key).is_empty() {
+                if ["stt_mic", "tts_voice"].contains(&key) {
+                    lines.push(
+                        "C explicitly discovers available names with an owned helper.".into(),
+                    );
+                }
+                if key == "stt_hotkey" {
+                    lines.push("K captures the next ordinary key event into the draft.".into());
+                }
                 lines.push(match key {
-                    "stt_mic" => "Enter an exact configured microphone name; blank uses the first available. No device discovery.",
-                    "tts_voice" => "Enter a configured Windows voice name; blank uses the system default. No voice discovery.",
+                    "stt_mic" => "Enter an exact configured microphone name; blank uses the first available.",
+                    "tts_voice" => "Enter a configured Windows voice name; blank uses the system default.",
                     "tts_edge_voice" => "Enter the Edge voice identifier; blank uses the fallback default. No network check.",
-                    "stt_hotkey" => "Shortcut spelling: ctrl+space, alt+r or f9; blank restores ctrl+space. No key is captured.",
+                    "stt_hotkey" => "Shortcut spelling: ctrl+space, alt+r or f9; blank restores ctrl+space.",
                     _ => "Maximum local speech child lifetime: 1 to 2147483647 seconds. LiteSuite's queue is separate.",
                 }.into());
                 lines.push(format!("Input limit: {} UTF-8 bytes.", max_bytes(key)));
@@ -697,8 +966,11 @@ impl View {
         self.scroll = self.scroll.min(self.lines.saturating_sub(self.height));
         self.visible = area.width >= 36
             && self.height >= 5
-            && (self.review.is_none() || self.lines <= self.height);
-        let text = if area.width < 36 || self.height < 5 || self.review.is_some() && !self.visible {
+            && (self.review.is_none() && self.catalog.is_none() || self.lines <= self.height);
+        let text = if area.width < 36
+            || self.height < 5
+            || (self.review.is_some() || self.catalog.is_some()) && !self.visible
+        {
             "Resize to see the full review. Esc back.".into()
         } else {
             wrapped
@@ -976,6 +1248,144 @@ mod tests {
         view.key(key(KeyCode::Esc));
         assert!(view.text.is_none());
         assert!(!view.accepts_paste());
+        assert!(view.open);
+    }
+    fn catalog_fixture() -> (Identity, Catalog, Value) {
+        let (id, doc) = fixture();
+        let catalog = Catalog {
+            before: Snapshot::parse(&doc, &id, "i").unwrap(),
+            key: "stt_mic".into(),
+            token: None,
+            status: "starting".into(),
+            items: Vec::new(),
+        };
+        let mut result = id.request();
+        for (key, value) in [
+            ("kind", json!("voice_catalog")),
+            ("scope", json!("device")),
+            ("work_instance", json!("i")),
+            ("catalog", json!("11b31da4-0b1d-445d-98f6-084bf4d571e4")),
+            ("before", json!(catalog.before.revision)),
+            ("field", json!(catalog.key)),
+            ("status", json!("starting")),
+            ("items", json!([])),
+        ] {
+            result[key] = value;
+        }
+        (id, catalog, result)
+    }
+    #[test]
+    fn discovery_wire_binds_inventory_and_rejects_drift_or_unbounded_names() {
+        let (id, catalog, result) = catalog_fixture();
+        let request = Request::Catalog(catalog, "start", None);
+        assert_eq!(request.command(&id, "i").unwrap()["action"], "start");
+        let Reply::Update(Update::Catalog(catalog)) =
+            request.response(&result, &id, "i", "request").unwrap()
+        else {
+            panic!("catalog update")
+        };
+        let mut ready = result;
+        ready["status"] = json!("ready");
+        ready["items"] = json!(["Microphone Δ"]);
+        let poll = Request::Catalog(catalog, "status", None);
+        for (key, value) in [
+            ("field", json!("tts_voice")),
+            ("before", json!("b".repeat(64))),
+            ("catalog", json!("85ed8fd0-9ec4-4517-9b7f-18ae4ec13cb6")),
+            ("items", json!(["a", "a"])),
+            ("items", json!(["x".repeat(513)])),
+            ("items", json!(["bad\nname"])),
+        ] {
+            let mut bad = ready.clone();
+            bad[key] = value;
+            assert!(
+                poll.clone().response(&bad, &id, "i", "poll").is_err(),
+                "{key}"
+            );
+        }
+        let Reply::Update(Update::Catalog(catalog)) =
+            poll.response(&ready, &id, "i", "poll").unwrap()
+        else {
+            panic!("ready update")
+        };
+        let close = Request::Catalog(catalog, "close", Some("Microphone Δ".into()));
+        assert_eq!(close.command(&id, "i").unwrap()["action"], "close");
+        let mut closed = ready;
+        closed["status"] = json!("closed");
+        assert!(
+            matches!(close.response(&closed,&id,"i","close"),Ok(Reply::Update(Update::CatalogClosed(_,Some(name)))) if name=="Microphone Δ")
+        );
+    }
+    #[test]
+    fn discovery_selection_prefills_draft_only_after_visible_choice_and_close() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (id, mut catalog, _) = catalog_fixture();
+        catalog.token = Some("11b31da4-0b1d-445d-98f6-084bf4d571e4".into());
+        catalog.status = "ready".into();
+        catalog.items = vec!["Microphone Δ".into()];
+        let snapshot = catalog.before.clone();
+        let mut view = View::default();
+        view.open();
+        view.update(Ok(Update::List(snapshot.clone())));
+        view.selected = 4;
+        view.waiting = true;
+        view.update(Ok(Update::Catalog(catalog)));
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(!view.accepts_paste());
+        assert!(!view.dictation_key(key(KeyCode::Char('d'))));
+        view.key(key(KeyCode::Down));
+        assert!(view.key(key(KeyCode::Enter)).is_none());
+        let theme = crate::theme::builtin_themes().remove(0);
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| view.draw(f, f.area(), &theme)).unwrap();
+        let Request::Catalog(_, action, selected) = view.key(key(KeyCode::Enter)).unwrap() else {
+            panic!("selection must close")
+        };
+        assert_eq!(action, "close");
+        assert_eq!(selected, Some("Microphone Δ".into()));
+        assert!(view.text.is_none());
+        assert_eq!(view.data.as_ref(), Some(&snapshot));
+        view.update(Ok(Update::CatalogClosed(snapshot.clone(), selected)));
+        assert_eq!(view.text, Some("Microphone Δ".into()));
+        assert_eq!(view.data.as_ref(), Some(&snapshot));
+        assert!(view.key(key(KeyCode::Enter)).is_none());
+        terminal.draw(|f| view.draw(f, f.area(), &theme)).unwrap();
+        let review = view
+            .key(key(KeyCode::Enter))
+            .unwrap()
+            .command(&id, "i")
+            .unwrap();
+        assert_eq!(review["type"], OPERATIONS[1]);
+        assert_eq!(review["value"], "Microphone Δ");
+    }
+    #[test]
+    fn shortcut_capture_uses_normal_press_and_cancels_without_saving() {
+        let (id, doc) = fixture();
+        let snapshot = Snapshot::parse(&doc, &id, "i").unwrap();
+        let mut view = View::default();
+        view.open();
+        view.update(Ok(Update::List(snapshot.clone())));
+        view.selected = 5;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        view.key(key(KeyCode::Char('k')));
+        assert!(view.capturing);
+        assert!(!view.accepts_paste());
+        view.key(KeyEvent::new(KeyCode::Null, KeyModifiers::NONE));
+        assert!(view.capturing);
+        view.key(key(KeyCode::Esc));
+        assert!(!view.capturing);
+        assert!(view.text.is_none());
+        view.key(key(KeyCode::Char('k')));
+        view.key(KeyEvent::new(
+            KeyCode::Char('R'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        assert!(!view.capturing);
+        assert_eq!(view.text, Some("ctrl+alt+r".into()));
+        assert_eq!(view.data, Some(snapshot));
+        assert!(view.key(key(KeyCode::Enter)).is_none());
+        view.key(key(KeyCode::Esc));
+        assert!(view.text.is_none());
         assert!(view.open);
     }
 }

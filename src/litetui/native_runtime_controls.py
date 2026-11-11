@@ -360,6 +360,9 @@ def mutation_hold(app):
             return state.error
         if state.attempt is not None and not state.attempt.verified:
             return "A runtime control owns its exact result and readback publication"
+    from litetui import native_voice_catalog
+    if native_voice_catalog.blocking(app):
+        return "Voice discovery owns its helper and exact close publication"
     from litetui import native_dictation
     if native_dictation.blocking(app):
         return "Dictation owns capture and its exact release publication"

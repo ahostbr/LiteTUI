@@ -281,13 +281,37 @@ async def serve(app):
             await app.client.close()
     from litetui import app as app_module
     assert Path(app_module.__file__).resolve() == source.resolve() / "src/litetui/app.py"
-    report.update(calls=calls, requests=requests, denied=denied, source_app=app_module.__file__)
+    report.update(calls=calls, requests=requests, denied=denied, source_app=app_module.__file__,
+                  launch_arguments=sys.argv[1:])
     (root / "switch-report.json").write_text(json.dumps(report), encoding="utf-8")
 
 
 def run(app, **kwargs):
     assert kwargs == {"headless": True}
     asyncio.run(serve(app))
+
+
+async def launch_codex_start(server):
+    server.process = NS(returncode=None)
+    server.native_bridge = NS(policy=None)
+    server.initialized = True
+
+
+async def launch_codex_request(server, method, params):
+    if method == "account/read":
+        return {"account": {"type": "chatgpt"}}
+    if method == "model/list":
+        return {"data": [{"model": old_model, "displayName": "Controlled Codex",
+                          "defaultReasoningEffort": "low",
+                          "supportedReasoningEfforts": [{"reasoningEffort": "low"}]}]}
+    raise AssertionError(f"Unexpected startup provider request: {method}")
+
+
+async def launch_codex_close(server):
+    if server.process is not None:
+        server.process.returncode = 0
+    server.initialized = False
+    server.runtime_activity.disconnected()
 
 
 def main():
@@ -325,6 +349,11 @@ def main():
         seat.registered, seat.error = True, ""
         return True
     with ExitStack() as stack:
+        if case == "launch-defaults":
+            from litetui.codex_app_server import AppServer
+            stack.enter_context(patch.object(AppServer, "start", launch_codex_start))
+            stack.enter_context(patch.object(AppServer, "request", launch_codex_request))
+            stack.enter_context(patch.object(AppServer, "close", launch_codex_close))
         for obj, name, replacement in (
             (platform, "node", lambda: "controlled-host"), (subprocess, "Popen", forbidden),
             (httpx.Client, "send", forbidden), (httpx.AsyncClient, "send", forbidden_async),

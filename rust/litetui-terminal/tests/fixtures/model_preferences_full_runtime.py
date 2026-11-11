@@ -61,7 +61,7 @@ async def chat_ready(_backend, _model):
     return None
 
 
-if __name__ == "__main__":
+def main():
     import traceback
 
     from litetui import llm_backend
@@ -105,3 +105,7 @@ if __name__ == "__main__":
         ):
             stack.enter_context(patch.object(owner, name, value))
         common.history.main()
+
+
+if __name__ == "__main__":
+    main()

@@ -454,7 +454,11 @@ impl PreferencesRequest {
             Self::ModelPreferences(r) => matches!(**r, crate::model_preferences::Request::Apply(_)),
             Self::Glassbox(r) => matches!(**r, crate::glassbox_controls::Request::Apply(_)),
             Self::ModelLifecycle(r) => matches!(**r, crate::model_lifecycle::Request::Apply(_)),
-            Self::Voice(r) => matches!(**r, crate::voice_preferences::Request::Apply(_)),
+            Self::Voice(r) => matches!(
+                **r,
+                crate::voice_preferences::Request::Apply(_)
+                    | crate::voice_preferences::Request::Catalog(_, "start" | "close", _)
+            ),
             Self::Presentation(r) => {
                 matches!(**r, crate::presentation_preferences::Request::Apply(_))
             }

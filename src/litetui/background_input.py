@@ -969,7 +969,8 @@ def begin_close(app):
 
 async def settle_before_shutdown(app):
     cutoff = begin_close(app)
-    from litetui import native_dictation, native_playback
+    from litetui import native_dictation, native_playback, native_voice_catalog
+    await native_voice_catalog.retire(app, closing=True)
     await native_playback.retire(app, closing=True)
     await native_dictation.retire(app, closing=True)
     if cutoff is None:
@@ -2683,6 +2684,9 @@ def prepare_publication(app, cmd, result):
     from litetui import native_runtime_controls
     ticket = native_runtime_controls.prepare_publication(app, cmd, result)
     if ticket is None:
+        from litetui import native_voice_catalog
+        ticket = native_voice_catalog.prepare_publication(app, cmd, result)
+    if ticket is None:
         from litetui import native_dictation
         ticket = native_dictation.prepare_publication(app, cmd, result)
     if (ticket is None and cmd.get("backend") in {"claude", "codex"}
@@ -2723,7 +2727,11 @@ def finish_publication(app, ticket):
         native_model_lifecycle,
         native_model_preferences,
         native_playback,
+        native_voice_catalog,
     )
+    if isinstance(ticket, native_voice_catalog.Publication):
+        native_voice_catalog.finish_publication(app, ticket)
+        return
     if isinstance(ticket, native_mcp_lifecycle.Publication):
         native_mcp_lifecycle.finish_publication(app, ticket)
         return

@@ -45,8 +45,6 @@ def catalog(app):
         if group == "inference":
             if app.backend.name not in BACKENDS:
                 reason = "This provider owns its inference configuration."
-            elif key == "reasoning_effort":
-                reason = "Per-model effort needs a matching owned execution-authority transition; use the reviewed thinking control."
             elif key == "enable_thinking" and not (llama and "jinja" in flags):
                 reason = "Requires llama.cpp with the jinja template flag."
         elif not llama and not (app.backend.name == "lmstudio" and key == "ctx"):

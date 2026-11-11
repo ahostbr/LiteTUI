@@ -2077,9 +2077,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     // data root, settings, executable lookup or child process side effects.
     let backend = crate::runtime_launch::Backend::parse(&options.backend)?;
     let launch_args = options.launch.python_args(backend, &options.model)?;
-    let thinking_args = options
-        .launch
-        .thinking_args(backend, options.resume.is_some());
+    let thinking_args = options.launch.thinking_args();
     let profile = options.selected_profile()?;
     let source = options.source.canonicalize()?;
     let python = options.python.canonicalize()?;
@@ -2121,6 +2119,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             root.join("settings.json"),
             serde_json::to_vec_pretty(&json!({
                 "backend": options.backend, "default_model": options.model,
+                "thinking_level": options.launch.initial_thinking(backend),
                 "backend_chosen": true, "user_name_asked": true,
                 "tools_enabled": options.tools_enabled, "mcp_enabled": false, "seat_name": "RustLive",
                 "tool_policy_profile": profile.as_str()

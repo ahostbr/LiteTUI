@@ -52,7 +52,8 @@ async def switch_app(make_app, monkeypatch):
         tools_enabled=False, mcp_enabled=False, skills_enabled=False,
         tool_policy_profile="strict", codex_native_engine=False,
     ))
-    app = make_app(initial_backend="custom", initial_model="old-model", hold_restored_input=True)
+    app = make_app(initial_backend="custom", initial_model="old-model",
+                   initial_thinking="default", hold_restored_input=True)
     app._model_id = "old-model"
     app._rpc = True
     app._gui_rpc_enabled = True

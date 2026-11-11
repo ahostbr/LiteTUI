@@ -268,30 +268,24 @@ fn direct_struct_construction_cannot_bypass_bounds_or_command_checks() {
 }
 
 #[test]
-fn thinking_defaults_are_explicit_only_for_fresh_launches_and_never_downgrade_choices() {
+fn thinking_defaults_seed_fresh_authority_without_fabricating_invocation_flags() {
     for backend in Backend::ALL {
         let options = LaunchOptions::default();
-        assert!(options.thinking_args(backend, true).is_empty());
+        assert!(options.thinking_args().is_empty());
         assert_eq!(
-            options.thinking_args(backend, false),
-            [
-                "--thinking-level",
-                if matches!(backend, Backend::Claude | Backend::Codex) {
-                    "low"
-                } else {
-                    "default"
-                }
-            ]
+            options.initial_thinking(backend),
+            if matches!(backend, Backend::Claude | Backend::Codex) {
+                "low"
+            } else {
+                "default"
+            }
         );
         let explicit = parse(&["--thinking-level", "model-specific-level"]);
         assert_eq!(
-            explicit.thinking_args(backend, true),
+            explicit.thinking_args(),
             ["--thinking-level", "model-specific-level"]
         );
-        assert_eq!(
-            explicit.thinking_args(backend, false),
-            ["--thinking-level", "model-specific-level"]
-        );
+        assert_eq!(explicit.initial_thinking(backend), "model-specific-level");
     }
     let args = ["--thinking-level", "low", "--reasoning-effort", "high"].map(str::to_owned);
     assert!(LaunchOptions::extract(&args).is_err());

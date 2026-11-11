@@ -119,6 +119,11 @@ def persist_settings(app, candidate, *, baseline=None, expected_revisions=None):
     object.__setattr__(candidate, '_baseline', deepcopy(next_baseline))
     object.__setattr__(candidate, '_saved_values', next_saved)
     app._settings_save_result = result
+    if candidate is app.settings and result.fully_saved and any(
+            {'model_infer_overrides', 'lmstudio_graded_thinking_models'}.intersection(outcome.fields)
+            for outcome in result.persistence):
+        from litetui import effort_projection
+        effort_projection.install(app)
     return result
 
 
@@ -235,6 +240,10 @@ def apply_saved_result(app, requested, result):
         app._convo_settings = cs.load(app.convo_dir)
     combined = SettingsSaveResult(result.persistence, tuple(statuses))
     app._settings_save_result = combined
+    if any(outcome.saved and {'model_infer_overrides', 'thinking_level', 'lmstudio_graded_thinking_models'}.intersection(outcome.fields)
+           for outcome in result.persistence):
+        from litetui import effort_projection
+        effort_projection.install(app)
     return combined
 
 
@@ -271,3 +280,5 @@ def prepare_reconnect(app):
         backend.set_settings(target)
     app.settings = target
     object.__setattr__(target, '_baseline', asdict(target))
+    from litetui import effort_projection
+    effort_projection.install(app)

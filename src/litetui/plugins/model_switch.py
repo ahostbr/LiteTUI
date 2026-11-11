@@ -1133,20 +1133,22 @@ class ModelConfigBody(Widget):
                                     if app.tools_enabled else app.settings.max_tokens_chat
                                 )
                             if key == "reasoning_effort":
-                                # Inherits the GLOBAL thinking level and applies to
-                                # chat AND compaction — not a server default.
+                                # Inherits the owned default; compaction has its own budget.
                                 inherited = app.thinking_level or None
                                 blank_label = (
-                                    f"inherit global ({app.thinking_level})"
-                                    if app.thinking_level else "inherit global (unset)"
+                                    f"inherit default ({app.thinking_level})"
+                                    if app.thinking_level else "inherit default (unset)"
                                 )
-                                note = ("applies to chat + compaction; off sends none "
+                                note = ("applies to chat; off sends none "
                                        "(no reasoning trace)")
                             yield from self._field_rows(
                                 "inf", key, label, kind,
                                 choices if choices is not None else
                                     (f"inherited: {inherited}" if inherited is not None else "server default"),
-                                infer_cfg.get(key),
+                                ("__server_default__" if key == "reasoning_effort"
+                                 and key in infer_cfg and infer_cfg[key] is None else infer_cfg.get(key)),
+                                disabled=(key == "reasoning_effort" and self._key == app.model_id
+                                          and getattr(app, "_cli_effective_thinking", None) is not None),
                                 note=note, blank_label=blank_label,
                             )
                         if "jinja" in flags and on_llama:
@@ -1212,7 +1214,9 @@ class ModelConfigBody(Widget):
                              allow_blank=False, disabled=disabled)
             elif kind == "select":
                 choices = [(blank_label, "")] + [(c, c) for c in extra]
-                value = current if current in (extra or []) else ""
+                if key == "reasoning_effort":
+                    choices.insert(1, ("server default", "__server_default__"))
+                value = current if current in {value for _, value in choices} else ""
                 yield Select(literal_options(choices), value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             else:
@@ -1268,6 +1272,9 @@ class ModelConfigBody(Widget):
                 widget = self.query_one(f"#{wid}")
             except Exception:
                 continue   # disabled-by-census fields may be absent; keep base value
+            if key == "reasoning_effort" and getattr(widget, "value", None) == "__server_default__":
+                out[key] = None
+                continue
             if isinstance(widget, Select):
                 raw = widget.value or ""
                 if raw == "":
@@ -1325,6 +1332,10 @@ class ModelConfigBody(Widget):
             if applied:
                 load_cfg = {**load_cfg, **preset.get("load", {})}
                 infer_cfg = {**infer_cfg, **preset.get("inference", {})}
+            if (self._key == app.model_id and getattr(app, "_cli_effective_thinking", None) is not None
+                    and ("reasoning_effort" in infer_cfg, infer_cfg.get("reasoning_effort"))
+                    != ("reasoning_effort" in self._infer_cfg(), self._infer_cfg().get("reasoning_effort"))):
+                raise ValueError("Invocation thinking override is read-only for the current model")
             validate_load_cfg(load_cfg)
             if app.backend.name == "llamacpp":
                 row = app.model_rows.get(self._key)

@@ -1623,7 +1623,10 @@ class LiteTUI(App):
         if initial_backend is not None and initial_backend not in llm_backend.BACKEND_NAMES:
             raise ValueError('Unsupported invocation backend')
         self._cli_initial_backend = initial_backend
-        self._cli_thinking_level = 'off' if initial_thinking == 'none' else initial_thinking
+        thinking_explicit = getattr(launch_options, 'thinking_explicit', None)
+        if thinking_explicit is None:
+            thinking_explicit = initial_thinking is not None
+        self._cli_thinking_level = ('off' if initial_thinking == 'none' else initial_thinking) if thinking_explicit else None
         self._launch_options = launch_options
         self._launch_prepared = False
         self._connect_done = asyncio.Event()
@@ -1659,7 +1662,10 @@ class LiteTUI(App):
             initial_thinking = authority.thinking_level
             self._cli_initial_backend = initial_backend
             self._cli_initial_model = initial_model
-            self._cli_thinking_level = initial_thinking
+            self._cli_thinking_level = initial_thinking if thinking_explicit else None
+        from litetui.effort_projection import Invocation
+        self._owned_effort_invocation = Invocation(self._cli_thinking_level)
+        self._cli_effective_thinking = self._cli_thinking_level
         self._invocation_saved_values = {}
         self._launch_overrides = {}
         if launch_options is not None:
@@ -5094,6 +5100,8 @@ class LiteTUI(App):
             self.retire_cli_model(value)  # only after successful owned publication
         self._model_id = value
         self._resume_connection_error = None
+        from litetui import effort_projection
+        effort_projection.install(self)
 
     def retire_cli_model(self, selected: str | None = None) -> None:
         """A deliberate model choice supersedes this process's launch choice.
@@ -5160,7 +5168,11 @@ class LiteTUI(App):
         self._remember_for_this_convo("thinking_level", value)
         self._cli_thinking_level = None
         self._cli_effective_thinking = None
+        from litetui.effort_projection import Invocation
+        self._owned_effort_invocation = Invocation(None)
         self._thinking_level = value
+        from litetui import effort_projection
+        effort_projection.install(self)
         # the user wrote "think level WHEN ON CODEX" as its own item, and it is a
         # different vocabulary from LM Studio's levels — `model_switch.py:906`
         # stores it under `model_infer_overrides[model]["reasoning_effort"]`.
@@ -5329,6 +5341,9 @@ class LiteTUI(App):
                 convo_settings_mod.save(self.convo_dir, cs, agent_session=self._agent_session)
             except OSError:
                 pass
+            else:
+                from litetui import effort_projection
+                effort_projection.install(self)
             return
 
         cs = convo_settings_mod.load(self.convo_dir)
@@ -5485,6 +5500,8 @@ class LiteTUI(App):
         # Restoring is not editing: later command saves diff only new intent.
         from dataclasses import asdict
         object.__setattr__(self.settings, '_baseline', asdict(self.settings))
+        from litetui import effort_projection
+        effort_projection.install(self)
 
     def _adopt_convo_backend(self, cs) -> None:
         """Put this conversation back on the engine it was using.
@@ -6258,6 +6275,8 @@ class LiteTUI(App):
                     self._thinking_level = None if level == 'default' else level
             if self._cli_launch_error:
                 return
+            from litetui import effort_projection
+            effort_projection.install(self)
             requested_ctx = getattr(getattr(self, '_launch_options', None), 'context_length', None)
             if requested_ctx:
                 info = await self.backend.model_info(self.model_id)
@@ -8822,6 +8841,10 @@ class LiteTUI(App):
 
     def _effective_request_overrides(self):
         overrides = dict(self.backend.request_overrides(self.model_id))
+        from litetui import effort_projection
+        if (self.backend.name in effort_projection.BACKENDS
+                and effort_projection.selection(self.settings, self.model_id) == (True, None)):
+            overrides['reasoning_effort'] = 'default'
         max_tokens = getattr(getattr(self, '_launch_options', None), 'max_tokens', None)
         if max_tokens is not None:
             overrides['max_tokens'] = max_tokens
@@ -8946,7 +8969,10 @@ class LiteTUI(App):
                     authority.backend, authority.model, graded)
                 actual_wire = TurnEngine.resolve_reasoning_effort(effective_level,
                     authority.backend, authority.model, graded)
-            if actual_wire != expected_wire:
+            from litetui import effort_projection
+            if authority.backend in effort_projection.BACKENDS:
+                effort_projection.validate(self, actual_wire)
+            elif actual_wire != expected_wire:
                 raise llm_backend.BackendError('Effective request effort disagrees with owned agent authority')
             if self.model_id != authority.model:
                 raise llm_backend.BackendError('Selected model disagrees with owned agent authority')

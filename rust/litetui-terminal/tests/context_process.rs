@@ -20,6 +20,13 @@ fn launch(fixture_file: &str) -> (Interactive, PathBuf) {
     launch_fixture(fixture_file, false)
 }
 fn launch_fixture(fixture_file: &str, command_controls: bool) -> (Interactive, PathBuf) {
+    launch_fixture_resume(fixture_file, command_controls, None)
+}
+fn launch_fixture_resume(
+    fixture_file: &str,
+    command_controls: bool,
+    resume: Option<(&Path, &str)>,
+) -> (Interactive, PathBuf) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let ordinal = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -36,7 +43,7 @@ fn launch_fixture(fixture_file: &str, command_controls: bool) -> (Interactive, P
         .join("target/context-process-tests")
         .join(format!("{}-{epoch}-{ordinal}", std::process::id()));
     let wrapper = directory.join("source/src/litetui");
-    let data = directory.join("data");
+    let data = resume.map_or_else(|| directory.join("data"), |(root, _)| root.to_path_buf());
     fs::create_dir_all(&wrapper).unwrap();
     let literal = |path: &Path| serde_json::to_string(&path.to_string_lossy()).unwrap();
     fs::write(
@@ -57,12 +64,19 @@ os.environ.update(RUST_RUNTIME_CONTROLS_SOURCE={}, RUST_CONTEXT_COMMON_FIXTURE={
 p=Path(os.environ['LITETUI_DATA_ROOT'])/'settings.json'
 s=json.loads(p.read_text(encoding='utf-8'))
 s.update(user_name_asked=True,skills_enabled=False,footer_task_manager=False,tts_enabled=False,sidecar_enabled=False,autocompact_enabled=False)
+if {}:
+    s['thinking_level']='medium'
 p.write_text(json.dumps(s), encoding='utf-8')
 runpy.run_path({}, run_name='__main__')
 "#,
         literal(&source),
         literal(&fixture.join("runtime_controls_runtime.py")),
         literal(&fixture.join(fixture_file)),
+        if fixture_file == "model_preferences_effort_runtime.py" {
+            "True"
+        } else {
+            "False"
+        },
         literal(&fixture.join(if command_controls {
             "command_controls_runtime.py"
         } else {
@@ -78,7 +92,10 @@ runpy.run_path({}, run_name='__main__')
         "--data-root".into(),
         data.to_string_lossy().into_owned(),
         "--backend".into(),
-        if fixture_file == "model_preferences_full_runtime.py" {
+        if matches!(
+            fixture_file,
+            "model_preferences_full_runtime.py" | "model_preferences_effort_runtime.py"
+        ) {
             "llamacpp".into()
         } else {
             "custom".into()
@@ -101,9 +118,15 @@ runpy.run_path({}, run_name='__main__')
         "http://127.0.0.1:45120/v1".into(),
     ];
     let mut args = args.to_vec();
-    if fixture_file == "model_preferences_full_runtime.py" {
+    if matches!(
+        fixture_file,
+        "model_preferences_full_runtime.py" | "model_preferences_effort_runtime.py"
+    ) {
         let index = args.iter().position(|s| s == "--thinking-level").unwrap();
         args.drain(index..index + 2);
+    }
+    if let Some((_, session)) = resume {
+        args.extend(["--resume".into(), session.into()]);
     }
     (Interactive::start(Options::parse(&args).unwrap()), data)
 }
@@ -3213,12 +3236,6 @@ fn full_model_preferences_keyboard_preserves_draft_pending_load_and_actual_reque
             settings_drain(runtime, &mut app)?;
             settings_key(runtime, &mut app, KeyCode::Char('p'))?;
             for (index, (field, text)) in values.iter().enumerate() {
-                if *field == "reasoning_effort" {
-                    let view = settings_key(runtime, &mut app, KeyCode::Char('e'))?;
-                    assert!(view.contains("execution-authority"), "{view}");
-                    settings_key(runtime, &mut app, KeyCode::Down)?;
-                    continue;
-                }
                 settings_key(runtime, &mut app, KeyCode::Char('e'))?;
                 for c in text.chars() {
                     settings_key(runtime, &mut app, KeyCode::Char(c))?;
@@ -3262,12 +3279,8 @@ fn full_model_preferences_keyboard_preserves_draft_pending_load_and_actual_reque
         .iter()
         .filter(|c| c["type"] == "gui.models.native_preferences_review")
         .collect::<Vec<_>>();
-    assert_eq!(reviews.len(), 35);
-    for (review, (field, _)) in reviews.iter().zip(
-        values
-            .into_iter()
-            .filter(|(field, _)| *field != "reasoning_effort"),
-    ) {
+    assert_eq!(reviews.len(), 36);
+    for (review, (field, _)) in reviews.iter().zip(values) {
         assert_eq!(review["field"], field);
     }
     let reads = report["wire"]
@@ -3279,7 +3292,7 @@ fn full_model_preferences_keyboard_preserves_draft_pending_load_and_actual_reque
                 .then_some(&row["result"]["preferences"])
         })
         .collect::<Vec<_>>();
-    assert_eq!(reads.len(), 35);
+    assert_eq!(reads.len(), 36);
     let final_state = reads.last().unwrap();
     assert_eq!(
         final_state["raw"]["load"]["active"],
@@ -3296,7 +3309,7 @@ fn full_model_preferences_keyboard_preserves_draft_pending_load_and_actual_reque
     assert_eq!(request["max_tokens"], 423);
     assert_eq!(request["stop"], json!(["END", "STOP"]));
     assert_eq!(request["extra_body"]["top_k"], 41);
-    assert_eq!(request["extra_body"]["reasoning_effort"], Value::Null);
+    assert_eq!(request["extra_body"]["reasoning_effort"], "none");
     assert_eq!(
         request["extra_body"]["chat_template_kwargs"]["enable_thinking"],
         false
@@ -3341,4 +3354,250 @@ fn full_model_preferences_keyboard_preserves_draft_pending_load_and_actual_reque
         true
     );
     eprintln!("Full model preferences child evidence: {}", data.display());
+}
+
+fn effort_submit(runtime: &mut Interactive, app: &mut Demo, text: &str) -> io::Result<()> {
+    app.live.as_mut().unwrap().submit(text)?;
+    runtime.submit(app.live.as_mut().unwrap().take_submission().unwrap())?;
+    observe(runtime, app, |event| matches!(event, Observation::Complete))
+}
+
+fn effort_switch(runtime: &mut Interactive, app: &mut Demo, model: &str) -> io::Result<()> {
+    app.open_backend();
+    runtime.backend(
+        app.live
+            .as_mut()
+            .unwrap()
+            .backend_controls
+            .take_intent()
+            .unwrap(),
+    )?;
+    observe(runtime, app, |event| {
+        matches!(
+            event,
+            Observation::Backend(litetui_terminal::backend_controls::Update::Catalog(_))
+        )
+    })?;
+    draw(app);
+    let view = &mut app.live.as_mut().unwrap().backend_controls;
+    let index = view
+        .catalog
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .position(|row| row.name == "llamacpp")
+        .unwrap();
+    view.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    for _ in 0..index {
+        view.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    view.paste(model);
+    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    draw(app);
+    let view = &mut app.live.as_mut().unwrap().backend_controls;
+    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    runtime.backend(view.take_intent().expect("drawn exact model selection"))?;
+    observe(runtime, app, |event| {
+        matches!(event, Observation::BackendChanged(_))
+    })
+}
+
+#[test]
+#[ignore = "real unpinned CLI effort settings, model switching and fresh-process resume"]
+fn model_effort_modes_reach_requests_and_survive_unpinned_reopen() {
+    for mode in ["value", "inherit", "server"] {
+        let (runtime, data) = launch("model_preferences_effort_runtime.py");
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = Demo::live("llamacpp".into(), "switch-old".into());
+                observe(runtime, &mut app, |event| {
+                    matches!(event, Observation::Ready)
+                })?;
+                app.live.as_mut().unwrap().settings.open();
+                settings_drain(runtime, &mut app)?;
+                settings_key(runtime, &mut app, KeyCode::Char('p'))?;
+                for _ in 0..9 {
+                    settings_key(runtime, &mut app, KeyCode::Down)?;
+                }
+                settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+                for c in "off".chars() {
+                    settings_key(runtime, &mut app, KeyCode::Char(c))?;
+                }
+                settings_key(runtime, &mut app, KeyCode::Enter)?;
+                let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(saved.contains("Saved and verified."), "{saved}");
+                if mode != "value" {
+                    settings_key(
+                        runtime,
+                        &mut app,
+                        KeyCode::Char(if mode == "inherit" { 'i' } else { 'd' }),
+                    )?;
+                    settings_key(runtime, &mut app, KeyCode::Enter)?;
+                    let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                    assert!(saved.contains("Saved and verified."), "{mode}: {saved}");
+                }
+                settings_key(runtime, &mut app, KeyCode::Esc)?;
+                settings_key(runtime, &mut app, KeyCode::Esc)?;
+                effort_submit(
+                    runtime,
+                    &mut app,
+                    "Explicit request after effort preference",
+                )?;
+                effort_switch(runtime, &mut app, "switch-new")?;
+                effort_submit(runtime, &mut app, "Explicit request on model B")?;
+                effort_switch(runtime, &mut app, "switch-old")?;
+                effort_submit(runtime, &mut app, "Explicit request back on model A")?;
+                Ok(())
+            })
+            .unwrap();
+        let report = json_file(&data.join("runtime-controls-report.json"));
+        assert_eq!(report["effort_launch_unpinned"], true);
+        assert_eq!(report["effort_reopened"], false);
+        assert_eq!(report["before"]["authority"]["thinking_level"], "medium");
+        assert_eq!(report["after"]["authority"]["thinking_level"], "medium");
+        let requests = report["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 3);
+        let expected = match mode {
+            "value" => json!("none"),
+            "inherit" => json!("medium"),
+            _ => Value::Null,
+        };
+        assert_eq!(
+            requests[0]["extra_body"]["reasoning_effort"], expected,
+            "{mode}"
+        );
+        assert_eq!(requests[1]["model"], "switch-new");
+        assert_eq!(requests[1]["extra_body"]["reasoning_effort"], "medium");
+        assert_eq!(requests[2]["model"], "switch-old");
+        assert_eq!(
+            requests[2]["extra_body"]["reasoning_effort"], expected,
+            "{mode}"
+        );
+        assert_eq!(
+            report["initial_documents"]["global"],
+            report["final_documents"]["global"]
+        );
+        assert_eq!(report["denied"], json!([]));
+        let session = report["after"]["identity"]["session_id"].as_str().unwrap();
+        let (reopened, same_data) = launch_fixture_resume(
+            "model_preferences_effort_runtime.py",
+            false,
+            Some((&data, session)),
+        );
+        assert_eq!(same_data, data);
+        reopened
+            .with_cleanup(|runtime| {
+                let mut app = Demo::live("llamacpp".into(), "switch-old".into());
+                observe(runtime, &mut app, |event| {
+                    matches!(event, Observation::Ready)
+                })?;
+                effort_submit(runtime, &mut app, "Explicit request after process reopen")?;
+                Ok(())
+            })
+            .unwrap();
+        let reopened = json_file(&data.join("runtime-controls-report.json"));
+        assert_eq!(reopened["effort_launch_unpinned"], true);
+        assert_eq!(reopened["effort_reopened"], true);
+        assert_eq!(reopened["after"]["identity"]["session_id"], session);
+        assert_eq!(reopened["after"]["authority"]["thinking_level"], "medium");
+        assert_eq!(reopened["requests"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            reopened["requests"][0]["extra_body"]["reasoning_effort"], expected,
+            "{mode}"
+        );
+        assert_eq!(reopened["denied"], json!([]));
+        assert_eq!(reopened["reader_retired"], true);
+        assert_eq!(
+            reopened["shutdown"]["result"]["work_shutdown"]["worker_settled"],
+            true
+        );
+        assert!(
+            reopened["launch_arguments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|arg| arg != "--thinking-level" && arg != "--reasoning-effort")
+        );
+        eprintln!(
+            "Unpinned effort {mode} process evidence: {}",
+            data.display()
+        );
+    }
+}
+
+#[test]
+#[ignore = "compiled Voice catalog selection and native shortcut capture with private inventories"]
+fn voice_catalog_names_and_shortcut_capture_require_review_without_audio() {
+    let (runtime, data) = launch("voice_catalog_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve composer and selection.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selected = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('v'))?;
+            for _ in 0..4 {
+                settings_key(runtime, &mut app, KeyCode::Down)?;
+            }
+            let path = data.join("settings.json");
+            let mut expected = json_file(&path);
+            for (index, field, value) in [
+                (4, "stt_mic", "Microphone Δ"),
+                (5, "stt_hotkey", "ctrl+alt+r"),
+                (6, "tts_voice", "SAPI Ω"),
+            ] {
+                if index > 4 {
+                    settings_key(runtime, &mut app, KeyCode::Down)?;
+                }
+                if index == 5 {
+                    settings_key(runtime, &mut app, KeyCode::Char('k'))?;
+                    app.live.as_mut().unwrap().settings.key(KeyEvent::new(
+                        KeyCode::Char('r'),
+                        KeyModifiers::CONTROL | KeyModifiers::ALT,
+                    ));
+                    assert!(draw(&mut app).contains("Captured into draft"));
+                } else {
+                    let opened = settings_key(runtime, &mut app, KeyCode::Char('c'))?;
+                    assert!(opened.contains("Discover"), "{opened}");
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        let shown = settings_key(runtime, &mut app, KeyCode::F(5))?;
+                        if shown.contains("Status: ready") {
+                            break;
+                        }
+                        assert!(Instant::now() < deadline, "{shown}");
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    settings_key(runtime, &mut app, KeyCode::Down)?;
+                    let draft = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                    assert!(draft.contains("Selected name is a draft"), "{draft}");
+                }
+                assert_eq!(json_file(&path), expected);
+                let reviewed = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(reviewed.contains("Save "), "{reviewed}");
+                assert_eq!(json_file(&path), expected);
+                let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(saved.contains("Saved and verified on disk"), "{saved}");
+                expected[field] = json!(value);
+                assert_eq!(json_file(&path), expected);
+            }
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Preserve composer and selection.");
+            assert_eq!(app.composer.before_cursor(), selected);
+            Ok(())
+        })
+        .unwrap_or_else(|err| panic!("{}: {err}", data.display()));
+    assert_eq!(json_file(&data.join("voice-guards.json")), json!([]));
+    assert!(
+        json_file(&data.join("runtime-controls-report.json"))["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }

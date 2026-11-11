@@ -299,7 +299,10 @@ async def local_owner(app, monkeypatch, backend="llamacpp"):
     app.model_rows[app.model_id] = replace(
         app.model_rows[app.model_id], path="controlled.gguf", nextn_predict_layers=2
     )
-    app._cli_effective_thinking = None
+    app.thinking_level = "default"
+    app._cli_initial_backend = None
+    from litetui import effort_projection
+    effort_projection.install(app)
     app._launch_options.work_lifecycle_version = 1
     capture = work.capture(app, {"version": 1, "id": "capture", **work.identity(app)})
     work.activate(
@@ -513,14 +516,14 @@ async def test_invocation_thinking_override_cannot_be_silently_saved(armed):
         await review(armed, "reasoning_effort", "off")
 
 
-async def test_per_model_effort_is_honestly_readonly_until_authority_transition_exists(
+async def test_per_model_effort_is_editable_without_replacing_base_authority(
     app, monkeypatch
 ):
     owner = await local_owner(app, monkeypatch)
     before = owner._agent_session.authority
     snap = await call(owner, "snapshot")
-    assert not snap["fields"]["reasoning_effort"]["editable"]
-    assert "execution-authority" in snap["catalog"]["reasoning_effort"]["reason"]
+    assert snap["fields"]["reasoning_effort"]["editable"]
+    assert snap["catalog"]["reasoning_effort"]["reason"] is None
     assert snap["catalog"]["reasoning_effort"]["choices"] == [
         "off",
         "minimal",
@@ -529,20 +532,23 @@ async def test_per_model_effort_is_honestly_readonly_until_authority_transition_
         "high",
         "xhigh",
     ]
-    with pytest.raises(ValueError, match="changed"):
-        await review(owner, "reasoning_effort", "off")
+    await review(owner, "reasoning_effort", "off")
     assert owner._agent_session.authority == before
 
 
-async def test_canonical_model_screen_effort_save_reproduces_authority_gap(
-    app, monkeypatch
+@pytest.mark.parametrize("invocation", [False, True])
+async def test_canonical_model_screen_effort_save_preserves_base_authority(
+    app, monkeypatch, invocation
 ):
     from types import SimpleNamespace
 
     from litetui.plugins import model_switch
 
-    app._cli_effective_thinking = None
+    if not invocation:
+        app.thinking_level = "default"
     before = app._agent_session.authority
+    errors = []
+    prior = copy.deepcopy(app.settings.model_infer_overrides)
     widgets = {
         "#inf-reasoning_effort": SimpleNamespace(value="off"),
         "#mc-preset-apply": SimpleNamespace(value=""),
@@ -556,7 +562,7 @@ async def test_canonical_model_screen_effort_save_reproduces_authority_gap(
         query_one=lambda key, *_: widgets[key],
         _load_cfg=dict,
         _infer_cfg=dict,
-        _say_error=lambda text: pytest.fail(text),
+        _say_error=errors.append,
     )
     body._collect_group = lambda prefix, fields, base: (
         model_switch.ModelConfigBody._collect_group(body, prefix, fields, base)
@@ -564,6 +570,12 @@ async def test_canonical_model_screen_effort_save_reproduces_authority_gap(
     monkeypatch.setattr(model_switch, "close_dialog", lambda *_: None)
     monkeypatch.setattr(app, "system_message", lambda *_: None)
     model_switch.ModelConfigBody.action_apply(body)
+    if invocation:
+        assert errors and "read-only" in errors[0]
+        assert app.settings.model_infer_overrides == prior
+        app._validate_owned_identity()
+        return
+    assert not errors
     assert app.settings.model_infer_overrides[app.model_id]["reasoning_effort"] == "off"
     assert app._agent_session.authority == before and before.thinking_level == "default"
     assert (
@@ -572,8 +584,7 @@ async def test_canonical_model_screen_effort_save_reproduces_authority_gap(
         ]
         == "none"
     )
-    with pytest.raises(RuntimeError, match="Effective request effort disagrees"):
-        app._validate_owned_identity()
+    app._validate_owned_identity()
 
 
 @pytest.mark.parametrize("change", ["history", "policy", "launch"])

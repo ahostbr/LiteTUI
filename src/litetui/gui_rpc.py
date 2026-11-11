@@ -36,7 +36,7 @@ def current_operation(app):
 
 OPERATIONS = (
     "glassbox.native_snapshot", "glassbox.native_review", "glassbox.native_apply", "glassbox.native_readback",
-    "hello", "state", "voice.native_dictation", "voice.native_playback", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
+    "hello", "state", "voice.native_dictation", "voice.native_playback", "voice.native_catalog", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -964,7 +964,11 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    from litetui import native_dictation, native_playback
+    from litetui import native_dictation, native_playback, native_voice_catalog
+    if operation == native_voice_catalog.OPERATION:
+        return await native_voice_catalog.dispatch(app, cmd)
+    if native_voice_catalog.blocking(app):
+        raise ValueError("Close voice discovery before another management action")
     if operation == native_playback.OPERATION:
         if native_dictation.blocking(app):
             raise ValueError("Finish or cancel dictation before playback")

@@ -86,16 +86,24 @@ def set_thinking(app, level):
     # Publish through the source-owned setter before changing any runtime
     # override. A rejected owned write must not alter the next turn's effort.
     app.thinking_level = value
+    from litetui import effort_projection
+    owned_host = (getattr(app, "_agent_session", None) is not None
+                  and getattr(app.backend, "name", None) in effort_projection.BACKENDS)
     # A per-model override takes precedence over the global level in TurnEngine.
     overrides = getattr(getattr(app, "settings", None), "model_infer_overrides", {})
     entry = overrides.get(getattr(app, "model_id", None), {})
     if value is None:
         entry.pop("reasoning_effort", None)
     elif "reasoning_effort" in entry:
-        entry["reasoning_effort"] = "none" if value == "off" else value
+        entry["reasoning_effort"] = value if owned_host else "none" if value == "off" else value
     if value is None:
         remember = getattr(app, "_remember_for_this_convo", None)
         if callable(remember):
             remember("thinking_level", "default")
             if getattr(getattr(app, "backend", None), "name", "") == "codex":
                 remember("reasoning_effort", "default")
+
+    if owned_host:
+        from litetui import settings_runtime
+        settings_runtime.persist_or_raise(app, app.settings)
+        effort_projection.install(app)

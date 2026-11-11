@@ -195,6 +195,8 @@ def _snapshot(app, binding, info):
         if group == "inference" and supported:
             values = dict(app._effective_request_overrides())
             values.pop(field, None)
+            if field == "reasoning_effort":
+                values[field] = "default"
             default = _request_values(app, values)[field]
         fields[field] = {
             "present": field in saved_row,

@@ -25,6 +25,14 @@ fn runtime_source() -> PathBuf {
         .unwrap()
 }
 fn launch(initial: &str, target: &str, case: &str) -> (Interactive, PathBuf) {
+    launch_with_thinking(initial, target, case, Some("default"))
+}
+fn launch_with_thinking(
+    initial: &str,
+    target: &str,
+    case: &str,
+    thinking: Option<&str>,
+) -> (Interactive, PathBuf) {
     let fixture_source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -75,13 +83,17 @@ runpy.run_path({}, run_name='__main__')
         "switch-old".into(),
         "--tool-profile".into(),
         "strict".into(),
-        "--thinking-level".into(),
-        "default".into(),
         "--timeout".into(),
         "30".into(),
         "--server-timeout".into(),
         "5".into(),
     ];
+    if initial == "codex" && case == "launch-defaults" {
+        args.extend(["--codex-engine".into(), "native".into()]);
+    }
+    if let Some(level) = thinking {
+        args.extend(["--thinking-level".into(), level.into()]);
+    }
     if initial == "custom" {
         args.extend([
             "--base-url".into(),
@@ -426,4 +438,47 @@ fn owned_backend_switch_accepts_empty_pending_conversation_without_materializing
 #[ignore = "controlled oversized owned history; dependency Python required"]
 fn large_saved_history_backend_switch_uses_full_context_proof_and_keeps_draft() {
     scenario("custom", "lmstudio", "oversized-history", true, false);
+}
+
+#[test]
+#[ignore = "actual provider/local startup with controlled metadata and no authentication"]
+fn fresh_launch_defaults_are_durable_and_only_explicit_effort_pins_the_invocation() {
+    for (backend, explicit, expected) in [
+        ("custom", None, "default"),
+        ("custom", Some("default"), "default"),
+        ("claude", None, "low"),
+        ("codex", None, "low"),
+    ] {
+        let (runtime, root) = launch_with_thinking(backend, backend, "launch-defaults", explicit);
+        runtime
+            .with_cleanup(|runtime| {
+                let mut app = Demo::live(backend.into(), "switch-old".into());
+                wait(runtime, &mut app, |event| {
+                    matches!(event, Observation::Ready)
+                })?;
+                Ok(())
+            })
+            .unwrap();
+        let report: Value =
+            serde_json::from_slice(&fs::read(root.join("switch-report.json")).unwrap()).unwrap();
+        assert_eq!(report["before"]["thinking"], expected);
+        assert_eq!(
+            report["before"]["cli_thinking"],
+            serde_json::json!(explicit)
+        );
+        let saved: Value =
+            serde_json::from_slice(&fs::read(root.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["thinking_level"], expected);
+        assert_eq!(
+            report["launch_arguments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|arg| *arg == "--thinking-level")
+                .count(),
+            usize::from(explicit.is_some())
+        );
+        assert!(report["requests"].as_array().unwrap().is_empty());
+        assert!(report["denied"].as_array().unwrap().is_empty());
+    }
 }

@@ -372,17 +372,20 @@ impl LaunchOptions {
     }
     /// Source argparse accepts a string; current model capabilities decide support.
     /// An omitted resume level must not replace the retained source-owned choice.
-    pub fn thinking_args(&self, backend: Backend, resumed: bool) -> Vec<String> {
-        let level = self.thinking_level.as_deref().or({
-            if resumed {
-                None
-            } else if matches!(backend, Backend::Claude | Backend::Codex) {
-                Some("low")
+    /// Fresh owned settings inherit the launch policy; this is not an invocation pin.
+    pub fn initial_thinking(&self, backend: Backend) -> &str {
+        self.thinking_level.as_deref().unwrap_or(
+            if matches!(backend, Backend::Claude | Backend::Codex) {
+                "low"
             } else {
-                Some("default")
-            }
-        });
-        level
+                "default"
+            },
+        )
+    }
+    /// Only a supplied flag can pin effort above a conversation's model preference.
+    pub fn thinking_args(&self) -> Vec<String> {
+        self.thinking_level
+            .as_deref()
             .map(|value| vec!["--thinking-level".into(), value.into()])
             .unwrap_or_default()
     }
