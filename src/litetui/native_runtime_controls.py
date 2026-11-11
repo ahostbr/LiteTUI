@@ -343,6 +343,9 @@ def _context(app):
 
 
 def mutation_hold(app):
+    from litetui import native_mark
+    if native_mark.blocking(app):
+        return "Mark owns its overlay, reviewed image and exact Close publication"
     from litetui import native_monitor
     if native_monitor.blocking(app):
         return "Monitor owns its worker, output readback and exact release publication"

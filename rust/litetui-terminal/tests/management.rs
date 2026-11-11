@@ -350,3 +350,75 @@ fn codex_native_start_requires_the_original_captured_execution_and_mirror_pair()
     f.as_object_mut().unwrap().remove("execution_id");
     assert!(client.accept(f).is_err());
 }
+
+#[test]
+fn pre_admission_refusal_is_exact_once_and_never_an_execution() {
+    let refusal = json!({"type":"submit_refused","phase":"pre_admission",
+        "reason":"admission","detail":"Below fleet floor"});
+    let frame = || {
+        let mut value = envelope(&refusal);
+        value["source"] = json!("rpc");
+        value["hook_id"] = Value::Null;
+        value["execution_id"] = Value::Null;
+        value
+    };
+    for fault in [
+        "none",
+        "session",
+        "operation",
+        "null-operation",
+        "source",
+        "hook",
+        "execution",
+        "missing-hook",
+        "missing-execution",
+        "no-prompt",
+        "started",
+        "duplicate",
+        "empty-detail",
+    ] {
+        let mut client = if fault == "started" {
+            started()
+        } else {
+            connected()
+        };
+        if fault != "started" && fault != "no-prompt" {
+            client.prompt("prompt-A").unwrap();
+        }
+        let mut event = refusal.clone();
+        let mut wire = frame();
+        match fault {
+            "session" => wire["session_id"] = json!("other"),
+            "operation" => wire["operation_id"] = json!("other"),
+            "null-operation" => wire["operation_id"] = Value::Null,
+            "source" => wire["source"] = json!("queued"),
+            "hook" => wire["hook_id"] = json!(EXECUTION),
+            "execution" => wire["execution_id"] = json!(EXECUTION),
+            "missing-hook" => {
+                wire.as_object_mut().unwrap().remove("hook_id");
+            }
+            "missing-execution" => {
+                wire.as_object_mut().unwrap().remove("execution_id");
+            }
+            "duplicate" => {
+                client.accept(refusal.clone()).unwrap();
+                client.accept(frame()).unwrap();
+            }
+            "empty-detail" => {
+                event["detail"] = json!("");
+                wire["event"] = event.clone();
+            }
+            _ => {}
+        }
+        client.accept(event).unwrap();
+        let result = client.accept(wire);
+        if fault == "none" {
+            assert!(matches!(result.unwrap(), Step::Event(_)));
+            let start = json!({"type":"turn_start","model":"model-A"});
+            client.accept(start.clone()).unwrap();
+            assert!(client.accept(envelope(&start)).is_err());
+        } else {
+            assert!(result.is_err(), "{fault}");
+        }
+    }
+}

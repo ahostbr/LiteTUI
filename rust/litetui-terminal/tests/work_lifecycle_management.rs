@@ -832,3 +832,27 @@ fn quit_drains_refused_capture_and_activation_without_startup() {
         );
     }
 }
+
+#[test]
+fn refused_user_attempt_does_not_poison_a_fresh_owned_work_admission() {
+    let mut m = connect();
+    m.prompt("refused-user-prompt").unwrap();
+    let refusal = json!({"type":"submit_refused","phase":"pre_admission",
+        "reason":"admission","detail":"Below floor"});
+    let frame = json!({"type":"gui.event","event_id":id(10000),"session_id":id(1),
+        "operation_id":"refused-user-prompt","source":"rpc","hook_id":null,
+        "execution_id":null,"event":refusal});
+    assert!(matches!(emit(&mut m, frame, None).unwrap(), Step::Event(_)));
+    claiming(&mut m);
+    assert!(matches!(
+        emit(&mut m, accepted(), None).unwrap(),
+        Step::WorkLifecycle(_)
+    ));
+    let start = stream("turn_start", origin(), 10001);
+    assert!(matches!(emit(&mut m, start, None).unwrap(), Step::Event(_)));
+    assert_eq!(m.known_work_origin().unwrap().operation, id(300));
+    let stale = json!({"type":"gui.event","event_id":id(10002),"session_id":id(1),
+        "operation_id":"refused-user-prompt","source":"rpc","hook_id":null,
+        "execution_id":null,"event":refusal});
+    assert!(emit(&mut m, stale, None).is_err());
+}

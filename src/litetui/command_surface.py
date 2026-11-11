@@ -17,6 +17,7 @@ MAX_ROWS = 1024
 MAX_BYTES = 512 * 1024
 # Reviewed adapters, not a second command/help catalog. Unknown contributions stay visible.
 _ROUTES = {
+    ("mark", "/mark"): "mark",
     ("monitor", "/monitor"): "monitor",
     ("model-switch", "/model"): "models",
     ("model-switch", "/backend"): "backend",
@@ -64,9 +65,9 @@ _UNAVAILABLE = {
     ("misc", "/maximize"): "Maximize enlarges the focused Textual panel; the terminal frontend has no panel focus and the transcript already takes every free row. Ctrl+G toggles the compact view; Alt+Up and Alt+Down scroll.",
     ("misc", "/test-sidebar"): "Test sidebar is a Textual-only dialog spike with no terminal equivalent.",
     ("sidecar-preview", "/sidecar"): "Native sidecar preview is a desktop overlay that is not available in the terminal frontend.",
-    ("mark", "/mark"): "Mark the screen is a desktop overlay that is not available in the terminal frontend.",
 }
 _NO_ARGUMENTS = {
+    "mark": "/mark takes no arguments; add your note in the reviewed marker overlay.",
     "tool_list": "/tools takes no arguments; choose tools in the reviewed tool list.",
     "model_reconnect": "/reconnect takes no arguments; it reviews a reconnect to the current model only.",
     "settings": "/settings takes no arguments; pick a setting inside the settings control.",
@@ -363,8 +364,8 @@ def resolve(app, cmd):
         from litetui import native_system_prompt
 
         native_system_prompt.validate_argument(arguments)
-    if action in {"model_load", "model_unload"} and arguments.strip() not in {"", current["model"]}:
-        raise ValueError("This lifecycle control reviews the current model only; select the requested model with /model first")
+    if action in {"model_load", "model_unload"} and len(arguments.strip().encode("utf-8")) > 1024:
+        raise ValueError("Model lifecycle target exceeds the review budget")
     if action == "engine" and arguments.strip().lower() not in {"", "status", "start", "stop"}:
         raise ValueError("Engine command supports status, start or stop; lane arguments require the engine configuration control")
     if action == "plan" and arguments.strip().lower() not in {"", "on", "off"}:

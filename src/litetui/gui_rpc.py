@@ -37,7 +37,7 @@ def current_operation(app):
 OPERATIONS = (
     "monitor.native_snapshot", "monitor.native_review", "monitor.native_apply", "monitor.native_readback", "monitor.native_close",
     "glassbox.native_snapshot", "glassbox.native_review", "glassbox.native_apply", "glassbox.native_readback",
-    "hello", "state", "voice.native_dictation", "voice.native_playback", "voice.native_catalog", "voice.native_action", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
+    "hello", "state", "screen.native_mark", "voice.native_dictation", "voice.native_playback", "voice.native_catalog", "voice.native_action", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -965,6 +965,11 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    from litetui import native_mark
+    if operation == native_mark.OPERATION:
+        return await native_mark.dispatch(app, cmd)
+    if native_mark.blocking(app):
+        raise ValueError("Close the Mark review before another management action")
     from litetui import (
         native_dictation,
         native_playback,
@@ -1317,12 +1322,37 @@ async def _async_dispatch(app, cmd):
             preset = cmd.get("preset_name")
             if preset:
                 candidate.llama_presets[str(preset)] = {"load": dict(load), "inference": dict(inference)}
+            owners = (app.settings, app.backend, app.conversation, getattr(app, "_agent_session", None))
+            authority = owners[3].authority if owners[3] is not None else None
             settings_runtime.persist_or_raise(app, candidate)
+            if owners[3] is not None:
+                from litetui import native_settings
+                try:
+                    if any(left is not right for left, right in zip(
+                            owners, (app.settings, app.backend, app.conversation, app._agent_session), strict=True)):
+                        raise ValueError("Model configuration lost its execution owner")
+                    service = settings_runtime.service_for(app)
+                    saved = service.snapshot(app.convo_id, read_only=True, max_bytes=1024 * 1024)
+                    if (app._agent_session.authority != authority
+                            or native_settings.owned_documents(service, app.convo_id, app._agent_session)[2] != saved.revisions
+                            or any(not native_settings._same(getattr(saved.saved, key), getattr(candidate, key))
+                                   for key in ("model_infer_overrides", "llama_load_settings", "llama_presets"))):
+                        raise ValueError("Model configuration failed durable owner readback")
+                except Exception:
+                    app._owned_launch_error = "Model configuration is uncertain; close and reopen."
+                    raise
             app.settings = candidate
             # `candidate` is a fresh object; re-point the backend or these
             # saved per-model settings stay on the stale object it captured.
             if hasattr(app.backend, "set_settings"):
                 app.backend.set_settings(candidate)
+            if owners[3] is not None:
+                from litetui import effort_projection
+                try:
+                    effort_projection.install(app)
+                except Exception:
+                    app._owned_launch_error = "Model configuration is uncertain; close and reopen."
+                    raise
             if cmd.get("apply_load", False) and prior != load:
                 await app.backend.apply_load_settings(key, load)
             return {"slug": key, "saved": True, "load_applied": bool(cmd.get("apply_load", False)),

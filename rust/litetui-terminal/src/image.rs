@@ -168,7 +168,10 @@ pub fn parse(
             let valid_source = match request {
                 Request::File(path) | Request::ReplaceFile { path, .. } => {
                     value["name"].as_str() == Path::new(path).file_name().and_then(|v| v.to_str())
-                        && matches!(value["format"].as_str(), Some("JPEG" | "PNG" | "WEBP"))
+                        && matches!(
+                            value["format"].as_str(),
+                            Some("JPEG" | "PNG" | "WEBP" | "GIF" | "BMP")
+                        )
                 }
                 Request::Clipboard(_) => {
                     let name = value["name"].as_str().unwrap_or("");
@@ -439,7 +442,7 @@ impl Picker {
                 })
                 .unwrap_or_default();
             format!(
-                "{}{}\n{} · {} × {} source pixels\nSending {} × {} · {} PNG bytes\nSHA-256 {}\n{}\n\nV previews pixels · {}",
+                "{}{}\n{} · {} × {} source pixels\nSending {} × {} · {} PNG bytes\nSHA-256 {}\n{}\nOnly the first image frame is sent.\n\nV previews pixels · {}",
                 terminal_text(review.name()),
                 clip,
                 v["format"].as_str().unwrap_or(""),
@@ -460,7 +463,7 @@ impl Picker {
             )
         } else {
             format!(
-                "Local image file (PNG, JPEG or WebP)\n{}\n\nEnter reviews the file · Esc returns to the draft.",
+                "Local image file (PNG, JPEG, WebP, GIF or BMP)\n{}\n\nEnter reviews the file · Esc returns to the draft.",
                 terminal_text(&self.path)
             )
         };

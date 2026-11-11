@@ -60,6 +60,7 @@ pub enum Action {
     ChatPause,
     Glassbox,
     Monitor,
+    Mark,
     Models,
     Thinking,
     Conversations,
@@ -105,6 +106,7 @@ impl Action {
             Some("chat_pause") => Some(Self::ChatPause),
             Some("glassbox") => Some(Self::Glassbox),
             Some("monitor") => Some(Self::Monitor),
+            Some("mark") => Some(Self::Mark),
             Some("models") => Some(Self::Models),
             Some("thinking") => Some(Self::Thinking),
             Some("conversations") => Some(Self::Conversations),
@@ -425,9 +427,9 @@ impl Route {
                 return Err(fail("Unsupported plan command arguments"));
             }
             Action::ModelLoad | Action::ModelUnload
-                if !arguments.trim().is_empty() && arguments.trim() != c.model =>
+                if !preselection_ok(arguments.trim(), 1024, true) =>
             {
-                return Err(fail("Lifecycle command must target the current model"));
+                return Err(fail("Unsupported lifecycle model target"));
             }
             Action::Models
                 if !preselection_ok(arguments.trim(), 1024, true)

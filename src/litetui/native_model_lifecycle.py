@@ -1,4 +1,4 @@
-"""Reviewed operations on the currently selected model and existing endpoint."""
+"""Reviewed model operations at the existing endpoint, with owned target adoption."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import copy
 import secrets
 from dataclasses import asdict, dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 from litetui import (
@@ -33,6 +34,10 @@ class Review:
     history: bytes
     stored: dict
     action: str
+    bridge: object = None
+    transition: dict | None = None
+    adopted: str | None = None
+    invocation: tuple | None = None
     ownership: tuple | None = None
     connection: object = None
     children: list = field(default_factory=list)
@@ -48,7 +53,7 @@ class Review:
     readback_command: bytes | None = None
     readback_result: object = None
     readback_raw: bytes | None = None
-    publication: object = None
+    publication: Publication | None = None
 
 
 def _encoded(value):
@@ -133,7 +138,7 @@ def _same(app, r):
         or app.conversation is not r.conversation
         or _encoded(app.conversation) != r.history
         or _ownership(app.backend) != r.ownership
-        or app.model_id != r.snapshot["model"]
+        or app.model_id != (r.adopted or r.snapshot["model"])
         or _endpoint(app.backend) != r.snapshot["endpoint"]
         or getattr(app.backend, "_owned", None) is not None
         or getattr(app, "_custom_server_process", None) is not None
@@ -142,6 +147,59 @@ def _same(app, r):
             "The reviewed runtime, model, endpoint or conversation changed"
         )
     app._validate_owned_identity()
+    if r.action == "unload" and r.invocation != (
+        getattr(app, "_cli_initial_model", None), getattr(app, "_user_model_choice", None)
+    ):
+        raise ValueError("Unload changed the selected invocation")
+
+
+CHOICE_FIELDS = ("target", "context_mode", "context_value")
+
+
+def _choice(app, cmd, r):
+    source = r.snapshot if r is not None else cmd
+    target = source.get("target", app.model_id)
+    mode = source.get("context_mode", "inherit")
+    value = source.get("context_value")
+    if (type(target) is not str or not target or len(target.encode("utf-8")) > 1024
+            or any(ord(c) < 32 for c in target)
+            or mode not in ("inherit", "default", "value")
+            or (mode == "value" and (type(value) is not int or not 1 <= value <= 2147483647))
+            or (mode != "value" and value is not None)):
+        raise ValueError("Invalid model target or one-use context choice")
+    inherited = app.settings.default_context_length
+    if inherited is not None and (type(inherited) is not int or not 1 <= inherited <= 2147483647):
+        raise ValueError("Invalid inherited load context")
+    want = inherited if mode == "inherit" else value
+    return target, mode, value, inherited, want
+
+
+def _binding(app, cmd, op, fields, r=None):
+    if r is None or r.transition is None:
+        return native_context.read_binding(app, cmd, PREFIX + op, *fields)
+    # Only this retained operation may use its exact historical binding. There
+    # is no general exemption for a retired Work epoch or an arbitrary read.
+    from litetui import background_input as work
+    binding = {k: r.snapshot[k] for k in
+               ("session_id", "agent_id", "backend", "model", "work_instance")}
+    work._keys(cmd, ("type", "id", "version", *binding, *fields))
+    _same(app, r)
+    if (op not in ("apply", "readback") or cmd["type"] != PREFIX + op
+            or type(cmd["version"]) is not int or cmd["version"] != 1
+            or any(cmd[k] != v for k, v in binding.items())
+            or cmd.get("token") != r.token
+            or op == "readback" and cmd.get("apply_id") != r.applied
+            or work.bridge(app) is not None or not r.bridge.closing
+            or r.bridge.owner[0] is not r.session or r.bridge.owner[1] is not app.store
+            or r.bridge.instance != binding["work_instance"]
+            or r.bridge.identity != {k: binding[k] for k in work.identity(app)}
+            or r.bridge.transition_proof != r.transition["work_shutdown"]
+            or r.bridge.shutdown_task is None or not r.bridge.shutdown_task.done()
+            or getattr(app, "_native_work_recapture_required", None) != {
+                "previous_instance": r.bridge.instance, "identity": work.identity(app)}):
+        raise ValueError("Model readback lost its exact retired operation owner")
+    work.text(cmd["id"])
+    return r.bridge, binding
 
 
 def track_connection_worker(app, worker):
@@ -208,8 +266,9 @@ def _safe_start(app, backend):
     return None
 
 
-async def _inspect(app, cmd, op, fields):
-    bridge, binding = native_context.read_binding(app, cmd, PREFIX + op, *fields)
+async def _inspect(app, cmd, op, fields, r=None):
+    bridge, binding = _binding(app, cmd, op, fields, r)
+    target, mode, value, inherited, want = _choice(app, cmd, r)
     context = backend_catalog._context(app, app.convo_id)
     guard = backend_catalog.fingerprint(app, context, {}, include_pending=False)
     backend = context.backend
@@ -224,15 +283,16 @@ async def _inspect(app, cmd, op, fields):
     if supported:
 
         async def inspect():
-            return await backend.list_models(), await backend.model_info(app.model_id)
+            return await backend.list_models(), await backend.model_info(target)
 
         rows, info = await join_probe(inspect())
         if backend.name == "llamacpp":
             served = await join_probe(asyncio.to_thread(backend._server_models))
         else:
             served = None
-    bridge.check()
-    native_context.read_binding(app, cmd, PREFIX + op, *fields)
+    if r is None or r.transition is None:
+        bridge.check()
+    _binding(app, cmd, op, fields, r)
     after = backend_catalog._context(app, app.convo_id)
     if any(
         getattr(context, key) is not getattr(after, key)
@@ -247,9 +307,13 @@ async def _inspect(app, cmd, op, fields):
         raise ValueError("Backend settings differ from the current runtime")
     if supported and _endpoint(backend) != endpoint:
         raise ValueError("Model inspection changed endpoint")
-    selected = [row for row in rows if row.key == binding["model"]]
+    names = [row.key for row in rows]
+    if (len(set(names)) != len(names) or any(type(key) is not str or not key
+            or len(key.encode("utf-8")) > 1024 or any(ord(c) < 32 for c in key) for key in names)):
+        raise ValueError("Model listing contains duplicate or invalid targets")
+    selected = [row for row in rows if row.key == target]
     advertised = len(selected) == 1 and (
-        backend.name != "llamacpp" or binding["model"] in served
+        backend.name != "llamacpp" or target in served
     )
     loaded, capacity = None, None
     if info is not None:
@@ -268,7 +332,7 @@ async def _inspect(app, cmd, op, fields):
             loaded = info[2]
             if advertised and selected[0].loaded is not loaded:
                 raise ValueError("Model residency changed during inspection")
-    load = app.settings.llama_load_settings.get(binding["model"], {})
+    load = app.settings.llama_load_settings.get(target, {})
     if not isinstance(load, dict) or len(load) > 128:
         raise ValueError("Model load preferences exceed the inspection budget")
     ctx = load.get("ctx")
@@ -297,10 +361,14 @@ async def _inspect(app, cmd, op, fields):
         if action == "load" and why is None:
             if loaded is not False:
                 why = "Load requires a model explicitly reported as not loaded."
+            elif backend.name == "llamacpp" and want is not None:
+                why = "This cooperating router owns its presets; a context override requires its owner to reload the preset."
             elif backend.name == "lmstudio" and any(
                 k != "ctx" and v is not None for k, v in load.items()
             ):
                 why = "LM Studio can apply only context length; review other load settings in its own UI."
+        if action == "reconnect" and target != app.model_id:
+            why = "Reconnect applies only to the selected model."
         if action == "unload" and why is None and loaded is not True:
             why = "Unload requires a model explicitly reported as loaded."
         actions[action] = {"eligible": why is None, "reason": why}
@@ -316,7 +384,14 @@ async def _inspect(app, cmd, op, fields):
         "context_source": "client_declared"
         if backend.name == "custom"
         else "backend_reported",
-        "load_context": ctx,
+        "target": target,
+        "selected_model": app.model_id,
+        "models": names,
+        "context_mode": mode,
+        "context_value": value,
+        "inherited_context": inherited,
+        "preset_context": ctx,
+        "load_context": want,
         "other_load_fields": sum(k != "ctx" for k in load),
         "connected": _connection(app, backend, endpoint) if supported else False,
         "actions": actions,
@@ -338,6 +413,8 @@ def _receipt(r, kind):
         "before": r.snapshot["revision"],
         "after": r.after,
         "apply_id": r.applied,
+        "target": r.snapshot["target"],
+        **(r.transition or {}),
     }
 
 
@@ -440,8 +517,10 @@ async def dispatch(app, cmd):
     }
     if op not in fields:
         raise ValueError("Unknown model lifecycle operation")
-    bridge, _ = native_context.read_binding(app, cmd, PREFIX + op, *fields[op])
     r = getattr(app, "_native_model_lifecycle_review", None)
+    if op in ("snapshot", "review") and any(k in cmd for k in CHOICE_FIELDS):
+        fields[op] = (*fields[op], *CHOICE_FIELDS)
+    bridge, _ = _binding(app, cmd, op, fields[op], r if op in ("apply", "readback") else None)
     if r is not None and r.applied is not None and op != "readback":
         raise ValueError(
             "Await the exact model operation readback before another action"
@@ -452,14 +531,15 @@ async def dispatch(app, cmd):
         or r.snapshot["work_instance"] != bridge.instance
     ):
         raise ValueError("Review the current model operation again")
-    if op == "readback" and (not r.apply_published or r.readback_result is not None):
+    if op == "readback" and (not isinstance(r, Review) or not r.apply_published or r.readback_result is not None):
         raise ValueError(
             "Await the exact published model operation before reading it back"
         )
     app._native_model_lifecycle_review = None
     try:
-        _, snap = await _inspect(app, cmd, op, fields[op])
+        _, snap = await _inspect(app, cmd, op, fields[op], r if op in ("apply", "readback") else None)
         if op == "readback":
+            assert isinstance(r, Review)  # The correlated phase guard above proved this.
             _same(app, r)
             if (
                 r.applied != cmd["apply_id"]
@@ -494,22 +574,26 @@ async def dispatch(app, cmd):
                 asdict(convo_settings.load(app.convo_dir)),
                 action,
             )
+            r.bridge = bridge
+            r.invocation = (getattr(app, "_cli_initial_model", None), getattr(app, "_user_model_choice", None))
             r.ownership = _ownership(app.backend)
             app._native_model_lifecycle_review = r
             return _receipt(r, "model_lifecycle_review")
+        assert isinstance(r, Review)  # Snapshot and Review returned; only Apply remains.
         _same(app, r)
         if r.snapshot != snap or not snap["actions"][r.action]["eligible"]:
             raise ValueError("Model state changed after review")
         app._backend_transition_inflight = True
         app._native_model_lifecycle_hold = True
         app._native_model_lifecycle_action = asyncio.current_task()
+        effect_completed = False
         try:
             if app.backend.name == "llamacpp":
                 # Revalidate the source-managed cooperating owner at the pinned endpoint.
                 # Connect-only authority prevents discovery, restart or preset rebuild.
                 await join_probe(app.backend.ensure_running())
                 _same(app, r)
-                _, refreshed = await _inspect(app, cmd, op, fields[op])
+                _, refreshed = await _inspect(app, cmd, op, fields[op], r)
                 if refreshed != snap:
                     raise ValueError(
                         "Router ownership or model state changed before the operation"
@@ -520,12 +604,38 @@ async def dispatch(app, cmd):
                     if r.action == "load" and app.backend.name == "lmstudio"
                     else {}
                 )
-                await join_probe(getattr(app.backend, r.action)(app.model_id, **kwargs))
+                await join_probe(getattr(app.backend, r.action)(snap["target"], **kwargs))
+                effect_completed = True
                 _same(app, r)
-            await join_probe(_connect(app, r))
-            _, current = await _inspect(app, cmd, op, fields[op])
+            if r.action == "load" and snap["target"] != app.model_id:
+                from litetui import background_input as work
+                from litetui.plugins.model_switch import adopt_loaded_model
+                # The completed load owns admission. Remove only our own hold
+                # until before_identity_transition synchronously begins close;
+                # every other quiescence/ownership check remains in force.
+                app._native_model_lifecycle_hold = False
+                try:
+                    proof = await work.before_identity_transition(app)
+                finally:
+                    app._native_model_lifecycle_hold = True
+                if work.bridge(app) is not r.bridge or work.identity(app) != r.bridge.identity:
+                    raise ValueError("Loaded target lost its original Work owner")
+                app._work_model_owner = (r.bridge, work._task())
+                try:
+                    adopt_loaded_model(app, snap["target"], ctx=snap["load_context"], refresh=False)
+                    r.adopted = snap["target"]
+                    r.transition = work.after_identity_transition(app, proof)
+                finally:
+                    app._work_model_owner = None
+            # Unloading another target preserves selection, invocation and the
+            # selected client's context. Only the target's residency changes.
+            if r.action != "unload" or snap["target"] == app.model_id:
+                await join_probe(_connect(app, r))
+            _, current = await _inspect(app, cmd, op, fields[op], r)
             _same(app, r)
             expected = copy.deepcopy(r.stored)
+            if r.adopted is not None:
+                expected["model"] = r.adopted
             if r.action == "load" and app.backend.name == "lmstudio":
                 expected["lmstudio_load"] = (
                     {"ctx": snap["load_context"]} if snap["load_context"] else {}
@@ -560,8 +670,9 @@ async def dispatch(app, cmd):
         except BaseException as exc:
             from litetui.llm_backend import VramRefused
 
-            if isinstance(exc, VramRefused):
-                # This typed refusal is raised before entering the canonical load body.
+            if isinstance(exc, VramRefused) and r.action == "load" and not effect_completed:
+                # Only the canonical load guard proves no effect. A similarly
+                # typed later failure cannot release already changed residency.
                 _release(app)
                 raise
             _fatal(app)
@@ -578,7 +689,7 @@ async def dispatch(app, cmd):
 
 @dataclass
 class Publication:
-    app: object
+    app: Any
     review: Review
     task: object
     result: object
@@ -598,7 +709,7 @@ def readback_allowed(app, cmd):
         or cmd.get("apply_id") != r.applied
     ):
         return False
-    native_context.read_binding(app, cmd, PREFIX + "readback", "token", "apply_id")
+    _binding(app, cmd, "readback", ("token", "apply_id"), r)
     _same(app, r)
     return True
 
@@ -613,6 +724,7 @@ def prepare_publication(app, cmd, result):
         if (
             not isinstance(r, Review)
             or r.publication is not None
+            or r.current is None
             or asyncio.current_task() is not getattr(r, phase + "_task")
             or _encoded(cmd) != getattr(r, phase + "_command")
             or result is not getattr(r, phase + "_result")
@@ -623,12 +735,8 @@ def prepare_publication(app, cmd, result):
             raise ValueError(
                 "Model publication is foreign, changed or already consumed"
             )
-        native_context.read_binding(
-            app,
-            cmd,
-            op,
-            *({"apply": ("token",), "readback": ("token", "apply_id")}[phase]),
-        )
+        _binding(app, cmd, phase,
+                 {"apply": ("token",), "readback": ("token", "apply_id")}[phase], r)
         _same(app, r)
         context = backend_catalog._context(app, app.convo_id)
         observed = {k: v for k, v in r.current.items() if k != "revision"}
@@ -647,7 +755,7 @@ def prepare_publication(app, cmd, result):
         raise
 
 
-def finish_publication(app, ticket):
+def finish_publication(app: Any, ticket: Publication):
     r = ticket.review
     if (
         ticket.app is not app

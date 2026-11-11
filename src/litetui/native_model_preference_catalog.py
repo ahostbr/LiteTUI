@@ -81,7 +81,7 @@ def catalog(app):
         if key == "stop":
             kind, note = (
                 "strings",
-                "Comma-separated stop strings; [] explicitly disables inherited stops.",
+                "JSON array of exact stop strings; [] explicitly disables inherited stops.",
             )
         if key == "mmproj":
             note = 'Unset auto-pairs a unique sibling projector; "none" disables vision. Explicit paths must exist.'

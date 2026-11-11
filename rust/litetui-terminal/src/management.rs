@@ -9,6 +9,7 @@ use std::{collections::HashSet, io};
 mod action;
 mod compact;
 mod execution;
+mod model_lifecycle;
 mod runtime;
 mod scheduled;
 mod settings;
@@ -255,6 +256,11 @@ pub enum Step {
     Commands {
         update: crate::command_palette::Update,
         policy: Option<Value>,
+    },
+    ModelLifecycleChanged {
+        update: Box<crate::model_lifecycle::Update>,
+        state: Snapshot,
+        policy: Value,
     },
     Settings {
         update: crate::settings_view::Update,
@@ -605,6 +611,7 @@ impl PreferencesRequest {
     }
 }
 enum SettingsRead {
+    ModelLifecycleTarget(Box<crate::model_lifecycle::Update>),
     Preferences(crate::work_protocol::Identity, String, PreferencesRequest),
     Values,
     RuntimeStatus {
@@ -688,6 +695,7 @@ pub struct Management {
     history_id: Option<CommandId>,
     operations: Vec<String>,
     prompt: Option<String>,
+    refused_prompt: Option<String>,
     origin: Option<(ExecutionId, Origin)>,
     executions: HashSet<String>,
     failed: bool,
@@ -772,6 +780,7 @@ impl Default for Management {
             history_id: None,
             operations: Vec::new(),
             prompt: None,
+            refused_prompt: None,
             origin: None,
             executions: HashSet::new(),
             failed: false,
@@ -923,6 +932,7 @@ impl Management {
         self.browser_preview = None;
         self.record_work_operation(id)?;
         self.prompt = Some(id.to_owned());
+        self.refused_prompt = None;
         self.origin = None;
         Ok(())
     }
@@ -1605,14 +1615,15 @@ impl Management {
         let kind = event["type"].as_str().expect("wire validated");
         if kind == "model_state" && (event["backend"] != *backend || event["model"] != *model) {
             let owned_change = event["backend"] == *backend
-                && self.control.as_ref().is_some_and(|pending| {
-                    pending.kind == Kind::Model
-                        && pending.selection.as_deref() == event["model"].as_str()
-                        && pending
-                            .mutation_id
-                            .as_ref()
-                            .is_some_and(|id| frame["operation_id"] == id.to_value())
-                });
+                && (self.model_lifecycle_event(frame, event)
+                    || self.control.as_ref().is_some_and(|pending| {
+                        pending.kind == Kind::Model
+                            && pending.selection.as_deref() == event["model"].as_str()
+                            && pending
+                                .mutation_id
+                                .as_ref()
+                                .is_some_and(|id| frame["operation_id"] == id.to_value())
+                    }));
             if !owned_change {
                 return Err(fail(
                     "Runtime model changed outside an owned management operation",
@@ -1665,7 +1676,33 @@ impl Management {
         {
             return Err(fail("Tool diagnostic belongs to another prompt operation"));
         }
+        if kind == "submit_refused" && event["phase"] == "pre_admission" {
+            self.validate_work_stream_origin(frame)?;
+            if self.prompt.is_none()
+                || frame["operation_id"].as_str() != self.prompt.as_deref()
+                || frame["source"] != "rpc"
+                || frame.get("hook_id") != Some(&Value::Null)
+                || frame.get("execution_id") != Some(&Value::Null)
+                || self.origin.is_some()
+                || self.refused_prompt.as_ref() == self.prompt.as_ref()
+                || self.rewrite_chain.is_some()
+                || self.compact.chain.is_some()
+            {
+                return Err(fail(
+                    "Pre-admission refusal differs from its captured prompt attempt",
+                ));
+            }
+            text(event, "reason", 128)?;
+            text(event, "detail", 4096)?;
+            self.refused_prompt = self.prompt.clone();
+            return Ok(());
+        }
         if IDENTIFIED.contains(&kind) {
+            if self.refused_prompt.is_some() && self.refused_prompt == self.prompt {
+                return Err(fail(
+                    "Execution arrived after its prompt was refused before admission",
+                ));
+            }
             self.validate_work_stream_origin(frame)?;
             let (execution, origin, _) = crate::stream::origin(frame, 4096)
                 .map_err(|_| fail("Runtime turn lacks a valid captured execution origin"))?;
@@ -3100,13 +3137,26 @@ impl Management {
     fn settings_response(&mut self, frame: Value) -> io::Result<Step> {
         let (_, read) = self.settings.take().expect("matched settings read");
         self.ensure_drained()?;
+        if let SettingsRead::ModelLifecycleTarget(update) = read {
+            return self.model_lifecycle_target_response(frame, update);
+        }
         if let SettingsRead::Preferences(identity, instance, request) = read {
             let fatal_mcp = matches!(&request, PreferencesRequest::McpLifecycle(r) if matches!(**r,crate::mcp_lifecycle::Request::Apply(_)|crate::mcp_lifecycle::Request::Readback(..)));
             let fatal_monitor = matches!(&request, PreferencesRequest::Monitor(r) if matches!(**r,crate::monitor_controls::Request::Apply(_)|crate::monitor_controls::Request::Close(_)));
+            let lifecycle_apply = matches!(&request, PreferencesRequest::ModelLifecycle(r)
+                if matches!(**r, crate::model_lifecycle::Request::Apply(_)));
+            let lifecycle_transition = matches!(&request, PreferencesRequest::ModelLifecycle(r)
+                if r.transition_target().is_some());
+            let fatal_lifecycle = matches!(&request, PreferencesRequest::ModelLifecycle(r)
+                if r.retained_readback() || lifecycle_apply && self.work_identity_transition_pending());
+            let retained_owner =
+                self.model_lifecycle_response_owner(&request, &identity, &instance)?;
             let reject = request.rejected();
             let result = if frame["ok"] != true {
                 Err(text(&frame, "error", 4096)?.to_string())
-            } else if identity != self.work_identity()? || instance != self.context_instance()? {
+            } else if !retained_owner
+                && (identity != self.work_identity()? || instance != self.context_instance()?)
+            {
                 Err("Settings owner changed. Refresh to inspect it.".into())
             } else {
                 request
@@ -3121,6 +3171,9 @@ impl Management {
             };
             let update = match result {
                 Ok(PreferencesReply::Next(next)) => {
+                    if lifecycle_apply {
+                        self.work_transition_receipt(&frame["result"], lifecycle_transition)?;
+                    }
                     let mut value = next.command(&identity, &instance)?;
                     let id = self
                         .wire
@@ -3148,6 +3201,16 @@ impl Management {
                     crate::settings_view::Update::Glassbox(Ok(update))
                 }
                 Ok(PreferencesReply::ModelLifecycle(update)) => {
+                    if lifecycle_transition {
+                        self.require_work_identity_rebind()?;
+                        let id = self
+                            .wire
+                            .register_read()
+                            .map_err(|_| fail("Cannot reserve loaded model policy readback"))?;
+                        let command = json!({"type":"gui.state","id":id.to_value(),"include_conversations":false});
+                        self.settings = Some((id, SettingsRead::ModelLifecycleTarget(update)));
+                        return Ok(Step::Write(command));
+                    }
                     crate::settings_view::Update::ModelLifecycle(Ok(update))
                 }
                 Ok(PreferencesReply::Voice(update)) => {
@@ -3164,6 +3227,11 @@ impl Management {
                 }
                 Err(reason) if fatal_monitor => {
                     return Err(fail(&format!("Monitor mutation did not settle: {reason}")));
+                }
+                Err(reason) if fatal_lifecycle => {
+                    return Err(fail(&format!(
+                        "Model identity operation did not settle: {reason}"
+                    )));
                 }
                 Err(reason) if fatal_mcp => {
                     return Err(fail(&format!("MCP mutation did not settle: {reason}")));

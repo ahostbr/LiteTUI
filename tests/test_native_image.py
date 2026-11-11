@@ -12,7 +12,7 @@ from litetui import claude_turn, native_image
 from litetui.codex_app_server import user_input
 
 
-@pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP"])
+@pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP", "GIF", "BMP"])
 def test_bounded_review_uses_canonical_png_and_provider_content(tmp_path, fmt):
     path = tmp_path / ("chosen." + fmt.lower())
     Image.new("RGB", (1600, 48), (15, 25, 45)).save(path, format=fmt)
@@ -52,7 +52,7 @@ def test_invalid_local_file_and_backend_refusals(tmp_path):
             native_image.read_image(app, invalid)
     broken = tmp_path / "corrupt.png"
     broken.write_bytes(b"not pixels")
-    with pytest.raises(ValueError, match="still PNG"):
+    with pytest.raises(ValueError, match="PNG, JPEG"):
         native_image.read_image(app, str(broken))
     with broken.open("wb") as file:
         file.truncate(native_image.MAX_FILE + 1)
@@ -107,3 +107,22 @@ def test_inline_image_respects_remaining_real_native_history_budgets(tmp_path):
     app.conversation = [{"role": "system", "content": "S" * history_projection.MAX_CONTEXT}]
     with pytest.raises(ValueError, match="semantic/projection byte budget"):
         native_image.check_inline_budget(app, "aW1n", "hi")
+
+
+@pytest.mark.parametrize("fmt", ["GIF", "WEBP", "PNG"])
+def test_animated_files_send_only_the_canonical_first_frame(tmp_path, fmt):
+    path = tmp_path / ("animated." + fmt.lower())
+    first = Image.new("RGB", (12, 8), (240, 20, 35))
+    second = Image.new("RGB", (12, 8), (20, 35, 240))
+    first.save(path, format=fmt, save_all=True, append_images=[second], duration=100,
+               loop=0, lossless=True)
+    with Image.open(path) as source:
+        assert source.is_animated
+        source.seek(0)
+        expected = source.convert("RGB").tobytes()
+    details, encoded = native_image.read_image(None, str(path))
+    with Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))) as delivered:
+        assert delivered.format == "PNG" and not getattr(delivered, "is_animated", False)
+        assert delivered.size == (12, 8)
+        assert delivered.convert("RGB").tobytes() == expected
+    assert details["format"] == fmt

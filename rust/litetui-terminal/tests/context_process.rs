@@ -72,7 +72,10 @@ runpy.run_path({}, run_name='__main__')
         literal(&source),
         literal(&fixture.join("runtime_controls_runtime.py")),
         literal(&fixture.join(fixture_file)),
-        if fixture_file == "model_preferences_effort_runtime.py" {
+        if matches!(
+            fixture_file,
+            "model_preferences_effort_runtime.py" | "model_settings_runtime.py"
+        ) {
             "True"
         } else {
             "False"
@@ -94,7 +97,9 @@ runpy.run_path({}, run_name='__main__')
         "--backend".into(),
         if matches!(
             fixture_file,
-            "model_preferences_full_runtime.py" | "model_preferences_effort_runtime.py"
+            "model_preferences_full_runtime.py"
+                | "model_preferences_effort_runtime.py"
+                | "model_settings_runtime.py"
         ) {
             "llamacpp".into()
         } else {
@@ -120,7 +125,9 @@ runpy.run_path({}, run_name='__main__')
     let mut args = args.to_vec();
     if matches!(
         fixture_file,
-        "model_preferences_full_runtime.py" | "model_preferences_effort_runtime.py"
+        "model_preferences_full_runtime.py"
+            | "model_preferences_effort_runtime.py"
+            | "model_settings_runtime.py"
     ) {
         let index = args.iter().position(|s| s == "--thinking-level").unwrap();
         args.drain(index..index + 2);
@@ -2330,7 +2337,7 @@ fn model_lifecycle_reconnect_review_preserves_draft_and_owned_runtime() {
             app.live.as_mut().unwrap().settings.open();
             settings_drain(runtime, &mut app)?;
             let opened = settings_key(runtime, &mut app, KeyCode::Char('l'))?;
-            assert!(opened.contains("Current model lifecycle"), "{opened}");
+            assert!(opened.contains("Model lifecycle"), "{opened}");
             assert!(opened.contains("http://127.0.0.1:45120/v1"), "{opened}");
             assert!(opened.contains("Reported loaded: unknown"), "{opened}");
             let refused = settings_key(runtime, &mut app, KeyCode::Char('l'))?;
@@ -2804,7 +2811,8 @@ fn registered_command_controls_retain_arguments_and_do_not_apply_on_route() {
                 route_registered_command(runtime, &mut app, raw)?;
                 settings_drain(runtime, &mut app)?;
                 let screen = draw(&mut app);
-                assert!(screen.contains("Current model lifecycle"), "{screen}");
+                assert!(screen.contains("Model lifecycle"), "{screen}");
+                assert!(screen.contains("Target: switch-old"), "{screen}");
                 if raw == "/reconnect" {
                     assert!(screen.contains("Review reconnect"), "{screen}");
                 }
@@ -3193,7 +3201,7 @@ fn full_model_preferences_keyboard_preserves_draft_pending_load_and_actual_reque
         ("repeat_penalty", "1.12"),
         ("presence_penalty", "-0.4"),
         ("frequency_penalty", "0.25"),
-        ("stop", "END,STOP"),
+        ("stop", r#"["END","STOP"]"#),
         ("reasoning_effort", "off"),
         ("enable_thinking", "false"),
         (
@@ -3679,4 +3687,318 @@ fn voice_actions_require_visible_apply_and_verified_result_without_real_effects(
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+#[ignore = "source-owned defaults and atomic presets through real keyboard, request and reopen"]
+fn model_defaults_and_presets_reach_requests_and_survive_reopen() {
+    let (runtime, data) = launch("model_settings_runtime.py");
+    let values = [
+        ("temperature", "0.32"),
+        ("top_p", "0.82"),
+        ("top_k", "29"),
+        ("min_p", "0.04"),
+        ("repeat_penalty", "1.13"),
+        ("presence_penalty", "0.2"),
+        ("frequency_penalty", "-0.3"),
+        ("seed", "173"),
+        ("stop", r#"["one,two","line\nnext",""]"#),
+    ];
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("llamacpp".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve model settings draft and selection.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selection = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('p'))?;
+            let defaults = settings_key(runtime, &mut app, KeyCode::Tab)?;
+            assert!(defaults.contains("Section: defaults"), "{defaults}");
+            for (index, (field, value)) in values.iter().enumerate() {
+                settings_key(runtime, &mut app, KeyCode::Char('e'))?;
+                for c in value.chars() {
+                    settings_key(runtime, &mut app, KeyCode::Char(c))?;
+                }
+                let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(
+                    review.contains("Destination (conversation)"),
+                    "{field}: {review}"
+                );
+                for _ in 0..8 {
+                    settings_key(runtime, &mut app, KeyCode::PageDown)?;
+                }
+                let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+                assert!(saved.contains("Saved and verified."), "{field}: {saved}");
+                if index + 1 < values.len() {
+                    settings_key(runtime, &mut app, KeyCode::Down)?;
+                }
+            }
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(
+                app.composer.text(),
+                "Preserve model settings draft and selection."
+            );
+            assert_eq!(app.composer.before_cursor(), selection);
+            effort_submit(
+                runtime,
+                &mut app,
+                "Explicit request after conversation defaults",
+            )?;
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('p'))?;
+            settings_key(runtime, &mut app, KeyCode::Tab)?;
+            settings_key(runtime, &mut app, KeyCode::Tab)?;
+            settings_key(runtime, &mut app, KeyCode::Char('s'))?;
+            for c in "Saved before apply".chars() {
+                settings_key(runtime, &mut app, KeyCode::Char(c))?;
+            }
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(review.contains("Destination (defaults)"), "{review}");
+            for _ in 0..8 {
+                settings_key(runtime, &mut app, KeyCode::PageDown)?;
+            }
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(saved.contains("Saved and verified."), "{saved}");
+            settings_key(runtime, &mut app, KeyCode::Char('a'))?;
+            let review = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(review.contains("Destination (conversation)"), "{review}");
+            for _ in 0..8 {
+                settings_key(runtime, &mut app, KeyCode::PageDown)?;
+            }
+            let saved = settings_key(runtime, &mut app, KeyCode::Enter)?;
+            assert!(saved.contains("Saved and verified."), "{saved}");
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            effort_submit(runtime, &mut app, "Explicit request after preset Apply")?;
+            effort_switch(runtime, &mut app, "switch-new")?;
+            effort_submit(runtime, &mut app, "Model B inherits conversation defaults")?;
+            effort_switch(runtime, &mut app, "switch-old")?;
+            effort_submit(runtime, &mut app, "Model A preserves applied preset")?;
+            Ok(())
+        })
+        .unwrap();
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    let requests = report["requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in requests {
+        assert_eq!(request["stop"], json!(["one,two", "line\nnext", ""]));
+        assert_eq!(request["seed"], 173);
+        assert_eq!(request["extra_body"]["top_k"], 29);
+    }
+    assert_eq!(requests[0]["temperature"], json!(0.32));
+    assert_eq!(requests[1]["temperature"], json!(0.9));
+    assert_eq!(requests[1]["extra_body"]["reasoning_effort"], "high");
+    assert_eq!(requests[2]["temperature"], json!(0.32));
+    assert_eq!(requests[2]["extra_body"]["reasoning_effort"], "medium");
+    assert_eq!(requests[3]["temperature"], json!(0.9));
+    assert_eq!(report["before"]["authority"]["thinking_level"], "medium");
+    assert_eq!(report["after"]["authority"]["thinking_level"], "medium");
+    assert_eq!(report["denied"], json!([]));
+    let reads = report["wire"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| {
+            (v["result"]["kind"] == "model_preferences_saved")
+                .then_some(&v["result"]["preferences"])
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 11);
+    assert_eq!(
+        reads[10]["raw"]["load"]["active"],
+        json!({"future-load":{"keep":true}})
+    );
+    assert_eq!(reads[10]["raw"]["load"]["saved"]["ctx"], 4096);
+    let global: Value = serde_json::from_str(
+        report["final_documents"]["global"]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        global["llama_presets"]["Saved before apply"]["inference"],
+        json!({"future-infer":{"keep":true}})
+    );
+    let session = report["after"]["identity"]["session_id"].as_str().unwrap();
+    let (resumed, _) =
+        launch_fixture_resume("model_settings_runtime.py", false, Some((&data, session)));
+    resumed
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("llamacpp".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            effort_submit(runtime, &mut app, "Explicit request after reopen")?;
+            Ok(())
+        })
+        .unwrap();
+    let reopened = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(reopened["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(reopened["requests"][0]["temperature"], json!(0.9));
+    assert_eq!(reopened["requests"][0]["seed"], 173);
+    assert_eq!(
+        reopened["requests"][0]["stop"],
+        json!(["one,two", "line\nnext", ""])
+    );
+    assert_eq!(
+        reopened["requests"][0]["extra_body"]["reasoning_effort"],
+        "high"
+    );
+    assert_eq!(reopened["denied"], json!([]));
+    assert_eq!(reopened["reader_retired"], true);
+    eprintln!("Defaults and presets child evidence: {}", data.display());
+}
+
+#[test]
+#[ignore = "compiled Mark two-review composer flow with contained fake overlay and synthetic PNG"]
+fn mark_capture_review_cancel_and_apply_keep_an_unsent_draft_and_join_helpers() {
+    fn mark_drain(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+        while let Some(intent) = app.take_work_intent() {
+            runtime.work(intent)?;
+            observe(runtime, app, |event| matches!(event, Observation::Work(_)))?;
+        }
+        Ok(())
+    }
+    fn mark_key(runtime: &mut Interactive, app: &mut Demo, code: KeyCode) -> io::Result<String> {
+        draw(app);
+        app.live
+            .as_mut()
+            .unwrap()
+            .work
+            .key(KeyEvent::new(code, KeyModifiers::NONE));
+        mark_drain(runtime, app)?;
+        Ok(draw(app))
+    }
+    fn all_pages(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+        for _ in 0..12 {
+            mark_key(runtime, app, KeyCode::PageDown)?;
+        }
+        Ok(())
+    }
+    let (runtime, data) = launch("mark_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |event| {
+                matches!(event, Observation::Ready)
+            })?;
+            app.insert_text("Preserve my selected draft.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let original = (
+                app.composer.text().to_owned(),
+                app.composer.before_cursor().to_owned(),
+                app.composer.selected_text().to_owned(),
+            );
+            app.open_image();
+            draw(&mut app);
+            app.live
+                .as_mut()
+                .unwrap()
+                .work
+                .image
+                .paste(&data.join("prior.png").to_string_lossy());
+            mark_key(runtime, &mut app, KeyCode::Enter)?;
+            mark_key(runtime, &mut app, KeyCode::Enter)?;
+            let previous = app
+                .live
+                .as_ref()
+                .unwrap()
+                .work
+                .image
+                .attached
+                .clone()
+                .unwrap();
+
+            app.open_mark();
+            mark_drain(runtime, &mut app)?;
+            let shown = draw(&mut app);
+            assert!(shown.contains("REPLACES"), "{shown}");
+            assert!(!data.join("mark-started").exists());
+            mark_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(
+                app.live.as_ref().unwrap().work.image.attached,
+                Some(previous.clone())
+            );
+            assert_eq!(app.composer.text(), original.0);
+            assert_eq!(app.composer.before_cursor(), original.1);
+            assert_eq!(app.composer.selected_text(), original.2);
+
+            for action in ["cancel", "drift", "apply"] {
+                let apply = action == "apply";
+                app.open_mark();
+                mark_drain(runtime, &mut app)?;
+                all_pages(runtime, &mut app)?;
+                mark_key(runtime, &mut app, KeyCode::Enter)?;
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    let shown = mark_key(runtime, &mut app, KeyCode::F(5))?;
+                    if shown.contains("Status: ready") {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "{shown}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert!(data.join("mark-started").exists());
+                assert_eq!(app.composer.text(), original.0);
+                assert_eq!(
+                    app.live.as_ref().unwrap().work.image.attached,
+                    Some(previous.clone())
+                );
+                all_pages(runtime, &mut app)?;
+                if action == "drift" {
+                    app.composer.move_cursor(Motion::End, false);
+                    app.composer.insert(" drift");
+                    mark_key(runtime, &mut app, KeyCode::Enter)?;
+                    assert!(app.live.as_ref().unwrap().work.owns_input());
+                    assert_eq!(
+                        app.live.as_ref().unwrap().work.image.attached,
+                        Some(previous.clone())
+                    );
+                    mark_key(runtime, &mut app, KeyCode::Esc)?;
+                    assert!(app.composer.text().ends_with(" drift"));
+                    app.composer.clear();
+                    app.composer.insert(&original.0);
+                    app.composer.move_cursor(Motion::WordLeft, true);
+                    continue;
+                }
+                mark_key(
+                    runtime,
+                    &mut app,
+                    if apply { KeyCode::Enter } else { KeyCode::Esc },
+                )?;
+                assert!(!app.live.as_ref().unwrap().work.owns_input());
+                if apply {
+                    assert!(
+                        app.composer
+                            .text()
+                            .starts_with(&(original.0.clone() + " [mark]"))
+                    );
+                    assert!(
+                        app.composer
+                            .text()
+                            .contains("My note: Review this fixture Δ")
+                    );
+                    assert_ne!(
+                        app.live.as_ref().unwrap().work.image.attached,
+                        Some(previous.clone())
+                    );
+                } else {
+                    assert_eq!(app.composer.text(), original.0);
+                    assert_eq!(app.composer.before_cursor(), original.1);
+                    assert_eq!(app.composer.selected_text(), original.2);
+                    assert_eq!(
+                        app.live.as_ref().unwrap().work.image.attached,
+                        Some(previous.clone())
+                    );
+                }
+            }
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("{}: {error}", data.display()));
+    let report = json_file(&data.join("runtime-controls-report.json"));
+    assert_eq!(report["requests"], json!([]));
+    assert_eq!(json_file(&data.join("mark-after.json"))["retired"], true);
+    assert_eq!(json_file(&data.join("mark-after.json"))["pending"], 0);
 }

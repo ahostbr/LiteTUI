@@ -111,6 +111,7 @@ impl Management {
             return false;
         }
         self.schedule_identity_pending()
+            || self.model_lifecycle_identity_pending()
             || self.work_lifecycle.rebind
             || self.work_lifecycle.transition_closing
             || self.control.as_ref().is_some_and(|p| {
@@ -256,6 +257,7 @@ impl Management {
                 ..
             } => Some(snapshot),
             Step::Control(super::Update::Choices(_))
+            | Step::ModelLifecycleChanged { .. }
             | Step::BackendChanged(_)
             | Step::Opened(_)
             | Step::ConversationChanged(_)
@@ -355,7 +357,10 @@ impl Management {
                             Step::ScheduledConversationChanged(target)
                             | Step::ConversationChanged(target),
                         ) => (&target.snapshot, &target.policy),
-                        Some(Step::Control(super::Update::Choices(_))) => model_target
+                        Some(
+                            Step::Control(super::Update::Choices(_))
+                            | Step::ModelLifecycleChanged { .. },
+                        ) => model_target
                             .as_ref()
                             .map(|(state, reported)| (state, reported))
                             .ok_or_else(|| {

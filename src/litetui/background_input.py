@@ -971,11 +971,13 @@ async def settle_before_shutdown(app):
     cutoff = begin_close(app)
     from litetui import (
         native_dictation,
+        native_mark,
         native_monitor,
         native_playback,
         native_voice_actions,
         native_voice_catalog,
     )
+    await native_mark.retire(app, closing=True)
     await native_voice_actions.retire(app, closing=True)
     await native_voice_catalog.retire(app, closing=True)
     await native_monitor.retire(app, closing=True)
@@ -2691,6 +2693,9 @@ def prepare_publication(app, cmd, result):
     from litetui import native_deferred, native_schedule, native_work_execution
     from litetui import native_runtime_controls
     ticket = native_runtime_controls.prepare_publication(app, cmd, result)
+    if ticket is None:
+        from litetui import native_mark
+        ticket = native_mark.prepare_publication(app, cmd, result)
     if ticket is None:
         from litetui import native_voice_actions
         ticket = native_voice_actions.prepare_publication(app, cmd, result)

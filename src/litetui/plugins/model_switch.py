@@ -606,6 +606,34 @@ def _notice(app, text: str):
 _USE_DEFAULT = object()
 
 
+def adopt_loaded_model(app, target: str, *, ctx=None, refresh=True) -> None:
+    """Adopt a completed load without issuing a second load or changing defaults.
+
+    Native callers retire their captured Work owner before entering this shared
+    source tail, then join their own canonical connection/context refresh.
+    """
+    from litetui import background_input, thinking_probe
+    value = background_input.bridge(app)
+    if (value is not None and value.active and target != app.model_id
+            and (getattr(app, "_work_model_owner", None) != (value, background_input._task())
+                 or not value.closing or getattr(value, "transition_proof", None) is None)):
+        raise ValueError("Loaded model adoption requires an awaited identity transition")
+    app.model_id = target
+    _retire_cli_model(app, target)
+    # The backend's hook ignores a nonselected target. Record the actual load
+    # only after that target owns selection; do not infer it from old presets.
+    if app.backend.name == "lmstudio":
+        app.remember_load_settings(target, {"ctx": ctx} if ctx is not None else {})
+    app._model_thinking_levels = None
+    thinking_probe.clear_cache(target)
+    app.update_header()
+    if refresh:
+        app.fetch_context_window()
+        if app.backend.name == "lmstudio":
+            app._probe_thinking()
+    app._rpc_emit_model_state()
+
+
 def _start_load(app, target: str, ctx=_USE_DEFAULT) -> None:
     """Load `target`. ONE body for the typed name and the picked one.
 
@@ -641,16 +669,7 @@ def _start_load(app, target: str, ctx=_USE_DEFAULT) -> None:
         # VRAM, which then reads its CEILING (262,144) instead of the window we
         # just loaded. Adopt the target and refresh: set_active_model's tail minus
         # the load we already did (no second, ctx-less load).
-        from litetui import thinking_probe
-        _retire_cli_model(app, target)
-        app.model_id = target
-        app._model_thinking_levels = None
-        thinking_probe.clear_cache(target)
-        app.update_header()
-        app.fetch_context_window()
-        if getattr(app.backend, "name", "") == "lmstudio":
-            app._probe_thinking()
-        app._rpc_emit_model_state()
+        adopt_loaded_model(app, target, ctx=want)
 
     app.run_worker(_go(), group="modelctl", exclusive=True)
 

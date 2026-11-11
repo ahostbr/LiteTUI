@@ -680,3 +680,44 @@ fn native_codex_provider_turn_metadata_has_both_count_and_byte_bounds() {
         assert!(t.accept(&json!({"type":"native_turn_started","eventVersion":1,"provider":"codex","threadId":"thread","turnId":"over-budget"}),"codex","current").is_err());
     }
 }
+
+#[test]
+fn pre_admission_refusal_waits_for_exact_ack_and_allows_explicit_recovery() {
+    for backend in ["codex", "claude", "custom"] {
+        for ack_first in [false, true] {
+            let mut turn = Turn::default();
+            let mut initial = ready();
+            initial["backend"] = json!(backend);
+            initial["model"] = json!("fixture");
+            turn.accept(&initial, backend, "fixture").unwrap();
+            let command = turn.submit("below-floor prompt").unwrap();
+            let ack = json!({"type":"response","id":command["id"],"ok":true,"result":{"turn":"accepted"}});
+            if ack_first {
+                turn.accept(&ack, backend, "fixture").unwrap();
+            }
+            let refusal = json!({"type":"submit_refused","phase":"pre_admission","reason":"admission","detail":"Below fleet floor"});
+            let observation = turn.accept(&refusal, backend, "fixture").unwrap();
+            if ack_first {
+                assert_eq!(
+                    observation,
+                    Observation::Refused("Below fleet floor".into())
+                );
+            } else {
+                assert!(matches!(observation, Observation::Information(_)));
+                assert!(turn.submit("too soon").is_err());
+                let mut foreign = ack.clone();
+                foreign["id"] = json!("other-attempt");
+                assert!(turn.accept(&foreign, backend, "fixture").is_err());
+                assert_eq!(
+                    turn.accept(&ack, backend, "fixture").unwrap(),
+                    Observation::Refused("Below fleet floor".into())
+                );
+            }
+            assert!(turn.accept(&refusal, backend, "fixture").is_err());
+            assert_ne!(
+                turn.submit("explicit recovery").unwrap()["id"],
+                command["id"]
+            );
+        }
+    }
+}

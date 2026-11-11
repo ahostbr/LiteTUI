@@ -43,6 +43,7 @@ pub enum Request {
     Midturn(Box<crate::midturn::Request>),
     ChatPause(Box<crate::chat_pause::Request>),
     Dictation(crate::dictation::Request),
+    Mark(crate::mark::Request),
     ExecutionValidate(Box<execution::Edit>),
     ExecutionApply(Box<execution::Review>),
     ControlValidate(Box<controls::Edit>),
@@ -82,6 +83,7 @@ pub enum Data {
     Midturn(Box<crate::midturn::Reply>),
     ChatPause(Box<crate::chat_pause::Reply>),
     Dictation(crate::dictation::State),
+    Mark(Box<crate::mark::State>),
     ImagePreview(crate::image::Thumbnail),
     ExecutionReview(Box<execution::Review>),
     ExecutionVerified {
@@ -164,6 +166,7 @@ pub struct View {
     pub midturn: crate::midturn::View,
     pub chat_pause: crate::chat_pause::View,
     pub dictation: crate::dictation::View,
+    pub mark: crate::mark::View,
     section: usize,
     selected: usize,
     page_back: Vec<usize>,
@@ -220,6 +223,13 @@ impl View {
             self.request(Request::ChatPause(Box::new(
                 crate::chat_pause::Request::Review { active },
             )));
+        }
+    }
+    pub fn mark(&mut self, draft: crate::dictation::Draft) {
+        if !self.owns_input() {
+            self.open = true;
+            let request = self.mark.begin(draft, self.image.attached.clone());
+            self.request(Request::Mark(request));
         }
     }
     pub fn dictate(&mut self, draft: crate::dictation::Draft) {
@@ -329,6 +339,9 @@ impl View {
         self.generation = generation;
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
+        if let Some(request) = self.mark.poll(self.waiting) {
+            self.request(Request::Mark(request));
+        }
         if let Some(request) = self.dictation.poll(self.waiting) {
             self.request(Request::Dictation(request));
         }
@@ -436,6 +449,7 @@ impl View {
                 | (Request::Midturn(_), Data::Midturn(_))
                 | (Request::ChatPause(_), Data::ChatPause(_))
                 | (Request::Dictation(_), Data::Dictation(_))
+                | (Request::Mark(_), Data::Mark(_))
                 | (Request::Image(_), Data::Image(_))
                 | (
                     Request::Image(crate::image::Request::Preview(_)),
@@ -471,6 +485,13 @@ impl View {
             }
             Data::Rejected(reason) if matches!(pending, Request::ChatPause(_)) => {
                 self.chat_pause.reject(reason)
+            }
+            Data::Mark(state) => {
+                self.mark.reply(*state);
+                self.open = self.mark.open;
+            }
+            Data::Rejected(reason) if matches!(pending, Request::Mark(_)) => {
+                self.mark.reject(reason)
             }
             Data::Dictation(state) => {
                 self.dictation.reply(state);
@@ -833,7 +854,8 @@ impl View {
         self.notice = error;
     }
     pub fn paste(&mut self, text: &str) {
-        if self.dictation.open
+        if self.mark.open
+            || self.dictation.open
             || self.chat_pause.open
             || self.midturn.open
             || self.hooks.open
@@ -867,6 +889,13 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.mark.open {
+            if let Some(r) = self.mark.key(key, self.waiting) {
+                self.request(Request::Mark(r));
+            }
+            self.open = self.mark.open;
+            return;
+        }
         if self.dictation.open {
             if let Some(r) = self.dictation.key(key, self.waiting) {
                 self.request(Request::Dictation(r));
@@ -1309,7 +1338,8 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if self.dictation.open
+        if self.mark.open
+            || self.dictation.open
             || self.chat_pause.open
             || self.midturn.open
             || self.hooks.open
@@ -1585,6 +1615,10 @@ impl View {
         self.current_row().map_or_else(Vec::new, Row::details)
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.mark.open {
+            self.mark.draw(frame, area, theme, self.waiting);
+            return;
+        }
         if self.dictation.open {
             self.dictation.draw(frame, area, self.waiting);
             return;

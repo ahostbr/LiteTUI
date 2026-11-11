@@ -47,6 +47,9 @@ async def call(owner, operation, **fields):
 
 def prepare(owner):
     from litetui.app import LiteTUI
+    from litetui import effort_projection
+
+    effort_projection.install(owner)
 
     owner.connect = lambda: owner.run_worker(
         inspect.unwrap(LiteTUI.connect)(owner), group="init", exclusive=True
@@ -357,7 +360,8 @@ async def test_foreign_or_changed_publication_retains_hold(armed):
 
 async def test_saved_context_is_requested_and_independently_verified(app, monkeypatch):
     state = lm_runtime(app, monkeypatch)
-    app.settings.llama_load_settings[app.model_id] = {"ctx": 4096}
+    app.settings.default_context_length = 4096
+    app.settings.llama_load_settings[app.model_id] = {"ctx": 1024}
     r = await review(app, "load")
     a = await call(app, "apply", token=r["token"])
     result = await call(app, "readback", token=r["token"], apply_id=a["apply_id"])
@@ -451,6 +455,16 @@ async def test_llama_connect_only_cooperating_router_uses_canonical_routes(
             "activation_token": captured["activation_token"],
         },
     )
+    app.settings.default_context_length = 3072
+    app.settings.llama_load_settings[app.model_id] = {"ctx": 1024}
+    snap = await call(app, "snapshot")
+    assert not snap["actions"]["load"]["eligible"]
+    assert "owns its presets" in snap["actions"]["load"]["reason"]
+    explicit = await call(app, "snapshot", target=app.model_id, context_mode="default", context_value=None)
+    assert explicit["actions"]["load"]["eligible"] and explicit["load_context"] is None
+    assert explicit["preset_context"] == 1024
+    assert not any(body is not None for _, body in state["requests"])
+    app.settings.default_context_length = None
     for action in ("load", "unload", "reconnect"):
         r = await review(app, action)
         a = await call(app, "apply", token=r["token"])

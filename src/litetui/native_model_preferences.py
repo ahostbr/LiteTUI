@@ -6,6 +6,7 @@ import asyncio
 import copy
 import secrets
 from dataclasses import dataclass
+from typing import Any
 
 from litetui import (
     backend_catalog,
@@ -17,6 +18,9 @@ from litetui import (
 )
 from litetui import (
     native_model_preference_catalog as vocabulary,
+)
+from litetui import (
+    native_model_settings as sections,
 )
 from litetui.plugins import model_switch
 from litetui.settings_scope import SETTING_SPECS
@@ -41,12 +45,14 @@ class Review:
     snapshot: dict | None = None
     info: object = None
     apply_published: bool = False
-    publication: object = None
+    publication: Publication | None = None
     phase: str | None = None
     task: object = None
     command: bytes | None = None
     result: object = None
     raw: bytes | None = None
+    section: str = "model"
+    plan: bytes | None = None
 
 
 def _encoded(value):
@@ -77,7 +83,7 @@ def _choice(field, mode, value):
     raise ValueError("Choose an explicit value or inherit this conversation's default")
 
 
-def _request_values(app, values):
+def _request_values(app, values, fields=vocabulary.INFERENCE):
     # Use the exact normal request constructor, without messages or provider I/O.
     request = TurnEngine.chat_request(
         model_id=app.model_id,
@@ -99,7 +105,7 @@ def _request_values(app, values):
             if key == "enable_thinking"
             else request.get(key, extra.get(key))
         )
-        for key in vocabulary.INFERENCE
+        for key in fields
     }
 
 
@@ -129,7 +135,7 @@ def _next_request(app):
     return _request_values(app, actual), _request_values(app, projected)
 
 
-def _snapshot(app, binding, info):
+def _snapshot(app, binding, info, section="model"):
     context = backend_catalog._context(app, binding["session_id"])
     service = settings_runtime.service_for(app)
     before = service.snapshot(context.session_id, read_only=True, max_bytes=1024 * 1024)
@@ -234,6 +240,8 @@ def _snapshot(app, binding, info):
         "catalog": catalog,
         "raw": raw,
     }
+    if section != "model":
+        sections.extend_snapshot(app, result, context, service, before, paths, section)
     result["revision"] = backend_catalog.fingerprint(
         app,
         context,
@@ -268,7 +276,7 @@ async def _inspect(app, cmd, op, fields):
         for k in ("session", "store", "backend", "settings")
     ):
         raise ValueError("Runtime ownership changed during model inspection")
-    return bridge, binding, info, _snapshot(app, binding, info)
+    return bridge, binding, info, _snapshot(app, binding, info, sections.section(cmd))
 
 
 def _quiet(app):
@@ -276,7 +284,15 @@ def _quiet(app):
 
 
 def _receipt(binding, r, kind):
+    import json
+
+    extra = (
+        {}
+        if r.section == "model"
+        else {"section": r.section, "transaction": json.loads(r.plan)}
+    )
     return {
+        **extra,
         "version": 1,
         "kind": kind,
         "scope": "conversation",
@@ -333,6 +349,9 @@ async def dispatch(app, cmd):
     }
     if op not in args:
         raise ValueError("Unknown model preference operation")
+    selected = sections.section(cmd)
+    if "section" in cmd:
+        args = {key: (*value, "section") for key, value in args.items()}
     initial_bridge, _ = native_context.read_binding(app, cmd, PREFIX + op, *args[op])
     r = getattr(app, "_native_model_preferences_review", None)
     if isinstance(r, Review) and r.applied is not None and op != "readback":
@@ -344,6 +363,7 @@ async def dispatch(app, cmd):
             not isinstance(r, Review)
             or r.token != cmd["token"]
             or r.instance != initial_bridge.instance
+            or r.section != selected
         ):
             raise ValueError("Review the current model preferences again")
         _same(app, r)
@@ -356,6 +376,7 @@ async def dispatch(app, cmd):
         if op == "snapshot":
             return snap
         if op == "readback":
+            assert isinstance(r, Review)
             if (
                 r.applied != cmd["apply_id"]
                 or r.applied is None
@@ -371,6 +392,26 @@ async def dispatch(app, cmd):
         _quiet(app)
         if op == "review":
             field, value, mode = cmd["field"], cmd["value"], cmd["mode"]
+            if selected != "model":
+                if cmd["revision"] != snap["revision"]:
+                    raise ValueError(
+                        "Model settings changed. Refresh and review again."
+                    )
+                plan = sections.plan(app, snap, state[3], field, mode, value)
+                r = Review(
+                    secrets.token_hex(32),
+                    bridge.instance,
+                    snap["revision"],
+                    field,
+                    value,
+                    mode,
+                    owners=_owners(app),
+                    info=info,
+                    section=selected,
+                    plan=_encoded(plan),
+                )
+                app._native_model_preferences_review = r
+                return _receipt(binding, r, "model_preferences_review")
             _choice(field, mode, value)
             if field not in FIELDS:
                 raise ValueError("Choose a supported model preference")
@@ -414,8 +455,13 @@ async def dispatch(app, cmd):
             )
             app._native_model_preferences_review = r
             return _receipt(binding, r, "model_preferences_review")
+        assert isinstance(r, Review)
         if r.revision != snap["revision"]:
             raise ValueError("Model preferences changed after review")
+        if selected != "model":
+            current = sections.apply(app, cmd, r, binding, info, bridge, state)
+            r.after, r.applied, r.snapshot = current["revision"], cmd["id"], current
+            return _result(app, cmd, r, binding, "model_preferences_applied")
         group = snap["catalog"][r.field]["group"]
         setting = (
             "model_infer_overrides" if group == "inference" else "llama_load_settings"
@@ -518,7 +564,7 @@ async def dispatch(app, cmd):
 
 @dataclass
 class Publication:
-    app: object
+    app: Any
     review: Review
     task: object
     result: object
@@ -536,9 +582,17 @@ def readback_allowed(app, cmd):
         or r.phase != "apply"
         or cmd.get("token") != r.token
         or cmd.get("apply_id") != r.applied
+        or sections.section(cmd) != r.section
     ):
         return False
-    native_context.read_binding(app, cmd, PREFIX + "readback", "token", "apply_id")
+    native_context.read_binding(
+        app,
+        cmd,
+        PREFIX + "readback",
+        "token",
+        "apply_id",
+        *(("section",) if "section" in cmd else ()),
+    )
     _same(app, r)
     return True
 
@@ -567,8 +621,9 @@ def prepare_publication(app, cmd, result):
             cmd,
             cmd["type"],
             *(("token",) if phase == "apply" else ("token", "apply_id")),
+            *(("section",) if "section" in cmd else ()),
         )
-        if _snapshot(app, binding, r.info)[0] != r.snapshot:
+        if _snapshot(app, binding, r.info, r.section)[0] != r.snapshot:
             raise ValueError("Model preferences changed before publication")
         r.publication = Publication(
             app, r, asyncio.current_task(), result, _encoded(result), phase
@@ -579,7 +634,7 @@ def prepare_publication(app, cmd, result):
         raise
 
 
-def finish_publication(app, ticket):
+def finish_publication(app: Any, ticket: Publication):
     r = ticket.review
     if (
         ticket.app is not app

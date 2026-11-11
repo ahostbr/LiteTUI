@@ -377,13 +377,35 @@ async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
     return None
 
 
+def _native_prompt_refusal(app, item):
+    """Capture an unsent RPC attempt, never invent a scheduled execution.
+
+    Work producers have their own admission/retirement receipts. This callback
+    is only for an ordinary owned native RPC prompt, before any user append or
+    stream scheduling. Legacy parents retain their turn_end refusal contract.
+    """
+    from litetui import background_input
+    if not background_input.enabled(app) or item.get("source") != "rpc":
+        return None
+    origin = EventOrigin(session_id=app.convo_id,
+                         operation_id=item.get("operation_id"), source="rpc")
+    if not origin.session_id or origin.operation_id is None:
+        raise ValueError("Native prompt refusal lacks its captured attempt identity")
+
+    def refused(reason):
+        app._rpc_emit({"type": "submit_refused", "phase": "pre_admission",
+                       "reason": "admission", "detail": reason}, origin=origin)
+    return refused
+
+
 def start_prompt(app, item):
     from litetui import background_input
     if background_input.entry_for(app, item) is not None:
         return background_input.start_prompt(app, item)
+    on_refused = _native_prompt_refusal(app, item)
     entry = item.get("_codex_entry")
     if entry and entry.get("state") in ("admitted", "next_turn"):
-        accepted = accept_prompt_origin(app, item)
+        accepted = accept_prompt_origin(app, item, on_refused=on_refused)
         if accepted is None:
             return
         app._hook_turn_id = entry.get("admission", {}).get("turn_id", app._hook_turn_id)
@@ -391,13 +413,13 @@ def start_prompt(app, item):
         return
     state = snapshot(app)
     if not state.hooks and not state.error:
-        accepted = accept_prompt_origin(app, item)
+        accepted = accept_prompt_origin(app, item, on_refused=on_refused)
         if accepted is not None:
             app._stream(origin=accepted)
         return
 
     async def deliver():
-        accepted = await admit_prompt_origin(app, item)
+        accepted = await admit_prompt_origin(app, item, on_refused=on_refused)
         if accepted is not None:
             app._stream(origin=accepted)
     app.run_worker(deliver(), group="chat", exclusive=True, exit_on_error=False)

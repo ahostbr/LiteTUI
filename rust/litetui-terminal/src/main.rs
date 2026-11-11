@@ -125,7 +125,11 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 && !app.has_live_question()
                 && let Some(chat) = app.live.as_mut()
             {
-                if chat.work.context_open() || chat.work.image.open || chat.work.dictation.open {
+                if chat.work.context_open()
+                    || chat.work.image.open
+                    || chat.work.dictation.open
+                    || chat.work.mark.open
+                {
                     chat.work.key(key);
                     return false;
                 }
@@ -1641,7 +1645,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
             }
-            if !quitting && let Some(intent) = app.live.as_mut().expect("live").work.take_intent() {
+            if !quitting && let Some(intent) = app.take_work_intent() {
                 if let Err(error) = app.live.as_mut().expect("live").prepare_work(&intent) {
                     app.live.as_mut().expect("live").work.observe(
                         litetui_terminal::work_view::Update {
@@ -1805,6 +1809,63 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mark_overlay_keeps_paste_repeat_and_small_viewport_escape_owned() {
+        use litetui_terminal::{dictation, live::Observation, work_view};
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("Unsent selected draft");
+        app.composer
+            .move_cursor(litetui_terminal::composer::Motion::WordLeft, true);
+        let before = (
+            app.composer.text().to_owned(),
+            app.composer.before_cursor().to_owned(),
+            app.composer.selected_text().to_owned(),
+        );
+        app.open_mark();
+        let intent = app.take_work_intent().unwrap();
+        let work_view::Request::Mark(request) = intent.request else {
+            panic!("Mark review");
+        };
+        paste(&mut app, "Must not replace selection");
+        let mut router = KeyRouter::default();
+        router.handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let id = litetui_terminal::work_protocol::Identity {
+            session: "s".into(),
+            agent: "a".into(),
+            backend: "custom".into(),
+            model: "fixture".into(),
+        };
+        let exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let value = serde_json::json!({"version":1,"kind":"mark","session_id":"s","agent_id":"a","backend":"custom","model":"fixture","work_instance":"w",
+            "capture":"12345678-1234-4123-8123-123456789012","draft_sha256":dictation::digest(&before.0),"previous":null,
+            "plan":{"script":{"path":exe,"sha256":"1".repeat(64)},"launcher":{"path":exe,"sha256":"2".repeat(64)},"ring":null,"delivery":"inline","seconds":180},
+            "status":"review","result":null,"result_sha256":null,"applied":false});
+        let state = request.parse(&id, "w", &value, None).unwrap();
+        app.observe_live(Observation::Work(work_view::Update {
+            generation: intent.generation,
+            data: work_view::Data::Mark(Box::new(state)),
+        }))
+        .unwrap();
+        app.viewport_too_small = true;
+        router.handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let work_view::Request::Mark(close) = app.take_work_intent().unwrap().request else {
+            panic!("Mark close");
+        };
+        assert_eq!(close.action, "close");
+        assert_eq!(app.composer.text(), before.0);
+        assert_eq!(app.composer.before_cursor(), before.1);
+        assert_eq!(app.composer.selected_text(), before.2);
+        assert!(app.live.as_mut().unwrap().take_submission().is_none());
+        assert!(router.handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
+    }
 
     #[test]
     fn dictation_overlay_owns_paste_repeat_and_small_viewport_escape() {

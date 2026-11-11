@@ -376,6 +376,8 @@ async def test_registered_control_commands_preserve_intent_without_callbacks(com
         ("/compact Keep  exact guidance 雪\n  and trailing  ", "conversation_compact", "Keep  exact guidance 雪\n  and trailing  "),
         ("/load", "model_load", ""), ("/load fixture-model", "model_load", "fixture-model"),
         ("/unload fixture-model", "model_unload", "fixture-model"),
+        ("/load different-model", "model_load", "different-model"),
+        ("/unload different-model", "model_unload", "different-model"),
         ("/reconnect", "model_reconnect", ""),
         ("/engine STOP", "engine", "STOP"), ("/engine start", "engine", "start"),
         ("/engine status", "engine", "status"), ("/hooks", "hooks", ""),
@@ -389,7 +391,6 @@ async def test_registered_control_commands_preserve_intent_without_callbacks(com
         route = command_surface.resolve(app, {**base, "command": command})
         assert (route["command"], route["native_action"], route["arguments"]) == (command, action, arguments)
     for command, reason in [
-        ("/load different-model", "current model"), ("/unload different-model", "current model"),
         ("/engine start 4", "lane arguments"), ("/engine lanes 4", "configuration"),
         ("/plan maybe", "on, off"), ("/reload-plugins two targets", "one exact"),
         ("/compact bad\0hint", "NUL"), ("/hooks extra", "arguments"),
@@ -533,15 +534,14 @@ async def test_every_unrouted_registered_command_states_its_own_reason(command_a
     app = command_app
     rows = [row for row in read(app)["entries"] if row["native_action"] is None]
     reasons = {row["tokens"][0]: row["unavailable_reason"] for row in rows}
-    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/sidecar", "/mark"}
+    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/sidecar"}
     assert len(set(reasons.values())) == len(reasons)
     for token in ("/screenshot", "/maximize", "/test-sidebar"):
         assert "Textual" in reasons[token]
     # The two window actions name the terminal-native keys that replace them.
     assert "Ctrl+Shift+C" in reasons["/screenshot"]
     assert "Alt+Up" in reasons["/maximize"] and "Ctrl+G" in reasons["/maximize"]
-    for token in ("/sidecar", "/mark"):
-        assert "desktop overlay" in reasons[token]
+    assert "desktop overlay" in reasons["/sidecar"]
     assert "no native action adapter" not in "".join(reasons.values())
     for row in rows:
         with pytest.raises(ValueError) as refusal:

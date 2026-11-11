@@ -197,6 +197,24 @@ impl Demo {
                 self.composer.clear();
             }
         }
+        if let Some(applied) = chat.work.mark.applied.take() {
+            if self.composer.text() == applied.draft.text
+                && self.composer.before_cursor() == applied.draft.before_cursor
+                && self.composer.selected_text() == applied.draft.selected
+                && chat.work.image.attached == applied.previous
+            {
+                self.composer
+                    .move_cursor(crate::composer::Motion::End, false);
+                if !applied.draft.text.is_empty() {
+                    self.composer.insert(" ");
+                }
+                self.composer.insert(&applied.message);
+                chat.work.image.attached = Some(applied.image);
+                chat.notice = "Mark added to the UNSENT composer. Edit it before sending.".into();
+            } else {
+                chat.notice = "Composer changed during Mark. The current draft was kept; reopen the image picker to reconcile the source attachment.".into();
+            }
+        }
         if let Some((draft, text)) = chat.work.dictation.applied.take() {
             if self.composer.text() == draft.text
                 && self.composer.before_cursor() == draft.before_cursor
@@ -284,6 +302,7 @@ impl Demo {
                 Action::ChatPause => self.open_chat_pause(),
                 Action::Glassbox => self.open_glassbox(&route_arguments),
                 Action::Monitor => self.open_monitor(&route_arguments),
+                Action::Mark => self.open_mark(),
                 Action::Models => self
                     .open_models_preselected(crate::model_controls::Kind::Model, &route_arguments),
                 Action::Thinking => self.open_models_preselected(
@@ -599,6 +618,54 @@ impl Demo {
         self.live
             .as_ref()
             .is_some_and(|chat| chat.work.owns_input())
+    }
+    pub fn take_work_intent(&mut self) -> Option<crate::work_view::Intent> {
+        let chat = self.live.as_mut()?;
+        let intent = chat.work.take_intent()?;
+        if matches!(&intent.request, crate::work_view::Request::Mark(request) if request.action == "apply")
+            && !chat.work.mark.matches(
+                &crate::dictation::Draft {
+                    text: self.composer.text().into(),
+                    before_cursor: self.composer.before_cursor().into(),
+                    selected: self.composer.selected_text().into(),
+                },
+                &chat.work.image.attached,
+            )
+        {
+            chat.work.observe(crate::work_view::Update {
+                generation: intent.generation,
+                data: crate::work_view::Data::Rejected(
+                    "Composer changed after the Mark review. Cancel and reopen Mark.".into(),
+                ),
+            });
+            return None;
+        }
+        Some(intent)
+    }
+    pub fn open_mark(&mut self) {
+        if self.has_live_input() || self.viewport_too_small {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || chat.queue_pending()
+                || chat.rewrite_pending()
+                || chat.engine.pending()
+            {
+                self.notice = "Finish the current reply before marking the screen.".into();
+                return;
+            }
+            chat.work.mark(crate::dictation::Draft {
+                text: self.composer.text().into(),
+                before_cursor: self.composer.before_cursor().into(),
+                selected: self.composer.selected_text().into(),
+            });
+            self.completion.dismiss();
+            self.footer.leave();
+        }
     }
     pub fn open_dictation(&mut self) {
         if self.has_live_input() || self.viewport_too_small {

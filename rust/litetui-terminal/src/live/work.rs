@@ -1146,4 +1146,16 @@ mod tests {
         bad.facts = Facts::parse_mcp(&f, life::Provider::Host, true).unwrap();
         assert!(startup.install_runtime_policy(bad).is_err());
     }
+    #[test]
+    fn pre_admission_refusal_cannot_release_an_admitted_work_execution() {
+        let mut turn = idle();
+        admit(&mut turn, "source-one", "admission-one", Mode::NewTurn);
+        let refusal = json!({"type":"submit_refused","phase":"pre_admission",
+            "reason":"admission","detail":"unowned refusal"});
+        assert!(turn.accept(&refusal, "custom", "fixture").is_err());
+        assert!(turn.work.pending.contains_key("admission-one"));
+        assert!(!turn.can_manage());
+        assert!(turn.verify_work("foreign-admission").is_err());
+        assert!(turn.work.pending.contains_key("admission-one"));
+    }
 }

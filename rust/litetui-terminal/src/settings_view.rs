@@ -318,7 +318,12 @@ impl View {
             action.map(|(action, model)| (action.to_owned(), model.to_owned()));
         self.waiting = true;
         self.intent = Some(Intent::ModelLifecycle(Box::new(
-            crate::model_lifecycle::Request::List,
+            match action.filter(|(_, model)| !model.is_empty()) {
+                Some((_, model)) => {
+                    crate::model_lifecycle::Request::Inspect(model.into(), Default::default())
+                }
+                None => crate::model_lifecycle::Request::List,
+            },
         )));
         self.hide();
     }

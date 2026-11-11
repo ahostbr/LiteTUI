@@ -30,6 +30,7 @@ pub(super) struct Control {
     pause_review: Option<crate::chat_pause::Review>,
     pause_origin: Option<crate::work_lifecycle::Origin>,
     dictation: Option<crate::dictation::State>,
+    mark: Option<crate::mark::State>,
     queue_origin: Option<crate::work_lifecycle::Origin>,
     queue_policy: Option<(u64, crate::tool_mode::Profile)>,
 }
@@ -183,6 +184,7 @@ impl Management {
                 r.operation()
             }
             view::Request::Dictation(_) => crate::dictation::OPERATION,
+            view::Request::Mark(_) => crate::mark::OPERATION,
             view::Request::Context(r) => r.operation(),
             view::Request::Plugin(request) => {
                 if !crate::plugin_reload::OPERATIONS
@@ -278,6 +280,7 @@ impl Management {
                 | view::Request::Midturn(_)
                 | view::Request::ChatPause(_)
                 | view::Request::Dictation(_)
+                | view::Request::Mark(_)
         ) {
             identity.request()
         } else {
@@ -577,6 +580,9 @@ impl Management {
                 command["profile"] = json!(profile.as_str());
                 self.work.queue_origin = Some(origin);
             }
+            view::Request::Mark(request) => {
+                command = request.command(&identity, self.context_instance()?);
+            }
             view::Request::Dictation(request) => {
                 command = request.command(&identity, self.context_instance()?);
             }
@@ -676,6 +682,7 @@ impl Management {
         command["type"] = json!(op);
         let mutating = match &intent.request {
             view::Request::Dictation(r) => !matches!(r.action, "review" | "status"),
+            view::Request::Mark(r) => r.action != "status",
             view::Request::ChatPause(request) => {
                 matches!(request.as_ref(), crate::chat_pause::Request::Apply(_))
             }
@@ -846,6 +853,20 @@ impl Management {
                 };
                 view::Data::ChatPause(Box::new(reply))
             }
+            view::Request::Mark(request) => {
+                let state = request.parse(
+                    &self.work_identity()?,
+                    self.context_instance()?,
+                    value,
+                    self.work.mark.as_ref(),
+                )?;
+                self.work.mark = if state.status == "closed" {
+                    None
+                } else {
+                    Some(state.clone())
+                };
+                view::Data::Mark(Box::new(state))
+            }
             view::Request::Dictation(request) => {
                 let state = request.parse(
                     &self.work_identity()?,
@@ -955,7 +976,8 @@ impl Management {
                 match request {
                     view::Request::Midturn(_)
                     | view::Request::ChatPause(_)
-                    | view::Request::Dictation(_) => unreachable!(),
+                    | view::Request::Dictation(_)
+                    | view::Request::Mark(_) => unreachable!(),
                     view::Request::Plugin(request) => {
                         let instance = self.context_instance()?;
                         if matches!(request.as_ref(), crate::plugin_reload::Request::Apply(_))

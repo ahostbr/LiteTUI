@@ -1537,7 +1537,35 @@ impl Turn {
                 })
             }
             "submit_refused"
-                if self.image_prompt.is_some()
+                if event["phase"] == "pre_admission"
+                    && self.sent
+                    && !self.started
+                    && self.terminal.is_none()
+                    && !self.settled
+                    && !self.rewrite_active
+                    && !self.work.pending_operation(&self.command_id) =>
+            {
+                let reason = event["detail"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty() && s.len() <= 4096)
+                    .ok_or_else(|| fail("Invalid pre-admission refusal detail"))?
+                    .to_owned();
+                if event["reason"].as_str().is_none_or(|s| s.trim().is_empty() || s.len() > 128) {
+                    return Err(fail("Invalid pre-admission refusal reason"));
+                }
+                self.admission_refused = true;
+                self.terminal = Some(TerminalOutcome::Refused(reason));
+                Ok(if self.can_settle() {
+                    self.settle()
+                } else {
+                    Observation::Information(
+                        "Input refused before admission; waiting for its exact command receipt.".into(),
+                    )
+                })
+            }
+            "submit_refused"
+                if event.get("phase").is_none()
+                    && self.image_prompt.is_some()
                     && self.sent
                     && !self.started
                     && self.terminal.is_none() =>
@@ -2578,6 +2606,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 turn.can_manage()
                             }
                             crate::work_view::Request::Dictation(_) => turn.can_manage(),
+                            crate::work_view::Request::Mark(_) => turn.can_manage(),
                             crate::work_view::Request::Hook(_)
                             | crate::work_view::Request::HookEdit(_)
                             | crate::work_view::Request::Plugin(_) => turn.can_manage(),
@@ -3445,6 +3474,23 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         work_deadline = None;
                         if !turn.closing {
                             frontend.observe(Observation::Work(update))?;
+                        }
+                    }
+                    Step::ModelLifecycleChanged {
+                        update,
+                        state,
+                        policy,
+                    } => {
+                        if !turn.closing {
+                            turn.validate_current_policy(&policy)?;
+                            frontend.observe(Observation::State(
+                                crate::runtime_state::Update::from_management(state),
+                            ))?;
+                            frontend.observe(Observation::Settings(
+                                crate::settings_view::Update::ModelLifecycle(Ok(update)),
+                            ))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
                         }
                     }
                     Step::Settings { update, policy } => {

@@ -20,6 +20,10 @@ pub const OPERATIONS: [&str; 4] = [
     "gui.models.native_preferences_apply",
     "gui.models.native_preferences_readback",
 ];
+mod sections;
+use sections::PresetAction;
+pub use sections::Section;
+
 const FIELDS: [&str; 36] = [
     "temperature",
     "top_p",
@@ -88,7 +92,7 @@ fn value_ok(key: &str, v: &Value) -> bool {
             "strings" => v.as_array().is_some_and(|a| {
                 a.len() <= 256
                     && a.iter()
-                        .all(|v| v.as_str().is_some_and(|s| s.len() <= 4096))
+                        .all(|v| v.as_str().is_some_and(|s| s.chars().count() <= 4096))
             }),
             "json" => v
                 .as_str()
@@ -104,6 +108,9 @@ fn wire_ok(key: &str, v: &Value) -> bool {
     }
 }
 fn mode(edit: &Edit) -> &'static str {
+    if let Some(action) = edit.preset {
+        return action.wire();
+    }
     if edit.inherit {
         "inherit"
     } else if edit.value.is_null() {
@@ -126,7 +133,7 @@ struct Spec {
     wire_choices: Value,
 }
 impl Spec {
-    fn parse(key: &str, v: &Value) -> io::Result<Self> {
+    fn parse(key: &str, v: &Value, section: Section) -> io::Result<Self> {
         keys(
             v,
             &[
@@ -150,7 +157,14 @@ impl Spec {
                 .ok_or_else(bad)
         };
         let group = text("group")?;
-        if group != if load_field(key) { "load" } else { "inference" } || v["kind"] != kind(key) {
+        if group
+            != if section != Section::Defaults && load_field(key) {
+                "load"
+            } else {
+                "inference"
+            }
+            || v["kind"] != kind(key)
+        {
             return Err(bad());
         }
         let choices = v["choices"]
@@ -266,6 +280,8 @@ struct Field {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
+    section: Section,
+    details: Value,
     revision: String,
     fields: BTreeMap<String, Field>,
     supported: bool,
@@ -282,31 +298,39 @@ pub struct Snapshot {
 impl Snapshot {
     fn parse(v: &Value, id: &Identity, instance: &str) -> io::Result<Self> {
         binding(v, id, instance, "model_preferences")?;
-        keys(
-            v,
-            &[
-                "version",
-                "kind",
-                "scope",
-                "session_id",
-                "agent_id",
-                "backend",
-                "model",
-                "work_instance",
-                "revision",
-                "fields",
-                "supported",
-                "reason",
-                "reported_loaded",
-                "context_length",
-                "context_source",
-                "deferred_load_fields",
-                "catalog",
-                "raw",
-            ],
-        )?;
-        keys(&v["fields"], &FIELDS)?;
-        keys(&v["catalog"], &FIELDS)?;
+        let section = Section::parse(v)?;
+        let mut expected_keys = vec![
+            "version",
+            "kind",
+            "scope",
+            "session_id",
+            "agent_id",
+            "backend",
+            "model",
+            "work_instance",
+            "revision",
+            "fields",
+            "supported",
+            "reason",
+            "reported_loaded",
+            "context_length",
+            "context_source",
+            "deferred_load_fields",
+            "catalog",
+            "raw",
+        ];
+        if section != Section::Model {
+            expected_keys.extend(["section", "destinations", "settings", "request"]);
+            expected_keys.push(if section == Section::Defaults {
+                "model_overrides"
+            } else {
+                "presets"
+            });
+        }
+        keys(v, &expected_keys)?;
+        let names = section.fields();
+        keys(&v["fields"], names)?;
+        keys(&v["catalog"], names)?;
         keys(&v["raw"], &["inference", "load"])?;
         for group in ["inference", "load"] {
             keys(&v["raw"][group], &["saved", "active"])?;
@@ -316,9 +340,9 @@ impl Snapshot {
                 }
             }
         }
-        let catalog = FIELDS
+        let catalog = names
             .iter()
-            .map(|k| Ok(((*k).to_owned(), Spec::parse(k, &v["catalog"][*k])?)))
+            .map(|k| Ok(((*k).to_owned(), Spec::parse(k, &v["catalog"][*k], section)?)))
             .collect::<io::Result<BTreeMap<_, _>>>()?;
         let supported = v["supported"].as_bool().ok_or_else(bad)?;
         let expected =
@@ -368,7 +392,7 @@ impl Snapshot {
             .filter(|n| *n <= 4096)
             .ok_or_else(bad)?;
         let mut fields = BTreeMap::new();
-        for key in FIELDS {
+        for &key in names {
             let r = &v["fields"][key];
             keys(
                 r,
@@ -403,10 +427,12 @@ impl Snapshot {
                 || editable
                     && (!supported
                         || !meta.editable
-                        || overridden
+                        || overridden && section != Section::Defaults
                         || !load_field(key)
                             && (present != active_present || r["saved"] != r["active"]))
-                || overridden && !["max_tokens", "reasoning_effort"].contains(&key)
+                || overridden
+                    && section != Section::Defaults
+                    && !["max_tokens", "reasoning_effort"].contains(&key)
             {
                 return Err(bad());
             }
@@ -425,7 +451,10 @@ impl Snapshot {
                 },
             );
         }
+        let details = sections::parse_details(v, section, &fields)?;
         Ok(Self {
+            section,
+            details,
             revision: hash(v, "revision")?,
             catalog,
             raw: v["raw"].clone(),
@@ -447,15 +476,18 @@ pub struct Edit {
     field: String,
     value: Value,
     inherit: bool,
+    preset: Option<PresetAction>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Review {
     edit: Edit,
     token: String,
+    transaction: Value,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     List,
+    Section(Section),
     Review(Edit),
     Apply(Review),
     Readback(Review, String, String),
@@ -474,22 +506,35 @@ impl Request {
     pub fn command(&self, id: &Identity, instance: &str) -> io::Result<Value> {
         let mut c = id.request();
         c["work_instance"] = json!(instance);
+        let section = match self {
+            Self::List => Section::Model,
+            Self::Section(s) => *s,
+            Self::Review(e) => e.before.section,
+            Self::Apply(r) | Self::Readback(r, _, _) => r.edit.before.section,
+        };
+        if section != Section::Model {
+            c["section"] = json!(section.wire());
+        }
         c["type"] = json!(match self {
-            Self::List => OPERATIONS[0],
+            Self::List | Self::Section(_) => OPERATIONS[0],
             Self::Review(e) => {
-                let row = e
-                    .before
-                    .fields
-                    .get(&e.field)
-                    .filter(|r| r.editable)
-                    .ok_or_else(bad)?;
-                if e.inherit && (!e.value.is_null() || !row.present)
-                    || !e.inherit
-                        && (e.value.is_null() && load_field(&e.field)
-                            || !e.before.catalog[&e.field].accepts(&e.field, &e.value)
-                            || row.present && row.saved == e.value)
-                {
-                    return Err(bad());
+                if section != Section::Model {
+                    sections::plan(e)?;
+                } else {
+                    let row = e
+                        .before
+                        .fields
+                        .get(&e.field)
+                        .filter(|r| r.editable)
+                        .ok_or_else(bad)?;
+                    if e.inherit && (!e.value.is_null() || !row.present)
+                        || !e.inherit
+                            && (e.value.is_null() && load_field(&e.field)
+                                || !e.before.catalog[&e.field].accepts(&e.field, &e.value)
+                                || row.present && row.saved == e.value)
+                    {
+                        return Err(bad());
+                    }
                 }
                 c["revision"] = json!(e.before.revision);
                 c["field"] = json!(e.field);
@@ -517,10 +562,17 @@ impl Request {
         command_id: &str,
     ) -> io::Result<Reply> {
         let (kind, edit, token, applied) = match &self {
-            Self::List => {
-                return Ok(Reply::Update(Update::List(Snapshot::parse(
-                    v, id, instance,
-                )?)));
+            Self::List | Self::Section(_) => {
+                let expected = if let Self::Section(section) = self {
+                    section
+                } else {
+                    Section::Model
+                };
+                let snapshot = Snapshot::parse(v, id, instance)?;
+                if snapshot.section != expected {
+                    return Err(bad());
+                }
+                return Ok(Reply::Update(Update::List(snapshot)));
             }
             Self::Review(e) => ("model_preferences_review", e, None, None),
             Self::Apply(r) => (
@@ -554,6 +606,19 @@ impl Request {
             "after",
             "apply_id",
         ];
+        if edit.before.section != Section::Model {
+            fields.extend(["section", "transaction"]);
+            if v["section"] != edit.before.section.wire()
+                || v["transaction"] != sections::plan(edit)?
+            {
+                return Err(bad());
+            }
+            if let Self::Apply(r) | Self::Readback(r, _, _) = &self
+                && v["transaction"] != r.transaction
+            {
+                return Err(bad());
+            }
+        }
         if matches!(self, Self::Readback(..)) {
             fields.push("preferences");
         }
@@ -578,6 +643,7 @@ impl Request {
             Self::Review(edit) => Ok(Reply::Update(Update::Review(Review {
                 edit,
                 token: actual_token,
+                transaction: v["transaction"].clone(),
             }))),
             Self::Apply(r) => Ok(Reply::Next(Self::Readback(
                 r,
@@ -586,6 +652,13 @@ impl Request {
             ))),
             Self::Readback(r, _, revision) => {
                 let actual = Snapshot::parse(&v["preferences"], id, instance)?;
+                if r.edit.before.section != Section::Model {
+                    let expected = sections::after(&r.edit, &r.transaction, &revision)?;
+                    if actual != expected || actual.revision != hash(v, "after")? {
+                        return Err(bad());
+                    }
+                    return Ok(Reply::Update(Update::Saved(actual)));
+                }
                 let mut expected = r.edit.before;
                 expected.revision = revision;
                 let row = expected.fields.get_mut(&r.edit.field).ok_or_else(bad)?;
@@ -632,6 +705,8 @@ pub struct View {
     waiting: bool,
     visible: bool,
     data: Option<Snapshot>,
+    section: Section,
+    preset_action: Option<PresetAction>,
     selected: usize,
     draft: Option<String>,
     server: bool,
@@ -665,16 +740,27 @@ impl View {
         self.review_seen = 0;
         match result {
             Ok(Update::List(s)) => {
+                self.section = s.section;
+                self.preset_action = None;
                 self.data = Some(s);
                 self.review = None;
                 self.draft = None;
             }
             Ok(Update::Review(r)) => self.review = Some(r),
             Ok(Update::Saved(s)) => {
+                let saved_preset = self.preset_action == Some(PresetAction::Save);
+                self.section = s.section;
+                self.preset_action = None;
                 self.data = Some(s);
                 self.review = None;
                 self.draft = None;
-                self.note = "Saved and verified. Inference: next request. Load: reload/reopen pending; running model unchanged.".into();
+                self.note = if self.section == Section::Presets && saved_preset {
+                    "Saved and verified. Named preset saved to defaults; current requests are unchanged."
+                } else if self.section == Section::Defaults {
+                    "Saved and verified. Conversation defaults apply unless a model override masks them."
+                } else {
+                    "Saved and verified. Inference: next request. Changed load settings remain pending until reload/reopen."
+                }.into();
             }
             Err(e) => {
                 self.data = None;
@@ -708,12 +794,17 @@ impl View {
             self.hide();
             return None;
         }
-        let field = FIELDS[self.selected];
+        let names = self.section.fields();
+        let field = names[self.selected.min(names.len() - 1)];
+        let is_load = self.section != Section::Defaults && load_field(field);
         if self.review.is_none()
             && let Some(text) = &mut self.draft
         {
             match key.code {
-                KeyCode::Char(c) if !crate::display_control(c) => {
+                KeyCode::Char(c)
+                    if !crate::display_control(c)
+                        && self.preset_action != Some(PresetAction::Apply) =>
+                {
                     self.server = false;
                     if text.len() < 65536 {
                         text.push(c);
@@ -730,12 +821,27 @@ impl View {
             }
         }
         let request = match key.code {
-            KeyCode::F(5) if self.review.is_none() => Request::List,
+            KeyCode::Tab if self.review.is_none() && self.draft.is_none() => {
+                self.section = match self.section {
+                    Section::Model => Section::Defaults,
+                    Section::Defaults => Section::Presets,
+                    Section::Presets => Section::Model,
+                };
+                self.selected = 0;
+                self.data = None;
+                self.section.list()
+            }
+            KeyCode::F(5) if self.review.is_none() => self.section.list(),
             KeyCode::Up | KeyCode::Down if self.review.is_none() => {
                 self.selected = if key.code == KeyCode::Up {
                     self.selected.saturating_sub(1)
                 } else {
-                    (self.selected + 1).min(FIELDS.len() - 1)
+                    let count = if self.section == Section::Presets {
+                        self.data.as_ref()?.details["presets"].as_object()?.len()
+                    } else {
+                        names.len()
+                    };
+                    (self.selected + 1).min(count.saturating_sub(1))
                 };
                 self.draft = None;
                 self.server = false;
@@ -743,19 +849,46 @@ impl View {
                 self.hide();
                 return None;
             }
+            KeyCode::Char('s') | KeyCode::Char('a')
+                if self.review.is_none() && self.section == Section::Presets =>
+            {
+                self.preset_action = Some(if key.code == KeyCode::Char('s') {
+                    PresetAction::Save
+                } else {
+                    PresetAction::Apply
+                });
+                self.draft = Some(if self.preset_action == Some(PresetAction::Save) {
+                    String::new()
+                } else {
+                    self.data.as_ref()?.details["presets"]
+                        .as_object()?
+                        .keys()
+                        .nth(self.selected)?
+                        .clone()
+                });
+                self.note = if self.preset_action == Some(PresetAction::Save) {
+                    "Type a preset name. Enter reviews Save (including overwrite)."
+                } else {
+                    "Enter reviews this preset's affected inference and load settings."
+                }
+                .into();
+                self.hide();
+                return None;
+            }
             KeyCode::Char('i') | KeyCode::Char('e') | KeyCode::Char('d')
-                if self.review.is_none() =>
+                if self.review.is_none() && self.section != Section::Presets =>
             {
                 let row = self.data.as_ref()?.fields.get(field)?;
-                if row.editable && (key.code != KeyCode::Char('d') || !load_field(field)) {
-                    self.server = key.code == KeyCode::Char('d');
+                if row.editable && (key.code != KeyCode::Char('d') || !is_load) {
+                    self.server = key.code == KeyCode::Char('d')
+                        || self.section == Section::Defaults && key.code == KeyCode::Char('i');
                     self.draft = Some(String::new());
                     self.note = if self.server {
                         "Explicit server default: remove the inherited request override. Enter reviews.".into()
                     } else if key.code == KeyCode::Char('i') {
                         "Inherit this conversation's default. Enter reviews.".into()
                     } else {
-                        "Type a value (true/false for booleans; comma-separated stop strings). Empty input inherits.".into()
+                        "Type a value (true/false for booleans; stop strings use a JSON array). Empty model input inherits; empty default input clears.".into()
                     };
                     self.hide();
                 }
@@ -763,6 +896,23 @@ impl View {
             }
             KeyCode::Enter if self.visible && self.review.is_some() => {
                 Request::Apply(self.review.take()?)
+            }
+            KeyCode::Enter if self.visible && self.section == Section::Presets => {
+                let edit = Edit {
+                    before: self.data.clone()?,
+                    field: self.draft.clone()?,
+                    value: Value::Null,
+                    inherit: false,
+                    preset: self.preset_action,
+                };
+                if sections::plan(&edit).is_err() {
+                    self.note =
+                        "Choose a valid preset name or a preset that changes supported fields."
+                            .into();
+                    self.hide();
+                    return None;
+                }
+                Request::Review(edit)
             }
             KeyCode::Enter if self.visible => {
                 let text = self.draft.as_ref()?;
@@ -772,13 +922,6 @@ impl View {
                 } else {
                     let parsed = match meta.kind.as_str() {
                         "text" | "select" | "json" => Ok(json!(text)),
-                        "strings" if text == "[]" => Ok(json!([])),
-                        "strings" => Ok(json!(
-                            text.split(',')
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                                .collect::<Vec<_>>()
-                        )),
                         _ => serde_json::from_str::<Value>(text),
                     };
                     match parsed {
@@ -793,9 +936,13 @@ impl View {
                     }
                 };
                 let before = self.data.clone()?;
+                let before_section = before.section;
                 let row = &before.fields[field];
                 if !row.editable
-                    || text.is_empty() && !self.server && !row.present
+                    || text.is_empty()
+                        && !self.server
+                        && !row.present
+                        && self.section == Section::Model
                     || (!text.is_empty() || self.server) && row.present && row.saved == value
                 {
                     self.note = "Choose a different value.".into();
@@ -805,7 +952,8 @@ impl View {
                     before,
                     field: field.into(),
                     value,
-                    inherit: text.is_empty() && !self.server,
+                    inherit: text.is_empty() && !self.server && before_section == Section::Model,
+                    preset: None,
                 })
             }
             _ => return None,
@@ -834,9 +982,16 @@ impl View {
                 }
             ));
         }
+        lines.push(format!(
+            "Section: {} · Tab switches model / conversation defaults / presets",
+            self.section.wire()
+        ));
         if let Some(r) = &self.review {
-            let row = &r.edit.before.fields[&r.edit.field];
-            lines.extend([
+            if r.edit.before.section != Section::Model {
+                lines.extend(sections::review_lines(r));
+            } else {
+                let row = &r.edit.before.fields[&r.edit.field];
+                lines.extend([
                 format!("Save {} for {}?", r.edit.before.catalog[&r.edit.field].label, r.edit.before.model),
                 format!("Current {}: {}", if load_field(&r.edit.field) { "active load preference" } else { "next request" }, show(&row.next)),
                 format!(
@@ -857,75 +1012,120 @@ impl View {
                 else { "Inference takes effect in the next request.".into() },
                 "Enter save · Esc cancel".into(),
             ]);
+            }
         } else if let Some(s) = &self.data {
-            if let Some(reason) = &s.reason {
-                lines.push(reason.clone());
-            }
-            for (i, key) in FIELDS
-                .iter()
-                .enumerate()
-                .skip(self.selected.saturating_sub(3))
-                .take(7)
-            {
-                let r = &s.fields[*key];
-                lines.push(format!(
-                    "{} {} · saved {} · active/next {}{}",
-                    if i == self.selected { ">" } else { " " },
-                    s.catalog[*key].label,
-                    if r.present {
-                        show(&r.saved)
-                    } else {
-                        "inherit".into()
-                    },
-                    show(&r.next),
-                    if r.overridden {
-                        " (launch override)"
-                    } else {
-                        ""
+            if s.section == Section::Presets {
+                lines.push("Presets save current SAVED model settings to defaults. Apply merges inference + load into this conversation.".into());
+                if let Some(presets) = s.details["presets"].as_object() {
+                    if presets.is_empty() {
+                        lines.push("No saved presets.".into());
                     }
-                ));
-            }
-            let key = FIELDS[self.selected];
-            let meta = &s.catalog[key];
-            let row = &s.fields[key];
-            lines.push(format!(
-                "Field {}/{} · {} · {}",
-                self.selected + 1,
-                FIELDS.len(),
-                meta.group,
-                meta.help
-            ));
-            if !meta.choices.is_empty() {
-                lines.push(format!("Choices: {}", meta.choices.join(", ")));
-            }
-            if let Some(why) = &meta.reason {
-                lines.push(why.clone());
-            }
-            if load_field(key) {
-                lines.push("Load values are saved only. Reload/reopen required; active settings and running model are unchanged.".into());
-                if row.present != row.active_present || row.saved != row.active {
-                    lines.push(
-                        "Saved load preference differs from active settings (pending).".into(),
-                    );
+                    for (index, name) in presets
+                        .keys()
+                        .enumerate()
+                        .skip(self.selected.saturating_sub(3))
+                        .take(7)
+                    {
+                        lines.push(format!(
+                            "{} {}",
+                            if index == self.selected { ">" } else { " " },
+                            name
+                        ));
+                    }
                 }
+                if let Some(draft) = &self.draft {
+                    lines.push(format!(
+                        "{} preset: {}",
+                        self.preset_action.map(|a| a.wire()).unwrap_or(""),
+                        draft
+                    ));
+                }
+                lines.push("↑/↓ preset · S save current as named preset · A apply selected · Enter review · Tab section · F5 refresh · Esc back".into());
             } else {
+                if let Some(reason) = &s.reason {
+                    lines.push(reason.clone());
+                }
+                for (i, key) in s
+                    .section
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .skip(self.selected.saturating_sub(3))
+                    .take(7)
+                {
+                    let r = &s.fields[*key];
+                    lines.push(format!(
+                        "{} {} · saved {} · active/next {}{}",
+                        if i == self.selected { ">" } else { " " },
+                        s.catalog[*key].label,
+                        if r.present {
+                            show(&r.saved)
+                        } else {
+                            "inherit".into()
+                        },
+                        show(&r.next),
+                        if r.overridden {
+                            if s.section == Section::Defaults {
+                                " (model override masks default)"
+                            } else {
+                                " (launch override)"
+                            }
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+                let key = s.section.fields()[self.selected];
+                let meta = &s.catalog[key];
+                let row = &s.fields[key];
                 lines.push(format!(
-                    "Inherited request value: {} · Explicit default: {}",
-                    show(&row.inherited),
-                    show(&row.server_default)
+                    "Field {}/{} · {} · {}",
+                    self.selected + 1,
+                    s.section.fields().len(),
+                    meta.group,
+                    meta.help
                 ));
+                if !meta.choices.is_empty() {
+                    lines.push(format!("Choices: {}", meta.choices.join(", ")));
+                }
+                if let Some(why) = &meta.reason {
+                    lines.push(why.clone());
+                }
+                if s.section != Section::Defaults && load_field(key) {
+                    lines.push("Load values are saved only. Reload/reopen required; active settings and running model are unchanged.".into());
+                    if row.present != row.active_present || row.saved != row.active {
+                        lines.push(
+                            "Saved load preference differs from active settings (pending).".into(),
+                        );
+                    }
+                } else {
+                    lines.push(format!(
+                        "Inherited request value: {} · Explicit default: {}",
+                        show(&row.inherited),
+                        show(&row.server_default)
+                    ));
+                }
+                if let Some(draft) = &self.draft {
+                    lines.push(format!(
+                        "{}: {}",
+                        s.catalog[s.section.fields()[self.selected]].label,
+                        if draft.is_empty() {
+                            if s.section == Section::Defaults {
+                                "server default"
+                            } else {
+                                "inherit"
+                            }
+                        } else {
+                            draft
+                        }
+                    ));
+                }
+                lines.push(if s.section == Section::Defaults {
+                    "↑/↓ field · E edit · D clear to server default · Enter review · PgUp/PgDn · Tab section · F5 refresh · Esc back"
+                } else {
+                    "↑/↓ field · E edit · I inherit · D server default · Enter review · PgUp/PgDn · Tab section · F5 refresh · Esc back"
+                }.into());
             }
-            if let Some(draft) = &self.draft {
-                lines.push(format!(
-                    "{}: {}",
-                    s.catalog[FIELDS[self.selected]].label,
-                    if draft.is_empty() { "inherit" } else { draft }
-                ));
-            }
-            lines.push(
-                "↑/↓ field · E edit · I inherit · D server default · Enter review · PgUp/PgDn · F5 refresh · Esc back"
-                    .into(),
-            );
         }
         if !self.note.is_empty() {
             lines.push(self.note.clone());
@@ -1079,8 +1279,10 @@ mod tests {
                 field: "temperature".into(),
                 value: json!(0.35),
                 inherit: false,
+                preset: None,
             },
             token: "b".repeat(64),
+            transaction: Value::Null,
         };
         let revision = "c".repeat(64);
         let applied = receipt(
@@ -1153,8 +1355,10 @@ mod tests {
                 field: "max_tokens".into(),
                 value: json!(321),
                 inherit: false,
+                preset: None,
             },
             token: "b".repeat(64),
+            transaction: Value::Null,
         };
         let mut view = View::default();
         view.open();
@@ -1190,8 +1394,10 @@ mod tests {
                 field: "ctx".into(),
                 value: json!(4096),
                 inherit: false,
+                preset: None,
             },
             token: "b".repeat(64),
+            transaction: Value::Null,
         };
         let revision = "c".repeat(64);
         let mut saved = receipt(
@@ -1239,8 +1445,10 @@ mod tests {
                 field: "json_schema".into(),
                 value: json!(format!(r#"{{"description":"{}"}}"#, "x".repeat(4000))),
                 inherit: false,
+                preset: None,
             },
             token: "b".repeat(64),
+            transaction: Value::Null,
         };
         let mut view = View::default();
         view.open();
@@ -1258,5 +1466,235 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(view.key(enter), Some(Request::Apply(_))));
+    }
+
+    fn section_fixture(section: Section) -> (Identity, Value) {
+        let (mut id, mut v) = fixture();
+        v["section"] = json!(section.wire());
+        v["destinations"] = json!({"conversation":"C:/owned/conversation/settings.json", "defaults":"C:/owned/settings.json"});
+        v["request"] = json!({});
+        for key in sections::REQUEST {
+            v["request"][key] = v["fields"][key]["next_request"].clone();
+        }
+        if section == Section::Defaults {
+            let old_catalog = v["catalog"].clone();
+            v["fields"] = json!({});
+            v["catalog"] = json!({});
+            v["settings"] = json!({"saved":{}, "active":{}});
+            for &key in section.fields() {
+                let default = if key == "stop" {
+                    json!([])
+                } else {
+                    Value::Null
+                };
+                v["settings"]["saved"][key] = default.clone();
+                v["settings"]["active"][key] = default.clone();
+                v["catalog"][key] = old_catalog[key].clone();
+                v["catalog"][key]["group"] = json!("inference");
+                v["catalog"][key]["editable"] = json!(true);
+                v["catalog"][key]["reason"] = Value::Null;
+                v["fields"][key] = json!({"present":true,"saved":default,"active_present":true,
+                    "active":default,"next_request":null,"inherited":null,"editable":true,"overridden":false,"server_default":null});
+            }
+            v["raw"]["inference"] = v["settings"].clone();
+            v["model_overrides"] = json!({});
+        } else {
+            id.backend = "llamacpp".into();
+            v["backend"] = json!("llamacpp");
+            v["context_source"] = json!("backend_reported");
+            for key in FIELDS {
+                v["catalog"][key]["editable"] = json!(true);
+                v["catalog"][key]["reason"] = Value::Null;
+                v["fields"][key]["editable"] = json!(true);
+            }
+            v["presets"] = json!({"Boost":{"inference":{"temperature":0.8},"load":{"ctx":4096}}});
+            let values = json!({"model_infer_overrides":{"other":{"top_k":99}},
+                "llama_load_settings":{"other":{"ctx":8192}}, "llama_presets":v["presets"]});
+            v["settings"] = json!({"saved":values,"active":values});
+        }
+        (id, v)
+    }
+
+    #[test]
+    fn defaults_section_binds_saved_active_mask_and_actual_request() {
+        let (id, mut v) = section_fixture(Section::Defaults);
+        v["model_overrides"]["temperature"] = json!(0.9);
+        v["fields"]["temperature"]["overridden"] = json!(true);
+        v["fields"]["temperature"]["next_request"] = json!(0.9);
+        v["request"]["temperature"] = json!(0.9);
+        let before = Snapshot::parse(&v, &id, "instance").unwrap();
+        let edit = Edit {
+            before,
+            field: "temperature".into(),
+            value: json!(0.3),
+            inherit: false,
+            preset: None,
+        };
+        let tx = sections::plan(&edit).unwrap();
+        assert_eq!(tx["next_request"]["temperature"], json!(0.9));
+        assert_eq!(tx["changes"], json!({"temperature":0.3}));
+        assert_eq!(
+            Request::Review(edit.clone())
+                .command(&id, "instance")
+                .unwrap()["section"],
+            "defaults"
+        );
+        let mut bad = v.clone();
+        bad["fields"]["temperature"]["overridden"] = json!(false);
+        assert!(Snapshot::parse(&bad, &id, "instance").is_err());
+        let after = sections::after(&edit, &tx, &"c".repeat(64)).unwrap();
+        assert_eq!(after.fields["temperature"].saved, json!(0.3));
+        assert_eq!(after.fields["temperature"].next, json!(0.9));
+    }
+
+    #[test]
+    fn preset_plan_and_readback_cover_both_maps_and_unselected_models() {
+        let (id, v) = section_fixture(Section::Presets);
+        let edit = Edit {
+            before: Snapshot::parse(&v, &id, "instance").unwrap(),
+            field: "Boost".into(),
+            value: Value::Null,
+            inherit: false,
+            preset: Some(PresetAction::Apply),
+        };
+        let tx = sections::plan(&edit).unwrap();
+        assert_eq!(
+            tx["changes"]["model_infer_overrides"]["requested"]["temperature"],
+            json!(0.8)
+        );
+        assert_eq!(tx["changes"]["model_infer_overrides"]["other"]["top_k"], 99);
+        assert_eq!(
+            tx["changes"]["llama_load_settings"]["requested"]["ctx"],
+            4096
+        );
+        assert_eq!(tx["pending_load"], true);
+        let after = sections::after(&edit, &tx, &"c".repeat(64)).unwrap();
+        assert_eq!(after.raw["load"]["saved"]["ctx"], 4096);
+        assert_eq!(after.raw["load"]["active"], json!({}));
+        assert_eq!(after.fields["temperature"].next, json!(0.8));
+        let mut altered = tx.clone();
+        altered["changes"]["llama_load_settings"]["other"]["ctx"] = json!(512);
+        assert!(sections::after(&edit, &altered, &"c".repeat(64)).is_err());
+        let mut save = edit;
+        save.field = "Copy".into();
+        save.preset = Some(PresetAction::Save);
+        let save_tx = sections::plan(&save).unwrap();
+        assert_eq!(save_tx["scope"], "defaults");
+        assert_eq!(
+            save_tx["changes"]["llama_presets"]["Copy"],
+            json!({"inference":{},"load":{}})
+        );
+    }
+
+    #[test]
+    fn new_section_publication_requires_exact_transaction_and_destination() {
+        let (id, v) = section_fixture(Section::Defaults);
+        let edit = Edit {
+            before: Snapshot::parse(&v, &id, "instance").unwrap(),
+            field: "seed".into(),
+            value: json!(173),
+            inherit: false,
+            preset: None,
+        };
+        let tx = sections::plan(&edit).unwrap();
+        let r = Review {
+            edit: edit.clone(),
+            token: "b".repeat(64),
+            transaction: tx.clone(),
+        };
+        let mut wire = receipt(
+            &id,
+            &r,
+            "model_preferences_review",
+            Value::Null,
+            Value::Null,
+        );
+        wire["section"] = json!("defaults");
+        wire["transaction"] = tx;
+        assert!(
+            Request::Review(edit.clone())
+                .response(&wire, &id, "instance", "review")
+                .is_ok()
+        );
+        for pointer in [
+            "/transaction/destination",
+            "/transaction/changes/seed",
+            "/transaction/next_request/seed",
+        ] {
+            let mut wrong = wire.clone();
+            *wrong.pointer_mut(pointer).unwrap() = json!("wrong");
+            assert!(
+                Request::Review(edit.clone())
+                    .response(&wrong, &id, "instance", "review")
+                    .is_err()
+            );
+        }
+        let mut applied = receipt(
+            &id,
+            &r,
+            "model_preferences_applied",
+            json!("c".repeat(64)),
+            json!("apply"),
+        );
+        applied["section"] = json!("presets");
+        applied["transaction"] = r.transaction.clone();
+        assert!(
+            Request::Apply(r)
+                .response(&applied, &id, "instance", "apply")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn exact_json_stop_editor_preserves_commas_newlines_empty_and_unicode() {
+        let (id, v) = section_fixture(Section::Defaults);
+        let mut view = View::default();
+        view.open();
+        view.update(Ok(Update::List(
+            Snapshot::parse(&v, &id, "instance").unwrap(),
+        )));
+        view.selected = 8;
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        view.key(key(KeyCode::Char('e')));
+        for c in r#"["one,two","line\nnext","","雪"]"#.chars() {
+            view.key(key(KeyCode::Char(c)));
+        }
+        terminal
+            .draw(|f| view.draw(f, f.area(), &crate::theme::builtin_themes()[0]))
+            .unwrap();
+        let Some(Request::Review(edit)) = view.key(key(KeyCode::Enter)) else {
+            panic!("expected review");
+        };
+        assert_eq!(edit.value, json!(["one,two", "line\nnext", "", "雪"]));
+        assert_eq!(edit.before.section, Section::Defaults);
+        assert!(!edit.inherit);
+        assert!(value_ok("stop", &json!(["雪".repeat(4096)])));
+        assert!(!value_ok("stop", &json!(["雪".repeat(4097)])));
+    }
+    #[test]
+    fn preset_preserves_opaque_keys_and_validates_inference_seed_at_application() {
+        let (id, mut v) = section_fixture(Section::Presets);
+        v["presets"]["Boost"]["inference"]["seed"] = json!(177);
+        v["presets"]["Boost"]["inference"]["future"] = json!({"keep":[false,null]});
+        v["presets"]["Future"] = json!({"load":{"cache_k":"future-value"}});
+        for state in ["saved", "active"] {
+            v["settings"][state]["llama_presets"] = v["presets"].clone();
+        }
+        let mut edit = Edit {
+            before: Snapshot::parse(&v, &id, "instance").unwrap(),
+            field: "Boost".into(),
+            value: Value::Null,
+            inherit: false,
+            preset: Some(PresetAction::Apply),
+        };
+        let tx = sections::plan(&edit).unwrap();
+        assert_eq!(tx["next_request"]["seed"], 177);
+        assert_eq!(
+            tx["changes"]["model_infer_overrides"]["requested"]["future"],
+            json!({"keep":[false,null]})
+        );
+        edit.before.details["presets"]["Boost"]["inference"]["seed"] = json!(true);
+        assert!(sections::plan(&edit).is_err());
     }
 }

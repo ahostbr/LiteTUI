@@ -56,7 +56,7 @@ def read_image(app, raw, *, formats=None):
         data = stream.read(MAX_FILE + 1)
     if not 0 < len(data) <= MAX_FILE:
         raise ValueError("Image file changed or exceeds 8 MiB.")
-    return decode_image(Path(raw).name, data, formats or ["PNG", "JPEG", "WEBP"])
+    return decode_image(Path(raw).name, data, formats or ["PNG", "JPEG", "WEBP", "GIF", "BMP"])
 
 
 def decode_image(name, data, formats):
@@ -67,12 +67,13 @@ def decode_image(name, data, formats):
             width, height = image.size
             if width * height > MAX_PIXELS:
                 raise ValueError("Image exceeds 16 million pixels.")
-            if getattr(image, "is_animated", False):
-                raise ValueError("Choose a still image.")
+            # The source composer sends the first frame. Do not enumerate later
+            # animation frames just to normalize one bounded provider image.
+            image.seek(0)
             fmt = image.format
             encoded = appsvc.encode_image(image)
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-        raise ValueError("Could not read a still PNG, JPEG, or WebP image.") from exc
+        raise ValueError("Could not read a PNG, JPEG, WebP, GIF, or BMP image.") from exc
     if not encoded:
         raise ValueError("Could not decode this image.")
     png = base64.b64decode(encoded, validate=True)
