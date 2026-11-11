@@ -47,7 +47,7 @@ footer_show_tps footer_show_cache footer_task_manager footer_show_key_hints foot
 stt_model stt_mic stt_hotkey sidecar_enabled
 groq_api_key cerebras_api_key nvidia_api_key mistral_api_key github_models_token
 openrouter_api_key gemini_api_key ollama_api_key zai_api_key cloudflare_api_key
-longcat_api_key sealion_api_key'''.split()
+longcat_api_key sealion_api_key anthropic_api_key anthropic_workspace_id'''.split()
 # seat_name is read at process start (agent_launch_context.ordinary names the next seat from the shared
 # file), so it is a DEFAULT. Filed under conversation it was saved into one conversation's snapshot and the
 # next launch never saw it (T0836).
@@ -65,7 +65,7 @@ for scope, names in ((SettingScope.CONVERSATION, _CONVERSATION),
         timing = ('restart' if name in _RESTART else 'reconnect' if name in _RECONNECT
                   else 'reload' if name in ('default_context_length', 'llama_load_settings')
                   else 'immediate' if scope == SettingScope.DEVICE else 'next_turn')
-        SETTING_SPECS[name] = SettingSpec(name, scope, timing)
+        SETTING_SPECS[name] = SettingSpec(name, scope, timing, sensitive=name == 'anthropic_api_key')
 
 
 def validate_registry(registry=None):

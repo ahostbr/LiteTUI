@@ -357,83 +357,74 @@ _CLAUDE_NAMES = {
 }
 
 
-def claude_request(kwargs: dict) -> dict:
+def _claude_content(content):
+    blocks = []
+    for part in content if isinstance(content, list) else ([{"type": "text", "text": content}] if content else []):
+        if part.get("type") == "text":
+            blocks.append({"type": "text", "text": part["text"]})
+        elif part.get("type") == "image_url":
+            url = part["image_url"]["url"]
+            if url.startswith("data:"):
+                header, data = url.split(",", 1)
+                source = {"type": "base64", "media_type": header[5:].split(";")[0], "data": data}
+            else:
+                source = {"type": "url", "url": url}
+            blocks.append({"type": "image", "source": source})
+    return blocks
+
+
+def claude_request(kwargs: dict, *, provider="claude") -> dict:
+    # API keys and legacy OAuth share Messages wire format, not credentials or
+    # opaque history. Only the legacy OAuth path uses Claude CLI tool casing.
+    def tool_name(name):
+        return _CLAUDE_NAMES.get(name.lower(), name) if provider == "claude" else name
+
     messages: list[dict] = []
     system: list[dict] = []
     for m in kwargs["messages"]:
         role, content = m["role"], m.get("content")
-        if role == "system":
-            system.append({"type": "text", "text": str(content or "")})
+        if role in ("system", "developer"):
+            system.extend(_claude_content(content))
             continue
-        blocks = _metadata(m, "claude", kwargs["model"])
+        blocks = _metadata(m, provider, kwargs["model"])
         if role == "tool":
             role = "user"
-            blocks.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": m["tool_call_id"],
-                    "content": str(content or ""),
-                }
-            )
+            blocks.append({
+                "type": "tool_result", "tool_use_id": m["tool_call_id"],
+                "content": _claude_content(content) if isinstance(content, list) else str(content or ""),
+            })
         else:
-            for b in (
-                content
-                if isinstance(content, list)
-                else ([{"type": "text", "text": content}] if content else [])
-            ):
-                if b.get("type") == "text":
-                    blocks.append({"type": "text", "text": b["text"]})
-                elif b.get("type") == "image_url":
-                    url = b["image_url"]["url"]
-                    if url.startswith("data:"):
-                        header, data = url.split(",", 1)
-                        blocks.append(
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": header[5:].split(";")[0],
-                                    "data": data,
-                                },
-                            }
-                        )
-                    else:
-                        blocks.append(
-                            {"type": "image", "source": {"type": "url", "url": url}}
-                        )
+            blocks.extend(_claude_content(content))
             for c in m.get("tool_calls") or []:
-                name = c["function"]["name"]
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": c["id"],
-                        "name": _CLAUDE_NAMES.get(name.lower(), name),
-                        "input": json.loads(c["function"]["arguments"]),
-                    }
-                )
+                blocks.append({
+                    "type": "tool_use", "id": c["id"],
+                    "name": tool_name(c["function"]["name"]),
+                    "input": json.loads(c["function"]["arguments"] or "{}"),
+                })
         if blocks:
             if messages and messages[-1]["role"] == role:
                 messages[-1]["content"].extend(blocks)
             else:
                 messages.append({"role": role, "content": blocks})
     body = {
-        "model": kwargs["model"],
-        "messages": messages,
-        "system": system,
-        "max_tokens": kwargs.get("max_tokens", 4096),
-        "stream": True,
+        "model": kwargs["model"], "messages": messages, "system": system,
+        "max_tokens": kwargs.get("max_tokens", 4096), "stream": True,
     }
     if kwargs.get("tools"):
         body["tools"] = [
-            {
-                "name": _CLAUDE_NAMES.get(
-                    t["function"]["name"].lower(), t["function"]["name"]
-                ),
-                "description": t["function"].get("description", ""),
-                "input_schema": t["function"]["parameters"],
-            }
+            {"name": tool_name(t["function"]["name"]),
+             "description": t["function"].get("description", ""),
+             "input_schema": t["function"]["parameters"]}
             for t in kwargs["tools"]
         ]
+    if provider == "anthropic":
+        if kwargs.get("stop"):
+            body["stop_sequences"] = kwargs["stop"]
+        choice = kwargs.get("tool_choice")
+        if isinstance(choice, str):
+            body["tool_choice"] = {"type": {"required": "any"}.get(choice, choice)}
+        elif isinstance(choice, dict):
+            body["tool_choice"] = {"type": "tool", "name": choice["function"]["name"]}
     return body
 
 
@@ -469,12 +460,12 @@ def numeric_usage(value):
 
 def _usage(raw, provider):
     inp = raw.get("input_tokens", 0)
-    if provider == "claude":
-        inp += raw.get("cache_read_input_tokens", 0) + raw.get(
-            "cache_creation_input_tokens", 0
-        )
-    out = raw.get("output_tokens", 0)
     details = numeric_usage(raw.get("input_tokens_details"))
+    if provider in ("claude", "anthropic"):
+        inp += raw.get("cache_read_input_tokens", 0) + raw.get("cache_creation_input_tokens", 0)
+        details = {"cached_tokens": raw.get("cache_read_input_tokens", 0),
+                   "cache_write_tokens": raw.get("cache_creation_input_tokens", 0)}
+    out = raw.get("output_tokens", 0)
     numeric = numeric_usage(raw)
     return NS(prompt_tokens=inp, completion_tokens=out, total_tokens=inp + out,
               cached_tokens=(details or {}).get("cached_tokens"),
@@ -732,9 +723,9 @@ class ResponseStream:
                                 if b["type"] in ("thinking", "redacted_thinking")
                             ]
                             terminal_chunk = _chunk(
-                                usage=_usage(usage, "claude"),
+                                usage=_usage(usage, self.provider),
                                 metadata={
-                                    "provider": "claude",
+                                    "provider": self.provider,
                                     "model": self.model,
                                     "items": opaque,
                                 },
@@ -1236,6 +1227,8 @@ def bind_client(client, backend) -> ClientBinding:
 
 
 def for_app(app) -> ModelTransport:
+    if getattr(getattr(app, "backend", None), "name", None) == "anthropic":
+        return app.backend.transport()
     if getattr(getattr(app, "backend", None), "owns_native_turns", False):
         raise ProviderError("Claude owns native turns; legacy transport is unsupported. No fallback was used.")
     if getattr(getattr(app, "backend", None), "name", None) in OAUTH_PROVIDERS:
@@ -1289,6 +1282,8 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
     as chat, without tools or parent history. Called only inside the tool worker.
     """
     backend = getattr(app, "backend", None)
+    if getattr(backend, "name", None) == "anthropic":
+        return asyncio.run(backend.complete(payload))
     if getattr(backend, "owns_native_turns", False):
         raise ProviderError("Claude legacy subagent/summary sidecalls are unsupported; use native agents.")
     if getattr(backend, "remote", False):

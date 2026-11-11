@@ -42,6 +42,12 @@ class LaunchOptions:
             self.server_mode != 'auto',
         )):
             raise ValueError('Claude owns its runtime, endpoint and context; local server/load/sampling options are unsupported')
+        if backend == 'anthropic' and any((
+            self.base_url, self.context_length, self.server_executable,
+            self.model_path, self.server_command, self.api_key_env, self.load_model,
+            self.server_mode == 'start',
+        )):
+            raise ValueError('Anthropic API uses a fixed remote endpoint; local server/load/context options are unsupported. Set ANTHROPIC_API_KEY or use /settings.')
         if backend == 'ninfer':
             from litetui import gpu_gate
             if not gpu_gate.is_rtx_5090():
@@ -141,7 +147,7 @@ def add_arguments(parser):
     mode.add_argument('--start-server', dest='server_mode', action='store_const', const='start')
     parser.add_argument('--load-model', action='store_true', help='Explicitly load --model (llama.cpp/LM Studio) before submitting a prompt')
     parser.add_argument('--context-length', type=int, help='Load/start context tokens; custom: declared client budget (server command must set actual context)')
-    parser.add_argument('--max-tokens', type=int, help='Completion token limit for local/custom backends')
+    parser.add_argument('--max-tokens', type=int, help='Completion token limit for local/custom backends and the Anthropic API')
     parser.add_argument('--server-executable', help='llama-server or ninfer-serve executable')
     parser.add_argument('--model-path', help='GGUF file, NInfer artifact, Strata or Xolotl strata-<model>.json, or custom command {model_path}')
     parser.add_argument('--server-command', help='Custom server argv as JSON array; no shell. Placeholders: {model}, {model_path}, {context_length}, {host}, {port}')

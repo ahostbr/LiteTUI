@@ -52,6 +52,8 @@ async def _close(backend):
 async def _execute(backend, payload):
     if getattr(backend, 'owns_native_turns', False):
         return await _claude(backend, payload)
+    if getattr(backend, 'name', None) == 'anthropic':
+        return await backend.complete(payload)
     if getattr(backend, 'name', None) == 'codex':
         # Existing Codex sidecall creates/owns its own transport and preserves
         # the requested child-only effort contract. Run outside this loop.

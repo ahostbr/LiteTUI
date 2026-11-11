@@ -38,7 +38,7 @@
         },
         "backend": {
           "type": "string",
-          "enum": ["codex", "claude", "free", "cline", "lmstudio", "llamacpp", "ninfer", "custom"],
+          "enum": ["codex", "claude", "anthropic", "free", "cline", "lmstudio", "llamacpp", "ninfer", "custom"],
           "description": "Optional child-only backend with an explicit model. Otherwise use the saved route. Never changes the parent. Local backends require the expert toggle and an already resident model."
         },
         "model": {

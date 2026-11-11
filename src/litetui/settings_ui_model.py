@@ -101,6 +101,8 @@ def _friendly_label(name: str) -> str:
 # The one-line effect of each control. Neither section copy nor a key-to-title
 # transform can say what a numeric budget costs or what a permission changes.
 FIELD_DESCRIPTIONS = {
+    "anthropic_api_key": "Paid Anthropic Messages API credential, independent of Claude OAuth. Saved on this device encrypted (AES-256, Windows DPAPI) to your Windows account; blank uses ANTHROPIC_API_KEY.",
+    "anthropic_workspace_id": "Optional workspace selection for the Anthropic API. Required when the key is not workspace-scoped; blank uses ANTHROPIC_WORKSPACE_ID.",
     "small_task_route": "Opt-in visible small-task worker: exact backend/model/cognitive/thinking JSON. Blank/null is off; never follows parent or falls back.",
     "subagent_route": "One child backend and exact model shared by all instances; conversation overrides win. Follow parent clears the global route.",
     "subagent_route_override": "Conversation child route: inherit the global route, follow the parent, or select a backend and model. Clear the legacy subagent model to inherit.",
@@ -311,6 +313,12 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "model", "Model", "model-engine", "Engine selection",
         "Which backend owns inference and whether Codex owns the loop.",
         ("backend", "codex_native_engine"), scope="conversation", keywords=("backend", "engine", "Codex", "loop"),
+    ),
+    _section(
+        "model", "Model", "model-anthropic", "Anthropic API",
+        "Paid native Messages API, separate from Claude Agent OAuth. Saved keys override environment credentials.",
+        ("anthropic_api_key", "anthropic_workspace_id"),
+        scope="device", keywords=("Anthropic", "Claude", "API", "key", "paid", "workspace"),
     ),
     _section(
         "model", "Model", "model-free-keys", "Free-tier keys",

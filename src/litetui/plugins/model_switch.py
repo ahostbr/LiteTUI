@@ -1513,7 +1513,9 @@ def _cmd_modelcfg(app, name: str, arg: str) -> None:
                 if app.backend.name == "claude":
                     from litetui.claude_cache import EFFORT_NOTE
                     app.system_message(f"{target}: effort {level}{EFFORT_NOTE}")
-        pick(app, f"{label} reasoning effort (response limits are provider-managed)",
+        limits = ("reply budgets are in /settings" if app.backend.name == "anthropic"
+                  else "response limits are provider-managed")
+        pick(app, f"{label} reasoning effort ({limits})",
              [(level, level) for level in levels], selected, current=app.thinking_level)
         return
     target = arg.strip() or app.model_id
@@ -1533,7 +1535,7 @@ def _activate(app) -> None:
     answer). Detection is deliberately offline-cheap: an exe on disk and a
     CLI on PATH — no network probes on the boot path."""
     s = app.settings
-    if s.backend in model_transport.OAUTH_PROVIDERS:
+    if s.backend in model_transport.OAUTH_PROVIDERS or s.backend == "anthropic":
         return
     if s.backend_chosen:
         return

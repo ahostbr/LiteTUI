@@ -2300,6 +2300,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
     ("xolotl", "Xolotl (DeepSeek-V4.1-Flash, GPU + RAM arena + NVMe)"),
     ("codex", "Codex (OAuth subscription)"),
     ("claude", "Claude Agent"),
+    ("anthropic", "Anthropic API key (paid)"),
     ("cline", "ClinePass (Cline subscription)"),
     ("free", "Free tier (no-cost models: Cline, Kilo, OVH, + keyed)"),
 )
@@ -2361,6 +2362,9 @@ def make_backend(settings):
 
 
 def _make_backend(settings):
+    if settings.backend == "anthropic":
+        from litetui.anthropic_backend import AnthropicBackend
+        return AnthropicBackend(settings)
     if settings.backend == "claude":
         from litetui.claude_backend import ClaudeBackend
         return ClaudeBackend(settings)

@@ -277,7 +277,8 @@ class SettingsService:
                             # snapshot below fails. Runtime applies its exact outcome.
                             keys = tuple(key for key in keys if key not in authoritative)
                     else:
-                        raw.update({c.key: deepcopy(c.value) for c in patch})
+                        from litetui.secret_at_rest import to_disk
+                        raw.update({c.key: to_disk(c.key, deepcopy(c.value)) for c in patch})
                     revision = _write(path, raw)
                 results.append(PersistenceDestinationResult(str(path), scope, True,
                                revision=revision, fields=keys))

@@ -60,7 +60,10 @@ async def main(exe: Path):
         await a.page.wait("SidecarShell.state().status.startsWith('Saved')", "the key save")
         await a.page.wait(f"{snap}.fields.groq_api_key.set === true", "the snapshot to say set")
         disk = json.loads((root / "settings.json").read_text(encoding="utf-8"))
-        check("the key is saved to settings.json", disk.get("groq_api_key") == FAKE)
+        from litetui import secret_at_rest
+        stored = disk.get("groq_api_key", "")
+        check("the key is saved to settings.json, sealed", FAKE not in json.dumps(disk)
+              and secret_at_rest.unseal("groq_api_key", stored) == FAKE)
         after = free_tier.status_mark()
         check("the saved key makes the Groq source live", before != after and "11 need a key" in after,
               f"{before} -> {after}")

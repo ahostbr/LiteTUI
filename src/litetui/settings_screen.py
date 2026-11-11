@@ -114,7 +114,7 @@ def thinking_choices(backend, model_id, current):
     Backends that report their own levels list those; "cline" is here for
     PassLink's Cline backend, so the Cline card does not edit this line again.
     """
-    if getattr(backend, "name", "") in ("codex", "claude", "cline", "free"):
+    if getattr(backend, "name", "") in ("codex", "claude", "anthropic", "cline", "free"):
         from litetui.thinking_capabilities import _as_choices
 
         # Wire spellings -> saved ones ("none" -> "off", the one translation):
@@ -654,7 +654,8 @@ class SettingsBody(Widget):
         yield from self._text_row(
             name, f"{source.label} key",
             f"Free tier ({source.limits}). Masked; blank falls back to ${source.key_env}. "
-            "Saved to this machine's settings.json. Use a free-tier account: one with "
+            "Saved to this machine's settings.json, encrypted (AES-256) to your Windows "
+            "account via DPAPI. Use a free-tier account: one with "
             "billing on can be charged.",
             placeholder=f"unset — uses ${source.key_env} if set", password=True,
         )
@@ -843,6 +844,21 @@ class SettingsBody(Widget):
                             "the tested CLI version; applies on /reconnect. Authentication "
                             "remains with the official Claude CLI.",
                             placeholder="unset — bundled Claude CLI",
+                        )
+                        yield self._section_header("model-anthropic")
+                        yield from self._text_row(
+                            "anthropic_api_key", "Anthropic API key (paid)",
+                            "Native Messages API; separate from Claude OAuth. Saved in this machine's "
+                            "settings.json, encrypted (AES-256) to your Windows account via DPAPI. "
+                            "Blank uses $ANTHROPIC_API_KEY. "
+                            "API usage is billed to your Anthropic account.",
+                            placeholder="unset — uses $ANTHROPIC_API_KEY", password=True,
+                        )
+                        yield from self._text_row(
+                            "anthropic_workspace_id", "Anthropic workspace ID",
+                            "Required for keys not scoped to one workspace; otherwise optional. "
+                            "Blank uses $ANTHROPIC_WORKSPACE_ID. /reconnect refreshes the model list.",
+                            placeholder="wrkspc_… (optional)",
                         )
                         yield self._section_header("model-router")
                         yield from self._text_row(

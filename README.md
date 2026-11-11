@@ -113,6 +113,42 @@ Speculation is never enabled automatically. Performance depends on the model,
 quantization and workload; enabling MTP is not a guaranteed speedup. No binary
 upgrade or model benchmark is performed by this setting.
 
+## Anthropic API key (paid, native Messages API)
+
+Select **Anthropic API key (paid)** with `/backend anthropic`. This is separate
+from `/backend claude` (the Claude Agent/OAuth integration below): LiteTUI owns
+the agent loop, tools, approvals, history and compaction. No Claude CLI or optional
+SDK installation is needed, and no OAuth credentials are read or changed.
+
+1. Create an API key in the [Claude Console](https://platform.claude.com/settings/keys).
+2. Open `/settings` → **Model** → **Anthropic API** and enter the key, or set
+   `ANTHROPIC_API_KEY` in the environment before launching LiteTUI. A saved key
+   takes precedence; clear it to use the environment. Saved keys are masked in the
+   UI and stored in this machine's `settings.json` (never in conversation snapshots)
+   as `dpapi:v1:…`: encrypted with Windows DPAPI (AES-256) to your Windows account,
+   so a copied `settings.json` is unreadable elsewhere. Any program running as you can
+   still decrypt it. A plaintext key saved by an older build is sealed on next launch.
+   The free-tier provider keys are sealed the same way. Off Windows keys are stored
+   as plaintext. Never paste a key into chat.
+3. For a key that is not scoped to a single workspace, also set **Anthropic workspace
+   ID** (or `ANTHROPIC_WORKSPACE_ID`). Workspace-scoped keys may leave this blank.
+4. Run `/backend anthropic`, then `/model` to select a model from the live API
+   catalog. Use `/reconnect` after changing credentials to refresh that catalog.
+   CLI startup is also supported: `litetui --backend anthropic`.
+
+This uses the documented [`POST /v1/messages`](https://platform.claude.com/docs/en/api/overview)
+endpoint at `https://api.anthropic.com`, API version `2026-10-21`, with API-key
+Bearer authentication (not the OAuth beta). Models and available effort levels
+come from [`GET /v1/models`](https://platform.claude.com/docs/en/api/models/list).
+`/think default` leaves model defaults intact; `/modelcfg` lists supported effort
+levels. Streaming text/thinking, images, tool calls/results, summaries and child
+completions use the native protocol, not the OpenAI compatibility endpoint.
+
+**API usage is billed separately from a Claude subscription.** Invalid keys,
+rate/spend limits, unavailable models and interrupted streams fail explicitly;
+requests do not switch to OAuth, another provider or another model. Sampling
+controls removed by this API version are disabled; reply token budgets still apply.
+
 ## Claude Agent (experimental native backend)
 
 Install the optional, pinned runtime while LiteTUI is closed:

@@ -293,6 +293,11 @@ class Settings:
     codex_native_engine: bool = False
     #: Claude uses its pinned SDK-bundled CLI unless explicitly overridden.
     claude_executable: str = ""
+    #: Direct paid Messages API, independent from Claude Agent subscription auth.
+    #: Saved credentials win over ANTHROPIC_API_KEY; blank uses the environment.
+    anthropic_api_key: str = field(default="", repr=False)
+    #: Optional for workspace-scoped keys; otherwise required by the API.
+    anthropic_workspace_id: str = ""
     #: OUR router instance. 7470 sits in the ecosystem's 74xx block — the
     #: 8xxx range is crowded on dev machines (the user, 2026-08-21).
     custom_base_url: str = ""
@@ -743,6 +748,8 @@ def _coerce(name: str, raw: Any, current: Any) -> Any:
     ftype = {f.name: f.type for f in fields(Settings)}.get(name)
     if ftype is None:
         return current
+    from litetui.secret_at_rest import from_disk
+    raw = from_disk(name, raw)  # sealed credentials are plaintext in memory
     if name == "tool_policy_profile" and raw == "scheduled":
         return _selectable_profile(raw)  # removed 2026-09-24; migrates on every read
     if name == "tool_trusted_interpreters":
@@ -784,6 +791,11 @@ def load(root: Path | None = None) -> Settings:
         # Startup retains the existing tolerant-load contract. Child dispatch
         # uses SettingsService's strict live read and reports malformed routing.
         pass
+    from litetui import secret_at_rest
+    try:
+        secret_at_rest.migrate_file(p)  # seal a key saved by an older build
+    except (OSError, ValueError):
+        pass  # tolerant load; the plaintext still reads, and the next save seals it
     if p.exists():
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -898,11 +910,13 @@ def _save_locked(s: Settings, root: Path | None = None) -> Path:
         if isinstance(existing, dict):
             merged.update(existing)
 
+    from litetui.secret_at_rest import to_disk
+
     if base is None:
         # Never loaded: this Settings IS the intent, so it authors every key.
-        merged.update(current)
+        merged.update({k: to_disk(k, v) for k, v in current.items()})
     else:
-        merged.update({k: v for k, v in current.items() if base.get(k) != v})
+        merged.update({k: to_disk(k, v) for k, v in current.items() if base.get(k) != v})
 
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".settings-", suffix=".json")
     try:
