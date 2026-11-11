@@ -72,8 +72,12 @@ def load_targets(path: str | Path) -> list[Target]:
     that is a valid (if useless) config, not an error, so a freshly-created
     file does not crash the first ``monitor run``."""
     p = Path(path)
-    text = p.read_text(encoding="utf-8")
-    if p.suffix.lower() == ".toml":
+    return parse_targets(p.read_text(encoding="utf-8"), p.suffix)
+
+
+def parse_targets(text: str, suffix: str = ".json") -> list[Target]:
+    """Parse already captured bytes through the same canonical target schema."""
+    if suffix.lower() == ".toml":
         data: dict[str, Any] = tomllib.loads(text)
     else:
         data = json.loads(text)

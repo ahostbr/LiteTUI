@@ -3601,3 +3601,82 @@ fn voice_catalog_names_and_shortcut_capture_require_review_without_audio() {
             .is_empty()
     );
 }
+
+#[test]
+#[ignore = "compiled Voice action review/apply with contained fake installers and audio"]
+fn voice_actions_require_visible_apply_and_verified_result_without_real_effects() {
+    let (runtime, data) = launch("voice_actions_runtime.py");
+    runtime
+        .with_cleanup(|runtime| {
+            let mut app = Demo::live("custom".into(), "switch-old".into());
+            observe(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
+            app.insert_text("Preserve action composer selection.");
+            app.composer.move_cursor(Motion::WordLeft, true);
+            let selected = app.composer.before_cursor().to_owned();
+            app.live.as_mut().unwrap().settings.open();
+            settings_drain(runtime, &mut app)?;
+            settings_key(runtime, &mut app, KeyCode::Char('v'))?;
+            let before = fs::read(data.join("settings.json"))?;
+            let effects = data.join("voice-action-effects.json");
+            let mut expected = Vec::<&str>::new();
+            for (key, kind) in [('t', "fallback"), ('i', "edge"), ('w', "stt")] {
+                if kind == "stt" {
+                    settings_key(runtime, &mut app, KeyCode::Right)?;
+                }
+                settings_key(runtime, &mut app, KeyCode::Char(key))?;
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let shown = settings_key(runtime, &mut app, KeyCode::F(5))?;
+                    if shown.contains("Status: review") {
+                        assert!(shown.contains("Enter Apply"), "{shown}");
+                        if kind == "stt" {
+                            assert!(shown.contains("small.en"), "{shown}");
+                        }
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "{shown}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert_eq!(
+                    if effects.exists() {
+                        json_file(&effects)
+                    } else {
+                        json!([])
+                    },
+                    json!(expected)
+                );
+                assert_eq!(fs::read(data.join("settings.json"))?, before);
+                settings_key(runtime, &mut app, KeyCode::Enter)?;
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let shown = settings_key(runtime, &mut app, KeyCode::F(5))?;
+                    if shown.contains("Status: verified") {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "{shown}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                expected.push(kind);
+                assert_eq!(json_file(&effects), json!(expected));
+                let closed = settings_key(runtime, &mut app, KeyCode::Esc)?;
+                assert!(
+                    closed.contains("Voice preferences on this device"),
+                    "{closed}"
+                );
+            }
+            assert_eq!(fs::read(data.join("settings.json"))?, before);
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            settings_key(runtime, &mut app, KeyCode::Esc)?;
+            assert_eq!(app.composer.text(), "Preserve action composer selection.");
+            assert_eq!(app.composer.before_cursor(), selected);
+            Ok(())
+        })
+        .unwrap_or_else(|err| panic!("{}: {err}", data.display()));
+    assert_eq!(json_file(&data.join("voice-guards.json")), json!([]));
+    assert!(
+        json_file(&data.join("runtime-controls-report.json"))["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

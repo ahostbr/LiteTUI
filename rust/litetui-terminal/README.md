@@ -579,6 +579,21 @@ preferences affect the next explicit model-list refresh. Saving does not scan
 folders, reconnect or load a model. Both controls reread the saved and active
 values independently and preserve the ordinary chat draft.
 
+### Explicit Voice actions
+
+In F10 Voice, T (or F6) opens Test fallback, I (F7) opens Install Edge, and W
+(F8) opens Download STT. F6 and F8 also work while editing the relevant Voice
+value, so the action can use that unsaved draft without saving the preference.
+Read the complete plan, then press Enter to apply once. It identifies the engine,
+voice or model, interpreter, package target/cache and any network access.
+
+Test fallback speaks a fixed test sentence through the selected local fallback;
+completion means its child finished, not that audio was heard. Edge installation
+verifies fresh imports. STT download verifies the selected model from the local
+cache afterward. F5 reads progress/results. Escape cancels or closes and waits
+for owned cleanup; already installed packages or downloaded cache files may remain.
+The ordinary chat draft and unsaved Voice preference draft remain intact.
+
 ### Explicit dictation to the composer
 
 In a live idle conversation, F10 opens Settings, V opens Voice and D opens
@@ -607,6 +622,22 @@ F10 → P shows all 36 current-model inference and load preferences, with unsupp
 F10 → L shows the current model, endpoint, loaded state and saved load context. L reviews Load, U reviews Unload and R reviews Reconnect. Read the complete review, then press Enter to apply once. The panel independently verifies the resulting model and client binding.
 
 LM Studio applies the saved context length when loading. An existing connect-only llama router uses its configured preset. Custom endpoints support reconnect at the reviewed address. Load and Unload can affect other clients sharing that server. F12 provides the separate NInfer and Strata engine controls. Quit joins an in-flight operation and its cleanup before releasing the conversation.
+
+### Browser monitor
+
+Use `/monitor targets` to inspect the configured target list. `/monitor init`
+reviews creation of a sample JSON config, `/monitor demo` reviews a simulated
+sweep, and `/monitor` or `/monitor sweep` reviews a real browser sweep. A quoted
+`--config PATH` selects a config for targets, init or sweep. The F11 command and
+palette routes open the same controls.
+
+Read every page showing the target/config and output paths, press Enter for the
+review, then Enter again to apply. R or F5 refreshes progress and independently
+reads results. Escape cancels/closes and waits for the helper to retire. Sweeps
+may open Chrome tabs and save screenshots, metrics and regression baselines;
+closing the helper does not close browser tabs or undo remote requests. Config
+creation never overwrites an existing file, and a changed output requires a new
+review. Returning to chat preserves the composer and caret.
 
 ### Glassbox controls
 

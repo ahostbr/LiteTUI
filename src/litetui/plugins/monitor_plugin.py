@@ -74,17 +74,17 @@ def _run_sweep_real(app, path: Path) -> None:
     _post(app, format_report(results))
 
 
-def _run_sweep_demo(app) -> None:
+def demo_targets():
     from litetui.monitor.targets import Target
+    return [Target(name="example", url="https://example.com", expect_text="Example Domain"),
+            Target(name="flaky", url="https://example.com/api", expect_text="Example Domain")]
 
+
+def _run_sweep_demo(app) -> None:
     probe = FakeProbe(fail=frozenset({"flaky"}))
     sink = FileSink(DEFAULT_LOG)
     engine = MonitorEngine(probe=probe, sink=sink)
-    demo = [
-        Target(name="example", url="https://example.com", expect_text="Example Domain"),
-        Target(name="flaky", url="https://example.com/api", expect_text="Example Domain"),
-    ]
-    results = engine.run_sweep(demo)
+    results = engine.run_sweep(demo_targets())
     _post(app, format_report(results, title="monitor sweep (demo)"))
 
 

@@ -533,14 +533,14 @@ async def test_every_unrouted_registered_command_states_its_own_reason(command_a
     app = command_app
     rows = [row for row in read(app)["entries"] if row["native_action"] is None]
     reasons = {row["tokens"][0]: row["unavailable_reason"] for row in rows}
-    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/monitor", "/sidecar", "/mark"}
+    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/sidecar", "/mark"}
     assert len(set(reasons.values())) == len(reasons)
     for token in ("/screenshot", "/maximize", "/test-sidebar"):
         assert "Textual" in reasons[token]
     # The two window actions name the terminal-native keys that replace them.
     assert "Ctrl+Shift+C" in reasons["/screenshot"]
     assert "Alt+Up" in reasons["/maximize"] and "Ctrl+G" in reasons["/maximize"]
-    for token in ("/monitor", "/sidecar", "/mark"):
+    for token in ("/sidecar", "/mark"):
         assert "desktop overlay" in reasons[token]
     assert "no native action adapter" not in "".join(reasons.values())
     for row in rows:

@@ -969,8 +969,16 @@ def begin_close(app):
 
 async def settle_before_shutdown(app):
     cutoff = begin_close(app)
-    from litetui import native_dictation, native_playback, native_voice_catalog
+    from litetui import (
+        native_dictation,
+        native_monitor,
+        native_playback,
+        native_voice_actions,
+        native_voice_catalog,
+    )
+    await native_voice_actions.retire(app, closing=True)
     await native_voice_catalog.retire(app, closing=True)
+    await native_monitor.retire(app, closing=True)
     await native_playback.retire(app, closing=True)
     await native_dictation.retire(app, closing=True)
     if cutoff is None:
@@ -2684,6 +2692,9 @@ def prepare_publication(app, cmd, result):
     from litetui import native_runtime_controls
     ticket = native_runtime_controls.prepare_publication(app, cmd, result)
     if ticket is None:
+        from litetui import native_voice_actions
+        ticket = native_voice_actions.prepare_publication(app, cmd, result)
+    if ticket is None:
         from litetui import native_voice_catalog
         ticket = native_voice_catalog.prepare_publication(app, cmd, result)
     if ticket is None:
@@ -2706,6 +2717,9 @@ def prepare_publication(app, cmd, result):
         from litetui import native_playback
         ticket = native_playback.prepare_publication(app, cmd, result)
     if ticket is None:
+        from litetui import native_monitor
+        ticket = native_monitor.prepare_publication(app, cmd, result)
+    if ticket is None:
         ticket = native_work_execution.prepare_publication(app, cmd, result)
     if ticket is None:
         ticket = native_schedule.prepare_publication(app, cmd, result)
@@ -2726,11 +2740,15 @@ def finish_publication(app, ticket):
         native_mcp_lifecycle,
         native_model_lifecycle,
         native_model_preferences,
+        native_monitor,
         native_playback,
         native_voice_catalog,
     )
     if isinstance(ticket, native_voice_catalog.Publication):
         native_voice_catalog.finish_publication(app, ticket)
+        return
+    if isinstance(ticket, native_monitor.Publication):
+        native_monitor.finish_publication(app, ticket)
         return
     if isinstance(ticket, native_mcp_lifecycle.Publication):
         native_mcp_lifecycle.finish_publication(app, ticket)

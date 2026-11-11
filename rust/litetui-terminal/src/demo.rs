@@ -283,6 +283,7 @@ impl Demo {
                 Action::AgentPreferences(focus) => self.open_agent_preferences(focus),
                 Action::ChatPause => self.open_chat_pause(),
                 Action::Glassbox => self.open_glassbox(&route_arguments),
+                Action::Monitor => self.open_monitor(&route_arguments),
                 Action::Models => self
                     .open_models_preselected(crate::model_controls::Kind::Model, &route_arguments),
                 Action::Thinking => self.open_models_preselected(

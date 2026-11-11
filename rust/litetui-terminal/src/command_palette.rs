@@ -59,6 +59,7 @@ pub enum Action {
     AgentPreferences(crate::agent_preferences::Focus),
     ChatPause,
     Glassbox,
+    Monitor,
     Models,
     Thinking,
     Conversations,
@@ -103,6 +104,7 @@ impl Action {
             )),
             Some("chat_pause") => Some(Self::ChatPause),
             Some("glassbox") => Some(Self::Glassbox),
+            Some("monitor") => Some(Self::Monitor),
             Some("models") => Some(Self::Models),
             Some("thinking") => Some(Self::Thinking),
             Some("conversations") => Some(Self::Conversations),
@@ -269,6 +271,7 @@ impl Catalog {
                                 | Action::ConversationRename
                                 | Action::SystemPrompt
                                 | Action::Glassbox
+                                | Action::Monitor
                                 | Action::Engine
                                 | Action::Plan
                                 | Action::ModelLoad

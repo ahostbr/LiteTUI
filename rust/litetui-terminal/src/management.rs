@@ -412,6 +412,7 @@ struct SavedHistoryPending {
 }
 enum PreferencesRequest {
     Glassbox(Box<crate::glassbox_controls::Request>),
+    Monitor(Box<crate::monitor_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
     McpLifecycle(Box<crate::mcp_lifecycle::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
@@ -423,6 +424,7 @@ enum PreferencesRequest {
 }
 enum PreferencesReply {
     Glassbox(Box<crate::glassbox_controls::Update>),
+    Monitor(Box<crate::monitor_controls::Update>),
     Mcp(Box<crate::mcp_config::Update>),
     McpLifecycle(Box<crate::mcp_lifecycle::Update>),
     ModelPreferences(Box<crate::model_preferences::Update>),
@@ -440,6 +442,7 @@ impl PreferencesRequest {
             Self::McpLifecycle(_) => &crate::mcp_lifecycle::OPERATIONS,
             Self::ModelPreferences(_) => &crate::model_preferences::OPERATIONS,
             Self::Glassbox(_) => &crate::glassbox_controls::OPERATIONS,
+            Self::Monitor(_) => &crate::monitor_controls::OPERATIONS,
             Self::ModelLifecycle(_) => &crate::model_lifecycle::OPERATIONS,
             Self::Voice(_) => &crate::voice_preferences::OPERATIONS,
             Self::Presentation(_) => &crate::presentation_preferences::OPERATIONS,
@@ -453,12 +456,20 @@ impl PreferencesRequest {
             Self::McpLifecycle(r) => matches!(**r, crate::mcp_lifecycle::Request::Apply(_)),
             Self::ModelPreferences(r) => matches!(**r, crate::model_preferences::Request::Apply(_)),
             Self::Glassbox(r) => matches!(**r, crate::glassbox_controls::Request::Apply(_)),
-            Self::ModelLifecycle(r) => matches!(**r, crate::model_lifecycle::Request::Apply(_)),
-            Self::Voice(r) => matches!(
+            Self::Monitor(r) => matches!(
                 **r,
-                crate::voice_preferences::Request::Apply(_)
-                    | crate::voice_preferences::Request::Catalog(_, "start" | "close", _)
+                crate::monitor_controls::Request::Apply(_)
+                    | crate::monitor_controls::Request::Close(_)
             ),
+            Self::ModelLifecycle(r) => matches!(**r, crate::model_lifecycle::Request::Apply(_)),
+            Self::Voice(r) => match &**r {
+                crate::voice_preferences::Request::Action(action) => action.mutates(),
+                other => matches!(
+                    other,
+                    crate::voice_preferences::Request::Apply(_)
+                        | crate::voice_preferences::Request::Catalog(_, "start" | "close", _)
+                ),
+            },
             Self::Presentation(r) => {
                 matches!(**r, crate::presentation_preferences::Request::Apply(_))
             }
@@ -472,6 +483,7 @@ impl PreferencesRequest {
             Self::McpLifecycle(r) => r.command(id, instance),
             Self::ModelPreferences(r) => r.command(id, instance),
             Self::Glassbox(r) => r.command(id, instance),
+            Self::Monitor(r) => r.command(id, instance),
             Self::ModelLifecycle(r) => r.command(id, instance),
             Self::Voice(r) => r.command(id, instance),
             Self::Presentation(r) => r.command(id, instance),
@@ -489,6 +501,7 @@ impl PreferencesRequest {
                 |reason| crate::settings_view::Update::ModelPreferences(Err(reason))
             }
             Self::Glassbox(_) => |reason| crate::settings_view::Update::Glassbox(Err(reason)),
+            Self::Monitor(_) => |reason| crate::settings_view::Update::Monitor(Err(reason)),
             Self::ModelLifecycle(_) => {
                 |reason| crate::settings_view::Update::ModelLifecycle(Err(reason))
             }
@@ -523,6 +536,9 @@ impl PreferencesRequest {
                     PreferencesReply::McpLifecycle(Box::new(update))
                 }
             },
+            Self::Monitor(r) => {
+                PreferencesReply::Monitor(Box::new(r.response(v, id, instance, command_id)?))
+            }
             Self::Glassbox(r) => match r.response(v, id, instance, command_id)? {
                 crate::glassbox_controls::Reply::Next(next) => {
                     PreferencesReply::Next(Self::Glassbox(Box::new(next)))
@@ -3004,6 +3020,9 @@ impl Management {
             crate::settings_view::Intent::ModelPreferences(r) => {
                 (Some(PreferencesRequest::ModelPreferences(r)), false)
             }
+            crate::settings_view::Intent::Monitor(r) => {
+                (Some(PreferencesRequest::Monitor(r)), false)
+            }
             crate::settings_view::Intent::Glassbox(r) => {
                 (Some(PreferencesRequest::Glassbox(r)), false)
             }
@@ -3083,6 +3102,7 @@ impl Management {
         self.ensure_drained()?;
         if let SettingsRead::Preferences(identity, instance, request) = read {
             let fatal_mcp = matches!(&request, PreferencesRequest::McpLifecycle(r) if matches!(**r,crate::mcp_lifecycle::Request::Apply(_)|crate::mcp_lifecycle::Request::Readback(..)));
+            let fatal_monitor = matches!(&request, PreferencesRequest::Monitor(r) if matches!(**r,crate::monitor_controls::Request::Apply(_)|crate::monitor_controls::Request::Close(_)));
             let reject = request.rejected();
             let result = if frame["ok"] != true {
                 Err(text(&frame, "error", 4096)?.to_string())
@@ -3121,6 +3141,9 @@ impl Management {
                 Ok(PreferencesReply::ModelPreferences(update)) => {
                     crate::settings_view::Update::ModelPreferences(Ok(update))
                 }
+                Ok(PreferencesReply::Monitor(update)) => {
+                    crate::settings_view::Update::Monitor(Ok(update))
+                }
                 Ok(PreferencesReply::Glassbox(update)) => {
                     crate::settings_view::Update::Glassbox(Ok(update))
                 }
@@ -3138,6 +3161,9 @@ impl Management {
                 }
                 Ok(PreferencesReply::Agent(update)) => {
                     crate::settings_view::Update::Agent(Ok(update))
+                }
+                Err(reason) if fatal_monitor => {
+                    return Err(fail(&format!("Monitor mutation did not settle: {reason}")));
                 }
                 Err(reason) if fatal_mcp => {
                     return Err(fail(&format!("MCP mutation did not settle: {reason}")));

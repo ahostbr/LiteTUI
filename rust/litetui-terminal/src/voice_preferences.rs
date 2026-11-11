@@ -14,12 +14,13 @@ use ratatui::{
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io};
 
-pub const OPERATIONS: [&str; 5] = [
+pub const OPERATIONS: [&str; 6] = [
     "gui.voice.native_preferences",
     "gui.voice.native_review",
     "gui.voice.native_apply",
     "gui.voice.native_readback",
     "gui.voice.native_catalog",
+    crate::voice_actions::OPERATION,
 ];
 const FIELDS: [&str; 9] = [
     "stt_model",
@@ -301,6 +302,7 @@ fn captured_key(event: KeyEvent) -> Option<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     List,
+    Action(Box<crate::voice_actions::Request>),
     Catalog(Catalog, &'static str, Option<String>),
     Review(Edit),
     Apply(Review),
@@ -309,6 +311,7 @@ pub enum Request {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
     List(Snapshot),
+    Action(crate::voice_actions::State),
     Catalog(Catalog),
     CatalogClosed(Snapshot, Option<String>),
     Review(Review),
@@ -324,6 +327,7 @@ impl Request {
         cmd["work_instance"] = json!(instance);
         cmd["type"] = json!(match self {
             Self::List => OPERATIONS[0],
+            Self::Action(action) => return action.command(id, instance),
             Self::Catalog(catalog, action, selected) => {
                 if !["stt_mic", "tts_voice"].contains(&catalog.key.as_str())
                     || !catalog.before.fields[&catalog.key].editable
@@ -377,6 +381,11 @@ impl Request {
         instance: &str,
         cmd_id: &str,
     ) -> io::Result<Reply> {
+        if let Self::Action(action) = self {
+            return Ok(Reply::Update(Update::Action(
+                action.response(v, id, instance)?,
+            )));
+        }
         if let Self::Catalog(mut catalog, action, selected) = self {
             verify_binding(v, id, instance, "voice_catalog")?;
             keys(
@@ -453,7 +462,7 @@ impl Request {
                     v, id, instance,
                 )?)));
             }
-            Self::Catalog(..) => unreachable!(),
+            Self::Catalog(..) | Self::Action(..) => unreachable!(),
             Self::Review(e) => ("voice_review", e, None, None),
             Self::Apply(r) => ("voice_applied", &r.edit, Some(&r.token), Some(cmd_id)),
             Self::Readback(r, apply, _) => {
@@ -535,6 +544,7 @@ pub struct View {
     capturing: bool,
     catalog: Option<Catalog>,
     catalog_selected: usize,
+    actions: crate::voice_actions::View,
     review: Option<Review>,
     note: String,
     scroll: usize,
@@ -551,6 +561,7 @@ impl View {
             && self.text.is_none()
             && self.catalog.is_none()
             && !self.capturing
+            && !self.actions.open()
             && key.kind == KeyEventKind::Press
             && key.modifiers.is_empty()
             && matches!(key.code, KeyCode::Char('d' | 'D'))
@@ -563,6 +574,7 @@ impl View {
         }
     }
     pub fn hide(&mut self) {
+        self.actions.hide();
         self.visible = false;
     }
     pub fn accepts_paste(&self) -> bool {
@@ -571,6 +583,7 @@ impl View {
             && self.review.is_none()
             && self.catalog.is_none()
             && !self.capturing
+            && !self.actions.open()
             && self.text.is_some()
     }
     pub fn clipboard_error(&mut self, error: String) {
@@ -605,7 +618,18 @@ impl View {
         self.hide();
         self.scroll = 0;
         self.note.clear();
+        if self.actions.open() {
+            match r {
+                Ok(Update::Action(state)) => self.actions.update(Ok(state)),
+                Err(reason) => self.actions.update(Err(reason)),
+                _ => self
+                    .actions
+                    .update(Err("Unexpected Voice action response".into())),
+            }
+            return;
+        }
         match r {
+            Ok(Update::Action(_)) => {}
             Ok(Update::List(s)) => {
                 self.data = Some(s);
                 self.review = None;
@@ -642,7 +666,56 @@ impl View {
             }
         }
     }
+    fn action_request(&mut self, task: &str) -> Option<Request> {
+        let before = self.data.clone()?;
+        let field = EDITABLE[self.selected];
+        let relevant = match task {
+            "fallback" => {
+                ["tts_engine", "tts_voice", "tts_edge_voice", "tts_timeout"].contains(&field)
+            }
+            "stt" => field == "stt_model",
+            _ => false,
+        };
+        let mut values = json!({});
+        if relevant {
+            let value = if let Some(text) = &self.text {
+                match parse_text(field, text) {
+                    Ok(value) => Some(value),
+                    Err(reason) => {
+                        self.note = reason.into();
+                        self.hide();
+                        return None;
+                    }
+                }
+            } else {
+                self.draft.clone()
+            };
+            if let Some(value) = value {
+                values[field] = value;
+            }
+        }
+        let effective = |key: &str| {
+            values
+                .get(key)
+                .unwrap_or(&before.fields[key].effective)
+                .clone()
+        };
+        let engine = effective("tts_engine");
+        let preferences = json!({"engine":engine,"voice":effective(if engine=="edge" {"tts_edge_voice"}else{"tts_voice"}),"timeout":effective("tts_timeout"),"model":effective("stt_model")});
+        Some(Request::Action(Box::new(self.actions.start(
+            task,
+            before.revision,
+            preferences,
+            values,
+        ))))
+    }
     pub fn key(&mut self, key: KeyEvent) -> Option<Request> {
+        if self.actions.open() {
+            let request = self.actions.key(key)?;
+            self.waiting = true;
+            self.hide();
+            return Some(Request::Action(Box::new(request)));
+        }
         if key.kind == KeyEventKind::Press && !self.waiting && self.capturing {
             if key.code == KeyCode::Esc {
                 self.capturing = false;
@@ -712,6 +785,17 @@ impl View {
             self.hide();
             return None;
         }
+        if self.review.is_none() && matches!(key.code, KeyCode::F(6..=8)) {
+            let task = match key.code {
+                KeyCode::F(6) => "fallback",
+                KeyCode::F(7) => "edge",
+                _ => "stt",
+            };
+            let request = self.action_request(task)?;
+            self.waiting = true;
+            self.hide();
+            return Some(request);
+        }
         let field = EDITABLE[self.selected];
         if self.review.is_none()
             && let Some(text) = &mut self.text
@@ -767,6 +851,13 @@ impl View {
         }
         let req = match key.code {
             KeyCode::F(5) if self.review.is_none() => Request::List,
+            KeyCode::Char(ch @ ('t' | 'T' | 'i' | 'I' | 'w' | 'W')) if self.review.is_none() => {
+                self.action_request(match ch {
+                    't' | 'T' => "fallback",
+                    'i' | 'I' => "edge",
+                    _ => "stt",
+                })?
+            }
             KeyCode::Char('c' | 'C')
                 if self.review.is_none() && ["stt_mic", "tts_voice"].contains(&field) =>
             {
@@ -862,6 +953,10 @@ impl View {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.actions.open() {
+            self.actions.draw(frame, area, theme);
+            return;
+        }
         let mut lines = vec!["Voice preferences on this device".to_owned()];
         if let Some(catalog) = &self.catalog {
             lines.push(format!("Discover {} names", label(&catalog.key)));
@@ -912,6 +1007,10 @@ impl View {
                 format!("Qwen2-Audio listen tool registered: {}. It handles audio separately from dictation.",s.listen),
                 String::new()]);
             lines.push("D dictate to composer".into());
+            lines.push(
+                "T/F6 review fallback test   I/F7 review Edge install   W/F8 review STT download"
+                    .into(),
+            );
             let key = EDITABLE[self.selected];
             let row = &s.fields[key];
             lines.push(format!(
@@ -1387,5 +1486,30 @@ mod tests {
         view.key(key(KeyCode::Esc));
         assert!(view.text.is_none());
         assert!(view.open);
+    }
+    #[test]
+    fn action_function_key_captures_unsaved_voice_text_without_saving_or_losing_draft() {
+        let (id, doc) = fixture();
+        let before = Snapshot::parse(&doc, &id, "i").unwrap();
+        let mut view = View::default();
+        view.open();
+        view.update(Ok(Update::List(before.clone())));
+        view.selected = 6;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        view.key(key(KeyCode::Char('e')));
+        view.key(key(KeyCode::Delete));
+        view.paste("Draft voice Ω");
+        let request = view
+            .key(key(KeyCode::F(6)))
+            .unwrap()
+            .command(&id, "i")
+            .unwrap();
+        assert_eq!(request["type"], crate::voice_actions::OPERATION);
+        assert_eq!(request["action"], "review");
+        assert_eq!(request["values"], json!({"tts_voice":"Draft voice Ω"}));
+        assert_eq!(view.text, Some("Draft voice Ω".into()));
+        assert_eq!(view.data, Some(before));
+        assert!(!view.accepts_paste());
+        assert!(!view.dictation_key(key(KeyCode::Char('d'))));
     }
 }

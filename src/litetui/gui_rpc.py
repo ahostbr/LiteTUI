@@ -35,8 +35,9 @@ def current_operation(app):
 
 
 OPERATIONS = (
+    "monitor.native_snapshot", "monitor.native_review", "monitor.native_apply", "monitor.native_readback", "monitor.native_close",
     "glassbox.native_snapshot", "glassbox.native_review", "glassbox.native_apply", "glassbox.native_readback",
-    "hello", "state", "voice.native_dictation", "voice.native_playback", "voice.native_catalog", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
+    "hello", "state", "voice.native_dictation", "voice.native_playback", "voice.native_catalog", "voice.native_action", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -964,7 +965,16 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
-    from litetui import native_dictation, native_playback, native_voice_catalog
+    from litetui import (
+        native_dictation,
+        native_playback,
+        native_voice_actions,
+        native_voice_catalog,
+    )
+    if operation == native_voice_actions.OPERATION:
+        return await native_voice_actions.dispatch(app, cmd)
+    if native_voice_actions.blocking(app):
+        raise ValueError("Close the reviewed Voice action before another management action")
     if operation == native_voice_catalog.OPERATION:
         return await native_voice_catalog.dispatch(app, cmd)
     if native_voice_catalog.blocking(app):
@@ -1368,6 +1378,9 @@ async def _async_dispatch(app, cmd):
         if action == "disconnect" and name in getattr(manager, "_stop_failed", ()):
             raise ValueError("MCP stop is unconfirmed; the owned server is retained for explicit cleanup retry")
         return manager.describe()
+    if operation.startswith("gui.monitor.native_"):
+        from litetui import native_monitor
+        return await native_monitor.dispatch(app, cmd)
     if operation == "gui.hooks.native_test_run":
         from litetui import native_hook_test
         return await native_hook_test.run(app, cmd)

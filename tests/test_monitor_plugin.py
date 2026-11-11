@@ -46,8 +46,8 @@ def test_register_binds_the_monitor_command():
     # The registered handler is the module's _handle.
     handler = next(h for t, h, _ in ctx.commands if t == ("/monitor",))
     assert handler is plugin_mod._handle
-    # A palette row was also registered.
-    assert any(title == "Browser monitor" for title, _ in ctx.rows)
+    # The command metadata drives the canonical palette row.
+    assert any(kw.get("palette") == "Browser monitor" for _, _, kw in ctx.commands)
 
 
 def test_manifest_is_declared():

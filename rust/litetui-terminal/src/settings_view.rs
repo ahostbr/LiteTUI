@@ -34,6 +34,7 @@ pub struct Snapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     Glassbox(Box<crate::glassbox_controls::Request>),
+    Monitor(Box<crate::monitor_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
     McpLifecycle(Box<crate::mcp_lifecycle::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
@@ -50,6 +51,7 @@ pub enum Intent {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
     Glassbox(Result<Box<crate::glassbox_controls::Update>, String>),
+    Monitor(Result<Box<crate::monitor_controls::Update>, String>),
     Mcp(Result<Box<crate::mcp_config::Update>, String>),
     McpLifecycle(Result<Box<crate::mcp_lifecycle::Update>, String>),
     ModelPreferences(Result<Box<crate::model_preferences::Update>, String>),
@@ -222,6 +224,7 @@ fn display(value: &str) -> String {
 #[derive(Default)]
 pub struct View {
     glassbox: crate::glassbox_controls::View,
+    monitor: crate::monitor_controls::View,
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
     mcp_lifecycle: crate::mcp_lifecycle::View,
@@ -259,6 +262,14 @@ impl View {
         self.intent = Some(Intent::Read);
         self.notice = "Reading current settings…".into();
         self.hide();
+    }
+    pub(crate) fn open_monitor(&mut self, arguments: &str) {
+        self.hide();
+        self.monitor.open(arguments);
+        self.waiting = true;
+        self.intent = Some(Intent::Monitor(Box::new(
+            crate::monitor_controls::Request::Snapshot(arguments.into()),
+        )));
     }
     pub(crate) fn open_glassbox(&mut self, action: Option<&str>) {
         self.hide();
@@ -332,6 +343,7 @@ impl View {
             || self.agent.open
             || self.model_preferences.open
             || self.glassbox.open
+            || self.monitor.open
             || self.model_lifecycle.open
     }
     pub fn owns_input(&self) -> bool {
@@ -346,6 +358,7 @@ impl View {
     }
     pub fn hide(&mut self) {
         self.glassbox.hide();
+        self.monitor.hide();
         self.mcp.hide();
         self.mcp_lifecycle.hide();
         self.model_preferences.hide();
@@ -367,6 +380,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.glassbox = Default::default();
+        self.monitor = Default::default();
         self.mcp = Default::default();
         self.mcp_read_only = false;
         self.mcp_lifecycle.close();
@@ -468,6 +482,12 @@ impl View {
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::McpLifecycle(result) => self.mcp_lifecycle.update(result.map(|update| *update)),
             Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
+            Update::Monitor(result) => {
+                if let Some(request) = self.monitor.update(result.map(|update| *update)) {
+                    self.waiting = true;
+                    self.intent = Some(Intent::Monitor(Box::new(request)));
+                }
+            }
             Update::RuntimeStatus(status) => {
                 if self.runtime_status.is_open() {
                     match status {
@@ -510,6 +530,13 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.monitor.open {
+            if let Some(request) = self.monitor.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Monitor(Box::new(request)));
+            }
+            return;
+        }
         if self.model_preferences.open {
             if let Some(request) = self.model_preferences.key(key) {
                 self.waiting = true;
@@ -721,6 +748,7 @@ impl View {
             || self.agent.open
             || self.model_preferences.open
             || self.glassbox.open
+            || self.monitor.open
             || self.model_lifecycle.open
         {
             return;
@@ -779,6 +807,10 @@ impl View {
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if self.model_preferences.open {
             self.model_preferences.draw(frame, area, theme);
+            return;
+        }
+        if self.monitor.open {
+            self.monitor.draw(frame, area, theme);
             return;
         }
         if self.glassbox.open {

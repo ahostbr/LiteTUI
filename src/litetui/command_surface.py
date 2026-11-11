@@ -17,6 +17,7 @@ MAX_ROWS = 1024
 MAX_BYTES = 512 * 1024
 # Reviewed adapters, not a second command/help catalog. Unknown contributions stay visible.
 _ROUTES = {
+    ("monitor", "/monitor"): "monitor",
     ("model-switch", "/model"): "models",
     ("model-switch", "/backend"): "backend",
     ("model-switch", "/reconnect"): "model_reconnect",
@@ -62,7 +63,6 @@ _UNAVAILABLE = {
     ("misc", "/screenshot"): "Screenshot saves an image of the Textual window and the terminal frontend has no capture path of its own; use your terminal's screenshot, or Ctrl+Shift+C to copy transcript text.",
     ("misc", "/maximize"): "Maximize enlarges the focused Textual panel; the terminal frontend has no panel focus and the transcript already takes every free row. Ctrl+G toggles the compact view; Alt+Up and Alt+Down scroll.",
     ("misc", "/test-sidebar"): "Test sidebar is a Textual-only dialog spike with no terminal equivalent.",
-    ("monitor", "/monitor"): "Browser monitor is a desktop overlay that is not available in the terminal frontend.",
     ("sidecar-preview", "/sidecar"): "Native sidecar preview is a desktop overlay that is not available in the terminal frontend.",
     ("mark", "/mark"): "Mark the screen is a desktop overlay that is not available in the terminal frontend.",
 }
@@ -122,7 +122,7 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "native_action": action,
         "accepts_arguments": (action in {
             "skill_prepare", "conversation_rename", "glassbox", "conversation_compact",
-            "model_load", "model_unload", "engine", "plugin_reload", "plan", "system_prompt",
+            "model_load", "model_unload", "engine", "plugin_reload", "plan", "system_prompt", "monitor",
             "models", "thinking", "backend", "conversation_resume", "claude", "mcp",
         } or kind == "command" and action in _WORK_INSPECTION),
         "unavailable_reason": "" if action else _UNAVAILABLE.get(
@@ -246,7 +246,10 @@ def _preselection(app, action, arguments):
     argument reaches the same reviewed control the palette opens.
     """
     wanted = arguments.strip()
-    if action == "models" and wanted:
+    if action == "monitor":
+        from litetui.native_monitor_files import parse_arguments
+        parse_arguments(arguments)
+    elif action == "models" and wanted:
         if wanted.isascii() and wanted.isdigit():
             count = len(app.available_models)
             if not 1 <= int(wanted) <= count:

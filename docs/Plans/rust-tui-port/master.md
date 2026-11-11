@@ -1,5 +1,15 @@
 # LiteTUI Rust terminal port
 
+## Monitor controls and explicit Voice actions - November 11, 2026
+
+Registered /monitor targets, init, demo and sweep now open native source-owned controls. Review binds the exact config, targets and output destinations; init never overwrites an existing config. The contained worker stages bounded artifacts, then the owner rechecks captured files under destination locks before publication and independently rereads them. Close and Quit join the helper tree and preserve the composer. Browser tabs/remote effects are explicitly distinct from helper cleanup; failed or partial publication is not reported as a complete sweep.
+
+Voice adds Test fallback, Install Edge and Download STT through a separate visible review and Apply. The plan captures exact interpreter/launcher fingerprints, package arguments and prefix, model/cache, selected saved or unsaved Voice values, fixed test phrase, timeout and network scope. Apply rechecks that plan, and completion requires a fresh dependency/model-cache verification. Fallback uses the canonical local SAPI/Edge templates and reports child completion without claiming audibility. Cancel joins owned descendants/readers and does not promise rollback of installed packages or cache files. Catalogs and actions share one exact release-publication/cleanup implementation.
+
+Frozen integrated validation: 1,190 ordinary Rust tests pass with 234 process gates ignored; all 59 selected compiled child tests pass (Monitor 1, context 33, runtime controls 17, command routing 8). All 225 integrated source tests pass. Formatting, strict all-target Clippy, new/changed module Ruff and seven-module mypy pass; shared seams retain the same eight baseline Ruff findings. The 66 Voice tests also pass on Python 3.14.0, and the Monitor preview's 159-test matrix passed on both Python 3.11.9 and 3.14.0. Exact logs, hashes and guarded command reports are under target/resume-20261111.
+
+All effect boundaries in these checks were controlled private fixtures. No actual audio, device enumeration, package install, model download, Chrome, provider or desktop interaction was exercised. A fresh package and final provider/device, both-host and release acceptance remain required.
+
 ## Voice catalogs and per-model effort - November 11, 2026
 
 F10 Voice can explicitly enumerate microphones and Windows voices in a bounded owned helper, then use the selected exact name as an editable draft. K captures a native key for the dictation shortcut. Neither action saves a preference: the existing full review and independent saved/effective readback remain required. Opening the panel never enumerates devices. Close and Quit join the helper tree and retain the Work hold until exact response publication.

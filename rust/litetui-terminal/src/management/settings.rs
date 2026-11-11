@@ -325,6 +325,7 @@ impl Management {
             | view::Intent::Connection(_)
             | view::Intent::Agent(_)
             | view::Intent::Glassbox(_)
+            | view::Intent::Monitor(_)
             | view::Intent::ModelLifecycle(_) => {
                 return Err(fail("Expected a reviewed settings editor operation"));
             }

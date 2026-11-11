@@ -4,6 +4,14 @@
 use crate::{demo::Demo, model_controls::Kind};
 
 impl Demo {
+    pub(crate) fn open_monitor(&mut self, arguments: &str) {
+        self.open_settings();
+        if let Some(chat) = self.live.as_mut()
+            && chat.settings.open
+        {
+            chat.settings.open_monitor(arguments);
+        }
+    }
     pub(crate) fn open_models_preselected(&mut self, kind: Kind, wanted: &str) {
         self.open_models(kind);
         if let Some(chat) = self.live.as_mut() {

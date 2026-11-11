@@ -10,14 +10,12 @@ passed independent review and the full controlled process gate. Reviewed host-hi
 
 These are source-backed gaps, separate from provider, device, packaging and host acceptance. Earlier completed lanes must not be rebuilt from their historical descriptions.
 
-- Voice: all nine configured preferences, explicit microphone/SAPI catalogs and native shortcut capture are implemented. Test fallback speech, optional Edge installation and STT model download actions remain in a separate preview lane.
 - Model configuration: per-model reasoning effort now projects effective execution without overwriting inherited authority, with distinct value/inherit/server-default states and true CLI pins. Model preset save/apply and conversation-wide sampling defaults remain.
 - Model lifecycle: load/unload of another named model and the one-use load context remain; named /model, /think, /backend and /resume already preselect their reviewed controls.
-- Model discovery: the three scan-source switches and extra model folders are implemented in the active wave, saved without triggering a scan or load.
-- Optional tools: /monitor has source targets/demo/init/sweep paths that need native adapters, /mark needs an owned overlay/result-to-composer flow, and /sidecar management remains.
+- Optional tools: /mark needs an owned overlay/result-to-composer flow, and /sidecar management remains. /monitor targets/init/demo/sweep now have reviewed native adapters with bounded output publication and joined helpers.
 - /maximize, /screenshot and /test-sidebar retain their explicit native substitutes or Textual-only reasons.
 
-Named command routes, hook authoring, MCP declarations/lifecycle, system-prompt editing, subagent-route preferences, interface preferences, mid-turn images, configured dictation shortcut consumption, card folding, line scrolling, scroll lock and the RGB picker are already implemented. This list does not certify release completion: the full final matrix, relocated package, real providers/devices, both terminal hosts and release review remain separate gates.
+All configured Voice preferences, explicit catalogs, native shortcut capture and reviewed fallback-test/install/download actions are implemented. Discovery preferences are saved without scanning or loading. Named command routes, hook authoring, MCP declarations/lifecycle, system-prompt editing, subagent-route preferences, interface preferences, mid-turn images, configured dictation shortcut consumption, card folding, line scrolling, scroll lock and the RGB picker are already implemented. This list does not certify release completion: the full final matrix, relocated package, real providers/devices, both terminal hosts and release review remain separate gates.
 
 ## Current boundary
 

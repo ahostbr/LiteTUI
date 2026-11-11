@@ -343,6 +343,9 @@ def _context(app):
 
 
 def mutation_hold(app):
+    from litetui import native_monitor
+    if native_monitor.blocking(app):
+        return "Monitor owns its worker, output readback and exact release publication"
     from litetui import native_mcp_lifecycle
     if native_mcp_lifecycle.blocking(app):
         return "A reviewed MCP operation owns admission until its independent readback"
@@ -360,6 +363,9 @@ def mutation_hold(app):
             return state.error
         if state.attempt is not None and not state.attempt.verified:
             return "A runtime control owns its exact result and readback publication"
+    from litetui import native_voice_actions
+    if native_voice_actions.blocking(app):
+        return "A reviewed Voice action owns its exact Close publication"
     from litetui import native_voice_catalog
     if native_voice_catalog.blocking(app):
         return "Voice discovery owns its helper and exact close publication"
@@ -1156,6 +1162,9 @@ def operation_allowed(app, cmd):
         if touches(cmd):
             raise ValueError("Use the reviewed runtime control for this setting")
     if why := mutation_hold(app):
+        from litetui import native_monitor
+        if native_monitor.readback_allowed(app, cmd):
+            return
         if native_mcp_lifecycle.readback_allowed(app, cmd):
             return
         from litetui import native_model_preferences
