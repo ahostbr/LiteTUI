@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from litetui import ninfer_engine, strata_engine
 from litetui import settings as settings_mod
+from litetui.file_observations import stable_read
 from litetui.llm_backend import BackendError
 
 MAX_FILE_METADATA = 1024 * 1024
@@ -29,8 +30,8 @@ def digest(value):
     return hashlib.sha256(encoded(value)).hexdigest()
 
 
-def _identity(info):
-    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+def _identity(info, *, birthtime=False):
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_size, info.st_mtime_ns, info.st_birthtime_ns if birthtime else info.st_ctime_ns)
 
 
 def file_evidence(path, *, complete=False):
@@ -46,8 +47,8 @@ def file_evidence(path, *, complete=False):
         data = stream.read(MAX_FILE_METADATA + 1 if complete else 65536)
         after = os.fstat(stream.fileno())
     path_after = path.stat()
-    if (_identity(before) != _identity(opened) or _identity(after) != _identity(before)
-            or _identity(path_after) != _identity(before) or path_after.st_mode != before.st_mode or str(path.resolve(strict=True)) != target):
+    if (not stable_read(before, opened, after, path_after, stamp=_identity)
+            or path_after.st_mode != before.st_mode or str(path.resolve(strict=True)) != target):
         raise ValueError("Engine source changed while reading; refresh the review")
     if complete and len(data) > MAX_FILE_METADATA:
         raise ValueError("Engine configuration exceeds its review budget")

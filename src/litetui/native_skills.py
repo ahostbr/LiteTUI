@@ -12,6 +12,7 @@ import stat
 from pathlib import Path
 
 from litetui import command_surface, skills
+from litetui.file_observations import stable_read
 
 MAX_BYTES = 65536
 MAX_RESPONSE_BYTES = 1048576
@@ -29,9 +30,9 @@ def _bytes(value, label):
     return result
 
 
-def _identity(info):
+def _identity(info, *, birthtime=False):
     return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
-            info.st_mtime_ns, info.st_ctime_ns)
+            info.st_mtime_ns, info.st_birthtime_ns if birthtime else info.st_ctime_ns)
 
 
 def _read(path):
@@ -45,13 +46,13 @@ def _read(path):
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as stream:
             opened = os.fstat(stream.fileno())
-            if _identity(opened) != _identity(before) or not stat.S_ISREG(opened.st_mode):
+            if (not stable_read(before, opened, opened, before, stamp=_identity)
+                    or not stat.S_ISREG(opened.st_mode)):
                 raise ValueError("Skill source changed before reading; prepare it again")
             data = stream.read(MAX_BYTES + 1)
             after = os.fstat(stream.fileno())
         if (len(data) > MAX_BYTES or len(data) != before.st_size
-                or _identity(after) != _identity(before)
-                or _identity(path.stat()) != _identity(before)
+                or not stable_read(before, opened, after, path.stat(), stamp=_identity)
                 or path.resolve(strict=True) != target):
             raise ValueError("Skill source changed while reading; prepare it again")
         return data, before, str(target)

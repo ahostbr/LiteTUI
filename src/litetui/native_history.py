@@ -22,6 +22,7 @@ from litetui import backend_catalog, conversation_page
 from litetui import history_projection as projection
 from litetui.agent_store import _unlinked, valid_id
 from litetui.conversation import ConversationRepository
+from litetui.file_observations import stable_read
 from litetui.history_index import HistoryIndex
 
 VERSION = 1
@@ -103,8 +104,8 @@ def capture_bytes(data: bytes, path: Path | None = None) -> Captured:
     return Captured(path, data, projection.encoded(meta), projection.encoded(messages), projection.encoded(summaries))
 
 
-def _stamp(info: Any) -> tuple[int, ...]:
-    return (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_mode & 0o222)
+def _stamp(info: Any, *, birthtime: bool = False) -> tuple[int, ...]:
+    return (info.st_size, info.st_mtime_ns, info.st_birthtime_ns if birthtime else info.st_ctime_ns, info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_mode & 0o222)
 
 
 def capture_file(path: Path) -> Captured:
@@ -119,7 +120,7 @@ def capture_file(path: Path) -> Captured:
         data = stream.read(MAX_TRANSCRIPT + 1)
         finished = os.fstat(stream.fileno())
     after = _unlinked(path).stat()
-    if len(data) > MAX_TRANSCRIPT or not (_stamp(before) == _stamp(opened) == _stamp(finished) == _stamp(after)):
+    if len(data) > MAX_TRANSCRIPT or not stable_read(before, opened, finished, after, stamp=_stamp):
         raise ValueError("History transcript changed while reading")
     captured = capture_bytes(data, path)
     return Captured(captured.path, captured.raw, captured.meta_bytes, captured.messages_bytes,

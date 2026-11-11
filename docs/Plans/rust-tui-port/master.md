@@ -1,5 +1,15 @@
 # LiteTUI Rust terminal port
 
+## Windows file observations and relocated checkpoint proof - November 11, 2026
+
+Windows Python 3.14 can report creation time through path stat and metadata-change time through handle fstat. A shared bounded-read comparator now preserves each API's before/after ctime checks and uses their common birthtime only for the cross-API comparison. History, Work, Skills and engine review retain their original identity, byte limits and permission masks; original review/receipt stamps are unchanged. Real private append/truncate fixtures and injected same-size timestamp changes cover successful reads and refusals. The playback persistent-directory test now joins its private holder and exercises the retained owner's normal shutdown cleanup instead of bypassing it with a one-shot test cleanup.
+
+Package proof is for the preceding af642d94 checkpoint: its 400-file package was relocated into a path containing spaces and Unicode, then verified before and after use. A fresh runtime-only Python 3.11.9 environment was installed offline from the packaged frozen lock, without the project editable install or pytest. The actual packaged executable passed 22 controlled backend cases: all seven generic backend turns, unavailable models/endpoints and the NInfer GPU refusal gate. Four separately compiled Interactive-library contracts drove the packaged runtime for Voice, Discovery, held-control Quit and response playback; those four are not packaged-keyboard-loop evidence. All payload hashes remained unchanged. Reports are under target/resume-20261111.
+
+Integrated file-observation validation passes all 183 affected tests on both Python 3.11.9 and Python 3.14.0, including the retained-playback shutdown retry. The new helper/tests and changed playback test are Ruff-clean; all five affected source modules pass mypy.
+
+The file-observation change requires a new package after integration. Real providers/devices, both terminal hosts and final release acceptance remain open.
+
 ## Voice preferences, discovery settings and runtime fixes - November 11, 2026
 
 Resumed from cb19517f after reconciling the later owner-seat commits. F10 Voice now edits all nine configured preferences, including microphone/SAPI voice names, shortcut, Edge voice and timeout. The native text editor preserves exact bounded paste, exposes clipboard errors and requires review plus independent saved/effective readback. Device/voice discovery and key capture are separate remaining work. F10 Connections now saves the three model-discovery switches and extra model folders at device scope, without a scan, connection or load; JSON list editing preserves commas and Unicode.

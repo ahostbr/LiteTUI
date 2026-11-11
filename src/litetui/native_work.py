@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from litetui import backend_catalog, backend_transition, calendar_view, scheduler, tasks
 from litetui.agent_store import _unlinked, valid_id, valid_name
+from litetui.file_observations import stable_read
 from litetui.goal_loop import GOAL_FILENAME, GoalState
 
 if TYPE_CHECKING:
@@ -140,8 +141,8 @@ def _wire(cmd, value):
     return value
 
 
-def _stamp(info):
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, stat.S_IFMT(info.st_mode))
+def _stamp(info, *, birthtime=False):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_birthtime_ns if birthtime else info.st_ctime_ns, stat.S_IFMT(info.st_mode))
 
 
 def _read(path):
@@ -157,7 +158,7 @@ def _read(path):
         raw = stream.read(MAX_FILE + 1)
         finished = os.fstat(stream.fileno())
     after = _unlinked(path).stat()
-    if len(raw) > MAX_FILE or not (_stamp(before) == _stamp(opened) == _stamp(finished) == _stamp(after)):
+    if len(raw) > MAX_FILE or not stable_read(before, opened, finished, after, stamp=_stamp):
         raise ValueError('Work document changed during bounded read')
     return raw, hashlib.sha256(raw).hexdigest()
 
@@ -444,7 +445,7 @@ def tail(app, cmd):
                 data = stream.read(MAX_TAIL)
                 finished = os.fstat(stream.fileno())
             after = _unlinked(path).stat()
-            if not (_stamp(before) == _stamp(opened) == _stamp(finished) == _stamp(after)):
+            if not stable_read(before, opened, finished, after, stamp=_stamp):
                 raise ValueError('Task log changed during bounded tail read')
             try:
                 decoded, lossy = data.decode('utf-8'), False

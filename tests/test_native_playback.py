@@ -294,9 +294,14 @@ async def test_close_still_fails_when_the_helper_directory_is_never_released(arm
         with pytest.raises(OSError):
             await playback.dispatch(runtime, follow(command, review, "close"))
         assert owned.directory.exists() and owned.temporary is not None
+        assert runtime._native_playback is owned and playback.blocking(runtime)
+        assert owned.release_result is None
     finally:
         holder.kill()
-        holder.wait()
-        owned.temporary.cleanup()
-        owned.temporary = None
-        runtime._native_playback = None
+        holder.wait(timeout=5)
+        # Process wait can precede Windows releasing its cwd. Exercise the
+        # retained product owner instead of bypassing it with one-shot cleanup.
+        monkeypatch.setattr(playback, "DIRECTORY_RELEASE_WAIT_S", 10.0)
+        await work.settle_before_shutdown(runtime)
+    assert runtime._native_playback is None and owned.temporary is None
+    assert not owned.directory.exists()
