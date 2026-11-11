@@ -27,6 +27,8 @@ class SidecarWindow:
         self.warn = warn or (lambda _message: None)
         self.timeout = timeout
         self.process = None
+        self._reader: threading.Thread | None = None
+        self._closing = False
         self.token = ""
         self._next_id = 1
         # One owner operation includes launch, snapshot delivery and failure cleanup.
@@ -63,7 +65,7 @@ class SidecarWindow:
 
         def read_replies() -> None:
             try:
-                while self.process is process:
+                while self.process is process and not self._closing:
                     raw = stdout.readline(sidecar_protocol.MAX_FRAME_BYTES + 2)
                     if not raw:
                         raise RuntimeError("Sidecar disconnected")
@@ -114,6 +116,8 @@ class SidecarWindow:
 
     def _exchange_locked(self, command: str, payload: object) -> dict:
         process = self.process
+        if self._closing:
+            raise RuntimeError("Sidecar cleanup is still pending")
         if self._reader_error is not None:
             raise RuntimeError("Sidecar disconnected") from self._reader_error
         if process is None or process.poll() is not None or process.stdin is None or process.stdout is None:
@@ -155,7 +159,11 @@ class SidecarWindow:
             if not self.executable.is_file():
                 self.warn(f"Sidecar is not installed: {self.executable}; use Textual instead.")
                 return False
-            if self.process is not None and self.process.poll() is None:
+            if self._closing:
+                raise RuntimeError("Sidecar cleanup must finish before reopening")
+            if self.process is not None and self.process.poll() is not None:
+                self.close()
+            if self.process is not None:
                 try:
                     result = self._exchange("open", {"view": view})
                     if result.get("opened") == view:
@@ -216,22 +224,51 @@ class SidecarWindow:
                 return False
 
     def close(self) -> bool:
+        # A callback cannot join its own reader, including while another caller
+        # owns the operation lock and waits for that callback to return.
+        reader = self._reader
+        if reader is threading.current_thread():
+            raise RuntimeError("Sidecar reader cannot close its own owner")
         with self._operation_lock:
             if self.process is None:
                 return False
             process = self.process
+            self._closing = True
+            # Retain process, reader, token and pipes until every cleanup step
+            # succeeds. A failure can be retried for this exact child; open()
+            # cannot replace the retained owner with another process.
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    if process.poll() is None:
+                        raise
+            try:
+                process.wait(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    if process.poll() is None:
+                        raise
+                process.wait(timeout=self.timeout)
+            if process.poll() is None:
+                raise RuntimeError("Sidecar child retirement remains unproven")
+            reader = self._reader
+            if reader is not None and reader.ident is not None:
+                reader.join(timeout=self.timeout)
+                if reader.is_alive():
+                    raise RuntimeError("Sidecar reader retirement remains unproven")
+            errors = []
+            for pipe in (process.stdin, process.stdout):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError as error:
+                        errors.append(error)
+            if errors:
+                raise errors[0]
             self.process = None
             self.token = ""
-            try:
-                if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=self.timeout)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=self.timeout)
-            finally:
-                for pipe in (process.stdin, process.stdout):
-                    if pipe is not None:
-                        pipe.close()
+            self._closing = False
             return True

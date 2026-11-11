@@ -60,6 +60,8 @@ def test_handshake_and_live_view_switch(tmp_path):
     def reply(_limit):
         import time
         while process.stdin.write.call_count <= process.stdout.readline.call_count - 1:
+            if process.poll() is not None:
+                return b""
             time.sleep(0.001)
         request_id = process.stdin.write.call_count
         return (json.dumps({"version": 1, "id": request_id, "token": owner.token,

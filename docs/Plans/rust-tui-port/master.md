@@ -1,5 +1,11 @@
 # LiteTUI Rust terminal port
 
+## Sidecar child and reader retirement - November 11, 2026
+
+The optional sidecar owner now retains its exact process, token and pipe handles when termination, reap, reader join or pipe closure fails. Reopen cannot replace that unsettled owner. Successful Close reaps the child and joins the reader before releasing pipes and ownership; a reader callback cannot close/join itself, and a failed Thread.start has no reader lifetime to join. This repairs the shared source lifecycle in preparation for native sidecar controls; it does not add the native management UI.
+
+Four targeted regressions first reproduced the old failures. Eight new cases now cover retained cleanup/retry, pending reopen refusal, self-close, pipe-close failure, reader-start failure and a private real Python child with stdin/stdout. The canonical affected family passes 82 tests, Ruff and mypy pass, and independent review's unstarted-reader finding is fixed and covered. Six adjacent legacy unowned-storage fixtures fail unchanged on the baseline; their exact names and both results are recorded in target/next-sidecar-lifecycle/VALIDATION.md. No actual sidecar GUI or desktop was launched.
+
 ## Monitor controls and explicit Voice actions - November 11, 2026
 
 Registered /monitor targets, init, demo and sweep now open native source-owned controls. Review binds the exact config, targets and output destinations; init never overwrites an existing config. The contained worker stages bounded artifacts, then the owner rechecks captured files under destination locks before publication and independently rereads them. Close and Quit join the helper tree and preserve the composer. Browser tabs/remote effects are explicitly distinct from helper cleanup; failed or partial publication is not reported as a complete sweep.
