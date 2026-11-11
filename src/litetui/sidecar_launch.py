@@ -141,12 +141,17 @@ class SidecarWindow:
         finally:
             self._pending.pop(request_id, None)
 
-    def send_event_reply(self, request_id: int, result: dict) -> None:
+    def send_event_reply(self, request_id: int, result: dict, *, expected_process=None, expected_token=None) -> None:
         process = self.process
         if process is None or process.poll() is not None or process.stdin is None:
             raise RuntimeError("Sidecar disconnected before event reply")
+        if ((expected_process is not None and process is not expected_process)
+                or (expected_token is not None and self.token != expected_token)):
+            raise RuntimeError("Sidecar event belongs to a retired child")
         raw = sidecar_protocol.encode(request_id, self.token, "event_reply", result)
         with self._write_lock:
+            if self.process is not process or (expected_token is not None and self.token != expected_token):
+                raise RuntimeError("Sidecar changed before the exact event reply")
             process.stdin.write(raw + b"\n")
             process.stdin.flush()
 

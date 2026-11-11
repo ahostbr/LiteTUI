@@ -285,6 +285,42 @@ fn clock_text((hour, minute): (u8, u8)) -> String {
     )
 }
 
+/// Frontend-observed tool interval, not provider execution time. Missing requests
+/// (including historical/orphan results) stay untimed; the first settlement wins.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolTiming {
+    started: Option<Instant>,
+    settled: Option<Duration>,
+}
+impl ToolTiming {
+    pub(crate) fn started() -> Self {
+        Self {
+            started: Some(Instant::now()),
+            settled: None,
+        }
+    }
+    pub(crate) fn finish(&mut self) {
+        self.finish_at(Instant::now());
+    }
+    fn finish_at(&mut self, now: Instant) {
+        if self.settled.is_none() {
+            self.settled = self.elapsed_at(now);
+        }
+    }
+    pub fn elapsed_at(&self, now: Instant) -> Option<Duration> {
+        self.settled.or_else(|| {
+            self.started
+                .map(|started| now.saturating_duration_since(started))
+        })
+    }
+    pub fn label(&self) -> String {
+        self.elapsed_at(Instant::now()).map_or_else(
+            || "duration unknown".into(),
+            |elapsed| format!("observed {}", duration_text(elapsed)),
+        )
+    }
+}
+
 /// How one turn ended, for the settled line below its last assistant card.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ending {
@@ -604,5 +640,34 @@ mod hotkey_tests {
         assert_eq!(read(json!("ctrl+")).unwrap().dictation_hotkey, None);
         assert!(read(json!("")).unwrap().dictation_hotkey.is_some());
         assert!(read(json!(7)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tool_timing_tests {
+    use super::*;
+
+    #[test]
+    fn tool_clock_advances_then_freezes_at_first_settlement_without_inventing_a_start() {
+        let start = Instant::now();
+        let mut timing = ToolTiming {
+            started: Some(start),
+            settled: None,
+        };
+        assert_eq!(
+            timing.elapsed_at(start + Duration::from_millis(400)),
+            Some(Duration::from_millis(400))
+        );
+        timing.finish_at(start + Duration::from_millis(62500));
+        assert_eq!(timing.label(), "observed 1m 02.5s");
+        timing.finish_at(start + Duration::from_secs(100));
+        assert_eq!(
+            timing.elapsed_at(start + Duration::from_secs(200)),
+            Some(Duration::from_millis(62500))
+        );
+        let mut unknown = ToolTiming::default();
+        unknown.finish_at(start);
+        assert_eq!(unknown.elapsed_at(start + Duration::from_secs(200)), None);
+        assert_eq!(unknown.label(), "duration unknown");
     }
 }

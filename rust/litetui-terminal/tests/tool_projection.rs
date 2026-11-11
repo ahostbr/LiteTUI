@@ -738,3 +738,72 @@ fn minimum_width_subrectangle_and_long_graphemes_never_escape_or_lose_tail() {
         );
     }
 }
+
+#[test]
+fn generic_observation_timer_advances_and_freezes_on_each_terminal_boundary() {
+    use std::time::{Duration, Instant};
+    for terminal in 0..5 {
+        let mut p = projection(limits());
+        apply(&mut p, A, request(T, 0, 0));
+        let sample = Instant::now();
+        let live = p.rows()[0].tools[0].timing.clone();
+        assert_eq!(
+            live.elapsed_at(sample + Duration::from_secs(4)).unwrap()
+                - live.elapsed_at(sample).unwrap(),
+            Duration::from_secs(4)
+        );
+        p.apply(6, &selected(A, end())).unwrap();
+        assert_eq!(
+            p.rows()[0].tools[0].timing,
+            live,
+            "stale generations do not settle clocks"
+        );
+        match terminal {
+            0 => apply(&mut p, A, returned(T, "ok", true)),
+            1 => apply(&mut p, A, returned(T, "failed", false)),
+            2 => apply(&mut p, A, end()),
+            3 => p.disconnect(),
+            _ => {
+                assert!(p.apply(7, &selected(A, request(T, 1, 1))).is_err());
+            }
+        }
+        let timing = &p.rows()[0].tools[0].timing;
+        let settled = timing.elapsed_at(sample + Duration::from_secs(600));
+        assert!(settled.is_some());
+        assert_eq!(
+            settled,
+            timing.elapsed_at(sample + Duration::from_secs(900))
+        );
+        p.disconnect();
+        assert_eq!(
+            settled,
+            p.rows()[0].tools[0]
+                .timing
+                .elapsed_at(sample + Duration::from_secs(1200))
+        );
+    }
+}
+
+#[test]
+fn generic_projection_renderer_displays_the_retained_observed_duration() {
+    let mut p = projection(limits());
+    apply(&mut p, A, request(T, 0, 0));
+    apply(&mut p, A, returned(T, "failed result", false));
+    let label = p.rows()[0].tools[0].timing.label();
+    let mut terminal = Terminal::new(TestBackend::new(100, 35)).unwrap();
+    terminal
+        .draw(|frame| ui::draw_stream_projection(frame, frame.area(), &p, &builtin_themes()[0], 0))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        text.contains(&format!("Returned · host ok=false · {label}")),
+        "{text}"
+    );
+    assert!(text.contains("not task completion"));
+}

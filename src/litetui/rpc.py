@@ -337,6 +337,7 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
             app, approval_id, cmd["allow"],
             cmd.get("remember", False),
             **({"rewrite_prewrite": cmd["rewrite_prewrite"]} if "rewrite_prewrite" in cmd else {}),
+            **({"remember_scope": cmd["remember_scope"]} if "remember_scope" in cmd else {}),
         )
         if ok:
             _respond(cmd_id, ok=True,

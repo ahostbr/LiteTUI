@@ -475,13 +475,17 @@ fn cancelled_route_or_submit_readback_settles_without_action() {
 fn staging_preflights_remaining_history_budget_without_replacing_draft() {
     let mut app = Demo::live("custom".into(), "model".into());
     app.observe_live(Observation::Ready).unwrap();
-    app.live
-        .as_mut()
-        .unwrap()
-        .submit(&"x".repeat(32000))
-        .unwrap();
-    app.live.as_mut().unwrap().take_submission();
-    app.observe_live(Observation::Complete).unwrap();
+    // Fill the retained metadata budget with individually renderable rows.
+    // Paging permits another row after one large prior prompt; the lifetime
+    // retention ceiling must still protect command staging and the main draft.
+    let prompt = "x".repeat(litetui_terminal::live_chat::DISPLAY_UNITS - 320);
+    for _ in
+        0..litetui_terminal::live_chat::RETAINED_UNITS / litetui_terminal::live_chat::DISPLAY_UNITS
+    {
+        app.live.as_mut().unwrap().submit(&prompt).unwrap();
+        app.live.as_mut().unwrap().take_submission();
+        app.observe_live(Observation::Complete).unwrap();
+    }
     app.insert_text("original main draft");
     app.open_commands();
     app.live.as_mut().unwrap().commands.take_intent();
@@ -1050,10 +1054,7 @@ fn backend_and_resume_arguments_preselect_rows_without_switching_or_opening() {
 
 #[test]
 fn claude_routes_open_only_existing_reviewed_controls() {
-    use litetui_terminal::{
-        conversation_actions as actions, conversation_browser as browser, restored_queue,
-        settings_view,
-    };
+    use litetui_terminal::{claude_reset, restored_queue, settings_view};
     for verb in ["resolve", "CONTINUE"] {
         let mut app = routed_app("claude", true, "claude", verb);
         assert!(app.has_live_queue(), "{verb}");
@@ -1066,12 +1067,24 @@ fn claude_routes_open_only_existing_reviewed_controls() {
     }
     let mut app = routed_app("claude", true, "claude", "new");
     assert_eq!(
-        app.live.as_mut().unwrap().browser.take_intent(),
-        Some(browser::Intent::Action(actions::Intent::Read {
-            action: actions::Action::New
-        }))
+        app.live.as_mut().unwrap().settings.take_intent(),
+        Some(settings_view::Intent::ClaudeReset(Box::new(
+            claude_reset::Request::Review
+        )))
     );
-    assert!(app.notice.contains("nothing was changed"), "{}", app.notice);
+    assert_eq!(app.live.as_mut().unwrap().browser.take_intent(), None);
+    assert_eq!(app.composer.text(), "PRESERVE COMPOSER");
+    let chat = app.live.as_mut().unwrap();
+    assert_eq!(chat.backend, "claude");
+    assert_eq!(chat.model, "model");
+    assert!(chat.history.is_none());
+    assert!(chat.rows.is_empty());
+    assert!(chat.take_submission().is_none());
+    let visible = paint(&mut app, 100, 30);
+    assert!(
+        visible.contains("Reading the exact Claude session"),
+        "{visible}"
+    );
     for verb in ["", "status"] {
         let mut app = routed_app("claude", true, "claude", verb);
         assert_eq!(

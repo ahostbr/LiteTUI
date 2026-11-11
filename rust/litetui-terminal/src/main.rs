@@ -235,11 +235,10 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             KeyCode::PageUp => current.scroll = current.scroll.saturating_sub(10),
             KeyCode::PageDown => current.scroll = current.scroll.saturating_add(10),
             KeyCode::Tab | KeyCode::Left | KeyCode::Right if !current.waiting => {
-                current.allow = !current.allow
+                current.cycle(key.code == KeyCode::Left)
             }
             KeyCode::Enter if !current.waiting => {
-                let allow = current.allow;
-                chat.approvals.choose(allow);
+                chat.approvals.confirm();
             }
             KeyCode::Esc if !current.waiting => chat.approvals.choose(false),
             _ => {}
@@ -698,10 +697,8 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         }
         KeyCode::PageUp => app.scroll_up(12),
         KeyCode::PageDown => app.scroll_down(12),
-        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll = 0,
-        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll = app.max_scroll
-        }
+        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => app.transcript_home(),
+        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => app.transcript_end(),
         KeyCode::Home => app
             .composer
             .move_cursor(Motion::Home, key.modifiers.contains(KeyModifiers::SHIFT)),
@@ -752,6 +749,32 @@ fn handle_key(
     // Include clipboard chords in live modal ownership, before any host I/O.
     if input.suppress_live_repeat(event) {
         return false;
+    }
+    // A source question preempts every lower panel, including panels with
+    // outstanding readbacks. One chord can read and edit only its focused note.
+    if app.has_live_question() {
+        if !app.stop_open()
+            && !app.has_live_approval()
+            && !app.viewport_too_small
+            && event.kind == KeyEventKind::Press
+            && event.modifiers == KeyModifiers::CONTROL
+            && matches!(event.code, KeyCode::Char('v' | 'V'))
+        {
+            let chat = app.live.as_mut().expect("live question");
+            if !chat.quitting
+                && !chat.cancelling()
+                && let Some(pending) = chat.questions.current_mut()
+                && !pending.waiting
+                && pending.note_focused()
+            {
+                match clipboard.read_text() {
+                    Ok(Some(text)) => pending.paste(&text, true),
+                    Ok(None) => {}
+                    Err(error) => pending.notice = error,
+                }
+            }
+        }
+        return input.handle(app, event);
     }
     if app.has_live_engine()
         && !app.stop_open()
@@ -876,19 +899,6 @@ fn handle_key(
                     Err(error) => chat.backend_controls.notice = error,
                 }
             }
-
-            if !chat.quitting
-                && !chat.cancelling()
-                && let Some(pending) = chat.questions.current_mut()
-                && !pending.waiting
-                && pending.note_focused()
-            {
-                match clipboard.read_text() {
-                    Ok(Some(text)) => pending.paste(&text, true),
-                    Ok(None) => {}
-                    Err(error) => pending.notice = error,
-                }
-            }
         }
         return input.handle(app, event);
     }
@@ -966,6 +976,18 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    if app.has_live_question() {
+        if !app.stop_open() && !app.viewport_too_small && !app.has_live_approval() {
+            let chat = app.live.as_mut().expect("live question");
+            if !chat.quitting
+                && !chat.cancelling()
+                && let Some(pending) = chat.questions.current_mut()
+            {
+                pending.paste(text, false);
+            }
+        }
+        return;
+    }
     if app.has_live_runtime_controls() && !app.has_live_question() {
         return;
     }
@@ -1069,20 +1091,6 @@ fn paste(app: &mut Demo, text: &str) {
         return;
     }
 
-    if !app.stop_open()
-        && !app.viewport_too_small
-        && !app.has_live_approval()
-        && app.has_live_question()
-    {
-        let chat = app.live.as_mut().expect("live question");
-        if !chat.quitting
-            && !chat.cancelling()
-            && let Some(pending) = chat.questions.current_mut()
-        {
-            pending.paste(text, false);
-        }
-        return;
-    }
     if app.approval_open || app.has_live_input() || app.viewport_too_small {
         return;
     }
@@ -1118,6 +1126,27 @@ fn terminal_mouse(app: &mut Demo, event: MouseEvent, shown: &ratatui::buffer::Bu
 }
 
 fn mouse(app: &mut Demo, event: MouseEvent) {
+    if app.has_live_approval() {
+        if !app.viewport_too_small
+            && !app.stop_open()
+            && !app
+                .live
+                .as_ref()
+                .is_some_and(|c| c.quitting || c.cancelling())
+        {
+            app.live.as_mut().expect("approval").approvals.mouse(event);
+        }
+        return;
+    }
+    if app.has_live_question() {
+        if !app.stop_open() && !app.viewport_too_small {
+            let chat = app.live.as_mut().expect("live question");
+            if !chat.quitting && !chat.cancelling() {
+                chat.questions.mouse(event);
+            }
+        }
+        return;
+    }
     if app.has_live_runtime_controls() && !app.has_live_question() {
         if !app.viewport_too_small && !app.stop_open() && !app.has_live_approval() {
             app.live
@@ -1250,17 +1279,6 @@ fn mouse(app: &mut Demo, event: MouseEvent) {
                 .expect("live controls")
                 .controls
                 .mouse(event);
-        }
-        return;
-    }
-    if !app.stop_open()
-        && !app.viewport_too_small
-        && !app.has_live_approval()
-        && app.has_live_question()
-    {
-        let chat = app.live.as_mut().expect("live question");
-        if !chat.quitting && !chat.cancelling() {
-            chat.questions.mouse(event);
         }
         return;
     }
@@ -2997,7 +3015,8 @@ mod tests {
             app.live.as_mut().unwrap().approvals.take_decision(),
             Some(litetui_terminal::approvals::Decision {
                 id: "a".into(),
-                allow: false
+                allow: false,
+                remember: false
             })
         );
         key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -3057,7 +3076,8 @@ mod tests {
             app.live.as_mut().unwrap().approvals.take_decision(),
             Some(litetui_terminal::approvals::Decision {
                 id: "b".into(),
-                allow: false
+                allow: false,
+                remember: false
             })
         );
     }
@@ -6053,6 +6073,670 @@ mod chat_pause_router_tests {
             assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
             assert!(app.live.as_mut().unwrap().take_submission().is_none());
             assert_eq!(app.composer.text(), draft);
+        }
+    }
+}
+
+#[cfg(test)]
+mod remembered_approval_input_tests {
+    use super::*;
+    use litetui_terminal::{approvals, live::Observation};
+    use ratatui::{Terminal, backend::TestBackend};
+    use serde_json::json;
+    fn app() -> Demo {
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("question");
+        app.submit();
+        app.insert_text("draft kept");
+        let event=approvals::Ledger::default().request(&json!({"type":"tool_approval_requested","id":"a","tool":"write","input":{"note":"private"},"profile":"strict","why":"write","timeout_s":300.0,
+            "remember_scope":{"version":1,"tool":"write","capabilities":["workspace_write"],"rule":"write:workspace_write","scope":"conversation","conversation_id":"12345678-1234-1234-1234-123456789abc","snapshot":"a".repeat(64)}})).unwrap();
+        app.observe_live(Observation::Approval(event)).unwrap();
+        app
+    }
+    fn draw(app: &mut Demo, w: u16, h: u16) {
+        Terminal::new(TestBackend::new(w, h))
+            .unwrap()
+            .draw(|f| ui::draw(f, app))
+            .unwrap();
+    }
+    fn press(app: &mut Demo, code: KeyCode) {
+        key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    #[test]
+    fn approval_remember_keyboard_requires_visible_confirmation_and_preserves_draft() {
+        let mut app = app();
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        draw(&mut app, 120, 50);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .current()
+                .unwrap()
+                .confirming
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        draw(&mut app, 120, 50);
+        let mut repeat = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        key(&mut app, repeat);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .unwrap()
+                .remember
+        );
+        assert_eq!(app.composer.text(), "draft kept");
+    }
+    #[test]
+    fn approval_remember_mouse_only_selects_exact_painted_control_and_resize_resets_review() {
+        let mut app = app();
+        draw(&mut app, 120, 50);
+        let rect = app
+            .live
+            .as_ref()
+            .unwrap()
+            .approvals
+            .current()
+            .unwrap()
+            .hits
+            .iter()
+            .find(|(_, choice)| *choice == 2)
+            .unwrap()
+            .0;
+        let event = |kind| MouseEvent {
+            kind,
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left)));
+        assert!(
+            !app.live
+                .as_ref()
+                .unwrap()
+                .approvals
+                .current()
+                .unwrap()
+                .remember
+        );
+        mouse(&mut app, event(MouseEventKind::Down(MouseButton::Left)));
+        mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left)));
+        assert!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .approvals
+                .current()
+                .unwrap()
+                .remember
+        );
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .approvals
+                .take_decision()
+                .is_none()
+        );
+        press(&mut app, KeyCode::Enter);
+        draw(&mut app, 120, 50);
+        assert!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .approvals
+                .current()
+                .unwrap()
+                .confirmation_shown
+        );
+        draw(&mut app, 72, 30);
+        assert!(
+            !app.live
+                .as_ref()
+                .unwrap()
+                .approvals
+                .current()
+                .unwrap()
+                .confirming
+        );
+        press(&mut app, KeyCode::Esc);
+        let denied = app
+            .live
+            .as_mut()
+            .unwrap()
+            .approvals
+            .take_decision()
+            .unwrap();
+        assert!(!denied.allow && !denied.remember);
+        assert_eq!(app.composer.text(), "draft kept");
+    }
+}
+
+#[cfg(test)]
+mod overlay_ownership_tests {
+    use super::*;
+    use litetui_terminal::{
+        approvals, claude_reset, history, history_view, image, live::Observation, questions,
+        settings_editor, settings_view, sidecar_controls, work_protocol::Identity,
+    };
+    use ratatui::backend::TestBackend;
+    use serde_json::json;
+
+    #[derive(Default)]
+    struct Clipboard {
+        reads: usize,
+    }
+    impl litetui_terminal::clipboard::Clipboard for Clipboard {
+        fn read_text(&mut self) -> Result<Option<String>, String> {
+            self.reads += 1;
+            Ok(Some("257".into()))
+        }
+        fn copy_text(&mut self, _: &str) -> Result<(), String> {
+            panic!("unexpected clipboard write")
+        }
+    }
+    fn identity() -> Identity {
+        Identity {
+            session: "12345678-1111-4111-8111-123456789abc".into(),
+            agent: "22345678-1111-4111-8111-123456789abc".into(),
+            backend: "claude".into(),
+            model: "fixture".into(),
+        }
+    }
+    fn app() -> Demo {
+        let mut app = Demo::live("claude".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.live
+            .as_mut()
+            .unwrap()
+            .submit("controlled source turn")
+            .unwrap();
+        app.live.as_mut().unwrap().take_submission();
+        app.insert_text("unsent draft");
+        app.composer.select_all();
+        let id = identity();
+        let value = json!({"version":1,"kind":"image_review","session_id":id.session,"agent_id":id.agent,"backend":id.backend,"model":id.model,"work_instance":"instance","token":"a".repeat(64),"delivery":"file","name":"kept.png","format":"PNG","width":1,"height":1,"sent_width":1,"sent_height":1,"png_bytes":10,"png_sha256":"b".repeat(64)});
+        app.live.as_mut().unwrap().work.image.attached = image::parse(
+            &value,
+            &id,
+            "instance",
+            &image::Request::File("kept.png".into()),
+        )
+        .unwrap();
+        app
+    }
+    fn draw(app: &mut Demo, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| ui::draw(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+    fn approval(app: &mut Demo) {
+        let event = approvals::Ledger::default().request(&json!({"type":"tool_approval_requested","id":"approval","tool":"write","input":{"path":"fixture"},"profile":"strict","why":"writes","timeout_s":300.0})).unwrap();
+        app.observe_live(Observation::Approval(event)).unwrap();
+    }
+    fn question(app: &mut Demo) {
+        let value =
+            serde_json::from_str(include_str!("../tests/fixtures/question_request.json")).unwrap();
+        let event = questions::Ledger::default().request(&value).unwrap();
+        app.observe_live(Observation::Question {
+            event,
+            settled: None,
+        })
+        .unwrap();
+        let pending = app.live.as_mut().unwrap().questions.current_mut().unwrap();
+        pending.jump(1);
+        pending.focus = 1;
+    }
+    fn remove_prompt(app: &mut Demo) {
+        let chat = app.live.as_mut().unwrap();
+        chat.approvals = Default::default();
+        chat.questions = Default::default();
+        chat.stop_confirm = false;
+        chat.busy = false;
+    }
+    fn review(app: &mut Demo, reset: bool) {
+        app.live.as_mut().unwrap().settings.open = true;
+        let update = if reset {
+            let id = identity();
+            let value = json!({"version":1,"kind":"claude_reset_review","session_id":id.session,"agent_id":id.agent,"backend":id.backend,"model":id.model,"work_instance":"instance","token":"a".repeat(64),"apply_id":null,"ledger_after":null,"cleanup_verified":false,
+                "review":{"segment":"b".repeat(32),"native_session":id.session,"target":"c".repeat(32),"workspace":std::env::temp_dir().to_string_lossy(),"held_inputs":2,"segments":1,"materialize":false,"history_sha256":"d".repeat(64),"ledger_before":"e".repeat(64)}});
+            let claude_reset::Reply::Update(update) = claude_reset::Request::Review
+                .response(&value, &id, "instance", "review")
+                .unwrap()
+            else {
+                panic!()
+            };
+            settings_view::Update::ClaudeReset(Ok(Box::new(update)))
+        } else {
+            settings_view::Update::Sidecar(Ok(Box::new(sidecar_controls::Update::Review(
+                json!({"action":"close","view":null,"executable":{"path":"C:/sidecar.exe"},"before":{"pid":1234},"consequence":"Close and join this exact retained child."}),
+            ))))
+        };
+        app.observe_live(Observation::Settings(update)).unwrap();
+    }
+    fn check_draft(app: &Demo, attached: &Option<image::Review>) {
+        assert_eq!(app.composer.text(), "unsent draft");
+        assert_eq!(app.composer.selected_text(), "unsent draft");
+        assert_eq!(app.live.as_ref().unwrap().work.image.attached, *attached);
+    }
+    #[test]
+    fn overlay_ownership_settings_reviews_yield_and_require_repaint_after_every_occlusion() {
+        for reset in [false, true] {
+            for overlay in ["approval", "question", "stop", "tiny", "cancel"] {
+                let mut app = app();
+                let attached = app.live.as_ref().unwrap().work.image.attached.clone();
+                review(&mut app, reset);
+                draw(&mut app, 140, 60);
+                match overlay {
+                    "approval" => approval(&mut app),
+                    "question" => question(&mut app),
+                    "stop" => {
+                        app.live.as_mut().unwrap().busy = true;
+                        app.open_stop();
+                    }
+                    "cancel" => {
+                        app.live.as_mut().unwrap().busy = true;
+                        app.live.as_mut().unwrap().request_stop().unwrap();
+                    }
+                    _ => {}
+                }
+                let text = draw(&mut app, if overlay == "tiny" { 20 } else { 140 }, 60);
+                assert!(
+                    !text.contains(if reset {
+                        "Claude session reset"
+                    } else {
+                        "Optional Sidecar"
+                    }),
+                    "{overlay}"
+                );
+                if overlay == "approval" {
+                    assert!(text.contains("Tool approval"));
+                }
+                if overlay == "question" {
+                    assert!(text.contains("Enter a fixture token"));
+                }
+                remove_prompt(&mut app);
+                let settings = &mut app.live.as_mut().unwrap().settings;
+                assert!(
+                    settings.subpanel_open(),
+                    "{overlay} must retain the open child"
+                );
+                settings.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                assert!(
+                    settings.take_intent().is_none(),
+                    "hidden review retained painted evidence: {overlay}"
+                );
+                draw(&mut app, 140, 60);
+                key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                let settings = &mut app.live.as_mut().unwrap().settings;
+                assert!(
+                    settings.take_intent().is_some(),
+                    "{overlay} must resume exact review"
+                );
+                assert!(settings.waiting);
+                check_draft(&app, &attached);
+            }
+        }
+    }
+    #[test]
+    fn overlay_ownership_late_review_waits_for_actual_visible_paint() {
+        for reset in [false, true] {
+            let mut app = app();
+            app.live.as_mut().unwrap().settings.open = true;
+            app.live.as_mut().unwrap().settings.waiting = true;
+            question(&mut app);
+            draw(&mut app, 140, 60);
+            assert!(app.live.as_ref().unwrap().settings.waiting);
+            review(&mut app, reset);
+            draw(&mut app, 140, 60);
+            remove_prompt(&mut app);
+            let settings = &mut app.live.as_mut().unwrap().settings;
+            settings.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(settings.take_intent().is_none());
+            draw(&mut app, 140, 60);
+            key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(app.live.as_mut().unwrap().settings.take_intent().is_some());
+        }
+    }
+    fn settings_editor(app: &mut Demo) {
+        let settings = &mut app.live.as_mut().unwrap().settings;
+        settings.open = true;
+        settings.editor.open("max_tokens_chat");
+        settings.take_intent();
+        settings.observe(settings_view::Update::Editor(
+            settings_editor::Update::Snapshot(settings_editor::Snapshot {
+                session: "owned".into(),
+                agent: "agent".into(),
+                backend: "claude".into(),
+                model: "fixture".into(),
+                token: "a".repeat(64),
+                revisions: json!({"global":"absent","conversation":"absent","agent":"absent"}),
+                budgets: [
+                    settings_editor::Budget {
+                        saved: 101,
+                        effective: 101,
+                        editable: true,
+                        reason: None,
+                    },
+                    settings_editor::Budget {
+                        saved: 202,
+                        effective: 202,
+                        editable: true,
+                        reason: None,
+                    },
+                ],
+            }),
+        ));
+        draw(app, 140, 60);
+    }
+    fn lower_panel(app: &mut Demo, panel: &str) {
+        let id = identity();
+        let selected = litetui_terminal::conversation_rewrite::Selection {
+            history_key: history_view::ReadKey {
+                target: history_view::Target::Current,
+                generation: 1,
+            },
+            identity: history::Identity {
+                from_session: id.session.clone(),
+                session: id.session,
+                agent: id.agent,
+                backend: id.backend,
+                model: id.model,
+                scope: history::Scope::Current,
+                catalog: None,
+            },
+            history_snapshot: "a".repeat(64),
+            context_sha256: "b".repeat(64),
+            messages: 3,
+            message_index: 1,
+            message_sha256: "c".repeat(64),
+        };
+        match panel {
+            "settings" => settings_editor(app),
+            "work" => app.live.as_mut().unwrap().work.open(),
+            "rewrite" => app
+                .live
+                .as_mut()
+                .unwrap()
+                .rewrite
+                .open(
+                    litetui_terminal::conversation_rewrite::Action::Edit,
+                    selected,
+                )
+                .unwrap(),
+            "compact" => app
+                .live
+                .as_mut()
+                .unwrap()
+                .compact
+                .open(litetui_terminal::conversation_compact::Selection {
+                    history_key: selected.history_key,
+                    identity: selected.identity,
+                    history_snapshot: selected.history_snapshot,
+                    context_sha256: selected.context_sha256,
+                    messages: selected.messages,
+                })
+                .unwrap(),
+            _ => unreachable!(),
+        }
+    }
+    #[test]
+    fn overlay_ownership_question_paste_is_exclusive_over_every_early_panel() {
+        for panel in ["settings", "work", "rewrite", "compact"] {
+            let mut app = app();
+            let attached = app.live.as_ref().unwrap().work.image.attached.clone();
+            lower_panel(&mut app, panel);
+            let previous = app
+                .live
+                .as_ref()
+                .unwrap()
+                .settings
+                .editor
+                .draft()
+                .to_owned();
+            question(&mut app);
+            // No redraw between the event and the clipboard chord: old child paint is stale.
+            let mut clipboard = Clipboard::default();
+            let mut router = KeyRouter::default();
+            handle_key(
+                &mut app,
+                &mut router,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                &mut clipboard,
+            );
+            assert_eq!(clipboard.reads, 1, "{panel}");
+            paste(&mut app, "-bracketed");
+            assert_eq!(
+                app.live
+                    .as_ref()
+                    .unwrap()
+                    .questions
+                    .current()
+                    .unwrap()
+                    .notes[1]
+                    .text(),
+                "257-bracketed",
+                "{panel}"
+            );
+            assert_eq!(app.live.as_ref().unwrap().settings.editor.draft(), previous);
+            check_draft(&app, &attached);
+        }
+    }
+    #[test]
+    fn overlay_ownership_question_paste_honors_higher_priority_guards_and_repeats() {
+        for guard in [
+            "approval", "stop", "cancel", "tiny", "quit", "repeat", "waiting",
+        ] {
+            let mut app = app();
+            settings_editor(&mut app);
+            question(&mut app);
+            let mut event = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+            match guard {
+                "approval" => approval(&mut app),
+                "stop" => {
+                    app.live.as_mut().unwrap().busy = true;
+                    app.open_stop();
+                }
+                "cancel" => {
+                    app.live.as_mut().unwrap().busy = true;
+                    app.live.as_mut().unwrap().request_stop().unwrap();
+                }
+                "tiny" => app.viewport_too_small = true,
+                "quit" => app.live.as_mut().unwrap().quitting = true,
+                "repeat" => event.kind = KeyEventKind::Repeat,
+                "waiting" => {
+                    app.live
+                        .as_mut()
+                        .unwrap()
+                        .questions
+                        .current_mut()
+                        .unwrap()
+                        .waiting = true
+                }
+                _ => unreachable!(),
+            }
+            let mut clipboard = Clipboard::default();
+            handle_key(&mut app, &mut KeyRouter::default(), event, &mut clipboard);
+            if guard != "repeat" {
+                paste(&mut app, "unowned");
+            }
+            assert_eq!(clipboard.reads, 0, "{guard}");
+            assert_eq!(
+                app.live
+                    .as_ref()
+                    .unwrap()
+                    .questions
+                    .current()
+                    .unwrap()
+                    .notes[1]
+                    .text(),
+                "",
+                "{guard}"
+            );
+            assert_eq!(app.live.as_ref().unwrap().settings.editor.draft(), "101");
+        }
+    }
+    #[test]
+    fn overlay_ownership_occlusion_keeps_pending_apply_and_its_late_readback() {
+        for reset in [false, true] {
+            let mut app = app();
+            review(&mut app, reset);
+            draw(&mut app, 140, 60);
+            key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            let request = app.live.as_mut().unwrap().settings.take_intent().unwrap();
+            question(&mut app);
+            draw(&mut app, 140, 60);
+            assert!(app.live.as_ref().unwrap().settings.waiting);
+            assert!(app.live.as_ref().unwrap().settings.subpanel_open());
+            assert!(app.live.as_mut().unwrap().settings.take_intent().is_none());
+            let update = match request {
+                settings_view::Intent::ClaudeReset(request) => {
+                    let claude_reset::Request::Apply(review) = *request else {
+                        panic!()
+                    };
+                    settings_view::Update::ClaudeReset(Ok(Box::new(claude_reset::Update::Saved(
+                        review,
+                    ))))
+                }
+                settings_view::Intent::Sidecar(_) => settings_view::Update::Sidecar(Ok(Box::new(
+                    sidecar_controls::Update::Saved(json!({})),
+                ))),
+                _ => panic!(),
+            };
+            app.observe_live(Observation::Settings(update)).unwrap();
+            let text = draw(&mut app, 140, 60);
+            assert!(text.contains("Enter a fixture token"));
+            assert!(app.live.as_ref().unwrap().settings.subpanel_open());
+            let followup = app.live.as_mut().unwrap().settings.take_intent();
+            if reset {
+                assert!(followup.is_none());
+            } else {
+                assert!(
+                    matches!(followup,Some(settings_view::Intent::Sidecar(r)) if matches!(*r,sidecar_controls::Request::Snapshot))
+                );
+            }
+        }
+    }
+    #[test]
+    fn overlay_ownership_question_mouse_uses_current_painted_hit_above_lower_panels() {
+        for panel in ["settings", "work", "rewrite", "compact"] {
+            for guard in ["none", "approval", "stop", "cancel", "tiny", "quit"] {
+                let mut app = app();
+                let attached = app.live.as_ref().unwrap().work.image.attached.clone();
+                lower_panel(&mut app, panel);
+                let previous = app
+                    .live
+                    .as_ref()
+                    .unwrap()
+                    .settings
+                    .editor
+                    .draft()
+                    .to_owned();
+                question(&mut app);
+                app.live
+                    .as_mut()
+                    .unwrap()
+                    .questions
+                    .current_mut()
+                    .unwrap()
+                    .jump(0);
+                draw(&mut app, 140, 60);
+                let rect = app
+                    .live
+                    .as_ref()
+                    .unwrap()
+                    .questions
+                    .current()
+                    .unwrap()
+                    .hits
+                    .iter()
+                    .find(|h| h.target == questions::HitTarget::Control(1))
+                    .unwrap()
+                    .rect;
+                match guard {
+                    "approval" => approval(&mut app),
+                    "stop" => app.open_stop(),
+                    "cancel" => {
+                        app.live.as_mut().unwrap().request_stop().unwrap();
+                    }
+                    "tiny" => app.viewport_too_small = true,
+                    "quit" => app.live.as_mut().unwrap().quitting = true,
+                    _ => {}
+                }
+                let event = |kind| MouseEvent {
+                    kind,
+                    column: rect.x,
+                    row: rect.y,
+                    modifiers: KeyModifiers::NONE,
+                };
+                mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left)));
+                assert!(
+                    app.live
+                        .as_ref()
+                        .unwrap()
+                        .questions
+                        .current()
+                        .unwrap()
+                        .answers[0]
+                        .is_empty()
+                );
+                mouse(&mut app, event(MouseEventKind::Down(MouseButton::Left)));
+                mouse(&mut app, event(MouseEventKind::Up(MouseButton::Left)));
+                assert_eq!(
+                    app.live
+                        .as_ref()
+                        .unwrap()
+                        .questions
+                        .current()
+                        .unwrap()
+                        .answers[0]
+                        .contains(&0),
+                    guard == "none",
+                    "{panel}/{guard}"
+                );
+                assert_eq!(app.live.as_ref().unwrap().settings.editor.draft(), previous);
+                check_draft(&app, &attached);
+            }
         }
     }
 }

@@ -2692,6 +2692,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let connection =
                             matches!(intent, crate::settings_view::Intent::Connection(_));
                         let agent = matches!(intent, crate::settings_view::Intent::Agent(_));
+                        let sidecar = matches!(intent, crate::settings_view::Intent::Sidecar(_));
                         let model_preferences =
                             matches!(intent, crate::settings_view::Intent::ModelPreferences(_));
                         let model_lifecycle =
@@ -2725,46 +2726,40 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => {
-                                frontend.observe(Observation::Settings(if model_lifecycle {
-                                    crate::settings_view::Update::ModelLifecycle(Err(
-                                        error.to_string()
-                                    ))
-                                } else if model_preferences {
-                                    crate::settings_view::Update::ModelPreferences(Err(
-                                        error.to_string()
-                                    ))
-                                } else if voice {
-                                    crate::settings_view::Update::Voice(Err(error.to_string()))
-                                } else if presentation {
-                                    crate::settings_view::Update::Presentation(Err(
-                                        error.to_string()
-                                    ))
-                                } else if connection {
-                                    crate::settings_view::Update::Connection(Err(error.to_string()))
-                                } else if agent {
-                                    crate::settings_view::Update::Agent(Err(error.to_string()))
-                                } else if mcp {
-                                    crate::settings_view::Update::Mcp(Err(error.to_string()))
-                                } else if runtime_status {
-                                    crate::settings_view::Update::RuntimeStatus(Err(
-                                        error.to_string()
-                                    ))
-                                } else if let Some(generation) = compact_generation {
-                                    crate::settings_view::Update::Compaction(
-                                        crate::compaction_settings::Update::Rejected {
-                                            generation,
-                                            reason: error.to_string(),
-                                        },
-                                    )
-                                } else if editing {
-                                    crate::settings_view::Update::Editor(
-                                        crate::settings_editor::Update::Rejected(error.to_string()),
-                                    )
-                                } else {
-                                    crate::settings_view::Update::Rejected(error.to_string())
-                                }))?
-                            }
+                            Err(error) => frontend.observe(Observation::Settings(if sidecar {
+                                crate::settings_view::Update::Sidecar(Err(error.to_string()))
+                            } else if model_lifecycle {
+                                crate::settings_view::Update::ModelLifecycle(Err(error.to_string()))
+                            } else if model_preferences {
+                                crate::settings_view::Update::ModelPreferences(Err(
+                                    error.to_string()
+                                ))
+                            } else if voice {
+                                crate::settings_view::Update::Voice(Err(error.to_string()))
+                            } else if presentation {
+                                crate::settings_view::Update::Presentation(Err(error.to_string()))
+                            } else if connection {
+                                crate::settings_view::Update::Connection(Err(error.to_string()))
+                            } else if agent {
+                                crate::settings_view::Update::Agent(Err(error.to_string()))
+                            } else if mcp {
+                                crate::settings_view::Update::Mcp(Err(error.to_string()))
+                            } else if runtime_status {
+                                crate::settings_view::Update::RuntimeStatus(Err(error.to_string()))
+                            } else if let Some(generation) = compact_generation {
+                                crate::settings_view::Update::Compaction(
+                                    crate::compaction_settings::Update::Rejected {
+                                        generation,
+                                        reason: error.to_string(),
+                                    },
+                                )
+                            } else if editing {
+                                crate::settings_view::Update::Editor(
+                                    crate::settings_editor::Update::Rejected(error.to_string()),
+                                )
+                            } else {
+                                crate::settings_view::Update::Rejected(error.to_string())
+                            }))?,
                         }
                     }
                     Input::Backend(intent) => {
@@ -4449,12 +4444,14 @@ mod approval_shutdown_tests {
             .approve(crate::approvals::Decision {
                 id: "a".into(),
                 allow: false,
+                remember: false,
             })
             .unwrap();
         runtime
             .approve(crate::approvals::Decision {
                 id: "b".into(),
                 allow: false,
+                remember: false,
             })
             .unwrap();
         assert!(
@@ -4466,7 +4463,8 @@ mod approval_shutdown_tests {
             runtime
                 .approve(crate::approvals::Decision {
                     id: "c".into(),
-                    allow: true
+                    allow: true,
+                    remember: false,
                 })
                 .is_err()
         );

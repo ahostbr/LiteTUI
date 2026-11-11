@@ -258,3 +258,129 @@ fn empty_card_announcement_precedes_tool_ownership_and_input_updates_are_authori
             .contains("updated partial")
     );
 }
+
+#[test]
+fn native_tool_elapsed_keeps_the_first_request_and_freezes_on_result_or_retirement() {
+    use std::time::{Duration, Instant};
+    let mut chat = chat();
+    chat.observe(activity(request("timed", 0))).unwrap();
+    let sample = Instant::now();
+    let first = chat.rows[0].tools[0].timing.clone();
+    assert_eq!(
+        first.elapsed_at(sample + Duration::from_secs(3)).unwrap()
+            - first.elapsed_at(sample).unwrap(),
+        Duration::from_secs(3)
+    );
+    chat.observe(activity(request("timed", 0))).unwrap();
+    assert_eq!(
+        chat.rows[0].tools[0].timing, first,
+        "input snapshots must not restart timing"
+    );
+    chat.observe(activity(result("timed", 0, json!(true))))
+        .unwrap();
+    let stopped = chat.rows[0].tools[0]
+        .timing
+        .elapsed_at(sample + Duration::from_secs(600));
+    assert!(stopped.is_some());
+    assert_eq!(
+        stopped,
+        chat.rows[0].tools[0]
+            .timing
+            .elapsed_at(sample + Duration::from_secs(900))
+    );
+    chat.observe(activity(result("timed", 0, json!(false))))
+        .unwrap();
+    assert_eq!(
+        stopped,
+        chat.rows[0].tools[0]
+            .timing
+            .elapsed_at(sample + Duration::from_secs(1000))
+    );
+    chat.observe(activity(request("retired", 0))).unwrap();
+    chat.finish(Some("transport lost".into()));
+    let retired = &chat.rows[0].tools[1];
+    assert_eq!(retired.result, ResultState::Incomplete);
+    assert_eq!(
+        retired.timing.elapsed_at(sample),
+        retired.timing.elapsed_at(sample + Duration::from_secs(600))
+    );
+}
+
+#[test]
+fn orphan_native_results_stay_untimed_even_if_a_late_input_snapshot_arrives() {
+    let mut chat = chat();
+    chat.observe(activity(result("orphan", 0, Value::Null)))
+        .unwrap();
+    chat.observe(activity(request("orphan", 0))).unwrap();
+    assert_eq!(
+        chat.rows[0].tools[0]
+            .timing
+            .elapsed_at(std::time::Instant::now()),
+        None
+    );
+}
+
+#[test]
+fn live_tool_duration_is_visible_running_folded_expanded_and_in_compact_view() {
+    let mut app = Demo::live("claude".into(), "m".into());
+    app.observe_live(Observation::Ready).unwrap();
+    app.insert_text("q");
+    app.submit();
+    app.observe_live(activity(request("timed", 0))).unwrap();
+    let render = |app: &mut Demo| {
+        let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let running = render(&mut app);
+    assert!(running.contains("result pending · observed "), "{running}");
+    app.observe_live(activity(result("timed", 0, json!(true))))
+        .unwrap();
+    let label = app.live.as_ref().unwrap().rows[0].tools[0].timing.label();
+    for compact in [false, true] {
+        if app.compact_display.active() != compact {
+            app.compact_display.toggle();
+        }
+        for expanded in [false, true] {
+            let text = render(&mut app);
+            assert!(
+                text.contains(&label) && text.contains("reported failure"),
+                "compact={compact} expanded={expanded}: {text}"
+            );
+            assert!(app.live.as_mut().unwrap().toggle_recent_tool());
+        }
+    }
+    app.observe_live(activity(result("orphan", 0, Value::Null)))
+        .unwrap();
+    assert!(render(&mut app).contains("duration unknown"));
+}
+
+#[test]
+fn every_live_terminal_outcome_freezes_pending_tool_elapsed_time() {
+    use std::time::{Duration, Instant};
+    for outcome in [
+        Observation::Complete,
+        Observation::Failed("failure".into()),
+        Observation::Cancelled("cancelled".into()),
+        Observation::ApprovalStopped("denied".into()),
+    ] {
+        let mut chat = chat();
+        chat.observe(activity(request("timed", 0))).unwrap();
+        chat.observe(outcome).unwrap();
+        let tool = &chat.rows[0].tools[0];
+        assert_eq!(tool.result, ResultState::Incomplete);
+        let sample = Instant::now();
+        let stopped = tool.timing.elapsed_at(sample);
+        assert!(stopped.is_some());
+        assert_eq!(
+            stopped,
+            tool.timing.elapsed_at(sample + Duration::from_secs(600))
+        );
+    }
+}

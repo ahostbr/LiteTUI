@@ -127,6 +127,7 @@ pub struct Tool {
     pub input_complete: bool,
     pub request_seen: bool,
     pub result: ResultState,
+    pub timing: crate::presentation::ToolTiming,
 }
 impl Tool {
     pub(crate) fn updated(old: Option<&Self>, event: Activity) -> io::Result<Self> {
@@ -138,6 +139,11 @@ impl Tool {
             input_complete: false,
             request_seen: false,
             result: ResultState::Pending,
+            timing: if matches!(&event.detail, Detail::Input { .. }) {
+                crate::presentation::ToolTiming::started()
+            } else {
+                crate::presentation::ToolTiming::default()
+            },
         });
         if tool.card != event.card
             || (tool.name.is_some() && event.name.is_some() && tool.name != event.name)
@@ -156,7 +162,8 @@ impl Tool {
                 tool.request_seen = true;
             }
             Detail::Result { text, is_error } => {
-                tool.result = ResultState::Returned { text, is_error }
+                tool.result = ResultState::Returned { text, is_error };
+                tool.timing.finish();
             }
         }
         Ok(tool)
@@ -164,6 +171,7 @@ impl Tool {
     pub(crate) fn finish(&mut self) {
         if self.result == ResultState::Pending {
             self.result = ResultState::Incomplete;
+            self.timing.finish();
         }
     }
     pub(crate) fn texts(&self) -> Vec<&str> {

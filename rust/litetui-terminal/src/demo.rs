@@ -34,6 +34,7 @@ pub struct Demo {
     pub transcript_selection: crate::transcript_selection::TranscriptSelection,
     pub compact_display: crate::compact_display::Profile,
     pub transcript_viewport: Option<(u16, u16)>,
+    pub transcript_rows: Option<(usize, usize, bool)>,
     pub viewport_too_small: bool,
     pub command_quit: bool,
     pub approval_open: bool,
@@ -130,6 +131,7 @@ impl Default for Demo {
             transcript_selection: Default::default(),
             compact_display: Default::default(),
             transcript_viewport: None,
+            transcript_rows: None,
             viewport_too_small: false,
             command_quit: false,
             approval_open: false,
@@ -159,7 +161,14 @@ impl Demo {
         // An unlocked reader (autoscroll off) is never yanked to the newest output.
         let following = self.presentation().autoscroll
             && (self.scroll >= self.max_scroll
+                && self
+                    .live
+                    .as_ref()
+                    .is_none_or(|chat| chat.is_latest_live_page())
                 || matches!(&observation, crate::live::Observation::Opened(_)));
+        if !following && let Some(chat) = self.live.as_mut() {
+            chat.pin_live_page();
+        }
         if matches!(
             observation,
             crate::live::Observation::Approval(crate::approvals::Event::Requested(_))
@@ -248,6 +257,7 @@ impl Demo {
         let route = chat.commands.take_route();
         let route_arguments = chat.commands.take_route_arguments();
         if following {
+            self.live.as_mut().expect("live").latest_live_page();
             self.scroll = usize::MAX;
         }
         if let Some(action) = route {
@@ -303,6 +313,7 @@ impl Demo {
                 Action::Glassbox => self.open_glassbox(&route_arguments),
                 Action::Monitor => self.open_monitor(&route_arguments),
                 Action::Mark => self.open_mark(),
+                Action::Sidecar => self.open_sidecar(&route_arguments),
                 Action::Models => self
                     .open_models_preselected(crate::model_controls::Kind::Model, &route_arguments),
                 Action::Thinking => self.open_models_preselected(
@@ -1068,12 +1079,61 @@ impl Demo {
         self.follow_selection = true;
     }
 
+    fn invalidate_transcript_page(&mut self) {
+        self.compact_display.clear_hits();
+        self.transcript_selection.clear();
+        self.transcript_rows = None;
+    }
     pub fn scroll_up(&mut self, amount: usize) {
-        self.scroll = self.scroll.saturating_sub(amount);
+        if self.scroll == 0
+            && amount > 0
+            && self
+                .live
+                .as_mut()
+                .is_some_and(|chat| chat.older_live_page())
+        {
+            self.invalidate_transcript_page();
+            self.scroll = usize::MAX;
+        } else {
+            self.scroll = self.scroll.saturating_sub(amount);
+        }
     }
 
     pub fn scroll_down(&mut self, amount: usize) {
-        self.scroll = self.scroll.saturating_add(amount).min(self.max_scroll);
+        if self.scroll >= self.max_scroll
+            && amount > 0
+            && self
+                .live
+                .as_mut()
+                .is_some_and(|chat| chat.newer_live_page())
+        {
+            self.invalidate_transcript_page();
+            self.scroll = 0;
+        } else {
+            self.scroll = self.scroll.saturating_add(amount).min(self.max_scroll);
+        }
+    }
+    pub fn transcript_home(&mut self) {
+        if self
+            .live
+            .as_mut()
+            .is_some_and(|chat| chat.first_live_page())
+        {
+            self.invalidate_transcript_page();
+        }
+        self.scroll = 0;
+    }
+    pub fn transcript_end(&mut self) {
+        if self
+            .live
+            .as_mut()
+            .is_some_and(|chat| chat.latest_live_page())
+        {
+            self.invalidate_transcript_page();
+            self.scroll = usize::MAX;
+        } else {
+            self.scroll = self.max_scroll;
+        }
     }
 
     pub fn open_approval(&mut self) {
@@ -1222,6 +1282,9 @@ impl Demo {
             return;
         }
         if let Some(chat) = &mut self.live {
+            if !chat.runtime_state.presentation().autoscroll {
+                chat.pin_live_page();
+            }
             if let Err(error) = chat.submit_composer(&text) {
                 self.notice = error.to_string();
                 return;
@@ -1230,6 +1293,7 @@ impl Demo {
             self.composer.push_history(&text);
             self.composer.clear();
             if chat.runtime_state.presentation().autoscroll {
+                chat.latest_live_page();
                 self.scroll = usize::MAX;
             }
             return;

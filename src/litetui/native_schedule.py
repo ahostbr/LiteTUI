@@ -176,12 +176,14 @@ def _retired_owner(app, pending):
             or pending.state not in {"proposed", "declined", "refused"}
             or app._agent_session is not pending.review.context.session
             or app._agent_session is not pending.bridge.owner[0]
+            or app.store is not pending.review.context.store
+            or app.store is not pending.bridge.owner[1]
             or work.identity(app)["agent_id"] != pending.bridge.identity["agent_id"]
             or pending.stamp_attempted or pending.stamp is not None or pending.transition is not None
             or getattr(getattr(app, "_native_work_deferred", None), "schedule_owner", None) is pending
             or work.encoded(pending.proposal) != pending.proposal_bytes):
         raise ValueError("Retired scheduled proposal lost its exact no-effect owner")
-    app._validate_owned_identity()
+    app._validate_owned_authority()
 
 
 def retire_proposal(app, value):

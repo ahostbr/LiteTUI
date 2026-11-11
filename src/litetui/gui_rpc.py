@@ -35,6 +35,10 @@ def current_operation(app):
 
 
 OPERATIONS = (
+    "claude.native_reset_review", "claude.native_reset_apply", "claude.native_reset_readback",
+    "sidecar.native_configure",
+    "sidecar.native_snapshot", "sidecar.native_review", "sidecar.native_apply", "sidecar.native_readback",
+    "sidecar.native_step_review", "sidecar.native_step_apply", "sidecar.native_step_readback", "sidecar.native_cancel",
     "monitor.native_snapshot", "monitor.native_review", "monitor.native_apply", "monitor.native_readback", "monitor.native_close",
     "glassbox.native_snapshot", "glassbox.native_review", "glassbox.native_apply", "glassbox.native_readback",
     "hello", "state", "screen.native_mark", "voice.native_dictation", "voice.native_playback", "voice.native_catalog", "voice.native_action", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
@@ -965,11 +969,22 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    from litetui import native_claude_reset
+    if operation in native_claude_reset.OPERATIONS:
+        return await native_claude_reset.dispatch(app, cmd)
+    if native_claude_reset.blocking(app):
+        raise ValueError("Claude reset owns its exact readback publication")
     from litetui import native_mark
     if operation == native_mark.OPERATION:
         return await native_mark.dispatch(app, cmd)
     if native_mark.blocking(app):
         raise ValueError("Close the Mark review before another management action")
+    from litetui import native_sidecar, native_sidecar_preferences
+    if operation.startswith(native_sidecar_preferences.PREFIX):
+        return native_sidecar_preferences.dispatch(app, cmd)
+    if operation.startswith(native_sidecar.PREFIX):
+        return await native_sidecar.dispatch(app, cmd)
+    native_sidecar.allowed(app, cmd)
     from litetui import (
         native_dictation,
         native_playback,

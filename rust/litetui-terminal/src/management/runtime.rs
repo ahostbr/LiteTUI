@@ -1,5 +1,5 @@
 //! One bounded runtime choice, ordered by its exact result/readback publication.
-use super::{CommandId, Management, Step, fail};
+use super::{CommandId, Management, Step, fail, text};
 use crate::{runtime_controls as controls, runtime_controls_view as view, work_lifecycle as life};
 use serde_json::Value;
 use std::io;
@@ -46,6 +46,80 @@ fn rpc_id(id: &CommandId) -> io::Result<String> {
         .ok_or_else(|| fail("Runtime control RPC id must be text"))
 }
 impl Management {
+    pub(super) fn register_sidecar_runtime(
+        &mut self,
+        value: &Value,
+        outer_id: &str,
+    ) -> io::Result<()> {
+        let policy = self
+            .runtime_policy()
+            .ok_or_else(|| fail("Sidecar runtime policy is unavailable"))?;
+        let review = crate::sidecar_controls::runtime_review(value, policy)?;
+        if self
+            .runtime_controls
+            .invocation
+            .as_ref()
+            .is_some_and(|a| !a.released)
+        {
+            return Err(fail("Another runtime choice still owns its readback"));
+        }
+        self.runtime_controls.invocation = Some(Invocation {
+            review,
+            apply_id: format!("{outer_id}/apply"),
+            readback_id: None,
+            receipt: None,
+            readback: None,
+            released: false,
+        });
+        Ok(())
+    }
+    pub(super) fn observe_sidecar_runtime_apply(
+        &mut self,
+        review: &Value,
+        applied: &Value,
+    ) -> io::Result<()> {
+        let current = self
+            .runtime_controls
+            .invocation
+            .as_mut()
+            .ok_or_else(|| fail("Sidecar runtime has no retained invocation"))?;
+        if current.review.wire != review["review"]
+            || applied["command"]["id"] != current.apply_id
+            || current.receipt.is_some()
+        {
+            return Err(fail(
+                "Sidecar runtime application changed its exact invocation",
+            ));
+        }
+        current.receipt = Some(controls::Receipt::parse(
+            &applied["result"],
+            &current.review,
+            &current.apply_id,
+        )?);
+        Ok(())
+    }
+    pub(super) fn install_sidecar_runtime(&mut self, value: &Value) -> io::Result<()> {
+        let invocation = self
+            .runtime_controls
+            .invocation
+            .as_mut()
+            .ok_or_else(|| fail("Sidecar runtime has no application"))?;
+        if invocation.released || invocation.readback.is_some() {
+            return Err(fail("Sidecar runtime readback was consumed"));
+        }
+        let receipt = invocation
+            .receipt
+            .as_ref()
+            .ok_or_else(|| fail("Sidecar runtime receipt is missing"))?;
+        let readback = controls::Readback::parse(&value["result"], receipt)?;
+        let operation = text(&value["command"], "id", 128)?.to_owned();
+        if value["result"]["readback_operation_id"] != operation {
+            return Err(fail("Sidecar runtime readback changed its actual command"));
+        }
+        invocation.readback_id = Some(operation);
+        invocation.readback = Some(readback.clone());
+        self.install_runtime_readback(&readback)
+    }
     pub(super) fn configure_runtime_controls(&mut self, operations: &[String]) -> io::Result<()> {
         self.runtime_controls.capabilities = controls::Capabilities::negotiate(operations)?;
         self.runtime_controls.mcp_lifecycle = crate::mcp_lifecycle::negotiate(

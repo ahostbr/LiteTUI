@@ -4,6 +4,14 @@
 use crate::{demo::Demo, model_controls::Kind};
 
 impl Demo {
+    pub(crate) fn open_sidecar(&mut self, arguments: &str) {
+        self.open_settings();
+        if let Some(chat) = self.live.as_mut()
+            && chat.settings.open
+        {
+            chat.settings.open_sidecar(arguments);
+        }
+    }
     pub(crate) fn open_monitor(&mut self, arguments: &str) {
         self.open_settings();
         if let Some(chat) = self.live.as_mut()
@@ -31,7 +39,7 @@ impl Demo {
         }
     }
     /// resolve / continue go to the reviewed held-input control, new to the
-    /// reviewed New conversation control, status to the read-only inspector.
+    /// reviewed Claude-session reset, status to the read-only inspector.
     pub(crate) fn open_claude(&mut self, verb: &str) -> std::io::Result<()> {
         match verb.trim().to_ascii_lowercase().as_str() {
             verb @ ("resolve" | "continue") => {
@@ -43,9 +51,11 @@ impl Demo {
                 }
             }
             "new" => {
-                self.open_conversation_action(crate::conversation_actions::Action::New, "")?;
-                if self.has_live_browser() {
-                    self.notice = "/claude new opened the reviewed New conversation control. A Claude-session-only reset has no native control; nothing was changed.".into();
+                self.open_settings();
+                if let Some(chat) = self.live.as_mut()
+                    && chat.settings.open
+                {
+                    chat.settings.open_claude_reset();
                 }
             }
             _ => {

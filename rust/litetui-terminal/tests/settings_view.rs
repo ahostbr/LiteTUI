@@ -157,12 +157,7 @@ fn readonly_keys_never_create_a_mutation_and_navigation_shows_pending_values() {
             && screen.contains("http://effective")
             && screen.contains("PENDING")
     );
-    for code in [
-        KeyCode::Enter,
-        KeyCode::Char('s'),
-        KeyCode::Delete,
-        KeyCode::Backspace,
-    ] {
+    for code in [KeyCode::Enter, KeyCode::Delete, KeyCode::Backspace] {
         view.key(key(code));
         assert!(view.take_intent().is_none());
     }
@@ -318,4 +313,17 @@ fn canonical_next_turn_and_reload_modes_keep_distinct_effective_values() {
     state["settings"]["effective"]["max_tokens_chat"] = json!(1);
     state["settings"]["deferred"]["max_tokens_chat"] = json!("next_turn");
     assert!(Snapshot::parse(&state, "owned-session").is_err());
+}
+
+#[test]
+fn sidecar_shortcut_only_requests_inspection_before_any_lifecycle_action() {
+    let mut view = view(&state());
+    draw(&mut view, 100, 30);
+    view.key(key(KeyCode::Char('s')));
+    assert_eq!(
+        view.take_intent(),
+        Some(Intent::Sidecar(Box::new(
+            litetui_terminal::sidecar_controls::Request::Snapshot
+        )))
+    );
 }

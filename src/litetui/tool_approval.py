@@ -312,7 +312,7 @@ def _approval_registry(app) -> dict:
     return reg
 
 
-def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False, *, rewrite_prewrite=None) -> bool:
+def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False, *, rewrite_prewrite=None, remember_scope=None) -> bool:
     """Answer a pending wire approval. False when the id is unknown or done.
 
     AN UNKNOWN ID IS AN ERROR AT THE CALLER, NOT A NO-OP HERE -- the same
@@ -334,9 +334,19 @@ def resolve_over_rpc(app, approval_id: str, allow: bool, remember: bool = False,
         deadline = record["authority"].deadline
         if deadline is not None and approval_authority.time.monotonic() >= deadline:
             return False
+    if remember_scope is not None:
+        if not allow or not remember:
+            return False
+        from litetui import native_approval_remember
+        try:
+            native_approval_remember.validate(app, approval_id, remember_scope)
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
     if record is not None and not approval_authority.settle(
             app, approval_id, outcome="approved" if allow else "denied"):
         return False
+    if remember_scope is not None:
+        native_approval_remember.select(app, approval_id, remember_scope)
     fut.set_result(ALWAYS if (allow and remember) else (ONCE if allow else DENIED))
     return True
 
@@ -413,12 +423,19 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
 
     status = "error"
     requested = False
+    remembered = None
     try:
         _approval_registry(app)[approval_id] = fut
         spawners[approval_id] = approval_relay.current_spawner(app)
         approval_authority.create(app, approval_id, approver=spawners[approval_id],
                                   route=seat_authority.confirm_route(app), timeout=timeout)
+        from litetui import native_approval_remember
+        try:
+            remember_scope = native_approval_remember.capture(app, approval_id, name, decision.capabilities)
+        except (AttributeError, OSError, TypeError, ValueError):
+            remember_scope = None
         app._rpc_emit({
+            **({"remember_scope": remember_scope} if remember_scope is not None else {}),
             "type": "tool_approval_requested",
             "id": approval_id,
             "tool": name,
@@ -434,6 +451,8 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             if answer is None or not approval_authority.persistence_ready(app, approval_id):
                 status = "revoked"
                 return None
+            if answer.remember:
+                remembered = native_approval_remember.finish(app, approval_id)
             status = "answered"
             return answer
         except TimeoutError:
@@ -448,6 +467,8 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
     finally:
         _approval_registry(app).pop(approval_id, None)
         spawners.pop(approval_id, None)
+        from litetui import native_approval_remember
+        native_approval_remember.close(app, approval_id)
         outcome = approval_authority.close(app, approval_id, status)
         if requested:
             # The decision can be approved even when the wait was subsequently
@@ -456,4 +477,5 @@ async def approve_over_rpc(app, name: str, args, decision: PolicyDecision,
             # live and is not silently converted into successful approval.
             app._rpc_emit({"type": "tool_approval_closed", "id": approval_id,
                            "outcome": outcome,
+                           **({"remembered": remembered} if remembered is not None else {}),
                            "reason": "audit-error" if outcome == "audit-error" else status})

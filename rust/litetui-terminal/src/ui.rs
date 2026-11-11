@@ -478,7 +478,13 @@ fn observed_tool(
         ToolObservationState::Returned { ok: false, .. } => "Returned · host ok=false",
         ToolObservationState::Incomplete => "Incomplete · return unavailable",
     };
-    tool_body(t, lines, status, t.title, width);
+    tool_body(
+        t,
+        lines,
+        &format!("{status} · {}", tool.timing.label()),
+        t.title,
+        width,
+    );
     tool_body(
         t,
         lines,
@@ -558,7 +564,7 @@ fn native_tool(
     if compact && !expanded {
         let marker = if selected { "›" } else { " " };
         let label = clip_label(
-            &format!("{marker} {header} · {status}"),
+            &format!("{marker} {header} · {} · {status}", tool.timing.label()),
             width.saturating_sub(2),
         );
         lines.push(Line::styled(
@@ -573,7 +579,13 @@ fn native_tool(
             style(header_color, t.tool_background).add_modifier(Modifier::BOLD),
         ));
     }
-    tool_body(t, lines, status, color, width);
+    tool_body(
+        t,
+        lines,
+        &format!("{status} · {}", tool.timing.label()),
+        color,
+        width,
+    );
     if !expanded {
         lines.push(Line::raw(""));
         return;
@@ -627,6 +639,8 @@ struct Transcript {
     selected: (usize, usize),
     headers: Headers,
     folds: Vec<FoldSpan>,
+    #[cfg(test)]
+    rendered_rows: usize,
 }
 /// The settled line below a turn's last card (source `format_turn_stop_line`).
 fn stop_line(
@@ -650,6 +664,42 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
     if let Some(chat) = &app.live {
         let mut lines = Vec::new();
         let mut selected = (0, 0);
+        // Choose the bounded absolute row window before any body is escaped or wrapped.
+        let visible = chat.visible_row_range();
+        #[cfg(test)]
+        let mut rendered_rows = 0;
+        if chat.has_older_live_page() || chat.has_newer_live_page() {
+            let location = if visible.is_empty() && chat.show_live_history() {
+                "Saved startup history".to_owned()
+            } else {
+                format!(
+                    "Live rows {}–{} of {}",
+                    visible.start + 1,
+                    visible.end,
+                    chat.rows.len()
+                )
+            };
+            tool_body(
+                t,
+                &mut lines,
+                &format!(
+                    "{location} · {}{}PgUp/PgDn at page edges · Ctrl+Home/End first/latest",
+                    if chat.has_older_live_page() {
+                        "older available · "
+                    } else {
+                        ""
+                    },
+                    if chat.has_newer_live_page() {
+                        "newer available · "
+                    } else {
+                        ""
+                    }
+                ),
+                t.thinking_text,
+                width,
+            );
+            lines.push(Line::raw(""));
+        }
         if let Some(descriptor) = chat.history.as_ref().and_then(|h| h.descriptor.as_ref()) {
             tool_body(
                 t,
@@ -664,6 +714,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
         }
         if let Some(history) = &chat.history
             && history.descriptor.is_none()
+            && chat.show_live_history()
             && chat.screen_cleared_history.as_deref() != Some(history.session.as_str())
         {
             tool_body(
@@ -706,11 +757,13 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                 lines.push(Line::raw(""));
             }
         }
-        for (row_index, row) in chat.rows.iter().enumerate() {
-            if row_index < chat.screen_cleared_rows {
-                continue;
+        for row_index in visible.clone() {
+            let row = &chat.rows[row_index];
+            #[cfg(test)]
+            {
+                rendered_rows += 1;
             }
-            if row_index == 0 && chat.prior_context_rows > 0 {
+            if row_index == visible.start && row_index < chat.prior_context_rows {
                 lines.push(Line::styled(
                     "  Retained scrollback from before compaction · F6 shows current context",
                     style(t.tool_text, t.background),
@@ -1004,6 +1057,8 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
             selected,
             headers,
             folds,
+            #[cfg(test)]
+            rendered_rows,
         };
     }
     let mut lines = vec![
@@ -1076,6 +1131,8 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
         selected: selected_range,
         headers,
         folds,
+        #[cfg(test)]
+        rendered_rows: 0,
     }
 }
 
@@ -1153,7 +1210,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             chat.rewrite.hide();
             chat.compact.hide();
             chat.work.hide();
-            chat.settings.hide();
+            chat.settings.occlude();
             chat.backend_controls.hide();
             chat.browser.hide();
         }
@@ -1256,11 +1313,26 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         body.width.saturating_sub(2),
         body.height.saturating_sub(picker_height),
     );
+    let page = app.live.as_ref().map(|chat| {
+        let rows = chat.visible_row_range();
+        (rows.start, rows.end, chat.show_live_history())
+    });
+    if app.transcript_rows != page {
+        // Identical geometry/local scroll can now name different absolute rows.
+        // A press or captured cell selection from the old page must not transfer.
+        app.compact_display.clear_hits();
+        app.transcript_selection.clear();
+        app.transcript_rows = page;
+    }
     let mut view = transcript(app, viewport.width as usize);
     let height = viewport.height as usize;
     // Source `_autocollapse_offscreen`: while the follow lock holds, fold settled cards that end
     // above the line the view is about to settle on, in the same frame as the move.
     if presentation.autoscroll
+        && app
+            .live
+            .as_ref()
+            .is_none_or(|chat| chat.is_latest_live_page())
         && app.scroll >= view.lines.len().saturating_sub(height)
         && fold_off_screen(app, &view.folds, view.lines.len().saturating_sub(height))
     {
@@ -1547,19 +1619,30 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     } else if let Some(chat) = &mut app.live {
         chat.queue.hide();
     }
-    if app.has_live_engine() {
+    // Current-conversation Work can start after an idle management panel opens.
+    // Source prompts own the frame; late management replies retain their owner
+    // but must not collect visible-review evidence beneath an overlay.
+    let lower_panels_visible = !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.live.as_ref().is_some_and(|chat| chat.cancelling());
+    if app.has_live_engine() && lower_panels_visible {
         app.live
             .as_mut()
             .expect("engine")
             .engine
             .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.engine.hide();
     }
-    if app.has_live_commands() {
+    if app.has_live_commands() && lower_panels_visible {
         app.live
             .as_mut()
             .expect("commands")
             .commands
             .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.commands.hide();
     }
     if app.help.open && !app.stop_open() {
         app.help.draw(frame, area, &t);
@@ -1645,21 +1728,31 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     } else if let Some(chat) = app.live.as_mut() {
         chat.work.hide();
     }
-    if app.has_live_settings() {
+    if app.has_live_settings()
+        && !app.stop_open()
+        && !app.has_live_approval()
+        && !app.has_live_question()
+        && !app.live.as_ref().is_some_and(|chat| chat.cancelling())
+    {
         app.live
             .as_mut()
             .expect("settings view")
             .settings
             .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.settings.occlude();
     }
-    if app.has_live_backend() {
+    if app.has_live_backend() && lower_panels_visible {
         app.live
             .as_mut()
             .expect("backend selector")
             .backend_controls
             .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.backend_controls.hide();
     }
     if app.has_live_browser()
+        && lower_panels_visible
         && !app.has_live_history()
         && !app.has_live_rewrite()
         && !app.has_live_compact()
@@ -1672,12 +1765,14 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     } else if let Some(chat) = app.live.as_mut() {
         chat.browser.hide();
     }
-    if app.has_live_controls() {
+    if app.has_live_controls() && lower_panels_visible {
         app.live
             .as_mut()
             .expect("live controls")
             .controls
             .draw(frame, area, &t);
+    } else if let Some(chat) = app.live.as_mut() {
+        chat.controls.hide();
     }
     if app.has_live_input() && app.live.as_ref().is_some_and(|chat| chat.cancelling()) {
         stopping_dialog(frame, app, area);
@@ -2000,6 +2095,19 @@ fn live_approval(frame: &mut Frame, app: &mut Demo, area: Rect, docked: bool) {
     current.scroll = current
         .scroll
         .min(lines.len().saturating_sub(parts[0].height as usize));
+    let layout = (parts[0].width, parts[0].height);
+    if current.layout != Some(layout) {
+        current.layout = Some(layout);
+        current.painted_lines.clear();
+        current.reviewed = false;
+        current.confirming = false;
+        current.confirmation_shown = false;
+        current.pressed = None;
+    }
+    current
+        .painted_lines
+        .extend(current.scroll..(current.scroll + parts[0].height as usize).min(lines.len()));
+    current.reviewed = current.painted_lines.len() == lines.len();
     frame.render_widget(
         Paragraph::new(
             lines
@@ -2015,23 +2123,70 @@ fn live_approval(frame: &mut Frame, app: &mut Demo, area: Rect, docked: bool) {
         .request
         .timeout_s
         .map_or("unbounded".into(), |n| format!("{n}s"));
-    let action: String = if current.waiting {
-        "Decision sent; waiting for source closure.".into()
-    } else if current.allow {
-        "  [ Deny ]   [> Allow once <]".into()
+    let choices = if current.request.remember_scope.is_some() {
+        3
     } else {
-        "  [> Deny <]   [ Allow once ]".into()
+        2
+    };
+    let selected = if current.remember {
+        2
+    } else {
+        u8::from(current.allow)
+    };
+    let mut action = String::from(" ");
+    let mut hits = Vec::new();
+    if current.waiting {
+        action.push_str("Decision sent; waiting for source closure.");
+    } else if current.confirming {
+        action.push_str("[ Confirm always (Enter) ]");
+        if current.reviewed && parts[1].width >= 28 && parts[1].height >= 3 {
+            current.confirmation_shown = true;
+            hits.push((Rect::new(parts[1].x + 1, parts[1].y + 2, 25, 1), 3));
+        }
+    } else {
+        for (index, label) in ["Deny", "Allow once", "Always allow"]
+            .iter()
+            .enumerate()
+            .take(choices)
+        {
+            let text = if selected == index as u8 {
+                format!("[> {label} <] ")
+            } else {
+                format!("[ {label} ] ")
+            };
+            let x = action.len() as u16;
+            if x + text.len() as u16 <= parts[1].width && parts[1].height >= 3 {
+                hits.push((
+                    Rect::new(parts[1].x + x, parts[1].y + 2, text.len() as u16 - 1, 1),
+                    index as u8,
+                ));
+            }
+            action.push_str(&text);
+        }
+    }
+    if current.hits != hits {
+        current.pressed = None;
+    }
+    current.hits = hits;
+    let note = if current.confirming {
+        " Confirm exact tool + authority for this conversation."
+    } else if current.remember && !current.reviewed {
+        " Read every request page before confirming Always allow."
+    } else if current.request.remember_scope.is_some() {
+        " Always allow needs separate confirmation and saved readback."
+    } else {
+        " This request supports Deny or Allow once only."
     };
     let controls = vec![
         Line::raw(format!(
             " Source wait budget: {budget}; turn deadline still applies."
         )),
-        Line::raw(" No execution receipt. Always-allow is not offered yet."),
+        Line::raw(note),
         Line::styled(
             action,
             style(t.tool_text, t.surface).add_modifier(Modifier::BOLD),
         ),
-        Line::raw(" Tab selects; Enter decides; Esc denies; Ctrl+Q quits."),
+        Line::raw(" Tab/click selects; Enter confirms; Esc denies; Ctrl+Q quits."),
         Line::raw(" Up/Down/PgUp/PgDn scroll full request; no auto-answer."),
     ];
     frame.render_widget(
@@ -2271,4 +2426,64 @@ fn live_question(frame: &mut Frame, app: &mut Demo, area: Rect, docked: bool) {
         .style(style(t.foreground, t.surface)),
         parts[2],
     );
+}
+
+#[cfg(test)]
+mod live_paging_render_work_tests {
+    use super::*;
+    use crate::{live::Observation, live_chat::Chat};
+
+    #[test]
+    fn ten_thousand_local_rows_materialize_only_the_selected_bounded_window() {
+        let mut chat = Chat::new("custom".into(), "fixture".into());
+        chat.observe(Observation::Ready).unwrap();
+        for index in 0..10_000 {
+            chat.submit(&format!("prompt-{index}")).unwrap();
+            chat.observe(Observation::Text(format!("answer-{index}")))
+                .unwrap();
+            chat.observe(Observation::Complete).unwrap();
+        }
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.live = Some(chat);
+        for first in [false, true, false] {
+            let chat = app.live.as_mut().unwrap();
+            if first {
+                chat.first_live_page();
+            } else {
+                chat.latest_live_page();
+            }
+            let range = chat.visible_row_range();
+            assert!(range.len() <= 64);
+            assert!(
+                chat.rows[range.clone()]
+                    .iter()
+                    .map(|row| row.render_units())
+                    .sum::<usize>()
+                    <= crate::live_chat::DISPLAY_UNITS
+            );
+            if first {
+                assert_eq!(range.start, 0);
+            } else {
+                assert_eq!(range.end, 10_000);
+            }
+            for width in [36, 120, 240] {
+                let view = transcript(&app, width);
+                assert_eq!(view.rendered_rows, range.len());
+                assert!(
+                    view.headers
+                        .iter()
+                        .all(|header| range.contains(&header.hit.row))
+                );
+                assert!(view.folds.iter().all(|fold| range.contains(&fold.row)));
+                assert!(
+                    view.lines.len() < 64 * 64,
+                    "only short fixture bodies in one page are materialized"
+                );
+            }
+        }
+        let chat = app.live.as_ref().unwrap();
+        assert_eq!(chat.rows.len(), 10_000);
+        assert_eq!(chat.rows[0].prompt, "prompt-0");
+        assert_eq!(chat.rows[9_999].cards[0].answer, "answer-9999");
+    }
 }

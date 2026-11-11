@@ -15,6 +15,7 @@ pub struct Request {
     pub profile: String,
     pub why: String,
     pub timeout_s: Option<f64>,
+    pub remember_scope: Option<Value>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -33,6 +34,7 @@ pub enum Event {
 pub struct Decision {
     pub id: String,
     pub allow: bool,
+    pub remember: bool,
 }
 fn fail(message: &str) -> io::Error {
     io::Error::other(message.to_owned())
@@ -75,6 +77,52 @@ fn input_text(value: &Value) -> io::Result<String> {
     serde_json::to_writer_pretty(&mut output, value)?;
     String::from_utf8(output.0).map_err(io::Error::other)
 }
+fn remember_scope(event: &Value) -> io::Result<Option<Value>> {
+    let Some(scope) = event.get("remember_scope") else {
+        return Ok(None);
+    };
+    let object = scope
+        .as_object()
+        .ok_or_else(|| fail("Invalid remembered approval scope"))?;
+    if object.len() != 7
+        || scope["version"] != 1
+        || scope["scope"] != "conversation"
+        || scope["tool"] != event["tool"]
+        || event.get("rewrite_prewrite").is_some()
+    {
+        return Err(fail("Invalid remembered approval authority"));
+    }
+    let caps = scope["capabilities"]
+        .as_array()
+        .filter(|v| !v.is_empty() && v.len() <= 32)
+        .ok_or_else(|| fail("Invalid approval capabilities"))?;
+    let caps = caps
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .filter(|v| !v.is_empty() && v.len() <= 128)
+                .ok_or_else(|| fail("Invalid approval capability"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if caps.windows(2).any(|v| v[0] >= v[1])
+        || scope["rule"] != format!("{}:{}", string(event, "tool", 256)?, caps.join(","))
+    {
+        return Err(fail("Approval rule differs from its exact capabilities"));
+    }
+    let session = string(scope, "conversation_id", 36)?;
+    if session.len() != 36 || !session.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err(fail("Invalid standing approval conversation"));
+    }
+    let digest = string(scope, "snapshot", 64)?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return Err(fail("Invalid standing approval snapshot"));
+    }
+    Ok(Some(scope.clone()))
+}
 impl Request {
     fn parse(event: &Value) -> io::Result<Self> {
         let timeout_s = match event.get("timeout_s") {
@@ -97,6 +145,7 @@ impl Request {
             profile: string(event, "profile", 128)?,
             why: string(event, "why", 4096)?,
             timeout_s,
+            remember_scope: remember_scope(event)?,
         };
         if request.text_bytes() > MAX_TEXT {
             return Err(fail("Approval request exceeds display byte limit"));
@@ -107,19 +156,31 @@ impl Request {
         Ok(request)
     }
     pub fn text_bytes(&self) -> usize {
-        self.id.len() + self.tool.len() + self.input.len() + self.profile.len() + self.why.len()
+        self.id.len()
+            + self.tool.len()
+            + self.input.len()
+            + self.profile.len()
+            + self.why.len()
+            + self
+                .remember_scope
+                .as_ref()
+                .map_or(0, |s| s.to_string().len())
     }
     pub fn display_text(&self) -> String {
         format!(
             "Request: {}\nTool: {}\nProfile: {}\nWhy: {}\nInput:\n{}",
             self.id, self.tool, self.profile, self.why, self.input
-        )
+        ) + &self.remember_scope.as_ref().map_or(String::new(), |s| format!(
+            "\n\nAlways allow: {}\nConversation: {}\nOnly these capabilities: {}\nA wider request asks again. Saved rule applies to this conversation; failed persistence is session-only.",
+            s["tool"].as_str().unwrap_or_default(), s["conversation_id"].as_str().unwrap_or_default(), s["capabilities"]))
     }
 }
 struct Record {
     id: String,
     closed: bool,
     prewrite: Option<Value>,
+    remember_scope: Option<Value>,
+    remember: bool,
     command: Option<(String, bool)>,
     acknowledged: bool,
     accepted: bool,
@@ -143,6 +204,8 @@ impl Ledger {
             id: request.id.clone(),
             closed: false,
             prewrite: event.get("rewrite_prewrite").cloned(),
+            remember_scope: request.remember_scope.clone(),
+            remember: false,
             command: None,
             acknowledged: false,
             accepted: false,
@@ -169,7 +232,7 @@ impl Ledger {
             }
             _ => return Err(fail("Invalid approval closure outcome")),
         };
-        let reason = string(event, "reason", 32)?;
+        let mut reason = string(event, "reason", 32)?;
         if !matches!(
             reason.as_str(),
             "answered" | "timeout" | "cancelled" | "revoked" | "audit-error" | "error"
@@ -192,6 +255,23 @@ impl Ledger {
             return Err(fail(
                 "Prewrite approval closed without its accepted host decision",
             ));
+        }
+        if record.remember && reason == "answered" && outcome.as_deref() == Some("approved") {
+            let receipt = &event["remembered"];
+            if receipt.as_object().map(|v| v.len()) != Some(3)
+                || receipt.get("scope") != record.remember_scope.as_ref()
+                || receipt["saved"].as_bool().is_none()
+                || receipt["session_only"].as_bool() != receipt["saved"].as_bool().map(|v| !v)
+            {
+                return Err(fail("Remembered approval lacks exact saved-rule readback"));
+            }
+            reason.push_str(if receipt["saved"] == true {
+                "; exact standing rule saved and independently verified"
+            } else {
+                "; standing rule is SESSION ONLY, saved rule was not verified"
+            });
+        } else if event.get("remembered").is_some() {
+            return Err(fail("Unrequested remembered approval receipt"));
         }
         record.closed = true;
         Ok(Event::Closed {
@@ -219,9 +299,18 @@ impl Ledger {
         if command == record.id {
             command.push_str("-command");
         }
+        if decision.remember
+            && (!decision.allow || record.remember_scope.is_none() || record.prewrite.is_some())
+        {
+            return Err(fail("Request does not authorize a standing rule"));
+        }
+        record.remember = decision.remember;
         record.command = Some((command.clone(), decision.allow));
         let mut value = json!({"type":"approve", "id":command, "approval_id":decision.id,
-                               "allow":decision.allow, "remember":false});
+                               "allow":decision.allow, "remember":decision.remember});
+        if decision.remember {
+            value["remember_scope"] = record.remember_scope.clone().expect("validated scope");
+        }
         if let Some(marker) = &record.prewrite {
             value["rewrite_prewrite"] = marker.clone();
         }
@@ -277,6 +366,35 @@ pub struct Pending {
     pub allow: bool,
     pub waiting: bool,
     pub scroll: usize,
+    pub remember: bool,
+    pub confirming: bool,
+    pub confirmation_shown: bool,
+    pub reviewed: bool,
+    pub painted_lines: std::collections::BTreeSet<usize>,
+    pub layout: Option<(u16, u16)>,
+    pub hits: Vec<(ratatui::layout::Rect, u8)>,
+    pub pressed: Option<(ratatui::layout::Rect, u8)>,
+}
+impl Pending {
+    pub fn select(&mut self, choice: u8) {
+        self.allow = choice != 0;
+        self.remember = choice == 2 && self.request.remember_scope.is_some();
+        self.confirming = false;
+        self.confirmation_shown = false;
+    }
+    pub fn cycle(&mut self, reverse: bool) {
+        let count = if self.request.remember_scope.is_some() {
+            3
+        } else {
+            2
+        };
+        let now = if self.remember {
+            2
+        } else {
+            u8::from(self.allow)
+        };
+        self.select((now + if reverse { count - 1 } else { 1 }) % count);
+    }
 }
 #[derive(Default)]
 pub struct View {
@@ -309,6 +427,14 @@ impl View {
                     allow: false,
                     waiting: false,
                     scroll: 0,
+                    remember: false,
+                    confirming: false,
+                    confirmation_shown: false,
+                    reviewed: false,
+                    painted_lines: Default::default(),
+                    layout: None,
+                    hits: Vec::new(),
+                    pressed: None,
                 });
                 Ok(
                     "Approval requested; runtime deadline still applies. No automatic answer."
@@ -340,7 +466,63 @@ impl View {
             )),
         }
     }
+    pub fn confirm(&mut self) {
+        let Some(current) = self.pending.front_mut() else {
+            return;
+        };
+        if current.waiting {
+            return;
+        }
+        if current.remember {
+            if !current.reviewed {
+                return;
+            }
+            if !current.confirming {
+                current.confirming = true;
+                return;
+            }
+            if !current.confirmation_shown {
+                return;
+            }
+        }
+        let (allow, remember) = (current.allow, current.remember);
+        self.choose_exact(allow, remember);
+    }
+    pub fn mouse(&mut self, event: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let Some(current) = self.pending.front_mut() else {
+            return;
+        };
+        if current.waiting || !event.modifiers.is_empty() {
+            current.pressed = None;
+            return;
+        }
+        let hit = current
+            .hits
+            .iter()
+            .find(|(r, _)| r.contains((event.column, event.row).into()))
+            .copied();
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => current.pressed = hit,
+            MouseEventKind::Up(MouseButton::Left) => {
+                let pressed = current.pressed.take();
+                if let Some((_, choice)) = hit
+                    && hit == pressed
+                {
+                    if choice == 3 {
+                        self.confirm();
+                    } else {
+                        current.select(choice);
+                    }
+                }
+            }
+            _ => current.pressed = None,
+        }
+    }
     pub fn choose(&mut self, allow: bool) {
+        self.choose_exact(allow, false);
+    }
+    fn choose_exact(&mut self, allow: bool, remember: bool) {
         if let Some(current) = self.pending.front_mut()
             && !current.waiting
         {
@@ -348,6 +530,7 @@ impl View {
             self.decision = Some(Decision {
                 id: current.request.id.clone(),
                 allow,
+                remember,
             });
         }
     }

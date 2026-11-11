@@ -61,7 +61,7 @@ def apply_patch(app, payload: dict) -> dict:
         raise ValueError("Invalid cache confirmation")
     if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_CHANGES:
         raise ValueError("Invalid settings patch count")
-    if not isinstance(expected, dict) or set(expected) != {"global", "conversation"} or not all(
+    if not isinstance(expected, dict) or set(expected) not in ({"global", "conversation"}, {"global", "conversation", "agent"}) or not all(
         isinstance(value, str) for value in expected.values()
     ):
         raise ValueError("Invalid settings revisions")
@@ -73,6 +73,8 @@ def apply_patch(app, payload: dict) -> dict:
                 'error': 'Conversation changed; discard the draft and reload settings'}
     service = settings_runtime.service_for(app)
     snapshot = service.snapshot(directory.name)
+    if set(expected) != set(snapshot.revisions):
+        raise ValueError("Settings revisions do not name every current owned destination")
     launch = getattr(app, "_invocation_saved_values", {})
     keys = set()
     for change in changes:

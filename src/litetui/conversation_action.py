@@ -1060,6 +1060,8 @@ async def _finish_exit(app):
         )
         await native_mcp_lifecycle.settle_before_shutdown(app)
         await native_model_lifecycle.settle_before_shutdown(app)
+        from litetui import native_sidecar
+        await native_sidecar.settle_before_shutdown(app)
         await native_glassbox.settle_before_shutdown(app)
         from litetui import native_mcp_shutdown
         await native_mcp_shutdown.settle_before_shutdown(app)

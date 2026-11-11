@@ -60,11 +60,14 @@ async def main():
             # native launch negotiation before the owned app captures history.
             projection = int(sys.argv[sys.argv.index("--history-projection-version") + 1])
             work_version = int(sys.argv[sys.argv.index("--work-lifecycle-version") + 1])
+            mcp_version = int(sys.argv[sys.argv.index("--mcp-lifecycle-version") + 1])
+            assert mcp_version == 1
             assert work_version == 1
             app = owned_app(rpc=True, tool_profile="strict", initial_backend="claude",
                             initial_model="claude-sonnet-5-5",
                             hold_restored_input="--hold-restored-input" in sys.argv,
-                            launch_options=LaunchOptions(history_projection_version=projection, work_lifecycle_version=work_version))
+                            launch_options=LaunchOptions(history_projection_version=projection,
+                                work_lifecycle_version=work_version, mcp_lifecycle_version=mcp_version))
             # This fixture bypasses on_mount/provider readiness. Select only its
             # controlled catalog entry before observing the real state read.
             app.model_id = "claude-sonnet-5-5"

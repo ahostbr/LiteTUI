@@ -36,6 +36,7 @@ fn decision(id: &str, allow: bool) -> Decision {
     Decision {
         id: id.into(),
         allow,
+        remember: false,
     }
 }
 fn response(command: &Value, accepted: bool) -> Value {
@@ -588,4 +589,115 @@ fn structured_question_request_is_not_a_session_failure() {
         requested.is_ok(),
         "a source question must be answerable: {requested:?}"
     );
+}
+
+fn remembered_request(id: &str) -> Value {
+    let mut event = request(id);
+    event["remember_scope"] = json!({"version":1,"tool":"write","capabilities":["workspace_write"],"rule":"write:workspace_write",
+        "scope":"conversation","conversation_id":"12345678-1234-1234-1234-123456789abc","snapshot":"a".repeat(64)});
+    event
+}
+#[test]
+fn remember_exact_scope_requires_independent_closure_receipt() {
+    let request = remembered_request("remember");
+    let scope = request["remember_scope"].clone();
+    let mut ledger = Ledger::default();
+    ledger.request(&request).unwrap();
+    let command = ledger
+        .decide(Decision {
+            id: "remember".into(),
+            allow: true,
+            remember: true,
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(command["remember_scope"], scope);
+    assert_eq!(command["remember"], true);
+    ledger.response(&response(&command, true)).unwrap();
+    let mut close = closed("remember");
+    close["outcome"] = json!("approved");
+    assert!(ledger.close(&close).is_err());
+    close["remembered"] = json!({"scope":scope,"saved":true,"session_only":false});
+    let mut wrong = close.clone();
+    wrong["remembered"]["scope"]["snapshot"] = json!("b".repeat(64));
+    assert!(ledger.close(&wrong).is_err());
+    assert!(
+        matches!(ledger.close(&close).unwrap(),Event::Closed{reason,..} if reason.contains("saved and independently verified"))
+    );
+    assert!(ledger.settled());
+}
+#[test]
+fn remember_failure_is_explicit_session_only_and_not_saved_success() {
+    let request = remembered_request("remember");
+    let mut ledger = Ledger::default();
+    ledger.request(&request).unwrap();
+    ledger
+        .decide(Decision {
+            id: "remember".into(),
+            allow: true,
+            remember: true,
+        })
+        .unwrap();
+    let mut close = closed("remember");
+    close["outcome"] = json!("approved");
+    close["remembered"] =
+        json!({"scope":request["remember_scope"],"saved":false,"session_only":true});
+    assert!(
+        matches!(ledger.close(&close).unwrap(),Event::Closed{reason,..} if reason.contains("SESSION ONLY"))
+    );
+}
+#[test]
+fn remember_never_widens_old_or_prewrite_requests() {
+    let mut ledger = Ledger::default();
+    ledger.request(&request("old")).unwrap();
+    assert!(
+        ledger
+            .decide(Decision {
+                id: "old".into(),
+                allow: true,
+                remember: true
+            })
+            .is_err()
+    );
+    let mut event = remembered_request("hook");
+    event["rewrite_prewrite"] = json!({"attempt":"private"});
+    assert!(Ledger::default().request(&event).is_err());
+    for field in ["rule", "tool", "scope", "snapshot", "conversation_id"] {
+        let mut event = remembered_request("bad");
+        event["remember_scope"][field] = json!("wrong");
+        assert!(Ledger::default().request(&event).is_err(), "{field}");
+    }
+    let mut event = remembered_request("bad");
+    event["remember_scope"]["capabilities"] = json!(["workspace_write", "network"]);
+    assert!(Ledger::default().request(&event).is_err());
+}
+#[test]
+fn always_choice_needs_all_text_and_a_second_painted_confirmation() {
+    let mut view = View::default();
+    view.observe(
+        Ledger::default()
+            .request(&remembered_request("remember"))
+            .unwrap(),
+    )
+    .unwrap();
+    view.current_mut().unwrap().select(2);
+    view.confirm();
+    assert!(view.take_decision().is_none());
+    view.current_mut().unwrap().reviewed = true;
+    view.confirm();
+    assert!(view.take_decision().is_none());
+    view.confirm();
+    assert!(view.take_decision().is_none());
+    view.current_mut().unwrap().confirmation_shown = true;
+    view.confirm();
+    assert_eq!(
+        view.take_decision(),
+        Some(Decision {
+            id: "remember".into(),
+            allow: true,
+            remember: true
+        })
+    );
+    view.confirm();
+    assert!(view.take_decision().is_none());
 }

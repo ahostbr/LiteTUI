@@ -9,8 +9,11 @@ use unicode_width::UnicodeWidthChar;
 // minimum-width row, escaped controls pay their expansion, every scalar pays
 // at least one unit (including combining marks), and every card pays overhead.
 // Reject before allocating/wrapping an oversized view; never silently truncate.
-pub(crate) const DISPLAY_UNITS: usize = 32768;
-pub(crate) const RETAINED_BYTES: usize = 8 * 1024 * 1024;
+pub const DISPLAY_UNITS: usize = 32768;
+pub const RETAINED_BYTES: usize = 8 * 1024 * 1024;
+pub const RETAINED_UNITS: usize = 8 * 1024 * 1024;
+pub const MAX_RETAINED_ROWS: usize = 16384;
+pub const MAX_VISIBLE_ROWS: usize = 64;
 pub(crate) fn display_units(text: &str) -> io::Result<usize> {
     text.chars().try_fold(0usize, |total, ch| {
         let cost = if ch == '\n' {
@@ -105,6 +108,7 @@ struct PendingWorkSegment {
     operation: String,
     admission: String,
     input: WorkInput,
+    units: usize,
 }
 /// Local presentation follows the row across source updates and transcript rebasing.
 #[derive(Default)]
@@ -126,6 +130,7 @@ impl ToolView {
     }
 }
 pub struct Row {
+    render_units: usize,
     pub image_name: Option<String>,
     pub source_owned: bool,
     pub source: Option<WorkSource>,
@@ -142,6 +147,9 @@ pub struct Row {
     pub timing: crate::presentation::TurnTiming,
 }
 impl Row {
+    pub fn render_units(&self) -> usize {
+        self.render_units
+    }
     pub(crate) fn tool_provider(&self) -> &'static str {
         self.tool_view.provider
     }
@@ -174,6 +182,7 @@ pub struct Chat {
     pub backend: String,
     pub model: String,
     pub rows: Vec<Row>,
+    live_page_start: Option<(usize, usize, bool)>,
     pub(crate) last_activity_summary: Option<String>,
     pub history: Option<crate::resume::History>,
     pub saved_history: crate::history_view::View,
@@ -236,6 +245,122 @@ pub struct Chat {
     retained_units: usize,
 }
 impl Chat {
+    fn retained_history_units(&self) -> Option<usize> {
+        self.history
+            .as_ref()
+            .filter(|history| {
+                history.descriptor.is_none()
+                    && self.screen_cleared_history.as_deref() != Some(history.session.as_str())
+            })
+            .map(|history| history.units)
+    }
+    fn page_ending_at(&self, end: usize) -> (usize, bool) {
+        let floor = self.screen_cleared_rows.min(self.rows.len());
+        let mut start = end;
+        let mut units = 0usize;
+        while start > floor && end - start < MAX_VISIBLE_ROWS {
+            let next = self.rows[start - 1].render_units;
+            if units.saturating_add(next) > DISPLAY_UNITS {
+                break;
+            }
+            start -= 1;
+            units += next;
+        }
+        let history = start == 0
+            && self
+                .retained_history_units()
+                .is_some_and(|cost| units.saturating_add(cost) <= DISPLAY_UNITS);
+        (start, history)
+    }
+    fn live_page(&self) -> (std::ops::Range<usize>, bool) {
+        let floor = self.screen_cleared_rows.min(self.rows.len());
+        let (start, limit, history) = self.live_page_start.unwrap_or_else(|| {
+            let (start, history) = self.page_ending_at(self.rows.len());
+            (start, self.rows.len(), history)
+        });
+        let start = start.max(floor).min(self.rows.len());
+        let history = history && start == 0 && self.retained_history_units().is_some();
+        let mut units = if history {
+            self.retained_history_units().unwrap_or(0)
+        } else {
+            0
+        };
+        let mut end = start;
+        let limit = limit.max(start).min(self.rows.len());
+        while end < limit && end - start < MAX_VISIBLE_ROWS {
+            let next = self.rows[end].render_units;
+            if units.saturating_add(next) > DISPLAY_UNITS {
+                break;
+            }
+            units += next;
+            end += 1;
+        }
+        (start..end, history)
+    }
+    /// Absolute retained indices; no row, operation ID, or source bytes are rebased.
+    pub fn visible_row_range(&self) -> std::ops::Range<usize> {
+        self.live_page().0
+    }
+    pub fn show_live_history(&self) -> bool {
+        self.live_page().1
+    }
+    pub fn has_older_live_page(&self) -> bool {
+        let (range, history) = self.live_page();
+        range.start > self.screen_cleared_rows.min(self.rows.len())
+            || range.start == 0 && !history && self.retained_history_units().is_some()
+    }
+    pub fn has_newer_live_page(&self) -> bool {
+        self.visible_row_range().end < self.rows.len()
+    }
+    pub fn is_latest_live_page(&self) -> bool {
+        !self.has_newer_live_page()
+    }
+    pub fn older_live_page(&mut self) -> bool {
+        let before = self.live_page();
+        if before.0.start > self.screen_cleared_rows {
+            let (start, history) = self.page_ending_at(before.0.start);
+            self.live_page_start = Some((start, before.0.start, history));
+        } else if !before.1 && self.retained_history_units().is_some() && before.0.start == 0 {
+            self.live_page_start = Some((0, 0, true));
+        }
+        self.live_page() != before
+    }
+    pub fn newer_live_page(&mut self) -> bool {
+        let before = self.live_page();
+        if before.0.end < self.rows.len() {
+            self.live_page_start = Some((before.0.end, self.rows.len(), false));
+        }
+        self.live_page() != before
+    }
+    pub fn first_live_page(&mut self) -> bool {
+        let before = self.live_page();
+        self.live_page_start = Some((
+            self.screen_cleared_rows.min(self.rows.len()),
+            self.rows.len(),
+            true,
+        ));
+        self.live_page() != before
+    }
+    pub fn latest_live_page(&mut self) -> bool {
+        let before = self.live_page();
+        self.live_page_start = None;
+        self.live_page() != before
+    }
+    pub fn pin_live_page(&mut self) {
+        if self.live_page_start.is_none() && !self.rows.is_empty() {
+            let (range, history) = self.live_page();
+            self.live_page_start = Some((range.start, range.end, history));
+        }
+    }
+    pub fn reveal_live_row(&mut self, index: usize) {
+        if index >= self.screen_cleared_rows
+            && index < self.rows.len()
+            && !self.visible_row_range().contains(&index)
+        {
+            let (start, history) = self.page_ending_at(index + 1);
+            self.live_page_start = Some((start, index + 1, history));
+        }
+    }
     pub fn new(backend: String, model: String) -> Self {
         Self {
             launch: None,
@@ -245,6 +370,7 @@ impl Chat {
             backend,
             model,
             rows: Vec::new(),
+            live_page_start: None,
             last_activity_summary: None,
             history: None,
             saved_history: crate::history_view::View::default(),
@@ -354,6 +480,7 @@ impl Chat {
         self.rows[..end]
             .iter()
             .enumerate()
+            .skip(self.screen_cleared_rows)
             .rev()
             .find_map(|(row, record)| record.tools.len().checked_sub(1).map(|tool| (row, tool)))
     }
@@ -362,6 +489,7 @@ impl Chat {
             .rows
             .iter()
             .enumerate()
+            .skip(self.screen_cleared_rows)
             .find_map(|(row, record)| record.tool_view.selected.map(|tool| (row, tool)));
         let target = match selected {
             Some((row, tool)) if !previous => Some((row, tool)),
@@ -375,6 +503,7 @@ impl Chat {
             self.rows[row].tool_view.selected = None;
         }
         let (row, index) = target;
+        self.reveal_live_row(row);
         self.rows[row].tool_view.selected = Some(index);
         Some((&mut self.rows[row], index))
     }
@@ -449,7 +578,9 @@ impl Chat {
         if let Some(attachment) = self.work.image.attached.take() {
             self.rows.last_mut().expect("reserved row").image_name = Some(attachment.name().into());
             self.retained_bytes += label.len();
-            self.retained_units += display_units(&label)?;
+            let units = display_units(&label)?;
+            self.retained_units += units;
+            self.rows.last_mut().expect("reserved row").render_units += units;
             self.pending_image = Some(attachment);
         }
         Ok(())
@@ -512,6 +643,7 @@ impl Chat {
         self.stop_requests = 0;
         self.stops_sent = 0;
         self.rows.push(Row {
+            render_units: units,
             image_name: None,
             source_owned: false,
             source: None,
@@ -532,17 +664,25 @@ impl Chat {
         Ok(())
     }
     fn prompt_budget(&self, prompt: &str) -> io::Result<usize> {
-        if self.rows.len() >= 100
-            || self.retained_bytes.saturating_add(prompt.len()) > RETAINED_BYTES
-        {
+        if self.rows.len() >= MAX_RETAINED_ROWS {
             return Err(io::Error::other(
-                "Live transcript limit reached; no prompt was sent",
+                "Retained live row limit reached; no prompt was sent",
+            ));
+        }
+        if self.retained_bytes.saturating_add(prompt.len()) > RETAINED_BYTES {
+            return Err(io::Error::other(
+                "Retained live text limit reached; no prompt was sent",
             ));
         }
         let units = display_units(prompt)?.saturating_add(320);
-        if self.retained_units.saturating_add(units) > DISPLAY_UNITS {
+        if units > DISPLAY_UNITS {
             return Err(io::Error::other(
-                "Live display-line/work limit reached; no prompt sent",
+                "Live row display-work limit reached; no prompt was sent",
+            ));
+        }
+        if self.retained_units.saturating_add(units) > RETAINED_UNITS {
+            return Err(io::Error::other(
+                "Retained live display/metadata limit reached; no prompt was sent",
             ));
         }
         Ok(units)
@@ -576,6 +716,7 @@ impl Chat {
         self.retained_bytes += entry.content.len();
         self.recovered_inputs.insert(entry.id.clone());
         self.rows.push(Row {
+            render_units: units,
             image_name: None,
             source_owned: false,
             source: None,
@@ -839,6 +980,7 @@ impl Chat {
             .observe(crate::restored_queue::Update::Snapshot(queue));
         self.last_activity_summary = None;
         self.rows.clear();
+        self.live_page_start = None;
         self.operation_rows.clear();
         self.work_admissions.clear();
         self.work_seen.clear();
@@ -1216,7 +1358,7 @@ impl Chat {
                                 "Work segment belongs to another operation",
                             ));
                         }
-                        self.append_work_row(segment.input)
+                        self.append_work_row(segment.input, segment.units)
                     } else {
                         self.append_rewrite_row("Conversation continuation", ReplyState::Sending)?
                     };
@@ -1281,7 +1423,7 @@ impl Chat {
                     ));
                 }
                 let units = display_units(&text)?;
-                self.replace_cost((0, 0), (text.len() + 1, units + 32))?;
+                self.replace_row_cost(row, (0, 0), (text.len() + 1, units + 32))?;
                 let card = &mut self.rows[row].cards[0];
                 card.answer.push_str(&text);
                 card.answer.push('\n');
@@ -1718,6 +1860,7 @@ impl Chat {
         Ok(())
     }
     fn rebase_operation_rows(&mut self, start: usize) {
+        self.live_page_start = None;
         self.operation_rows.retain(|_, row| {
             if *row < start {
                 false
@@ -1754,7 +1897,7 @@ impl Chat {
             .filter(|i| *i < self.rows.len())
             .ok_or_else(|| io::Error::other("Work receipt has no exact operation row"))
     }
-    fn append_work_row(&mut self, input: WorkInput) -> usize {
+    fn append_work_row(&mut self, input: WorkInput, units: usize) -> usize {
         let index = self.rows.len();
         let (prompt, committed) = match input.delivery {
             crate::work_lifecycle::Delivery::Append => (input.text, None),
@@ -1767,6 +1910,7 @@ impl Chat {
             ),
         };
         self.rows.push(Row {
+            render_units: units,
             image_name: None,
             source_owned: true,
             source: Some(input.source),
@@ -1811,7 +1955,7 @@ impl Chat {
         };
         if !paid {
             let reason = reason.as_deref().unwrap_or("");
-            self.replace_cost((0, 0), (reason.len(), display_units(reason)?))?;
+            self.replace_row_cost(index, (0, 0), (reason.len(), display_units(reason)?))?;
         }
         let rate = self.runtime_state.rate();
         let row = &mut self.rows[index];
@@ -1900,7 +2044,7 @@ impl Chat {
                 match admission.mode {
                     Mode::NewTurn => {
                         if self.rewrite_pending
-                            || self.rows.len() >= 100
+                            || self.rows.len() >= MAX_RETAINED_ROWS
                             || self.operation_rows.contains_key(&admission.operation)
                             || !self.approvals.is_empty()
                             || !self.questions.is_empty()
@@ -1949,7 +2093,7 @@ impl Chat {
                         self.check_rewrite_operation(&admission.operation)?;
                         if self.work_segments.contains_key(&admission.origin.execution)
                             || self.rewrite_rows.contains_key(&admission.origin.execution)
-                            || self.rows.len() + self.work_segments.len() >= 100
+                            || self.rows.len() + self.work_segments.len() >= MAX_RETAINED_ROWS
                             || suspended_submission.is_some()
                         {
                             return Err(io::Error::other(
@@ -1958,7 +2102,18 @@ impl Chat {
                         }
                     }
                 }
-                self.replace_cost((0, 0), (bytes, units))?;
+                if units > DISPLAY_UNITS {
+                    return Err(io::Error::other("Live row display-work limit exceeded"));
+                }
+                if admission.mode == Mode::InTurn {
+                    self.replace_row_cost(
+                        current.expect("validated Work row"),
+                        (0, 0),
+                        (bytes, units),
+                    )?;
+                } else {
+                    self.replace_cost((0, 0), (bytes, units))?;
+                }
                 let display = WorkInput {
                     text: text.into(),
                     source: WorkSource {
@@ -1982,7 +2137,7 @@ impl Chat {
                             }
                         }
                         self.pending = None;
-                        let row = self.append_work_row(display);
+                        let row = self.append_work_row(display, units);
                         self.operation_rows.insert(admission.operation.clone(), row);
                         self.submission_id = Some(admission.operation.clone());
                         self.rewrite_stream_row = None;
@@ -2005,6 +2160,7 @@ impl Chat {
                                 operation: admission.operation.clone(),
                                 admission: admission.id.clone(),
                                 input: display,
+                                units,
                             },
                         );
                     }
@@ -2030,7 +2186,7 @@ impl Chat {
                     | TerminalOutcome::Cancelled(s)
                     | TerminalOutcome::ApprovalStopped(s) => s,
                 };
-                self.replace_cost((0, 0), (reason.len(), display_units(reason)?))?;
+                self.replace_row_cost(row, (0, 0), (reason.len(), display_units(reason)?))?;
                 self.rows[row].state = ReplyState::AwaitingRetirement;
                 self.work_ended.insert(operation, outcome);
                 self.notice = "Stream ended; awaiting independent source worker retirement.".into();
@@ -2085,7 +2241,7 @@ impl Chat {
                     .work_segments
                     .remove(&execution)
                     .expect("verified held input");
-                let row = self.append_work_row(segment.input);
+                let row = self.append_work_row(segment.input, segment.units);
                 self.rows[row].cards.clear();
                 self.rows[row].items.clear();
                 self.finish_work_row(row, outcome, false)?;
@@ -2195,6 +2351,7 @@ impl Chat {
         self.retained_bytes += prompt.len();
         let index = self.rows.len();
         self.rows.push(Row {
+            render_units: units,
             image_name: None,
             source_owned: true,
             source: None,
@@ -2291,14 +2448,8 @@ impl Chat {
         }
         let reason = stop_reason.as_deref().unwrap_or("");
         let units = display_units(reason)?;
-        if self.retained_units.saturating_add(units) > DISPLAY_UNITS
-            || self.retained_bytes.saturating_add(reason.len()) > RETAINED_BYTES
-        {
-            return Err(io::Error::other("Live transcript/display limit exceeded"));
-        }
-        self.retained_units += units;
-        self.retained_bytes += reason.len();
         let index = self.current_row_index()?;
+        self.replace_row_cost(index, (0, 0), (reason.len(), units))?;
         let rate = self.runtime_state.rate();
         let row = &mut self.rows[index];
         self.last_activity_summary = Some(
@@ -2364,15 +2515,36 @@ impl Chat {
             .saturating_sub(old.1)
             .saturating_add(new.1);
         if bytes > RETAINED_BYTES {
-            return Err(io::Error::other("Live transcript text limit exceeded"));
+            return Err(io::Error::other("Retained live text limit exceeded"));
         }
-        if units > DISPLAY_UNITS {
-            return Err(io::Error::other("Live display-line/work limit exceeded"));
+        if units > RETAINED_UNITS {
+            return Err(io::Error::other(
+                "Retained live display/metadata limit exceeded",
+            ));
         }
         self.retained_bytes = bytes;
         self.retained_units = units;
         Ok(())
     }
+    fn replace_row_cost(
+        &mut self,
+        row: usize,
+        old: (usize, usize),
+        new: (usize, usize),
+    ) -> io::Result<()> {
+        let units = self.rows[row]
+            .render_units
+            .checked_sub(old.1)
+            .and_then(|units| units.checked_add(new.1))
+            .ok_or_else(|| io::Error::other("Invalid live row display-work accounting"))?;
+        if units > DISPLAY_UNITS {
+            return Err(io::Error::other("Live row display-work limit exceeded"));
+        }
+        self.replace_cost(old, new)?;
+        self.rows[row].render_units = units;
+        Ok(())
+    }
+
     fn content(&mut self, index: Option<usize>, kind: ContentKind, text: String) -> io::Result<()> {
         let units = display_units(&text)?;
         let row = self.pending_row()?;
@@ -2400,8 +2572,12 @@ impl Chat {
         } else {
             (0, 0)
         };
-        self.replace_cost(old, (text.len(), units + if new_card { 320 } else { 0 }))?;
         let row_index = self.current_row_index()?;
+        self.replace_row_cost(
+            row_index,
+            old,
+            (text.len(), units + if new_card { 320 } else { 0 }),
+        )?;
         let row = &mut self.rows[row_index];
         if new_card {
             row.cards.push(Card::default());
@@ -2456,7 +2632,7 @@ impl Chat {
         let old_cost = old.map(cost).transpose()?.unwrap_or_default();
         let tool = Tool::updated(old, activity)?;
         let new_cost = cost(&tool)?;
-        self.replace_cost(old_cost, new_cost)?;
+        self.replace_row_cost(index, old_cost, new_cost)?;
         if let crate::native_activity::ResultState::Returned { is_error, .. } = &tool.result {
             let status = match is_error {
                 Some(true) => "reported failure",
@@ -2502,6 +2678,10 @@ impl Chat {
             return Err("Finish current work before clearing the screen. Nothing was cleared.");
         }
         self.screen_cleared_rows = self.rows.len();
+        for row in &mut self.rows {
+            row.tool_view.selected = None;
+        }
+        self.live_page_start = None;
         self.screen_cleared_history = self.history.as_ref().map(|h| h.session.clone());
         Ok(())
     }
@@ -2569,5 +2749,113 @@ impl Chat {
         }
         self.notice =
             failure.unwrap_or_else(|| "Python runtime and contained process tree exited.".into());
+    }
+}
+
+#[cfg(test)]
+mod paging_budget_tests {
+    use super::*;
+
+    fn ready() -> Chat {
+        let mut chat = Chat::new("custom".into(), "fixture".into());
+        chat.observe(Observation::Ready).unwrap();
+        chat
+    }
+
+    #[test]
+    fn retained_text_and_metadata_caps_are_distinct_and_atomic() {
+        for text_cap in [true, false] {
+            let mut chat = ready();
+            chat.submit("q").unwrap();
+            if text_cap {
+                chat.retained_bytes = RETAINED_BYTES - 1;
+            } else {
+                chat.retained_units = RETAINED_UNITS - 1;
+            }
+            chat.observe(Observation::Text("x".into())).unwrap();
+            let before = (
+                chat.retained_bytes,
+                chat.retained_units,
+                chat.rows[0].render_units,
+            );
+            let error = chat
+                .observe(Observation::Text("y".into()))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(if text_cap {
+                    "text limit"
+                } else {
+                    "display/metadata limit"
+                }),
+                "{error}"
+            );
+            assert_eq!(
+                (
+                    chat.retained_bytes,
+                    chat.retained_units,
+                    chat.rows[0].render_units
+                ),
+                before
+            );
+            assert_eq!(chat.rows[0].cards[0].answer, "x");
+        }
+    }
+
+    #[test]
+    fn exact_retained_row_cap_keeps_the_unsent_next_prompt_outside_state() {
+        let mut chat = ready();
+        for _ in 0..MAX_RETAINED_ROWS {
+            chat.submit("q").unwrap();
+            chat.take_submission().unwrap();
+            chat.observe(Observation::Complete).unwrap();
+        }
+        assert_eq!(chat.rows.len(), MAX_RETAINED_ROWS);
+        let before = (chat.retained_bytes, chat.retained_units);
+        assert!(
+            chat.submit("unsent")
+                .unwrap_err()
+                .to_string()
+                .contains("row limit")
+        );
+        assert!(chat.take_submission().is_none());
+        assert_eq!((chat.retained_bytes, chat.retained_units), before);
+        assert!(!chat.busy);
+    }
+
+    #[test]
+    fn legacy_history_can_fill_its_own_page_without_hiding_the_first_live_row() {
+        let mut chat = ready();
+        let mut history = crate::resume::History::parse(
+            &serde_json::json!({
+                "session_id":"fixture","read_only":false,"meta":{"id":"fixture"},
+                "messages":[{"role":"user","content":"old"}]
+            }),
+            "fixture",
+        )
+        .unwrap();
+        history.units = DISPLAY_UNITS;
+        chat.history = Some(history);
+        chat.submit("q").unwrap();
+        chat.observe(Observation::Complete).unwrap();
+        assert!(!chat.show_live_history());
+        assert!(chat.has_older_live_page());
+        chat.first_live_page();
+        assert!(chat.show_live_history());
+        assert_eq!(chat.visible_row_range(), 0..0);
+        assert!(chat.newer_live_page());
+        assert!(!chat.show_live_history());
+        assert_eq!(chat.visible_row_range(), 0..1);
+        chat.history.as_mut().unwrap().units = DISPLAY_UNITS - 400;
+        chat.submit("q").unwrap();
+        chat.observe(Observation::Complete).unwrap();
+        chat.latest_live_page();
+        assert_eq!(chat.visible_row_range(), 0..2);
+        assert!(!chat.show_live_history());
+        assert!(chat.older_live_page());
+        assert!(chat.show_live_history());
+        assert_eq!(chat.visible_row_range(), 0..0);
+        assert!(chat.newer_live_page());
+        assert_eq!(chat.visible_row_range(), 0..2);
     }
 }

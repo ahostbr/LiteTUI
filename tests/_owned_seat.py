@@ -35,6 +35,23 @@ def _fixture_rows(backend):
     return None  # Unrelated backend units retain their real implementation.
 
 
+def _effect_original(function):
+    # A later monkeypatch undo can restore a retired helper after release_all.
+    # Collapse our exact wrappers only; functools.wraps may copy this marker to
+    # an unrelated test wrapper, which must remain in the delegated call path.
+    while True:
+        control = getattr(function, "_owned_seat_control", None)
+        if not (isinstance(control, tuple) and len(control) == 2
+                and control[0] is function):
+            return function
+        function = control[1]
+
+
+def _patch_effect(stack, target, name, replacement, original):
+    replacement._owned_seat_control = (replacement, original)
+    stack.enter_context(patch.object(target, name, replacement))
+
+
 def control_external_effects(app=None, *, real_effects=()):
     """Hold unrelated observer controls; opted-out subjects must supply a seam."""
     global _EFFECTS, _REAL_EFFECTS
@@ -52,26 +69,31 @@ def control_external_effects(app=None, *, real_effects=()):
     stack = ExitStack()
     try:
         if "thinking" not in real:
-            stack.enter_context(patch.object(thinking_probe, "get_effective_levels", lambda *a, **k: None))
+            original_thinking = _effect_original(thinking_probe.get_effective_levels)
+            def thinking(*args, **kwargs):
+                if _EFFECTS is stack:
+                    return None
+                return original_thinking(*args, **kwargs)
+            _patch_effect(stack, thinking_probe, "get_effective_levels", thinking, original_thinking)
         if "model_list" not in real:
-            original_listing = llm_backend.LMStudioBackend.list_models
+            original_listing = _effect_original(llm_backend.LMStudioBackend.list_models)
             async def listing(backend):
-                rows = _fixture_rows(backend)
+                rows = _fixture_rows(backend) if _EFFECTS is stack else None
                 return await original_listing(backend) if rows is None else rows
-            stack.enter_context(patch.object(llm_backend.LMStudioBackend, "list_models", listing))
+            _patch_effect(stack, llm_backend.LMStudioBackend, "list_models", listing, original_listing)
         if "readiness" not in real:
-            original_loaded = llm_backend.LMStudioBackend.loaded_models
+            original_loaded = _effect_original(llm_backend.LMStudioBackend.loaded_models)
             def loaded(backend):
-                rows = _fixture_rows(backend)
+                rows = _fixture_rows(backend) if _EFFECTS is stack else None
                 return original_loaded(backend) if rows is None else [row.key for row in rows if row.loaded]
-            stack.enter_context(patch.object(llm_backend.LMStudioBackend, "loaded_models", loaded))
+            _patch_effect(stack, llm_backend.LMStudioBackend, "loaded_models", loaded, original_loaded)
         if "updates" not in real:
             # Do not birth a daemon which reads mutable environment/ROOT later.
-            original_update = update_check.start_background_check
+            original_update = _effect_original(update_check.start_background_check)
             def start_update(app):
-                if not any(owner is app for owner in _OBSERVER_APPS):
+                if _EFFECTS is not stack or not any(owner is app for owner in _OBSERVER_APPS):
                     original_update(app)
-            stack.enter_context(patch.object(update_check, "start_background_check", start_update))
+            _patch_effect(stack, update_check, "start_background_check", start_update, original_update)
     except BaseException:
         stack.close()
         raise

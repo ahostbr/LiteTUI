@@ -302,7 +302,7 @@ fn approval_stop_obeys_pending_row_approval_and_display_limits() {
 }
 
 #[test]
-fn stopped_reasons_share_the_retained_transcript_budget() {
+fn stopped_reasons_are_retained_with_independent_row_budgets() {
     let mut chat = Chat::new("claude".into(), "fixture".into());
     chat.observe(Observation::Ready).unwrap();
     chat.submit("first").unwrap();
@@ -311,8 +311,18 @@ fn stopped_reasons_share_the_retained_transcript_budget() {
     chat.submit("second").unwrap();
     chat.observe(Observation::ApprovalStopped("x".repeat(16000)))
         .unwrap();
-    chat.submit("third").unwrap_err(); // Reasons were retained, not just a transient notice.
-    assert_eq!(chat.rows.len(), 2);
+    chat.submit("third").unwrap();
+    assert_eq!(chat.rows.len(), 3);
+    assert_eq!(
+        chat.rows[0].stop_reason.as_deref(),
+        Some("x".repeat(16000).as_str())
+    );
+    assert_eq!(
+        chat.rows[1].stop_reason.as_deref(),
+        Some("x".repeat(16000).as_str())
+    );
+    assert!(chat.rows[0].render_units() >= 16000);
+    assert!(chat.rows[1].render_units() >= 16000);
 }
 
 #[test]

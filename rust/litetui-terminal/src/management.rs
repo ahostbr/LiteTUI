@@ -104,7 +104,7 @@ fn names(value: &Value, key: &str) -> io::Result<Vec<String>> {
     let entries = value
         .get(key)
         .and_then(Value::as_array)
-        .filter(|v| v.len() <= 256)
+        .filter(|v| v.len() <= 512)
         .ok_or_else(|| fail(&format!("Invalid management {key}")))?;
     let mut seen = HashSet::new();
     entries
@@ -419,6 +419,8 @@ struct SavedHistoryPending {
 enum PreferencesRequest {
     Glassbox(Box<crate::glassbox_controls::Request>),
     Monitor(Box<crate::monitor_controls::Request>),
+    ClaudeReset(Box<crate::claude_reset::Request>),
+    Sidecar(Box<crate::sidecar_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
     McpLifecycle(Box<crate::mcp_lifecycle::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
@@ -431,6 +433,8 @@ enum PreferencesRequest {
 enum PreferencesReply {
     Glassbox(Box<crate::glassbox_controls::Update>),
     Monitor(Box<crate::monitor_controls::Update>),
+    ClaudeReset(Box<crate::claude_reset::Update>),
+    Sidecar(Box<crate::sidecar_controls::Update>),
     Mcp(Box<crate::mcp_config::Update>),
     McpLifecycle(Box<crate::mcp_lifecycle::Update>),
     ModelPreferences(Box<crate::model_preferences::Update>),
@@ -449,6 +453,8 @@ impl PreferencesRequest {
             Self::ModelPreferences(_) => &crate::model_preferences::OPERATIONS,
             Self::Glassbox(_) => &crate::glassbox_controls::OPERATIONS,
             Self::Monitor(_) => &crate::monitor_controls::OPERATIONS,
+            Self::ClaudeReset(_) => &crate::claude_reset::OPERATIONS,
+            Self::Sidecar(_) => &crate::sidecar_controls::OPERATIONS,
             Self::ModelLifecycle(_) => &crate::model_lifecycle::OPERATIONS,
             Self::Voice(_) => &crate::voice_preferences::OPERATIONS,
             Self::Presentation(_) => &crate::presentation_preferences::OPERATIONS,
@@ -462,6 +468,8 @@ impl PreferencesRequest {
             Self::McpLifecycle(r) => matches!(**r, crate::mcp_lifecycle::Request::Apply(_)),
             Self::ModelPreferences(r) => matches!(**r, crate::model_preferences::Request::Apply(_)),
             Self::Glassbox(r) => matches!(**r, crate::glassbox_controls::Request::Apply(_)),
+            Self::ClaudeReset(r) => r.mutates(),
+            Self::Sidecar(r) => r.mutates(),
             Self::Monitor(r) => matches!(
                 **r,
                 crate::monitor_controls::Request::Apply(_)
@@ -490,6 +498,8 @@ impl PreferencesRequest {
             Self::ModelPreferences(r) => r.command(id, instance),
             Self::Glassbox(r) => r.command(id, instance),
             Self::Monitor(r) => r.command(id, instance),
+            Self::ClaudeReset(r) => r.command(id, instance),
+            Self::Sidecar(r) => r.command(id, instance),
             Self::ModelLifecycle(r) => r.command(id, instance),
             Self::Voice(r) => r.command(id, instance),
             Self::Presentation(r) => r.command(id, instance),
@@ -508,6 +518,8 @@ impl PreferencesRequest {
             }
             Self::Glassbox(_) => |reason| crate::settings_view::Update::Glassbox(Err(reason)),
             Self::Monitor(_) => |reason| crate::settings_view::Update::Monitor(Err(reason)),
+            Self::ClaudeReset(_) => |reason| crate::settings_view::Update::ClaudeReset(Err(reason)),
+            Self::Sidecar(_) => |reason| crate::settings_view::Update::Sidecar(Err(reason)),
             Self::ModelLifecycle(_) => {
                 |reason| crate::settings_view::Update::ModelLifecycle(Err(reason))
             }
@@ -541,6 +553,18 @@ impl PreferencesRequest {
                 crate::mcp_lifecycle::Reply::Update(update) => {
                     PreferencesReply::McpLifecycle(Box::new(update))
                 }
+            },
+            Self::ClaudeReset(r) => match r.response(v, id, instance, command_id)? {
+                crate::claude_reset::Reply::Next(next) => {
+                    PreferencesReply::Next(Self::ClaudeReset(Box::new(next)))
+                }
+                crate::claude_reset::Reply::Update(update) => {
+                    PreferencesReply::ClaudeReset(Box::new(update))
+                }
+            },
+            Self::Sidecar(r) => match r.response(v, id, instance, command_id, policy)? {
+                Ok(next) => PreferencesReply::Next(Self::Sidecar(Box::new(next))),
+                Err(update) => PreferencesReply::Sidecar(Box::new(update)),
             },
             Self::Monitor(r) => {
                 PreferencesReply::Monitor(Box::new(r.response(v, id, instance, command_id)?))
@@ -3057,6 +3081,12 @@ impl Management {
             crate::settings_view::Intent::ModelPreferences(r) => {
                 (Some(PreferencesRequest::ModelPreferences(r)), false)
             }
+            crate::settings_view::Intent::ClaudeReset(r) => {
+                (Some(PreferencesRequest::ClaudeReset(r)), false)
+            }
+            crate::settings_view::Intent::Sidecar(r) => {
+                (Some(PreferencesRequest::Sidecar(r)), false)
+            }
             crate::settings_view::Intent::Monitor(r) => {
                 (Some(PreferencesRequest::Monitor(r)), false)
             }
@@ -3131,6 +3161,12 @@ impl Management {
         }
         .map_err(|_| fail("Cannot reserve settings request"))?;
         command["id"] = id.to_value();
+        if let SettingsRead::Preferences(_, _, PreferencesRequest::Sidecar(request)) = &read
+            && let crate::sidecar_controls::Request::StepApply(review) = request.as_ref()
+            && review["group"]["route"] == "runtime"
+        {
+            self.register_sidecar_runtime(review, text(&command, "id", 128)?)?;
+        }
         self.settings = Some((id, read));
         Ok(command)
     }
@@ -3142,6 +3178,7 @@ impl Management {
         }
         if let SettingsRead::Preferences(identity, instance, request) = read {
             let fatal_mcp = matches!(&request, PreferencesRequest::McpLifecycle(r) if matches!(**r,crate::mcp_lifecycle::Request::Apply(_)|crate::mcp_lifecycle::Request::Readback(..)));
+            let fatal_claude_reset = matches!(&request, PreferencesRequest::ClaudeReset(r) if r.mutates() || r.is_readback());
             let fatal_monitor = matches!(&request, PreferencesRequest::Monitor(r) if matches!(**r,crate::monitor_controls::Request::Apply(_)|crate::monitor_controls::Request::Close(_)));
             let lifecycle_apply = matches!(&request, PreferencesRequest::ModelLifecycle(r)
                 if matches!(**r, crate::model_lifecycle::Request::Apply(_)));
@@ -3174,6 +3211,13 @@ impl Management {
                     if lifecycle_apply {
                         self.work_transition_receipt(&frame["result"], lifecycle_transition)?;
                     }
+                    if let PreferencesRequest::Sidecar(request) = &next
+                        && let crate::sidecar_controls::Request::StepReadback { review, applied } =
+                            request.as_ref()
+                        && review["group"]["route"] == "runtime"
+                    {
+                        self.observe_sidecar_runtime_apply(review, applied)?;
+                    }
                     let mut value = next.command(&identity, &instance)?;
                     let id = self
                         .wire
@@ -3193,6 +3237,17 @@ impl Management {
                 Ok(PreferencesReply::Mcp(update)) => crate::settings_view::Update::Mcp(Ok(update)),
                 Ok(PreferencesReply::ModelPreferences(update)) => {
                     crate::settings_view::Update::ModelPreferences(Ok(update))
+                }
+                Ok(PreferencesReply::ClaudeReset(update)) => {
+                    crate::settings_view::Update::ClaudeReset(Ok(update))
+                }
+                Ok(PreferencesReply::Sidecar(update)) => {
+                    if let crate::sidecar_controls::Update::Saved(value) = update.as_ref()
+                        && value["group"]["route"] == "runtime"
+                    {
+                        self.install_sidecar_runtime(value)?;
+                    }
+                    crate::settings_view::Update::Sidecar(Ok(update))
                 }
                 Ok(PreferencesReply::Monitor(update)) => {
                     crate::settings_view::Update::Monitor(Ok(update))
@@ -3224,6 +3279,9 @@ impl Management {
                 }
                 Ok(PreferencesReply::Agent(update)) => {
                     crate::settings_view::Update::Agent(Ok(update))
+                }
+                Err(reason) if fatal_claude_reset => {
+                    return Err(fail(&format!("Claude reset did not settle: {reason}")));
                 }
                 Err(reason) if fatal_monitor => {
                     return Err(fail(&format!("Monitor mutation did not settle: {reason}")));
@@ -5101,5 +5159,21 @@ mod presentation_state_tests {
         assert!(!changed.presentation.show_thinking && changed.presentation.key_hints);
         assert!(changed.presentation.sidebar_dialogs);
         assert!(Snapshot::parse(&state(json!({"show_thinking":"no"}))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod capability_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn expanded_source_capabilities_remain_bounded_and_unique() {
+        let full =
+            json!({"capabilities": (0..512).map(|i|format!("gui.control{i}")).collect::<Vec<_>>()});
+        assert_eq!(names(&full, "capabilities").unwrap().len(), 512);
+        let overflow =
+            json!({"capabilities": (0..513).map(|i|format!("gui.control{i}")).collect::<Vec<_>>()});
+        assert!(names(&overflow, "capabilities").is_err());
+        assert!(names(&json!({"capabilities":["hello","hello"]}), "capabilities").is_err());
     }
 }

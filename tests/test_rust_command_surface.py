@@ -439,7 +439,8 @@ async def test_argument_routes_only_preselect_and_refuse_what_the_control_cannot
     app.available_models = ["fixture-model", "second-model"]
     levels = thinking_capabilities(app)["levels"]
     backends = [name for name, _label in command_surface.llm_backend.visible_backends()]
-    prefix = app.convo_id[:8]
+    # Include the UUID separator so a random all-digit prefix is never a picker index.
+    prefix = app.convo_id[:13]
     before = tree(app)
     cases = [
         ("/model 2", "models", "2"), ("/models second-model", "models", "second-model"),
@@ -534,14 +535,13 @@ async def test_every_unrouted_registered_command_states_its_own_reason(command_a
     app = command_app
     rows = [row for row in read(app)["entries"] if row["native_action"] is None]
     reasons = {row["tokens"][0]: row["unavailable_reason"] for row in rows}
-    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar", "/sidecar"}
+    assert set(reasons) == {"/screenshot", "/maximize", "/test-sidebar"}
     assert len(set(reasons.values())) == len(reasons)
     for token in ("/screenshot", "/maximize", "/test-sidebar"):
         assert "Textual" in reasons[token]
     # The two window actions name the terminal-native keys that replace them.
     assert "Ctrl+Shift+C" in reasons["/screenshot"]
     assert "Alt+Up" in reasons["/maximize"] and "Ctrl+G" in reasons["/maximize"]
-    assert "desktop overlay" in reasons["/sidecar"]
     assert "no native action adapter" not in "".join(reasons.values())
     for row in rows:
         with pytest.raises(ValueError) as refusal:
@@ -552,3 +552,12 @@ async def test_every_unrouted_registered_command_states_its_own_reason(command_a
     registry.add_command("third-party", ("/screenshot",), forbidden)
     app.plugins, app.skills = registry, []
     assert "no native action adapter" in read(app)["entries"][0]["unavailable_reason"]
+
+@pytest.mark.asyncio
+async def test_sidecar_routes_only_supported_views_without_executing_plugin(command_app):
+    app = command_app
+    for view in ("", "timeline", "calendar", "settings", "job"):
+        result = command_surface.resolve(app, raw_request(app, command="/sidecar" + (" " + view if view else "")))
+        assert result["native_action"] == "sidecar"
+    with pytest.raises(ValueError):
+        command_surface.resolve(app, raw_request(app, command="/sidecar arbitrary"))

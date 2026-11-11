@@ -48,6 +48,13 @@ fn generic_calls_and_late_results_keep_their_transcript_positions() {
     assert!(turn.accept(&result, "custom", "m").is_err());
     let row = &chat.rows[0];
     assert_eq!(row.items, [Item::Card(0), Item::Tool(0), Item::Card(1)]);
+    let timing = &row.tools[0].timing;
+    let now = std::time::Instant::now();
+    assert!(timing.elapsed_at(now).is_some());
+    assert_eq!(
+        timing.elapsed_at(now),
+        timing.elapsed_at(now + std::time::Duration::from_secs(600))
+    );
     assert_eq!(row.cards[0].answer, "Before");
     assert_eq!(row.cards[1].answer, "After the tool.");
     assert_eq!(

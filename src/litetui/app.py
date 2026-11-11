@@ -2445,6 +2445,8 @@ class LiteTUI(App):
         )
         await native_mcp_lifecycle.settle_before_shutdown(self)
         await native_model_lifecycle.settle_before_shutdown(self)
+        from litetui import native_sidecar
+        await native_sidecar.settle_before_shutdown(self)
         await native_glassbox.settle_before_shutdown(self)
         from litetui import native_mcp_shutdown
         await native_mcp_shutdown.settle_before_shutdown(self)
@@ -8945,6 +8947,35 @@ class LiteTUI(App):
 
         require_open(self)
         LiteTUI._validate_owned_identity(self)
+
+    def _validate_owned_authority(self) -> None:
+        """Validate the current owner for an exact historical no-effect reply.
+
+        This does not validate or install a request projection. A failed identity
+        transition may retain the old projection while its new conversation is
+        staged; execution remains closed through _validate_owned_identity.
+        """
+        session = getattr(self, '_agent_session', None)
+        if session is None:
+            raise llm_backend.BackendError('Historical cleanup requires an owned agent')
+        authority = session.authority  # independently rechecks the lease and disk authority
+        if getattr(self.backend, 'name', None) != authority.backend:
+            raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
+        if self.model_id != authority.model:
+            raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
+        if ((getattr(self, '_thinking_level', None) or 'default') != authority.thinking_level
+                or getattr(self.settings, 'thinking_level', None) != authority.thinking_level):
+            raise llm_backend.BackendError('Inherited effort disagrees with owned agent authority')
+        store = getattr(self, 'store', None)
+        expected = session.conversation_directory(self.convo_id)
+        if (store is None or store.agent_session is not session
+                or store.convo_id != self.convo_id or store.convo_dir != expected
+                or self.convo_dir != expected or store.convo_path != expected / TRANSCRIPT_NAME):
+            raise llm_backend.BackendError('Historical cleanup lost its owned conversation store')
+        from litetui import effort_projection
+        if not isinstance(getattr(self, '_owned_effort_invocation', None), effort_projection.Invocation):
+            raise llm_backend.BackendError('Historical cleanup lost its owned invocation')
+        effort_projection._invocation(self)
 
     def _validate_owned_identity(self) -> None:
         """Validate source identity without granting turn admission or execution."""

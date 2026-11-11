@@ -5,7 +5,7 @@ import argparse
 import asyncio
 import os
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,7 +46,11 @@ def test_unset_preserves_existing_positional_launch_contract() -> None:
                               None, None, None, 5, None, False)
     assert old.history_projection_version is None
     assert '--history-projection-version' not in launch.to_argv(old)
-    assert options('--backend', 'custom', *launch.to_argv(old)) == old
+    # CLI parsing records absent thinking explicitly; legacy positional calls
+    # leave that provenance unknown without changing the original fields.
+    parsed = options('--backend', 'custom', *launch.to_argv(old))
+    assert old.thinking_explicit is None
+    assert parsed == replace(old, thinking_explicit=False)
 
 
 @pytest.mark.parametrize('value', [True, False, 0, 2, -1, '1', 1.0, []])

@@ -343,9 +343,15 @@ def _context(app):
 
 
 def mutation_hold(app):
+    from litetui import native_claude_reset
+    if native_claude_reset.blocking(app):
+        return "Claude reset owns its retired SDK session and exact readback publication"
     from litetui import native_mark
     if native_mark.blocking(app):
         return "Mark owns its overlay, reviewed image and exact Close publication"
+    from litetui import native_sidecar
+    if native_sidecar.hold(app):
+        return "Sidecar owns its exact application and readback publication"
     from litetui import native_monitor
     if native_monitor.blocking(app):
         return "Monitor owns its worker, output readback and exact release publication"
@@ -1165,6 +1171,9 @@ def operation_allowed(app, cmd):
         if touches(cmd):
             raise ValueError("Use the reviewed runtime control for this setting")
     if why := mutation_hold(app):
+        from litetui import native_claude_reset
+        if native_claude_reset.readback_allowed(app, cmd):
+            return
         from litetui import native_monitor
         if native_monitor.readback_allowed(app, cmd):
             return

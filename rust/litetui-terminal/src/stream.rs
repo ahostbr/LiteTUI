@@ -76,6 +76,7 @@ pub struct ToolObservation {
     pub provider_call_id: String,
     pub name: String,
     pub state: ToolObservationState,
+    pub timing: crate::presentation::ToolTiming,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -334,6 +335,7 @@ impl Projection {
             provider_call_id: provider.to_owned(),
             name: name.to_owned(),
             state: ToolObservationState::Requested,
+            timing: crate::presentation::ToolTiming::started(),
         });
         self.tool_calls += 1;
         self.metadata_bytes += bytes;
@@ -360,6 +362,7 @@ impl Projection {
             result: result.to_owned(),
             ok,
         };
+        self.rows[index].tools[tool_index].timing.finish();
         self.text_bytes += result.len();
         Ok(())
     }
@@ -389,6 +392,7 @@ fn incomplete_tools(row: &mut Row) {
     for tool in &mut row.tools {
         if tool.state == ToolObservationState::Requested {
             tool.state = ToolObservationState::Incomplete;
+            tool.timing.finish();
         }
     }
 }

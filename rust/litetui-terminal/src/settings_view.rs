@@ -35,6 +35,8 @@ pub struct Snapshot {
 pub enum Intent {
     Glassbox(Box<crate::glassbox_controls::Request>),
     Monitor(Box<crate::monitor_controls::Request>),
+    ClaudeReset(Box<crate::claude_reset::Request>),
+    Sidecar(Box<crate::sidecar_controls::Request>),
     Mcp(Box<crate::mcp_config::Request>),
     McpLifecycle(Box<crate::mcp_lifecycle::Request>),
     ModelPreferences(Box<crate::model_preferences::Request>),
@@ -52,6 +54,8 @@ pub enum Intent {
 pub enum Update {
     Glassbox(Result<Box<crate::glassbox_controls::Update>, String>),
     Monitor(Result<Box<crate::monitor_controls::Update>, String>),
+    ClaudeReset(Result<Box<crate::claude_reset::Update>, String>),
+    Sidecar(Result<Box<crate::sidecar_controls::Update>, String>),
     Mcp(Result<Box<crate::mcp_config::Update>, String>),
     McpLifecycle(Result<Box<crate::mcp_lifecycle::Update>, String>),
     ModelPreferences(Result<Box<crate::model_preferences::Update>, String>),
@@ -225,6 +229,8 @@ fn display(value: &str) -> String {
 pub struct View {
     glassbox: crate::glassbox_controls::View,
     monitor: crate::monitor_controls::View,
+    claude_reset: crate::claude_reset::View,
+    sidecar: crate::sidecar_controls::View,
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
     mcp_lifecycle: crate::mcp_lifecycle::View,
@@ -262,6 +268,22 @@ impl View {
         self.intent = Some(Intent::Read);
         self.notice = "Reading current settings…".into();
         self.hide();
+    }
+    pub(crate) fn open_claude_reset(&mut self) {
+        self.hide();
+        self.claude_reset.open();
+        self.waiting = true;
+        self.intent = Some(Intent::ClaudeReset(Box::new(
+            crate::claude_reset::Request::Review,
+        )));
+    }
+    pub(crate) fn open_sidecar(&mut self, arguments: &str) {
+        self.hide();
+        self.sidecar.open(arguments);
+        self.waiting = true;
+        self.intent = Some(Intent::Sidecar(Box::new(
+            crate::sidecar_controls::Request::Snapshot,
+        )));
     }
     pub(crate) fn open_monitor(&mut self, arguments: &str) {
         self.hide();
@@ -349,6 +371,8 @@ impl View {
             || self.model_preferences.open
             || self.glassbox.open
             || self.monitor.open
+            || self.claude_reset.open
+            || self.sidecar.open
             || self.model_lifecycle.open
     }
     pub fn owns_input(&self) -> bool {
@@ -362,8 +386,17 @@ impl View {
             .or_else(|| self.intent.take())
     }
     pub fn hide(&mut self) {
+        self.occlude();
+        self.claude_reset.hide();
+        self.sidecar.hide();
+    }
+    /// A higher-priority prompt owns the frame, but the child and its pending
+    /// transaction still belong to Settings. Only painted evidence expires.
+    pub fn occlude(&mut self) {
         self.glassbox.hide();
         self.monitor.hide();
+        self.claude_reset.occlude();
+        self.sidecar.occlude();
         self.mcp.hide();
         self.mcp_lifecycle.hide();
         self.model_preferences.hide();
@@ -386,6 +419,8 @@ impl View {
     pub fn close(&mut self) {
         self.glassbox = Default::default();
         self.monitor = Default::default();
+        self.claude_reset = Default::default();
+        self.sidecar = Default::default();
         self.mcp = Default::default();
         self.mcp_read_only = false;
         self.mcp_lifecycle.close();
@@ -480,6 +515,7 @@ impl View {
                     self.intent = Some(Intent::ModelLifecycle(Box::new(request)));
                 }
             }
+            Update::ClaudeReset(result) => self.claude_reset.update(result.map(|update| *update)),
             Update::Voice(result) => self.voice.update(result.map(|update| *update)),
             Update::Presentation(result) => self.presentation.update(result.map(|update| *update)),
             Update::Connection(result) => self.connection.update(result.map(|update| *update)),
@@ -487,6 +523,12 @@ impl View {
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
             Update::McpLifecycle(result) => self.mcp_lifecycle.update(result.map(|update| *update)),
             Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
+            Update::Sidecar(result) => {
+                if let Some(request) = self.sidecar.update(result.map(|update| *update)) {
+                    self.waiting = true;
+                    self.intent = Some(Intent::Sidecar(Box::new(request)));
+                }
+            }
             Update::Monitor(result) => {
                 if let Some(request) = self.monitor.update(result.map(|update| *update)) {
                     self.waiting = true;
@@ -535,6 +577,20 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.claude_reset.open {
+            if let Some(request) = self.claude_reset.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::ClaudeReset(Box::new(request)));
+            }
+            return;
+        }
+        if self.sidecar.open {
+            if let Some(request) = self.sidecar.key(key) {
+                self.waiting = true;
+                self.intent = Some(Intent::Sidecar(Box::new(request)));
+            }
+            return;
+        }
         if self.monitor.open {
             if let Some(request) = self.monitor.key(key) {
                 self.waiting = true;
@@ -677,6 +733,9 @@ impl View {
                 )));
                 self.hide();
             }
+            KeyCode::Char('s') if key.kind == KeyEventKind::Press => {
+                self.open_sidecar("");
+            }
             KeyCode::Char('g') if key.kind == KeyEventKind::Press => {
                 self.open_glassbox(None);
             }
@@ -754,6 +813,8 @@ impl View {
             || self.model_preferences.open
             || self.glassbox.open
             || self.monitor.open
+            || self.claude_reset.open
+            || self.sidecar.open
             || self.model_lifecycle.open
         {
             return;
@@ -810,6 +871,14 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.claude_reset.open {
+            self.claude_reset.draw(frame, area, theme);
+            return;
+        }
+        if self.sidecar.open {
+            self.sidecar.draw(frame, area, theme);
+            return;
+        }
         if self.model_preferences.open {
             self.model_preferences.draw(frame, area, theme);
             return;
@@ -1011,7 +1080,7 @@ impl View {
         );
         frame.render_widget(
             Paragraph::new(
-                "P preferences · A agent · L model lifecycle · V voice · U interface · N connections · M MCP · I status · G Glassbox · E edit · C compact · R refresh · Esc back",
+                "P preferences · A agent · L model lifecycle · V voice · U interface · N connections · M MCP · I status · G Glassbox · S Sidecar · E edit · C compact · R refresh · Esc back",
             ),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );

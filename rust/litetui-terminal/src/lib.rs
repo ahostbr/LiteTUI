@@ -60,6 +60,7 @@ pub mod settings_editor;
 pub mod settings_view;
 
 pub mod chat_pause;
+pub mod claude_reset;
 pub mod command_palette;
 mod command_routes;
 pub mod help_view;
@@ -100,6 +101,7 @@ pub mod playback;
 pub mod plugin_reload;
 pub mod presentation;
 pub mod presentation_preferences;
+pub mod sidecar_controls;
 pub mod transcript_selection;
 pub mod voice_actions;
 pub mod voice_preferences;

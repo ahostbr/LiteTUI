@@ -137,16 +137,31 @@ fn saved_messages_retain_order_details_and_structured_content_without_replaying(
     assert_eq!(chat.history.as_ref().unwrap().messages[0].role, "user");
 }
 #[test]
-fn saved_display_budget_is_shared_with_new_turns() {
+fn saved_history_and_new_turns_use_separate_bounded_display_pages() {
     let mut value = transcript();
     value["messages"] = json!([{"role":"user","content":"x".repeat(32000)}]);
     let mut chat = Chat::new("claude".into(), "model-A".into());
     chat.observe(Observation::History(History::parse(&value, ID).unwrap()))
         .unwrap();
     chat.observe(Observation::Ready).unwrap();
-    assert!(chat.submit(&"x".repeat(1000)).is_err());
-    assert!(chat.take_submission().is_none());
-    assert!(chat.history.is_some());
+    let prompt = "y".repeat(1000);
+    chat.submit(&prompt).unwrap();
+    assert_eq!(chat.take_submission(), Some(prompt.clone()));
+    assert_eq!(chat.visible_row_range(), 0..1);
+    assert!(!chat.show_live_history());
+    assert!(chat.has_older_live_page());
+    assert!(chat.first_live_page());
+    assert!(chat.show_live_history());
+    assert_eq!(chat.visible_row_range(), 0..0);
+    assert!(chat.newer_live_page());
+    assert_eq!(chat.visible_row_range(), 0..1);
+    assert!(!chat.show_live_history());
+    assert_eq!(
+        chat.history.as_ref().unwrap().messages[0].text,
+        "x".repeat(32000)
+    );
+    assert_eq!(chat.rows[0].prompt, prompt);
+    assert!(chat.rows[0].render_units() <= litetui_terminal::live_chat::DISPLAY_UNITS);
 }
 #[test]
 fn root_resume_preflight_never_rewrites_settings_or_adopts_an_unmarked_root() {

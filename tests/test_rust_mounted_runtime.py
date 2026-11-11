@@ -1,7 +1,7 @@
 """Bounded mounted runtime with scripted external transports, not a live child.
 
 The fixture catalog loads real core_tools and self_compact; other plugins and
-stdin-reader/updater startup are excluded. Default thinking avoids probing. Model,
+stdin-reader/updater startup and thinking-level discovery are excluded. Model,
 backend HTTP, hook process and registration transports are scripted, not tested.
 Real hook selection/authorization/parser, admission, queue, engine, backend
 readiness orchestration and owned storage remain in the exercised path.
@@ -39,6 +39,7 @@ from litetui import (
     plugins,
     rpc,
     settings,
+    thinking_probe,
     ttyguard,
     update_check,
 )
@@ -122,6 +123,7 @@ class MountedRuntime:
         self.cleanup_errors = []
         self.problems = []
         self.excluded_updates = []
+        self.excluded_thinking = []
 
     def cleanup(self, label, callback):
         try:
@@ -150,13 +152,13 @@ class MountedRuntime:
 
         stack.callback(restore_factory)
 
-        def factory(loop, coroutine, context=None):
+        def factory(loop, coroutine, context=None, **kwargs):
             if previous_factory is None:
-                task = asyncio.Task(coroutine, loop=loop, context=context)
+                task = asyncio.Task(coroutine, loop=loop, context=context, **kwargs)
             elif context is None:
-                task = previous_factory(loop, coroutine)
+                task = previous_factory(loop, coroutine, **kwargs)
             else:
-                task = previous_factory(loop, coroutine, context=context)
+                task = previous_factory(loop, coroutine, context=context, **kwargs)
             owner = context.get(WORK_OWNER) if context is not None else WORK_OWNER.get()
             if owner is self:
                 self.tasks.append(task)
@@ -275,6 +277,15 @@ class MountedRuntime:
                 self.root / "global-hooks.json", hook_dir / "hooks.json"))
             patch.setattr(update_check, "start_background_check",
                           lambda app: self.excluded_updates.append(app))
+
+            def thinking_levels(host, model, seed_models=()):
+                # This fixture measures turn/origin/ownership, not autonomous
+                # model capability probes. Keep the real worker and tripwires.
+                if host != "http://127.0.0.1:1234" or model != MODEL:
+                    self.effects.forbid("unplanned thinking-level discovery")()
+                self.excluded_thinking.append((host, model, tuple(seed_models)))
+
+            patch.setattr(thinking_probe, "get_effective_levels", thinking_levels)
             patch.setattr(platform, "node", lambda: "synthetic-host")
             for obj, name in (
                 (subprocess, "Popen"), (socket, "create_connection"),
@@ -640,8 +651,8 @@ async def test_task_factory_replacement_is_reported_without_clobbering_owner(tmp
     loop = asyncio.get_running_loop()
     original = loop.get_task_factory()
 
-    def sentinel(loop, coroutine, context=None):
-        return asyncio.Task(coroutine, loop=loop, context=context)
+    def sentinel(loop, coroutine, context=None, **kwargs):
+        return asyncio.Task(coroutine, loop=loop, context=context, **kwargs)
 
     try:
         with pytest.raises(ExceptionGroup) as caught:

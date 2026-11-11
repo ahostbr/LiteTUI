@@ -19,6 +19,7 @@ MAX_BYTES = 512 * 1024
 _ROUTES = {
     ("mark", "/mark"): "mark",
     ("monitor", "/monitor"): "monitor",
+    ("sidecar-preview", "/sidecar"): "sidecar",
     ("model-switch", "/model"): "models",
     ("model-switch", "/backend"): "backend",
     ("model-switch", "/reconnect"): "model_reconnect",
@@ -64,7 +65,6 @@ _UNAVAILABLE = {
     ("misc", "/screenshot"): "Screenshot saves an image of the Textual window and the terminal frontend has no capture path of its own; use your terminal's screenshot, or Ctrl+Shift+C to copy transcript text.",
     ("misc", "/maximize"): "Maximize enlarges the focused Textual panel; the terminal frontend has no panel focus and the transcript already takes every free row. Ctrl+G toggles the compact view; Alt+Up and Alt+Down scroll.",
     ("misc", "/test-sidebar"): "Test sidebar is a Textual-only dialog spike with no terminal equivalent.",
-    ("sidecar-preview", "/sidecar"): "Native sidecar preview is a desktop overlay that is not available in the terminal frontend.",
 }
 _NO_ARGUMENTS = {
     "mark": "/mark takes no arguments; add your note in the reviewed marker overlay.",
@@ -124,7 +124,7 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
         "accepts_arguments": (action in {
             "skill_prepare", "conversation_rename", "glassbox", "conversation_compact",
             "model_load", "model_unload", "engine", "plugin_reload", "plan", "system_prompt", "monitor",
-            "models", "thinking", "backend", "conversation_resume", "claude", "mcp",
+            "models", "thinking", "backend", "conversation_resume", "claude", "mcp", "sidecar",
         } or kind == "command" and action in _WORK_INSPECTION),
         "unavailable_reason": "" if action else _UNAVAILABLE.get(
             (owner, tokens[0] if tokens else ""), "This contribution has no native action adapter yet."),
@@ -265,6 +265,9 @@ def _preselection(app, action, arguments):
         if level not in levels:
             raise ValueError(f"Thinking level {wanted!r} is not offered by this backend and model. "
                              f"Offered: {', '.join(levels)}")
+    elif action == "sidecar":
+        if wanted and wanted not in ("timeline", "calendar", "settings", "job"):
+            raise ValueError("/sidecar accepts timeline, calendar, settings or job; lifecycle and proposals are reviewed in the panel.")
     elif action == "backend" and wanted:
         tokens = wanted.lower().split()
         if "--default" in tokens:

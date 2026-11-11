@@ -225,7 +225,7 @@ class Bridge:
                 self.recovered.append({"producer": producer_record.ref, "input": entry.ref, "state": state,
                                        "reason": entry.reason, "admission": entry.admission, "epoch": entry.epoch})
 
-    def check(self, *, allow_closing=False, allow_error=False):
+    def _check_owner(self):
         if (self.app._agent_session is not self.owner[0] or self.app.store is not self.owner[1]
                 or self.app.backend is not self.owner[2] or self.app.model_id != self.owner[3]
                 or self.app.convo_id != self.owner[4] or identity(self.app) != self.identity
@@ -236,6 +236,9 @@ class Bridge:
             if (not self.app.store.pending or self.app.store.agent_session is not self.app._agent_session
                     or Path(self.app.convo_dir) != expected or self.raw is not None):
                 raise ValueError("Work conversation storage is no longer owned")
+
+    def check(self, *, allow_closing=False, allow_error=False):
+        self._check_owner()
         self.app._validate_owned_identity()
         if self.error and not allow_error:
             raise ValueError(self.error)
@@ -254,6 +257,9 @@ class Bridge:
 
     def persist(self):
         self.check(allow_closing=True, allow_error=True)
+        self._publish_checked()
+
+    def _publish_checked(self):
         if not self.app.store.owned or self.app.store.pending:
             raise ValueError("Work ledger publication requires canonical materialization and its exact lease")
         if _read(self.path) != self.raw:
@@ -281,6 +287,27 @@ class Bridge:
             except OSError:
                 pass
             raise
+
+    def _finish_shutdown(self, cutoff):
+        # Only the exact joined Quit task may publish the closing ledger without
+        # request settings. A torn preference document must still reject new
+        # execution, but cannot prevent retirement of its retained Work owner.
+        if (bridge(self.app) is not self or not self.active or not self.closing
+                or self.close_event is not cutoff or cutoff is None
+                or self.shutdown_task is None or self.shutdown_task is not _task()):
+            raise ValueError("Work retirement requires its exact closing task and cutoff")
+        self._check_owner()
+        self.app._validate_owned_authority()
+        if self.path != Path(self.app.convo_dir) / FILENAME:
+            raise ValueError("Work retirement ledger path changed")
+        if self.app.store.pending and self.raw is None:
+            if (self.revision or self.producers or self.inputs or self.calls or self.reservations
+                    or self.executions or _read(self.path) is not None):
+                raise ValueError("Pending conversation has unexpected Work ledger activity")
+            return digest(b"")
+        self.app.store._validate_owned_transcript()
+        self._publish_checked()
+        return digest(self.raw)
 
     def emit(self, kind, *, origin=None, **fields):
         self.sequence += 1
@@ -316,7 +343,12 @@ def _command(app, cmd, operation, extras=(), *, admission=True, expected_identit
     if any(cmd.get(key) != value for key, value in owner.items()):
         raise ValueError("Work command belongs to another owned identity")
     text(cmd.get("id"))
-    (app._validate_owned_execution if admission else app._validate_owned_identity)()
+    if expected_identity is not None:
+        # Only an exact historical no-effect owner can supply this identity;
+        # a stale request projection must not prevent its final cleanup reply.
+        app._validate_owned_authority()
+    else:
+        (app._validate_owned_execution if admission else app._validate_owned_identity)()
 
 
 def capture(app, cmd):
@@ -969,6 +1001,8 @@ def begin_close(app):
 
 async def settle_before_shutdown(app):
     cutoff = begin_close(app)
+    from litetui import native_claude_reset
+    await native_claude_reset.retire(app)
     from litetui import (
         native_dictation,
         native_mark,
@@ -1053,7 +1087,9 @@ async def _settle_shutdown(app, value, cutoff, *, cancel=True):
         raise RuntimeError("Work hook process or pipe retirement is unproven")
     if getattr(app, "_hook_lifecycle", ()) or app._hook_lock.locked():
         raise RuntimeError("Work lifecycle hooks remain pending")
-    if app.store.pending and value.raw is None:
+    if cancel:
+        ledger_hash = value._finish_shutdown(cutoff)
+    elif app.store.pending and value.raw is None:
         # A fresh conversation has no store lease or ledger to flush. Joining an
         # unused bridge must not materialize a conversation just to close it.
         value.check(allow_closing=True)
@@ -2690,9 +2726,15 @@ def require_new_execution(app):
 
 def prepare_publication(app, cmd, result):
     """Prepare one exact known response barrier, never an arbitrary callback."""
+    from litetui import native_sidecar
+    if cmd.get("type", "").startswith(native_sidecar.PREFIX):
+        return native_sidecar.prepare_publication(app, cmd, result)
     from litetui import native_deferred, native_schedule, native_work_execution
     from litetui import native_runtime_controls
     ticket = native_runtime_controls.prepare_publication(app, cmd, result)
+    if ticket is None:
+        from litetui import native_claude_reset
+        ticket = native_claude_reset.prepare_publication(app, cmd, result)
     if ticket is None:
         from litetui import native_mark
         ticket = native_mark.prepare_publication(app, cmd, result)
@@ -2734,6 +2776,14 @@ def prepare_publication(app, cmd, result):
 
 
 def finish_publication(app, ticket):
+    from litetui import native_claude_reset
+    if isinstance(ticket, native_claude_reset.Publication):
+        native_claude_reset.finish_publication(app, ticket)
+        return
+    from litetui import native_sidecar
+    if isinstance(ticket, native_sidecar.Publication):
+        native_sidecar.finish_publication(app, ticket)
+        return
     from litetui import native_deferred, native_schedule, native_work_execution
     from litetui import native_runtime_controls
     if ticket is not None and getattr(app, "_native_claude_queue_publication", None) is ticket:

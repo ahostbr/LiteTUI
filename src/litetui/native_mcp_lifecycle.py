@@ -269,11 +269,12 @@ def activated(app, value):
     )
 
 
-def _same(app, state):
+def _same_owner(app, state):
     app._validate_owned_identity()
     if (
         not enabled(app)
         or state is not _state(app)
+        or state.app is not app
         or state.bridge is not work.bridge(app)
         or state.manager is not _manager(app)
         or any(
@@ -281,6 +282,10 @@ def _same(app, state):
         )
     ):
         raise ValueError("MCP lifecycle lost its captured runtime owner")
+
+
+def _same(app, state):
+    _same_owner(app, state)
     state.bridge.check()
     if state.error:
         raise ValueError(state.error)
@@ -969,13 +974,81 @@ async def settle_before_shutdown(app):
             )
 
 
+
+def _retired_transition_inventory(app, state):
+    """Inspect only a completed quiet retirement; never reopen MCP admission."""
+    _same_owner(app, state)
+    value = state.bridge
+    task = value.shutdown_task
+    proof = getattr(value, "transition_proof", None)
+    cutoff = value.close_event
+    if (
+        not value.closing
+        or not isinstance(task, asyncio.Task)
+        or not task.done()
+        or task.cancelled()
+        or task.exception() is not None
+        or getattr(task.get_coro(), "cr_code", None) is not work._settle_shutdown.__code__
+        or not isinstance(proof, dict)
+        or not isinstance(cutoff, dict)
+        or cutoff.get("type") != "work_closing"
+        or cutoff.get("instance") != value.instance
+        or cutoff.get("identity") != value.identity
+        or cutoff.get("cutoff_sequence") != cutoff.get("sequence")
+        or getattr(app, "_gui_quitting", False)
+        or getattr(app, "_conversation_transition_shutdown_requested", False)
+        or app._chat_running()
+        or app._pending_input
+        or value.reservations
+        or any(entry.claim_task is not None for entry in value.inputs.values())
+    ):
+        raise ValueError("MCP transition inspection requires exact completed quiet Work retirement")
+    # Bind the successful retained task result to the exact cutoff and current
+    # ledger. A copied dictionary or merely closing bridge is not retirement.
+    ids = set(cutoff["input_ids"])
+    ids.update(entry.ref["input_id"] for entry in value.inputs.values()
+               if entry.ref["producer_id"] in cutoff["producer_ids"])
+    expected = {
+        "version": work.VERSION, "instance": value.instance,
+        "closing_sequence": cutoff["sequence"], "final_sequence": value.sequence,
+        "admission_closed": True, "worker_settled": True,
+        "callback_settled": True, "process_settled": True,
+        "producer_ids": cutoff["producer_ids"],
+        "inputs": [{"input_id": key, "disposition": value.inputs[key].state}
+                   for key in sorted(ids)],
+        "admission_ids": cutoff["admission_ids"],
+        "ledger_sha256": work.digest(value.raw if value.raw is not None else b""),
+        "effects_verified": False,
+    }
+    if (work.encoded(task.result()) != work.encoded(proof)
+            or work.encoded(proof) != work.encoded(expected)
+            or work._read(value.path) != value.raw):
+        raise ValueError("MCP transition inspection lost its exact Work retirement proof")
+    runtime = controls._state(app)
+    retirement = getattr(value, "runtime_controls_retirement", None)
+    if (runtime is None or runtime.bridge is not value or not runtime.closing
+            or runtime.shutdown is None or runtime.error or runtime.tickets or runtime.waiters
+            or not isinstance(retirement, dict)
+            or retirement.get("runtime_controls_shutdown") != runtime.shutdown):
+        raise ValueError("MCP transition inspection requires settled runtime authorization")
+    value.check(allow_closing=True)
+    manager = state.manager
+    if (state.hold or state.error or state.action is not None and not state.action.done()
+            or app.settings.mcp_enabled is not False or manager.servers or manager._stop_failed
+            or manager._closing or manager._maint_active or _inventory(app) != state.inventory):
+        raise ValueError("MCP transition inspection requires exact disabled published inventory")
+
+
 def transition_refusal(app):
     if not enabled(app):
         return None
     state = _state(app)
     if state.hold or state.error:
         return "Settle the exact MCP operation before changing runtime identity."
-    require_inventory(app)
+    if state.bridge.closing:
+        _retired_transition_inventory(app, state)
+    else:
+        require_inventory(app)
     if app.settings.mcp_enabled or state.manager.servers or state.manager._stop_failed:
         return "Review Disable in MCP Runtime before changing conversation, backend or model."
     return None

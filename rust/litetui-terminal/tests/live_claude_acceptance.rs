@@ -7,6 +7,8 @@
 //! off. Every approval and the settled compaction witness are logged for audit.
 #[path = "support/acceptance_filter.rs"]
 mod acceptance_filter;
+#[path = "support/paid_startup.rs"]
+mod paid_startup;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use litetui_terminal::{
@@ -41,6 +43,7 @@ enum Phase {
 }
 
 struct Ctx {
+    startup: paid_startup::Startup,
     deadline: Instant,
     phase: Phase,
     token: String,
@@ -255,6 +258,13 @@ fn pump(
                 continue;
             }
         };
+        ctx.startup.observe(&event)?;
+        if matches!(
+            &event,
+            Observation::Theme(litetui_terminal::theme_controls::Update::Snapshot(_))
+        ) {
+            ctx.say("[startup] validated source theme snapshot");
+        }
         match &event {
             Observation::Content { card, kind, text } if !kind.reasoning() => {
                 let entry = ctx.cards.entry(*card).or_default();
@@ -550,6 +560,7 @@ fn real_claude_reads_a_file_compacts_with_tools_and_recalls_it() {
     println!("Real Claude acceptance data: {}", root.display());
     let started = Instant::now();
     let mut ctx = Ctx {
+        startup: paid_startup::Startup::new("claude", "claude-sonnet-5-5"),
         deadline: started + OVERALL,
         phase: Phase::Idle,
         token: token.clone(),

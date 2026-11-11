@@ -61,6 +61,7 @@ pub enum Action {
     Glassbox,
     Monitor,
     Mark,
+    Sidecar,
     Models,
     Thinking,
     Conversations,
@@ -107,6 +108,7 @@ impl Action {
             Some("glassbox") => Some(Self::Glassbox),
             Some("monitor") => Some(Self::Monitor),
             Some("mark") => Some(Self::Mark),
+            Some("sidecar") => Some(Self::Sidecar),
             Some("models") => Some(Self::Models),
             Some("thinking") => Some(Self::Thinking),
             Some("conversations") => Some(Self::Conversations),
@@ -274,6 +276,7 @@ impl Catalog {
                                 | Action::SystemPrompt
                                 | Action::Glassbox
                                 | Action::Monitor
+                                | Action::Sidecar
                                 | Action::Engine
                                 | Action::Plan
                                 | Action::ModelLoad

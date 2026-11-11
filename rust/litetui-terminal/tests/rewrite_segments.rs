@@ -602,7 +602,7 @@ fn malformed_compaction_status_does_not_become_a_success_notice() {
     }
 }
 #[test]
-fn cumulative_display_budget_spans_all_followup_rows() {
+fn followup_rows_have_independent_bounded_display_pages() {
     let (mut t, op) = ready();
     let mut chat = prepared_chat(&op);
     relay(&mut t, &mut chat, ack(&op));
@@ -634,9 +634,26 @@ fn cumulative_display_budget_spans_all_followup_rows() {
             json!({"type":"text_delta","text":"y".repeat(20_000)}),
         ),
     );
-    assert!(chat.observe(next).is_err());
-    assert_eq!(chat.rows[1].cards[0].answer.len(), 20_000);
-    assert!(chat.rows[2].cards[0].answer.is_empty());
+    chat.observe(next).unwrap();
+    assert_eq!(chat.rows[1].cards[0].answer, "x".repeat(20_000));
+    assert_eq!(chat.rows[2].cards[0].answer, "y".repeat(20_000));
+    assert_eq!(chat.visible_row_range(), 2..3);
+    assert!(chat.older_live_page());
+    assert!(chat.visible_row_range().contains(&1));
+    assert!(!chat.visible_row_range().contains(&2));
+    let oversized = accept(
+        &mut t,
+        event(
+            &op,
+            SECOND,
+            json!({"type":"text_delta","text":"z".repeat(13_000)}),
+        ),
+    );
+    assert!(chat.observe(oversized).is_err());
+    assert_eq!(chat.rows[1].cards[0].answer, "x".repeat(20_000));
+    assert_eq!(chat.rows[2].cards[0].answer, "y".repeat(20_000));
+    assert!(chat.newer_live_page());
+    assert_eq!(chat.visible_row_range(), 2..3);
 }
 
 #[test]
