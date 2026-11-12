@@ -1927,31 +1927,37 @@ impl View {
             }
         }
         if max_scroll > 0 {
+            // Textual's ScrollBarRender.render_bar, vertical, in eighths of a cell.
             const BARS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", " "];
             let size = f64::from(height);
-            let total = rows.len() as f64;
-            let thumb = (size * size / total).max(1.0);
-            let start = self.scroll as f64 * size / total;
-            let end = start + thumb;
+            let virtual_size = rows.len() as f64;
+            let thumb = (size / (virtual_size / size)).max(1.0);
+            let position = (size - thumb) * (self.scroll as f64 / (virtual_size - size));
+            let start = (position * 8.0) as usize;
+            let end = start + (thumb * 8.0).ceil() as usize;
+            let (start_index, start_bar) = (start / 8, start % 8);
+            let (end_index, end_bar) = (end / 8, end % 8);
             let column = x0 + cw;
-            let thumb_style = Style::default().fg(p.surface).bg(p.border);
-            for i in 0..height {
-                let (top, bottom) = (f64::from(i), f64::from(i) + 1.0);
-                let covered = (end.min(bottom) - start.max(top)).max(0.0);
-                if covered >= 1.0 - 1e-9 {
-                    buf.set_string(column, content_top + i, " ", thumb_style);
-                } else if covered > 0.0 {
-                    if start > top {
-                        // The thumb's first cell: its lower part, in the thumb colour.
-                        let eighths = ((covered * 8.0).round() as usize).clamp(1, 8);
-                        let style = Style::default().fg(p.border).bg(p.surface);
-                        buf.set_string(column, content_top + i, BARS[eighths - 1], style);
-                    } else {
-                        // The thumb's last cell: track showing below it, over the thumb colour.
-                        let eighths = (((1.0 - covered) * 8.0).round() as usize).clamp(1, 8);
-                        buf.set_string(column, content_top + i, BARS[eighths - 1], thumb_style);
-                    }
-                }
+            let track = Style::default().fg(p.border).bg(p.surface);
+            let solid = Style::default().fg(p.surface).bg(p.border);
+            for i in start_index..end_index.min(usize::from(height)) {
+                buf.set_string(column, content_top + i as u16, " ", solid);
+            }
+            if start_index < usize::from(height) && BARS[7 - start_bar] != " " {
+                buf.set_string(
+                    column,
+                    content_top + start_index as u16,
+                    BARS[7 - start_bar],
+                    track,
+                );
+            }
+            if end_index < usize::from(height) && BARS[7 - end_bar] != " " {
+                buf.set_string(
+                    column,
+                    content_top + end_index as u16,
+                    BARS[7 - end_bar],
+                    solid,
+                );
             }
         }
         // A select's choices open over the rows below it.
