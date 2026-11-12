@@ -552,29 +552,11 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         {
             app.open_runtime_controls(litetui_terminal::runtime_controls_view::Field::Profile);
         }
-        KeyCode::F(1) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_work();
-        }
-        KeyCode::F(12) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_engine();
-        }
         KeyCode::F(11) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_commands();
         }
-        KeyCode::F(10) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_settings();
-        }
-        KeyCode::F(9) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_backend();
-        }
-        KeyCode::F(8) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_browser();
-        }
         KeyCode::F(7) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
             app.open_queue()
-        }
-        KeyCode::F(3) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_models(litetui_terminal::model_controls::Kind::Model)
         }
         KeyCode::F(4) => app.open_themes(),
         KeyCode::F(5) => app.reset(),
@@ -3447,7 +3429,7 @@ mod tests {
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("preserved draft");
         let mut router = KeyRouter::default();
-        plain(&mut app, &mut router, KeyCode::F(3));
+        app.open_models(litetui_terminal::model_controls::Kind::Model);
         assert_eq!(
             app.live.as_mut().unwrap().controls.take_intent(),
             Some(Intent::Open(Kind::Model))
@@ -3507,10 +3489,10 @@ mod tests {
         app.observe_live(Observation::Ready).unwrap();
         app.live.as_mut().unwrap().busy = true;
         let mut router = KeyRouter::default();
-        plain(&mut app, &mut router, KeyCode::F(3));
+        app.open_models(litetui_terminal::model_controls::Kind::Model);
         assert!(!app.has_live_controls());
         app.live.as_mut().unwrap().busy = false;
-        plain(&mut app, &mut router, KeyCode::F(3));
+        app.open_models(litetui_terminal::model_controls::Kind::Model);
         app.live.as_mut().unwrap().controls.take_intent();
         app.observe_live(Observation::Controls(Update::Choices(control_menu())))
             .unwrap();
@@ -3593,10 +3575,10 @@ mod tests {
         app.insert_text("preserved draft");
         let mut router = KeyRouter::default();
         app.live.as_mut().unwrap().busy = true;
-        plain(&mut app, &mut router, KeyCode::F(8));
+        app.open_browser();
         assert!(!app.has_live_browser());
         app.live.as_mut().unwrap().busy = false;
-        plain(&mut app, &mut router, KeyCode::F(8));
+        app.open_browser();
         assert_eq!(
             app.live.as_mut().unwrap().browser.take_intent(),
             Some(Intent::Refresh)
@@ -3649,7 +3631,7 @@ mod tests {
         .unwrap();
         assert!(!app.has_live_browser());
         assert_eq!(app.composer.text(), "preserved draft");
-        plain(&mut app, &mut router, KeyCode::F(8));
+        app.open_browser();
         assert!(app.has_live_browser());
         let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
         small.draw(|f| ui::draw(f, &mut app)).unwrap();
@@ -3674,7 +3656,7 @@ mod tests {
         router.handle(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
         let before_cursor = app.composer.before_cursor().to_owned();
         let selected = app.composer.selected_text().to_owned();
-        plain(&mut app, &mut router, KeyCode::F(8));
+        app.open_browser();
         assert_eq!(
             app.take_browser_intent().unwrap(),
             Some(BrowserIntent::Refresh)
@@ -3802,7 +3784,7 @@ mod tests {
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("preserved draft");
         let mut router = KeyRouter::default();
-        plain(&mut app, &mut router, KeyCode::F(8));
+        app.open_browser();
         app.live.as_mut().unwrap().browser.take_intent();
         let p=b::Page::parse(&json!({"session_id":session,"agent_id":agent,"snapshot":"a".repeat(64),"offset":0,"total":0,"entries":[],"previous_cursor":null,"next_cursor":null}),1,session).unwrap();
         app.observe_live(Observation::Browser(b::Update::Page(p)))
@@ -3868,10 +3850,10 @@ mod tests {
         app.insert_text("unsent main draft");
         let mut router = KeyRouter::default();
         app.live.as_mut().unwrap().busy = true;
-        plain(&mut app, &mut router, KeyCode::F(9));
+        app.open_backend();
         assert!(!app.has_live_backend());
         app.live.as_mut().unwrap().busy = false;
-        plain(&mut app, &mut router, KeyCode::F(9));
+        app.open_backend();
         assert_eq!(
             app.live.as_mut().unwrap().backend_controls.take_intent(),
             Some(Intent::Read)
@@ -3920,7 +3902,7 @@ mod tests {
                 .notice
                 .contains("Already on custom")
         );
-        plain(&mut app, &mut router, KeyCode::F(9));
+        app.open_backend();
         app.live.as_mut().unwrap().backend_controls.take_intent();
         app.observe_live(Observation::Backend(Update::Catalog(catalog.clone())))
             .unwrap();
@@ -4022,7 +4004,7 @@ mod tests {
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("unsent settings draft");
         let mut router = KeyRouter::default();
-        plain(&mut app, &mut router, KeyCode::F(10));
+        app.open_settings();
         assert_eq!(
             app.live.as_mut().unwrap().settings.take_intent(),
             Some(Intent::Read)
@@ -4058,7 +4040,7 @@ mod tests {
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("MAIN DRAFT");
         let mut router = KeyRouter::default();
-        plain(&mut app, &mut router, KeyCode::F(10));
+        app.open_settings();
         app.live.as_mut().unwrap().settings.take_intent();
         app.observe_live(Observation::Settings(settings_view::Update::Snapshot(
             settings_view::Snapshot {
@@ -4185,7 +4167,7 @@ mod tests {
         app.composer
             .move_cursor(litetui_terminal::composer::Motion::WordLeft, true);
         let mut router = KeyRouter::default();
-        plain(&mut app, &mut router, KeyCode::F(10));
+        app.open_settings();
         assert_eq!(
             app.live.as_mut().unwrap().settings.take_intent(),
             Some(settings_view::Intent::Read)
@@ -4526,7 +4508,7 @@ mod engine_router_tests {
             .unwrap();
         key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.has_live_engine());
-        key(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        app.open_engine();
         assert!(app.has_live_engine());
         assert_eq!(app.composer.text(), "unsent engine draft");
         assert!(app.live.as_mut().unwrap().submit("forbidden").is_err());
@@ -4985,8 +4967,8 @@ mod work_router_tests {
         app.live.as_mut().unwrap().take_submission();
         app.insert_text("KEEP α 雪 MAIN DRAFT");
         app.composer.move_cursor(Motion::WordLeft, true);
-        let mut router = KeyRouter::default();
-        router.handle(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        let router = KeyRouter::default();
+        app.open_work();
         assert!(app.has_live_work());
         assert!(app.live.as_ref().unwrap().busy);
         (app, router)
@@ -5095,7 +5077,7 @@ mod work_router_tests {
         .unwrap();
         paint(&mut app, 100, 34);
         assert!(app.has_live_question() && app.has_live_work());
-        router.handle(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.open_work();
         assert!(app.live.as_mut().unwrap().work.take_intent().is_none());
         assert_eq!(draft(&app), before);
     }
@@ -5213,7 +5195,7 @@ mod work_controls_clipboard_tests {
         app.insert_text("KEEP ordinary composer Ω draft");
         app.composer.move_cursor(Motion::WordLeft, true);
         let mut router = KeyRouter::default();
-        router.handle(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.open_work();
         let intent = app.live.as_mut().unwrap().work.take_intent().unwrap();
         app.observe_live(Observation::Work(v::Update {
             generation: intent.generation,
@@ -5426,7 +5408,7 @@ mod execution_keys_tests {
             app.composer.before_cursor().to_owned(),
         );
         let mut router = KeyRouter::default();
-        press(&mut app, &mut router, KeyCode::F(1));
+        app.open_work();
         reads(&mut app, f);
         for _ in 0..4 {
             paint(&mut app);

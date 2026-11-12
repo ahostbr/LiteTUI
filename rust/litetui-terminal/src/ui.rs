@@ -1532,7 +1532,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             Block::default()
                 .borders(Borders::ALL)
                 .title_bottom(if app.live.is_some() {
-                    " F1 Work · F3 models · F7 held · F8 conversations · F4 themes · Esc stops · Ctrl+Q "
+                    " F7 held · F4 themes · Esc stops · Ctrl+Q "
                 } else {
                     " F4 themes · F6 approval · Ctrl+Q "
                 })

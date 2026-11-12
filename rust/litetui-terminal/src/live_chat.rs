@@ -2308,7 +2308,7 @@ impl Chat {
                     }
                 }
                 let notice = format!(
-                    "Source input {input_id}: {reason} · delivery uncertain; F1 Work, F7 held input, and Ctrl+Q remain available."
+                    "Source input {input_id}: {reason} · delivery uncertain; /tasks, F7 held input, and Ctrl+Q remain available."
                 );
                 if input_id.len() > 128
                     || self.work_uncertain.len() >= 256
