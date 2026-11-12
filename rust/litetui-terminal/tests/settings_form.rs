@@ -436,3 +436,85 @@ fn the_hooks_tab_opens_the_native_hooks_screen() {
     assert!(view.take_hooks());
     assert!(!view.take_hooks(), "asked once");
 }
+
+#[test]
+fn voice_tab_capture_key_and_actions() {
+    use litetui_terminal::settings_form::{Route, textual_key};
+    let mut v = form_json("settings_form");
+    v["tabs"][1] = json!({"id": "tab-voice", "label": "Voice", "scroll": true, "items": [
+        {"kind": "row", "indent": false, "section": null, "items": [
+            {"kind": "label", "text": "Record hotkey", "inline": false, "section": null},
+            {"kind": "line", "section": null, "items": [
+                {"kind": "input", "id": "f-stt_hotkey", "value": "ctrl+space", "placeholder": "ctrl+space", "password": false, "disabled": false, "section": null},
+                {"kind": "button", "id": "voice-capture", "label": "Capture key", "disabled": false, "section": null}
+            ]}
+        ]},
+        {"kind": "button", "id": "voice-test", "label": "Test fallback voice", "disabled": false, "section": null}
+    ]});
+    let form = Form::parse(&v, "settings_form", S, "agent", "custom", "m").unwrap();
+    let mut view = View::default();
+    view.open();
+    view.take_intent();
+    view.observe(Update::Form(Box::new(form)));
+    key(&mut view, KeyCode::Tab);
+    key(&mut view, KeyCode::Tab);
+    key(&mut view, KeyCode::Right); // Voice tab
+    key(&mut view, KeyCode::Tab); // hotkey input
+    key(&mut view, KeyCode::Tab); // Capture key
+    key(&mut view, KeyCode::Enter);
+    view.key(KeyEvent::new(KeyCode::F(9), KeyModifiers::CONTROL));
+    let rows = screen(&mut view, 140, 45);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("Record hotkey set to ctrl+f9. Save to apply.")),
+        "{rows:?}"
+    );
+    key(&mut view, KeyCode::Tab); // Test fallback voice
+    key(&mut view, KeyCode::Enter);
+    assert!(
+        view.owns_input(),
+        "a draft is open: asked to save or discard first"
+    );
+    view.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    let Some(Intent::Save { values, .. }) = view.take_intent() else {
+        panic!("no save")
+    };
+    assert_eq!(Value::Object(values), json!({"f-stt_hotkey": "ctrl+f9"}));
+    // Without a draft, the Voice tab's actions hand over to the native voice panel.
+    let mut view = View::default();
+    view.open();
+    view.take_intent();
+    view.observe(Update::Form(Box::new(
+        Form::parse(&v, "settings_form", S, "agent", "custom", "m").unwrap(),
+    )));
+    for k in [
+        KeyCode::Tab,
+        KeyCode::Tab,
+        KeyCode::Right,
+        KeyCode::Tab,
+        KeyCode::Tab,
+        KeyCode::Tab,
+    ] {
+        key(&mut view, k);
+    }
+    key(&mut view, KeyCode::Enter);
+    assert!(!view.owns_input());
+    assert_eq!(view.take_route(), Some(Route::Voice));
+    // Textual's key names.
+    assert_eq!(
+        textual_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL)).as_deref(),
+        Some("ctrl+space")
+    );
+    assert_eq!(
+        textual_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)).as_deref(),
+        Some("A")
+    );
+    assert_eq!(
+        textual_key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::SHIFT | KeyModifiers::ALT
+        ))
+        .as_deref(),
+        Some("alt+shift+up")
+    );
+}

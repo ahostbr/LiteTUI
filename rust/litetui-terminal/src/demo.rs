@@ -836,6 +836,18 @@ impl Demo {
             .is_some_and(|chat| chat.settings.take_hooks_request())
         {
             self.show_work(Some(crate::work_view::Destination::Hooks));
+        } else if self
+            .live
+            .as_mut()
+            .is_some_and(|chat| chat.settings.take_voice_request())
+        {
+            // The Voice tab's Test / Install / Download: the native voice actions panel.
+            self.open_settings();
+            if let Some(chat) = self.live.as_mut()
+                && chat.settings.open
+            {
+                chat.settings.open_voice();
+            }
         }
     }
     /// `/settings`: Python's tabbed settings dialog (settings_form), in one step.

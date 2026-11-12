@@ -394,6 +394,22 @@ impl View {
     pub fn take_hooks_request(&mut self) -> bool {
         self.form.take_hooks()
     }
+    /// The settings dialog's Voice tab asked for the voice actions panel.
+    pub fn take_voice_request(&mut self) -> bool {
+        if self.form.take_route() == Some(crate::settings_form::Route::Voice) {
+            return true;
+        }
+        false
+    }
+    /// The native voice preferences and actions panel.
+    pub(crate) fn open_voice(&mut self) {
+        self.voice.open();
+        self.waiting = true;
+        self.intent = Some(Intent::Voice(Box::new(
+            crate::voice_preferences::Request::List,
+        )));
+        self.hide();
+    }
     pub fn owns_input(&self) -> bool {
         self.open
             || self.waiting

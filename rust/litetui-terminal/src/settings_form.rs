@@ -448,8 +448,10 @@ pub struct View {
     searched: bool,
     /// Keys pressed before the form arrived; Textual delivers these once its screen mounts.
     early: Vec<KeyEvent>,
-    /// Enter on the Hooks tab's editor row: the app opens the hooks screen.
-    hooks: bool,
+    /// A screen the dialog hands over to (the hooks screen, the voice actions panel).
+    route: Option<Route>,
+    /// Capture key: the next key pressed becomes the record hotkey (Python's on_key).
+    capturing: bool,
     intent: Option<Intent>,
     hits: Vec<(Rect, Hit)>,
     visible: bool,
@@ -488,9 +490,25 @@ impl View {
     pub fn finish(&mut self) {
         *self = Self::default();
     }
-    /// The Hooks tab asked for the hooks screen (consumed once).
+    /// The screen the dialog handed over to, once.
+    pub fn take_route(&mut self) -> Option<Route> {
+        self.route.take()
+    }
+    /// Kept for the Hooks tab's callers.
     pub fn take_hooks(&mut self) -> bool {
-        std::mem::take(&mut self.hooks)
+        if self.route == Some(Route::Hooks) {
+            self.route = None;
+            return true;
+        }
+        false
+    }
+    fn hand_over(&mut self, route: Route, what: &str) {
+        if self.dirty() {
+            self.message = format!("Save or discard the settings draft before opening {what}.");
+        } else {
+            self.close();
+            self.route = Some(route);
+        }
     }
     pub fn dirty(&self) -> bool {
         !self.edits.is_empty()
@@ -860,6 +878,14 @@ impl View {
                 self.restoring = true;
                 self.confirm = Some(0);
             }
+            // Python's Voice tab actions run in the native voice actions panel.
+            "voice-test" | "voice-install-edge" | "voice-dl-stt" => {
+                self.hand_over(Route::Voice, "the voice actions")
+            }
+            "voice-capture" => {
+                self.capturing = true;
+                self.message = "Press the key combination…".into();
+            }
             _ => {
                 let label = self
                     .form
@@ -899,15 +925,7 @@ impl View {
                     self.sections.insert(id, now);
                 }
                 Some(Target::Button(id)) => self.press(&id),
-                Some(Target::Hooks) => {
-                    if self.dirty() {
-                        self.message =
-                            "Save or discard the settings draft before opening hooks.".into();
-                    } else {
-                        self.close();
-                        self.hooks = true;
-                    }
-                }
+                Some(Target::Hooks) => self.hand_over(Route::Hooks, "hooks"),
                 Some(Target::Control(_)) => {
                     let Some(control) = self.focused_control().cloned() else {
                         return;
@@ -1029,6 +1047,21 @@ impl View {
                     self.popup = None;
                 }
                 _ => {}
+            }
+            return;
+        }
+        if self.capturing {
+            // SettingsBody.on_key: the key itself, in Textual's name, into the hotkey box.
+            if let Some(name) = textual_key(key)
+                && let Some(control) = self
+                    .form
+                    .as_ref()
+                    .and_then(|f| f.control("f-stt_hotkey"))
+                    .cloned()
+            {
+                self.capturing = false;
+                self.set(&control, json!(name));
+                self.message = format!("Record hotkey set to {name}. Save to apply.");
             }
             return;
         }
@@ -1187,6 +1220,53 @@ impl View {
         }
     }
 }
+/// Where the settings dialog hands over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    Hooks,
+    Voice,
+}
+
+/// A key as Textual names it ("ctrl+space", "f9", "a", "A"); None for a bare modifier.
+pub fn textual_key(key: KeyEvent) -> Option<String> {
+    let name = match key.code {
+        KeyCode::Char(' ') => "space".to_owned(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::F(n) => format!("f{n}"),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Tab => "tab".into(),
+        KeyCode::BackTab => "shift+tab".into(),
+        KeyCode::Esc => "escape".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Insert => "insert".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::PageUp => "pageup".into(),
+        KeyCode::PageDown => "pagedown".into(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        _ => return None,
+    };
+    let mut prefix = String::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        prefix.push_str("ctrl+");
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        prefix.push_str("alt+");
+    }
+    // A shifted letter is its capital, as Textual reports it; other keys name shift.
+    if key.modifiers.contains(KeyModifiers::SHIFT)
+        && !matches!(key.code, KeyCode::Char(c) if c != ' ')
+        && key.code != KeyCode::BackTab
+    {
+        prefix.push_str("shift+");
+    }
+    Some(format!("{prefix}{name}"))
+}
+
 fn byte(text: &str, chars: usize) -> usize {
     text.char_indices()
         .nth(chars)
