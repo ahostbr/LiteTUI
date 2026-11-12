@@ -4,7 +4,7 @@
   "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
   "ledger": {
     "path": "docs/Plans/rust-tui-port/remaining-parity.md",
-    "sha256": "936638f964e4810a84d457f73c87c02d7d4d38103aaa864194e470ebed9eb742"
+    "sha256": "e616c322ee30e430fa6a7c17570feda2b49e416bbe27a893385a78b5131a5d1a"
   },
   "source_hashes": {
     "rust/litetui-terminal/src/agent_preferences.rs": "b43234540a769666868542cd8fd130871c69e946fe89f071bca2d73cabbb7d0c",
@@ -197,6 +197,37 @@
     "tests/test_rust_voice_preferences.py": "025ac90f74d19d3b5b046dceeef2f96c8c32548597b6793ae92fcd9ad34ba8d0",
     "tests/test_rust_work_controls.py": "e9eebdd22047a4798b0c60d5cf7d82df5a1fd3fd4b38b56b921a98652ca051eb",
     "tests/test_rust_work_inspection.py": "3dc43d219c300ae93849a9df47fa72b9eec6113902c197b9658a5c2676be4b65",
+    "target/final-gate-sensitivity-prep/attempt-2/proof.json": "f8d7c70dc76191b3e7f341c08896e7bad72546efe4fd081537f4d40dc46a4689",
+    "target/final-gate-sensitivity-prep/attempt-2/inputs-before.json": "1719df5f2f1b52f8c8367ad0b8048aaf385408ca40831e46bac8ed9f6f18f5e7",
+    "target/final-gate-sensitivity-prep/attempt-2/inputs-after.json": "1719df5f2f1b52f8c8367ad0b8048aaf385408ca40831e46bac8ed9f6f18f5e7",
+    "target/final-gate-sensitivity-prep/attempt-2/run_controls.py": "4e9ee132fda59b2836a98e553518ee6668413273409b8b0f35d9e49cf7001d74",
+    "target/final-gate-sensitivity-prep/attempt-2/tool-versions.json": "8af8c5d6f5c33a3f0b0d90a21dd429c28032bbabf87515ed2d80fe5c7a32cc83",
+    "target/final-gate-sensitivity-prep/attempt-2/cleanup.json": "7a26d5289f1010b0109a3d4b52f86c32d01d035513207b2f692f62ca5bfb48fd",
+    "target/final-gate-sensitivity-prep/attempt-2/cleanup-intent.json": "72c3db1d21416ba0a92746520b4b7bb92ca2b5d372b194e8f0a73cceca3e895a",
+    "target/final-gate-sensitivity-prep/attempt-2/cleanup-initial-refusal.json": "de2abc17354c2da7d9ca173dea8cbcf299723b03a285c1fe08b8095fcda0f54b",
+    "target/final-gate-sensitivity-prep/proof.json": "fa65f69a5607b31806c3064f02d48e1598fee6f4b6f356bbd74ce577e87fd2b5",
+    "target/final-gate-sensitivity-prep/run_controls.py": "b8ae2f952fac1be22d2b34b7213bf37069cb8abbc2b6b25dfdd85ac68f8fa7f9",
+    "target/final-gate-sensitivity-prep/attempt-2/version-python.log": "3c00433d6870b2f40b3bbc642b5cec6dc34ace27ad25b0c1a0bb075047ea33b8",
+    "target/final-gate-sensitivity-prep/attempt-2/version-cargo.log": "9788f29ce8f0691843154477acf46d1f724d081fb503f59f13cc8618c871693b",
+    "target/final-gate-sensitivity-prep/attempt-2/version-rustc.log": "a648c9943f6d13872c43bfcef380550091c9f56d79bcb61de0241c3dc990dcbd",
+    "target/final-gate-sensitivity-prep/attempt-2/version-clippy.log": "6b1080944283c95d165f959c32d6d492bb8b1607ebd48de36c71c9a819e4f420",
+    "target/final-gate-sensitivity-prep/attempt-2/version-rustfmt.log": "2a66aa7a5848c1237f7fdf9d715bd4d32a7e03986a8cd6297f24cf8d0f472407",
+    "target/final-gate-sensitivity-prep/attempt-2/wire-positive.log": "2742dcff220d60dc4d818e487355ad0c7b886c2d47cae02dacda18b3be6052f8",
+    "target/final-gate-sensitivity-prep/attempt-2/wire-expected-outcome-mutant.log": "ae92f2ad67be219c428383b567bd32684e8be78049b8dc5cc35e2e3145990f70",
+    "target/final-gate-sensitivity-prep/attempt-2/wire-restored.log": "4f1444ac362c6456bf3794390e9011892ec0f6f72ac41252f6facdca1c37456a",
+    "target/final-gate-sensitivity-prep/attempt-2/format-positive.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/final-gate-sensitivity-prep/attempt-2/format-negative.log": "0c3394fca15897dd01da9ac1ea1bdded9099b74c92a791c2c6e738b200242ea8",
+    "target/final-gate-sensitivity-prep/attempt-2/format-restored.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/final-gate-sensitivity-prep/attempt-2/generate-local-lock.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/final-gate-sensitivity-prep/attempt-2/warning-positive.log": "ebebd605204f63941fb623cca9bcb44d5412edf022bee2198a46d836eea4d58e",
+    "target/final-gate-sensitivity-prep/attempt-2/warning-negative.log": "f987cc03900b94be2cbb1690b3e3cb185ff1b041c7d603b1e2128f6ab3dc464f",
+    "target/final-gate-sensitivity-prep/attempt-2/warning-restored.log": "07c471ddc55464ef6a09d66973d52e768fed7a24dd6d1547ff3380acac72a271",
+    "target/final-gate-sensitivity-prep/attempt-2/final-format-restored.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/final-gate-sensitivity-prep/attempt-2/variants/rust-bad-format.rs": "1f89965d3cf318d040680bc03ee017148005d4d94b2b6f1442da3697e3e65c4a",
+    "target/final-gate-sensitivity-prep/attempt-2/variants/rust-good.rs": "d25fc1c815675c2f0698d9d0d03fc591b1a1150f8b6172a6d1ec38fa9f28b6ae",
+    "target/final-gate-sensitivity-prep/attempt-2/variants/rust-warning.rs": "9614c944285f496641d76db8a73de90abe2772546092a335282119332148e245",
+    "target/final-gate-sensitivity-prep/attempt-2/variants/wire-mutated.py": "e15888c9e3bd4edd4efee43702470b6d5ae6fa61bd0fddf3c5fa7372c7559f4a",
+    "target/final-gate-sensitivity-prep/attempt-2/variants/wire-original.py": "4fd854cf650553c4980c4a3f68ad8262d9128eebf0ce50457cd6019d9068351d",
     "target/final-acceptance-gate-prep/evidence-map-v1/remaining-parity-snapshot.md": "bde92068fdf74f112fe15d0f87320f4da450cef873c98ad5c952f21d6f2f3a95",
     "target/final-acceptance-gate-prep/evidence-map-v1/case-evidence.json": "46ee45852706740ed42642d8dc1b1964a28ae7a3a13d5eef5a7f7659646c48a7",
     "rust/litetui-terminal/tests/fixtures/backend_runtime.py": "71fa76f47d0520bc8df69029da1ee5ac864f2cc1ba85de9561827a8d1d686671",
@@ -1946,7 +1977,7 @@
           }
         ]
       },
-      "remaining_acceptance": "U includes 10k **synthetic ordinary rows**, not 10k Work admissions. Retention remains 16,384 rows, 8 MiB text and 8 MiB charged units; Work ledger 4,096. H/Perf and separate 10k saved-history exercise pending.",
+      "remaining_acceptance": "U includes 10k **synthetic ordinary rows**, not 10k Work admissions. Retention remains 16,384 rows, 8 MiB text and 8 MiB charged units; Work ledger 4,096. H/Perf remains pending. The separate Rust hidden 10k saved-history exercise passed; its Textual comparison is still pending.",
       "implementation_behavior": "**B04 Live transcript navigation** — bounded retained rows with ≤64 rows and 32,768 charged display units per visible page; absolute tool/header identities, older/newer navigation, folding, selection, scroll lock, resize and clear-screen.",
       "preconditions": {
         "authority": "Exact test-owned state and policy in the named executable cases; these are source/control checks, not permission for real devices or user state.",
@@ -7807,7 +7838,7 @@
       "evidence": [],
       "decision": {
         "path": "docs/Plans/rust-tui-port/acceptance-evidence/p0-closure.json",
-        "sha256": "1b5af6aeacb38b1a2e81c5140c95737b26715dd9a72dd551c7b3995b15cd168a",
+        "sha256": "e16fee7783a482d030cfad8263cf87e94f4daab55f3e5fa1329c7e00da702dfe",
         "pointer": "",
         "expected": {
           "type": "phase_closure",
@@ -7818,7 +7849,7 @@
           "quote": "Ryan directed this closure through Sentinel after observing that P0 had absorbed more than twelve hours of later-phase implementation. **P0 is closed now. It is not a gate for further offline expansion.**",
           "source": {
             "path": "docs/Plans/rust-tui-port/master.md",
-            "sha256": "549772b7c03ab6a5f0742e9dbc7b69f4b67f8d4fcf88628c42c6cd67fe3d2887"
+            "sha256": "eaec52a11a4fae149b46c8d44b93c3fe87475de2543ed5c80d6e4c236de1c9e9"
           },
           "record_origin": "Derived from the canonical retained P0 exit section; this record checks that document, not an independent authentication of the speaker."
         },
@@ -8029,7 +8060,22 @@
         }
       },
       "status": "pending",
-      "evidence": [],
+      "evidence": [
+        {
+          "path": "target/final-gate-sensitivity-prep/manifest.json",
+          "sha256": "4e6cf5c55214c19b77cf7f5f756e11ef89b08bf1d8b534ea8806ced7b8c82099",
+          "pointer": "/requirement_outcomes/wire_expected_outcome_mutation/complete",
+          "expected": true,
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P2"
+            ],
+            "description": "Exact copied production-wire test positive, deliberately wrong expected outcome, and restored controls; no new feature or host coverage."
+          }
+        }
+      ],
       "remaining_acceptance": "Complete shared host clipboard/image/input/resize/recovery and golden-path evidence; representative cases are not the entire phase."
     },
     {
@@ -8197,6 +8243,48 @@
             ],
             "description": "One successful Rust hidden 10k-history run only; Textual counterpart failed and actual host baseline remains pending."
           }
+        },
+        {
+          "path": "target/final-history-conpty-prep/v9-textual-cards/second-textual/summary.json",
+          "sha256": "28689d8750dfe69862d17b4f1d7195075801163fd4f8942f4dddd1c211941a2d",
+          "pointer": "/all_completed",
+          "expected": false,
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P4"
+            ],
+            "description": "Failed retained Textual diagnostic: first traversal completed but whole-window deadline expired during focus restoration; not baseline completion."
+          }
+        },
+        {
+          "path": "target/final-history-conpty-prep/v9-textual-cards/second-textual/hidden-conpty-00-textual/measurement.json",
+          "sha256": "c8f0ea9c1ef53434159bf1cfa36735567be85d2c54bb27fffb5f66a52fc05e80",
+          "pointer": "/failure",
+          "expected": "TimeoutError: Textual focus transition",
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P4"
+            ],
+            "description": "Exact retained diagnostic failure after first-window endpoints/pages and restored follow lock; no completed stream window."
+          }
+        },
+        {
+          "path": "target/final-history-conpty-prep/v9-textual-cards/second-textual/hidden-conpty-00-textual/transport-proof.json",
+          "sha256": "1043d7d60b7ed8a70ecd13983707d2d81d23758dc5319d49c83cd9554c7c0dc0",
+          "pointer": "/root_alive",
+          "expected": false,
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P4"
+            ],
+            "description": "Failed diagnostic still retired the owned PTY root and readers; cleanup does not establish acceptance."
+          }
         }
       ],
       "remaining_acceptance": "Three actual-host fault/recovery runs per host; matched baseline; approved numeric thresholds; actual render-delay control; complete shared host observations and Ryan visual signoff."
@@ -8273,7 +8361,36 @@
         }
       },
       "status": "pending",
-      "evidence": [],
+      "evidence": [
+        {
+          "path": "target/final-gate-sensitivity-prep/manifest.json",
+          "sha256": "4e6cf5c55214c19b77cf7f5f756e11ef89b08bf1d8b534ea8806ced7b8c82099",
+          "pointer": "/requirement_outcomes/rust_format_sensitivity/complete",
+          "expected": true,
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P5"
+            ],
+            "description": "Installed Rust quality-gate sensitivity on a dependency-free disposable fixture; product unchanged, no live acceptance."
+          }
+        },
+        {
+          "path": "target/final-gate-sensitivity-prep/manifest.json",
+          "sha256": "4e6cf5c55214c19b77cf7f5f756e11ef89b08bf1d8b534ea8806ced7b8c82099",
+          "pointer": "/requirement_outcomes/strict_warning_sensitivity/complete",
+          "expected": true,
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P5"
+            ],
+            "description": "Installed Rust quality-gate sensitivity on a dependency-free disposable fixture; product unchanged, no live acceptance."
+          }
+        }
+      ],
       "remaining_acceptance": "Final cross-gate evidence reconciliation and independent completion review; no merge/push/cutover authority."
     }
   ],

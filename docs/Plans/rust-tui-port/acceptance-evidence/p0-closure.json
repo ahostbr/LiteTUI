@@ -7,7 +7,7 @@
   "quote": "Ryan directed this closure through Sentinel after observing that P0 had absorbed more than twelve hours of later-phase implementation. **P0 is closed now. It is not a gate for further offline expansion.**",
   "source": {
     "path": "docs/Plans/rust-tui-port/master.md",
-    "sha256": "549772b7c03ab6a5f0742e9dbc7b69f4b67f8d4fcf88628c42c6cd67fe3d2887"
+    "sha256": "eaec52a11a4fae149b46c8d44b93c3fe87475de2543ed5c80d6e4c236de1c9e9"
   },
   "record_origin": "Derived from the canonical retained P0 exit section; this record checks that document, not an independent authentication of the speaker."
 }
