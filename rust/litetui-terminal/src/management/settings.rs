@@ -1,6 +1,9 @@
 //! One publication/readback state machine for the two reviewed settings contracts.
 use super::{CommandId, Management, Snapshot as State, Step, fail, text};
-use crate::{compaction_settings as compact, settings_editor as budget, settings_view as view};
+use crate::{
+    compaction_settings as compact, settings_editor as budget, settings_form as form,
+    settings_view as view,
+};
 use serde_json::{Value, json};
 use std::io;
 
@@ -328,7 +331,8 @@ impl Management {
             | view::Intent::Monitor(_)
             | view::Intent::ClaudeReset(_)
             | view::Intent::Sidecar(_)
-            | view::Intent::ModelLifecycle(_) => {
+            | view::Intent::ModelLifecycle(_)
+            | view::Intent::Form(_) => {
                 return Err(fail("Expected a reviewed settings editor operation"));
             }
         };
@@ -521,6 +525,128 @@ impl Management {
         command["id"] = id.to_value();
         pending.id = id;
         self.settings_edit = Some(pending);
+        Ok(Step::Write(command))
+    }
+}
+
+/// `/settings`: one read, or one save followed by a runtime-state readback that
+/// proves the save left the session, backend, model, agent and policy as they were.
+pub(super) struct FormPending {
+    pub(super) id: CommandId,
+    save: bool,
+    saved: Option<form::Update>,
+}
+impl Management {
+    pub(super) fn request_settings_form(&mut self, intent: form::Intent) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail("Finish current work before opening settings"));
+        }
+        self.ensure_drained()?;
+        if ![form::READ, form::SAVE]
+            .iter()
+            .all(|op| self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail(
+                "Runtime lacks the native settings dialog; update Python source",
+            ));
+        }
+        if self.browser_authority.is_none() {
+            return Err(fail("Runtime omitted owned settings authority"));
+        }
+        let (session, _, _, _) = self.expected.as_ref().expect("active");
+        let save = matches!(intent, form::Intent::Save { .. });
+        let (mut command, id) = match intent {
+            form::Intent::Read => (
+                json!({"type":form::READ,"version":1,"session_id":session}),
+                self.wire.register_read(),
+            ),
+            form::Intent::Save {
+                form: token,
+                values,
+            } => (
+                json!({"type":form::SAVE,"version":1,"session_id":session,"form":token,"values":values}),
+                self.wire.register_request(),
+            ),
+        };
+        let id = id.map_err(|_| fail("Cannot reserve settings operation"))?;
+        command["id"] = id.to_value();
+        self.settings_form = Some(FormPending {
+            id,
+            save,
+            saved: None,
+        });
+        Ok(command)
+    }
+    pub(super) fn settings_form_response(&mut self, frame: Value) -> io::Result<Step> {
+        self.ensure_drained()?;
+        let mut pending = self.settings_form.take().expect("pending settings form");
+        let publish = |update, policy| Step::Settings {
+            update: view::Update::Form(update),
+            policy,
+        };
+        if self.closing {
+            return Ok(publish(
+                form::Update::Rejected(
+                    "Settings response consumed during shutdown; reopen to verify saved settings."
+                        .into(),
+                ),
+                None,
+            ));
+        }
+        if frame["ok"] != true {
+            let reason = text(&frame, "error", 4096)?;
+            if pending.saved.is_some() {
+                return Err(fail(&format!("Settings save readback failed: {reason}")));
+            }
+            return Ok(publish(form::Update::Rejected(reason.into()), None));
+        }
+        let value = &frame["result"];
+        let (session, backend, model, profile) = self.expected.as_ref().expect("active");
+        let (agent, schedules) = self.browser_authority.as_ref().expect("owned");
+        if let Some(saved) = pending.saved.take() {
+            let state = State::parse(value)?;
+            if (&state.session, &state.backend, &state.model, &state.profile)
+                != (session, backend, model, profile)
+                || state.held_restored_input != Some(0)
+                || state.schedules_paused != *schedules
+                || value["ownership"]["agent_id"] != *agent
+            {
+                return Err(fail(
+                    "Settings save changed runtime identity or policy; reconnect required",
+                ));
+            }
+            let saved = match saved {
+                form::Update::Saved {
+                    status,
+                    message,
+                    form,
+                    ..
+                } => form::Update::Saved {
+                    status,
+                    message,
+                    form,
+                    presentation: Some(state.presentation.clone()),
+                },
+                other => other,
+            };
+            return Ok(publish(saved, Some(value["tool_policy"].clone())));
+        }
+        if !pending.save {
+            let read = form::Form::parse(value, "settings_form", session, agent, backend, model)?;
+            return Ok(publish(form::Update::Form(Box::new(read)), None));
+        }
+        let saved = form::Update::saved(value, session, agent, backend, model)?;
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve settings readback"))?;
+        let mut command = json!({"type":"gui.state","include_conversations":false});
+        command["id"] = id.to_value();
+        self.settings_form = Some(FormPending {
+            id,
+            save: true,
+            saved: Some(saved),
+        });
         Ok(Step::Write(command))
     }
 }

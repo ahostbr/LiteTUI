@@ -49,6 +49,8 @@ pub enum Intent {
     Read,
     Editor(crate::settings_editor::Intent),
     Compaction(crate::compaction_settings::Intent),
+    /// `/settings`: Python's own dialog as data (settings_form).
+    Form(crate::settings_form::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -69,6 +71,7 @@ pub enum Update {
     Rejected(String),
     Editor(crate::settings_editor::Update),
     Compaction(crate::compaction_settings::Update),
+    Form(crate::settings_form::Update),
     CompactionEdited {
         update: crate::compaction_settings::Update,
         inspection: Snapshot,
@@ -84,6 +87,10 @@ impl Update {
     pub fn presentation(&self) -> Option<crate::presentation::Presentation> {
         match self {
             Self::Presentation(Ok(update)) => update.effective(),
+            Self::Form(crate::settings_form::Update::Saved {
+                presentation: Some(presentation),
+                ..
+            }) => Some((**presentation).clone()),
             _ => None,
         }
     }
@@ -243,6 +250,7 @@ pub struct View {
     agent: crate::agent_preferences::View,
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
+    pub form: crate::settings_form::View,
     pub open: bool,
     pub waiting: bool,
     pub snapshot: Option<Snapshot>,
@@ -259,6 +267,13 @@ pub struct View {
     pressed: Option<usize>,
 }
 impl View {
+    /// `/settings`: Python's tabbed settings dialog, drawn from its own rows.
+    pub fn open_form(&mut self) {
+        if self.waiting || self.form.owns_input() {
+            return;
+        }
+        self.form.open();
+    }
     pub fn open(&mut self) {
         if self.waiting {
             return;
@@ -376,12 +391,17 @@ impl View {
             || self.model_lifecycle.open
     }
     pub fn owns_input(&self) -> bool {
-        self.open || self.waiting || self.editor.owns_input() || self.compaction.owns_input()
+        self.open
+            || self.waiting
+            || self.editor.owns_input()
+            || self.compaction.owns_input()
+            || self.form.owns_input()
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
-        self.editor
+        self.form
             .take_intent()
-            .map(Intent::Editor)
+            .map(Intent::Form)
+            .or_else(|| self.editor.take_intent().map(Intent::Editor))
             .or_else(|| self.compaction.take_intent().map(Intent::Compaction))
             .or_else(|| self.intent.take())
     }
@@ -408,6 +428,7 @@ impl View {
         self.runtime_status.hide();
         self.editor.hide();
         self.compaction.hide();
+        self.form.hide();
         self.visible = false;
         self.hits.clear();
         self.details = None;
@@ -433,6 +454,7 @@ impl View {
         self.runtime_status.close();
         self.editor.close();
         self.compaction.close();
+        self.form.close();
         self.open = false;
         if self.intent.take().is_some() {
             self.waiting = false;
@@ -440,6 +462,7 @@ impl View {
         self.hide();
     }
     pub fn finish(&mut self) {
+        self.form.finish();
         self.editor.finish();
         self.compaction.finish();
         self.close();
@@ -447,14 +470,17 @@ impl View {
         self.snapshot = None;
     }
     pub fn accepts_paste(&self) -> bool {
-        self.mcp.accepts_paste()
+        self.form.accepts_paste()
+            || self.mcp.accepts_paste()
             || self.editor.editing()
             || self.compaction.accepts_paste()
             || self.connection.accepts_paste()
             || self.voice.accepts_paste()
     }
     pub fn paste(&mut self, text: &str) {
-        if self.mcp.open {
+        if self.form.owns_input() {
+            self.form.paste(text);
+        } else if self.mcp.open {
             self.mcp.paste(text);
         } else if self.voice.accepts_paste() {
             self.voice.paste(text);
@@ -476,6 +502,11 @@ impl View {
         }
     }
     pub fn observe(&mut self, update: Update) {
+        if let Update::Form(update) = update {
+            self.form.observe(update);
+            self.notice = self.form.notice.clone();
+            return;
+        }
         if let Update::CompactionEdited { update, inspection } = update {
             self.observe(Update::Snapshot(inspection));
             self.compaction.observe(update);
@@ -503,6 +534,7 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
+            Update::Form(_) => {}
             Update::ModelPreferences(result) => {
                 self.model_preferences.update(result.map(|update| *update))
             }
@@ -577,6 +609,13 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.form.owns_input() {
+            self.form.key(key);
+            if !self.form.owns_input() {
+                self.notice = self.form.notice.clone();
+            }
+            return;
+        }
         if self.claude_reset.open {
             if let Some(request) = self.claude_reset.key(key) {
                 self.waiting = true;
@@ -805,6 +844,13 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.form.owns_input() {
+            self.form.mouse(event);
+            if !self.form.owns_input() {
+                self.notice = self.form.notice.clone();
+            }
+            return;
+        }
         if self.mcp.open
             || self.voice.open
             || self.presentation.open
@@ -871,6 +917,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.form.owns_input() {
+            self.form.draw(frame, area, theme);
+            return;
+        }
         if self.claude_reset.open {
             self.claude_reset.draw(frame, area, theme);
             return;

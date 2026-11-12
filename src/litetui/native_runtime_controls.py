@@ -1131,6 +1131,19 @@ def begin_close(app):
         signal_stop(app)
 
 
+def reviewed_fields(app):
+    """Settings that change only through their reviewed runtime controls."""
+    from litetui import native_mcp_lifecycle
+    fields = {"tools_enabled", "tool_policy_profile", "tool_profile", "profile", "plan_mode"}
+    if _tool_selection(app):
+        fields.add("tools_disabled")
+    if native_mcp_lifecycle.enabled(app):
+        fields.update(("mcp_enabled", "mcp_disabled_servers"))
+    # Standing tool authority changes only through its reviewed, effect-stating control.
+    fields.update(("tool_always_allow", "tool_deny", "tool_trusted_interpreters"))
+    return fields
+
+
 def operation_allowed(app, cmd):
     if not enabled(app):
         return
@@ -1153,13 +1166,7 @@ def operation_allowed(app, cmd):
             raise ValueError("Use the runtime command controls for slash commands")
     if op in {"set", "run_command", "gui.commands.execute", "gui.tools.execute", "gui.prompt.submit", "gui.system.set"}:
         raise ValueError("Use the reviewed runtime controls for this operation")
-    fields = {"tools_enabled", "tool_policy_profile", "tool_profile", "profile", "plan_mode"}
-    if _tool_selection(app):
-        fields.add("tools_disabled")
-    if native_mcp_lifecycle.enabled(app):
-        fields.update(("mcp_enabled", "mcp_disabled_servers"))
-    # Standing tool authority changes only through its reviewed, effect-stating control.
-    fields.update(("tool_always_allow", "tool_deny", "tool_trusted_interpreters"))
+    fields = reviewed_fields(app)
     if op in {"set_settings", "gui.settings.apply", "gui.settings.native_validate", "gui.settings.native_save"}:
         def touches(value):
             if isinstance(value, list):

@@ -340,7 +340,7 @@ impl Demo {
                 Action::Help => self.open_help(false),
                 Action::Keys => self.open_help(true),
                 Action::ClearScreen => self.clear_screen(),
-                Action::Settings => self.open_settings(),
+                Action::Settings => self.open_settings_form(),
                 Action::Themes => self.open_themes(),
                 Action::SavedHistory => self.open_history(),
                 Action::HeldInput => self.open_queue(),
@@ -828,6 +828,27 @@ impl Demo {
                 _ => None,
             };
             chat.settings.open_glassbox(action);
+        }
+    }
+    /// `/settings`: Python's tabbed settings dialog (settings_form), in one step.
+    pub fn open_settings_form(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || ((chat.queue_pending() || chat.rewrite_pending()) || chat.engine.pending())
+            {
+                self.notice = "Finish current work before opening settings.".into();
+                return;
+            }
+            chat.settings.open_form();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
         }
     }
     pub fn open_settings(&mut self) {

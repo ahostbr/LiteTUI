@@ -1218,6 +1218,16 @@ impl Turn {
                     || event["backend"] != backend
                     || event["model"] != model
                 {
+                    // Python could not start the backend: say why in its words, not as raw JSON.
+                    if !self.ready
+                        && event["launch_status"] == "blocked"
+                        && let Some(reason) = event["launch_error"].as_str()
+                    {
+                        return Err(fail(&format!(
+                            "The Python runtime could not start the {backend} backend: {}",
+                            terminal_text(reason)
+                        )));
+                    }
                     return Err(fail(&format!("Unexpected/blocked runtime ready: {event}")));
                 }
                 if let Some(policy) = &self.policy {
@@ -2701,6 +2711,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let runtime_status =
                             matches!(intent, crate::settings_view::Intent::RuntimeStatus);
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
+                        let form = matches!(intent, crate::settings_view::Intent::Form(_));
                         let compact_generation = match &intent {
                             crate::settings_view::Intent::Compaction(
                                 crate::compaction_settings::Intent::Read { generation }
@@ -2726,7 +2737,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => frontend.observe(Observation::Settings(if sidecar {
+                            Err(error) => frontend.observe(Observation::Settings(if form {
+                                crate::settings_view::Update::Form(
+                                    crate::settings_form::Update::Rejected(error.to_string()),
+                                )
+                            } else if sidecar {
                                 crate::settings_view::Update::Sidecar(Err(error.to_string()))
                             } else if model_lifecycle {
                                 crate::settings_view::Update::ModelLifecycle(Err(error.to_string()))

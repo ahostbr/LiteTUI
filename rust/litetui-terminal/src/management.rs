@@ -700,6 +700,7 @@ pub struct Management {
     command_catalog: Option<crate::command_palette::Catalog>,
     command_prepared: Option<crate::prepared_skill::Prepared>,
     settings_edit: Option<settings::Pending>,
+    settings_form: Option<settings::FormPending>,
     settings_snapshot: Option<settings::Snapshot>,
     settings_review: Option<settings::Review>,
     settings_generation: u64,
@@ -789,6 +790,7 @@ impl Default for Management {
             command_catalog: None,
             command_prepared: None,
             settings_edit: None,
+            settings_form: None,
             settings_snapshot: None,
             settings_review: None,
             settings_generation: 0,
@@ -927,6 +929,7 @@ impl Management {
             && self.rewrite_attempt.is_none()
             && self.settings.is_none()
             && self.settings_edit.is_none()
+            && self.settings_form.is_none()
             && self.backend.is_none()
             && self.browser.is_none()
             && self.control.is_none()
@@ -1450,6 +1453,17 @@ impl Management {
                 .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
             {
                 self.settings_edit_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .settings_form
+                .as_ref()
+                .is_some_and(|pending| Some(&pending.id) == id.as_ref()) =>
+            {
+                self.settings_form_response(frame)
             }
             Notice::Response {
                 id,
@@ -3107,6 +3121,9 @@ impl Management {
 
 impl Management {
     pub fn request_settings(&mut self, intent: crate::settings_view::Intent) -> io::Result<Value> {
+        if let crate::settings_view::Intent::Form(intent) = intent {
+            return self.request_settings_form(intent);
+        }
         if matches!(
             intent,
             crate::settings_view::Intent::Editor(_) | crate::settings_view::Intent::Compaction(_)

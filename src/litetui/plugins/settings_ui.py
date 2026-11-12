@@ -53,6 +53,15 @@ def _cmd_settings(app, name: str, arg: str) -> None:
 
 
 def _open_textual_settings(app) -> None:
+    present_dialog(app, *settings_dialog(app))
+
+
+def settings_dialog(app):
+    """(body factory, screen factory, result callback) exactly as /settings opens them.
+
+    The native frontend's form (native_settings_form) mounts this same screen, so
+    what it shows and how it saves cannot drift from the Textual dialog.
+    """
     # Both factories from ONE set of arguments — `picker.pick`'s reason: two
     # built at two places are two chances for the sidebar and the modal to show
     # different settings.
@@ -98,8 +107,7 @@ def _open_textual_settings(app) -> None:
             'save_patch': save_patch,
             'runtime_apply': runtime_apply,
         }
-    present_dialog(
-        app,
+    return (
         partial(SettingsBody, app.settings, models, servers, sorted(loaded), remote, **bindings),
         partial(SettingsScreen, app.settings, models, servers, sorted(loaded), remote, **bindings),
         (lambda result: None) if bindings else app._on_settings_saved,

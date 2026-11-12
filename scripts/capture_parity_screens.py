@@ -52,27 +52,20 @@ STEPS = [
 
 # --profile settings (Ryan 2026-11-12: "let me see both"): Python's /settings has 12 tabs and a
 # search box that activates the tab of the first match, so each tab is reached by typing its
-# name. Rust's /settings is a hub whose letter keys open separate editors. Each step is
+# name. Each step is
 # (name, key writes, reset): "full" closes everything and clears the composer, "search" erases
 # the typed search term and keeps the screen open.
 PY_TABS = ["Model", "NInfer", "Strata", "Xolotl", "Voice", "Generation", "Agent loop", "Compaction",
            "Capabilities", "Hooks", "Themes", "Interface"]
-RUST_EDITORS = [("model-prefs", "p"), ("agent", "a"), ("voice", "v"), ("interface", "u"), ("connection", "n"),
-                ("compaction", "c"), ("mcp", "m"), ("sidecar", "s"), ("glassbox", "g"), ("lifecycle", "l"),
-                ("status", "i")]
 PROFILES = {
     "screens": {frontend: [(name, [keys], "full") for name, keys in STEPS] for frontend in ("textual", "rust")},
-    "settings": {
-        # Search focuses the first match, so tabs are stepped instead: Tab, Tab moves focus from the
-        # search box past Clear to the tab bar, then each Right arrow is the next tab ("←/→ or
-        # click to change tab"). NInfer appears only on a machine with NInfer installed.
-        "textual": [("settings-open", ["/settings\r"], "none"), ("tab-01", ["\t", "\t"], "none")]
-        + [(f"tab-{n:02d}", ["\x1b[C"], "none") for n in range(2, len(PY_TABS) + 1)],
-        # Rust today needs a second Enter: "/settings" + Enter (completion popup open) leaves the
-        # palette on the Settings row (parity bug, Python opens Settings at once).
-        "rust": [("settings-hub", ["/settings\r", "\r"], "full")]
-        + [(f"editor-{name}", ["/settings\r", key], "full") for name, key in RUST_EDITORS],
-    },
+    # Search focuses the first match, so tabs are stepped instead: Tab, Tab moves focus from the
+    # search box past Clear to the tab bar, then each Right arrow is the next tab ("←/→ or click
+    # to change tab"). NInfer appears only on a machine with NInfer installed. Rust's /settings
+    # draws Python's own dialog (native_settings_form), so both frontends get the same keys.
+    "settings": {frontend: [("settings-open", ["/settings\r"], "none"), ("tab-01", ["\t", "\t"], "none")]
+                 + [(f"tab-{n:02d}", ["\x1b[C"], "none") for n in range(2, len(PY_TABS) + 1)]
+                 for frontend in ("textual", "rust")},
 }
 
 
