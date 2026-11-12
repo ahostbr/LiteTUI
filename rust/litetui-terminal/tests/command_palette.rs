@@ -412,13 +412,14 @@ fn reducer_changed_skill_or_display_budget_refuses_without_replaying() {
     assert!(m.ready());
 }
 #[test]
-fn raw_slash_draft_cannot_fall_back_to_provider_and_verified_skill_keeps_composer() {
+fn raw_slash_draft_cannot_fall_back_to_provider_and_submit_empties_composer() {
     let mut app = Demo::live("custom".into(), "model".into());
     app.observe_live(Observation::Ready).unwrap();
     app.insert_text("/UNKNOWN exact arguments");
     app.submit();
     assert!(app.live.as_mut().unwrap().take_submission().is_none());
-    assert_eq!(app.composer.text(), "/UNKNOWN exact arguments");
+    // Python's handle_submit empties the input for every submit, a slash command included.
+    assert_eq!(app.composer.text(), "");
     assert_eq!(
         app.live.as_mut().unwrap().commands.take_intent(),
         Some(Intent::Raw("/UNKNOWN exact arguments".into()))
@@ -446,7 +447,8 @@ fn raw_slash_draft_cannot_fall_back_to_provider_and_verified_skill_keeps_compose
     app.observe_live(Observation::Commands(Update::Verified(Box::new(p.clone()))))
         .unwrap();
     assert_eq!(app.live.as_mut().unwrap().take_submission(), Some(p.prompt));
-    assert_eq!(app.composer.text(), "/UNKNOWN exact arguments");
+    // The verified skill does not put the slash text back.
+    assert_eq!(app.composer.text(), "");
 }
 
 #[test]

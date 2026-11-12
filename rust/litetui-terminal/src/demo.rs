@@ -1380,6 +1380,11 @@ impl Demo {
                         || chat.engine.pending())
                 {
                     chat.commands.raw(&text);
+                    // Python's handle_submit empties the input and records history for every
+                    // submit, a slash command included; a kept "/settings" made the next
+                    // "/settings" read "/settings/settings".
+                    self.composer.push_history(&text);
+                    self.composer.clear();
                     self.completion.dismiss();
                     self.footer.leave();
                 } else {
