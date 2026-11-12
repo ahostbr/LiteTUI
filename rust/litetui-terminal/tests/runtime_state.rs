@@ -214,6 +214,12 @@ fn footer_and_ready_notice_use_reported_tool_policy() {
         cells.contains("meters:off") && cells.contains("v0.29.1"),
         "{cells}"
     );
+    // Python's composer: tall border, its placeholder, and the mic / pause chips.
+    assert!(
+        cells.contains("▊Message... (Ctrl+V paste | Ctrl+O image | /help)"),
+        "{cells}"
+    );
+    assert!(cells.contains(" ○ mic  ⏸ pause  ▁▎"), "{cells}");
     app.finish_live(None);
     assert!(app.footer_fields.is_empty());
 }

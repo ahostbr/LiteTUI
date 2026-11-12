@@ -1449,7 +1449,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         .style(style(t.title, t.background)),
         areas[3],
     );
-    let input_width = areas[4].width.saturating_sub(2).max(1) as usize;
+    // Live composer sits one column in (Python's layout); its text width shrinks to match.
+    let indent = u16::from(app.live.is_some() && areas[4].width > 4);
+    let input_width = areas[4].width.saturating_sub(2 + 2 * indent).max(1) as usize;
     // Some clusters (e.g. repeated Hangul leading jamo) exceed an entire row.
     // Keep the logical text intact but draw one replacement cell until it fits.
     let graphemes: Vec<_> = app
@@ -1498,7 +1500,8 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     let input_line = if app.composer.text().is_empty() {
         Line::styled(
             if app.live.is_some() {
-                "Message… (Enter sends to the real model; Ctrl+Q quits)"
+                // Python's placeholder (widgets.py composer).
+                "Message... (Ctrl+V paste | Ctrl+O image | /help)"
             } else {
                 "Message... (preview only; Enter adds a local mock turn)"
             },
@@ -1525,23 +1528,57 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 .collect::<Vec<_>>(),
         )
     };
+    // Python's composer: Textual's "tall" border one column in, the scroll lock chip at the top
+    // right (🔒 follows new replies, 🔓 does not) and the mic and pause chips at the bottom right.
+    let tall = ratatui::symbols::border::Set {
+        top_left: "▊",
+        top_right: "▎",
+        bottom_left: "▊",
+        bottom_right: "▎",
+        vertical_left: "▊",
+        vertical_right: "▎",
+        horizontal_top: "▔",
+        horizontal_bottom: "▁",
+    };
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(tall)
+        .border_style(style(t.thinking_border, t.surface));
+    if let Some(chat) = app.live.as_ref() {
+        let lock = if presentation.autoscroll {
+            " 🔒 "
+        } else {
+            " 🔓 "
+        };
+        let mic = if chat.work.dictation.active() {
+            " ● rec "
+        } else {
+            " ○ mic "
+        };
+        let paused = chat.work.snapshot.as_ref().is_some_and(|s| s.paused);
+        let pause = if paused {
+            " ▶ resume "
+        } else {
+            " ⏸ pause "
+        };
+        block = block
+            // One border cell between each chip and the corner, as Python draws it.
+            .title_top(Line::from(format!("{lock}▔")).right_aligned())
+            .title_bottom(Line::from(format!("{mic}{pause} ▁")).right_aligned());
+    } else {
+        block = block.title_bottom(" F4 themes · F6 approval · Ctrl+Q ");
+    }
     let composer = Paragraph::new(input_line)
         .style(style(t.foreground, t.surface))
         .scroll((0, input_scroll as u16))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title_bottom(if app.live.is_some() {
-                    " Ctrl+\\ commands · Esc stops · Ctrl+Q "
-                } else {
-                    " F4 themes · F6 approval · Ctrl+Q "
-                })
-                .border_style(style(t.thinking_border, t.surface)),
-        );
-    frame.render_widget(composer, areas[4]);
+        .block(block);
+    let mut composer_area = areas[4];
+    composer_area.x += indent;
+    composer_area.width -= 2 * indent; // a one-column margin on each side, like Python
+    frame.render_widget(composer, composer_area);
     if !app.approval_open && !app.has_live_input() && !app.themes_open {
         frame.set_cursor_position((
-            areas[4].x + 1 + (cursor_cells - input_scroll) as u16,
+            areas[4].x + 1 + indent + (cursor_cells - input_scroll) as u16,
             areas[4].y + 1,
         ));
     }
