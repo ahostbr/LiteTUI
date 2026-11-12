@@ -112,8 +112,9 @@ async def test_every_free_tier_key_row_is_masked_and_under_its_own_header():
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         body = app.screen.query_one(SettingsBody)
-        header = body.query_one("#set-section-model-free-keys", SettingsSectionHeader)
         for name in SECRET_FIELDS:
+            section = "model-anthropic" if name == "anthropic_api_key" else "model-free-keys"
+            header = body.query_one(f"#set-section-{section}", SettingsSectionHeader)
             row = body.query_one(f"#f-{name}", Input)
             assert row.password, f"{name} is shown in clear"
             assert any(row in member.query(Input) for member in header._members), f"{name} is not under its header"

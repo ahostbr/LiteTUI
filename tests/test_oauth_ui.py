@@ -4,6 +4,7 @@ from dataclasses import asdict
 import httpx
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui import model_transport as mt
 from litetui import oauth_backend, settings, tool_policy
@@ -32,6 +33,10 @@ async def test_remote_compaction_uses_tool_door_and_preserves_transcript(
     monkeypatch.setattr(oauth_backend.OAuthBackend, "ensure_running", ready)
     monkeypatch.setattr(
         mt, "read_credentials", lambda *a: mt.Credentials("test", "account")
+    )
+    # oauth_backend imported the name, so its chat-ready check reads this binding.
+    monkeypatch.setattr(
+        oauth_backend, "read_credentials", lambda *a: mt.Credentials("test", "account")
     )
 
     async def listing(self):
@@ -94,7 +99,13 @@ async def test_remote_compaction_uses_tool_door_and_preserves_transcript(
             "codex", http_transport=httpx.MockTransport(handler)
         ),
     )
-    app = app_mod.LiteTUI()
+    # An owned seat runs only on the model it was launched with.
+    app = owned_app(initial_backend="codex", initial_model="gpt-test")
+    app.model_id = "gpt-test"
+    # A failed startup registration blocks the chat-ready door; the fleet
+    # transport is not what this test measures.
+    app.seat.registered = True
+    app._inbox_monitor = lambda: None
     # This arm exercises the retained raw Responses converter. The production
     # Codex backend now delegates compaction to app-server (covered separately).
     monkeypatch.delattr(app.backend, "app_server", raising=False)

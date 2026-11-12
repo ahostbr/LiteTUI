@@ -435,7 +435,11 @@ class ClaudeTools:
         # What this session bridges is fixed here, and it is what a compaction review discloses.
         self.host_tools = {name: spec_digest(inventory[name]) for name in sorted(HOST_TOOLS & inventory.keys())
                            } if tools and self.app.tools_enabled else {}
+        from litetui import harness
+        # Native Bash runs inside claude.exe, not through harness.tool_process_env: give that process the seat's id.
+        seat_id = getattr(getattr(self.app, "seat", None), "agent_id", None)
         return {
+            "env": harness.claude_process_env(seat_id),
             "tools": [n for n in NATIVE_TOOLS if n not in disabled] if self.app.tools_enabled else [],
             "permission_mode": "default",
             "can_use_tool": self.can_use_tool,

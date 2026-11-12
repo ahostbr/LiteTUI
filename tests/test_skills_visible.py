@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui import paths
 from litetui import skills as skills_mod
@@ -26,7 +27,7 @@ def _app_with(tmp_root: Path, monkeypatch):
     # Skills now live under the configured writable data root. Keep immutable
     # resources at their normal anchor and isolate discovery through that seam.
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(tmp_root))
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._connect = lambda: None
     a._fetch_ctx_window = lambda: None
     a._apply_context_length = lambda: None
@@ -50,7 +51,7 @@ def test_disabled_skills_yield_a_list_not_a_dict():
     """
     from litetui.settings import Settings
 
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a.settings = Settings(skills_enabled=False)
     a.skills = skills_mod.discover(paths.ROOT) if a.settings.skills_enabled else []
     assert isinstance(a.skills, list)
@@ -148,7 +149,7 @@ async def test_slash_skills_actually_gives_the_body_to_the_model(monkeypatch):
 async def test_an_empty_directory_says_what_it_expects(monkeypatch):
     """"0 skills" with no explanation sends you to read the source."""
     root = Path(tempfile.mkdtemp(prefix="skills-root3-"))
-    (root / "skills").mkdir(parents=True)
+    (root / "skills" / "scratch").mkdir(parents=True)  # a folder with no SKILL.md
 
     a = _app_with(root, monkeypatch)
     msgs: list[str] = []
@@ -159,15 +160,14 @@ async def test_an_empty_directory_says_what_it_expects(monkeypatch):
         a.push_screen = lambda screen, cb=None: pushed.append((screen, cb))
         a._handle_command("/skills")
         await pilot.pause()
-        # The explanation now lives in the full report, which is the picker's
-        # first row rather than the default wall of text. Still one keystroke
-        # away, which is what this test has always been about: "0 skills" with
-        # no explanation sends you to read the source.
-        assert pushed, "/skills no longer opens a picker"
-        pushed[0][1](pushed[0][0]._rows[0][0])
-        await pilot.pause()
+        # Nothing to pick, so there is no picker: the report itself is the
+        # answer (skills_plugin._cmd_skills), because where it looked is the
+        # whole question when the list is empty.
+        assert not pushed, "an empty skill list opened a picker with nothing in it"
     out = "\n".join(msgs)
-    assert "SKILL.md" in out, "an empty directory did not say what it wants"
+    assert str(root / "skills") in out, "an empty directory did not say where it looked"
+    assert "scratch/" in out and "no SKILL.md inside" in out, (
+        "a folder without a SKILL.md was not named with the file it lacks")
 
 
 @pytest.mark.asyncio
@@ -202,7 +202,7 @@ def test_the_shipped_example_skill_is_discoverable():
     found = skills_mod.discover(repo)
     assert found, "the shipped skills/ directory discovered nothing"
     names = {s.name for s in found}
-    assert "look-at-the-screen" in names
-    one = next(s for s in found if s.name == "look-at-the-screen")
+    assert "codex-imagegen" in names
+    one = next(s for s in found if s.name == "codex-imagegen")
     assert one.description, "the example skill has no description to index"
     assert len(one.description) <= skills_mod.MAX_DESC_CHARS

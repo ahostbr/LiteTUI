@@ -37,7 +37,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import jobkill, ninfer_engine, ttyguard
+from . import jobkill, ninfer_engine, strata_options, ttyguard
 from .llm_backend import BackendError, _arg_value
 from .ninfer_engine import EngineStartFailed, OwnedEngine
 
@@ -59,21 +59,22 @@ STRATA_VRAM_COMMIT_FRACTION = 0.9
 STRATA_MIN_FREE_VRAM_FRACTION = 0.6
 
 
-def _litesuite_strata_root() -> str:
-    """`strataRoot` from LiteSuite's config.json — the folder its Model Hub installed into
-    or was pointed at — so both apps use one install. "" when unset or unreadable."""
+def litesuite_folder(key: str) -> str:
+    """A folder LiteSuite's config.json names (`strataRoot`, `xolotlRoot`) — the one its
+    Model Hub installed into or was pointed at — so both apps use one install. "" when
+    unset or unreadable."""
     try:
         body = json.loads(ninfer_engine._config_path().read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - no file or bad JSON means "LiteSuite chose nothing"
         return ""
-    val = body.get("strataRoot") if isinstance(body, dict) else None
+    val = body.get(key) if isinstance(body, dict) else None
     return val.strip() if isinstance(val, str) else ""
 
 
 def strata_root(settings) -> Path:
     """The install folder: the setting, else the one LiteSuite's Model Hub names, else
     where that hub installs by default."""
-    chosen = str(getattr(settings, "strata_root", "") or "").strip() or _litesuite_strata_root()
+    chosen = str(getattr(settings, "strata_root", "") or "").strip() or litesuite_folder("strataRoot")
     return Path(chosen) if chosen else ninfer_engine.litesuite_llm_dir() / "strata"
 
 
@@ -118,6 +119,13 @@ def strata_config(settings, *, max_bytes=None) -> Path | None:
     return found[0] if len(found) == 1 else None
 
 
+#: The names `StrataBackend` and `/model` call on whichever launcher a backend has
+#: (`xolotl_engine` defines the same three).
+install_root = strata_root
+list_configs = list_strata_configs
+chosen_config = strata_config
+
+
 def config_context(cfg: dict | None) -> int | None:
     val = _arg_value(list((cfg or {}).get("args") or ()), "--max-context")
     return int(val) if isinstance(val, str) and val.isdigit() else None
@@ -137,7 +145,7 @@ def default_host(settings, *, config=None) -> str:
     return f"http://127.0.0.1:{port if isinstance(port, int) and port > 0 else STRATA_DEFAULT_PORT}"
 
 
-def with_context(cfg: dict, max_context: int | None) -> dict:
+def with_context(cfg: dict, max_context: int | None, *, rope_scaled: bool = False) -> dict:
     """`cfg` with its `--max-context` replaced, or `cfg` itself when nothing changes.
 
     Mirrors what Strata's setup writes for a context: above 8,192 tokens the KV cache is
@@ -148,11 +156,11 @@ def with_context(cfg: dict, max_context: int | None) -> dict:
         return cfg
     if max_context == config_context(cfg):
         return cfg
-    if max_context > STRATA_TRAINED_CONTEXT:
+    if max_context > STRATA_TRAINED_CONTEXT and not rope_scaled:
         raise BackendError(
             f"strata_max_context {max_context} is past the model's trained {STRATA_TRAINED_CONTEXT} "
-            "tokens — that needs RoPE scaling, which Strata's own setup configures "
-            "(run its setup with --context); nothing was started.")
+            "tokens — that needs RoPE scaling: set Strata's RoPE scaling (linear or yarn) in Settings, "
+            "or run Strata's own setup with --context; nothing was started.")
     args = [str(a) for a in cfg["args"]]
     if "--max-context" in args[:-1]:
         args[args.index("--max-context") + 1] = str(max_context)
@@ -229,21 +237,21 @@ def native_bytes(cfg: dict) -> int:
         return 0
 
 
-def memory_refusal(cfg: dict, *, ram_free: int | None, commit_free: int | None,
-                   gpu: tuple[int, int] | None) -> str | None:
-    """Why this config cannot be loaded into the memory that is free, or None. Pure."""
+def gpu_refusal(gpu: tuple[int, int] | None) -> str | None:
+    """The card is mostly held by something else (another model?), or None. Pure."""
     if gpu is not None and gpu[1] > 0 and gpu[0] < gpu[1] * STRATA_MIN_FREE_VRAM_FRACTION:
         return (f"only {gpu[0]} of {gpu[1]} MiB is free on the GPU — something else holds the card "
                 "(another model?). Unload it first; nothing was started.")
-    args = [str(a) for a in cfg.get("args") or ()]
-    if "--mmap-experts" in args or "--resident-budget-gib" in args:
-        return None          # Strata's low-RAM modes read experts from disk; no pin to size
-    pinned = int(native_bytes(cfg) * STRATA_PINNED_FRACTION)
-    if not pinned:
-        return None
+    return None
+
+
+def pin_refusal(label: str, pinned: int, *, ram_free: int | None, commit_free: int | None,
+                gpu: tuple[int, int] | None, remedy: str = "close other programs first") -> str | None:
+    """`pinned` bytes of RAM do not fit in what is available, or in the commit charge left
+    once the VRAM the engine takes is charged too; None when they fit or cannot be asked. Pure."""
     if ram_free is not None and ram_free < pinned:
-        return (f"Strata pins about {_gb(pinned)} of this model in RAM and only {_gb(ram_free)} is "
-                "available — close other programs first; nothing was started.")
+        return (f"{label} pins about {_gb(pinned)} of this model in RAM and only {_gb(ram_free)} is "
+                f"available — {remedy}; nothing was started.")
     if commit_free is not None:
         vram = (gpu[0] * 1024 * 1024 * STRATA_VRAM_COMMIT_FRACTION) if gpu else 0
         if commit_free < pinned + vram:
@@ -251,6 +259,21 @@ def memory_refusal(cfg: dict, *, ram_free: int | None, commit_free: int | None,
                     f"the VRAM Windows also charges) and only {_gb(commit_free)} is left before the "
                     "system limit — close other programs or enlarge the page file; nothing was started.")
     return None
+
+
+def memory_refusal(cfg: dict, *, ram_free: int | None, commit_free: int | None,
+                   gpu: tuple[int, int] | None) -> str | None:
+    """Why this config cannot be loaded into the memory that is free, or None. Pure."""
+    card = gpu_refusal(gpu)
+    if card:
+        return card
+    args = [str(a) for a in cfg.get("args") or ()]
+    if "--mmap-experts" in args or "--resident-budget-gib" in args:
+        return None          # Strata's low-RAM modes read experts from disk; no pin to size
+    pinned = int(native_bytes(cfg) * STRATA_PINNED_FRACTION)
+    if not pinned:
+        return None
+    return pin_refusal("Strata", pinned, ram_free=ram_free, commit_free=commit_free, gpu=gpu)
 
 
 def refuse_reason(settings, cfg: dict, host: str, *, healthy) -> str | None:
@@ -271,10 +294,11 @@ def log_path() -> Path:
     return data_root() / ".strata" / "litetui-strata-server.log"
 
 
-def _log_event(text: str) -> None:
-    """One timestamped line for outcomes that never spawn (a refusal must leave a trace: T877)."""
+def _log_event(text: str, log=None) -> None:
+    """One timestamped line for outcomes that never spawn (a refusal must leave a trace: T877).
+    `log` is the launcher's `log_path`; Strata's own when None."""
     try:
-        lp = log_path()
+        lp = (log or log_path)()
         lp.parent.mkdir(parents=True, exist_ok=True)
         with open(lp, "a", encoding="utf-8", errors="replace") as fh:
             fh.write(f"--- litetui {time.strftime('%F %T')} | {text}\n")
@@ -282,8 +306,8 @@ def _log_event(text: str) -> None:
         pass
 
 
-def _refuse(message: str) -> None:
-    _log_event(f"REFUSED: {message}")
+def _refuse(message: str, log=None) -> None:
+    _log_event(f"REFUSED: {message}", log)
     raise BackendError(message)
 
 
@@ -317,10 +341,18 @@ def inspect_launch(settings, *, max_config_bytes=None) -> LaunchInspection:
         raise BackendError(
             "no Strata model chosen — /model to pick one (each strata-<model>.json in the install "
             "is a prepared model), or set strata_config.")
-    run_cfg = with_context(cfg, getattr(settings, "strata_max_context", None))
+    try:
+        strata_options.validate(settings)
+    except ValueError as exc:
+        raise BackendError(f"{exc}; nothing was started.") from exc
+    rope_scaled = (getattr(settings, "strata_rope_scaling", None) in ("linear", "yarn")
+                   or _arg_value([str(a) for a in cfg["args"]], "--rope-scaling") in ("linear", "yarn"))
+    run_cfg = with_context(cfg, getattr(settings, "strata_max_context", None), rope_scaled=rope_scaled)
+    run_cfg = strata_options.apply(run_cfg, settings)
     derived = None
     run_path = path
     if run_cfg is not cfg:
+        # A context or option LiteTUI chose, beside the log, never over the install's own file.
         # Only describe the destination here; review must not materialize it.
         derived = run_path = log_path().with_name(f"{path.stem}.litetui.json")
     host = default_host(settings, config=cfg)
@@ -359,20 +391,33 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, reviewed_plan
     """
     if cancelled is not None and cancelled():
         raise BackendError("Engine start cancelled before spawn")
+    inspection = None
     if reviewed_plan is not None:
         reviewed_plan.verify()
         settings = reviewed_plan.settings()
-    _log_event("engine start requested")
+        inspection = reviewed_plan.strata_inspection()
+    return spawn_server(settings, healthy=healthy, spawn=spawn, notice=notice, label="Strata",
+                        plan=lambda s: launch_plan(s, inspection=inspection), refuse=refuse_reason,
+                        log=log_path, timeout=STRATA_START_TIMEOUT_S,
+                        reviewed_plan=reviewed_plan, cancelled=cancelled)
+
+
+def spawn_server(settings, *, healthy, spawn, notice, label: str, plan, refuse, log,
+                 timeout: float, reviewed_plan=None, cancelled=None) -> OwnedEngine:
+    """The start every engine behind Strata's `serve/server.py` shares (Strata, Xolotl):
+    plan, refuse before anything spawns, spawn into the log, adopt the process into a
+    kill-on-close job, wait for the server's ready line. The launcher passes its own
+    `launch_plan`, `refuse_reason`, `log_path` and timeout."""
+    _log_event("engine start requested", log)
     try:
-        inspection = reviewed_plan.strata_inspection() if reviewed_plan is not None else None
-        argv, root, cfg, host = launch_plan(settings, inspection=inspection)
+        argv, root, cfg, host = plan(settings)
     except BackendError as exc:
-        _refuse(str(exc))
-    reason = refuse_reason(settings, cfg, host, healthy=healthy)
+        _refuse(str(exc), log)
+    reason = refuse(settings, cfg, host, healthy=healthy)
     if reason:
-        _refuse(reason)
-    model_id = str(cfg.get("model_name") or "strata")
-    lp = log_path()
+        _refuse(reason, log)
+    model_id = str(cfg.get("model_name") or label.lower())
+    lp = log()
     lp.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(lp, "a", encoding="utf-8", errors="replace")  # noqa: SIM115 - the process writes here for its whole life
     log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')} ---\n{' '.join(argv)}\n")
@@ -398,12 +443,12 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, reviewed_plan
     job = jobkill.create()
     pid = getattr(proc, "pid", None)
     if job is not None and isinstance(pid, int) and not jobkill.assign(job, pid):
-        _log_event(f"job assign FAILED for pid {pid} — orphan protection is off for this engine")
+        _log_event(f"job assign FAILED for pid {pid} — orphan protection is off for this engine", log)
         jobkill.close(job)
         job = None
     owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file, model_id=model_id,
                         job=job, args=tuple(argv), registered=False)
-    deadline = time.monotonic() + STRATA_START_TIMEOUT_S
+    deadline = time.monotonic() + timeout
     fresh = ""
     while time.monotonic() < deadline:
         if cancelled is not None and cancelled():
@@ -418,10 +463,10 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, reviewed_plan
             atexit.register(ninfer_engine.stop, owned)
             return owned
         if getattr(proc, "poll", lambda: None)() is not None:
-            ninfer_engine._fail_start(owned, f"Strata exited before it was ready — {_last_words(fresh)}")
+            ninfer_engine._fail_start(owned, f"{label} exited before it was ready — {_last_words(fresh)}")
         time.sleep(1.0)
     ninfer_engine._fail_start(
-        owned, f"Strata did not become ready in {STRATA_START_TIMEOUT_S}s — {_last_words(fresh)}")
+        owned, f"{label} did not become ready in {timeout}s — {_last_words(fresh)}")
 
 
 def request_unload(host: str, timeout: float = 30.0) -> bool:

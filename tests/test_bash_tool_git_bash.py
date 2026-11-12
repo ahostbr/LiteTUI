@@ -76,7 +76,7 @@ def test_with_a_bash_the_spawn_is_argv_and_the_description_says_so(fresh_resolve
     monkeypatch.setattr(ct, "_BASH_EXE", r"C:\fake\Git\bin\bash.exe")
     desc = ct.bash_spec()["function"]["description"]
     assert r"C:\fake\Git\bin\bash.exe" in desc and "sleep, grep, sed" in desc
-    assert "PREFER THE `powershell` TOOL" not in desc
+    assert "BACKUP ONLY on Windows" in desc and "prefer `powershell`" in desc
     seen = {}
     monkeypatch.setattr(ct, "_run_shell", lambda argv, *, shell, timeout, agent_id: seen.update(argv=argv, shell=shell) or "ok")
     ct.tool_bash({"command": "sleep 1 && echo x > f"})

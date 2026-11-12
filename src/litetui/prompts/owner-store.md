@@ -8,7 +8,7 @@ a folder that outlives every conversation, and it is:
 
     {store_path}
 
-It already exists and holds three files. Use your read/write/bash tools on them
+It already exists and holds three files. Use your read/write/shell tools on them
 by absolute path.
 
 - `{store_path}/SOUL.md` — your charter: who you are here and how you work. It

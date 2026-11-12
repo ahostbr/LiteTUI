@@ -35,7 +35,9 @@ async def test_gui_retry_preserves_custom_system_facts_on_reopen(tmp_path, build
         assert app._resume(app.convo_path, startup=True)
         assert app._store_injected is loaded and app._store_notice_text is None
         prompt = app._request_messages()[0]["content"]
-        assert prompt.startswith("Custom system body")
+        assert prompt.startswith("# BUILDER ROLE \u2014 Builder Mode\n\nCustom system body")
+        assert prompt.count("# BUILDER ROLE") == 1
+        assert prompt.count("Custom system body") == 1
         assert prompt.count(appsvc.STORE_HEADER) == 1
         assert "OWNER-BODY" in prompt if owner else "HOME-BODY" in prompt
 

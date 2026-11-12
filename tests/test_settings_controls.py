@@ -92,6 +92,13 @@ def _controlled(tree: ast.Module) -> set[str]:
                 and kw.value.value.startswith("f-")
             ):
                 found.add(kw.value.value[2:])
+    # Strata's run options are rows generated from one catalog: `_strata_option_rows` loops
+    # strata_options.SECTIONS and `_strata_option_row` builds id=f"f-{opt.field}" for each option.
+    # tests/test_strata_options.py mounts the dialog and checks every one has a widget.
+    named = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    if {"_strata_option_rows", "_strata_option_row"} <= named:
+        from litetui import strata_options
+        found |= set(strata_options.FIELD_NAMES)
     return found
 
 

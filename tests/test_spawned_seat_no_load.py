@@ -89,7 +89,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket, 'create_connection', forbidden)
     monkeypatch.setattr(urllib.request, 'urlopen', forbidden)
     # Not the subject here: it pins backend, model and effort to the seat's authority.
-    monkeypatch.setattr(app_mod.LiteTUI, '_validate_owned_execution', lambda self: None)
+    monkeypatch.setattr(app_mod.LiteTUI, '_validate_owned_execution', lambda self, **kw: None)
     monkeypatch.setattr(subagent_local, 'resolve_host',
                         lambda host: {'openrouter.example.com': ['104.18.2.115']}[host], raising=False)
 

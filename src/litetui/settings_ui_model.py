@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from litetui import strata_options
+
 SettingScope = Literal["conversation", "defaults", "device", "app", "mixed"]
 
 
@@ -90,7 +92,7 @@ def _friendly_label(name: str) -> str:
         return FIELD_LABELS[name]
     words = name.replace("_", " ").split()
     special = {"tts": "Speech", "stt": "Dictation", "mcp": "MCP", "lmstudio": "LM Studio",
-               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "llama": "llama.cpp", "api": "API",
+               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "xolotl": "Xolotl", "llama": "llama.cpp", "api": "API",
                "hf": "Hugging Face", "kv": "KV", "tps": "tokens per second", "pct": "percentage",
                "s": "seconds", "mib": "MiB", "gguf": "GGUF"}
     return " ".join(special.get(word, word) for word in words).capitalize()
@@ -99,6 +101,8 @@ def _friendly_label(name: str) -> str:
 # The one-line effect of each control. Neither section copy nor a key-to-title
 # transform can say what a numeric budget costs or what a permission changes.
 FIELD_DESCRIPTIONS = {
+    "anthropic_api_key": "Paid Anthropic Messages API credential, independent of Claude OAuth. Saved on this device encrypted (AES-256, Windows DPAPI) to your Windows account; blank uses ANTHROPIC_API_KEY.",
+    "anthropic_workspace_id": "Optional workspace selection for the Anthropic API. Required when the key is not workspace-scoped; blank uses ANTHROPIC_WORKSPACE_ID.",
     "small_task_route": "Opt-in visible small-task worker: exact backend/model/cognitive/thinking JSON. Blank/null is off; never follows parent or falls back.",
     "subagent_route": "One child backend and exact model shared by all instances; conversation overrides win. Follow parent clears the global route.",
     "subagent_route_override": "Conversation child route: inherit the global route, follow the parent, or select a backend and model. Clear the legacy subagent model to inherit.",
@@ -134,6 +138,9 @@ FIELD_DESCRIPTIONS = {
     "ninfer_host": "Address of an NInfer server started separately; blank discovers LiteSuite's engine.",
     "ninfer_executable": "NInfer server executable used by the next /engine start.",
     "ninfer_artifact": "Model artifact served at the next NInfer engine start.",
+    "ninfer_speed_preset": "DeepSeek speed tier: how many experts stay in RAM and the prefill chunk; Fastest default, falls back when RAM is short.",
+    "ninfer_auto_long_anchors": "Experimental, off: NInfer keeps checkpoints at message boundaries so a compacted conversation resumes from one; costs a saved state each.",
+    "ninfer_derive_session_keys": "Experimental, off: NInfer derives a session key per conversation so its checkpoints stay retained.",
     "ninfer_max_context": "Context tokens requested at NInfer startup; larger windows use more GPU memory.",
     "ninfer_max_concurrency": "Requests decoded together by NInfer; parallel requests share its context pool.",
     "ninfer_kv_dtype": "NInfer cache format; higher precision needs more memory, smaller formats save it.",
@@ -143,6 +150,10 @@ FIELD_DESCRIPTIONS = {
     "strata_root": "Folder Strata's setup prepared; blank uses the one LiteSuite's Model Hub installs.",
     "strata_config": "Prepared model (strata-<model>.json) served at the next Strata engine start.",
     "strata_max_context": "Context tokens requested at Strata startup; blank keeps the model's set-up value.",
+    "xolotl_host": "Address of a Xolotl server started separately; blank uses the chosen model's own port.",
+    "xolotl_root": "The Xolotl checkout (built engine, serve venv, strata-<model>.json); blank uses LiteSuite's.",
+    "xolotl_config": "Prepared model (strata-<model>.json in the checkout) served at the next Xolotl engine start.",
+    "xolotl_max_context": "Context tokens (--ctx) requested at Xolotl startup; blank keeps the config's value.",
     "tts_enabled": "Show Speak on replies; turning it off stops LiteTUI-owned playback, not LiteSuite's queue.",
     "tts_litesuite_first": "Use LiteSuite's selected voice when reachable; off uses only the fallback engine. LiteSuite owns queued playback and stopping it.",
     "tts_engine": "Fallback when LiteSuite is unavailable, or the primary engine when LiteSuite preference is off.",
@@ -223,11 +234,19 @@ FIELD_DESCRIPTIONS = {
     "llama_load_settings": "Saved loading parameters applied when opening llama.cpp models.",
     "llama_presets": "Named llama.cpp configurations available for later model loads.",
     "model_infer_overrides": "Inference parameters saved for individual models instead of all models.",
+    "model_context_overrides": "Context length chosen for each model when you pick it with /model; the backend's own context setting follows the latest choice.",
     "mcp_disabled_servers": "Configured MCP server names prevented from starting.",
     "plugins_disabled": "Plugin names skipped when LiteTUI loads extensions.",
     "user_name_asked": "Remember that the first-run name question was already shown.",
     "custom_themes": "Custom color palettes stored for reuse in the theme picker.",
 }
+
+
+# Strata's run options are one catalog (strata_options.py); its words are registered here, not repeated.
+FIELD_LABELS.update({o.field: o.label for o in strata_options.OPTIONS})
+FIELD_LABELS[strata_options.EXTRA_FIELD] = strata_options.EXTRA_LABEL
+FIELD_DESCRIPTIONS.update({o.field: o.full_help() for o in strata_options.OPTIONS})
+FIELD_DESCRIPTIONS[strata_options.EXTRA_FIELD] = strata_options.EXTRA_HELP
 
 
 def _field_description(name: str) -> str:
@@ -296,6 +315,12 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         ("backend", "codex_native_engine"), scope="conversation", keywords=("backend", "engine", "Codex", "loop"),
     ),
     _section(
+        "model", "Model", "model-anthropic", "Anthropic API",
+        "Paid native Messages API, separate from Claude Agent OAuth. Saved keys override environment credentials.",
+        ("anthropic_api_key", "anthropic_workspace_id"),
+        scope="device", keywords=("Anthropic", "Claude", "API", "key", "paid", "workspace"),
+    ),
+    _section(
         "model", "Model", "model-free-keys", "Free-tier keys",
         "One key per keyed free source; a saved key wins over its environment variable.",
         ("groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
@@ -327,12 +352,26 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "ninfer", "NInfer", "ninfer-envelope", "Runtime envelope",
         "The startup flags that shape memory and parallel work.",
-        ("ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV"),
+        ("ninfer_speed_preset", "ninfer_auto_long_anchors", "ninfer_derive_session_keys", "ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV", "speed", "preset", "prefill", "fastest", "experts", "RAM"),
     ),
     _section(
         "strata", "Strata", "strata-engine", "Engine",
         "Qwen3.8-Flash-Next on one GPU plus system RAM (github.com/Niko1221/Strata).",
         ("strata_host", "strata_root", "strata_config", "strata_max_context"), scope="device", keywords=("Qwen", "Flash-Next", "engine", "RAM", "context"),
+    ),
+    *(
+        _section(
+            "strata", "Strata", sec.section_id, sec.title, sec.summary,
+            tuple(o.field for o in strata_options.options_for(sec.section_id))
+            + ((strata_options.EXTRA_FIELD,) if sec.section_id == "strata-extra" else ()),
+            scope="device", keywords=sec.keywords,
+        )
+        for sec in strata_options.SECTIONS
+    ),
+    _section(
+        "xolotl", "Xolotl", "xolotl-engine", "Engine",
+        "DeepSeek-V4.1-Flash on one GPU, a pinned RAM arena and NVMe (github.com/Indras-Mirror/Xolotl).",
+        ("xolotl_host", "xolotl_root", "xolotl_config", "xolotl_max_context"), scope="device", keywords=("DeepSeek", "V4.1", "engine", "RAM", "arena", "context"),
     ),
     _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",
@@ -486,7 +525,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
 # These are current Settings fields that the earlier planned IA omitted.
 _EXTRA_FIELDS = (
     ("model", "Model", "model-extra", "Connections & saved engines", "Choose where LiteTUI connects and what it remembers.",
-     ("backend_chosen", "claude_executable", "custom_api_key_env", "custom_base_url", "custom_context_length", "llama_load_settings", "llama_presets", "model_infer_overrides")),
+     ("backend_chosen", "claude_executable", "custom_api_key_env", "custom_base_url", "custom_context_length", "llama_load_settings", "llama_presets", "model_context_overrides", "model_infer_overrides")),
     ("capabilities", "Capabilities", "cap-extra", "Connected extensions", "Choose which extensions and servers can run.",
      ("mcp_disabled_servers", "plugins_disabled", "user_name_asked")),
     ("themes", "Themes", "theme-saved", "Saved themes", "Your custom palettes live here.", ("custom_themes",)),

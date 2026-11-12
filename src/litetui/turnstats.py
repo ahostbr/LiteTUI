@@ -171,6 +171,23 @@ class EtaState:
         frac = (processed - cache) / denom
         return (max(0.0, min(1.0, frac)), processed, total)
 
+    def prefill_detail(self):
+        """(fraction 0..1, new tokens done, new tokens total, cached tokens) or None.
+
+        The same measurement as `prefill_readout`, split the way a person reads it. The readout's
+        `processed/total` count the cached prefix too, so a turn that reused 105k of 125k tokens read
+        "prefill 0% · 105k/125k": the percent is of the 20k that is new, the counter was of everything.
+        (Ryan 2026-11-08, twice.) Here the counter and the percent are of the same thing, and the reused
+        part is named."""
+        if self.prefill is None:
+            return None
+        processed, total, cache = self.prefill
+        denom = total - cache
+        if denom <= 0:
+            return None
+        done = max(0, min(denom, processed - cache))
+        return (done / denom, done, denom, max(0, cache))
+
 
 class ElapsedState:
     """The in-flight clock: which bubble is counting, since when, and the task

@@ -145,15 +145,15 @@ class Binding:
             raise ValueError("Owner handoff changed before independent readback")
         return self.receipt
 
-    def commit(self, app, t0):
+    def commit(self, app, before):
         self.check(app)
         if self.attempted or self.repository() != (self.head, self.branch):
             raise ValueError("Owner commit was already attempted or its Git base changed")
         files = _files(self.directory)
         if files["SOUL.md"] != self.initial["SOUL.md"]:
             raise ValueError("The reviewed owner SOUL.md changed")
-        if (files["NOW.md"] == self.initial["NOW.md"] or
-                (self.directory / "NOW.md").stat().st_mtime_ns + owner_mode.MTIME_SLACK_NS < t0):
+        # Content, not filesystem clocks, proves the rewrite (develop d76ad3e6 / owner_mode.owner_gate).
+        if files["NOW.md"] == self.initial["NOW.md"] or (isinstance(before, bytes) and files["NOW.md"] == before):
             return False, "NOW.md has not been rewritten during this compaction"
         self.attempted = True
         ok, _ = owner_mode.run_handoff(self.directory, self.agent_id, command=self.helper,
@@ -181,8 +181,8 @@ class Binding:
                         "files": {key: _hash(data) for key, data in files.items()}}
         return True, "Owner handoff commit verified"
 
-    async def gate(self, app, t0):
-        task = asyncio.create_task(asyncio.to_thread(self.commit, app, t0))
+    async def gate(self, app, before):
+        task = asyncio.create_task(asyncio.to_thread(self.commit, app, before))
         # Stop/Quit must outlive this host writer even if the provider worker is
         # cancelled while Git runs. Never schedule a second helper after uncertainty.
         try:

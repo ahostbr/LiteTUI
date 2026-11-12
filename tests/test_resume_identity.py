@@ -19,9 +19,11 @@ from pathlib import Path
 
 import pytest
 
+from _owned_seat import owned_app
 from litetui import app as app_mod
 from litetui import paths
 from litetui.conversation import ConversationRepository
+from litetui.storage_catalog import conversations
 
 paths.CONVO_DIR = Path(tempfile.mkdtemp(prefix="convos-resume-id-"))
 
@@ -31,7 +33,7 @@ def _meta_of(path: Path) -> dict:
 
 
 def test_a_new_conversation_records_its_owning_seat():
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._new_convo()
     a._materialise_convo()   # creation is lazy now — force it for these assertions
     meta = _meta_of(a.convo_path)
@@ -47,7 +49,7 @@ def test_a_new_conversation_records_its_owning_seat():
 
 def test_the_conversation_uuid_is_the_folder_name():
     """The row's id must match the directory, or /resume <id> cannot find it."""
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._new_convo()
     a._materialise_convo()   # creation is lazy now — force it for these assertions
     assert a.convo_path.parent.name == a.convo_id
@@ -55,7 +57,7 @@ def test_the_conversation_uuid_is_the_folder_name():
 
 def test_two_conversations_are_distinguishable():
     """The failure being fixed: identical rows for different conversations."""
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._new_convo()
     a._materialise_convo()   # creation is lazy now — force it for these assertions
     first = a.convo_path.parent.name
@@ -71,7 +73,7 @@ def test_a_pre_v3_conversation_shows_no_owner_rather_than_a_wrong_one():
     Showing the CURRENT seat for them would be a fabrication — the row would
     claim ownership that was never recorded. Absence must read as absence.
     """
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._new_convo()
     a._materialise_convo()   # creation is lazy now — force it for these assertions
     p = a.convo_path
@@ -92,10 +94,14 @@ def test_a_pre_v3_conversation_shows_no_owner_rather_than_a_wrong_one():
 
 def test_the_row_carries_both_ids():
     """Build the row the way the picker does and assert both ids appear."""
-    a = app_mod.LiteTUI()
+    a = owned_app()
     a._new_convo()
     a._materialise_convo()   # creation is lazy now — force it for these assertions
-    rows = ConversationRepository.list_all()
+    # The picker lists the OWNING AGENT's conversations from the storage catalog;
+    # ConversationRepository.list_all() only reads the read-only legacy .convos.
+    session = a._agent_session
+    rows = [(row.transcript, *ConversationRepository.read(row.transcript))
+            for row in conversations(session.store.data_root, agent_id=session.authority.agent_id)]
     assert rows, "no conversations listed"
     path_, meta_, _msgs = rows[0]
     cid = path_.parent.name[:8]

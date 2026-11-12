@@ -295,6 +295,17 @@ def start_text(task: Task, root: Path | str, promoted_after: float | None = None
     the two roots equal it resolved by coincidence, which is why it survived.
     """
     where = log_path(task, root)
+    log_notice = f"the full output will be at {where.as_posix()} (read it with the read tool)"
+    try:
+        where.parent.mkdir(parents=True, exist_ok=True)
+        # Close the notice before advertising its path. Start and finish run
+        # synchronously on the event loop; exclusive creation also preserves
+        # a result if this task is announced again after it has finished.
+        if not where.is_file():
+            with where.open("x", encoding="utf-8") as log:
+                log.write(f"[task {task.id} running: output is written here when it finishes]\n")
+    except OSError as exc:
+        log_notice = f"the log could not be created ({exc})"
     head = (
         f"[task {task.id} started · {task.tool} · {task.label}]\n" if not promoted_after else
         f"[task {task.id} · {task.tool} · {task.label} — still running after {promoted_after:g}s, "
@@ -303,8 +314,7 @@ def start_text(task: Task, root: Path | str, promoted_after: float | None = None
     return (
         head +
         f"Running in the background. Its output arrives later as a message tagged "
-        f"[inbox from task]; the full output will be at {where.as_posix()} "
-        f"(read it with the read tool). Continue with other work, or end the turn "
+        f"[inbox from task]; {log_notice}. Continue with other work, or end the turn "
         f"and wait."
     )
 

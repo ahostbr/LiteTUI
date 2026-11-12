@@ -192,6 +192,40 @@ def test_the_loaded_powershell_spec_names_the_real_interpreter() -> None:
     assert "{exe}" not in desc, "the placeholder reached the model unfilled"
 
 
+@pytest.mark.parametrize("bash_exe", [None, r"C:\Git\bin\bash.exe"])
+def test_windows_shell_descriptions_name_default_and_backup(monkeypatch, bash_exe):
+    from litetui.plugins import core_tools as ct
+
+    monkeypatch.setattr(ct, "bash_exe", lambda: bash_exe)
+    ps = ct.powershell_spec()["function"]["description"].lower()
+    bash = ct.bash_spec()["function"]["description"].lower()
+    assert "default for all shell work on windows" in ps
+    assert "backup only on windows" in bash
+    assert "prefer `powershell`" in bash
+    assert "unix tool that powershell lacks" in bash
+    assert "default shell tool on macos/linux" in bash
+    assert "bash falls through to cmd.exe" not in ps
+
+
+@pytest.mark.parametrize("platform,exe,expected", [
+    ("nt", "pwsh", ["powershell", "bash"]),
+    ("nt", None, ["bash"]),
+    ("posix", "pwsh", ["bash"]),
+    ("posix", None, ["bash"]),
+])
+def test_shell_registration_follows_platform(monkeypatch, platform, exe, expected):
+    from types import SimpleNamespace
+
+    from litetui.plugins import core_tools as ct
+
+    monkeypatch.setattr(ct, "os", SimpleNamespace(name=platform))
+    monkeypatch.setattr(ct, "powershell_exe", lambda: exe)
+    seen = []
+    ctx = SimpleNamespace(app=None, tool=lambda spec, fn, **kw: seen.append(spec["function"]["name"]))
+    ct._register(ctx)
+    assert [name for name in seen if name in {"powershell", "bash"}] == expected
+
+
 def test_substitution_leaves_unknown_braces_alone() -> None:
     """str.format would raise KeyError on the first brace it did not recognise,
     and a JSON Schema may legitimately contain them."""

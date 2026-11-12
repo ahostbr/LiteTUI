@@ -155,6 +155,9 @@ def source_key(source: Source) -> str | None:
         except BackendError:
             return None
     key = saved_key(source.key_env) or os.environ.get(source.key_env, '').strip() or None
+    from litetui.secret_at_rest import is_sealed
+    if is_sealed(key):
+        return None  # saved key sealed for another Windows account: never send ciphertext
     if key and '{account}' in source.base_url and not re.fullmatch(r'[^:\s]+:\S+', key):
         return None  # not 'account_id:token': not configured
     return key

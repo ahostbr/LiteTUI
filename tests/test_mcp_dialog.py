@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from litetui.app import LiteTUI
+from _owned_seat import owned_app
 from litetui.mcp_client import MCPManager
 from litetui.mcp_list import ACTIONS_FOR, MCPListBody
 from litetui.side_panel import show_dialog
@@ -57,8 +57,11 @@ def _app(monkeypatch, tmp_path, servers):
     # on the real 2s settle. _connect is stubbed below, so there is nothing to
     # settle — the wait's condition is already met.
     monkeypatch.setattr("litetui.app._INBOX_SETTLE_S", 0.0)
-    app = LiteTUI()
-    app._connect = lambda: None
+    app = owned_app()
+    # An owned app always starts _apply_cli_args (the agent's thinking level is
+    # launch authority, 08a7294a); it waits on connect settling. The stubbed
+    # connect never runs, so declare it settled or that worker blocks idle.
+    app._connect = lambda: setattr(app, "_connect_settled", True)
     # Point the manager at the tmp repo root; the app built its own against the
     # real one during __init__, which must not be written to by a test.
     app.mcp = MCPManager(tmp_path)
@@ -281,7 +284,7 @@ async def test_a_button_on_native_codex_is_refused(monkeypatch, tmp_path):
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open(app, pilot)
         srv = app.mcp.servers["web"]
-        app.backend = SimpleNamespace(app_server=object())   # native Codex thread
+        app._backend = SimpleNamespace(app_server=object())  # native Codex thread; the `backend` setter would persist it as the seat's authority
         body.query_one("#mcp-act-0-disconnect").press()
         await _settle(pilot)
         assert srv.stopped == 0
@@ -300,14 +303,16 @@ async def test_idle_staged_conversation_can_mutate_without_materialising(monkeyp
         body = await _open(app, pilot)
         await _reach_idle(app, pilot, body)
         assert app.store.pending is True
-        assert not directory.exists()
+        # Owned-agent birth reserves the first conversation dir EMPTY (05182823);
+        # materialising is what puts files in it.
+        assert directory.is_dir() and not any(directory.iterdir())
         body.query_one("#mcp-act-0-disconnect").press()
         await _drain(app, pilot)
         assert srv.stopped == 1
         assert "web" not in app.mcp.servers
         assert {row["name"] for row in app.mcp.describe()} == {"web"}
         assert app.store.pending is True
-        assert not directory.exists()
+        assert directory.is_dir() and not any(directory.iterdir())
 
 
 @pytest.mark.asyncio

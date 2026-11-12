@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -59,13 +60,18 @@ HEARTBEAT_EVERY = 12
 #: Why: Docs/adr/0002-tests-must-not-write-the-live-registry.md
 NO_HARNESS_ENV = "LITETUI_NO_HARNESS"
 
+#: T0085: `liteharness spawn --pty --exec litetui` mints a pty-* id and exports it
+#: here. The seat registers under its OWN uuid, so without this in presence nothing
+#: joins the spawner's pty-* row to the seat (no post-launch verify, no kill by id).
+PROVISIONAL_ID_ENV = "LITEHARNESS_PROVISIONAL_ID"
+
 
 def harness_disabled() -> bool:
     return bool(os.environ.get(NO_HARNESS_ENV, "").strip())
 
 
-def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
-    """Merge only recap fields into an existing seat row; never create a row.
+def _merge_presence_fields(path: Path, agent_id: str, fields: dict, prefix: str) -> bool:
+    """Merge only `fields` into an existing seat row; never create a row.
 
     Contract copied from liteharness-oss/liteharness/config.py:merge_presence_fields:
     missing/unreadable/non-dict -> False; re-read before update, atomic temp-file
@@ -79,12 +85,12 @@ def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
         return False
     if not isinstance(row, dict) or row.get("agent_id") != agent_id:
         return False
-    row.update({"last_recap": recap, "last_recap_at": datetime.now(timezone.utc).isoformat()})
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".recap-", suffix=".json")
+    row.update(fields)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=prefix, suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump(row, output, ensure_ascii=False)
-        # A purged seat must not be brought back by a pending recap write.
+        # A purged seat must not be brought back by a pending write.
         if not path.exists():
             return False
         for attempt in range(8):
@@ -99,6 +105,18 @@ def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
         if os.path.exists(temporary):
             os.unlink(temporary)
     return False
+
+
+def merge_recap_presence(path: Path, agent_id: str, recap: str) -> bool:
+    """Merge only the recap fields into an existing seat row."""
+    return _merge_presence_fields(
+        path, agent_id,
+        {"last_recap": recap, "last_recap_at": datetime.now(timezone.utc).isoformat()}, ".recap-")
+
+
+def merge_provisional_presence(path: Path, agent_id: str, provisional_id: str) -> bool:
+    """T0085: merge only provisional_id, joining the spawner's pty-* row to this seat."""
+    return _merge_presence_fields(path, agent_id, {"provisional_id": provisional_id}, ".prov-")
 
 
 class _Refused:
@@ -172,6 +190,25 @@ def _liteharness_exe() -> str | None:
         if candidate.exists():
             return str(candidate)
     return None
+
+
+def liteharness_command() -> list[str] | None:
+    """The argv prefix that runs the liteharness CLI as a subprocess, or None when it cannot be reached.
+
+    The console script (`_liteharness_exe`) first. `[sys.executable, "-m", "liteharness.cli"]` only when
+    THIS interpreter can really import liteharness: the locked project venv cannot, and launching through
+    it fails with `No module named 'liteharness'` (Ryan 2026-10-24: "Own-seat launch refused ...
+    ModuleNotFoundError", from agent_seat_launch and owner_mode, which spelled it out by hand).
+    """
+    exe = _liteharness_exe()
+    if exe:
+        return [exe]
+    import importlib.util
+    try:
+        reachable = importlib.util.find_spec("liteharness") is not None
+    except (ImportError, ValueError):
+        reachable = False
+    return [sys.executable, "-m", "liteharness.cli"] if reachable else None
 
 
 def _cli(args: list[str], *, timeout: float):
@@ -248,6 +285,25 @@ def tool_process_env(agent_id: str | None, env=None) -> dict[str, str]:
     return child
 
 
+def claude_process_env(agent_id: str | None, environ=None) -> dict[str, str]:
+    """The identity half of `tool_process_env`, as an overlay for the Claude Agent process.
+
+    A host tool is spawned by us, so `tool_process_env` can hand it a scrubbed copy of the environment.
+    Claude's NATIVE Bash is spawned by `claude.exe`, which the SDK starts with `{**os.environ, **options.env}`:
+    it can add or override, never remove. This LiteTUI consumed its own LITEHARNESS_AGENT_ID at launch, so
+    the shell the model typed into had no seat id, and `liteharness`'s `get_agent_id()` fell through to
+    CLAUDE_CODE_SESSION_ID (a Claude session id, not a seat) and refused `clerk forward` with "requires the
+    Clerk's own identity". So: the seat id is set, and any other inherited identity variable is blanked
+    (an empty value is skipped by `get_agent_id()`), the same ones `tool_process_env` scrubs.
+    """
+    source = os.environ if environ is None else environ
+    overlay = {key: "" for key in (*_SPAWN_IDENTITY_ENV, "LITESUITE_AGENT_ID")
+               if source.get(key)}
+    if agent_id:
+        overlay["LITEHARNESS_AGENT_ID"] = agent_id
+    return overlay
+
+
 def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]:
     """Consume an explicit spawn identity, preserving standalone defaults.
 
@@ -271,6 +327,7 @@ def spawned_seat_identity(default_name: str = "LiteTUI") -> tuple[str, str, str]
         or default_name
     )
     tier = values.get("LITEHARNESS_TIER", "") or DEFAULT_TIER
+    tier = {"owner": "leader", "builder": "worker", "critic": "reviewer", "scout": "thinker"}.get(tier, tier)
     valid = {"orchestrator", "leader", "worker", "thinker", "reviewer"}
     if tier not in valid:
         print(
@@ -374,6 +431,8 @@ class Seat:
         self.thinking_level: str | None = None
         # Captured from the explicit spawn marker envelope; never an inherited parent env.
         self.spawned_by: str | None = None
+        # T0085: the spawner's pty-* id, captured (and popped) from the env at startup.
+        self.provisional_id: str | None = None
         # Bound to the launching canvas session, not to a cwd or a possibly
         # inherited environment in later tool subprocesses.
         self.canvas_session = canvas_session
@@ -429,6 +488,22 @@ class Seat:
         if not self.registered:
             return None
         return registered_spawner(self.agent_id)
+
+    def _record_provisional(self, root: Path | None = None) -> bool:
+        """T0085: write provisional_id into this seat's own presence row.
+
+        Only a row the spawner made is ours to claim: `spawn` pre-creates
+        agents/<provisional>.json and a hook deletes it when a seat absorbs it, so a
+        nested `litetui` that inherited another seat's id finds no row and records
+        nothing. `register` starts from the existing row, so the field survives it.
+        """
+        pid = self.provisional_id
+        if not pid or pid == self.agent_id or not re.fullmatch(r"pty-[A-Za-z0-9_-]+", pid):
+            return False
+        agents = (root or Path.home() / ".liteharness") / "agents"
+        if not (agents / f"{pid}.json").exists():
+            return False
+        return merge_provisional_presence(agents / f"{self.agent_id}.json", self.agent_id, pid)
 
     def registry_name(self, root: Path | None = None) -> str | None:
         """Owned folder truth, or legacy registry name without agent context."""
@@ -568,6 +643,7 @@ class Seat:
             if r.returncode == 0:
                 if self._agent_session is None:
                     self.name = _resolved_name(r.stdout) or self.name
+                self._record_provisional()
                 return True
         except Exception:
             pass
@@ -612,6 +688,7 @@ class Seat:
             if self.registered:
                 self.name = got
                 self.error = None
+                self._record_provisional()
             else:
                 if self._agent_session is not None:
                     from litetui.registration_diagnostics import (
@@ -849,11 +926,37 @@ def message_text(msg: dict) -> str:
     return ""
 
 
+_ID_TOKEN = re.compile(r"[\w.:@-]+")
+
+
+def _header_id(msg: dict, key: str) -> str | None:
+    """A message or thread id fit to sit in the one-line header, else None.
+
+    Only a plain token: an id with a space, bracket or newline would break the header line (and the
+    markup around it) for every reader, so it is left out rather than escaped.
+    """
+    value = msg.get(key)
+    if isinstance(value, str) and _ID_TOKEN.fullmatch(value.strip()):
+        return value.strip()
+    return None
+
+
 def format_message(msg: dict) -> str:
-    """Render an inbox message for the chat log."""
+    """Render an inbox message for the chat log.
+
+    The header carries the FULL message id (and the thread id when there is one), not just the sender
+    prefix: a seat that must act on a message (`liteharness clerk forward <msg-id>`, `clerk digest`,
+    a reply on the thread) had no way to learn its id except by scanning the maildir by hand.
+    """
     frm = str(msg.get("from") or "?")[:8]
     pri = msg.get("priority") or "normal"
-    return f"[inbox from {frm} · {pri}]\n{message_text(msg)}"
+    parts = [f"inbox from {frm}", str(pri)]
+    mid, thread = _header_id(msg, "id"), _header_id(msg, "thread_id")
+    if mid:
+        parts.append(f"id {mid}")
+    if thread:
+        parts.append(f"thread {thread}")
+    return f"[{' · '.join(parts)}]\n{message_text(msg)}"
 
 
 # ── Agent-facing tool ────────────────────────────────────────────────────────
@@ -873,6 +976,56 @@ HARNESS_TOOL_SPEC = tool_schemas.load("harness")
 
 
 AGENTS_DIR = Path.home() / ".liteharness" / "agents"
+
+
+def ancestral_claude_spawner(candidate: str | None) -> str | None:
+    """Adopt an unmarked launch's candidate only with live strict ancestry proof.
+
+    Presence birth is milliseconds since epoch. Legacy Claude rows instead carry
+    an ISO registered_at: it must be timezone-aware and not predate the observed
+    process. Missing evidence/package support is a refusal, never an env fallback.
+    """
+    import math
+    import re
+
+    if not isinstance(candidate, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", candidate):
+        return None
+    try:
+        # Vendored byte-identical copy: LiteTUI's venv has no liteharness (T0106).
+        from litetui.process_ancestry import process_ancestry
+
+        path = AGENTS_DIR / f"{candidate}.json"
+        if path.resolve().parent != AGENTS_DIR.resolve():
+            return None
+        row = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(row, dict) or row.get("agent_id") != candidate
+                or row.get("cli") not in ("claude", "claude-code")
+                or type(row.get("session_pid")) is not int or row["session_pid"] <= 0):
+            return None
+        chain = process_ancestry(os.getpid(), stop_at=row["session_pid"])
+        if not chain or chain[0].pid != os.getpid():
+            return None
+        owner = next((item for item in chain[1:] if item.pid == row["session_pid"]), None)
+        if owner is None:
+            return None
+        if "session_process_started_at" in row:
+            birth = row["session_process_started_at"]
+            if (type(birth) not in (int, float) or not math.isfinite(birth)
+                    or birth <= 0 or abs(birth - owner.started_at * 1000) > 1):
+                return None
+        else:
+            registered = datetime.fromisoformat(row["registered_at"])
+            if (registered.tzinfo is None
+                    or not owner.started_at <= registered.timestamp() <= time.time()):
+                return None
+        # Registration can change while the native observation is in flight.
+        if json.loads(path.read_text(encoding="utf-8")) != row:
+            return None
+        return candidate
+    except Exception:  # noqa: BLE001 - unknown approval authority must refuse
+        # Includes unreadable presence and unknown native evidence. Existing
+        # no_spawner logging wins.
+        return None
 
 
 def registered_spawner(agent_id: str) -> str | None:

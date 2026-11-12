@@ -11,6 +11,7 @@ def test_every_proposed_tab_has_named_sections():
         "model",
         "ninfer",
         "strata",
+        "xolotl",
         "voice",
         "generation",
         "agent",

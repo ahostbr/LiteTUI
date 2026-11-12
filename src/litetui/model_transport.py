@@ -38,6 +38,23 @@ class ProviderError(BackendError):
     """Safe to render/log: bounded sanitized diagnostics, never raw bodies/auth."""
 
 
+class UnattendedRetryableError(ProviderError):
+    """Codex request failure; replay ONLY before the consumer executes any tool."""
+
+
+@dataclass
+class CodexRequestRetry:
+    """One request's budget, shared by HTTP retries and discarded stream attempts."""
+    used: int = 0
+
+    def take_delay(self) -> float | None:
+        if self.used >= 2:
+            return None
+        delay = (2.0, 4.0)[self.used]
+        self.used += 1
+        return delay
+
+
 class RetryableProviderError(ProviderError):
     """A transient provider failure that may safely replay this model request."""
 
@@ -55,9 +72,9 @@ _CONNECTION_FAILURES = (httpx.ConnectError, httpx.ReadError, httpx.WriteError,
                         httpx.RemoteProtocolError)
 
 
-def _logged_provider_error(message: str) -> ProviderError:
+def _logged_provider_error(message: str, error_type=ProviderError) -> ProviderError:
     runtime_log.record_error("oauth.request_failed", detail=message)
-    return ProviderError(message)
+    return error_type(message)
 
 
 
@@ -141,7 +158,9 @@ def _stream_failure(provider: str, event: dict, secrets) -> ProviderError:
     details = [f"{key}={clean}" for key, value in fields if (clean := safe(value))]
     reason = "; ".join(details) or "no reason supplied by the server"
     return _logged_provider_error(
-        f"{provider.title()} {event['type']}: {reason}. The response was not replayed."
+        f"{provider.title()} {event['type']}: {reason}. The response was not replayed.",
+        UnattendedRetryableError if provider == "codex" and _provider_error_code(event) == "server_error"
+        else ProviderError,
     )
 
 
@@ -342,83 +361,74 @@ _CLAUDE_NAMES = {
 }
 
 
-def claude_request(kwargs: dict) -> dict:
+def _claude_content(content):
+    blocks = []
+    for part in content if isinstance(content, list) else ([{"type": "text", "text": content}] if content else []):
+        if part.get("type") == "text":
+            blocks.append({"type": "text", "text": part["text"]})
+        elif part.get("type") == "image_url":
+            url = part["image_url"]["url"]
+            if url.startswith("data:"):
+                header, data = url.split(",", 1)
+                source = {"type": "base64", "media_type": header[5:].split(";")[0], "data": data}
+            else:
+                source = {"type": "url", "url": url}
+            blocks.append({"type": "image", "source": source})
+    return blocks
+
+
+def claude_request(kwargs: dict, *, provider="claude") -> dict:
+    # API keys and legacy OAuth share Messages wire format, not credentials or
+    # opaque history. Only the legacy OAuth path uses Claude CLI tool casing.
+    def tool_name(name):
+        return _CLAUDE_NAMES.get(name.lower(), name) if provider == "claude" else name
+
     messages: list[dict] = []
     system: list[dict] = []
     for m in kwargs["messages"]:
         role, content = m["role"], m.get("content")
-        if role == "system":
-            system.append({"type": "text", "text": str(content or "")})
+        if role in ("system", "developer"):
+            system.extend(_claude_content(content))
             continue
-        blocks = _metadata(m, "claude", kwargs["model"])
+        blocks = _metadata(m, provider, kwargs["model"])
         if role == "tool":
             role = "user"
-            blocks.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": m["tool_call_id"],
-                    "content": str(content or ""),
-                }
-            )
+            blocks.append({
+                "type": "tool_result", "tool_use_id": m["tool_call_id"],
+                "content": _claude_content(content) if isinstance(content, list) else str(content or ""),
+            })
         else:
-            for b in (
-                content
-                if isinstance(content, list)
-                else ([{"type": "text", "text": content}] if content else [])
-            ):
-                if b.get("type") == "text":
-                    blocks.append({"type": "text", "text": b["text"]})
-                elif b.get("type") == "image_url":
-                    url = b["image_url"]["url"]
-                    if url.startswith("data:"):
-                        header, data = url.split(",", 1)
-                        blocks.append(
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": header[5:].split(";")[0],
-                                    "data": data,
-                                },
-                            }
-                        )
-                    else:
-                        blocks.append(
-                            {"type": "image", "source": {"type": "url", "url": url}}
-                        )
+            blocks.extend(_claude_content(content))
             for c in m.get("tool_calls") or []:
-                name = c["function"]["name"]
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": c["id"],
-                        "name": _CLAUDE_NAMES.get(name.lower(), name),
-                        "input": json.loads(c["function"]["arguments"]),
-                    }
-                )
+                blocks.append({
+                    "type": "tool_use", "id": c["id"],
+                    "name": tool_name(c["function"]["name"]),
+                    "input": json.loads(c["function"]["arguments"] or "{}"),
+                })
         if blocks:
             if messages and messages[-1]["role"] == role:
                 messages[-1]["content"].extend(blocks)
             else:
                 messages.append({"role": role, "content": blocks})
     body = {
-        "model": kwargs["model"],
-        "messages": messages,
-        "system": system,
-        "max_tokens": kwargs.get("max_tokens", 4096),
-        "stream": True,
+        "model": kwargs["model"], "messages": messages, "system": system,
+        "max_tokens": kwargs.get("max_tokens", 4096), "stream": True,
     }
     if kwargs.get("tools"):
         body["tools"] = [
-            {
-                "name": _CLAUDE_NAMES.get(
-                    t["function"]["name"].lower(), t["function"]["name"]
-                ),
-                "description": t["function"].get("description", ""),
-                "input_schema": t["function"]["parameters"],
-            }
+            {"name": tool_name(t["function"]["name"]),
+             "description": t["function"].get("description", ""),
+             "input_schema": t["function"]["parameters"]}
             for t in kwargs["tools"]
         ]
+    if provider == "anthropic":
+        if kwargs.get("stop"):
+            body["stop_sequences"] = kwargs["stop"]
+        choice = kwargs.get("tool_choice")
+        if isinstance(choice, str):
+            body["tool_choice"] = {"type": {"required": "any"}.get(choice, choice)}
+        elif isinstance(choice, dict):
+            body["tool_choice"] = {"type": "tool", "name": choice["function"]["name"]}
     return body
 
 
@@ -454,12 +464,12 @@ def numeric_usage(value):
 
 def _usage(raw, provider):
     inp = raw.get("input_tokens", 0)
-    if provider == "claude":
-        inp += raw.get("cache_read_input_tokens", 0) + raw.get(
-            "cache_creation_input_tokens", 0
-        )
-    out = raw.get("output_tokens", 0)
     details = numeric_usage(raw.get("input_tokens_details"))
+    if provider in ("claude", "anthropic"):
+        inp += raw.get("cache_read_input_tokens", 0) + raw.get("cache_creation_input_tokens", 0)
+        details = {"cached_tokens": raw.get("cache_read_input_tokens", 0),
+                   "cache_write_tokens": raw.get("cache_creation_input_tokens", 0)}
+    out = raw.get("output_tokens", 0)
     numeric = numeric_usage(raw)
     return NS(prompt_tokens=inp, completion_tokens=out, total_tokens=inp + out,
               cached_tokens=(details or {}).get("cached_tokens"),
@@ -492,7 +502,8 @@ class ResponseStream:
     def _interrupted(self):
         return _logged_provider_error(
             f"{self.provider.title()} connection was interrupted. "
-            "The response was not replayed; check any completed tool effects before retrying."
+            "The response was not replayed; check any completed tool effects before retrying.",
+            UnattendedRetryableError if self.provider == "codex" else ProviderError,
         )
 
     async def _resend(self, cause):
@@ -716,9 +727,9 @@ class ResponseStream:
                                 if b["type"] in ("thinking", "redacted_thinking")
                             ]
                             terminal_chunk = _chunk(
-                                usage=_usage(usage, "claude"),
+                                usage=_usage(usage, self.provider),
                                 metadata={
-                                    "provider": "claude",
+                                    "provider": self.provider,
                                     "model": self.model,
                                     "items": opaque,
                                 },
@@ -854,9 +865,9 @@ class OAuthTransport:
 
     async def create(
         self, *, purpose: str = "turn", retry_notice=None,
-        origin: EventOrigin | None = None, **kwargs,
+        origin: EventOrigin | None = None, retry_budget=None, **kwargs,
     ):
-        """`purpose`, `retry_notice` and `origin` are local; none reaches the wire.
+        """`purpose`, `retry_notice`, `origin` and the retry budget are local; none reaches the wire.
 
         🔴 T821. A test counted `create` calls to assert how many COMPLETIONS
         one turn costs. It was right on 2026-09-12 (4e873f7) and red by
@@ -899,6 +910,8 @@ class OAuthTransport:
         secrets = [credentials.access, credentials.account_id]
 
         budget = len(_CODEX_RETRY_DELAYS) if purpose == "turn" else _CODEX_SIDE_CALL_RETRIES
+        if self.provider != "codex" or purpose != "turn":
+            retry_budget = None
 
         async def pause_for_retry(cause: str):
             """`cause` names the failure in the notice and the final error:
@@ -906,7 +919,11 @@ class OAuthTransport:
             "connection failed" or "connection reset"."""
             nonlocal retries
             provider = self.provider.title()
-            if self.provider != "codex" or retries >= budget:
+            shared_delay = retry_budget.take_delay() if retry_budget is not None else None
+            if retry_budget is not None:
+                retries = retry_budget.used
+            if (self.provider != "codex" or (retry_budget is not None and shared_delay is None)
+                    or (retry_budget is None and retries >= budget)):
                 if cause.startswith("connection"):
                     message = (f"{provider} connection was interrupted before output, "
                                f"retried {retries} times. Check the connection and retry.")
@@ -917,10 +934,14 @@ class OAuthTransport:
             # Full jitter, uniform over [ceiling/2, ceiling], so clients do not
             # synchronise. The 2/4/8/16/32 s ceilings and ~5 attempts are the
             # T1019 card's spec (Orchestrator f43c6985), not the 0.154 reference's.
-            delay = random.uniform(ceiling / 2, ceiling)
-            retries += 1
+            delay = shared_delay if retry_budget is not None else random.uniform(ceiling / 2, ceiling)
+            if retry_budget is None:
+                retries += 1
             if retry_notice is not None:
-                retry_notice(f"{provider} {cause}; retrying in {max(1, round(delay))}s…")
+                # Neutral progress: app system messages containing "error" or
+                # "failed" notify the spawner, which must wait for exhaustion.
+                retry_notice(f"Retrying Codex request in {delay:g}s" if retry_budget is not None
+                             else f"{provider} {cause}; retrying in {max(1, round(delay))}s…")
             await asyncio.sleep(delay)
 
         # Only the agent loop's own requests belong to the turn. A side call
@@ -1052,6 +1073,65 @@ def _refuse_unsupported_local_lm(backend, *, remote_marker=None):
     )
 
 
+def _is_progress_chunk(chunk) -> bool:
+    """A NInfer prompt-progress report: no output yet, only the prefill state."""
+    if getattr(chunk, "prompt_progress", None) is not None:
+        return True
+    extra = getattr(chunk, "model_extra", None)
+    return bool(extra) and extra.get("prompt_progress") is not None
+
+
+class _ProgressFallbackStream:
+    """A stream that survives NInfer's prompt-progress state check failing AFTER the response has started.
+
+    NInfer 2026-11-08 12:34 (DS-pelican-4, compaction round 2, engine request 23): the engine opened the stream, then failed it while
+    rendering the first progress report, so the error arrived as an error event during iteration. `create` only saw failures raised by the
+    call itself, so its resend never ran and the compaction was lost. Until the first non-progress chunk has been handed on nothing but
+    the readout has been consumed, so the request is resent once without return_progress and iteration continues on the new stream.
+    Anything else, and any failure after output began, is raised as before."""
+
+    def __init__(self, stream, reopen, mark_broken):
+        self._stream = stream
+        self._reopen = reopen
+        self._mark_broken = mark_broken
+        self._delivered = False
+        self._retried = False
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        while True:
+            try:
+                async for chunk in self._stream:
+                    if not _is_progress_chunk(chunk):
+                        self._delivered = True
+                    yield chunk
+                return
+            except Exception as error:  # noqa: BLE001 - re-raised unless it is exactly the progress failure
+                body = getattr(error, "body", None)
+                detail = (str(body) if body is not None else "") + str(error)
+                if self._delivered or self._retried or "prompt-progress state" not in detail:
+                    raise
+                self._retried = True
+                self._mark_broken()
+                await self.close()
+                self._stream = await self._reopen()
+
+    async def close(self):
+        closer = getattr(self._stream, "close", None)
+        if closer is not None:
+            try:
+                result = closer()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:  # noqa: BLE001 - closing a dead stream must not mask the retry
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
 class OpenAITransport:
     def __init__(self, client, *, backend=None, remote_marker=None):
         # `backend` is optional so a standalone OpenAITransport(client) keeps
@@ -1060,6 +1140,25 @@ class OpenAITransport:
         self.client = client
         self.backend = backend
         self.remote_marker = remote_marker
+
+    def _guard_progress_stream(self, created, kwargs):
+        """Wrap a streamed request that asked for prompt progress, see _ProgressFallbackStream."""
+        extra = kwargs.get("extra_body") or {}
+        if not (kwargs.get("stream") and extra.get("return_progress")):
+            return created
+
+        def mark_broken():
+            try:
+                self.backend._progress_broken = True
+            except Exception:  # noqa: BLE001 - a flag, never worth failing the retry
+                pass
+
+        async def reopen():
+            retry = dict(kwargs)
+            retry["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
+            return await self.client.chat.completions.create(**retry)
+
+        return _ProgressFallbackStream(created, reopen, mark_broken)
 
     async def create(
         self, *, purpose: str = "turn", retry_notice=None,
@@ -1072,14 +1171,30 @@ class OpenAITransport:
                                                       "work_input_id", "work_payload_sha256")}
             for m in kwargs["messages"]
         ]
+        extra = kwargs.get("extra_body") or {}
+        if extra.get("return_progress") and getattr(self.backend, "_progress_broken", False):
+            kwargs["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
         try:
-            return await self.client.chat.completions.create(**kwargs)
+            created = await self.client.chat.completions.create(**kwargs)
+            return self._guard_progress_stream(created, kwargs)
         except Exception as error:
             # Some routed models advertise no capability and reject 'none' only
             # at request time. Retry this precise refusal once, never a generic 400.
             body = getattr(error, "body", None)
             detail = str(body) if body is not None else str(error)
             extra = kwargs.get("extra_body") or {}
+            # NInfer 2026-11-08 (compaction round 3, request 15: HTTP 500 "internal error response render"): with
+            # return_progress the engine validates each progress report against the reuse it announced at admission
+            # (openai_chat_response.cpp:363) and fails the request when they differ, which loses a turn or a whole
+            # compaction. The progress readout is a convenience, so drop it for this request and the rest of the session.
+            if extra.get("return_progress") and "prompt-progress state" in (detail + str(error)):
+                kwargs["extra_body"] = {k: v for k, v in extra.items() if k != "return_progress"}
+                if self.backend is not None:
+                    try:
+                        self.backend._progress_broken = True
+                    except Exception:  # noqa: BLE001 - a flag, never worth failing the retry
+                        pass
+                return await self.client.chat.completions.create(**kwargs)
             mandatory = "Reasoning is mandatory for this endpoint and cannot be disabled"
             if (purpose == "turn" or getattr(error, "status_code", None) != 400
                     or mandatory not in detail or extra.get("reasoning_effort") != "none"):
@@ -1123,6 +1238,8 @@ def bind_client(client, backend) -> ClientBinding:
 
 
 def for_app(app) -> ModelTransport:
+    if getattr(getattr(app, "backend", None), "name", None) == "anthropic":
+        return app.backend.transport()
     if getattr(getattr(app, "backend", None), "owns_native_turns", False):
         raise ProviderError("Claude owns native turns; legacy transport is unsupported. No fallback was used.")
     if getattr(getattr(app, "backend", None), "name", None) in OAUTH_PROVIDERS:
@@ -1176,6 +1293,8 @@ def complete_sidecall(app, payload, *, opener=urllib.request.urlopen):
     as chat, without tools or parent history. Called only inside the tool worker.
     """
     backend = getattr(app, "backend", None)
+    if getattr(backend, "name", None) == "anthropic":
+        return asyncio.run(backend.complete(payload))
     if getattr(backend, "owns_native_turns", False):
         raise ProviderError("Claude legacy subagent/summary sidecalls are unsupported; use native agents.")
     if getattr(backend, "remote", False):

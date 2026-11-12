@@ -76,6 +76,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.plugin_reload_ui",
     "litetui.plugins.scheduler_plugin",
     "litetui.plugins.monitor_plugin",   # /monitor — browser-monitor sweep -> Grafana
+    "litetui.plugins.agent_monitor_plugin",   # T1222: the `monitor` TOOL (watch a command/file, get woken)
     "litetui.plugins.subagent_plugin",
     "litetui.plugins.spawn_agent_plugin",
     "litetui.plugins.small_task_plugin",
@@ -282,6 +283,11 @@ class PluginRegistry:
         self.deferred_static: frozenset[str] = frozenset()
         self.defer_dynamic: bool = False
         self.activated: set[str] = set()
+        #: True when the built-in deferral must be skipped: a backend with a prefix cache (NInfer) re-reads the whole
+        #: prompt from zero whenever the `tools` array changes, 100-280 s at 50-80k tokens on a DeepSeek-V4.1 that streams
+        #: its experts. Loading four built-in schemas mid-conversation cost 250 s and 281 s (measured 2026-11-08), against
+        #: ~2,600 tokens once. Evaluated per call so a /model switch takes effect at once.
+        self.static_resident = lambda: False
 
     # ── registration (called via PluginContext, owner pre-bound) ──────────
 
@@ -371,7 +377,9 @@ class PluginRegistry:
     def _is_deferred(self, name: str, dynamic: bool) -> bool:
         if name in self.activated:
             return False
-        return self.defer_dynamic if dynamic else name in self.deferred_static
+        if dynamic:
+            return self.defer_dynamic
+        return name in self.deferred_static and not self.static_resident()
 
     def _offerable(self, deferred: bool) -> list[dict]:
         """The gated, not-switched-off specs — split by whether they are

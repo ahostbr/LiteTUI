@@ -319,7 +319,7 @@ async def test_every_field_is_reachable_without_opening_its_tab():
                 # No single control by design (mirrors _collect's skip tuple):
                 # per-model dicts are edited through /modelcfg; backend_chosen
                 # is set by the first-boot picker.
-                "llama_load_settings", "model_infer_overrides", "llama_presets",
+                "llama_load_settings", "model_infer_overrides", "llama_presets", "model_context_overrides",
                 "backend_chosen", "user_name_asked",
             ):
                 continue  # rendered as per-server switches, not one control
@@ -382,7 +382,7 @@ async def test_the_settings_sections_are_tabs():
         await pilot.pause()
         panes = app.screen.query(TabPane)
         assert [pane.id for pane in panes] == [
-            "tab-model", "tab-ninfer", "tab-strata", "tab-voice", "tab-generation", "tab-agent",
+            "tab-model", "tab-ninfer", "tab-strata", "tab-xolotl", "tab-voice", "tab-generation", "tab-agent",
             "tab-compaction", "tab-capabilities", "tab-hooks", "tab-themes",
             "tab-interface",
         ]

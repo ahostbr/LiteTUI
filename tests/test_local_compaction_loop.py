@@ -49,3 +49,50 @@ async def test_tool_round_threshold_compacts_then_resumes_without_optional_wake(
     assert any(m["role"] == "tool" for m in snapshots[1])
     assert any(m.get("content") == WAKE_AFTER_COMPACT for m in snapshots[2])
     assert app._interrupted_compact_resume is None
+
+
+@pytest.mark.asyncio
+async def test_a_mid_turn_context_overflow_compacts_then_resumes_instead_of_ending_the_turn(monkeypatch, tmp_path):
+    """Seen 2026-11-08 on DeepSeek: 79% of the window, one round of four 28k-char reads, and the next request was refused as
+    longer than the engine's context ("the prompt is longer than this engine's context") with the turn lost, below the 80%
+    threshold that would have compacted. The engine's refusal is the evidence: compact, then resume the same turn."""
+    app = _agentic_app(monkeypatch, tmp_path, on_tool=lambda: None)
+    app.settings.autocompact_enabled = True
+    app.settings.wake_after_compact = False
+    app.settings.compact_keep_recent = 0
+    app._kick_card_summary = lambda *args: None
+    app._fetch_ctx_window = lambda: None
+    calls = []
+
+    async def ready(**kwargs):
+        pass
+
+    app._ensure_chat_ready = ready
+
+    class _Full(Exception):
+        body = {"error": {"code": "context_length_exceeded", "message": "prepared prompt exceeds Engine max_context 131072"}}
+
+    async def create(**kwargs):
+        calls.append(kwargs.get("purpose", "turn"))
+        if len(calls) == 1:
+            from test_card_summary import _probe
+            return _Stream([_Chunk(content="working")] + _probe(1))
+        if len(calls) == 2:
+            raise _Full("too long")
+        if len(calls) == 3:
+            return _Stream([_Chunk(content="Summary: continue the task after the completed probe.")])
+        return _Stream([_Chunk(content="resumed and finished")])
+
+    monkeypatch.setattr(app_mod.model_transport, "for_app", lambda _: SimpleNamespace(create=create))
+    async with app.run_test(size=(100, 40)) as pilot:
+        # 79% of the window: under the 80% threshold, so only the engine's refusal can trigger the compaction.
+        app.ctx_max, app.ctx_used, app.ctx_loaded = 131_072, 104_156, True
+        assert app._autocompact_due() is None
+        app._append({"role": "user", "content": "do the task"})
+        app._stream()
+        for _ in range(160):
+            await pilot.pause(.05)
+            if len(calls) >= 4 and not app._chat_running():
+                break
+    assert calls == ["turn", "turn", "compaction", "turn"], calls
+    assert app._compact_forced is False and app._interrupted_compact_resume is None

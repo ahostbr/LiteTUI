@@ -235,11 +235,16 @@ def test_management_is_refused_and_never_reaches_the_404_routes(single):
         "no request may be sent to a route that does not exist"
 
 
-def test_seat_guard_does_not_try_to_suspend_a_single_model_server(single):
-    """A GUARD, not a red test: this already passed before the fix, but for
-    the wrong reason (the row parsed as not-loaded). It must keep passing for
-    the right one — the server is unmanageable, so there is no seat to take."""
+def test_a_single_model_seat_is_refused_by_name_not_generated_beside(single):
+    """T0702 changed this guard's contract. It asserted `seat_snapshot is None`
+    — "unmanageable, so there is no seat to take" — and None is what made the
+    studio tool generate BESIDE the resident model without a word. Ryan
+    2026-10-26 ruled that out. The seat is reported, and the suspend refuses
+    with the server's own reason: it has no unload route, so nothing is
+    generated."""
     b = LlamaCppBackend(_settings(single.host))
     _run(b.ensure_running())
-    assert b.seat_snapshot(SERVED_ID) is None, \
-        "an unmanageable seat must read as not-suspendable"
+    rec = b.seat_snapshot(SERVED_ID)
+    assert rec is not None and rec["identifier"] == SERVED_ID
+    err = b.seat_suspend(rec)
+    assert err and "serving one model" in err

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -39,6 +40,10 @@ class StrataBackend(OwnedEngineLifecycle):
     name = "strata"
     label = "Strata"
     _process_name = "Strata"
+    #: The settings are `<prefix>_host`, `_root`, `_config`, `_max_context`.
+    _setting_prefix = "strata"
+    #: Where to get it, said when nothing answers.
+    _install_where = f"LiteSuite's Model Hub (Strata), or {strata_engine.STRATA_REPO_URL}"
     #: Said by `/engine start` immediately before the spawn.
     start_notice = ("Starting Strata — it loads tens of GB into RAM, which takes a minute or more, "
                     "and the PC can stall while it does…")
@@ -57,16 +62,17 @@ class StrataBackend(OwnedEngineLifecycle):
     def host(self) -> str:
         """Owned engine first, then the setting or the chosen config's port. Re-asked every
         time: /model can change the config, and the engine may start after the app did."""
-        return self._host or strata_engine.default_host(self._settings)
+        return self._host or self._engine.default_host(self._settings)
 
     def base_url(self) -> str:
         return f"{self.host()}/v1"
 
     def empty_state_hint(self) -> str:
-        return "/model to pick a prepared Strata model, then /engine start"
+        return f"/model to pick a prepared {self.label} model, then /engine start"
 
     def reload_hint(self, rec: dict | None = None) -> str:
-        return "/engine start on the Strata backend (LiteTUI starts the server for the chosen model)"
+        return (f"POST {self.host()}/v1/load (or Load on the {self.label} server's own page); if no server "
+                f"answers, /engine start on the {self.label} backend")
 
     # -- health --------------------------------------------------------------
 
@@ -100,13 +106,12 @@ class StrataBackend(OwnedEngineLifecycle):
             return "ok"
         if state == "unloaded":
             raise EngineUnavailable(
-                f"the Strata server at {host} is up but has unloaded its model, and a request would "
+                f"the {self.label} server at {host} is up but has unloaded its model, and a request would "
                 "load it again (tens of GB of RAM). Load it from that server's own page, or stop it "
                 "and /engine start.", reason="engine_unloaded")
         raise EngineUnavailable(
-            f"no Strata server is answering at {host} — /engine start to load the chosen model, or "
-            f"start it yourself and set strata_host. Install: LiteSuite's Model Hub (Strata), "
-            f"or {strata_engine.STRATA_REPO_URL}.")
+            f"no {self.label} server is answering at {host} — /engine start to load the chosen model, or "
+            f"start it yourself and set {self._setting_prefix}_host. Install: {self._install_where}.")
 
     # -- stop / status (start is OwnedEngineLifecycle.start_engine) ------------
 
@@ -114,14 +119,14 @@ class StrataBackend(OwnedEngineLifecycle):
         if self._owned is None:
             host = self.host()
             if self._health_state(host) is not None:
-                return (f"the Strata server at {host} was not started by this LiteTUI — stop it where "
+                return (f"the {self.label} server at {host} was not started by this LiteTUI — stop it where "
                         "it was started (its window, or the app that ran it).")
             return "no engine is running."
         host = self._owned.host
         result = self.shutdown()
         if getattr(result, "main_exited", False) and not getattr(result, "retained", True):
-            return f"stopped the Strata server LiteTUI started at {host}."
-        return (f"stop requested for the Strata server at {host}, but exit was NOT confirmed "
+            return f"stopped the {self.label} server LiteTUI started at {host}."
+        return (f"stop requested for the {self.label} server at {host}, but exit was NOT confirmed "
                 "(it may still be running) — try /engine stop again.")
 
     def engine_status(self) -> str:
@@ -129,12 +134,12 @@ class StrataBackend(OwnedEngineLifecycle):
         said = {"loaded": "answering, model loaded", "unloaded": "answering, model UNLOADED",
                 None: "NOT answering"}[self._health_state(host)]
         if self._owned is not None:
-            return f"LiteTUI-owned Strata server at {host}: {said} (log {self._owned.log_path})"
+            return f"LiteTUI-owned {self.label} server at {host}: {said} (log {self._owned.log_path})"
         if said == "NOT answering":
-            path = strata_engine.strata_config(self._settings)
+            path = self._engine.chosen_config(self._settings)
             chosen = path.stem.removeprefix("strata-") if path else "none chosen — /model"
-            return f"no Strata server at {host}. Model for the next /engine start: {chosen}."
-        return f"attached Strata server at {host}: {said}"
+            return f"no {self.label} server at {host}. Model for the next /engine start: {chosen}."
+        return f"attached {self.label} server at {host}: {said}"
 
     # -- models --------------------------------------------------------------
 
@@ -144,10 +149,10 @@ class StrataBackend(OwnedEngineLifecycle):
             with native_engine_endpoint.open_read(req, timeout=timeout) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            raise BackendError(f"Strata returned {e.code} for {url}.") from e
+            raise BackendError(f"{self.label} returned {e.code} for {url}.") from e
         except Exception as e:
             raise BackendError(
-                f"no Strata server is answering at {self.host()} — /engine start, or check strata_host "
+                f"no {self.label} server is answering at {self.host()} — /engine start, or check {self._setting_prefix}_host "
                 f"({type(e).__name__}).") from e
 
     def _entries(self) -> list[dict]:
@@ -213,11 +218,11 @@ class StrataBackend(OwnedEngineLifecycle):
         if key not in rows:
             only = ", ".join(sorted(rows)) or "none"
             raise BackendError(
-                f"{key!r} is not what this Strata server serves (it serves {only}). One model per "
+                f"{key!r} is not what this {self.label} server serves (it serves {only}). One model per "
                 "process — /model to choose another, then /engine stop and /engine start.")
         if not rows[key].loaded:
             raise BackendError(
-                "the Strata server has unloaded its model; sending would load it again (tens of GB "
+                f"the {self.label} server has unloaded its model; sending would load it again (tens of GB "
                 "of RAM). Load it from the server's own page, or /engine stop then /engine start.")
 
     # -- capabilities and per-request ----------------------------------------
@@ -241,14 +246,75 @@ class StrataBackend(OwnedEngineLifecycle):
             return None
         return {"identifier": model_id, "context": info[0], "parallel": 1, "status": "idle", "queued": 0}
 
+    # Suspend and resume use the SERVER'S OWN LOAD SWITCH, not the process (T0702).
+    # `POST /v1/unload` ends the engine between requests — RAM and VRAM go back — while the
+    # server keeps answering; `POST /v1/load` starts the engine again on the same spawn config
+    # (serve/server.py `Service.unload` / `ensure_loaded`). Nothing is killed and nothing is
+    # restarted with settings LiteTUI chose, so a server LiteTUI did not start is freed the same
+    # way as one it did. The server refuses (409) while a request runs — that is the
+    # other-seats-mid-stream gate here, so `seat_snapshot`'s "idle" is not trusted for it.
+
+    #: How long a suspend keeps asking while the server says a request is still running.
+    SEAT_BUSY_WAIT_S = 15.0
+    #: A load is an engine start: the launcher's own wait (`STRATA_START_TIMEOUT_S`).
+    SEAT_LOAD_TIMEOUT_S = strata_engine.STRATA_START_TIMEOUT_S
+
+    def _switch(self, verb: str, timeout: float) -> tuple[int | None, dict]:
+        """POST /v1/<verb> (load | unload) -> (HTTP status, JSON body); (None, {}) when nothing
+        answered. JSON with no Origin: the server refuses the switch to anything else."""
+        req = urllib.request.Request(f"{self.host()}/v1/{verb}", data=b"{}", method="POST",
+                                     headers={"Content-Type": "application/json", "User-Agent": "LiteTUI"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                status, raw = r.status, r.read()
+        except urllib.error.HTTPError as e:
+            status, raw = e.code, e.read()
+        except Exception:  # noqa: BLE001 - refused or timed out: nothing usable answered
+            return None, {}
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = {}
+        return status, body if isinstance(body, dict) else {}
+
+    def _switch_refusal(self, verb: str, status: int | None, body: dict) -> str:
+        """The sentence for a load switch that did not do its job."""
+        if status is None:
+            return f"no {self.label} server is answering at {self.host()}"
+        if status in (404, 405, 501):
+            return (f"this {self.label} server has no /v1/{verb} (an older build) — update {self.label} "
+                    f"from {self._install_where}")
+        if status == 409:
+            return f"a request is still running on the {self.label} server — try again when it has finished"
+        message = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else None
+        return f"the {self.label} server did not {verb} the model ({status}: {message or body or 'no reason given'})"
+
     def seat_suspend(self, rec: dict) -> str | None:
-        return ("suspend unsupported: a Strata server holds its model for the life of the process — "
-                "/engine stop frees the RAM and VRAM")
+        deadline = time.monotonic() + self.SEAT_BUSY_WAIT_S
+        while True:
+            status, body = self._switch("unload", timeout=120)
+            if status != 409 or time.monotonic() >= deadline:
+                break
+            time.sleep(1.0)                   # our own turn's request may still be closing
+        if status == 200 and body.get("status") in ("unloaded", "not loaded"):
+            return None
+        if status == 200 and body.get("status") == "unsupported":
+            return (f"this {self.label} engine cannot unload between requests — /engine stop frees its "
+                    "RAM and VRAM")
+        return self._switch_refusal("unload", status, body)
 
     def seat_resume(self, rec: dict) -> str | None:
-        if self.seat_snapshot(rec.get("identifier") or "") is not None:
-            return None
-        return f"the Strata server is no longer serving {rec.get('identifier')!r} — " + self.reload_hint(rec)
+        key = rec.get("identifier") or ""
+        if self.seat_snapshot(key) is None:
+            status, body = self._switch("load", timeout=self.SEAT_LOAD_TIMEOUT_S)
+            if status != 200:
+                return self._switch_refusal("load", status, body)
+        got = self.seat_snapshot(key)
+        if got is None:
+            return f"the {self.label} server is not serving {key!r} after the load — " + self.reload_hint(rec)
+        if rec.get("context") and got.get("context") != rec.get("context"):
+            return f"seat reloaded but at context {got.get('context')} instead of {rec['context']}"
+        return None
 
     # -- control, which this engine does not have ------------------------------
 
@@ -261,8 +327,7 @@ class StrataBackend(OwnedEngineLifecycle):
     async def apply_load_settings(self, key: str, cfg: dict, *, notice=None) -> None:
         raise BackendError(self._frozen_reason("change the load settings"))
 
-    @staticmethod
-    def _frozen_reason(what: str) -> str:
-        return (f"Strata cannot {what} while it is running — the model and its context are fixed when "
-                "the server starts. /model picks the model and strata_max_context (in /settings) the "
-                "context; then /engine stop and /engine start.")
+    def _frozen_reason(self, what: str) -> str:
+        return (f"{self.label} cannot {what} while it is running — the model and its context are fixed when "
+                f"the server starts. /model picks the model and {self._setting_prefix}_max_context (in /settings) "
+                "the context; then /engine stop and /engine start.")

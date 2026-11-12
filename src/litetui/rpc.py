@@ -130,6 +130,15 @@ def publish_management_result(app: LiteTUI, cmd: dict[str, Any], result: Any) ->
     background_input.finish_publication(app, ticket)
 
 
+# Legacy stdio uses different operation names, but the same hold policy:
+# observation and completion of already-issued callbacks only. Unknown future
+# mutations fail closed instead of inheriting permission from this old protocol.
+_RESTART_SAFE = frozenset({
+    "list_models", "get_settings", "list_commands", "list_skills",
+    "jobs.list", "tasks.list", "tasks.tail", "answer", "approve",
+})
+
+
 def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
     """Route a command on the app loop. T4 will expand this table."""
     cmd_type = cmd.get("type", "")
@@ -165,6 +174,12 @@ def _dispatch(app: LiteTUI, cmd: dict[str, Any]) -> None:
         native_schedule.operation_allowed(app, cmd_type)
     except ValueError as exc:
         _respond(cmd_id, ok=False, error=str(exc))
+        return
+
+    from litetui import restart_checkpoint
+    if ((not isinstance(cmd_type, str) or cmd_type not in _RESTART_SAFE)
+            and restart_checkpoint.is_held(app)):
+        _respond(cmd_id, ok=False, error="Restart checkpoint hold blocks this mutation")
         return
 
     from litetui import native_engine

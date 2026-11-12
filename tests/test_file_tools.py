@@ -473,3 +473,19 @@ def test_write_new_file_defaults_to_lf_without_a_convention(tmp_path):
     out = ct.tool_write({"path": str(p), "content": "new\nbody\r\n"})
     assert out.startswith("Wrote"), out
     assert p.read_bytes() == b"new\nbody\n"
+
+
+def test_relative_write_uses_cwd_not_source_root(tmp_path, monkeypatch):
+    from litetui import paths
+    from litetui.plugins import core_tools
+
+    source = tmp_path / "source"
+    worktree = tmp_path / "worktree"
+    source.mkdir()
+    worktree.mkdir()
+    monkeypatch.setattr(paths, "ROOT", source)
+    monkeypatch.chdir(worktree)
+    result = core_tools.tool_write({"path": "NOW.md", "content": "worktree content"})
+    assert not result.startswith("[error]"), result
+    assert (worktree / "NOW.md").read_text() == "worktree content"
+    assert not (source / "NOW.md").exists()

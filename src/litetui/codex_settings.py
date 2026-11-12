@@ -141,15 +141,23 @@ def control(backend, name):
         if name in {"autocompact_enabled", "autocompact_at_percent", "clear_screen_after_compact", "wake_after_compact"}:
             return Control("host", "LiteTUI compacts Claude conversations itself (Claude's own autocompact is off): "
                            "Claude writes the summary, and the next message starts a fresh session carrying it.")
-        if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith(("ninfer_", "strata_")):
+        if name in CONTROLS or name in {"codex_native_engine", "mcp_enabled", "skills_enabled"} or name.startswith(("ninfer_", "strata_", "xolotl_")):
             return Control("unsupported", "Claude owns its runtime and context. This local/Codex control is unsupported; saved values are preserved for other backends.")
+        return None
+    if getattr(backend, "name", None) == "anthropic":
+        if CONTROLS.get(name) is SAMPLING and name != "stop":
+            return Control("unsupported", "The native Anthropic API does not accept this sampling control. Saved values are preserved for other backends.")
+        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith(("ninfer_", "strata_", "xolotl_")):
+            return Control("unsupported", "Anthropic uses a fixed remote API, separate from Claude Agent/OAuth and local engines.")
+        if name == "thinking_level":
+            return Control("host", "Effort choices come from Anthropic's Models API. Default uses model defaults; off is offered only when supported.")
         return None
     if getattr(backend, "name", None) in ("cline", "free"):
         # Our loop drives ClinePass (sampling, tools, compaction all apply);
         # only its endpoint is fixed and remote.
         if name == "thinking_level":
             return CLINE_THINKING
-        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith(("ninfer_", "strata_")):
+        if CONTROLS.get(name) is LOCAL_SERVER or name in {"codex_native_engine", "claude_executable"} or name.startswith(("ninfer_", "strata_", "xolotl_")):
             return CLINE_FIXED
         return None
     return CONTROLS.get(name) if native(backend) else None

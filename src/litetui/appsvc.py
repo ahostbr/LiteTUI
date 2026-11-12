@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from pathlib import Path
 from litetui import paths
 from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
@@ -114,6 +115,9 @@ INDEX_HEADER = "## Project index (AGENT_INDEX.md), snapshot at the start of this
 INDEX_OPENING = (f'\n\n{INDEX_HEADER}\n\nRead this before touching any area it lists. Source: {{where}}. '
                  'It is NOT re-sent each turn and is not refreshed on resume; read the file for its '
                  'current contents.\n\n')
+#: Marks an already-injected lore block inside the system message; by marker for the same reason.
+LORE_HEADER = "## Lore, loaded at the start of this conversation"
+LORE_OPENING = f'\n\n{LORE_HEADER}\n\n'
 STORE_OPENING = ('\n\n' + STORE_HEADER + '\n\nThis is a SNAPSHOT taken at the start of the conversation, not a live view, and it is NOT re-sent each turn. If you have written to these files since, or need their current contents, read them with the `read` tool.\n\n')
 
 
@@ -151,6 +155,29 @@ def index_block(app, cwd=None) -> str:
     return INDEX_OPENING.format(where=where) + text + '\n'
 
 
+def lore_block(app) -> str:
+    """The lore file as a prompt section, or '' for a seat with no owned agent home.
+
+    Only `.agents` seats (an owned AgentSession) are told the lore; a `.convos`-era
+    archive has no session and gets nothing, not even an error. A SNAPSHOT like the
+    index: injected once into message 0, which a local compaction keeps and a Claude
+    compaction rebuilds. Cuts are named in the text and the user is told too.
+    """
+    if getattr(app, '_agent_session', None) is None:
+        return ''
+    from litetui.lore import read_lore
+    found = read_lore()
+    if found is None:
+        return ''
+    _, text, warnings = found
+    notify = getattr(app, '_system', None)
+    for warning in warnings:
+        if notify is not None:
+            notify(f'warning: {warning[1:-1].removeprefix("... ")}. Trim it.')
+    # no text line when a cut kept none (one long line): the header and the note only
+    return LORE_OPENING + '\n'.join([*([text] if text else []), *warnings]) + '\n'
+
+
 def store_block(app, live: bool=False) -> str:
     # memory.md is capped hardest ON PURPOSE: it is an index, and an index
     # that needs more than this has stopped being one.
@@ -177,17 +204,25 @@ def store_block(app, live: bool=False) -> str:
     # quietly stopped being true is worse than no instruction at all.
     return STORE_OPENING + '\n\n'.join(parts) + '\n'
 
-def strip_store_block(content: str) -> str:
-    """`content` without its trailing store block; unchanged when it has none.
+def store_block_start(content: str) -> int:
+    """Locate a generated trailing snapshot, never a bare marker in user text.
 
-    INVARIANT: the store block is the LAST thing in message 0, so everything
-    from the blank line before STORE_HEADER onward is the snapshot. The index
-    block, if any, sits before it and stays (found again by its own header).
-    `_inject_store_once` appends it last, and `LiteTUI._append_to_system`
-    inserts any later text in front of it; anything else that extends message 0
-    after the store is injected must do the same or this cut will take it too.
+    The full opening, a home/owner section and the final newline must match.
+    Bodies are opaque: their own headings are not deletion boundaries.
+    INVARIANT: `_inject_store_once` appends the snapshot last; later additions
+    via `_append_to_system` go before this same boundary.
     """
-    cut = content.find('\n\n' + STORE_HEADER)
+    match = re.search(
+        re.escape(STORE_OPENING)
+        + r'### (?:memory|soul|handoff|SOUL|NOW|DOMAIN)\.md \(current contents\)\n\n.+\n\Z',
+        content, re.DOTALL,
+    )
+    return match.start() if match else -1
+
+
+def strip_store_block(content: str) -> str:
+    """`content` without its trailing store block; unchanged when it has none."""
+    cut = store_block_start(content)
     return content if cut < 0 else content[:cut]
 
 

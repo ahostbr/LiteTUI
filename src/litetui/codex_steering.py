@@ -167,10 +167,12 @@ class HostSteering:
             captured=context,
         )
         context["reason"] = result.reason
-        return result.allowed and not self.app._stop_requested, context
+        from litetui.restart_checkpoint import is_held
+        return result.allowed and not self.app._stop_requested and not is_held(self.app), context
 
     async def run(self):
         background_input.bind_provider_lane(self.app, self, self.work_lane)
+        from litetui.restart_checkpoint import is_held
         while not getattr(self.app, "_stop_requested", False):
             if self.work_lane is not None and self.work_lane.bridge.error:
                 return
@@ -178,6 +180,8 @@ class HostSteering:
             if native_runtime_controls.mutation_hold(self.app):
                 await asyncio.sleep(0.05)
                 continue
+            if is_held(self.app):
+                return
             queue = getattr(self.app, "_pending_input", [])
             if not queue:
                 await asyncio.sleep(0.1)

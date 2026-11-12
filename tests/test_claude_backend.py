@@ -346,11 +346,11 @@ def test_backend_rows_is_the_one_source_for_the_picker_and_the_sidecar(monkeypat
     assert seen["rows"] == rows
 
 
-def _identity_app(monkeypatch, agent_session=None):
+def _identity_app(monkeypatch, agent_session=None, **prompt_sources):
     """A real LiteTUI (conftest isolates its data) with a store and a registered seat."""
     from litetui import app as app_mod
-    app = (owned_app() if agent_session is None
-           else app_mod.LiteTUI(agent_session=agent_session))
+    app = (owned_app(**prompt_sources) if agent_session is None
+           else app_mod.LiteTUI(agent_session=agent_session, **prompt_sources))
     app._materialise_convo()
     (app._agent_session.memory_root / "soul.md").write_text("SOUL-MARKER-4471", encoding="utf-8")
     (app._agent_session.memory_root / "handoff.md").write_text("HANDOFF-MARKER-9902", encoding="utf-8")
@@ -412,16 +412,17 @@ def owned_identity_app(tmp_path, monkeypatch):
         yield _identity_app(monkeypatch, agent_session=session)
 
 
-def test_a_fresh_claude_segment_leads_with_the_launch_block_exactly_once(owned_identity_app):
+def test_a_fresh_claude_segment_leads_with_the_launch_block_exactly_once(monkeypatch, tmp_path):
     from litetui.claude_turn import ledger_for, system_prompt_for
 
-    app = owned_identity_app
-    launch = "LAUNCH-ROLE-MARKER-5530\nMETHOD-MARKER-8812 (cognitive file text)"
-    app._cli_system_prompt = launch
+    method = tmp_path / "selected-method.md"
+    method.write_text("# POLYMATHIC GAMMA\nMETHOD-MARKER-8812 (cognitive file text)", encoding="utf-8")
+    role_body = "LAUNCH-ROLE-MARKER-5530"
+    app = _identity_app(monkeypatch, system_prompt=role_body, cognitive_file=str(method))
     segment = ledger_for(app).select_segment("ws")
     prompt = system_prompt_for(app, segment)
-    assert prompt.startswith(launch), "the launch block leads the native prompt"
-    assert prompt.count("METHOD-MARKER-8812") == 1
+    assert prompt.startswith("# BUILDER ROLE \u2014 Builder Mode\n\n" + role_body)
+    assert prompt.count("METHOD-MARKER-8812") == 1 and prompt.count("# POLYMATHIC GAMMA") == 1
     assert ledger_for(app).segment(segment["id"])["system_prompt"] == prompt, "recorded in the ledger"
     assert "mcp__litetui__" in prompt, "the Claude tool composition is kept after the launch block"
 

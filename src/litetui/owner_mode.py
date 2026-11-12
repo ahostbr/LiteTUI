@@ -13,10 +13,10 @@ refuse BEFORE any agent home or lock is created.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
+from enum import Enum
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -78,10 +78,10 @@ def validate_owner_name(raw: str) -> str:
 
 def handoff_command() -> list[str]:
     """The argv prefix that runs the liteharness CLI as a subprocess."""
-    found = shutil.which("liteharness")
-    if found:
-        return [found]
-    return [sys.executable, "-m", "liteharness.cli"]
+    from litetui import harness
+    # The shared resolver: the console script, else this interpreter only if it can import liteharness.
+    # Left unresolvable, the old argv still runs so the probe below fails with its own plain words.
+    return harness.liteharness_command() or [sys.executable, "-m", "liteharness.cli"]
 
 
 def require_handoff() -> None:
@@ -319,14 +319,14 @@ def _posix(path) -> str:
     return str(path).replace("\\", "/")
 
 
-def compact_prompt(owner_dir, *, summary: bool = True) -> str:
+def compact_prompt(owner_dir, *, summary: bool = True, app=None, fresh: bool = False) -> str:
     """STEP 1 / STEP 2 for an owner seat: rewrite NOW.md, append to DOMAIN.md, then summarise.
 
     `summary=False` is STEP 1 alone, for a backend that compacts natively and writes its
     own summary (Codex): the seat writes the files and confirms in one line.
     """
     from litetui.textfmt import load_prompt
-    text = load_prompt("compact-owner", dir=_posix(owner_dir))
+    text = load_prompt("compact-owner", app=app, fresh=fresh, dir=_posix(owner_dir))
     if summary:
         return text
     return (text.split("\nSTEP 2")[0].rstrip()
@@ -350,34 +350,76 @@ REMINDER_AT_PERCENT = 70
 CONTEXT_REMINDER = "context 70%: run /compact to write NOW.md first"
 
 
+def context_reminder(percent: int) -> str:
+    """The reminder with the reading that crossed, so a first reading of 95% says 95% (T0483-C)."""
+    return f"context {percent}%: run /compact to write NOW.md first"
+
+
 def not_committed_note(reason: str) -> str:
     return f"NOW.md was NOT committed: {reason}"
 
 
-#: File times tick coarsely (NTFS can stamp a write up to a few ms behind the clock that
-#: produced t0), so a write made right after t0 can read as slightly older. A note written
-#: this close to the start of a compaction was not written by STEP 1 anyway; anything older
-#: than this is rejected as unchanged.
-MTIME_SLACK_NS = 50_000_000
+class NowState(Enum):
+    """A snapshot unavailable at entry, distinct from empty bytes and no owner mode."""
+
+    ABSENT = "absent"
 
 
-async def owner_gate(owner_dir, t0_ns: int, agent_id: str | None = None) -> tuple[bool, str]:
+NowSnapshot = bytes | NowState
+
+
+async def owner_gate(owner_dir, before: NowSnapshot, agent_id: str | None = None) -> tuple[bool, str]:
     """After STEP 1, before anything is truncated: did the seat write NOW.md, and did it commit?
 
-    (a) NOW.md's mtime is at or after `t0_ns` (the seat actually rewrote it during
-    this compaction); (b) `liteharness owner-handoff` runs as a subprocess, outside
+    (a) NOW.md is readable and differs from `before` (bytes or NowState.ABSENT)
+    captured when this compaction began;
+    (b) `liteharness owner-handoff` runs as a subprocess, outside
     the tool policy, and validates the template and commits NOW.md and DOMAIN.md.
     Returns (ok, reason); the reason is the first thing that failed.
     """
     import asyncio
     now = Path(owner_dir) / NOW
     try:
-        modified = now.stat().st_mtime_ns
+        current = now.read_bytes()
     except OSError as exc:
         return False, f"NOW.md cannot be read: {exc}"
-    if modified + MTIME_SLACK_NS < t0_ns:
+    if current == before:
         return False, "NOW.md was not rewritten during this compaction (it has not changed since the compaction began)"
-    ok, output = await asyncio.to_thread(run_handoff, owner_dir, agent_id)
+    # T0483-B: the commit runs in a thread that cancelling this coroutine cannot stop. Shield it
+    # and keep it findable, so a second /compact waits for it (settle_inflight_handoff) before its
+    # STEP 1 instead of racing it. Killing git mid-commit could leave a stale index.lock.
+    handoff = asyncio.ensure_future(asyncio.to_thread(run_handoff, owner_dir, agent_id))
+    key = _inflight_key(owner_dir)
+    _INFLIGHT[key] = handoff
+    handoff.add_done_callback(lambda done, k=key: _INFLIGHT.pop(k, None) if _INFLIGHT.get(k) is done else None)
+    ok, output = await asyncio.shield(handoff)
     if ok:
         return True, output
     return False, " ".join(output.split()) or "the handoff refused without a reason"
+
+
+#: owner-handoff futures still running, by memory folder (at most one per folder).
+_INFLIGHT: dict = {}
+
+
+def _inflight_key(owner_dir) -> str:
+    return os.path.normcase(str(Path(owner_dir).resolve()))
+
+
+async def settle_inflight_handoff(owner_dir) -> None:
+    """Wait until a cancelled compaction's owner-handoff for this folder has finished (T0483-B).
+
+    Call before a compaction snapshots NOW.md, so a late commit cannot overlap its STEP 1.
+    The result is ignored: the cancelled compaction no longer acts on it.
+    """
+    import asyncio
+    handoff = _INFLIGHT.get(_inflight_key(owner_dir))
+    if handoff is None or handoff.done():
+        return
+    if handoff.get_loop() is not asyncio.get_running_loop():
+        _INFLIGHT.pop(_inflight_key(owner_dir), None)   # left by a loop that has closed
+        return
+    try:
+        await asyncio.shield(handoff)
+    except Exception:
+        pass

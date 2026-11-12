@@ -43,6 +43,8 @@ from litetui.settings import Settings
 @pytest.fixture
 def artifacts(tmp_path, monkeypatch):
     """Point the artifact directory at a throwaway tree and return a factory."""
+    # T0839: config.json may name extra roots; never read the real one here.
+    monkeypatch.setenv(ninfer_engine.LITESUITE_LLM_DIR_ENV, str(tmp_path / "llm"))
     root = tmp_path / "ninfer-models"
     root.mkdir()
     monkeypatch.setattr(ninfer_engine, "artifacts_dir", lambda: root)

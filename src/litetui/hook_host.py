@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from litetui import lifecycle_hooks as hooks
-from litetui import native_runtime_controls, seat_authority, tool_policy
+from litetui import native_runtime_controls, restart_checkpoint, seat_authority, tool_policy
 from litetui.event_origin import EventOrigin
 from litetui.widgets import _mark_delivered
 
@@ -260,13 +260,14 @@ def refuse_engine_admission(app, item, *, on_refused=None) -> bool:
     return True
 
 
-def accept_prompt(app, item, *, native_accepted=False) -> bool:
+def accept_prompt(app, item, *, native_accepted=False, restart_maintenance=None) -> bool:
     """Boolean admission contract retained for queued/native callers."""
-    return accept_prompt_origin(app, item, native_accepted=native_accepted) is not None
+    return accept_prompt_origin(app, item, native_accepted=native_accepted,
+                                restart_maintenance=restart_maintenance) is not None
 
 
 def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_refused=None,
-                         persist_user=None) -> EventOrigin | None:
+                         persist_user=None, restart_maintenance=None) -> EventOrigin | None:
     """Accept input and return its captured origin, without scheduling execution.
 
     `native_accepted` is passed ONLY by codex_steering.accept_steered, for input
@@ -276,6 +277,19 @@ def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_re
         return None
     if origin is None:
         origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
+    # T0495: hooks may await while the user switches conversations. Self-job
+    # metadata survives that wait; mismatch drops this occurrence, never queues
+    # it into the newly active conversation. Legacy prompts carry neither key.
+    if "owner_agent_id" in item or "owner_convo_id" in item:
+        from litetui.scheduler import self_target_matches
+        if (not item.get("owner_agent_id") or not self_target_matches(
+                item["owner_agent_id"], item.get("owner_convo_id"),
+                getattr(getattr(app, "seat", None), "agent_id", None), getattr(app, "convo_id", None))):
+            app._system("Self schedule dropped: its seat or conversation is no longer active.")
+            return None
+    if (not native_accepted and not restart_checkpoint.maintenance_permitted(app, restart_maintenance)
+            and restart_checkpoint.retain_prompt(app, item)):
+        return None
     if not native_accepted and refuse_below_floor(app, item, on_refused=on_refused):
         return None
     if not item.get("_gui_in_turn"):
@@ -294,6 +308,12 @@ def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_re
     if materialise is not None:
         materialise()
     session_id = getattr(app, "convo_id", None)
+    from litetui import prompt_overrides
+    try:
+        prompt_overrides.refresh(app)
+    except (prompt_overrides.PromptError, OSError) as exc:
+        app._system(f"Prompt configuration error; input held unsent: {exc}")
+        return None
     message = {"role": "user", "content": item["content"]}
     if getattr(getattr(app, "backend", None), "owns_native_turns", False):
         from litetui.claude_turn import UncertainDelivery, accept_input, hold_input
@@ -332,6 +352,8 @@ async def admit_prompt(app, item) -> bool:
 async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
                               persist_user=None, allow_prompt=True, before_persist=None) -> EventOrigin | None:
     if refuse_engine_admission(app, item, on_refused=on_refused):
+        return None
+    if restart_checkpoint.retain_prompt(app, item):
         return None
     # Capture input metadata before the first suspension, not from mutable app
     # fields after hooks or lifecycle work have run.
@@ -399,6 +421,8 @@ def _native_prompt_refusal(app, item):
 
 
 def start_prompt(app, item):
+    if restart_checkpoint.retain_prompt(app, item):
+        return
     from litetui import background_input
     if background_input.entry_for(app, item) is not None:
         return background_input.start_prompt(app, item)
@@ -428,6 +452,8 @@ def start_prompt(app, item):
 async def queued_prompt(app):
     from litetui.backend_transition import submission_refusal
     if submission_refusal(app):
+        return False
+    if restart_checkpoint.is_held(app):
         return False
     if app._pending_input and app._pending_input[0].get("_codex_entry"):
         return False

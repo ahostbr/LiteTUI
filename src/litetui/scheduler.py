@@ -250,6 +250,11 @@ class Job:
     owner_convo_id: str = ""
     interval_minutes: int = 0
     next_run_at: str | None = None
+    #: T0495: nonempty only for self-scheduled cron; BOTH identities must match.
+    #: Legacy cron remains unscoped, and loops retain their conversation rule.
+    owner_agent_id: str = ""
+    #: A due self job seen while busy owes ONE fire at next idle, not a backlog.
+    deferred_slot: str | None = None
 
     @classmethod
     def loop(
@@ -307,6 +312,16 @@ def level_of(value) -> str:
     return value if value in PROFILES else INTERACTIVE
 
 
+def self_target_matches(owner_agent_id, owner_convo_id, agent_id, convo_id) -> bool:
+    """Unscoped legacy jobs run anywhere; a self job needs both exact identities.
+
+    Shared-file readers must check before taking the scheduler lease, again on
+    its current disk row, and at delivery (including a manual fire).
+    """
+    return not owner_agent_id or bool(owner_convo_id and owner_agent_id == agent_id
+                                      and owner_convo_id == convo_id)
+
+
 def slot_of(when: datetime) -> str:
     """The minute a moment belongs to, as a stable key."""
     return when.strftime("%Y-%m-%dT%H:%M")
@@ -359,6 +374,9 @@ def due(jobs: list[Job], now: datetime) -> list[Job]:
             cron = job.cron()
         except CronError:
             continue  # a malformed schedule never fires; /cron list shows it
+        if job.owner_agent_id and job.deferred_slot and job.last_fired_slot != slot_of(now):
+            ready.append(job)
+            continue  # one owed fire, even after the original cron minute passed
         slot = now.replace(second=0, microsecond=0)
         if not cron.matches(slot):
             continue

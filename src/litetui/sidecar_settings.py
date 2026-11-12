@@ -10,16 +10,21 @@ from litetui.settings_service import SettingsSnapshot
 _SENSITIVE_NAME = re.compile(r"key|token|secret|password|auth", re.IGNORECASE)
 
 
-#: The free-tier keys (settings.py). The sidecar may SET or CLEAR them but is
+#: Provider API keys (settings.py). The sidecar may SET or CLEAR them but is
 #: only ever told whether each is set, never the value (the user 2026-09-24,
 #: liteask a-29b8bd60: "a key field per source in /settings + sidecar").
-SECRET_FIELDS = frozenset({"groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
+SECRET_FIELDS = frozenset({"anthropic_api_key", "groq_api_key", "cerebras_api_key", "nvidia_api_key", "mistral_api_key",
                            "github_models_token", "openrouter_api_key", "gemini_api_key", "ollama_api_key",
                            "zai_api_key", "cloudflare_api_key", "longcat_api_key", "sealion_api_key"})
 
 
 def is_sensitive(name: str) -> bool:
-    return bool(_SENSITIVE_NAME.search(name) or SETTING_SPECS.get(name) and SETTING_SPECS[name].sensitive)
+    spec = SETTING_SPECS.get(name)
+    if spec and spec.sensitive:
+        return True
+    # Keyboard hints are a public boolean, not a credential. Keep the name
+    # heuristic for all other fields and let explicit sensitivity win above.
+    return name != "footer_show_key_hints" and bool(_SENSITIVE_NAME.search(name))
 
 
 def _control(backend, key):

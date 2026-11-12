@@ -295,9 +295,13 @@ class SettingsService:
                             _, revision_home = read(self.agent_session.memory_root / 'settings.json')
                             if revision_home != expected_revisions.get('agent'):
                                 raise ValueError('Stale agent revision; reload before retry')
+                            new_backend = authoritative.get('backend', authority.backend)
+                            # A backend switch clears the model unless the same save names one.
+                            model = (authoritative['default_model'] if 'default_model' in authoritative
+                                     else None if new_backend != authority.backend else authority.model)
                             self.agent_session.update_execution(
-                                backend=authoritative.get('backend', authority.backend),
-                                model=authoritative.get('default_model', authority.model),
+                                backend=new_backend,
+                                model=model,
                                 thinking_level=authoritative.get('thinking_level', authority.thinking_level))
                             home = self.agent_session.memory_root / 'settings.json'
                             _, home_revision = read(home)
@@ -307,7 +311,8 @@ class SettingsService:
                             # snapshot below fails. Runtime applies its exact outcome.
                             keys = tuple(key for key in keys if key not in authoritative)
                     else:
-                        raw.update({c.key: deepcopy(c.value) for c in patch})
+                        from litetui.secret_at_rest import to_disk
+                        raw.update({c.key: to_disk(c.key, deepcopy(c.value)) for c in patch})
                     revision = _write(path, raw, **({"max_bytes": max_bytes} if max_bytes is not None else {}))
                 results.append(PersistenceDestinationResult(str(path), scope, True,
                                revision=revision, fields=keys))

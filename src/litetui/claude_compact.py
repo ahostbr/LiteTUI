@@ -33,6 +33,7 @@ import asyncio
 import json
 import time
 import uuid
+from pathlib import Path
 
 from rich.text import Text
 
@@ -54,7 +55,7 @@ COMPACT_COLD = ("Compacting ends this Claude session: Claude writes a summary, a
                 "message is read at full input price.")
 
 
-def request(extra: str = "", owner_dir=None) -> str:
+def request(extra: str = "", owner_dir=None, *, app=None) -> str:
     """LiteTUI's compaction instructions, whole, as the marked request Claude's system
     prompt declares genuine (claude_backend.APPEND).
 
@@ -64,22 +65,25 @@ def request(extra: str = "", owner_dir=None) -> str:
     Claude could not see the store and the whole request read as an injection. Its
     prompt is LiteTUI's now and names that folder (the conversation-store section).
     """
-    from litetui.app import COMPACT_PROMPT
+    from litetui import paths, prompt_overrides
+    compact_text = (prompt_overrides.text_for(app, "compact.md", fresh=True) if app is not None
+                    else prompt_overrides.read_text(paths.prompt_file("compact.md")))
 
     if owner_dir is not None:
         # Owner mode: STEP 1 is the owner folder's NOW.md rewrite and DOMAIN.md append.
         return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
                 f"Write/Edit tools on NOW.md and DOMAIN.md in your owner memory folder, then reply with "
                 f"STEP 2's summary; that reply becomes the notes the next session starts from.\n\n"
-                f"{owner_mode.compact_prompt(owner_dir).strip()}"
+                f"{owner_mode.compact_prompt(owner_dir, app=app, fresh=True).strip()}"
                 + (f"\n\n{extra}" if extra else ""))
     return (f"{COMPACT_MARKER} LiteTUI is compacting this conversation now. Do STEP 1 with your "
             f"Write/Edit tools on the store files your system prompt names, then reply with STEP 2's "
-            f"summary; that reply becomes the notes the next session starts from.\n\n{COMPACT_PROMPT.strip()}"
+            f"summary; that reply becomes the notes the next session starts from.\n\n{compact_text.strip()}"
             + (f"\n\n{extra}" if extra else ""))
 
 
-async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None, reviewed=None):
+async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | None = None, reviewed=None,
+                  owner_before: owner_mode.NowSnapshot | None = None):
     """Summarise with Claude, then continue in a fresh session seeded with it."""
     # Consume once even on refusal/failure. Maintenance must not arm a later
     # unrelated /compact to resurrect this task.
@@ -88,11 +92,14 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
     if resume is not None and not resume_current(app, resume):
         resume = None
     owner_dir = getattr(app, "_owner_memory_dir", None)
-    owner_t0 = None
-    if owner_dir is not None:
-        # Recorded by LiteTUI._compact at entry; a direct caller gets "now".
-        owner_t0 = getattr(app, "_owner_compact_t0", None) or time.time_ns()
-    prompt = request(extra, owner_dir)
+    if owner_dir is not None and owner_before is None:
+        # A direct caller snapshots this operation, never a previous compaction's app state.
+        await owner_mode.settle_inflight_handoff(owner_dir)   # T0483-B
+        try:
+            owner_before = (Path(owner_dir) / owner_mode.NOW).read_bytes()
+        except OSError:
+            owner_before = owner_mode.NowState.ABSENT
+    prompt = request(extra, owner_dir, app=app)
     from litetui.claude_backend import settle_close
     from litetui.widgets import CompactionCard, ToolMessage
 
@@ -259,11 +266,11 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                 failure = "Claude summary ended without a terminal result; no continuation was admitted"
 
         await turn(prompt)
-        if owner_t0 is not None and not failure and summary.strip() and not app._stop_requested:
+        if owner_before is not None and not failure and summary.strip() and not app._stop_requested:
             # Owner mode: before the session is closed or anything truncated, did the
             # seat rewrite NOW.md, and did `owner-handoff` commit it? Never for an empty
             # summary (the compaction is about to be reported failed) and never after Stop.
-            passed, why = await app._owner_gate(owner_t0)
+            passed, why = await app._owner_gate(owner_before)
             if not passed and not app._stop_requested:
                 owner_failure, first_summary = why, summary
                 app._system(f"NOW.md was not saved ({why}); asking Claude once more.")
@@ -273,7 +280,7 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
                     owner_failure = f"{why} (the retry turn failed: {failure})"
                     failure, summary = None, first_summary
                 else:
-                    passed, why = await app._owner_gate(owner_t0)
+                    passed, why = await app._owner_gate(owner_before)
                     owner_failure = None if passed else why
         card.thinking_done()
         selected = ledger.selected
@@ -394,10 +401,11 @@ async def compact(app, extra: str = "", *, auto: bool = False, handoff: str | No
         # Admission, never replay: delivered tools may already have effects.
         # Bind this one-shot callback to the fresh segment and original input.
         from litetui import background_input
-        from litetui.app import WAKE_AFTER_COMPACT
+        from litetui import prompt_overrides
+        wake_text = prompt_overrides.text_for(app, "wake-after-compact.md", fresh=True)
         item = resume[3] if resume is not None else active_input
         continuation = (backend, conversation_id, next_segment["id"], item, None)
-        text = resume[4] if resume is not None and resume[4] is not None else WAKE_AFTER_COMPACT
+        text = resume[4] if resume is not None and resume[4] is not None else wake_text
         fired = False
 
         def _wake_after_compact():

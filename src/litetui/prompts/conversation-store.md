@@ -7,7 +7,7 @@ never use it as from/--from or as a reply address. Your own directory is:
 
     {store_path}
 
-It already exists and holds four things. Use your read/write/bash tools on them
+It already exists and holds four things. Use your read/write/shell tools on them
 by absolute path.
 
 - `{store_path}/memory.md` — an INDEX you maintain. One line per memory, newest at the

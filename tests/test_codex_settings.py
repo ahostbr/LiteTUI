@@ -1,6 +1,7 @@
 from types import SimpleNamespace as NS
 
 import pytest
+from _owned_seat import owned_app
 from textual.app import App
 
 from litetui.codex_settings import CONTROLS, LOCAL_SERVER, loop_description
@@ -70,9 +71,8 @@ async def test_global_reasoning_default_respects_backend_scope(monkeypatch, tmp_
 
     from litetui import convo_settings
     from litetui import settings as settings_mod
-    from litetui.app import LiteTUI
 
-    app = LiteTUI()
+    app = owned_app(initial_backend=backend, initial_model="fixture")
     app._connect = lambda: None
     app._fetch_ctx_window = lambda: None
     notes = []
@@ -82,8 +82,6 @@ async def test_global_reasoning_default_respects_backend_scope(monkeypatch, tmp_
     async with app.run_test() as pilot:
         app.backend = NS(name=backend, remote=True, shutdown=lambda: None)
         app.settings = replace(app.settings, backend=backend, thinking_level="medium")
-        app.convo_dir = tmp_path / "conversation"
-        app.convo_path = app.convo_dir / "convo.jsonl"
         app._adopt_convo_settings(born=True)
         app.thinking_level = mode
         before = convo_settings.load(app.convo_path.parent)
@@ -91,11 +89,13 @@ async def test_global_reasoning_default_respects_backend_scope(monkeypatch, tmp_
         default = "high" if mode == "low" else "low"
         app._on_settings_saved(replace(app.settings, thinking_level=default))
         await pilot.pause()
-        expected = mode if backend == "codex" else default
-        assert app.thinking_level == expected
-        assert convo_settings.load(app.convo_path.parent).thinking_level == expected
-        if backend == "codex":
-            assert convo_settings.load(app.convo_path.parent) == before
-        assert settings_mod.load(root=tmp_path).thinking_level == default
-        assert convo_settings.born_from(settings_mod.load(root=tmp_path)).thinking_level == default
-        assert any("new conversations" in note for note in notes) == (backend == "codex")
+        # A dialog edit applies live on every backend, codex included: the live level,
+        # the conversation file and the owning agent's authority are one value.
+        assert app.thinking_level == default
+        assert convo_settings.load(app.convo_path.parent).thinking_level == default
+        assert app._agent_session.authority.thinking_level == default
+        # thinking_level is conversation-scoped (settings_scope.py, 55f20030): the
+        # dialog edit lands on this conversation and its agent, never on the device default.
+        assert settings_mod.load(root=tmp_path).thinking_level == "medium"
+        assert convo_settings.born_from(settings_mod.load(root=tmp_path)).thinking_level == "medium"
+        assert not any("retains its chosen mode" in note for note in notes)

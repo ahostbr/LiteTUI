@@ -324,9 +324,9 @@ def test_E2_the_spawner_comes_only_from_the_marker_and_both_vars_are_popped(monk
     assert "LITEHARNESS_SPAWNED_BY" not in os.environ and "LITETUI_APPROVAL_HOST" not in os.environ
 
 
-def test_E2_M1_no_marker_means_no_spawner_whatever_the_env_says(monkeypatch):
+def test_E2_M1_no_marker_without_ancestry_proof_means_no_spawner(monkeypatch):
     """The measured stale case: an ambient SPAWNED_BY (a dead leader id) and the
-    shell's CLAUDE_CODE_SESSION_ID name nobody without the marker."""
+    shell's CLAUDE_CODE_SESSION_ID name nobody without current ancestry proof."""
     _clear(monkeypatch)
     monkeypatch.setenv("LITEHARNESS_SPAWNED_BY", "27bec769-a21d-4219-a659-a3dd692260a9")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "e24ec61f-ee78-472e-931b-3ce4819c638e")

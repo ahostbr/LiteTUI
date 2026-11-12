@@ -1,0 +1,95 @@
+{
+  "kind": "isolated candidate CLI/app composer capture; NOT running-seat proof",
+  "git_head": "337df18aa0754b4692aa95e6294c00d71f57453c",
+  "module": "C:\\Projects\\.scratch\\T0338\\AgentPromptsGammaSol\\LiteTUI\\src\\litetui\\app.py",
+  "captures": [
+    {
+      "role": "OWNER",
+      "wire_role": "leader",
+      "system_messages": 1,
+      "characters": 61867,
+      "sha256": "2340e6e1fa493f6f6513e1367e673416d0e4aaeeac7daa1c8720021ea100b588",
+      "headers": [
+        "# OWNER ROLE — Owner Mode",
+        "# POLYMATHIC GAMMA"
+      ],
+      "prompt_files": [
+        "card-summary.md",
+        "claude-tools.md",
+        "compact-owner.md",
+        "compact.md",
+        "conversation-store.md",
+        "harness-capabilities.md",
+        "method.md",
+        "ordinary-instructions.md",
+        "owner-store.md",
+        "plan-mode.md",
+        "role.md",
+        "seat-instructions.md",
+        "systemprompt.md",
+        "tool-denied.md",
+        "tools.md",
+        "wake-after-compact.md"
+      ]
+    },
+    {
+      "role": "BUILDER",
+      "wire_role": "worker",
+      "system_messages": 1,
+      "characters": 49751,
+      "sha256": "3e03ca832cbfe3823fe69872ea2bf157815c70e0253382db37fb782b73a227e8",
+      "headers": [
+        "# BUILDER ROLE — Builder Mode",
+        "# POLYMATHIC GAMMA"
+      ],
+      "prompt_files": [
+        "card-summary.md",
+        "claude-tools.md",
+        "compact-owner.md",
+        "compact.md",
+        "conversation-store.md",
+        "harness-capabilities.md",
+        "method.md",
+        "ordinary-instructions.md",
+        "owner-store.md",
+        "plan-mode.md",
+        "role.md",
+        "seat-instructions.md",
+        "systemprompt.md",
+        "tool-denied.md",
+        "tools.md",
+        "wake-after-compact.md"
+      ]
+    },
+    {
+      "role": "CRITIC",
+      "wire_role": "reviewer",
+      "system_messages": 1,
+      "characters": 45304,
+      "sha256": "5a859353cd14d1f81c17de17fa11fa5bb241c6eafd9400cc1997455ecf308331",
+      "headers": [
+        "# CRITIC ROLE — Critic Mode",
+        "# POLYMATHIC GAMMA"
+      ],
+      "prompt_files": [
+        "card-summary.md",
+        "claude-tools.md",
+        "compact-owner.md",
+        "compact.md",
+        "conversation-store.md",
+        "harness-capabilities.md",
+        "method.md",
+        "ordinary-instructions.md",
+        "owner-store.md",
+        "plan-mode.md",
+        "role.md",
+        "seat-instructions.md",
+        "systemprompt.md",
+        "tool-denied.md",
+        "tools.md",
+        "wake-after-compact.md"
+      ]
+    }
+  ],
+  "privacy": "Temporary synthetic HOME, data root, cwd, lore and agent homes; full SYSTEM bodies not retained"
+}

@@ -59,6 +59,8 @@ from textual.widgets import (
 # by patching THIS module -- i.e. by touching the screen, which is the
 # exact thing the derivation exists to stop being necessary.
 from litetui import free_tier, gpu_gate, llm_backend, stt_backend, tool_policy, voice_backend
+from litetui import ninfer_engine
+from litetui import strata_options
 from litetui import settings as settings_mod
 from litetui.colorpicker import ColorPickerBody, ColorPickerScreen
 from litetui.hooks_screen import HooksEditor
@@ -98,7 +100,7 @@ NOT_A_SETTINGS_CONTROL = frozenset({
     "mcp_disabled_servers", "custom_themes", "plugins_disabled",
     # Per-model dicts, edited through /modelcfg — a flat text box
     # for a nested dict would be a control that corrupts on save.
-    "llama_load_settings", "model_infer_overrides", "llama_presets",
+    "llama_load_settings", "model_infer_overrides", "llama_presets", "model_context_overrides",
     # Set by first-boot prompts, not by visible controls.
     "backend_chosen", "user_name_asked",
 })
@@ -112,7 +114,7 @@ def thinking_choices(backend, model_id, current):
     Backends that report their own levels list those; "cline" is here for
     PassLink's Cline backend, so the Cline card does not edit this line again.
     """
-    if getattr(backend, "name", "") in ("codex", "claude", "cline", "free"):
+    if getattr(backend, "name", "") in ("codex", "claude", "anthropic", "cline", "free"):
         from litetui.thinking_capabilities import _as_choices
 
         # Wire spellings -> saved ones ("none" -> "off", the one translation):
@@ -124,6 +126,10 @@ def thinking_choices(backend, model_id, current):
         if current not in [value for _, value in choices]:
             choices.append((f"{current} (saved; not supported by this model)", current))
         return choices
+    # A saved level this list does not carry (a NInfer/llama seat running at "max", as DS-pelican-4 did on 2026-11-08) must still
+    # be an option: Textual's Select raises InvalidSelectValueError for a value outside its options, and /settings died on mount.
+    if current and current not in [value for _, value in THINKING_CHOICES]:
+        return [*THINKING_CHOICES, (f"{current} (saved; not in this list)", current)]
     return THINKING_CHOICES
 
 def _theme_choices(custom: dict | None = None):
@@ -416,6 +422,21 @@ def loop_model_choices(
 
 
 
+def _blocking_pending_runtime(result) -> bool:
+    """A pending runtime outcome that should keep the dialog open.
+
+    A saved change that simply takes effect later ("Saved; restart required": an engine's context
+    length, a host) is finished business: the app says so in the chat when the dialog closes. Keeping
+    the dialog open for it left no way to leave cleanly (Ryan 2026-10-24). An environment override of
+    a saved value, or any other pending outcome, still blocks.
+    """
+    return any(
+        item.status == "pending"
+        and not (item.action in ("restart", "reconnect", "reload") and (item.reason or "").startswith("Saved;"))
+        for item in result.runtime
+    )
+
+
 class SettingsBody(Widget):
     """Every knob, grouped and scrollable — host-agnostic.
 
@@ -633,7 +654,8 @@ class SettingsBody(Widget):
         yield from self._text_row(
             name, f"{source.label} key",
             f"Free tier ({source.limits}). Masked; blank falls back to ${source.key_env}. "
-            "Saved to this machine's settings.json. Use a free-tier account: one with "
+            "Saved to this machine's settings.json, encrypted (AES-256) to your Windows "
+            "account via DPAPI. Use a free-tier account: one with "
             "billing on can be charged.",
             placeholder=f"unset — uses ${source.key_env} if set", password=True,
         )
@@ -671,6 +693,38 @@ class SettingsBody(Widget):
             )
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
+
+    def _strata_option_rows(self):
+        """Strata's run options (strata_options.py), one collapsible section each."""
+        for section in strata_options.SECTIONS:
+            yield self._section_header(section.section_id)
+            for opt in strata_options.options_for(section.section_id):
+                yield from self._strata_option_row(opt)
+            if section.section_id == "strata-extra":
+                yield from self._text_row(
+                    strata_options.EXTRA_FIELD, strata_options.EXTRA_LABEL, strata_options.EXTRA_HELP,
+                    placeholder="--flag value --other-flag",
+                )
+
+    def _strata_option_row(self, opt):
+        label = f"{opt.label} ({opt.target[1]})"
+        if opt.kind in ("choice", "switch"):
+            locked = settings_mod.source_of(opt.field)
+            with Vertical(classes="set-row"):
+                yield Label(label, classes="set-label")
+                yield Select(
+                    literal_options(strata_options.choice_labels(opt)),
+                    value=getattr(self._start, opt.field) or "",
+                    id=f"f-{opt.field}",
+                    allow_blank=False,
+                    disabled=locked is not None,
+                )
+                yield Static(opt.full_help(), classes="set-help")
+        else:
+            yield from self._text_row(
+                opt.field, label, opt.full_help(),
+                placeholder=opt.placeholder or "blank: as the model's config",
+            )
 
     def _model_pick_row(self, name: str, label: str, sentinel: str, help_text: str):
         """One picker, two fields (T640) — the subagent's and the fold's."""
@@ -791,6 +845,21 @@ class SettingsBody(Widget):
                             "remains with the official Claude CLI.",
                             placeholder="unset — bundled Claude CLI",
                         )
+                        yield self._section_header("model-anthropic")
+                        yield from self._text_row(
+                            "anthropic_api_key", "Anthropic API key (paid)",
+                            "Native Messages API; separate from Claude OAuth. Saved in this machine's "
+                            "settings.json, encrypted (AES-256) to your Windows account via DPAPI. "
+                            "Blank uses $ANTHROPIC_API_KEY. "
+                            "API usage is billed to your Anthropic account.",
+                            placeholder="unset — uses $ANTHROPIC_API_KEY", password=True,
+                        )
+                        yield from self._text_row(
+                            "anthropic_workspace_id", "Anthropic workspace ID",
+                            "Required for keys not scoped to one workspace; otherwise optional. "
+                            "Blank uses $ANTHROPIC_WORKSPACE_ID. /reconnect refreshes the model list.",
+                            placeholder="wrkspc_… (optional)",
+                        )
                         yield self._section_header("model-router")
                         yield from self._text_row(
                             "custom_base_url", "Custom server URL",
@@ -892,6 +961,25 @@ class SettingsBody(Widget):
                                 placeholder="C:/Users/you/.litesuite/llm/ninfer-models/qwen3_8_27b_nvfp4.ninfer",
                             )
                             yield self._section_header("ninfer-envelope")
+                            yield from self._select_row(
+                                "ninfer_speed_preset", "NInfer: speed preset (DeepSeek recipes)",
+                                [(p.label, p.key) for p in ninfer_engine.SPEED_PRESETS.values()],
+                                "Sets the expert tier (--expert-host-mib) and --prefill-chunk of the model's launch recipe. Measured on the RTX 5090, "
+                                "first token on a cold prompt: old build 83K = 405 s. Fastest: 32K = 17-21 s, 83K = 60-71 s, RAM ~80%, decode 45-49 tok/s. "
+                                "Fast: 32K = 20-21 s, 83K = 51 s, RAM ~63%. Standard: 32K = 24 s, 83K = 54 s, RAM ~63%. Runs vary by about 25%. "
+                                "Fastest needs 70 GiB of free RAM at launch and drops to Fast when it is not free. Applies on the next /engine start.",
+                            )
+                            yield from self._switch_row(
+                                "ninfer_auto_long_anchors", "NInfer: anchor message boundaries (--auto-long-anchors), experimental",
+                                "Off by default. The engine keeps checkpoints at message boundaries of every request, so a compacted or edited "
+                                "conversation resumes from the nearest one instead of re-reading from the start. Each anchor costs one saved model state "
+                                "(VRAM or RAM). Measured first turn after a compaction without it: 20K tokens, 0% cache, 14 s. Applies on the next /engine start.",
+                            )
+                            yield from self._switch_row(
+                                "ninfer_derive_session_keys", "NInfer: derive session keys (--derive-session-keys), experimental",
+                                "Off by default. Gives each conversation a session key (Chat Completions carries none) so the engine keeps its "
+                                "checkpoints as a live session. A compaction rewrites the first message and starts a new key. Applies on the next /engine start.",
+                            )
                             yield from self._text_row(
                                 "ninfer_max_context", "NInfer: context length (--max-context)",
                                 "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",
@@ -949,6 +1037,37 @@ class SettingsBody(Widget):
                             "context takes VRAM from the expert cache, not system RAM. Applies on "
                             "the next /engine start.",
                             placeholder="blank, or tokens such as 131072",
+                        )
+                        yield from self._strata_option_rows()
+                with TabPane("Xolotl", id="tab-xolotl"):
+                    with VerticalScroll(classes="set-scroll"):
+                        yield self._section_header("xolotl-engine")
+                        yield from self._text_row(
+                            "xolotl_host", "Xolotl host",
+                            "Blank uses the chosen model's own port on this PC (8150). Set it "
+                            "only for a Xolotl server you started yourself somewhere else.",
+                            placeholder="http://127.0.0.1:8150",
+                        )
+                        yield from self._text_row(
+                            "xolotl_root", "Xolotl: checkout folder",
+                            "Blank uses the one LiteSuite's Model Hub names. The Xolotl checkout "
+                            "with the built engine, its serve venv (.venv-serve) and one "
+                            "strata-<model>.json per model. Engine and docs: "
+                            "https://github.com/Indras-Mirror/Xolotl",
+                            placeholder="C:/Users/you/.litesuite/llm/xolotl",
+                        )
+                        yield from self._text_row(
+                            "xolotl_config", "Xolotl: model (strata-<model>.json)",
+                            "Blank uses the one model the checkout holds; /model picks between "
+                            "several. /engine start serves this.",
+                            placeholder="C:/Users/you/.litesuite/llm/xolotl/strata-ds41-1017-v3.json",
+                        )
+                        yield from self._text_row(
+                            "xolotl_max_context", "Xolotl: context length (--ctx)",
+                            "Blank keeps the config's --ctx. A longer context takes VRAM from the "
+                            "expert cache; the RAM it pins is the config's --arena-gib. Applies on "
+                            "the next /engine start.",
+                            placeholder="blank, or tokens such as 262144",
                         )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
@@ -1761,6 +1880,7 @@ class SettingsBody(Widget):
             raise ValueError("lms_load_timeout_s: under 30s no large model can load")
         if hasattr(out, "tts_timeout"):
             _validate_tts_timeout(out.tts_timeout)
+        strata_options.validate(out)
 
         # The theme creator: a non-empty name mints (or overwrites) a custom
         # theme from the ct-* fields and SELECTS it, so Ctrl+S gives instant
@@ -1892,7 +2012,11 @@ class SettingsBody(Widget):
         if failed:
             messages.append(present(f"Save failed — {failed}", self.app.settings.error_message_style, surface="settings"))
         if result.has_pending_runtime:
-            messages.append("Runtime changes are pending")
+            later = {"restart": "the next engine start", "reconnect": "the next reconnect", "reload": "the next reload"}
+            pending = [item for item in result.runtime if item.status == "pending"]
+            where = sorted({later.get(item.action, "a restart") for item in pending})
+            messages.append(f"Runtime changes are pending: {', '.join(item.field for item in pending)} "
+                            f"apply on {' / '.join(where)}")
         if result.has_runtime_failures:
             runtime_errors = "; ".join(
                 item.reason or f"{item.field}: runtime apply failed"
@@ -1923,13 +2047,24 @@ class SettingsBody(Widget):
             and not result.runtime
         ) or (
             result.fully_saved
-            and not result.has_pending_runtime
+            and not _blocking_pending_runtime(result)
             and not result.has_runtime_failures
             and not self._settings_adapter.pending_changes
         ):
             close_dialog(self, new)
             return
         self._show_save_result(result)
+        self._mark_saved_if_persisted(result)
+
+    def _mark_saved_if_persisted(self, result) -> None:
+        """A save that stays open only to report what applies later has still saved what is on screen.
+
+        Without this the as-opened snapshot stayed stale, so Esc/Cancel called a saved change "unsaved",
+        and the Save in that prompt returned the same pending result: the dialog could not be left cleanly.
+        """
+        if (result.fully_saved and not result.has_runtime_failures
+                and not self._settings_adapter.pending_changes):
+            self._capture_initial_state()
 
     def action_save(self) -> None:
         try:
@@ -1955,10 +2090,11 @@ class SettingsBody(Widget):
             self._show_error(f"Cannot retry — {type(exc).__name__}: {exc}")
             return
         self._last_save_result = result
-        if result.fully_saved and not result.has_pending_runtime and not result.has_runtime_failures:
+        if result.fully_saved and not _blocking_pending_runtime(result) and not result.has_runtime_failures:
             close_dialog(self, self._draft.snapshot())
             return
         self._show_save_result(result)
+        self._mark_saved_if_persisted(result)
 
     def action_cancel(self) -> None:
         self.request_cancel()

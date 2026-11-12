@@ -35,6 +35,7 @@ pytestmark = pytest.mark.real_mcp_load
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from _settle import settle_until
+from _owned_seat import owned_app
 from litetui import app as m
 from litetui import paths
 
@@ -107,7 +108,7 @@ def _declare_one_unreachable_server(tmp_path):
 
 
 def make_app():
-    a = m.LiteTUI()
+    a = owned_app()
     a.available_models = ["a-model"]
     a.model_id = "a-model"
     a._connect = lambda: None
@@ -118,7 +119,7 @@ def make_app():
 def test_construction_does_not_wait_for_an_unreachable_server():
     """See BOUND_MS for how the number was derived, and how I got it wrong."""
     t0 = time.perf_counter()
-    m.LiteTUI()
+    owned_app()
     elapsed_ms = (time.perf_counter() - t0) * 1000
     assert elapsed_ms < BOUND_MS, (
         f"LiteTUI.__init__ took {elapsed_ms:.0f} ms. It is dialling out again — "

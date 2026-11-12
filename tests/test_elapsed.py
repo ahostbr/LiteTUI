@@ -139,3 +139,11 @@ def test_render_progress_shows_measured_prefill_percent():
 def test_render_progress_falls_back_to_estimate_without_prefill():
     line = render_progress(0, 1.0, prompt_tokens=4096, learned_rate=4096.0)
     assert "est ~" in line, line
+
+
+def test_render_progress_with_a_cached_prefix_counts_new_tokens_and_names_the_cached_part():
+    line = render_progress(0, 1.0, prefill=(0.0, 0, 20000, 105000))
+    assert "prefill 0%" in line and "0/20k new" in line and "105k cached" in line, line
+    assert "105k/125k" not in line, line  # the old counter that mixed cached and new
+    nocache = render_progress(0, 1.0, prefill=(0.4, 8000, 20000, 0))
+    assert "prefill 40% · 8k/20k" in nocache and "cached" not in nocache, nocache

@@ -1,26 +1,35 @@
 """T0347 child sessions own their provider configuration, auth and cleanup."""
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from litetui import subagent_dispatch as dispatch
+from litetui.agent_launch_context import ordinary
 from litetui.settings import Settings
 from litetui.settings_service import SettingChange, SettingsService
 
 
-def app(tmp_path, parent='claude', child='codex'):
-    service = SettingsService(tmp_path)
-    snap = service.create_conversation('one')
-    service.save_patch('one', [SettingChange('subagent_route', {'backend': child, 'model': 'child'}, 'device')], snap.revisions)
-    return SimpleNamespace(backend=SimpleNamespace(name=parent), model_id='parent',
-                           settings=Settings(backend=parent, custom_base_url='https://parent.invalid',
-                                             custom_api_key_env='PARENT_SECRET'),
-                           convo_dir=tmp_path / '.convos' / 'one', _settings_service=service)
+@pytest.fixture
+def app():
+    with ExitStack() as sessions:
+        def create(tmp_path, parent='claude', child='codex'):
+            session = sessions.enter_context(ordinary(tmp_path, Settings(backend=parent, default_model='parent')))
+            service = SettingsService(tmp_path, agent_session=session)
+            cid = session.initial_conversation_id
+            snap = service.create_conversation(cid)
+            service.save_patch(cid, [SettingChange('subagent_route', {'backend': child, 'model': 'child'}, 'device')], snap.revisions)
+            return SimpleNamespace(backend=SimpleNamespace(name=parent), model_id='parent', convo_id=cid,
+                                   settings=Settings(backend=parent, custom_base_url='https://parent.invalid',
+                                                     custom_api_key_env='PARENT_SECRET'),
+                                   convo_dir=session.conversation_directory(cid), _settings_service=service,
+                                   _agent_session=session)
+        yield create
 
 
 @pytest.mark.parametrize('parent,child', [('claude','codex'), ('codex','claude'), ('claude','free'), ('codex','cline')])
-def test_cross_backend_child_uses_fresh_settings_and_backend(tmp_path, monkeypatch, parent, child):
+def test_cross_backend_child_uses_fresh_settings_and_backend(tmp_path, app, monkeypatch, parent, child):
     host = app(tmp_path, parent, child)
     created = []
     async def ready(model):
@@ -44,7 +53,36 @@ def test_cross_backend_child_uses_fresh_settings_and_backend(tmp_path, monkeypat
     assert host.backend.name == parent
 
 
-def test_unavailable_auth_names_backend_and_fix(tmp_path, monkeypatch):
+@pytest.mark.parametrize('legacy', [None, 'stale-local-child'])
+def test_runner_without_model_uses_live_global_despite_stale_legacy(tmp_path, app, monkeypatch, legacy):
+    from litetui.plugins.subagent_plugin import _make_runner
+
+    host = app(tmp_path, parent='codex')
+    service = host._settings_service
+    service.save_patch(host.convo_id, [SettingChange('subagent_model', legacy, 'conversation')],
+                       service.snapshot(host.convo_id).revisions)
+    captured = []
+
+    async def ready(model):
+        captured.append(model)
+
+    async def execute(backend, payload):
+        captured.append(payload['model'])
+        return {'choices': [{'message': {'content': 'answer'}}]}
+
+    monkeypatch.setattr(dispatch, 'make_backend', lambda settings: SimpleNamespace(name='codex', ensure_chat_ready=ready))
+    monkeypatch.setattr(dispatch, '_execute', execute)
+    runner = _make_runner(host)
+    for model in ('child', 'updated-child'):
+        service.save_patch(host.convo_id, [SettingChange('subagent_route', {'backend': 'codex', 'model': model}, 'device')],
+                           service.snapshot(host.convo_id).revisions)
+        result = runner({'prompt': 'hello'})
+        assert f'model {model}]' in result
+        assert captured[-2:] == [model, model]
+    assert host.model_id == 'parent'
+
+
+def test_unavailable_auth_names_backend_and_fix(tmp_path, app, monkeypatch):
     host = app(tmp_path, child='cline')
     async def ready(model):
         raise dispatch.BackendError('run `cline auth`')
@@ -54,7 +92,7 @@ def test_unavailable_auth_names_backend_and_fix(tmp_path, monkeypatch):
         dispatch.complete_child(host, {'messages': []})
 
 
-def test_child_cleanup_runs_on_success_and_failure(tmp_path, monkeypatch):
+def test_child_cleanup_runs_on_success_and_failure(tmp_path, app, monkeypatch):
     host = app(tmp_path)
     calls = []
     async def ready(model):
@@ -71,7 +109,7 @@ def test_child_cleanup_runs_on_success_and_failure(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sync_dispatch_refuses_ui_loop_before_creating_resources(tmp_path, monkeypatch):
+async def test_sync_dispatch_refuses_ui_loop_before_creating_resources(tmp_path, app, monkeypatch):
     host = app(tmp_path)
     factory = Mock()
     monkeypatch.setattr(dispatch, 'make_backend', factory)
@@ -80,7 +118,7 @@ async def test_sync_dispatch_refuses_ui_loop_before_creating_resources(tmp_path,
     factory.assert_not_called()
 
 
-def test_unknown_provider_error_does_not_echo_body_or_credentials(tmp_path, monkeypatch):
+def test_unknown_provider_error_does_not_echo_body_or_credentials(tmp_path, app, monkeypatch):
     host = app(tmp_path)
     async def ready(model):
         raise RuntimeError('secret-credential \x1b[31m' + 'response body ' * 1000)

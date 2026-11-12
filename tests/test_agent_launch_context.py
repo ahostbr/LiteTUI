@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from litetui import agent_launch_context, agent_ownership, agent_store
+from litetui import agent_launch_context, agent_ownership, agent_store, llm_backend
 from litetui.app import LiteTUI, ConversationRepository
 from litetui.settings import Settings
 
@@ -48,7 +48,7 @@ def test_bootstrap_matching_flags_settings_win_without_persistence(owned):
     before = (owned.memory_root / 'settings.json').read_bytes()
     agent_launch_context.apply_settings(owned, settings)
     assert (settings.backend, settings.default_model, settings.thinking_level) == ('codex', 'fixture', 'high')
-    assert settings.seat_name == 'QuietHelm'
+    assert settings.seat_name == 'LiteTUI', 'the agent name is never copied onto the shared seat_name setting (T0836)'
     assert (owned.memory_root / 'settings.json').read_bytes() == before
 
 
@@ -514,6 +514,13 @@ async def test_actual_native_entry_refuses_authority_before_provider(owned, monk
         app.backend.name = 'wrong-backend'
     elif backend_name == 'claude':
         app.settings.model_infer_overrides = {'fixture': {'reasoning_effort': 'low'}}
+    if change == 'effort' and route.startswith('compact'):
+        # T0480-C2: compaction carries compact_thinking_level, so the chat-effort
+        # agreement is not asked of it; the same guard still refuses a chat turn.
+        LiteTUI._validate_owned_execution(app, chat_effort=False)
+        with pytest.raises(llm_backend.BackendError, match='effort'):
+            LiteTUI._validate_owned_execution(app)
+        return
     app.convo_id = 'fixture-session'
     app._stream_worker = lambda origin: LiteTUI._stream_worker(app, origin)
     operation = LiteTUI._stream_inline(app) if route.startswith('stream') else LiteTUI._compact.__wrapped__(app)

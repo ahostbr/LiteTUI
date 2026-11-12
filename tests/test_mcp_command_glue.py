@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
+from _owned_seat import owned_app
 import pytest
 from textual.worker import WorkerState
 
@@ -97,7 +98,7 @@ async def test_fresh_bare_app_command_connects_without_materialising(monkeypatch
     server.start = lambda: None
     server.stop = lambda: setattr(server, "stopped", server.stopped + 1)
     monkeypatch.setattr(MCPManager, "_build", lambda *a: server)
-    app = LiteTUI()
+    app = owned_app()
     app.mcp = MCPManager(root)
     app.mcp.reload_configs()
     msgs = []
@@ -107,7 +108,9 @@ async def test_fresh_bare_app_command_connects_without_materialising(monkeypatch
     monkeypatch.setattr(app, "run_worker", _app().run_worker)
     directory = app.store.convo_dir
     assert app.store.pending is True
-    assert not directory.exists()
+    # Owned-agent birth reserves the first conversation dir EMPTY (05182823);
+    # materialising is what puts files in it.
+    assert directory.is_dir() and not any(directory.iterdir())
     assert list(app.workers) == []
     assert app.plugins.commands["/mcp"].handler is mm._cmd_mcp
 
@@ -132,6 +135,7 @@ async def test_fresh_bare_app_command_connects_without_materialising(monkeypatch
         assert app.mcp._try_claim()  # genuine MCPBusy, not an injected exception
 
     app._handle_command("/mcp connect fresh")
+    app.store = staged_store  # teardown releases the real store's lease, not the malformed stand-in
     if blocker not in ("idle", "manager-claim"):
         assert msgs and any(word in msgs[-1].lower() for word in ("busy", "maintenance", "restart"))
         assert "fresh" not in app.mcp.servers
@@ -154,7 +158,7 @@ async def test_fresh_bare_app_command_connects_without_materialising(monkeypatch
             app.mcp.disconnect("fresh")
     assert {row["name"] for row in app.mcp.describe()} == {"fresh"}
     assert staged_store.pending is True
-    assert not directory.exists()
+    assert directory.is_dir() and not any(directory.iterdir())
 
 
 # ── /mcp reconcile command + gate ─────────────────────────────────────────────

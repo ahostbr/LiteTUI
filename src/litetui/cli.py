@@ -28,6 +28,11 @@ def main() -> None:
         print(f"litetui {__version__}")
         return
 
+    if sys.argv[1:2] == ["prompt"]:
+        from litetui.prompt_commands import main as prompts_main
+        prompts_main(sys.argv[2:])
+        return
+
     if sys.argv[1:2] == ["--capabilities"]:
         from litetui.model_capabilities import main as capabilities_main
         capabilities_main(sys.argv[2:])
@@ -59,6 +64,8 @@ def main() -> None:
         default=None,
         help="read the system message from a UTF-8 file",
     )
+    parser.add_argument("--role-prompt-file", help="default actual-role preamble; caller system text replaces its body")
+    parser.add_argument("--prompts-dir", help="exclusive full prompt-folder launch seed, copied into leased agent home")
     parser.add_argument("--cognitive-file", type=str, default=None,
                         help="canonical cognitive architecture file selected by the LiteSuite bridge")
     parser.add_argument("--cwd", type=str, default=None, help="change working directory before start")
@@ -176,6 +183,7 @@ def main() -> None:
     app = None
     owner_lock = None
     owner_notice = None
+    relaunch = None
     try:
         if owner_memory is not None:
             # One seat per memory folder. Taken BEFORE any agent home is opened, so a
@@ -248,6 +256,7 @@ def main() -> None:
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
         if owner_lock is not None:
+            assert agent_session is not None
             owner_lock.set_agent(agent_session.authority.agent_id)
 
         from litetui.app import LiteTUI, wants_ansi_fallback
@@ -256,26 +265,22 @@ def main() -> None:
         if not args.rpc:
             app_kwargs["ansi_color"] = wants_ansi_fallback()
 
-        if args.system_prompt and args.system_prompt_file:
+        if args.system_prompt is not None and args.system_prompt_file is not None:
             parser.error("--system-prompt and --system-prompt-file are mutually exclusive")
         system_prompt = args.system_prompt
-        if args.system_prompt_file:
+        if args.system_prompt_file is not None:
             try:
                 system_prompt = Path(args.system_prompt_file).read_text(encoding="utf-8")
             except OSError as exc:
                 parser.error(f"cannot read --system-prompt-file: {exc}")
-        if args.cognitive_file:
-            try:
-                architecture = Path(args.cognitive_file).read_text(encoding="utf-8")
-            except OSError as exc:
-                parser.error(f"cannot read --cognitive-file: {exc}")
-            system_prompt = (system_prompt + "\n\n" if system_prompt else "") + architecture
-
         app = LiteTUI(
             rpc=args.rpc,
             hold_restored_input=args.hold_restored_input,
             first_prompt=args.prompt,
             system_prompt=system_prompt,
+            role_prompt_file=args.role_prompt_file,
+            cognitive_file=args.cognitive_file,
+            prompts_dir=args.prompts_dir,
             initial_model=args.model,
             initial_backend=args.backend,
             initial_thinking=args.reasoning_effort or args.thinking_level,
@@ -310,6 +315,7 @@ def main() -> None:
             app.run(headless=True)
         else:
             app.run()
+            relaunch = getattr(app, '_relaunch_argv', None)
     finally:
         try:
             if agent_session is not None:
@@ -322,6 +328,21 @@ def main() -> None:
         finally:
             if owner_lock is not None:
                 owner_lock.release()
+
+    if relaunch:
+        # /agent-new NAME: this window continues as the new agent. The leases above are released, so the
+        # child can take its own; this process stays as a thin parent (an engine it started keeps
+        # running and the child attaches to it) and ends with the child's exit code.
+        import subprocess
+        try:
+            code = subprocess.call(relaunch, env=getattr(app, '_relaunch_env', None))
+        except (OSError, TypeError, ValueError) as exc:
+            # This app is already gone, so the terminal is all there is to say it on.
+            print(f"litetui: could not continue this window as the new agent: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        if code:
+            print(f"litetui: the new agent's window ended with exit code {code}", file=sys.stderr)
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ from textual.widgets import Input, Label, Select, Static, Switch, TabbedContent,
 
 from litetui import settings_runtime
 from litetui import cline_backend
+from litetui import context_choice
 from litetui import free_tier
 from litetui import llm_backend
 from litetui import model_transport
@@ -168,7 +169,7 @@ backend_hint = llm_backend.backend_hint
 
 
 def _ninfer_artifact_rows(app) -> list[tuple[str, str]]:
-    from litetui.ninfer_engine import list_ninfer_artifacts
+    from litetui.ninfer_engine import in_default_artifacts_dir, list_ninfer_artifacts, recipe_path
 
     chosen = str(getattr(app.settings, "ninfer_artifact", "") or "").strip()
     rows = []
@@ -179,7 +180,11 @@ def _ninfer_artifact_rows(app) -> list[tuple[str, str]]:
             size = f"  · {path.stat().st_size / 1_000_000_000:.1f} GB"
         except OSError:
             pass
-        rows.append((str(path), f"{path.stem}{size}{mark}"))
+        # T0839: artifacts outside the default folder show where they live, and a launch
+        # recipe is flagged so "why did it start with those flags" has an answer here.
+        where = "" if in_default_artifacts_dir(path) else f"  · {path.parent}"
+        recipe = "  · recipe" if recipe_path(path).is_file() else ""
+        rows.append((str(path), f"{path.stem}{size}{recipe}{where}{mark}"))
     return rows
 
 
@@ -205,8 +210,14 @@ def _pick_ninfer_artifact(app) -> None:
     def _picked(choice: str | None) -> None:
         if not choice:
             return
+        # The artifact is the model here; ask what context to serve it at (Ryan 2026-10-24).
+        context_choice.ask(app, "ninfer", Path(choice).stem, lambda tokens: _apply(choice, tokens))
+
+    def _apply(choice: str, tokens: int | None) -> None:
         import dataclasses
         candidate = dataclasses.replace(app.settings, ninfer_artifact=choice)
+        if tokens:
+            candidate = context_choice.settings_after(candidate, "ninfer", Path(choice).stem, tokens)
         if getattr(app, 'convo_dir', None) is None:
             # No conversation yet: do not let /settings' global fallback turn
             # this instance-only /model choice into a startup preference.
@@ -216,8 +227,9 @@ def _pick_ninfer_artifact(app) -> None:
             result = getattr(app, '_settings_save_result', None)
             if result is not None and any(not p.saved for p in result.persistence):
                 return
+        at = f" at {tokens:,} tokens of context" if tokens else ""
         app.system_message(
-            f"NInfer artifact set to {Path(choice).stem} — /engine start to serve it."
+            f"NInfer artifact set to {Path(choice).stem}{at} — /engine start to serve it."
         )
 
     pick(app, "Select a NInfer artifact (served on the next /engine start)",
@@ -225,35 +237,42 @@ def _pick_ninfer_artifact(app) -> None:
          current=str(getattr(app.settings, "ninfer_artifact", "") or ""))
 
 
-def _pick_strata_config(app) -> None:
-    """`/model` on Strata: choose the prepared model the next engine will serve.
+def _pick_server_config(app) -> None:
+    """`/model` on Strata or Xolotl: choose the prepared model the next engine will serve.
 
     The same door as `_pick_ninfer_artifact`, for the same reason: one model per process,
     chosen before the server starts. Here the choice is a `strata-<model>.json` in the
-    install — Strata's setup writes one per model it prepared.
+    install — Strata's setup (and Xolotl's, a Strata fork) writes one per prepared model.
+    Which install, and which setting it saves, is the backend's (`_engine`, `_setting_prefix`).
     """
-    from litetui import strata_engine
-
-    chosen = str(getattr(app.settings, "strata_config", "") or "").strip()
+    backend = app.backend
+    eng, field, label = backend._engine, f"{backend._setting_prefix}_config", backend.label
+    chosen = str(getattr(app.settings, field, "") or "").strip()
     rows = []
-    for path in strata_engine.list_strata_configs(app.settings):
-        ctx = strata_engine.config_context(strata_engine.read_config(path))
+    for path in eng.list_configs(app.settings):
+        ctx = eng.config_context(eng.read_config(path))
         size = f"  · {ctx:,} context" if ctx else ""
         mark = "  · current" if chosen and Path(chosen) == path else ""
         rows.append((str(path), f"{path.stem.removeprefix('strata-')}{size}{mark}"))
     if not rows:
         app.system_message(
-            f"No prepared Strata models in {strata_engine.strata_root(app.settings)} — LiteSuite's "
-            f"Model Hub installs Strata and downloads one ({strata_engine.STRATA_REPO_URL}), or set "
-            "strata_root in /settings."
+            f"No prepared {label} models in {eng.install_root(app.settings)} — {backend._install_where}, "
+            f"or set {backend._setting_prefix}_root in /settings."
         )
         return
 
     def _picked(choice: str | None) -> None:
         if not choice:
             return
+        model = Path(choice).stem.removeprefix('strata-')
+        # The config is the model here; ask what context to serve it at (Ryan 2026-10-24).
+        context_choice.ask(app, backend.name, model, lambda tokens: _apply(choice, model, tokens))
+
+    def _apply(choice: str, model: str, tokens: int | None) -> None:
         import dataclasses
-        candidate = dataclasses.replace(app.settings, strata_config=choice)
+        candidate = dataclasses.replace(app.settings, **{field: choice})
+        if tokens:
+            candidate = context_choice.settings_after(candidate, backend.name, model, tokens)
         if getattr(app, 'convo_dir', None) is None:
             app.settings = candidate        # instance-only, as for the NInfer artifact
         else:
@@ -261,29 +280,66 @@ def _pick_strata_config(app) -> None:
             result = getattr(app, '_settings_save_result', None)
             if result is not None and any(not p.saved for p in result.persistence):
                 return
+        at = f" at {tokens:,} tokens of context" if tokens else ""
         app.system_message(
-            f"Strata model set to {Path(choice).stem.removeprefix('strata-')} — /engine start to serve it."
+            f"{label} model set to {model}{at} — /engine start to serve it."
         )
 
-    pick(app, "Select a Strata model (served on the next /engine start)", rows, _picked, current=chosen)
+    pick(app, f"Select a {label} model (served on the next /engine start)", rows, _picked, current=chosen)
+
+
+def _choose_model(app, target: str) -> None:
+    """The human door of /model (typed name or number, and the picker): ask which context length to run the
+    model at, remember it for this model and make it the backend's main setting, then switch.
+
+    `switch_model` stays the door the RPC hosts use and asks nothing; it applies whatever the settings now say.
+    """
+    backend = getattr(app.backend, "name", "")
+
+    def _go(tokens: int | None) -> None:
+        previous = app.settings
+        changed = False
+        if tokens:
+            candidate = context_choice.settings_after(previous, backend, target, tokens)
+            key = context_choice.main_key(backend)
+            changed = getattr(previous, key, None) != tokens
+            try:
+                if getattr(app, "convo_dir", None) is not None:
+                    settings_runtime.persist_or_raise(app, candidate, baseline=previous)
+            except OSError as exc:
+                app.system_message(f"Context length not saved ({exc}); using it for this session only.")
+            app.settings = candidate
+            set_settings = getattr(app.backend, "set_settings", None)
+            if set_settings is not None:
+                set_settings(candidate)
+        unchanged_model = target == app.model_id
+        switch_model(app, target)
+        if tokens and changed and unchanged_model:
+            # Re-picking the model that is already active with a new size: switch_model had nothing to do,
+            # so apply the new window explicitly (an explicit act, like the /settings control).
+            app.apply_context_length(force=True)
+
+    context_choice.ask(app, backend, target, _go)
 
 
 def _cmd_model(app, name: str, arg: str) -> None:
     if not arg and getattr(app.backend, "name", "") == "ninfer":
         _pick_ninfer_artifact(app)
         return
-    if not arg and getattr(app.backend, "name", "") == "strata":
-        _pick_strata_config(app)
+    if not arg and getattr(app.backend, "name", "") in ("strata", "xolotl"):
+        _pick_server_config(app)
         return
     if arg:
         # Switch by number or name
         if arg.isdigit():
             idx = int(arg) - 1
             if 0 <= idx < len(app.available_models):
-                switch_model(app, app.available_models[idx])
+                _choose_model(app, app.available_models[idx])
             else:
                 app.system_message(f"Invalid number. Use 1-{len(app.available_models)}")
-        elif not switch_model(app, arg):
+        elif arg in app.available_models:
+            _choose_model(app, arg)
+        else:
             app.system_message(f"Model not found: {arg}")
     elif not app.available_models:
         app.system_message(f"No models discovered — {_empty_state_hint(app)}")
@@ -330,7 +386,7 @@ def _ninfer_mark(app) -> str:
     reg = str(getattr(app.settings, "ninfer_host", "") or "").strip() or discover_ninfer_host()
     if reg:
         return f"engine registered at {reg}"
-    return ("installed — /engine start" if ninfer_engine.ninfer_executable(app.settings).is_file()
+    return ("installed — /engine start" if ninfer_engine.effective_executable(app.settings).is_file()
             else "not installed — LiteSuite's Model Hub installs it")
 
 
@@ -347,6 +403,22 @@ def _strata_mark(app) -> str:
     count = len(strata_engine.list_strata_configs(app.settings))
     if not count:
         return "installed, no model downloaded"
+    return f"installed, {count} model{'' if count == 1 else 's'} — /engine start"
+
+
+def _xolotl_mark(app) -> str:
+    from litetui import xolotl_engine
+    from litetui.xolotl_backend import XolotlBackend
+
+    host = xolotl_engine.default_host(app.settings)
+    if XolotlBackend._health_state(host, timeout=0.5) is not None:
+        return f"server answering at {host}"
+    root = xolotl_engine.xolotl_root(app.settings)
+    if not xolotl_engine.server_python(root).is_file():
+        return "not installed — set xolotl_root to a built Xolotl checkout"
+    count = len(xolotl_engine.list_xolotl_configs(app.settings))
+    if not count:
+        return "installed, no model configured"
     return f"installed, {count} model{'' if count == 1 else 's'} — /engine start"
 
 
@@ -384,15 +456,16 @@ def _set_lanes(app, raw: str) -> str:
 
 
 def _cmd_engine(app, name: str, arg: str) -> None:
-    """/engine start [N]|stop|status|lanes N — the NInfer or Strata process LiteTUI may own."""
+    """/engine start [N]|stop|status|lanes N — the NInfer, Strata or Xolotl process LiteTUI may own."""
     backend = app.backend
     if getattr(backend, "name", "") not in llm_backend.ENGINE_BACKENDS:
         from litetui import gpu_gate
         # T893: NInfer is never named on a box that is not an RTX 5090.
         if gpu_gate.is_rtx_5090():
-            app.system_message("/engine drives the NInfer or Strata backend — /backend ninfer or /backend strata first.")
+            app.system_message("/engine drives the NInfer, Strata or Xolotl backend — /backend ninfer, "
+                               "/backend strata or /backend xolotl first.")
         else:
-            app.system_message("/engine drives the Strata backend — /backend strata first.")
+            app.system_message("/engine drives the Strata or Xolotl backend — /backend strata or /backend xolotl first.")
         return
     is_ninfer = getattr(backend, "name", "") == "ninfer"
     verb, *rest = (arg.strip().lower() or "status").split()
@@ -504,6 +577,7 @@ def backend_rows(app) -> list[tuple[str, str]]:
         "llamacpp": llama_mark,
         "ninfer": _ninfer_mark(app),
         "strata": _strata_mark(app),
+        "xolotl": _xolotl_mark(app),
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
         "cline": cline_backend.auth_status(),
@@ -747,9 +821,9 @@ def _cmd_load(app, name: str, arg: str) -> None:
             "/model picks the artifact, /engine start serves it."
         )
         return
-    if getattr(app.backend, "name", "") == "strata":
+    if getattr(app.backend, "name", "") in ("strata", "xolotl"):
         app.system_message(
-            "Strata serves one model per process — there is nothing to load. "
+            f"{app.backend.label} serves one model per process — there is nothing to load. "
             "/model picks the model, /engine start serves it."
         )
         return
@@ -1504,7 +1578,9 @@ def _cmd_modelcfg(app, name: str, arg: str) -> None:
                 if app.backend.name == "claude":
                     from litetui.claude_cache import EFFORT_NOTE
                     app.system_message(f"{target}: effort {level}{EFFORT_NOTE}")
-        pick(app, f"{label} reasoning effort (response limits are provider-managed)",
+        limits = ("reply budgets are in /settings" if app.backend.name == "anthropic"
+                  else "response limits are provider-managed")
+        pick(app, f"{label} reasoning effort ({limits})",
              [(level, level) for level in levels], selected, current=app.thinking_level)
         return
     target = arg.strip() or app.model_id
@@ -1524,7 +1600,7 @@ def _activate(app) -> None:
     answer). Detection is deliberately offline-cheap: an exe on disk and a
     CLI on PATH — no network probes on the boot path."""
     s = app.settings
-    if s.backend in model_transport.OAUTH_PROVIDERS:
+    if s.backend in model_transport.OAUTH_PROVIDERS or s.backend == "anthropic":
         return
     if s.backend_chosen:
         return

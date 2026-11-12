@@ -18,6 +18,124 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-08
+
+Compaction on a nearly full window now works on NInfer, and the prefill readout counts the same tokens its percent does.
+
+### Fixed
+- **Compaction no longer fails when the window is nearly full.** The 0.29.0 compaction request carries the whole conversation, so at about 95% it was refused as longer than the engine's context ("Compact failed - conversation unchanged"). When the engine itself refuses it, LiteTUI resends the older messages only, rendered exactly as the chat turns were (same first message, tools and reasoning effort) so the engine still restores its prefix: measured on DeepSeek, 128,138 of 129,122 prompt tokens reused, 984 computed, 45 s in total, against 106 s with no reuse.
+- **A turn no longer dies when one round of large tool results overflows the window.** Below the 80% threshold, four large reads in one round could push the next request past the engine's context and end the turn with "the prompt is longer than this engine's context". On the engine's refusal LiteTUI now compacts and resumes the same turn. Nothing is estimated; the refusal is the evidence.
+- **The prefill readout no longer mixes cached and new tokens.** "prefill 0% - 105k/125k" counted the 105k the engine reused while the percent was of the 20k that was new. It now reads "prefill 0% - 0/20k new - 105k cached" (and the plain "prefill 40% - 8k/20k" when nothing was cached), on turns and on the compaction card.
+- **An engine "prompt-progress state" failure no longer loses the request.** NInfer can answer HTTP 500 with "invalid OpenAI Chat prompt-progress state" when it asked for progress reports; LiteTUI resends once without the progress flag and stops asking for it in that session.
+
+## [0.29.0] - 2026-11-08
+
+NInfer gets a speed-preset dropdown and a prefix cache that survives compaction, the `monitor` tool lets a seat be woken by a command or a file, and `studio` reaches every LiteImage feature.
+
+### Added
+- **NInfer speed preset (Settings > NInfer).** Fastest (default), Fast, Standard or Recipe: it sets how many of a DeepSeek model's experts stay in pinned RAM and the prefill chunk of the model's launch recipe, with the measured first-token times in the help text. Fastest needs 70 GiB of free RAM at launch and falls back to Fast when it is not free; the choice is logged. Measured on an RTX 5090 with the new engine build: an 83K-token prompt in about 52-70 s, against 405 s before.
+- **Two experimental NInfer switches, both off by default:** `--auto-long-anchors` (the engine keeps checkpoints at message boundaries so a compacted conversation resumes from one) and `--derive-session-keys` (a session key per conversation). Each costs a saved model state.
+- **`monitor` tool.** A seat watches a command's output or a file's appended lines and is woken by each event: an idle seat at once, a busy one when it finishes its turn.
+- **`studio` reaches every LiteImage feature** (Generate, Face Swap, Character Sheet, video upscale and DLSS 5 upscale to an exact size) through LiteImage's bridge. Every LiteImage, Director, LiteSound and LiteModeler job runs with the seat out until it ends, and a local backend frees the seat or refuses by name.
+- **NInfer launch recipes** (`<artifact>.launch.json`, `ninferArtifactRoots`): a model that needs its own build and flags names them in a sidecar file; the recipe's `maxContext` beats the global setting. NInfer also offers the thinking levels the served model's template takes.
+- **Owner-approved self schedules** and a fail-closed deny floor for owner seats.
+- `/resume` into another agent's conversation switches this terminal to it.
+
+### Fixed
+- **NInfer's prefix cache is no longer thrown away.** Loading a deferred tool, changing the thinking level, a compaction request with a different system text or tools, and re-snapshotting the store into message 0 each made the server re-read the whole prompt (104-405 s at 25-83K tokens). On NInfer the built-in tools are advertised from the first request, a compaction sends the last turn's exact messages, tools and reasoning effort plus one final message, and message 0 stays byte-identical across a compaction. The first turn after a compaction now starts in 14 s, not 321 s.
+- Compaction: retries once at the number a server names for `max_tokens`, makes no prompt-size estimate, and a compacting seat persists to disk and stops instead of carrying on; an owner's STEP 1 turn refused by validation is no longer taken as answered, and a cancelled compaction's handoff commit lands first.
+- The context reminder names the real percentage; settings that start an engine are device-wide; a saved seat name is kept and an agent seat never writes its identity into shared settings; ordinary text containing snapshot markers is preserved; user file locks stay outside worktrees.
+- The cell-size fallback no longer prints a traceback after every `/quit`; the closed-app guard in a studio wait no longer divides by the poll interval; a failing GPU release never replaces a job's outcome.
+
+## [0.28.0] - 2026-10-24
+
+Agents you can create from inside a window (`/agent-new`), and a run of fixes
+for what happens to a seat's model when you switch backends, plus Strata and
+Xolotl settings that now say how and when they apply.
+
+### Added
+- **`/agent-new NAME`, and `/new NAME`.** Creates the agent home NAME (the same
+  home `litetui --create-agent NAME` makes, with this seat's backend, model and
+  thinking level) and continues this window as that agent. The window is
+  relaunched once the old seat has released its home; the launcher process stays
+  as a thin parent, so an engine LiteTUI started (Strata, NInfer) keeps running
+  and the new seat attaches to it instead of reloading the model. Refused with a
+  reason for a bad or existing name, a turn in flight, a spawned or headless
+  seat, or a seat with no model chosen. Plain `/new`, `/clear` and `/reset` are
+  unchanged.
+
+### Changed
+- **Switching backend clears the seat's model** (`model_selection: unchosen`) and
+  says so: `/model` on LM Studio, Codex and the other model-listing backends, and
+  "nothing is serving yet; `/engine start`" on NInfer, Strata and Xolotl. The old
+  backend's model id means nothing on the new one, and it used to be saved as a
+  chosen model there. A backend change also drops launch and `/model` picks made
+  on the old backend.
+- **Strata, Xolotl and NInfer pick their one served model themselves.** `/model`
+  on an engine backend chooses the artifact or config to serve, never a model id,
+  so after a reconnect the seat takes the model the engine serves.
+- **Saving a setting that applies on the next start closes the dialog.** The chat
+  note after Settings closes now names every restart-class setting (Strata and
+  Xolotl context length, roots and configs included) and how to apply it:
+  `/engine stop`, then `/engine start`.
+
+### Fixed
+- Every send on a seat whose saved model its backend does not serve failed with
+  "Selected model disagrees with owned agent authority". It now says what is
+  true: nothing is serving, and how to start it.
+- The first send after a model was published by the app itself (connect
+  replacing an unserved saved model) crashed in the launch check with "Launch
+  override disagrees with agent settings".
+- A seat with no model tried to register presence with `--model None`, stored
+  the failure and blocked every later send with "Owned agent registration
+  blocked". It is now skipped, not failed, until a model exists.
+- Escape and Cancel in Settings no longer call a change that was already saved
+  "unsaved".
+
+## [0.27.0] - 2026-10-22
+
+The Xolotl backend for DeepSeek-V4.1, the version in the footer, and a long run
+of work on how a seat's role prompt is composed, revised and kept across resume.
+
+### Added
+- **The version in the footer.** The footer's lower row shows `v<version>` at its
+  right edge, read from `version.py`. It is hidden first when the row is too
+  narrow to hold it beside the permission label, the manager toggle and the meters.
+- **Lore at seat start.** `.agents` seats get the lore file injected at start and
+  after compaction; its path resolves through `lore_file` in
+  `~/.liteharness/config.json`.
+- **Xolotl backend** (`--backend xolotl`): DeepSeek-V4.1-Flash on one GPU, a
+  pinned RAM arena and NVMe, through [Xolotl](https://github.com/Indras-Mirror/Xolotl),
+  a Strata fork that serves through Strata's own server (OpenAI `/v1`, Anthropic
+  `/v1/messages`). Listed in `/backend`, the Settings engine picker and its own
+  Xolotl settings tab; `/model` picks a `strata-<model>.json` in the checkout and
+  `/engine start` runs `serve_ds41.py` for it, refusing with the reason when the
+  expert arena (`--arena-gib`), the conversation pool and the engine's own share
+  will not fit in free RAM, commit or VRAM. The checkout is the `xolotl_root`
+  setting, else LiteSuite's `xolotlRoot`. It is the Strata backend with its own
+  launcher, settings and reasoning levels (none to max), not a copy.
+- **Owner-scoped next-turn prompt overrides**, and per-home launch and live seat
+  systems composed from the prompt catalog.
+
+### Changed
+- A seat's role revisions are audited before a named resume; a custom role body
+  survives a default-only resume, and proved storage prefixes are kept.
+- The packaged prompt catalog is pinned independently of install debris, and a
+  test enforces parity between the checkout and the tracked catalog.
+
+### Fixed
+- A path token the policy cannot resolve is refused instead of crashing the seat.
+- A Bash-launched LiteTUI gets its Claude spawner back only with a live
+  process-ancestry proof, vendored so it runs in LiteTUI's own venv.
+- Studio maps model families to the supported `lst` action.
+- Footer keyboard hints are exposed to the sidecar without being treated as secrets.
+
+## [0.26.0] - 2026-10-16
+
+Owner mode, a restart checkpoint that waits for the seat to finish, and a long
+run of fixes to how a saved conversation is resumed against its memory store.
+On Windows the shell tool is now PowerShell.
+
 ### Added
 - **Owner mode** (`litetui --owner NAME --memory DIR`): a seat whose long memory
   is a folder it does not own. `DIR` holds `SOUL.md`, `NOW.md` and `DOMAIN.md`;
@@ -32,6 +150,39 @@ fails if this file's top released heading disagrees with it.
   Codex a manual `/compact` first drives one STEP 1 turn; Codex's own automatic
   compaction cannot be intercepted. Owner mode also reminds you once each time
   the context rises through 70%. Needs `liteharness` installed; see the README.
+- **Restart checkpoint.** A restart now waits for the seat: an idle seat stays
+  idle, a seat mid-work holds until it reaches a safe boundary, and the same
+  seat is compacted after it has written its handoff. The legacy RPC path and
+  scoped compaction are covered too. See `Docs/restart-checkpoint.md`.
+
+### Changed
+- **PowerShell is the default shell tool on Windows**, with bash as the backup;
+  macOS and Linux keep bash alone.
+- **Subagent children use the subagent model you configured**, not a model id
+  hard-coded in the code. A configured route wins over a legacy child model.
+- **Conversation search reads an index snapshot** and never builds the index
+  inline, so a lookup cannot time out on a build; refresh is its own detached
+  command.
+
+### Fixed
+- **A saved conversation resumes only on the memory store it was saved with.**
+  A resume that would change the store is refused. Store identity and injection
+  receipts are recorded atomically with the prompt, and older launch shapes stay
+  readable.
+- **The memory-store snapshot survives Ctrl+T, plan mode, `/new` and
+  compaction.** It is derived from message 0 instead of a flag nothing reset.
+- **An inbox message from the desktop app is shown with its text**, not a blank
+  body: the text is read from `payload.text` when there is no top-level `body`,
+  and both approval readers share the same extraction.
+- **Command policy:** pattern text quoted for a search command is no longer read
+  as an owner-launcher launch, awk and sed programs count as launches, an
+  escaped quote ends the launcher token, and a PowerShell command that only reads
+  no longer trips the two owner-file guards.
+- **Owner mode:** a stale lock is taken over under a kernel lease, so two
+  launches cannot both win it, and the handoff capability probe ignores existing
+  folders.
+- **Ownership:** an action on a running seat's own home no longer walks every
+  agent home.
 
 ## [0.25.1] - 2026-10-10
 

@@ -396,14 +396,14 @@ async def test_a_seat_s_own_worktree_command_runs_without_a_modal_but_a_stranger
     calls = []
     host, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
                           profile=INTERACTIVE, approve=DENIED)
-    host.seat = SimpleNamespace(name="Seat")
+    host.seat = SimpleNamespace(name="Seat", current_spawner=lambda: None)
     result, ok = await app_mod.LiteTUI._execute_tool(host, "bash", {"command": command})
     assert ok and screens == [] and calls == [{"command": command}]
 
     calls.clear()
     stranger, screens = _host(SHELL_POLICY, lambda args: calls.append(args) or "ran",
                               profile=INTERACTIVE, approve=DENIED)
-    stranger.seat = SimpleNamespace(name="Someone")
+    stranger.seat = SimpleNamespace(name="Someone", current_spawner=lambda: None)
     result, ok = await app_mod.LiteTUI._execute_tool(stranger, "bash", {"command": command})
     assert not ok and len(screens) == 1 and calls == []
 
@@ -421,3 +421,77 @@ async def test_configured_identity_reaches_backend_tool_door(tmp_path, monkeypat
     result, ok = await app_mod.LiteTUI._execute_tool(host, 'bash', {'command': f'"{exe}" script.py'})
     assert (result, ok) == ('mocked', True)
     assert len(calls) == 1 and screens == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change_cwd_after_policy", [False, True])
+async def test_relative_write_authorizes_and_writes_same_cwd_target(tmp_path, monkeypatch, change_cwd_after_policy):
+    from litetui import tool_policy
+    from litetui.plugins import core_tools
+
+    source = tmp_path / "source"
+    worktree = tmp_path / "worktree"
+    later = tmp_path / "later-cwd"
+    for directory in (source, worktree, later):
+        directory.mkdir()
+    monkeypatch.setattr(app_mod.paths, "ROOT", source)
+    monkeypatch.chdir(worktree)
+    target = worktree / "tests" / "foo.py"
+    observed = []
+    evaluate = tool_policy.evaluate
+
+    def record(profile, policy, args, workspace, **kwargs):
+        decision = evaluate(profile, policy, args, workspace, **kwargs)
+        observed.append((dict(args), decision))
+        if change_cwd_after_policy:
+            monkeypatch.chdir(later)
+        return decision
+
+    monkeypatch.setattr(tool_policy, "evaluate", record)
+    host, screens = _host(WRITE_POLICY, core_tools.tool_write, profile=AUTONOMOUS)
+    result, ok = await app_mod.LiteTUI._execute_tool(
+        host, "write", {"path": "tests/foo.py", "content": "worktree content"})
+    assert ok, result
+    assert target.read_text() == "worktree content"
+    assert observed[0][0]["path"] == str(target)
+    assert observed[0][1].allowed and screens == []
+    assert not (source / "tests" / "foo.py").exists()
+    assert not (later / "tests" / "foo.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_relative_write_cannot_borrow_source_root_owner_permission(tmp_path, monkeypatch):
+    from litetui import tool_policy
+    from litetui.plugins import core_tools
+
+    source = tmp_path / "source"
+    worktree = tmp_path / "worktree"
+    owner = source / "memory"
+    actual = worktree / "memory" / "NOW.md"
+    owner.mkdir(parents=True)
+    actual.parent.mkdir(parents=True)
+    (owner / "NOW.md").write_text("approved area unchanged")
+    actual.write_text("outside area unchanged")
+    monkeypatch.setattr(app_mod.paths, "ROOT", source)
+    monkeypatch.chdir(worktree)
+    args = {"path": "memory/NOW.md", "content": "must not be written"}
+    evaluate = tool_policy.evaluate
+    # Control: the unexpanded path would wrongly borrow this owner's SELF_STORE allowance.
+    assert evaluate(STRICT, WRITE_POLICY, args, source, active_owner_memory_dir=owner).allowed
+    observed = []
+
+    def record(profile, policy, checked, workspace, **kwargs):
+        decision = evaluate(profile, policy, checked, workspace, **kwargs)
+        observed.append((dict(checked), decision))
+        return decision
+
+    monkeypatch.setattr(tool_policy, "evaluate", record)
+    host, screens = _host(WRITE_POLICY, core_tools.tool_write, profile=STRICT, approve=DENIED)
+    host._owner_memory_dir = owner
+    result, ok = await app_mod.LiteTUI._execute_tool(host, "write", args)
+    assert not ok and "denied by user" in result
+    assert observed[0][0]["path"] == str(actual)
+    assert tool_policy.EXTERNAL_WRITE in observed[0][1].capabilities
+    assert len(screens) == 1
+    assert actual.read_text() == "outside area unchanged"
+    assert (owner / "NOW.md").read_text() == "approved area unchanged"

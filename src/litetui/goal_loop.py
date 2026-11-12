@@ -230,6 +230,9 @@ class GoalRuntime:
         self._evaluating = False
 
     async def on_plain_answer(self) -> None:
+        from litetui.restart_checkpoint import is_held
+        if is_held(self.app):
+            return
         if (self._evaluating or getattr(self.app, "_gui_quitting", False)
                 or background_input.activation_pending(self.app)):
             return
@@ -349,6 +352,9 @@ def goal_turn_item(state: GoalState, instruction: str) -> dict:
 
 
 def _deliver_goal_turn(app: Any, state: GoalState, instruction: str):
+    from litetui.restart_checkpoint import is_held
+    if is_held(app):
+        return None  # durable goal stays selected; no new autonomous turn
     item = goal_turn_item(state, instruction)
     text = item["content"]
     background_input.require_recapture_complete(app)

@@ -35,6 +35,7 @@ def current_operation(app):
 
 
 OPERATIONS = (
+    "checkpoint.prepare", "checkpoint.status", "checkpoint.flush", "checkpoint.release",
     "claude.native_reset_review", "claude.native_reset_apply", "claude.native_reset_readback",
     "sidecar.native_configure",
     "sidecar.native_snapshot", "sidecar.native_review", "sidecar.native_apply", "sidecar.native_readback",
@@ -229,6 +230,8 @@ def _validate(app, patch):
             raise ValueError("ninfer_host: expected an http(s) server URL, or blank to discover")
         if name == "strata_host" and value and not value.startswith(("http://", "https://")):
             raise ValueError("strata_host: expected an http(s) server URL, or blank for the install's port")
+        if name == "xolotl_host" and value and not value.startswith(("http://", "https://")):
+            raise ValueError("xolotl_host: expected an http(s) server URL, or blank for the config's port")
     candidate = copy.deepcopy(app.settings)
     for name, value in patch.items():
         setattr(candidate, name, value)
@@ -357,6 +360,11 @@ def _conversations(app, action, cmd):
         app._submit_text(message, alt_chord=False, source="rpc")
         return {"session_id": session_id, "accepted": True}
     elif action == "compact":
+        from litetui import restart_checkpoint
+        if restart_checkpoint.is_held(app):
+            from litetui.plugin_reload_activity import idle_infra_phase
+            with idle_infra_phase(app):
+                restart_checkpoint.authorize_compaction(app, cmd.get("checkpoint_id"), cmd.get("handoff_sha256"))
         app._handle_command("/compact")
         return {"session_id": session_id, "accepted": True}
     else:
@@ -562,6 +570,26 @@ def _memory(app, action, cmd):
     return {"name": name, "text": text}
 
 
+# During a restart hold, reads and completion of already-issued callbacks remain
+# available. New mutations are refused BEFORE their first side effect, including
+# async management operations that do not pass through dispatch().
+_RESTART_SAFE = frozenset({
+    "hello", "state", "checkpoint.prepare", "checkpoint.status", "checkpoint.flush", "checkpoint.release",
+    "settings.get", "settings.validate", "conversations.list", "conversations.read", "conversations.compact",
+    "models.list", "models.capabilities", "models.config", "models.confirm", "extensions.list",
+    "hooks.get", "hooks.validate", "mcp.list", "skills.list", "skills.read", "tools.list",
+    "memory.list", "memory.read", "jobs.list", "tasks.list", "tasks.tail", "goals.get", "calendar.list",
+    "diagnostics.get", "host_tools.result", "subagents.list", "subagents.tail", "system.get",
+    "glassbox.get", "work.get", "engine.status",
+})
+
+
+def _restart_gate(app, operation):
+    from litetui import restart_checkpoint
+    if operation not in _RESTART_SAFE and restart_checkpoint.is_held(app):
+        raise ValueError("Restart checkpoint hold blocks this mutation")
+
+
 def dispatch(app, cmd):
     """Execute nonblocking operations on the existing app loop."""
     from litetui import native_engine
@@ -572,6 +600,7 @@ def dispatch(app, cmd):
     from litetui import conversation_transition
     conversation_transition.require_execution(app)
     operation = str(cmd.get("type", ""))[4:]
+    _restart_gate(app, operation)
     if operation not in OPERATIONS:
         raise ValueError(f"Unsupported GUI operation: {operation}")
     if operation in {"mcp.native_config_list", "mcp.native_config_review", "mcp.native_config_add_review",
@@ -709,6 +738,21 @@ def dispatch(app, cmd):
         from litetui import native_glassbox
         return native_glassbox.dispatch(app, cmd)
     domain, action = operation.split(".", 1)
+    from litetui import restart_checkpoint
+    if domain == "checkpoint":
+        from litetui.plugin_reload_activity import idle_infra_phase
+        # Exclude this exact control worker, not a group or unrelated task.
+        with idle_infra_phase(app):
+            if action == "prepare":
+                return restart_checkpoint.prepare(app, cmd.get("checkpoint_id"), disposition=cmd.get("disposition"))
+            if action == "status":
+                return restart_checkpoint.status(app)
+            if action == "flush":
+                return restart_checkpoint.flush(app, cmd.get("checkpoint_id"))
+            if action == "release":
+                return restart_checkpoint.release(app, cmd.get("checkpoint_id"), reconciled=cmd.get("reconciled"))
+    if domain == "prompt" and restart_checkpoint.is_held(app):
+        raise ValueError("Restart checkpoint hold blocks new input")
     if domain == "restored_input":
         _idle(app)
         if action == "list":
@@ -1056,6 +1100,7 @@ async def async_dispatch(app, cmd):
             OPERATION_CONTEXT.reset(token)
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
+    _restart_gate(app, operation[4:])
     blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
     if operation.startswith(("gui.models.native_preferences_", "gui.models.native_lifecycle_", "gui.mcp.native_lifecycle_")):
         blocking = True
@@ -1213,7 +1258,7 @@ async def _async_dispatch(app, cmd):
         if backend.name not in llm_backend.ENGINE_BACKENDS:
             from litetui import gpu_gate
             # T893: NInfer is never named on a box that is not an RTX 5090 (as /engine's own refusal).
-            engines = "NInfer or Strata" if gpu_gate.is_rtx_5090() else "Strata"
+            engines = "NInfer, Strata or Xolotl" if gpu_gate.is_rtx_5090() else "Strata or Xolotl"
             raise ValueError(f"engine operations require the {engines} backend")
         action = operation.rsplit(".", 1)[1]
         if action == "status":
@@ -1297,7 +1342,7 @@ async def _async_dispatch(app, cmd):
             raise ValueError("Connection failed; requested connection settings remain deferred")
         if not hasattr(app, "_gui_effective_settings"):
             app._gui_effective_settings = asdict(app.settings)
-        for name in ("lm_host", "ninfer_host", "strata_host", "llama_host", "llama_executable", "backend", "default_model"):
+        for name in ("lm_host", "ninfer_host", "strata_host", "xolotl_host", "llama_host", "llama_executable", "backend", "default_model"):
             app._gui_effective_settings[name] = getattr(app.settings, name)
         return {"connected": True, "model": app._rpc_model_state(), "settings": _settings(app)}
     if operation in ("gui.models.load", "gui.models.unload", "gui.models.config", "gui.models.configure"):

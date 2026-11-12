@@ -46,6 +46,9 @@ class OwnedEngineLifecycle(_VramGate):
         #: process). _stopping is held for the whole off-loop stop.
         self._starting = False
         self._stopping = False
+        #: True between `stop_for_seat` and `start_after_seat`: the engine is down because a
+        #: GPU job asked for its memory, and the resume must start it again.
+        self._stopped_for_seat = False
         #: Serializes every read/write of _starting/_stopping/_owned/_host across the event
         #: loop AND the spawn/stop worker threads. Held only for SYNC critical sections (no
         #: await inside), so it never stalls the loop; the long terminate_owned runs OUTSIDE it.
@@ -109,6 +112,50 @@ class OwnedEngineLifecycle(_VramGate):
                     self._owned = None
                     self._host = None
         return result
+
+    # -- freeing the seat for a GPU job (studio / listen tools, T0702) --------------
+    #
+    # For an engine whose process IS its model there is no unload: the RAM and VRAM come
+    # back only when the process exits. So the seat is freed by stopping the engine LiteTUI
+    # started and starting it again afterwards. The `_stopping` claim is held across the
+    # whole gap, so a /engine start cannot slip in while the job runs.
+
+    def stop_for_seat(self) -> str | None:
+        """Stop our owned engine for a GPU job. None = exit proven (claim kept for the resume)."""
+        if self._owned is None:
+            return (f"the {self.label} engine was not started by this LiteTUI, so it is not stopped for a "
+                    "generation — stop it where it was started to free its RAM and VRAM")
+        if not self.begin_stop():
+            return f"the {self.label} engine is starting or stopping — try again once it settles"
+        result = self.shutdown()
+        if getattr(result, "main_exited", False) and not getattr(result, "retained", True):
+            with self._lifecycle_lock:
+                self._stopped_for_seat = True
+            return None
+        self.end_stop()
+        return (f"the {self.label} engine did not confirm it exited, so its VRAM may still be held — "
+                "/engine stop until it reports the process is gone, then try again")
+
+    def start_after_seat(self) -> str | None:
+        """Start the engine `stop_for_seat` stopped, on the current settings, and release the
+        claim whatever happens. No VRAM question: it puts back the weights the job's own
+        suspend took out, not a second set (the gate's rule, `second_instance`)."""
+        try:
+            owned = self._engine.start(self._settings, healthy=self._health, notice=None)
+        except BackendError as exc:
+            retained = getattr(exc, "retained_owned", None)
+            if retained is not None:          # resident but unconfirmed: keep it for /engine stop
+                with self._lifecycle_lock:
+                    self._owned, self._host = retained, retained.host
+            return str(exc)
+        else:
+            with self._lifecycle_lock:
+                self._owned, self._host = owned, owned.host
+            return None
+        finally:
+            with self._lifecycle_lock:
+                self._stopped_for_seat = False
+                self._stopping = False
 
     async def start_engine(self, *, notice=None, reviewed_plan=None, reviewed_check=None, cancelled=None) -> str:
         """Spawn the engine under LiteTUI's VRAM gate; refuse if any engine is up.

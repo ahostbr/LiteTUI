@@ -256,8 +256,12 @@ class AgentSession:
         self._require_owned()
         return _unlinked(self._agent.conversations_root / valid_id(conversation_id))
 
-    def update_execution(self, *, backend: str, model: str, thinking_level: str) -> AgentAuthority:
+    def update_execution(self, *, backend: str, model: str | None, thinking_level: str) -> AgentAuthority:
         """Publish execution under this process lease; retain failed temp evidence.
+
+        `model=None` clears the choice (`model_selection: unchosen`): a backend
+        switch does that, because the old backend's model id means nothing on
+        the new one and recording it as chosen made every send fail.
 
         Atomic replace leaves old authority intact on prepublication failure. The
         in-memory capability refreshes only after exact readback. No registry or
@@ -266,12 +270,13 @@ class AgentSession:
         from copy import deepcopy
         self._require_owned()
         execution = {'backend': backend, 'model': model, 'thinking_level': thinking_level}
-        if any(not isinstance(v, str) or not v.strip() for v in execution.values()):
+        if any(not isinstance(v, str) or not v.strip()
+               for k, v in execution.items() if not (k == 'model' and v is None)):
             raise StoreError('Agent execution authority is incomplete')
         before = read_agent(self.store.agent_directory(self._authority.name))
         settings = deepcopy(before.settings)
         settings['execution'].update(execution)
-        settings['execution']['model_selection'] = 'chosen'
+        settings['execution']['model_selection'] = 'unchosen' if model is None else 'chosen'
         target = _unlinked(self._agent.directory / SETTINGS_NAME)
         temporary = _unlinked(self._agent.directory / ('.settings.update.' + str(uuid4()) + '.json'))
         with temporary.open('x', encoding='utf-8') as handle:

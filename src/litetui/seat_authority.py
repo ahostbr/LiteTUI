@@ -158,12 +158,19 @@ def withheld(app, level: str) -> str | None:
 #: The file headers of a Codex patch: every path it adds, updates, deletes or moves to.
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$", re.MULTILINE)
 _PATH_KEYS = ("path", "file_path", "notebook_path")
+#: Keys whose value is the folder a call's relative paths and command run from
+#: (T0306-S F: Codex's shell tool says `workdir`).
+_BASE_KEYS = ("cwd", "workdir", "working_directory", "dir")
+#: The marker every data root gets on launch: the floor knows a data root by it,
+#: so removing or rewriting it is a write the owner rules guard (T0306-S D).
+DATA_MARKER = ".litetui-data.json"
 
 
-def _written(value, paths: list, commands: list, depth: int = 0) -> None:
+def _written(value, paths: list, commands: list, depth: int = 0, values: list | None = None) -> None:
     """Every path and command a tool call's arguments carry, whatever the backend
     names them: `path` (LiteTUI write/edit, Claude-native Write/Edit as mapped),
-    `file_path` / `notebook_path`, a `command`, and the file headers of a patch."""
+    `file_path` / `notebook_path`, a `command`, and the file headers of a patch.
+    Every other string value goes to `values`, to be tried as a path."""
     if depth > 4:
         return
     if isinstance(value, dict):
@@ -175,12 +182,14 @@ def _written(value, paths: list, commands: list, depth: int = 0) -> None:
                 commands.append(text)
                 paths.extend(_PATCH_PATH.findall(text))
             else:
-                _written(item, paths, commands, depth + 1)
+                _written(item, paths, commands, depth + 1, values)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _written(item, paths, commands, depth + 1)
+            _written(item, paths, commands, depth + 1, values)
     elif isinstance(value, str):
         paths.extend(_PATCH_PATH.findall(value))
+        if values is not None:
+            values.append(value)
 
 
 def jobs_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str | None:
@@ -202,7 +211,7 @@ def jobs_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str |
     Spawned/unknown seats are not owners; an owner-marked PTY must freshly prove
     it is untainted. Bridge failure refuses this direct write, not scheduler.save.
     T1133's removed profile caps and schedule API gates stay removed."""
-    return _owned_file_refusal(app, args, workspace, policy, "jobs.json", _jobs_words, shell=shell)
+    return _owned_file_refusal(app, args, workspace, policy, (("jobs.json", _jobs_words, (None,), False),), shell=shell)
 
 
 def settings_file_refusal(app, args, workspace, policy=None, *, shell=None) -> str | None:
@@ -223,64 +232,97 @@ def settings_file_refusal(app, args, workspace, policy=None, *, shell=None) -> s
     Owner's is refused for its OWN conversation's file too: it saves that file
     in-process (convo_settings.save), never through a tool.
 
-    What is refused is a write that NAMES the file, to the floor's stated bound."""
-    return _owned_file_refusal(app, args, workspace, policy, "settings.json", _settings_words,
-                               unders=(None, ".agents"), shell=shell)
+    What is refused is a write that NAMES the file, to the floor's stated bound,
+    and (T0306-S) the floor's added recognitions, MORE: a copy INTO the folder, a
+    stream suffix on a folder, a short name, `of=`, a linking copy, pathspec magic
+    and a .NET call's path.
+
+    D (T0306-S): the data root's marker is asked about too. A root known only by
+    its marker loses every guard once the marker is gone, so removing or
+    rewriting it is refused like the settings file."""
+    return _owned_file_refusal(app, args, workspace, policy, (
+        ("settings.json", _settings_words, (None, ".agents"), False),
+        (DATA_MARKER, _marker_words, (None,), True)), shell=shell)
 
 
-def _owned_file_refusal(app, args, workspace, policy, name, words, unders=(None,), *,
-                        shell=None) -> str | None:
-    """Why this seat may not make this tool call, which would write a data root's
-    `name` (directly in the root, or below one of its `unders` folders); None
-    when it would not, or when the seat is Owner's own.
+def _owned_file_refusal(app, args, workspace, policy, files, *, shell=None) -> str | None:
+    """Why this seat may not make this tool call, which would write one of `files`
+    ((name, words, unders, added): a data root's `name`, directly in the root or
+    below one of its `unders` folders; `added` when the whole name is new in
+    T0306-S); None when it would not, or when the seat is Owner's own.
 
-    `shell` is the interpreter the caller PROVED (tool_policy.proven_shell), never
-    a guess: left None, the floor reads every command under all three dialects and
-    a `;`-joined read becomes one malformed write under cmd's."""
+    ONE ownership recheck per call, whichever file it names. A write that only
+    T0306-S's recognitions see (the floor's MORE, F's keys and values, the
+    marker) is rechecked with _still_owner: a bridge that does not answer
+    refuses that call and leaves the owner mark as it was. A write the rule saw
+    before keeps is_ryans_own, which clears the mark on any failed recheck.
+
+    `shell` is the interpreter the caller PROVED (tool_policy.proven_shell),
+    never a guess; None keeps the floor's conservative union of dialects."""
     # T1133 removed autonomy/profile locks and schedule API gates. This guard
     # protects file ownership only; a read-only tool's path is not a write.
     if policy is not None and policy.classify_args is None and policy.capabilities <= {
             tool_policy.READ_ONLY, tool_policy.NETWORK}:
         return None
-    found = _protected_write(args, workspace, name, unders, shell)
-    # The owner recheck costs a bridge call: only a recognized write pays it.
-    if found is None or is_ryans_own(app, recheck=True):
-        return None
-    return words(*found)
+    for name, words, unders, added in files:
+        try:
+            found = _protected_write(args, workspace, name, unders, shell=shell)
+            if found is None:
+                continue
+            only_added = added or _protected_write(
+                args, workspace, name, unders, shell=shell, wide=False) is None
+        except deny_floor.UnresolvablePath as error:
+            return error.reason  # not an ownership waiver, even for Owner's own seat
+        # The owner recheck costs a bridge call: only a recognized write pays it.
+        owner = _still_owner(app) if only_added else is_ryans_own(app, recheck=True)
+        return None if owner else words(*found)
+    return None
 
 
-def _protected_write(args, workspace, name, unders, shell=None) -> tuple | None:
+def _protected_write(args, workspace, name, unders, shell=None, *, wide=True) -> tuple | None:
     """(target, the floor's Git reason, the folder the file sits below) when the
     call would write a data root's `name`: one of the first two is None. The
     floor's own questions, asked with `name`, once for each of `unders` (None:
-    the file directly in the data root)."""
+    the file directly in the data root). `wide` (T0306-S) adds every recognition
+    the floor can add (MORE), the folder keys beside `cwd`, and a string under any
+    other key tried as a path when its last segment is `name` (F); without it the
+    questions are the rule's before T0306-S. Read-only tools never reach this."""
     paths: list[str] = []
     commands: list[str] = []
-    _written(args, paths, commands)
+    values: list[str] = []
+    _written(args, paths, commands, values=values)
+    if wide:
+        paths += [v for v in values if deny_floor.canonical_name(v.strip().strip("\"'")) == name.lower()]
     if not paths and not commands:
         return None
+    more = deny_floor.MORE if wide else frozenset()
     for command in commands:
         for under in unders:
-            if reason := deny_floor.jobs_git_refusal(command, workspace, shell=shell, name=name, under=under):
+            if reason := deny_floor.jobs_git_refusal(command, workspace, shell=shell, name=name, under=under, more=more):
                 return None, reason, under
-    bases = [Path(workspace), Path.cwd()]
-    if isinstance(args, dict) and isinstance(args.get("cwd"), str) and args["cwd"]:
-        bases.append(Path(workspace) / args["cwd"])
-    for base in dict.fromkeys(b.resolve() for b in bases):
+    try:
+        cwd = Path.cwd()
+    except (OSError, ValueError, RuntimeError) as error:
+        raise deny_floor.UnresolvablePath("<current working directory>", error) from error
+    bases = [Path(workspace), cwd]
+    for key in (_BASE_KEYS if wide else ("cwd",)):
+        if isinstance(args, dict) and isinstance(args.get(key), str) and args[key]:
+            bases.append(Path(workspace) / args[key])
+    for base in dict.fromkeys(deny_floor.resolve_path(b) for b in bases):
         for raw in paths:
-            try:   # the one door every tool passes: a malformed path is not the target
-                # dealias FIRST (Dijkstra A1): `jobs.json::$DATA` opens jobs.json, and
-                # un-reduced it fails to resolve, which would skip it as malformed.
-                path = Path(deny_floor.dealias(raw.strip().strip("\"'"))).expanduser()
-                target = (path if path.is_absolute() else base / path).resolve()
-            except (OSError, ValueError, RuntimeError):
-                continue
+            # dealias FIRST (Dijkstra A1): `jobs.json::$DATA` opens jobs.json.
+            # A failed check is a refusal, never evidence of a non-target.
+            path = Path(deny_floor.dealias(raw.strip().strip("\"'"), allow_globs=False))
+            if str(path).startswith("~"):
+                target = deny_floor.resolve_path(path, expanduser=True)
+            else:
+                target = deny_floor.resolve_path(path if path.is_absolute() else base / path)
             for under in unders:
                 if deny_floor.is_jobs_file(target, name, under):
                     return target, None, under
         for command in commands:
             for under in unders:
-                if target := deny_floor.jobs_write_target(command, base, shell=shell, name=name, under=under):
+                if target := deny_floor.jobs_write_target(command, base, shell=shell, name=name, under=under, more=more):
                     return target, None, under
     return None
 
@@ -311,6 +353,16 @@ def _settings_words(target, git_reason=None, under=None) -> str:
             "on this data root, and this seat cannot establish current owner "
             "authority (T0306). "
             "Settings are changed with /settings in the owner's own LiteTUI")
+
+
+def _marker_words(target, git_reason=None, under=None) -> str:
+    doing = (f"write or remove {target}" if git_reason is None else
+             "run a Git command that writes, or that from another folder may write, "
+             "a data root's marker")
+    return (f"this LiteTUI may not {doing}: that file marks the folder as a LiteTUI data root, "
+            "and the schedule and settings files there are guarded because of it, and this "
+            "seat cannot establish current owner authority (T0306). "
+            "The marker is LiteTUI's own; no tool needs to touch it")
 
 
 def schedule_note(app, level: str) -> str:
@@ -439,6 +491,12 @@ def pty_taint_clean(term: str, timeout: float = 1.0) -> bool:
     (/pty/talk, /pty/write, MCP terminal writes; the taint is recorded BEFORE the
     write). Only a clear "untainted" keeps the mark: no answer, a timeout, an error
     or a tainted terminal all mean NOT the owner (fail-safe)."""
+    return pty_taint_state(term, timeout) is False
+
+
+def pty_taint_state(term: str, timeout: float = 1.0) -> bool | None:
+    """LiteSuite's answer for this terminal: True tainted, False untainted, None
+    when there is no answer (no token, a timeout, an error, a reply without it)."""
     import json
     import os
     import urllib.parse
@@ -449,15 +507,16 @@ def pty_taint_clean(term: str, timeout: float = 1.0) -> bool:
         try:
             token = (Path.home() / ".litesuite" / "bridge-token").read_text(encoding="utf-8").strip()
         except OSError:
-            return False
+            return None
     url = f"{BRIDGE}/pty/owner-ok?term={urllib.parse.quote(term)}"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             answer = json.loads(response.read().decode("utf-8"))
-    except Exception:  # noqa: BLE001 - any failure to verify is "not the owner"
-        return False
-    return answer.get("tainted") is False
+    except Exception:  # noqa: BLE001 - any failure to verify is no answer
+        return None
+    tainted = answer.get("tainted") if isinstance(answer, dict) else None
+    return tainted if isinstance(tainted, bool) else None
 
 
 def is_owner(app) -> bool:
@@ -476,6 +535,22 @@ def is_owner(app) -> bool:
         app._owner_seat = False
         return False
     return True
+
+
+def _still_owner(app) -> bool:
+    """is_ryans_own for a write only T0306-S's recognitions see (review R2; pick 2:
+    only seats that are not the owner's are refused). A tainted terminal clears
+    the mark as is_owner does; a bridge that does not answer refuses this one call
+    and leaves the mark as it was."""
+    if is_spawned(app) or not getattr(app, "_owner_seat", False):
+        return False
+    term = getattr(app, "_pty_term", None)
+    if not term:
+        return True
+    tainted = pty_taint_state(term)
+    if tainted is True:
+        app._owner_seat = False
+    return tainted is False
 
 
 def is_ryans_own(app, recheck: bool = True) -> bool:
