@@ -50,6 +50,31 @@ STEPS = [
     ("glassbox", "/glassbox\r"),
 ]
 
+# --profile settings (Ryan 2026-11-12: "let me see both"): Python's /settings has 12 tabs and a
+# search box that activates the tab of the first match, so each tab is reached by typing its
+# name. Rust's /settings is a hub whose letter keys open separate editors. Each step is
+# (name, key writes, reset): "full" closes everything and clears the composer, "search" erases
+# the typed search term and keeps the screen open.
+PY_TABS = ["Model", "NInfer", "Strata", "Xolotl", "Voice", "Generation", "Agent loop", "Compaction",
+           "Capabilities", "Hooks", "Themes", "Interface"]
+RUST_EDITORS = [("model-prefs", "p"), ("agent", "a"), ("voice", "v"), ("interface", "u"), ("connection", "n"),
+                ("compaction", "c"), ("mcp", "m"), ("sidecar", "s"), ("glassbox", "g"), ("lifecycle", "l"),
+                ("status", "i")]
+PROFILES = {
+    "screens": {frontend: [(name, [keys], "full") for name, keys in STEPS] for frontend in ("textual", "rust")},
+    "settings": {
+        # Search focuses the first match, so tabs are stepped instead: Tab, Tab moves focus from the
+        # search box past Clear to the tab bar, then each Right arrow is the next tab ("←/→ or
+        # click to change tab"). NInfer appears only on a machine with NInfer installed.
+        "textual": [("settings-open", ["/settings\r"], "none"), ("tab-01", ["\t", "\t"], "none")]
+        + [(f"tab-{n:02d}", ["\x1b[C"], "none") for n in range(2, len(PY_TABS) + 1)],
+        # Rust today needs a second Enter: "/settings" + Enter (completion popup open) leaves the
+        # palette on the Settings row (parity bug, Python opens Settings at once).
+        "rust": [("settings-hub", ["/settings\r", "\r"], "full")]
+        + [(f"editor-{name}", ["/settings\r", key], "full") for name, key in RUST_EDITORS],
+    },
+}
+
 
 def settle(screen_text, *, quiet=2.0, minimum=1.0, limit=60.0):
     """Wait until the decoded screen stops changing for `quiet` seconds."""
@@ -73,6 +98,8 @@ def run(frontend, args):
     workspace = base / "workspace"
     workspace.mkdir()
     env.update(LITETUI_PERF_CHUNKS="8", LITETUI_PERF_DELAY="0.001")  # the runtime accepts .001-.1 s
+    if args.all_plugins:
+        env["LITETUI_PERF_ALL_PLUGINS"] = "1"  # child_environment drops inherited LITETUI_* keys
     common = ["--backend", "custom", "--model", "perf-fixture", "--tool-profile", "strict", "--thinking-level",
               "default", "--server-mode", "connect", "--base-url", "http://127.0.0.1:45120/v1"]
     if frontend == "rust":
@@ -122,16 +149,22 @@ def run(frontend, args):
     try:
         settle(text, quiet=4.0, minimum=8.0, limit=args.startup)
         shoot("start")
-        for name, keys in STEPS:
+        for name, writes, reset in PROFILES[args.profile][frontend]:
             if not pty.isalive():
                 errors.append(f"frontend exited before step {name}")
                 break
-            pty.write(keys)
+            for index, keys in enumerate(writes):
+                if index:
+                    settle(text, quiet=1.5, limit=30)
+                pty.write(keys)
             shoot(name)
-            for _ in range(2):  # close the screen, then clear the composer (draft never sent)
-                pty.write("\x1b")
-                time.sleep(0.6)
-            pty.write("\x08" * 16)
+            if reset == "full":
+                for _ in range(3):  # close the screen(s), then clear the composer (draft never sent)
+                    pty.write("\x1b")
+                    time.sleep(0.6)
+                pty.write("\x08" * 16)
+            elif reset == "search":
+                pty.write("\x08" * (len(writes[-1]) + 2))
             settle(text, quiet=1.0, limit=15)
         pty.write("\x11")  # Ctrl+Q
         deadline = time.monotonic() + 30
@@ -157,13 +190,17 @@ def main():
     parser.add_argument("--cols", type=int, default=140)
     parser.add_argument("--rows", type=int, default=45)
     parser.add_argument("--startup", type=float, default=240.0)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="screens")
+    parser.add_argument("--frontends", default="textual,rust", help="comma list of textual, rust")
+    parser.add_argument("--all-plugins", action="store_true",
+                        help="load every plugin in the controlled runtime (needed for /settings)")
     args = parser.parse_args()
     # The children run with their own working directory, so every path they get is absolute.
     args.out, args.binary, args.source = args.out.resolve(), args.binary.resolve(), args.source.resolve()
     assert not args.out.exists(), args.out
     args.out.mkdir(parents=True)
     result = {}
-    for frontend in ("textual", "rust"):
+    for frontend in args.frontends.split(","):
         shots, errors = run(frontend, args)
         result[frontend] = {"shots": len(shots), "errors": errors}
         print(json.dumps({frontend: result[frontend]}), flush=True)
