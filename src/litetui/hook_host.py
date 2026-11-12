@@ -246,6 +246,13 @@ def refuse_below_floor(app, item, *, on_refused=None) -> bool:
     return True
 
 
+def _floor_refused(app, item, on_refused):
+    """refuse_below_floor with develop's two-argument call shape unless a callback is set."""
+    if on_refused is None:
+        return refuse_below_floor(app, item)
+    return refuse_below_floor(app, item, on_refused=on_refused)
+
+
 def refuse_engine_admission(app, item, *, on_refused=None) -> bool:
     from litetui.backend_transition import submission_refusal
     why = submission_refusal(app)
@@ -290,7 +297,7 @@ def accept_prompt_origin(app, item, *, native_accepted=False, origin=None, on_re
     if (not native_accepted and not restart_checkpoint.maintenance_permitted(app, restart_maintenance)
             and restart_checkpoint.retain_prompt(app, item)):
         return None
-    if not native_accepted and refuse_below_floor(app, item, on_refused=on_refused):
+    if not native_accepted and _floor_refused(app, item, on_refused):
         return None
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")
@@ -359,7 +366,7 @@ async def admit_prompt_origin(app, item, *, on_refused=None, before_accept=None,
     # fields after hooks or lifecycle work have run.
     origin = EventOrigin(operation_id=item.get("operation_id"), source=item.get("source", "queued"))
     # T1043: before the prompt_before hooks, so no hook runs for a refused turn.
-    if refuse_below_floor(app, item, on_refused=on_refused):
+    if _floor_refused(app, item, on_refused):
         return None
     if not item.get("_gui_in_turn"):
         app._gui_operation_id = item.get("operation_id")

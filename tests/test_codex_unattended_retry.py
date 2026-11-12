@@ -26,6 +26,13 @@ def failure(kind="interrupted"):
     return mt._stream_failure("codex", {"type": "error", "code": kind}, ())
 
 
+class _Emitted(list):
+    """RPC events in order; `emit` is bound, so a test can reach the list via `__self__`."""
+
+    def emit(self, row, *, origin=None):  # the host passes each event's origin
+        self.append(row)
+
+
 class Stream:
     def __init__(self, items):
         self.items = items
@@ -50,6 +57,9 @@ async def run_turn(monkeypatch, plans, *, source="harness", native=False, transp
     app = owned_app(initial_backend="codex", initial_model="gpt-6-astra", initial_thinking="high")
     app.model_id = "gpt-6-astra"
     app.backend = _NativeBackend()
+    # The seat pins "high"; a real Codex model list reports the efforts it supports. An owned
+    # invocation level the model does not report is refused before any request is sent.
+    app.backend.reasoning_levels = lambda _model: ["high"]
     if not native:
         del app.backend.app_server
         app.backend.shutdown = lambda: None
@@ -64,9 +74,9 @@ async def run_turn(monkeypatch, plans, *, source="harness", native=False, transp
     app.settings.error_message_style = "detail"
     app.tools_enabled = True
     app._kick_card_summary = lambda *a: None
-    notices, requests, streams, effects, rpc = [], [], [], [], []
+    notices, requests, streams, effects, rpc = [], [], [], [], _Emitted()
     app._report_spawner_error = lambda *args: notices.append(args)
-    app._rpc_emit = rpc.append
+    app._rpc_emit = rpc.emit
 
     async def ready():
         pass

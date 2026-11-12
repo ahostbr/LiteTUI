@@ -95,6 +95,9 @@ def off_local_lm_studio(a):
 
     a.backend = CustomBackend(a.settings)
     a._client_binding = model_transport.bind_client(a.client, a.backend)
+    # The owned effort projection is bound to the backend object, as after a real switch.
+    from litetui import effort_projection
+    effort_projection.install(a)
     return a
 
 

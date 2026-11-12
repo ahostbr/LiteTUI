@@ -120,11 +120,13 @@ def validate(app, actual_wire):
 
     authority = app._agent_session.authority
     base = authority.thinking_level
-    selected = selection(app.settings, authority.model)
-    graded = _graded(app.settings)
+    # A host without loaded settings has no per-model selection and no graded mapping.
+    settings = getattr(app, "settings", None)
+    selected = selection(settings, authority.model)
+    graded = _graded(settings)
     invocation = _invocation(app)
     if ((getattr(app, "_thinking_level", None) or "default") != base
-            or getattr(app.settings, "thinking_level", base) != base):
+            or getattr(settings, "thinking_level", base) != base):
         raise BackendError("Inherited effort disagrees with owned agent authority")
     proof = getattr(app, "_owned_effort_projection", None)
     if proof is not None:

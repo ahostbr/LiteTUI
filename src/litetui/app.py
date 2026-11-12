@@ -9576,7 +9576,7 @@ class LiteTUI(App):
         """Capture one invocation BEFORE Textual can start its asynchronous body."""
         captured = conversation_rewrite.stream_origin(self, origin).scheduled()
         background_input.before_stream(self, captured)
-        runner = conversation_rewrite.stream_runner(self, captured, self._stream_body(captured, restart_maintenance))
+        runner = conversation_rewrite.stream_runner(self, captured, LiteTUI._stream_body(self, captured, restart_maintenance))
         runner = background_input.stream_runner(self, captured, runner)
         worker = self.run_worker(
             runner, name="_stream", group="chat", exclusive=True,
@@ -9589,11 +9589,19 @@ class LiteTUI(App):
             raise
         return worker
 
+    async def _stream_unscheduled(self, *, restart_maintenance=None):
+        """develop's `_stream.__wrapped__` seam (the body of its @work `_stream`): capture this
+        invocation's origin and run the worker body now, without scheduling a worker."""
+        captured = conversation_rewrite.stream_origin(self, None).scheduled()
+        return await LiteTUI._stream_worker(self, captured, restart_maintenance=restart_maintenance)
+
+    _stream.__wrapped__ = _stream_unscheduled
+
     def _stream_inline(self, *, origin: EventOrigin | None = None, restart_maintenance=None):
         """Capture now, return an unscheduled coroutine for driven compaction."""
         captured = conversation_rewrite.stream_origin(self, origin).scheduled()
         return background_input.inline_runner(self, captured, conversation_rewrite.inline_runner(
-            self, captured, self._stream_body(captured, restart_maintenance)))
+            self, captured, LiteTUI._stream_body(self, captured, restart_maintenance)))
 
     def _stream_body(self, captured, restart_maintenance):
         """The worker callable. Only a restart maintenance grant is passed as a keyword, so the

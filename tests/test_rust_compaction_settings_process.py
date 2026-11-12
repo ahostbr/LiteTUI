@@ -87,7 +87,13 @@ def test_real_six_field_saves_use_exact_destination_without_execution(tmp_path, 
     destination = "global" if field == "clear_screen_after_compact" else "conversation"
     expected = json.loads(report["initial_documents"][destination]["raw"])
     (expected if destination == "global" else expected["execution"])[field] = value
-    assert json.loads(report["documents"][destination]["raw"]) == expected
+    saved = json.loads(report["documents"][destination]["raw"])
+    # develop's conversation_document materializes every missing conversation key from the
+    # inherited settings; an inherited unset field lands as an explicit null (no value change).
+    for document in (saved, expected):
+        if isinstance(document.get("execution"), dict):
+            document["execution"] = {k: v for k, v in document["execution"].items() if v is not None}
+    assert saved == expected
     assert receipt["destination"] == report["documents"][destination]["path"]
     assert receipt["persistence"][0]["destination"] == receipt["destination"]
     for key in ("global", "conversation", "agent"):
