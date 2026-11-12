@@ -1,79 +1,62 @@
-# Oxide handoff, paused 2026-11-12 (night pause by Ryan)
+# Oxide handoff, 2026-11-12 (resumed after Ryan's night pause)
 
 Seat: Oxide (owner, Opus 5.5, agent 196c7cd3-0b5e-454b-8dc2-6ee284db3288), card T0565, worktree
-`<worktree>`, branch `work/rust-tui-OpenBolt` (pushed, never forced;
-the LiteTUI repo is public and Ryan allowed pushing this branch). Nothing below is verified by Ryan
-unless it says so.
+`<worktree>`, branch `work/rust-tui-OpenBolt`. Nothing below is verified by Ryan unless it says so.
 
-## Commits this session (oldest first)
+**Public repo rule (Sentinel bb8c4f98, 2026-11-12):** ahostbr/LiteTUI is PUBLIC. Commit only; never
+push any branch without Ryan's OK through Sentinel. Sentinel does the pushes. No real machine paths,
+keys, emails or build logs in any committed file: use `<worktree>`-style placeholders in docs,
+synthetic `C:/fixture/...` roots in fixtures, env vars in scripts. Ryan: "fix on top, no rewrite".
+**Testing rule (Ryan via Sentinel a2772c62):** anything Ryan tests must be merged to develop first;
+never ask him to test a branch build.
+
+## Commits today (oldest first)
 
 | sha | what |
 |---|---|
-| ac617962 | merge of LiteTUI develop e551f2eb (186 commits) into the port; every conflict listed in its body |
-| a834b8d3 | merge seams: UNRECORDED import, `_stream_body` (restart_maintenance only when set), seat_name defaults scope, xolotl/anthropic in the Rust launcher |
-| ce4a0ca8 | Ryan's bug 1 (Python model flow for /backend, /model, context dialog) and bug 2 (slash menu prefetch) |
-| 55fd754b | picking an unloaded model selects it and runs Python's apply_context_length |
-| (this WIP commit) | controlled-matrix fixes below, plus `scripts/capture_parity_screens.py` |
+| 2d0c9a20 | Ctrl+T/Shift+Tab/Ctrl+P fix (`_host_prompt_message(base=)`), Codex row identity in `_request_messages`, engine settings device-wide per develop 5f5ef63f, lazy slash-menu read (prefetch at Ready raced the first prompt), `anthropic_api_key` in Rust KEY_SETTINGS, develop job fields optional-but-paired |
+| 1d523051, 2a1eb364, 7653dc71, 7c5568a0 | public-path scrub of 18 files; fixture digests recomputed (`scripts/rehash_fixture.py`) |
+| e3480267 | merge of develop b224f2f8 (develop got 2c7299d8 Codex row identity and b224f2f8 path scrub from this seat) |
+| ad898b1c | the 45 port-only Python failures: `_stream.__wrapped__` seam, class-level `_stream_body`, `refuse_below_floor` call shape, effort projection without settings, test fakes |
 
-Ryan's word: on Theater page `rust-litetui-try-2` he answered **approve** to "Do /backend, /model and
-/ behave like Python now?" (session.json rev 1, 2026-11-12T04:08:35Z), about a minute after it
-opened. Recorded as his word on bugs 1 and 2 for build 55fd754b only.
+Pushed by Sentinel: e3480267. ad898b1c and later are local until Sentinel pushes.
 
-## Where it stands
+## Where it stands (measured on this tree; controlled providers, no model loads)
 
-- Rust ordinary suite at ce4a0ca8: 1,273 passed, 0 failed, 242 ignored, 110 groups (fmt, clippy clean).
-- Controlled-child matrix on 55fd754b: **193/238** (`target/oxide-repro-20261111/controlled2/summary.json`).
-  The develop merge broke real paths. Ryan was warned via Sentinel (dcf8ea64, ebc58ca6) to avoid
-  Ctrl+T/Shift+Tab/Ctrl+P and New in the round-2 build.
-- Fixed in this WIP commit (rerun of only these targets, `target/oxide-repro-20261111/rerun-a.out`):
-  agent_preferences 1/1, backend_switch 7/7, scheduled_transition 8/8, conversation 8/8,
-  work_execution_controls 10/10, work_controls 2/2.
-  - New conversation refused: develop's message 0 carries `litetui_prompt_*` keys; both
-    `history_projection.FRESH_SYSTEM_KEYS` and `management/scheduled.rs` now accept them.
-  - Work Run refused: develop's Job has `owner_agent_id`, `deferred_slot`; added to Rust JOB schema,
-    validator and canonical defaults.
-  - backend_switch fixture: display-only readiness marks probe engines; fixture neutralizes `_marks`.
-  - plugin_reload fixture: private schema dir now seeded with every real schema (develop's
-    scheduler loads `schedule_self` at registration).
-  - agent_preferences test: compares execution blocks with explicit nulls treated as absent.
-- Still failing (rerun stopped for the pause at context_process): context_process 30/35
-  (connection_preferences, discovery_preferences, mcp_runtime, model_defaults..., see rerun-a log),
-  and NOT yet rerun: history_inspection, compaction_settings, conversation_rewrite, claude_reset,
-  work_reconciliation, engine, runtime_controls.
+- Rust ordinary: 1,273 passed, 0 failed, 242 ignored (fmt, clippy -D warnings clean) at e3480267.
+- Controlled matrix on 2d0c9a20: 236/238 (`target/oxide-repro-20261111/controlled3.out`). The 2 misses
+  (monitor_commands_review_sweep..., dictation_voice_route...) pass alone, 1/1 each: load-sensitive
+  under 3 parallel targets, not fixed. Matrix on ad898b1c: `controlled4.out` (running at writing).
+- Python: merged-only list + related suites at ad898b1c: 1185 passed, 12 skipped, 9 failed, all 9
+  also failing on develop b224f2f8 (not this card): test_ninfer_artifact_choice (1),
+  test_ninfer_backend (1), test_role_revision_t0338 (1), test_compaction_ui
+  store_writes_render_as_tool_cards (1), test_fleet_floor_t1043 (5). Also on develop and not this
+  card: test_seat_prompts_t0338 (6 with LITESUITE_ROOT set), test_codex_steering
+  uncertain_delivery_survives_actual_conversation_store_reload (1).
+- Public scan: `target/oxide-repro-20261111/tip_scan.py <repo> HEAD --all` -> 0 real paths at
+  e3480267 (only synthetic ExampleProjects/TestUser/<user> remain).
 
 ## Next exact step
 
-1. Fix runtime controls (Ctrl+T/Shift+Tab/Ctrl+P close the runtime). Root cause found, not yet
-   edited: `native_runtime_controls.review` predicts message 0 as `deepcopy(first)` with new content,
-   but develop's toggles rebuild it with `app._host_prompt_message()` (new `litetui_prompt_base`), so
-   `first_system_after.row_sha256` never matches. Fix: give `_host_prompt_message(self, base=None)`
-   a `base` parameter and predict with
-   `app._host_prompt_message(base=app._runtime_control_prompt(**{key: selected}))`.
-2. Rebuild tests (`cargo build --tests`, write `target/oxide-repro-20261111/exes.json`), then
-   `python target/oxide-repro-20261111/run_subset.py rerun-b context_process history_inspection_process compaction_settings_process conversation_rewrite_process claude_reset_process work_reconciliation_process engine_process runtime_controls_process`
-   and fix what remains (first errors are summarized in this session's controlled2 logs).
-3. Full 238 matrix (`run_controlled2.py` with a fresh artifacts manifest), full Rust ordinary
-   suite, the merged-only Python list (`target/oxide-repro-20261111/remaining-files.txt`, 51 left,
-   several are develop-only tests that need a develop baseline in
-   `scratchpad/base-e551f2eb`).
-4. Restage the package (`stage-package.ps1`, release build) and give Ryan round 3 on a NEW Theater
-   page; never edit `rust-litetui-try-1111` or `rust-litetui-try-2`.
-5. Parity sweep: run `python -X utf8 scripts/capture_parity_screens.py --binary <release exe> --out target/oxide-parity/run1`
-   (global Python311 has psutil and pywinpty), then a NEW Theater page listing every difference,
-   ranked. Known big one already: Python binds NO F-keys (screens open by slash command); the
-   Rust footer advertises F1-F12. Ask Ryan whether F-keys stay as extras.
+1. Read `controlled4.out`; rerun any miss alone before calling it real.
+2. Parity sweep: `python -X utf8 scripts/capture_parity_screens.py --binary <release exe> --out target/oxide-parity/run1`
+   (needs psutil + pywinpty in the parent interpreter; `--python` defaults to $LITETUI_PYTHON, else
+   python on PATH), then a NEW Theater page ranking every difference. Never edit
+   `rust-litetui-try-1111` or `rust-litetui-try-2`.
+3. Round 3 for Ryan only through develop (Sentinel's intent gate), not a branch package.
 
-## Other work in this session
+## Open questions for Ryan
 
-- LiteSound port plan (plan only, Ryan decides): private repo `ahostbr/LiteSound`, branch
-  `plan/rust-port`, commit 08868eea, `docs/plans/rust-port/plan.md`. Worktree
-  `<LiteSound repo>/.worktrees/rust-port-plan`.
-- Cargo cleanup: deleted `target/cargo-shared` and `rust/litetui-terminal/target/{debug,*-tests}`,
-  9,589 MiB freed at the time; builds since recreated `target/cargo-shared`.
-- Packages: `target/oxide-pkg-55fd754b` (round 2, has the merge regressions above).
-- Pattern recorded: never mutate src/tests while a suite that imports them runs.
+- F-keys: Python binds none (every screen opens by slash command); the Rust footer advertises F1-F12.
+  Keep them as Rust-only extras or remove them for 1:1?
+- LiteSound port plan (private repo ahostbr/LiteSound, branch `plan/rust-port`, 08868eea) ends with
+  four questions; no build starts until he answers.
 
-## Open questions
+## Traps learned today
 
-- F-keys: keep them as Rust-only extras or remove them for 1:1 with Python?
-- Develop baseline for develop-only failing tests was never completed (stopped for the matrix).
+- Bash-tool heredocs collapse `\\` to `\`: regex or path edits go in a file written by the Write
+  tool (pattern recorded 2026-11-12).
+- Recorded fixtures carry SHA-256 chains over their own objects; any fixture edit needs
+  `scripts/rehash_fixture.py ORIGINAL EDITED`.
+- `run_controlled2.py` checks binary hashes against its manifest; rebuild the manifest after any
+  test build (`cargo test` rebuilds include_str fixtures).
