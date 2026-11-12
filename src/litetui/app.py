@@ -4052,9 +4052,12 @@ class LiteTUI(App):
                     messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + guidance}
                 else:
                     messages.insert(0, {"role": "system", "content": guidance})
-        # Host bookkeeping must never reach OpenAI-compatible wire messages.
-        return [{k: v for k, v in message.items() if not k.startswith("litetui_prompt_")
-                 and k not in {"litetui_ordinary_text", "litetui_seat_text"}}
+        # Host bookkeeping must never reach OpenAI-compatible wire messages. Only rows that
+        # carry it are copied: Codex finds its accepted user row by identity (`original is m`
+        # in codex_app_server), so copying every row silently disabled mid-turn steering.
+        def private(key):
+            return key.startswith("litetui_prompt_") or key in {"litetui_ordinary_text", "litetui_seat_text"}
+        return [{k: v for k, v in message.items() if not private(k)} if any(map(private, message)) else message
                 for message in messages]
     def _ensure_legacy_store_notice(self, *, native_unknown: bool = False) -> None:
         if getattr(self, "_store_notice_text", None):
