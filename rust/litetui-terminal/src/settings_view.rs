@@ -390,6 +390,10 @@ impl View {
             || self.sidecar.open
             || self.model_lifecycle.open
     }
+    /// The settings dialog's Hooks tab asked for the hooks screen.
+    pub fn take_hooks_request(&mut self) -> bool {
+        self.form.take_hooks()
+    }
     pub fn owns_input(&self) -> bool {
         self.open
             || self.waiting

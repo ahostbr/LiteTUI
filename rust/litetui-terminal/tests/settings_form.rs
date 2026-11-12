@@ -407,3 +407,32 @@ fn restore_defaults_asks_like_python_then_sends_the_restore() {
     );
     assert!(view.waiting);
 }
+
+#[test]
+fn the_hooks_tab_opens_the_native_hooks_screen() {
+    let mut v = form_json("settings_form");
+    v["tabs"][1] = json!({"id": "tab-hooks", "label": "Hooks", "scroll": false, "items": [
+        {"kind": "text", "text": "Scope, inventory, and hook actions are exposed by the lifecycle editor below.", "id": null, "classes": ["set-help"], "section": null},
+        {"kind": "hooks_editor", "section": null}
+    ]});
+    let form = Form::parse(&v, "settings_form", S, "agent", "custom", "m").unwrap();
+    let mut view = View::default();
+    view.open();
+    view.take_intent();
+    view.observe(Update::Form(Box::new(form)));
+    // Tab, Tab to the tab bar; Right to Hooks; Tab to the editor row; Enter.
+    key(&mut view, KeyCode::Tab);
+    key(&mut view, KeyCode::Tab);
+    key(&mut view, KeyCode::Right);
+    let rows = screen(&mut view, 140, 45);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("Open the hooks editor (/hooks)")),
+        "{rows:?}"
+    );
+    key(&mut view, KeyCode::Tab);
+    key(&mut view, KeyCode::Enter);
+    assert!(!view.owns_input(), "the settings dialog closes");
+    assert!(view.take_hooks());
+    assert!(!view.take_hooks(), "asked once");
+}

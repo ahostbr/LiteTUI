@@ -313,6 +313,7 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
             app.open_dictation();
         } else {
             app.live.as_mut().expect("settings view").settings.key(key);
+            app.open_hooks_from_settings();
         }
         return false;
     }
@@ -1479,6 +1480,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                     }
                     Event::Mouse(event) => {
                         terminal_mouse(&mut app, event, shown.buffer);
+                        app.open_hooks_from_settings();
                         false
                     }
                     Event::FocusLost | Event::Resize(..) => {

@@ -398,6 +398,8 @@ enum Target {
     Section(String),
     Control(String),
     Button(String),
+    /// The Hooks tab's editor: opens the native hooks screen (/hooks).
+    Hooks,
 }
 /// Python's focus order: the search box, Clear, the tab bar, the tab's rows, the buttons.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -446,6 +448,8 @@ pub struct View {
     searched: bool,
     /// Keys pressed before the form arrived; Textual delivers these once its screen mounts.
     early: Vec<KeyEvent>,
+    /// Enter on the Hooks tab's editor row: the app opens the hooks screen.
+    hooks: bool,
     intent: Option<Intent>,
     hits: Vec<(Rect, Hit)>,
     visible: bool,
@@ -483,6 +487,10 @@ impl View {
     }
     pub fn finish(&mut self) {
         *self = Self::default();
+    }
+    /// The Hooks tab asked for the hooks screen (consumed once).
+    pub fn take_hooks(&mut self) -> bool {
+        std::mem::take(&mut self.hooks)
     }
     pub fn dirty(&self) -> bool {
         !self.edits.is_empty()
@@ -672,6 +680,7 @@ impl View {
         fn visit(items: &[Item], out: &mut Vec<Target>) {
             for item in items {
                 match item {
+                    Item::HooksEditor => out.push(Target::Hooks),
                     Item::Control(c) => out.push(Target::Control(c.id.clone())),
                     Item::Button { id, .. } => out.push(Target::Button(id.clone())),
                     Item::Line(items) | Item::Row { items, .. } => visit(items, out),
@@ -890,6 +899,15 @@ impl View {
                     self.sections.insert(id, now);
                 }
                 Some(Target::Button(id)) => self.press(&id),
+                Some(Target::Hooks) => {
+                    if self.dirty() {
+                        self.message =
+                            "Save or discard the settings draft before opening hooks.".into();
+                    } else {
+                        self.close();
+                        self.hooks = true;
+                    }
+                }
                 Some(Target::Control(_)) => {
                     let Some(control) = self.focused_control().cloned() else {
                         return;
@@ -1552,11 +1570,16 @@ impl Layout<'_> {
                 self.push3(rows, index, None);
             }
             Item::HooksEditor => {
-                self.line(
-                    x + 1,
-                    "Lifecycle hooks: open /hooks to list, edit and test them.".into(),
-                    Style::default().fg(p.muted).bg(p.surface),
+                let index = self.target(&Target::Hooks);
+                let focused = self.focused(index);
+                let rows = self.button(
+                    "Open the hooks editor (/hooks)",
+                    x,
+                    Self::button_width("Open the hooks editor (/hooks)"),
+                    focused,
+                    false,
                 );
+                self.push3(rows, index, None);
             }
             Item::Row { items, indent } => {
                 let dx = if *indent { 4 } else { 0 };

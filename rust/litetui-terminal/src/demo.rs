@@ -828,6 +828,16 @@ impl Demo {
             chat.settings.open_glassbox(action);
         }
     }
+    /// The settings dialog's Hooks tab: the native hooks screen, as /hooks opens it.
+    pub fn open_hooks_from_settings(&mut self) {
+        if self
+            .live
+            .as_mut()
+            .is_some_and(|chat| chat.settings.take_hooks_request())
+        {
+            self.show_work(Some(crate::work_view::Destination::Hooks));
+        }
+    }
     /// `/settings`: Python's tabbed settings dialog (settings_form), in one step.
     pub fn open_settings_form(&mut self) {
         if self.has_live_input() {
