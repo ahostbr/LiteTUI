@@ -72,7 +72,7 @@ def run(frontend, args):
     env = cf.child_environment(base, args.source, frontend)
     workspace = base / "workspace"
     workspace.mkdir()
-    env.update(LITETUI_PERF_CHUNKS="8", LITETUI_PERF_DELAY="0")
+    env.update(LITETUI_PERF_CHUNKS="8", LITETUI_PERF_DELAY="0.001")  # the runtime accepts .001-.1 s
     common = ["--backend", "custom", "--model", "perf-fixture", "--tool-profile", "strict", "--thinking-level",
               "default", "--server-mode", "connect", "--base-url", "http://127.0.0.1:45120/v1"]
     if frontend == "rust":
@@ -123,6 +123,9 @@ def run(frontend, args):
         settle(text, quiet=4.0, minimum=8.0, limit=args.startup)
         shoot("start")
         for name, keys in STEPS:
+            if not pty.isalive():
+                errors.append(f"frontend exited before step {name}")
+                break
             pty.write(keys)
             shoot(name)
             for _ in range(2):  # close the screen, then clear the composer (draft never sent)
@@ -155,6 +158,8 @@ def main():
     parser.add_argument("--rows", type=int, default=45)
     parser.add_argument("--startup", type=float, default=240.0)
     args = parser.parse_args()
+    # The children run with their own working directory, so every path they get is absolute.
+    args.out, args.binary, args.source = args.out.resolve(), args.binary.resolve(), args.source.resolve()
     assert not args.out.exists(), args.out
     args.out.mkdir(parents=True)
     result = {}
