@@ -1,0 +1,13 @@
+{
+  "type": "phase_closure",
+  "phase": "P0",
+  "observer": "Ryan",
+  "performance_accepted": false,
+  "scope": "Retained user-directed P0 phase closure. The unmeasured comparable performance baseline moved explicitly to P4; this is not a new approval or full-port acceptance.",
+  "quote": "Ryan directed this closure through Sentinel after observing that P0 had absorbed more than twelve hours of later-phase implementation. **P0 is closed now. It is not a gate for further offline expansion.**",
+  "source": {
+    "path": "docs/Plans/rust-tui-port/master.md",
+    "sha256": "549772b7c03ab6a5f0742e9dbc7b69f4b67f8d4fcf88628c42c6cd67fe3d2887"
+  },
+  "record_origin": "Derived from the canonical retained P0 exit section; this record checks that document, not an independent authentication of the speaker."
+}

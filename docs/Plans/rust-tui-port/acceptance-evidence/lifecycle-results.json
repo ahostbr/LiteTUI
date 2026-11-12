@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "kind": "lifecycle_results",
+  "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+  "status": "pending",
+  "pending_reason": "Both actual hosts still need the three retained fault/recovery runs, no replay and visible terminal restoration. The named Settings roundtrips and hidden controlled matrix do not establish this campaign. Desktop interaction remains stopped after Escape.",
+  "runs": []
+}

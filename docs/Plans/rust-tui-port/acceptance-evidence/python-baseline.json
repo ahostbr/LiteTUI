@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "performance_samples",
+  "frontend": "textual",
+  "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+  "status": "pending",
+  "pending_reason": "Matched Windows Terminal and LiteSuite measurements with observed cache conditions and complete required metrics are not yet captured. Desktop interaction remains stopped after Escape. Existing hidden-terminal measurements are supporting evidence only.",
+  "completed_at": null,
+  "runs": [],
+  "supporting_evidence": [
+    {
+      "path": "target/final-performance-prep/FINAL_RESULTS.json",
+      "sha256": "a33653d820bc77cf509d2314b7eb2c0b2092020037e4ed4055ef987a27ac46fe",
+      "scope": "Existing hidden-terminal small workload; not matched visible-host or observed cold/warm acceptance."
+    }
+  ]
+}
