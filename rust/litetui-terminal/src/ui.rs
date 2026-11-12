@@ -1560,7 +1560,8 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     app.footer.update_visible(&footer.actions);
     let footer_style = style(t.footer_foreground, t.footer_background);
     let row = |row: &crate::footer::FooterRow| {
-        let mut spans = vec![Span::raw(" ")];
+        // Python's footer starts at column 0 (its one cell of padding is on the right).
+        let mut spans = vec![];
         if row.overflow {
             spans.push(Span::raw("…"));
         }
@@ -1583,10 +1584,38 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         }
         Line::from(spans)
     };
+    // Python's second row: "|| strict on  ·  plan:off  meters:off" with the version at the right.
+    let mut permission = row(&footer.permission);
+    let version = app
+        .live
+        .as_ref()
+        .and_then(|chat| chat.runtime_state.version())
+        .map(|v| format!("v{v} "));
+    if app.live.is_some() && !footer.permission.fields.is_empty() {
+        permission.spans.push(Span::raw("  "));
+        permission.spans.push(Span::styled(
+            if presentation.task_manager {
+                "meters:on"
+            } else {
+                "meters:off"
+            },
+            footer_style,
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(vec![row(&footer.status), row(&footer.permission)]).style(footer_style),
+        Paragraph::new(vec![row(&footer.status), permission]).style(footer_style),
         areas[5],
     );
+    if let Some(version) = version
+        && areas[5].height >= 2
+        && usize::from(areas[5].width) > version.width() + 40
+    {
+        let w = version.width() as u16;
+        frame.render_widget(
+            Paragraph::new(version).style(footer_style),
+            Rect::new(areas[5].right() - w, areas[5].y + 1, w, 1),
+        );
+    }
     if !hint.is_empty() {
         let w = hint.width().min(usize::from(areas[5].width)) as u16;
         frame.render_widget(

@@ -14,7 +14,15 @@ struct ReadyFacts {
     conversation: Option<String>,
     thinking: Option<String>,
     context_ceiling: Option<u64>,
+    /// ready.context_loaded: ctx_max is the loaded window, not a ceiling ("max").
+    context_loaded: bool,
     tools: Option<crate::tool_mode::Facts>,
+    /// ready.seat_name: the registered seat the status row names (absent when unregistered).
+    seat: Option<String>,
+    /// ready.authority_glyphs: each profile's footer glyph, from tool_policy.stops_you.
+    glyphs: std::collections::BTreeMap<String, String>,
+    /// ready.version: LiteTUI's version, right-aligned on the second footer row.
+    version: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Update(UpdateKind);
@@ -80,6 +88,25 @@ impl Update {
                 conversation: optional_text(event, "conversation_id", 128)?,
                 thinking: optional_text(event, "thinking_level", 64)?,
                 context_ceiling: optional_count(event, "context_length")?.filter(|n| *n > 0),
+                context_loaded: event
+                    .get("context_loaded")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                seat: optional_text(event, "seat_name", 256)?,
+                version: optional_text(event, "version", 64)?,
+                glyphs: match event.get("authority_glyphs") {
+                    None | Some(Value::Null) => Default::default(),
+                    Some(Value::Object(map)) => map
+                        .iter()
+                        .map(|(k, v)| match v.as_str() {
+                            Some(g) if k.len() <= 64 && g.chars().count() <= 4 => {
+                                Ok((k.clone(), g.to_owned()))
+                            }
+                            _ => Err(io::Error::other("Invalid runtime authority glyph")),
+                        })
+                        .collect::<io::Result<_>>()?,
+                    Some(_) => return Err(io::Error::other("Invalid runtime authority glyphs")),
+                },
             })),
             Some("usage") => {
                 let usage = event
@@ -229,6 +256,10 @@ impl State {
             .as_ref()
             .map(|facts| facts.description())
     }
+    /// The source's version for the footer, once ready reported it.
+    pub fn version(&self) -> Option<&str> {
+        self.ready.as_ref().and_then(|r| r.version.as_deref())
+    }
     pub fn footer_fields(&self) -> Vec<F> {
         let Some(ready) = &self.ready else {
             return Vec::new();
@@ -246,11 +277,16 @@ impl State {
             Some((used, Some(maximum))) => format!("ctx {} / {}", count(used), count(maximum)),
             Some((used, None)) => format!("ctx {} / ?", count(used)),
             None => match ready.context_ceiling {
+                // Python prints "max" only when the number is a ceiling, not the loaded window.
+                Some(ceiling) if ready.context_loaded => format!("ctx — / {}", count(ceiling)),
                 Some(ceiling) => format!("ctx — / {} max", count(ceiling)),
                 None => "ctx —".into(),
             },
         };
         fields.push(F::new(K::Context, context));
+        if let Some(seat) = &ready.seat {
+            fields.push(F::new(K::Seat, label(seat)));
+        }
         if let Some(conversation) = &ready.conversation {
             fields.push(F::new(
                 K::Conversation,
@@ -269,14 +305,16 @@ impl State {
         if let Some(rate) = self.rate {
             fields.push(F::new(K::Throughput, format!("{rate:.1} tok/s")));
         }
+        // Python's authority field: "<glyph> <profile> on" (textfmt.profile_text); tools on/off
+        // is the title bar's, not the footer's.
+        let authority = |profile: &str| match ready.glyphs.get(profile) {
+            Some(glyph) => format!("{glyph} {profile} on"),
+            None => profile.to_owned(),
+        };
         if let Some(policy) = &self.runtime_policy {
             fields.push(F::new(
                 K::Authority,
-                format!(
-                    "{} · tools:{}",
-                    policy.effective_profile.as_str(),
-                    if policy.tools_enabled { "on" } else { "off" }
-                ),
+                authority(policy.effective_profile.as_str()),
             ));
             fields.push(F::new(
                 K::Plan,
@@ -287,14 +325,7 @@ impl State {
                 },
             ));
         } else if let Some(tools) = &ready.tools {
-            fields.push(F::new(
-                K::Authority,
-                format!(
-                    "tools:{} · {}",
-                    if tools.enabled { "on" } else { "off" },
-                    tools.profile.as_str()
-                ),
-            ));
+            fields.push(F::new(K::Authority, authority(tools.profile.as_str())));
         }
         // No seat registration, plan, cache or background facts
         // are available in these events. Never infer them from launch arguments.

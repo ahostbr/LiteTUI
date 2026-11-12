@@ -6317,6 +6317,14 @@ class LiteTUI(App):
             "work_lifecycle_version": getattr(self._launch_options, "work_lifecycle_version", None),
             "capabilities": list(OPERATIONS),
             "version": __version__,
+            # Footer facts a native frontend cannot derive (Ryan 2026-11-12, footer 1:1): the
+            # seat name the status row shows, whether ctx_max is the loaded window (else a
+            # ceiling, "max"), and each profile's footer glyph from tool_policy.stops_you.
+            "seat_name": (getattr(getattr(self, "seat", None), "name", None)
+                          if getattr(getattr(self, "seat", None), "registered", False) else None),
+            "context_loaded": bool(getattr(self, "ctx_loaded", False)),
+            "authority_glyphs": {name: ("||" if tool_policy.stops_you(name) else ">>")
+                                 for name in tool_policy.PROFILES},
             **self._rpc_model_state(),
             # T631: the host cannot derive this. LiteSuite spawns us with --rpc,
             # --cwd, --tool-profile, --mode and --model and NO backend -- the

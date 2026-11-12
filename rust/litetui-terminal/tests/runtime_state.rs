@@ -189,14 +189,17 @@ fn footer_and_ready_notice_use_reported_tool_policy() {
     app.observe_live(Observation::State(update(json!({
         "type":"ready","model":"reported-model","tools_enabled":true,"mcp_enabled":false,
         "tool_profile":"strict","approval_route":"host",
+        "authority_glyphs":{"strict":"||","interactive":"||","autonomous":">>"},
+        "seat_name":"RustLive","context_loaded":true,"context_length":8192,"version":"0.29.1",
     }))))
     .unwrap();
     app.observe_live(Observation::Ready).unwrap();
     assert!(app.notice.contains("Tools on") && app.notice.contains("strict"));
-    assert_eq!(
-        field(&app.live.as_ref().unwrap().runtime_state, K::Authority).as_deref(),
-        Some("tools:on · strict")
-    );
+    // Python's footer (textfmt.profile_text): "<glyph> <profile> on", no tools on/off.
+    let state = &app.live.as_ref().unwrap().runtime_state;
+    assert_eq!(field(state, K::Authority).as_deref(), Some("|| strict on"));
+    assert_eq!(field(state, K::Seat).as_deref(), Some("RustLive"));
+    assert_eq!(field(state, K::Context).as_deref(), Some("ctx — / 8,192"));
     let mut terminal = Terminal::new(TestBackend::new(110, 35)).unwrap();
     terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
     let cells = terminal
@@ -206,7 +209,11 @@ fn footer_and_ready_notice_use_reported_tool_policy() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(cells.contains("tools:on") && cells.contains("strict"));
+    assert!(cells.contains("|| strict on") && cells.contains("RustLive"));
+    assert!(
+        cells.contains("meters:off") && cells.contains("v0.29.1"),
+        "{cells}"
+    );
     app.finish_live(None);
     assert!(app.footer_fields.is_empty());
 }

@@ -80,6 +80,8 @@ pub struct Presentation {
     pub footer_throughput: bool,
     pub footer_cache: bool,
     pub key_hints: bool,
+    /// footer_task_manager: Python's "meters:on/off" toggle on the second footer row.
+    pub task_manager: bool,
     /// The dictation shortcut (`stt_hotkey`). It rides the same effective-settings delivery
     /// as the presentation values; a spelling this frontend cannot read binds nothing, as the
     /// source's runtime bind ignores a malformed key.
@@ -105,6 +107,7 @@ impl Default for Presentation {
             footer_throughput: true,
             footer_cache: true,
             key_hints: false,
+            task_manager: false,
             dictation_hotkey: Hotkey::parse("ctrl+space"),
             order: FOOTER_ORDER_DEFAULT.to_vec(),
         }
@@ -147,6 +150,7 @@ impl Presentation {
         flag("footer_show_tps", &mut out.footer_throughput)?;
         flag("footer_show_cache", &mut out.footer_cache)?;
         flag("footer_show_key_hints", &mut out.key_hints)?;
+        flag("footer_task_manager", &mut out.task_manager)?;
         // Plain/detail wording is applied by the source before text reaches this frontend.
         choice("error_message_style", "plain", "detail")?;
         if let Some(value) = choice("dialog_style", "modal", "sidebar")? {
