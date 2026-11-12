@@ -154,6 +154,8 @@ async def test_unknown_window_refuses_before_query_and_discards_stale_window(tmp
     app = turn_app(tmp_path)
     session = app.backend.session
     app.ctx_max, app.ctx_loaded = 1_000_000, True
+    # A session that has already answered once: an unknown window now refuses.
+    ledger_for(app).bind_session(app._claude_active_input["_claude_segment"], session.session_id)
 
     async def context():
         if measurement is None:
@@ -166,6 +168,45 @@ async def test_unknown_window_refuses_before_query_and_discards_stale_window(tmp
     assert app.backend.session is session
     assert not getattr(app, "_claude_compact_resume", None)
     assert ledger_for(app).pending(app._claude_active_input["_claude_segment"])[0]["state"] == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_first_turn_is_sent_without_a_window_reading(tmp_path):
+    # Ryan's first "hello" on Claude (2026-11-12) stopped with "Claude context usage
+    # unavailable": the cold CLI did not answer the reading in time. Nothing had reached the
+    # session, so no stale window could be reused and nothing could be due for compaction.
+    app = turn_app(tmp_path)
+    session = app.backend.session
+    app.ctx_max, app.ctx_loaded = 1_000_000, True
+
+    async def context():
+        raise RuntimeError("Claude context usage unavailable: no reply within 10 s")
+
+    session.get_context_usage = context
+    await stream_turn(app)
+    assert session.queried, "the first input must be sent"
+    # The window stays unknown rather than yesterday's.
+    assert app.ctx_max is None and not app.ctx_loaded
+
+
+@pytest.mark.asyncio
+async def test_context_reading_timeout_names_itself():
+    client = Client(None)
+
+    async def context():
+        await asyncio.sleep(3600)
+
+    client.get_context_usage = context
+    session = ClaudeSession(None, lambda _: client)
+    real_timeout = asyncio.timeout
+    try:
+        asyncio.timeout = lambda _seconds: real_timeout(0.05)
+        with pytest.raises(RuntimeError, match="no reply within 10 s"):
+            await session.get_context_usage()
+        assert session.lifecycle.failure is None
+    finally:
+        asyncio.timeout = real_timeout
+        await session.close()
 
 
 @pytest.mark.asyncio

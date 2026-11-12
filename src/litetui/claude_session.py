@@ -230,6 +230,9 @@ class ClaudeSession:
                         try:
                             async with asyncio.timeout(10):
                                 usage = await client.get_context_usage()
+                        except TimeoutError as exc:
+                            # str(TimeoutError()) is empty; say what happened.
+                            raise CommandRefused("Claude context usage unavailable: no reply within 10 s") from exc
                         except Exception as exc:
                             raise CommandRefused(f"Claude context usage unavailable: {exc}") from exc
                         pending.reply.set_result(usage)

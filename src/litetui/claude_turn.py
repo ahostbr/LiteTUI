@@ -692,7 +692,15 @@ async def stream_turn(app, *, origin: EventOrigin | None = None):
         effort = effort_for(app)
         session, bridge, normalizer = await session_for(app, backend, segment, effort)
         require_current_segment()  # Startup/model control awaited; ownership may have changed.
-        await measure_context(app, session)
+        try:
+            await measure_context(app, session)
+        except ContextUnavailable:
+            # Nothing has reached this native session yet (its id binds on the first reply), so
+            # there is no earlier window to reuse and nothing can be due for compaction; the
+            # window stays unknown (measure_context cleared it). A slow first reading from a cold
+            # CLI stopped Ryan's first "hello" (2026-11-12); a later turn still refuses without one.
+            if segment.get("session_id") is not None:
+                raise
         require_current_segment()
         if getattr(app, "_autocompact_due", lambda: None)() is not None:
             # The input never reached Claude. Keep it prepared until a summary
