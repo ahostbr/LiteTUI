@@ -1105,7 +1105,7 @@ Sentinel relayed Ryan's 2026-10-15 ~20:0x EDT goal: “we had it running fine ! 
 
 Keep Ratatui dependency choices compatible with `ratatui-rgp`: verify actual supported versions and Windows capability negotiation before locking the frontend dependencies. Do not promise compatibility from crate names alone. Later work should investigate an optional Ratty host path, inline 3D display and graceful unsupported-host fallback while preserving the mandatory LiteSuite embedded-terminal and Windows Terminal acceptance paths. No RGP implementation, clone edits, GPU workload or new UI redesign is authorized by this P0 checkpoint.
 
-Prior-art pointers supplied by Sentinel, not independently reverified here: `E:\SAS\REPO_CLONES\ratty` (Windows ConPTY/RGP work); Ryan's PR #66 reportedly merged upstream and #68 OSC-envelope-for-Windows reportedly closed unmerged on 10-11; conversation search phrase **Ratty LiteCode 3D Terminal Buddies**. Recover that design and measure the current crate/protocol contract before scheduling the later slice.
+Prior-art pointers supplied by Sentinel, not independently reverified here: `<repo clones>/ratty` (Windows ConPTY/RGP work); Ryan's PR #66 reportedly merged upstream and #68 OSC-envelope-for-Windows reportedly closed unmerged on 10-11; conversation search phrase **Ratty LiteCode 3D Terminal Buddies**. Recover that design and measure the current crate/protocol contract before scheduling the later slice.
 
 ## Visual-preview checkpoint — accepted direction, not runtime parity
 
