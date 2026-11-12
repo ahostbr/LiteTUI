@@ -13,6 +13,7 @@ RULES = [
      "<LiteTUI venv python>"),
     (re.compile(r"C:" + S + r"Projects" + S + r"LiteSound"), "<LiteSound repo>"),
     (re.compile(r"C:" + S + r"Projects" + S + r"LiteTUI"), "<LiteTUI repo>"),
+    (re.compile(r"C:" + S + r"Projects" + S + r"LiteSuite"), "<LiteSuite repo>"),
     (re.compile(r"C:" + S + r"Projects" + S + r"\.scratch"), "<scratch>"),
     (re.compile(r"C:" + S + r"Projects" + S + r"your-project"), "<your-project>"),
     (re.compile(r"C:" + S + r"Users" + S + r"Ryan" + S + r"AppData" + S + r"Local" + S + r"Temp"), "<temp>"),
