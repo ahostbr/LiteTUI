@@ -1,4 +1,5 @@
 """Owned restart migration uses exact known launch prefixes, never memory scans."""
+import os
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,9 @@ from _owned_seat import owned_app
 from litetui import appsvc, seat_prompts
 from litetui import prompt_overrides as prompts
 
-CATALOG = Path("C:/Projects/LiteSuite/resources/liteharness-plugin/prompts/cognitive-architectures")
+# The LiteSuite checkout next to this one, or $LITESUITE_ROOT (the tests skip when absent).
+CATALOG = (Path(os.environ.get("LITESUITE_ROOT") or Path(__file__).resolve().parents[2] / "LiteSuite")
+           / "resources/liteharness-plugin/prompts/cognitive-architectures")
 RECAP = "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
 
 

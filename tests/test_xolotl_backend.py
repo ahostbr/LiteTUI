@@ -134,10 +134,10 @@ def test_thinking_levels_are_serve_ds41s_and_ultra_folds_to_max():
 
 def test_cli_launch_options_map_onto_the_xolotl_settings():
     start = LaunchOptions(base_url="http://127.0.0.1:8150", server_mode="start",
-                          context_length=262144, model_path="F:/REPO_CLONES/Xolotl/strata-ds41-1017-v3.json")
+                          context_length=262144, model_path="D:/Example/Xolotl/strata-ds41-1017-v3.json")
     assert start.overrides(Settings(), "xolotl", None) == {
         "xolotl_host": "http://127.0.0.1:8150", "xolotl_max_context": 262144,
-        "xolotl_config": "F:/REPO_CLONES/Xolotl/strata-ds41-1017-v3.json"}
+        "xolotl_config": "D:/Example/Xolotl/strata-ds41-1017-v3.json"}
     with pytest.raises(ValueError, match="Xolotl context is fixed at startup"):
         LaunchOptions(context_length=131072).overrides(Settings(), "xolotl", None)
     with pytest.raises(ValueError, match="Xolotl has no server executable"):

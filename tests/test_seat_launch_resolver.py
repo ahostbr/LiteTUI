@@ -1,6 +1,6 @@
 r"""Opening another seat must not launch through an interpreter that lacks liteharness.
 
-Ryan 2026-10-24 (screenshot, LiteTUI-9ecb4b7a): "Own-seat launch refused: C:\Projects\LiteTUI\.venv\Scripts\python.exe:
+Ryan 2026-10-24 (screenshot, LiteTUI-9ecb4b7a): "Own-seat launch refused: <LiteTUI venv python>:
 Error while finding module specification for 'liteharness.cli' (ModuleNotFoundError: No module named 'liteharness')".
 agent_seat_launch and owner_mode spelled `[sys.executable, "-m", "liteharness.cli"]` by hand; sys.executable is the
 locked project venv, which deliberately has no liteharness (harness._liteharness_exe documents it). Both now go

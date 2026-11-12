@@ -6,7 +6,7 @@ both versions.
 
 .EXAMPLE
 .\New-YouTubeTranscriptSummaries.ps1 `
-  -TranscriptPath 'C:\Projects\LiteTUI\artifacts\youtube-top-10-transcripts'
+  -TranscriptPath '..\artifacts\youtube-top-10-transcripts'
 
 .NOTES
 The default model is qwen/qwen3.5-9b at LM Studio's local API endpoint.
@@ -15,7 +15,7 @@ files are never altered. Existing summaries are skipped unless -Force is used.
 #>
 [CmdletBinding()]
 param(
-    [string] $TranscriptPath = 'C:\Projects\LiteTUI\artifacts\youtube-top-10-transcripts',
+    [string] $TranscriptPath = (Join-Path $PSScriptRoot '..\artifacts\youtube-top-10-transcripts'),
     [string] $ApiBaseUrl = 'http://localhost:1234/v1',
     [string] $Model = 'qwen/qwen3.5-9b',
     [ValidateRange(512, 16384)]

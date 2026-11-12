@@ -26,9 +26,9 @@ from litetui.turn_engine import TurnEngine
 RECORDED_PROMPT_TOKENS = [79194, 80405, 80806, 81087, 83701, 85247, 85458, 86721, 86912]
 RECORDED_COMPLETION_TOKENS = [2432, 88, 591, 68, 1664, 289, 48, 168, 1334]
 WINDOW = 100_000
-REAL_CONVO = pathlib.Path(
-    r"C:\Projects\LiteTUI\.agents\DELETE\conversations\06d3a2e3-9dfd-48c9-86d1-59e2fc0ab82b\convo.jsonl"
-)
+# Ryan's DELETE seat record, inside the LiteTUI checkout (skipped where it is absent).
+REAL_CONVO = (pathlib.Path(__file__).resolve().parents[1] / ".agents" / "DELETE" / "conversations"
+              / "06d3a2e3-9dfd-48c9-86d1-59e2fc0ab82b" / "convo.jsonl")
 
 STRATA_REFUSAL = (
     "Error code: 400 - prompt ({prompt} tokens) + max tokens ({asked}) exceeds the context ({window}); "

@@ -118,7 +118,7 @@
       "mcp__SOTS_MCP_CORE__sots_help": 1
     },
     "example_source": {
-      "path": "C:\\Projects\\LiteTUI\\.agents\\Carmack-T0571-A\\conversations\\231568b6-5e03-422d-983c-6b2bf03f243a\\convo.jsonl",
+      "path": "<LiteTUI repo>\\.agents\\Carmack-T0571-A\\conversations\\231568b6-5e03-422d-983c-6b2bf03f243a\\convo.jsonl",
       "line": 27,
       "metadata_keys": [
         "items",
@@ -133,32 +133,32 @@
   },
   "raw_evidence": [
     {
-      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-host.json",
+      "path": "<LiteTUI repo>\\.worktrees\\T0355-A\\temp-working-dir\\t0355-host.json",
       "bytes": 16958,
       "sha256": "2ebab29c762639e01f525156980c2da79611a518da544e435f2327357aa184b5"
     },
     {
-      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-capture.json",
+      "path": "<LiteTUI repo>\\.worktrees\\T0355-A\\temp-working-dir\\t0355-capture.json",
       "bytes": 243097,
       "sha256": "8acea337d1985980fc8bca9e80b836be5fda890804a725c4ed7821cb3e4ee67c"
     },
     {
-      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-direct-first.json",
+      "path": "<LiteTUI repo>\\.worktrees\\T0355-A\\temp-working-dir\\t0355-direct-first.json",
       "bytes": 177301,
       "sha256": "ba863e069facb9c064b5f30cbb50dd1897977f2bdeb4b180c965ff5ab2972d19"
     },
     {
-      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-native-catalog.json",
+      "path": "<LiteTUI repo>\\.worktrees\\T0355-A\\temp-working-dir\\t0355-native-catalog.json",
       "bytes": 299259,
       "sha256": "ff79873a4675f75851061eae37e1a15a88dc493f15c63f21f00eb3b79cb2fc67"
     },
     {
-      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-history-routing.json",
+      "path": "<LiteTUI repo>\\.worktrees\\T0355-A\\temp-working-dir\\t0355-history-routing.json",
       "bytes": 116903,
       "sha256": "4986a83aa649675af05e10ec9bc82b37906948e612c948200359c96987ce8032"
     },
     {
-      "path": "C:\\Projects\\LiteTUI\\.worktrees\\T0355-A\\temp-working-dir\\t0355-code-mode-negative.json",
+      "path": "<LiteTUI repo>\\.worktrees\\T0355-A\\temp-working-dir\\t0355-code-mode-negative.json",
       "bytes": 228806,
       "sha256": "ba2303fec7315a6adb946a6daefef6baeb7c938e3b87b0c1a9166869859a1245"
     }

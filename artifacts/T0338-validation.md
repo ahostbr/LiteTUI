@@ -45,7 +45,7 @@ python -m pytest tests/test_prompt_edges_t0338.py tests/test_prompt_overrides_t0
 ```
 
 Final result: **303 passed in 49.35s**, recorded in task log
-`C:/Projects/LiteTUI/output/tasks/t-1b381d716f644898917bb85fc2ae9bbf.log`.
+`<LiteTUI repo>/output/tasks/t-1b381d716f644898917bb85fc2ae9bbf.log`.
 Prior snapshot: 302 passed in 49.81s; added native quoted-marker legacy test then
 native subset 4 passed in 3.27s. Never ran full suite.
 
@@ -58,7 +58,7 @@ Source split preserves the final blank line by design. Ruff/mypy unavailable;
 no install attempted. Editing tool lock files remain untracked, not deliverables.
 
 Tool-less child self-review log:
-`C:/Projects/LiteTUI/output/tasks/t-cdc232ecef0440e0abe1b4faad72363c.log`.
+`<LiteTUI repo>/output/tasks/t-cdc232ecef0440e0abe1b4faad72363c.log`.
 Addressed real managed-pair, historical dedup, nonce traversal, escaped metadata,
 retained-temp, audit-tail, orphan-retention, notice-failure, empty ordinary boundary,
 seat-boundary and explicit Claude provenance defects. Child concern about registry

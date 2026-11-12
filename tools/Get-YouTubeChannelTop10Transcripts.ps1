@@ -6,7 +6,7 @@ matches a phrase ("top 10" by default), and writes cleaned Markdown files.
 .EXAMPLE
 .\Get-YouTubeChannelTop10Transcripts.ps1 `
   -ChannelUrl 'https://www.youtube.com/@TheNextNewThingAI' `
-  -OutputPath 'C:\Projects\LiteTUI\artifacts\youtube-top-10-transcripts'
+  -OutputPath '..\artifacts\youtube-top-10-transcripts'
 
 .NOTES
 Requires yt-dlp on PATH. Manual English subtitles are requested first; auto

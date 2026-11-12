@@ -51,5 +51,5 @@ ran the real path.
 ## 4. Report
 
 Reply to Sentinel (`ba736bd4-d249-42c0-b1ed-04b597d753f0`) with the sha and what you
-measured. Full item text is also at the top of `C:/Projects/LiteSuite/TODO.md` under
+measured. Full item text is also at the top of `<LiteSuite repo>/TODO.md` under
 "LITETUI -- RAW TOOL OUTPUT CORRUPTS THE TUI".

@@ -113,7 +113,7 @@ def remove_bg(path, tol):
 ```
 
 (Reference implementation with a cleaner 4-neighbour guard:
-`C:\Projects\LiteTUI\temp-working-dir\remove_bg.py` if it still exists —
+`<LiteTUI repo>\temp-working-dir\remove_bg.py` if it still exists —
 that one is the one that was run and verified.)
 
 Runs in <1s per 1254² image on this box.

@@ -69,7 +69,7 @@ def server_python(root: Path) -> Path:
 
 
 def exe_stem(cfg: dict | None) -> str:
-    """`ds41_generate` for `F:\\...\\build-win\\ds41_generate.exe`, on any OS."""
+    """`ds41_generate` for `<xolotl root>\\build-win\\ds41_generate.exe`, on any OS."""
     name = re.split(r"[\\/]", str((cfg or {}).get("exe") or ""))[-1].lower()
     return name.removesuffix(".exe")
 

@@ -23,7 +23,7 @@ script dies the extension just goes back to retrying.
 
 1. `chrome://extensions`
 2. Turn on **Developer mode** (top right)
-3. **Load unpacked** → `C:\Projects\chrome-bridge\extension`
+3. **Load unpacked** → `<projects>\chrome-bridge\extension`
 
 To confirm: `python bridge.py ping` → `{"pong": true, "version": "0.3.0"}`.
 The reported version comes from the RUNNING worker, so it is also how you tell whether a
@@ -62,7 +62,7 @@ python relayctl.py
 ```
 
 ```
-  PyBridge relay C:\Projects\chrome-bridge
+  PyBridge relay <projects>\chrome-bridge
   --------------------------------------------------------------------
     status   RUNNING  extension v0.3.0  up 14s
     pid      204852
@@ -97,7 +97,7 @@ inherits its console.
 To run it detached on Windows so it survives the terminal that started it:
 
 ```powershell
-Start-Process python -ArgumentList 'C:\Projects\chrome-bridgeridge.py','serve' `
+Start-Process python -ArgumentList '<projects>\chrome-bridgeridge.py','serve' `
   -WindowStyle Hidden -RedirectStandardOutput relay.out.log -RedirectStandardError relay.err.log
 ```
 
