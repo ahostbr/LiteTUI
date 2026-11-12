@@ -1,7 +1,7 @@
 # Oxide handoff, paused 2026-11-12 (night pause by Ryan)
 
 Seat: Oxide (owner, Opus 5.5, agent 196c7cd3-0b5e-454b-8dc2-6ee284db3288), card T0565, worktree
-`C:/Projects/.worktrees/OpenBolt-rust-tui`, branch `work/rust-tui-OpenBolt` (pushed, never forced;
+`<worktree>`, branch `work/rust-tui-OpenBolt` (pushed, never forced;
 the LiteTUI repo is public and Ryan allowed pushing this branch). Nothing below is verified by Ryan
 unless it says so.
 
@@ -67,7 +67,7 @@ opened. Recorded as his word on bugs 1 and 2 for build 55fd754b only.
 
 - LiteSound port plan (plan only, Ryan decides): private repo `ahostbr/LiteSound`, branch
   `plan/rust-port`, commit 08868eea, `docs/plans/rust-port/plan.md`. Worktree
-  `C:/Projects/LiteSound/.worktrees/rust-port-plan`.
+  `<LiteSound repo>/.worktrees/rust-port-plan`.
 - Cargo cleanup: deleted `target/cargo-shared` and `rust/litetui-terminal/target/{debug,*-tests}`,
   9,589 MiB freed at the time; builds since recreated `target/cargo-shared`.
 - Packages: `target/oxide-pkg-55fd754b` (round 2, has the merge regressions above).

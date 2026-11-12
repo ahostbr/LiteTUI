@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import shutil
 import sys
 import threading
 import time
@@ -145,7 +147,8 @@ def run(frontend, args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
-    parser.add_argument("--python", type=Path, default=Path(r"C:\Projects\LiteTUI\.venv\Scripts\python.exe"))
+    parser.add_argument("--python", type=Path,
+                        default=Path(os.environ.get("LITETUI_PYTHON") or shutil.which("python") or "python"))
     parser.add_argument("--source", type=Path, default=ROOT)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--cols", type=int, default=140)

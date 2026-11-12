@@ -2,7 +2,7 @@
 
 ## Successor handoff - November 11, 2026
 
-Sentinel requested this committed handoff for an Opus 5.5 successor. This is not task completion. Work only in `C:/Projects/.worktrees/OpenBolt-rust-tui`, branch `work/rust-tui-OpenBolt`; `C:/Projects/LiteSuite` is the desktop development checkout, not the Rust-port checkout. The last preceding checkpoint is `33d9aca1` (reviewed sensitivity evidence); implemented product remains `c6a643fa4a353b52792a3b286ba33c85d65df9c4`. Resolve this handoff commit with `git log -1 --format=%H -- docs/Plans/rust-tui-port/remaining-parity.md`; Sentinel receives its exact SHA. No merge, push, release, cutover, installation or worktree deletion is authorized.
+Sentinel requested this committed handoff for an Opus 5.5 successor. This is not task completion. Work only in `<worktree>`, branch `work/rust-tui-OpenBolt`; `<projects>/LiteSuite` is the desktop development checkout, not the Rust-port checkout. The last preceding checkpoint is `33d9aca1` (reviewed sensitivity evidence); implemented product remains `c6a643fa4a353b52792a3b286ba33c85d65df9c4`. Resolve this handoff commit with `git log -1 --format=%H -- docs/Plans/rust-tui-port/remaining-parity.md`; Sentinel receives its exact SHA. No merge, push, release, cutover, installation or worktree deletion is authorized.
 
 **Current authorization and open work:** Ryan explicitly reaffirmed **keep desktop checks stopped**, and deferred audio for his own later checks. A hands-on checklist has been delivered. Sentinel says Ryan will use Rust LiteTUI and report bugs. Do not restart desktop/audio or another diagnostic merely on handoff. No unresolved Rust product defect is established by the current audit. Remaining acceptance is actual-host behavior/recovery, Mark result/apply/cancel, Sidecar proposals/refresh/close, later voice, matched observed performance/approved limits, visual signoff and final evidence closure. Representative automated cases are not exhaustive live acceptance. P0 remains closed by Ryan; the historical 528 discovery rows are not a new implementation backlog.
 
@@ -912,7 +912,7 @@ Verification: **210 ordinary Rust tests + 10 controlled-process tests**, fmt/Cli
 
 The existing composer and themed transcript now connect to one owned real Python child for serialized multi-turn native chat. Real Claude retained ORANGE across two prompts and exited cleanly (`output/tasks/t-af329ae5909646e59918061f69e447f8.log`). The UI uses the existing assistant geometry, editing/history/clipboard/theme/scroll behavior without fixture messages or mock tool actions. ACK is not completion; unique command IDs cannot match a previous turn's ACK. Busy Enter preserves the draft. Ctrl+Q and terminal I/O errors wait for process-tree cleanup; view and cleanup failures remain distinct.
 
-Launch: `& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-chat.ps1'` (or double-click `open-chat.cmd`). Fresh isolated data/settings, Claude Sonnet, no local models, tools/MCP off. The one-prompt `open-live.ps1` and offline `open-preview.cmd` remain separate modes.
+Launch: `& '<worktree>/rust/litetui-terminal/open-chat.ps1'` (or double-click `open-chat.cmd`). Fresh isolated data/settings, Claude Sonnet, no local models, tools/MCP off. The one-prompt `open-live.ps1` and offline `open-preview.cmd` remain separate modes.
 
 This is **text-chat progress, not 100% parity**. Native tool enablement/approval UI and remaining tool/thinking controls, footer actions/preferences and remaining facts, slash dispatch, full GUI reconciliation, reconnect/resume, screens/plugins/host behavior, persistence and performance gates remain open. Display work is independently bounded before layout; these scoped safety limits are not source parity.
 
@@ -922,15 +922,15 @@ Historical checkpoint sections below preserve what was true at those milestones;
 
 ## First live checkpoint — not full parity
 
-The Rust binary now launches the real owned Python CLI child in a new isolated data root, sends one short prompt to Claude `claude-sonnet-5-5`, prints the real streamed reply and shuts down. The first measured run returned `Hello`, `turn_end: stop` and successful Python exit; a fresh fleet discovery showed no remaining `RustLive` seat. Evidence: `C:/Projects/LiteTUI/output/tasks/t-24b0ef83c301422c9037191dd755d13b.log`.
+The Rust binary now launches the real owned Python CLI child in a new isolated data root, sends one short prompt to Claude `claude-sonnet-5-5`, prints the real streamed reply and shuts down. The first measured run returned `Hello`, `turn_end: stop` and successful Python exit; a fresh fleet discovery showed no remaining `RustLive` seat. Evidence: `<LiteTUI repo>/output/tasks/t-24b0ef83c301422c9037191dd755d13b.log`.
 
 Launch from PowerShell:
 
 ```powershell
-& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-live.ps1'
+& '<worktree>/rust/litetui-terminal/open-live.ps1'
 ```
 
-The launcher builds current source and retains a new `C:/Projects/.scratch/T0565/claude-live-<guid>` root. Settings use shipped defaults plus isolated overrides; shared settings are not read or changed. No local model discovery/start/load; tools and MCP disabled. No automatic retry or backend fallback. This explicit `--live` mode uses single-turn legacy native RPC with bounded ingress, output/command queues and deadlines. It is plain terminal streaming, **not yet the existing Ratatui composer/transcript**, GUI reconciliation or full parity. Generic identified-event Session is separately compiled/tested, not misapplied to native Claude's uncorrelated legacy messages.
+The launcher builds current source and retains a new `claude-live-<guid>` root under `$env:LITETUI_SCRATCH` (default: `litetui-rust` in the system temp folder). Settings use shipped defaults plus isolated overrides; shared settings are not read or changed. No local model discovery/start/load; tools and MCP disabled. No automatic retry or backend fallback. This explicit `--live` mode uses single-turn legacy native RPC with bounded ingress, output/command queues and deadlines. It is plain terminal streaming, **not yet the existing Ratatui composer/transcript**, GUI reconciliation or full parity. Generic identified-event Session is separately compiled/tested, not misapplied to native Claude's uncorrelated legacy messages.
 
 The first run temporarily registered in the real fleet: data-root isolation is not harness-home isolation. The child disappeared cleanly afterward, but isolating liteharness home remains open. Windows child containment now assigns a suspended process to a private kill-on-close Job Object before resuming it; graceful cleanup waits for all contained processes, not just the venv launcher. Other OS live launching currently refuses; cross-platform cleanup remains P4.
 
@@ -963,7 +963,7 @@ The uncommitted session-owner work is carried into this live path, not checkpoin
 - Agents: [OpenBolt].
 - Conversations: [83816ba3-d370-4c4f-b0f7-022cc4b4074d].
 - Source revisions: [LiteTUI develop 9ef5337].
-- Worktree: `C:\Projects\.worktrees\OpenBolt-rust-tui`; branch `work/rust-tui-OpenBolt`.
+- Worktree: `<worktree>`; branch `work/rust-tui-OpenBolt`.
 - Back references: Ryan's request, “port litetui to rust”; v9 questionnaire in the conversation above; T0565.
 - Forward references: [sub-terminal.md](sub-terminal.md), [inventory.md](inventory.md).
 - Append future metadata entries; do not replace the provenance lists.

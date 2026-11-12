@@ -6,7 +6,7 @@ Master: [master.md](master.md). Source inventory: [inventory.md](inventory.md).
 
 - Task T0565; one workstream, sequential phases P0–P5. Status: P0 in progress; user-requested offline Rust preview implemented. Real-runtime P1 gate not passed.
 - Created 2026-10-15; modified [2026-10-15]; agents [OpenBolt]; source [9ef5337]; conversation [83816ba3-d370-4c4f-b0f7-022cc4b4074d]. Append future metadata.
-- Work only in `C:\Projects\.worktrees\OpenBolt-rust-tui`, branch `work/rust-tui-OpenBolt`. Public repository: local commits only, no secrets or private transcripts in fixtures.
+- Work only in `<worktree>`, branch `work/rust-tui-OpenBolt`. Public repository: local commits only, no secrets or private transcripts in fixtures.
 - Goal: full baseline UI parity on Windows, verified in LiteSuite's embedded terminal and Windows Terminal. Preserve familiar layout/keys. Python remains installed temporarily. Preserve custom plugin behavior but allow its UI source to change. Use separate fresh data; never reset old state. All backend and authority behavior remains in scope.
 - No timeline until inventory is reconciled. No “MVP complete” substituting for parity. Later phases may not proceed with missing contract details.
 

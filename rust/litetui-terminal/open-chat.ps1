@@ -1,5 +1,5 @@
 param(
-    [string]$Python = 'C:/Projects/LiteTUI/.venv/Scripts/python.exe',
+    [string]$Python = $(if ($env:LITETUI_PYTHON) { $env:LITETUI_PYTHON } else { (Get-Command python -ErrorAction Stop).Source }),
     [ValidateSet('off', 'on')][string]$Tools = 'off',
     [ValidateSet('strict', 'interactive', 'autonomous')][string]$ToolProfile,
     [string]$Workspace,
@@ -50,8 +50,9 @@ if (-not [string]::IsNullOrWhiteSpace($Workspace)) {
 $source = (Resolve-Path "$PSScriptRoot/../..").Path
 & cargo build --manifest-path "$PSScriptRoot/Cargo.toml" --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "Rust build failed: $LASTEXITCODE" }
+$scratch = if ($env:LITETUI_SCRATCH) { $env:LITETUI_SCRATCH } else { Join-Path ([System.IO.Path]::GetTempPath()) 'litetui-rust' }
 $root = if ([string]::IsNullOrWhiteSpace($DataRoot)) {
-    'C:/Projects/.scratch/T0565/claude-chat-' + [guid]::NewGuid().ToString('N')
+    Join-Path $scratch ('claude-chat-' + [guid]::NewGuid().ToString('N'))
 } else {
     [System.IO.Path]::GetFullPath($DataRoot)
 }

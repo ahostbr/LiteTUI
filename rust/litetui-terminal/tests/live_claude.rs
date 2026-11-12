@@ -23,7 +23,10 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let root = PathBuf::from("C:/Projects/.scratch/T0565").join(format!(
+    let root = std::env::var_os("LITETUI_LIVE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("litetui-rust"))
+        .join(format!(
         "interactive-smoke-{}-{}",
         std::process::id(),
         SystemTime::now()

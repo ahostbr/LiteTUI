@@ -224,18 +224,18 @@ These paths have controlled source/child-process coverage. Installed engines, pr
 Run in a terminal:
 
 ```powershell
-& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-chat.ps1'
+& '<worktree>/rust/litetui-terminal/open-chat.ps1'
 ```
 
 To enable source-authorized tools in a chosen workspace:
 
 ~~~powershell
-& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-chat.ps1' -Tools on -ToolProfile strict -Workspace 'C:/Projects/your-project'
+& '<worktree>/rust/litetui-terminal/open-chat.ps1' -Tools on -ToolProfile strict -Workspace '<your-project>'
 ~~~
 
 Tools default off. Without -ToolProfile, a native picker asks before Python starts; Escape or Ctrl+Q cancels without creating runtime state. Arrow keys or a click select a row, and a fresh Enter confirms. Redirected launches must supply --tool-profile. Strict asks before sensitive actions; interactive and autonomous are also explicit source-profile choices. The runtime must confirm the requested mode/profile, workspace and approval-host route before any prompt is sent. Startup also negotiates management protocol 1 and reads the actual source state before enabling the composer. Older sources without this contract fail with an update diagnostic. External MCP is still off. This launcher creates fresh data by default; use -DataRoot and -Resume for the saved restart path above.
 
-Or double-click **`open-chat.cmd`** for a new dark Windows Terminal window. Both build current source and start Claude `claude-sonnet-5-5` in a new retained `C:/Projects/.scratch/T0565/claude-chat-<guid>` root. No local model service is queried or started. Pass `-Python <exe>` to the PowerShell launcher to override the interpreter.
+Or double-click **`open-chat.cmd`** for a new dark Windows Terminal window. Both build current source and start Claude `claude-sonnet-5-5` in a new retained `claude-chat-<guid>` root under `$env:LITETUI_SCRATCH` (default: `litetui-rust` in the system temp folder). No local model service is queried or started. The interpreter is `$env:LITETUI_PYTHON`, else `python` on PATH; pass `-Python <exe>` to override it.
 
 - Type a prompt; **Enter** sends it. Replies stream into the existing themed assistant-card geometry. Subsequent prompts retain the real Python/Claude conversation.
 - **Esc** while a turn is active opens stop confirmation; **Ctrl+Esc** reaches it during a question or approval. Keep going is selected by default. A second confirmed stop forces interruption. The session waits for source settlement before accepting another prompt, retains partial output, and never replays the stopped prompt. Stopping does not undo earlier tool effects.
@@ -250,7 +250,7 @@ Or double-click **`open-chat.cmd`** for a new dark Windows Terminal window. Both
 - Tools can now be enabled explicitly with --tools on --workspace <absolute-directory> and --tool-profile strict|interactive|autonomous (explicit selection required); the footer reports actual source policy. External MCP remains off. F8 opens owned saved conversations and F11 routes supported commands and prepared skills. The management controls described in this README refresh their own source facts and require their normal review/readback before mutation. Unsupported runtime events fail visibly; no implicit approval or mock tool action occurs.
 - Long live conversations use bounded pages. PgUp/PgDn or the wheel at page edges moves between older and newer rows; Ctrl+Home/End reaches the first/latest page. The banner shows the absolute turn range. Older pages remain stationary when following is off; changing pages invalidates old selections and mouse targets. All retained rows keep their identities and text independently of source compaction. Retention is limited to 8 MiB text, 8 MiB charged display/metadata units and 16,384 rows. Each row and rendered page is limited to 32,768 display units, with at most 64 rows rendered per page. These are accounting limits, not measured process memory. The source Work ledger separately retains its 4,096 lifetime admission limit. Limits refuse additional content without silent clipping. F6 continues to inspect source Saved History. The composer accepts up to 16,384 characters; transport prompts have a 64 KiB ceiling.
 
-**Evidence:** real Claude returned `ORANGE` on two sequential prompts, including recall from the first turn, then whole-job cleanup returned `Ok(())`: `C:/Projects/LiteTUI/output/tasks/t-af329ae5909646e59918061f69e447f8.log`. Automated TestBackend tests exercise live composer/rows/card geometry without fixture text; controlled child tests exercise serialized commands and error/quit cleanup. **Ryan's actual desktop hands-on acceptance is pending.** That older run stopped desktop checks during gaming. On November 11 Ryan authorized real provider/device and desktop acceptance and requested the dev Suite through `C:/Projects/LiteSuite/run.bat`; current evidence is in the port master. The older idle visual-test runtime was stopped by exact owned PID, which remains forced cleanup, not graceful-quit evidence.
+**Evidence:** real Claude returned `ORANGE` on two sequential prompts, including recall from the first turn, then whole-job cleanup returned `Ok(())`: `<LiteTUI repo>/output/tasks/t-af329ae5909646e59918061f69e447f8.log`. Automated TestBackend tests exercise live composer/rows/card geometry without fixture text; controlled child tests exercise serialized commands and error/quit cleanup. **Ryan's actual desktop hands-on acceptance is pending.** That older run stopped desktop checks during gaming. On November 11 Ryan authorized real provider/device and desktop acceptance and requested the dev Suite through `<projects>/LiteSuite/run.bat`; current evidence is in the port master. The older idle visual-test runtime was stopped by exact owned PID, which remains forced cleanup, not graceful-quit evidence.
 
 **Approval-stop verification (2026-10-29):** 252 ordinary Rust tests and all 15 explicitly enabled controlled-process tests passed. The controlled child emitted two stopped turns (ACK before closure, then ACK after the single terminal event), remained alive beyond the previous two-second deadline, accepted a third explicit prompt and shut down cleanly. One-shot refusal without a local request returned failure with successful cleanup. Renderer regressions verify the persistent stopped label, escaped reason, partial reply, follow-up, shutdown and retained display budget. Cargo fmt, Clippy with warnings denied, build, CLI help and plan-document checks passed on Rust/Cargo 1.92.0. No real-provider test or desktop interaction was performed; the paid Claude smoke remained ignored in the ordinary suite. This is a continuation checkpoint, not full parity or tool-enabled acceptance.
 
@@ -268,7 +268,7 @@ Or double-click **`open-chat.cmd`** for a new dark Windows Terminal window. Both
 
 **Reasoning verification:** Python producer regression tests first failed for lost append/replace metadata, then passed after the additive fix. The affected Python set has 110 passes; focused Ruff/mypy are clean. Rust renderer and controlled-child tests cover replacement, isolation from answers, lifecycle refusal, escaping and shared limits. Real Claude math smoke (`output/tasks/t-4af3d61556b04f149298327239cbb2ee.log`) emitted empty reasoning deltas plus an empty replacement snapshot, then answered and exited cleanly. That proves live wire compatibility, **not nonempty reasoning or desktop visual acceptance**; nonempty replacement/render evidence is controlled.
 
-**Footer verification:** 210 ordinary Rust tests + 10 controlled-process tests pass. A further real two-turn Claude smoke observed reported ready facts and measured context (`6,267 / 200,000` after turn two), with cleanup `Ok(())`: `C:/Projects/LiteTUI/output/tasks/t-80d844f0b563461ba1cd1e2cb989e367.log`. Renderer tests cover the actual footer path. Severity colours, footer actions/preferences and unreported facts remain open.
+**Footer verification:** 210 ordinary Rust tests + 10 controlled-process tests pass. A further real two-turn Claude smoke observed reported ready facts and measured context (`6,267 / 200,000` after turn two), with cleanup `Ok(())`: `<LiteTUI repo>/output/tasks/t-80d844f0b563461ba1cd1e2cb989e367.log`. Renderer tests cover the actual footer path. Severity colours, footer actions/preferences and unreported facts remain open.
 
 Direct syntax: `litetui-rs --interactive --python <exe> --source <repo> --data-root <absolute directory> --backend claude --model claude-sonnet-5-5 [--timeout 180]`. It requires a real terminal; prompts come from the composer, not `--prompt`.
 
@@ -277,16 +277,16 @@ Direct syntax: `litetui-rs --interactive --python <exe> --source <repo> --data-r
 From PowerShell, one command (builds current source; requires the existing Python environment and Claude authentication):
 
 ```powershell
-& 'C:/Projects/.worktrees/OpenBolt-rust-tui/rust/litetui-terminal/open-live.ps1'
+& '<worktree>/rust/litetui-terminal/open-live.ps1'
 ```
 
-Optionally pass `-Prompt 'Your short prompt'` or `-Python 'path/to/python.exe'`. This uses Claude `claude-sonnet-5-5`; no automatic fallback or retry. Each invocation creates a **new** `C:/Projects/.scratch/T0565/claude-live-<guid>` data root, retained for diagnosis. Its settings contain explicit isolated overrides layered on shipped defaults, never a copy of live settings. This launcher keeps tools and external MCP disabled by default. This is ordinary owned CLI startup, not a constructor/ownership bypass.
+Optionally pass `-Prompt 'Your short prompt'` or `-Python 'path/to/python.exe'`. This uses Claude `claude-sonnet-5-5`; no automatic fallback or retry. Each invocation creates a **new** `claude-live-<guid>` data root under `$env:LITETUI_SCRATCH` (default: `litetui-rust` in the system temp folder), retained for diagnosis. Its settings contain explicit isolated overrides layered on shipped defaults, never a copy of live settings. This launcher keeps tools and external MCP disabled by default. This is ordinary owned CLI startup, not a constructor/ownership bypass.
 
 The direct binary interface is `--live --python <exe> --source <repo> --data-root <absolute directory> --backend <claude|codex> --model <slug> --prompt <text> --tool-profile <strict|interactive|autonomous> [--timeout <1..600 seconds>]`. It also works with redirected stdout when the profile is supplied explicitly. Claude was verified; Codex is not live-verified by this milestone.
 
 This one-shot path is **plain streaming terminal output**; use `--interactive` above for the Ratatui composer/transcript. It uses source-defined single-turn legacy RPC, not negotiated GUI events or invented execution identities. Ready must match the requested backend/model; ACK is not completion. Only `turn_end` with `stopReason: stop`, no error and received answer text succeeds. Unknown/interactivity events fail rather than receiving automatic approvals. Native snapshots are explicitly labelled as replacements. Control characters are escaped. Raw frames, channel chunks, stderr tail and emitted answer size have explicit bounds; the runtime has a deadline and graceful shutdown. Windows assigns the suspended child to a private kill-on-close Job before resuming it, and cleanup waits for the whole job. Stalled stdin/stdout cannot block the supervisor; stdout remains validated through shutdown/EOF. Forced termination is reported as failure. Non-Windows live startup refuses.
 
-**Measured evidence:** one real Claude prompt returned `Hello`, followed by `turn_end: stop`, successful Python exit, and no remaining `RustLive` agent in a fresh fleet discovery. Smoke log: `C:/Projects/LiteTUI/output/tasks/t-24b0ef83c301422c9037191dd755d13b.log`. The child temporarily registered in the real fleet despite its isolated data root; **liteharness-home isolation remains a known gap**. Process exit alone is not a universal provider-descendant cleanup proof. No local model service was queried or started. Native tool views/approvals, full state reconciliation and the rest of the parity plan remain open.
+**Measured evidence:** one real Claude prompt returned `Hello`, followed by `turn_end: stop`, successful Python exit, and no remaining `RustLive` agent in a fresh fleet discovery. Smoke log: `<LiteTUI repo>/output/tasks/t-24b0ef83c301422c9037191dd755d13b.log`. The child temporarily registered in the real fleet despite its isolated data root; **liteharness-home isolation remains a known gap**. Process exit alone is not a universal provider-descendant cleanup proof. No local model service was queried or started. Native tool views/approvals, full state reconciliation and the rest of the parity plan remain open.
 
 ## Open it on Windows
 
@@ -295,7 +295,7 @@ Double-click **`open-preview.cmd`** in this folder. It opens a separate, explici
 From a LiteSuite terminal pane (or any interactive terminal):
 
 ```powershell
-cd C:\Projects\.worktrees\OpenBolt-rust-tui\rust\litetui-terminal
+cd <worktree>\rust\litetui-terminal
 cargo build --locked
 .\target\debug\litetui-rs.exe --preview
 ```

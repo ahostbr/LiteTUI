@@ -230,7 +230,7 @@ def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
 
 # ── speed presets for a DeepSeek launch recipe (Ryan 2026-11-08) ────────────
 #
-# Measured 2026-11-08 on the RTX 5090 / 96 GB box with the sync build (C:/Projects/.scratch/T1192/bench-*), DSpark, prefix reuse on, 131072 window.
+# Measured 2026-11-08 on the RTX 5090 / 96 GB box with the sync build (<scratch>/T1192/bench-*), DSpark, prefix reuse on, 131072 window.
 # The host tier is how many of the 7,680 experts sit in pinned RAM (8.19 MiB each); the rest are read from the SSD on every prefill pass.
 # Prefill times are first-token times on a cold prompt; run-to-run noise is about +-25%, so read the tiers as orders, not decimals.
 #   old build, live session: 83K prompt 405 s (206 tok/s)

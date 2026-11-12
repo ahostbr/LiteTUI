@@ -541,7 +541,10 @@ fn real_claude_reads_a_file_compacts_with_tools_and_recalls_it() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let root = PathBuf::from("C:/Projects/.scratch/T0565").join(format!(
+    let root = std::env::var_os("LITETUI_LIVE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("litetui-rust"))
+        .join(format!(
         "claude-acceptance-{}-{}",
         std::process::id(),
         SystemTime::now()
