@@ -1,12 +1,14 @@
 param(
-    [string]$Python = $(if ($env:LITETUI_PYTHON) { $env:LITETUI_PYTHON } else { (Get-Command python -ErrorAction Stop).Source }),
+    [string]$Python,
     [string]$Prompt = 'Reply with exactly one word: Hello. Do not use tools.',
     [ValidateSet('strict', 'interactive', 'autonomous')][string]$ToolProfile
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'launch-options.ps1')
 $profileArgs = @()
 if ($PSBoundParameters.ContainsKey('ToolProfile')) { $profileArgs = @('--tool-profile', $ToolProfile) }
 $source = (Resolve-Path "$PSScriptRoot/../..").Path
+if ([string]::IsNullOrWhiteSpace($Python)) { $Python = Resolve-LiteTuiPython $source }
 $manifest = Join-Path $PSScriptRoot 'Cargo.toml'
 & cargo build --manifest-path $manifest --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "Rust build failed: $LASTEXITCODE" }

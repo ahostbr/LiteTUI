@@ -1,3 +1,21 @@
+# The Python that runs LiteTUI's backend: $env:LITETUI_PYTHON; else the main checkout's .venv
+# (git's common dir, so a worktree finds the repository's environment with its optional extras such
+# as the Claude SDK); else this tree's own .venv; else python on PATH.
+function Resolve-LiteTuiPython {
+    param([string]$Source)
+    if ($env:LITETUI_PYTHON) { return $env:LITETUI_PYTHON }
+    $candidates = @()
+    $common = & git -C $Source rev-parse --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -eq 0 -and $common) {
+        $candidates += Join-Path (Split-Path $common -Parent) '.venv/Scripts/python.exe'
+    }
+    $candidates += Join-Path $Source '.venv/Scripts/python.exe'
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
+    }
+    return (Get-Command python -ErrorAction Stop).Source
+}
+
 # Invocation-only forwarding shared by checkout and portable launchers.
 # Rust validates combinations before runtime state is created; Python owns readiness.
 function Get-LiteTuiLaunchArguments {

@@ -1,5 +1,5 @@
 param(
-    [string]$Python = $(if ($env:LITETUI_PYTHON) { $env:LITETUI_PYTHON } else { (Get-Command python -ErrorAction Stop).Source }),
+    [string]$Python,
     [ValidateSet('off', 'on')][string]$Tools = 'off',
     [ValidateSet('strict', 'interactive', 'autonomous')][string]$ToolProfile,
     [string]$Workspace,
@@ -48,6 +48,8 @@ if (-not [string]::IsNullOrWhiteSpace($Workspace)) {
     $workspaceArgs = @('--workspace', $resolvedWorkspace)
 }
 $source = (Resolve-Path "$PSScriptRoot/../..").Path
+if ([string]::IsNullOrWhiteSpace($Python)) { $Python = Resolve-LiteTuiPython $source }
+Write-Host "Python backend: $Python"
 & cargo build --manifest-path "$PSScriptRoot/Cargo.toml" --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "Rust build failed: $LASTEXITCODE" }
 $scratch = if ($env:LITETUI_SCRATCH) { $env:LITETUI_SCRATCH } else { Join-Path ([System.IO.Path]::GetTempPath()) 'litetui-rust' }
