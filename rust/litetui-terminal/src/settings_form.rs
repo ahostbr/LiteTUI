@@ -27,6 +27,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub const READ: &str = "gui.settings.native_form";
 pub const SAVE: &str = "gui.settings.native_form_save";
+pub const RESTORE: &str = "gui.settings.native_form_restore";
 pub const MAX_BYTES: usize = 1024 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_ITEMS: usize = 4096;
@@ -348,6 +349,10 @@ pub enum Intent {
         form: String,
         values: Map<String, Value>,
     },
+    /// Python's confirmed Restore defaults.
+    Restore {
+        form: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -415,6 +420,7 @@ enum Hit {
     Clear,
 }
 const CONFIRM: [&str; 3] = ["Save", "Discard", "Keep editing"];
+const RESTORE_CONFIRM: [&str; 2] = ["Restore defaults", "Keep editing"];
 
 #[derive(Default)]
 pub struct View {
@@ -430,6 +436,8 @@ pub struct View {
     cursor: usize,
     popup: Option<usize>,
     confirm: Option<usize>,
+    /// The open confirmation is Python's restore one, not the unsaved-changes one.
+    restoring: bool,
     /// Python's `#set-error` line: the last save's message.
     message: String,
     /// The search box (Python's #set-search) and its caret.
@@ -812,6 +820,22 @@ impl View {
         self.confirm = None;
         self.message = "Saving…".into();
     }
+    fn end_confirm(&mut self) {
+        self.confirm = None;
+        self.restoring = false;
+    }
+    fn restore(&mut self) {
+        let Some(form) = &self.form else {
+            return;
+        };
+        self.intent = Some(Intent::Restore {
+            form: form.token.clone(),
+        });
+        self.edits.clear();
+        self.waiting = true;
+        self.end_confirm();
+        self.message = "Restoring defaults…".into();
+    }
     fn cancel(&mut self) {
         if self.dirty() {
             self.confirm = Some(0);
@@ -823,6 +847,10 @@ impl View {
         match id {
             "set-save" => self.save(),
             "set-cancel" => self.cancel(),
+            "set-defaults" => {
+                self.restoring = true;
+                self.confirm = Some(0);
+            }
             _ => {
                 let label = self
                     .form
@@ -942,14 +970,18 @@ impl View {
             return;
         }
         if let Some(choice) = self.confirm {
+            let count = if self.restoring { 2 } else { 3 };
             match key.code {
-                KeyCode::Left | KeyCode::BackTab => self.confirm = Some((choice + 2) % 3),
-                KeyCode::Right | KeyCode::Tab => self.confirm = Some((choice + 1) % 3),
-                KeyCode::Esc => self.confirm = None,
-                KeyCode::Enter => match choice {
-                    0 => self.save(),
-                    1 => self.close(),
-                    _ => self.confirm = None,
+                KeyCode::Left | KeyCode::BackTab => {
+                    self.confirm = Some((choice + count - 1) % count)
+                }
+                KeyCode::Right | KeyCode::Tab => self.confirm = Some((choice + 1) % count),
+                KeyCode::Esc => self.end_confirm(),
+                KeyCode::Enter => match (self.restoring, choice) {
+                    (true, 0) => self.restore(),
+                    (false, 0) => self.save(),
+                    (false, 1) => self.close(),
+                    _ => self.end_confirm(),
                 },
                 _ => {}
             }
@@ -2055,19 +2087,30 @@ impl View {
                 );
                 buf.set_string(crect.right() - 1, y, r, edge);
             }
+            // SettingsExitConfirm's two forms: unsaved changes, or restore defaults.
+            let (title, sub, labels): (&str, &str, &[&str]) = if self.restoring {
+                (
+                    "Restore all settings to defaults?",
+                    "This replaces the current draft and applies only after you confirm.",
+                    &RESTORE_CONFIRM,
+                )
+            } else {
+                (
+                    "Unsaved settings changes",
+                    "Save the draft, discard it, or return to the settings panel.",
+                    &CONFIRM,
+                )
+            };
             buf.set_string(
                 crect.x + 3,
                 crect.y + 2,
-                "Unsaved settings changes",
+                title,
                 panel.add_modifier(Modifier::BOLD),
             );
             buf.set_string(
                 crect.x + 3,
                 crect.y + 3,
-                clip(
-                    "Save the draft, discard it, or return to the settings panel.",
-                    inner - 4,
-                ),
+                clip(sub, inner - 4),
                 Style::default().fg(p.muted).bg(p.panel),
             );
             let probe = Layout {
@@ -2077,13 +2120,13 @@ impl View {
                 rows: Vec::new(),
                 margin: false,
             };
-            let total: u16 = CONFIRM
+            let total: u16 = labels
                 .iter()
                 .map(|l| Layout::button_width(l) + 2)
                 .sum::<u16>();
             let mut bx = crect.x + (cw.saturating_sub(total)) / 2 + 1;
             let mut hits = Vec::new();
-            for (i, label) in CONFIRM.iter().enumerate() {
+            for (i, label) in labels.iter().enumerate() {
                 let bw = Layout::button_width(label);
                 let rows = probe.button(label, bx, bw, i == choice, false);
                 for (r, spans) in rows.iter().enumerate() {

@@ -542,7 +542,7 @@ impl Management {
             return Err(fail("Finish current work before opening settings"));
         }
         self.ensure_drained()?;
-        if ![form::READ, form::SAVE]
+        if ![form::READ, form::SAVE, form::RESTORE]
             .iter()
             .all(|op| self.operations.iter().any(|v| v == op))
         {
@@ -554,7 +554,7 @@ impl Management {
             return Err(fail("Runtime omitted owned settings authority"));
         }
         let (session, _, _, _) = self.expected.as_ref().expect("active");
-        let save = matches!(intent, form::Intent::Save { .. });
+        let save = !matches!(intent, form::Intent::Read);
         let (mut command, id) = match intent {
             form::Intent::Read => (
                 json!({"type":form::READ,"version":1,"session_id":session}),
@@ -565,6 +565,10 @@ impl Management {
                 values,
             } => (
                 json!({"type":form::SAVE,"version":1,"session_id":session,"form":token,"values":values}),
+                self.wire.register_request(),
+            ),
+            form::Intent::Restore { form: token } => (
+                json!({"type":form::RESTORE,"version":1,"session_id":session,"form":token}),
                 self.wire.register_request(),
             ),
         };

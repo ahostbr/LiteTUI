@@ -21,7 +21,8 @@ import json
 VERSION = 1
 FORM = "gui.settings.native_form"
 SAVE = "gui.settings.native_form_save"
-OPERATIONS = (FORM, SAVE)
+RESTORE = "gui.settings.native_form_restore"
+OPERATIONS = (FORM, SAVE, RESTORE)
 MAX_BYTES = 1024 * 1024
 MAX_VALUE = 64 * 1024
 MAX_EDITS = 256
@@ -258,10 +259,31 @@ def _edit(widget, item, value):
         widget.value = value
 
 
-async def save(app, cmd):
+def _restore(app, body):
+    """Python's confirmed Restore defaults (SettingsBody._on_restore_answer), minus the
+    settings only their reviewed runtime controls may change."""
+    from copy import deepcopy
+
+    if not body._settings_adapter.enabled:
+        raise ValueError("Restore defaults needs an open conversation")
+    target, names = body._dialog_default_target()
+    ids, servers = _reviewed(app)
+    kept = {name for name in names
+            if f"f-{name}" in ids or (servers and name == "mcp_disabled_servers")}
+    for name in kept:
+        setattr(target, name, deepcopy(getattr(body._start, name)))
+    names = tuple(name for name in names if name not in kept)
+    body._set_dialog_values(target, names)
+    body._last_save_result = None
+    body._submit(target, force_fields=names)
+
+
+async def save(app, cmd, *, restore=False):
     _check(app, cmd)
     edits = cmd.get("values")
-    if not isinstance(edits, dict) or not 1 <= len(edits) <= MAX_EDITS:
+    if restore:
+        edits = {}
+    elif not isinstance(edits, dict) or not 1 <= len(edits) <= MAX_EDITS:
         raise ValueError("Settings save needs between 1 and 256 edited controls")
     screen = await _mount(app)
     try:
@@ -276,8 +298,11 @@ async def save(app, cmd):
             if item is None:
                 raise ValueError(f"Unknown settings control: {key}")
             _edit(body.query_one(f"#{key}"), item, value)
-        body._last_save_result = None
-        body.action_save()
+        if restore:
+            _restore(app, body)
+        else:
+            body._last_save_result = None
+            body.action_save()
         for _ in range(3):
             await asyncio.sleep(0)
         closed = screen not in app.screen_stack
@@ -304,4 +329,4 @@ async def save(app, cmd):
 async def dispatch(app, cmd):
     if cmd["type"] == FORM:
         return await form(app, cmd)
-    return await save(app, cmd)
+    return await save(app, cmd, restore=cmd["type"] == RESTORE)

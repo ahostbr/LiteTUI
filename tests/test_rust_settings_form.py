@@ -179,3 +179,24 @@ async def test_reviewed_runtime_fields_are_read_only_here(host, monkeypatch):
             await native_settings_form.dispatch(host, {
                 **CMD, "type": native_settings_form.SAVE, "form": form["form"],
                 "values": {"f-tools_enabled": True}})
+
+
+@pytest.mark.asyncio
+async def test_restore_defaults_is_pythons_confirmed_restore_minus_reviewed_fields(host, monkeypatch):
+    from litetui.settings import Settings
+
+    monkeypatch.setattr(native_runtime_controls, "enabled", lambda app: True)
+    monkeypatch.setattr(native_runtime_controls, "reviewed_fields", lambda app: {"tools_enabled"})
+    async with host.run_test(size=(140, 45)):
+        form = await native_settings_form.dispatch(host, CMD)
+        await native_settings_form.dispatch(host, {
+            **CMD, "type": native_settings_form.SAVE, "form": form["form"],
+            "values": {"f-lm_host": "http://127.0.0.1:9999"}})
+        host.settings.tools_enabled = not Settings().tools_enabled
+        form = await native_settings_form.dispatch(host, CMD)
+        result = await native_settings_form.dispatch(host, {
+            **CMD, "type": native_settings_form.RESTORE, "form": form["form"]})
+    assert result["status"] in {"saved", "partial"}, result
+    saved = host.snapshot().saved
+    assert saved.lm_host == Settings().lm_host, "restored to the factory value"
+    assert host.settings.tools_enabled != Settings().tools_enabled, "reviewed field untouched"

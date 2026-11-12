@@ -380,3 +380,30 @@ fn keys_pressed_while_the_form_loads_apply_once_it_arrives() {
         "{rows:?}"
     );
 }
+
+#[test]
+fn restore_defaults_asks_like_python_then_sends_the_restore() {
+    let mut view = opened();
+    // Shift+Tab from the search box wraps to the last bottom button, "Restore defaults".
+    view.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    key(&mut view, KeyCode::Enter);
+    let rows = screen(&mut view, 140, 45);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("Restore all settings to defaults?")),
+        "{rows:?}"
+    );
+    assert!(rows.iter().any(|r| r.contains("Keep editing")));
+    key(&mut view, KeyCode::Right); // Keep editing
+    key(&mut view, KeyCode::Enter);
+    assert_eq!(view.take_intent(), None);
+    key(&mut view, KeyCode::Enter); // ask again
+    key(&mut view, KeyCode::Enter); // Restore defaults
+    assert_eq!(
+        view.take_intent(),
+        Some(Intent::Restore {
+            form: "a".repeat(64)
+        })
+    );
+    assert!(view.waiting);
+}
