@@ -357,6 +357,10 @@ class Settings:
     #: Context length chosen for a model at /model time, keyed "<backend>:<model>" (the model a backend serves:
     #: its id, or an engine's artifact/config name). The backend's own context setting follows the last choice.
     model_context_overrides: dict = field(default_factory=dict)
+    #: The thinking level last used with each backend, {backend: level}. A backend switch restores
+    #: the level last used there, else keeps the current one (Ryan 2026-11-12: "keep whatever last
+    #: was set for whatever last known think level on a different agent was").
+    thinking_by_backend: dict = field(default_factory=dict)
     #: Named presets {name: {"load": {...}, "inference": {...}}} — saved and
     #: applied from /modelcfg.
     llama_presets: dict = field(default_factory=dict)

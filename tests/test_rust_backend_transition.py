@@ -598,3 +598,31 @@ async def test_model_select_with_a_context_saves_it_like_choose_model(switch_app
     assert app.settings.model_context_overrides["custom:old-model"] == 4096
     # Re-picking the active model with a new size applies it explicitly (plugins/model_switch).
     assert applied == [True]
+
+
+@pytest.mark.asyncio
+async def test_switch_restores_the_level_last_used_with_that_backend(switch_app):
+    # Ryan 2026-11-12 (via Sentinel 8d6c9638): "keep whatever last was set for whatever last known
+    # think level on a different agent was". A thinking change records the level for the current
+    # backend; switching back restores it; a backend with no memory keeps the current level.
+    app = switch_app
+    app.thinking_level = "low"
+    assert app.settings.thinking_by_backend["custom"] == "low"
+    from litetui import settings as settings_mod
+    assert settings_mod.load().thinking_by_backend.get("custom") == "low", "kept on this device"
+    # LM Studio last ran at default: the switch brings it back instead of carrying "low"
+    # (which this LM Studio model does not take, so carrying it would be refused).
+    app.settings.thinking_by_backend["lmstudio"] = "default"
+    result = await gui_rpc.async_dispatch(app, command(app))
+    assert result["status"] == "connected", result
+    assert app._agent_session.authority.thinking_level == "default"
+    assert app.thinking_level is None
+
+
+def test_level_after_switch_keeps_the_current_level_without_a_memory():
+    from types import SimpleNamespace
+    from litetui.thinking_capabilities import level_after_switch
+    settings = SimpleNamespace(thinking_by_backend={"codex": "high"})
+    assert level_after_switch(settings, "codex", "low") == "high"
+    assert level_after_switch(settings, "lmstudio", "low") == "low"
+    assert level_after_switch(settings, "lmstudio", None) == "default"

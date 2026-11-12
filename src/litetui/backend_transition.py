@@ -255,7 +255,10 @@ async def transition(app, cmd):
             # selects it (no fallback) and switch_model's apply_context_length loads it.
             if len(selected) != 1:
                 raise ValueError("Requested model is unavailable; no fallback was used")
-            _check_thinking(candidate, settings, model, context.authority.thinking_level)
+            from litetui import thinking_capabilities
+            # The level last used with this backend comes back with it, else the current one stays.
+            level = thinking_capabilities.level_after_switch(app.settings, name, context.authority.thinking_level)
+            _check_thinking(candidate, settings, model, level)
         checked = True
         _quiet(app)
         if (app.conversation is not conversation or app.conversation != history
@@ -275,6 +278,11 @@ async def transition(app, cmd):
         if (authority.backend, authority.model, authority.thinking_level) != (
                 name, model, context.authority.thinking_level):
             raise ValueError("Published backend selection failed authority readback")
+        if level != authority.thinking_level:
+            context.session.update_execution(backend=name, model=model, thinking_level=level)
+            authority = context.session.authority
+            if (authority.backend, authority.model, authority.thinking_level) != (name, model, level):
+                raise ValueError("Restored thinking level failed authority readback")
         mutated = True
         from litetui import convo_settings
 

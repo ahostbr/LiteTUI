@@ -5471,6 +5471,9 @@ class LiteTUI(App):
                         setattr(self, attr, published)
                 if cleared:  # picks made on the old backend must not come back on the new one
                     self._cli_initial_model = self._user_model_choice = None
+                if field in ('thinking_level', 'reasoning_effort'):
+                    from litetui import thinking_capabilities
+                    thinking_capabilities.remember_level(self, backend, level)
                 from litetui.agent_launch_context import apply_settings
                 apply_settings(session, self.settings)
                 if (self._owned_launch_error or '').startswith('Agent execution save failed:'):
@@ -7622,6 +7625,11 @@ class LiteTUI(App):
         elif hasattr(self.backend, "app_server"):
             self.backend.shutdown()
         self.backend = llm_backend.make_backend(s)
+        # The level last used on this backend comes back with it; otherwise the current one stays.
+        from litetui import thinking_capabilities
+        level = thinking_capabilities.level_after_switch(s, choice, self.thinking_level or "default")
+        if level != (self.thinking_level or "default"):
+            self.thinking_level = None if level == "default" else level
         # The conversation is NOT touched — history survives an engine switch;
         # only the endpoint and the model list change.
         self._cli_initial_model = self._user_model_choice = None  # picks belong to the old backend

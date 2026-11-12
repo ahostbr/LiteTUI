@@ -76,6 +76,31 @@ def thinking_capabilities(app):
                      "Levels reported by the active backend; default omits the effort field.")}
 
 
+def level_after_switch(settings, backend, current):
+    """The thinking level to use after switching to `backend`: the level last used there,
+    else the current one (Ryan 2026-11-12). Shared by every backend-switch path."""
+    remembered = (getattr(settings, "thinking_by_backend", None) or {}).get(backend)
+    return remembered if isinstance(remembered, str) and remembered else (current or "default")
+
+
+def remember_level(app, backend, level):
+    """Record `level` as the one last used with `backend`, on this device."""
+    settings = getattr(app, "settings", None)
+    if not backend or settings is None or not hasattr(settings, "thinking_by_backend"):
+        return
+    level = level or "default"
+    memory = dict(settings.thinking_by_backend or {})
+    if memory.get(backend) == level:
+        return
+    memory[backend] = level
+    if getattr(app, "convo_dir", None) is not None:
+        import dataclasses
+        from litetui import settings_runtime
+        candidate = dataclasses.replace(settings, thinking_by_backend=memory)
+        settings_runtime.persist_or_raise(app, candidate, baseline=settings)
+    settings.thinking_by_backend = memory
+
+
 def set_thinking(app, level):
     if level is None or level == "default":
         value = None

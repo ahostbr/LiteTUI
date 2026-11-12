@@ -101,6 +101,8 @@ NOT_A_SETTINGS_CONTROL = frozenset({
     # Per-model dicts, edited through /modelcfg — a flat text box
     # for a nested dict would be a control that corrupts on save.
     "llama_load_settings", "model_infer_overrides", "llama_presets", "model_context_overrides",
+    # Recorded by thinking changes and read by backend switches; never typed.
+    "thinking_by_backend",
     # Set by first-boot prompts, not by visible controls.
     "backend_chosen", "user_name_asked",
 })
