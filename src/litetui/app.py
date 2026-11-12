@@ -4926,6 +4926,12 @@ class LiteTUI(App):
         engine = getattr(self.backend, "label", None) or self.backend.name
         parts = [p for p in (engine, self.model_id, mode, think, cwd) if p]
         self.sub_title = " \u00b7 ".join(parts)
+        # A native frontend draws this header from model_state; tell it when the text changed.
+        if getattr(self, "_rpc", False) and getattr(self, "_rpc_ready_sent", False):
+            header = LiteTUI._header_text(self)
+            if header is not None and getattr(self, "_rpc_header_sent", None) != header:
+                self._rpc_header_sent = header
+                LiteTUI._rpc_emit_model_state(self)
         # The footer carries the thinking level too, and it only refreshed on a
         # context update -- so /think changed the header instantly and left the
         # footer lying until the next completion came back.
@@ -6258,7 +6264,20 @@ class LiteTUI(App):
             "model": getattr(self, "model_id", "") or None,
             "backend": getattr(backend, "name", None),
             "models": models,
+            # The title bar as this app draws it ("LiteTUI — engine · model · tools · think · cwd"),
+            # so a native frontend shows the same header (Ryan 2026-11-12, start screen 1:1).
+            "title": LiteTUI._header_text(self),
         }
+
+    def _header_text(self) -> str | None:
+        # Partial hosts (test doubles, an unmounted app) have no reactive header yet.
+        from textual.reactive import ReactiveError
+        try:
+            sub = str(getattr(self, "sub_title", "") or "")
+            title = str(getattr(self, "title", "") or "LiteTUI")
+        except ReactiveError:
+            return None
+        return f"{title} — {sub}" if sub else title
 
     def _rpc_emit_model_state(self) -> None:
         """Tell a live host that a LiteTUI-side switch changed its picker."""
@@ -6325,6 +6344,8 @@ class LiteTUI(App):
             "context_loaded": bool(getattr(self, "ctx_loaded", False)),
             "authority_glyphs": {name: ("||" if tool_policy.stops_you(name) else ">>")
                                  for name in tool_policy.PROFILES},
+            # The start screen's logo and tagline, the text this app mounts as its splash.
+            "banner": LITETUI_SPLASH,
             **self._rpc_model_state(),
             # T631: the host cannot derive this. LiteSuite spawns us with --rpc,
             # --cwd, --tool-profile, --mode and --model and NO backend -- the
