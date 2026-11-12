@@ -27,13 +27,13 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("litetui-rust"))
         .join(format!(
-        "interactive-smoke-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+            "interactive-smoke-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
     println!("Real Claude multi-turn data: {}", root.display());
     let runtime = Interactive::start(Options {
         launch: Default::default(),

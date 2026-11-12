@@ -545,13 +545,13 @@ fn real_claude_reads_a_file_compacts_with_tools_and_recalls_it() {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("litetui-rust"))
         .join(format!(
-        "claude-acceptance-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+            "claude-acceptance-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
     // A sibling of the data root: the runtime creates the data root itself and refuses one that exists.
     let workspace = root.with_file_name(format!(
         "{}-workspace",
