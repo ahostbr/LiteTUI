@@ -82,6 +82,9 @@ pub enum Action {
     Mcp,
     ModelPreferences,
     ClearScreen,
+    /// Rust-local palette rows (no Python command; Ryan 2026-11-12, option (c)).
+    SavedHistory,
+    HeldInput,
 }
 impl Action {
     fn parse(v: &Value) -> io::Result<Option<Self>> {
@@ -156,6 +159,54 @@ pub struct Entry {
     pub completion_order: Option<usize>,
     pub skill_order: Option<usize>,
     pub source: Option<String>,
+}
+/// Rust screens with no Python command are rows of the palette itself, so the palette is
+/// their one entry point (Ryan 2026-11-12: no F-keys, no extra slash commands).
+fn with_local(mut catalog: Catalog) -> Catalog {
+    let mut order = catalog
+        .entries
+        .iter()
+        .filter_map(|e| e.palette_order)
+        .max()
+        .map_or(0, |n| n + 1);
+    for (id, title, help, action) in [
+        (
+            "rust.saved_history",
+            "Saved history",
+            "Read-only view of this agent's saved conversations and their rows.",
+            Action::SavedHistory,
+        ),
+        (
+            "rust.held_input",
+            "Held input",
+            "Messages held during a restart or hold, and what happened to each.",
+            Action::HeldInput,
+        ),
+    ] {
+        if catalog.entries.iter().any(|e| e.id == id) {
+            continue;
+        }
+        catalog.entries.push(Entry {
+            id: id.into(),
+            kind: "local".into(),
+            owner: "rust".into(),
+            title: title.into(),
+            help: help.into(),
+            group: "rust".into(),
+            group_label: "LiteTUI".into(),
+            tokens: Vec::new(),
+            palette: true,
+            action: Some(action),
+            arguments: false,
+            unavailable: String::new(),
+            palette_order: Some(order),
+            completion_order: None,
+            skill_order: None,
+            source: None,
+        });
+        order += 1;
+    }
+    catalog
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Catalog {
@@ -695,13 +746,13 @@ impl View {
         self.hide();
         if !active {
             if let Update::Catalog { catalog, .. } = u {
-                self.catalog = Some(catalog);
+                self.catalog = Some(with_local(catalog));
             }
             return;
         }
         match u {
             Update::Catalog { catalog, skills } => {
-                self.catalog = Some(catalog);
+                self.catalog = Some(with_local(catalog));
                 self.mode = if skills { Mode::Skills } else { Mode::Palette };
                 self.selected = 0;
                 self.notice = "Choose a source entry. Enter opens its native control.".into();
@@ -723,7 +774,7 @@ impl View {
                 }
             }
             Update::Route { catalog, route } => {
-                self.catalog = Some(catalog);
+                self.catalog = Some(with_local(catalog));
                 if route.action == Action::Skills {
                     self.mode = Mode::Skills;
                     self.query.clear();
@@ -738,7 +789,7 @@ impl View {
                 catalog,
                 prepared: p,
             } => {
-                self.catalog = Some(*catalog);
+                self.catalog = Some(with_local(*catalog));
                 self.argument_row = Some(p.row.clone());
                 self.arguments
                     .set(&p.arguments)
@@ -927,6 +978,11 @@ impl View {
                         let r = &self.catalog.as_ref().unwrap().entries[*i];
                         if r.action.is_none() {
                             self.notice = r.unavailable.clone();
+                        } else if r.kind == "local" {
+                            // A Rust screen: open it here; the source has nothing to resolve.
+                            let action = r.action;
+                            self.close();
+                            self.route = action;
                         } else if r.kind == "skill" {
                             self.argument_row = Some(r.id.clone());
                             self.mode = Mode::Arguments;

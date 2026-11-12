@@ -552,22 +552,20 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
         {
             app.open_runtime_controls(litetui_terminal::runtime_controls_view::Field::Profile);
         }
-        KeyCode::F(11) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_commands();
-        }
-        KeyCode::F(7) if key.kind == KeyEventKind::Press && key.modifiers.is_empty() => {
-            app.open_queue()
-        }
-        KeyCode::F(4) => app.open_themes(),
-        KeyCode::F(5) => app.reset(),
-        KeyCode::F(6)
+        // The one palette shortcut, Ctrl+\ (Ctrl+P is plan mode, as in Python, where the palette
+        // opens from the title bar; Ctrl+\\ deletes to the line end; Ctrl+Shift+P is Windows
+        // Terminal's own palette). Some terminals report Ctrl+\ as Ctrl+4. Themes, saved history
+        // and held input are rows in the palette.
+        KeyCode::Char('\\' | '4')
             if app.live.is_some()
                 && key.kind == KeyEventKind::Press
-                && key.modifiers.is_empty() =>
+                && key.modifiers == KeyModifiers::CONTROL =>
         {
-            app.open_history()
+            app.open_commands();
         }
-        KeyCode::F(6) => app.open_approval(),
+        KeyCode::F(4) if app.live.is_none() => app.open_themes(), // offline preview only
+        KeyCode::F(5) => app.reset(),
+        KeyCode::F(6) if app.live.is_none() => app.open_approval(), // offline preview only
         KeyCode::F(2) => app.toggle_tool(),
         KeyCode::Tab => app.next_tool(),
         KeyCode::BackTab => app.previous_tool(),
@@ -1968,7 +1966,7 @@ mod tests {
         app.live.as_mut().unwrap().ready = true;
         app.insert_text("Playback draft");
         let mut router = KeyRouter::default();
-        router.handle(&mut app, KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+        app.open_history();
         let view = &mut app.live.as_mut().unwrap().saved_history;
         let read = view.take_intent().unwrap();
         view.observe(history_view::Update::Rejected {
@@ -2018,7 +2016,7 @@ mod tests {
         app.insert_text("UNSENT HISTORY DRAFT");
         let mut router = KeyRouter::default();
         let mut clipboard = TestClipboard::default();
-        router.handle(&mut app, KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+        app.open_history();
         assert!(app.has_live_history());
         let intent = app
             .live
@@ -3517,10 +3515,10 @@ mod tests {
         app.insert_text("preserved draft");
         let mut router = KeyRouter::default();
         app.live.as_mut().unwrap().busy = true;
-        plain(&mut app, &mut router, KeyCode::F(7));
+        app.open_queue();
         assert!(!app.has_live_queue());
         app.live.as_mut().unwrap().busy = false;
-        plain(&mut app, &mut router, KeyCode::F(7));
+        app.open_queue();
         assert_eq!(
             app.live.as_mut().unwrap().queue.take_intent(),
             Some(Intent::Open)
@@ -4368,6 +4366,30 @@ mod tests {
         assert_eq!(app.composer.text(), "KEEP α 雪 THE COMPOSER DRAFT");
     }
     #[test]
+    fn palette_opens_with_ctrl_backslash_and_no_live_f_key() {
+        // Ryan 2026-11-12: no F-keys; one palette shortcut (some terminals send Ctrl+\ as Ctrl+4).
+        use litetui_terminal::{command_palette::Intent, live::Observation};
+        for (code, modifiers, opens) in [
+            (KeyCode::Char('\\'), KeyModifiers::CONTROL, true),
+            (KeyCode::Char('4'), KeyModifiers::CONTROL, true),
+            (KeyCode::F(11), KeyModifiers::NONE, false),
+            (KeyCode::F(4), KeyModifiers::NONE, false),
+            (KeyCode::F(7), KeyModifiers::NONE, false),
+        ] {
+            let mut app = Demo::live("custom".into(), "model".into());
+            app.observe_live(Observation::Ready).unwrap();
+            let mut router = KeyRouter::default();
+            router.handle(&mut app, KeyEvent::new(code, modifiers));
+            let read = app.live.as_mut().unwrap().commands.take_intent();
+            assert_eq!(
+                matches!(read, Some(Intent::Read { skills: false })),
+                opens,
+                "{code:?}"
+            );
+            assert!(!app.has_live_themes() && !app.has_live_queue(), "{code:?}");
+        }
+    }
+    #[test]
     fn command_palette_owns_f11_exact_argument_paste_and_cancel_repeats() {
         use litetui_terminal::{
             command_palette::{Action, Catalog, Entry, Intent, Update},
@@ -4377,7 +4399,7 @@ mod tests {
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("main composer draft");
         let mut router = KeyRouter::default();
-        plain(&mut app, &mut router, KeyCode::F(11));
+        app.open_commands();
         assert_eq!(
             app.live.as_mut().unwrap().commands.take_intent(),
             Some(Intent::Read { skills: false })
@@ -4565,12 +4587,7 @@ mod theme_router_tests {
         app.insert_text("MAIN DRAFT");
         let mut router = KeyRouter::default();
         let mut clipboard = Clipboard::default();
-        handle_key(
-            &mut app,
-            &mut router,
-            KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE),
-            &mut clipboard,
-        );
+        app.open_themes();
         assert!(app.has_live_themes());
         assert!(!app.themes_open);
         assert_eq!(

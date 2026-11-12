@@ -184,6 +184,31 @@ fn forged_prepared_payload_or_provenance_cannot_stage() {
     }
 }
 #[test]
+fn rust_screens_are_palette_rows_that_open_without_a_source_round_trip() {
+    // Ryan 2026-11-12 (option c): no F-keys; saved history and held input live in the palette.
+    let mut v = view(false);
+    let screen = draw(&mut v, 90, 30);
+    assert!(
+        screen.contains("Saved history") && screen.contains("Held input"),
+        "{screen}"
+    );
+    for (query, action) in [
+        ("Saved history", Action::SavedHistory),
+        ("Held input", Action::HeldInput),
+    ] {
+        let mut v = view(false);
+        draw(&mut v, 90, 30);
+        v.paste(query);
+        draw(&mut v, 90, 30);
+        v.key(key(KeyCode::Enter));
+        assert!(
+            v.take_intent().is_none(),
+            "a local row asks the source nothing"
+        );
+        assert_eq!(v.take_route(), Some(action));
+    }
+}
+#[test]
 fn unavailable_entries_are_visible_and_cannot_resolve() {
     let mut v = view(false);
     draw(&mut v, 80, 28);
@@ -1148,7 +1173,7 @@ fn help_and_keys_overlay_list_the_live_catalog_and_native_keys_read_only() {
         }
         for text in [
             "Ctrl+Q: quit and close the owned runtime",
-            "F11: command palette and skills",
+            "Ctrl+\\: command palette: themes, saved history, held input, skills (Tab)",
         ] {
             assert!(keys.contains(text) || action == "help", "{action} {text}");
         }

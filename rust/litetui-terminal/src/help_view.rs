@@ -37,13 +37,13 @@ pub const KEYS: &[(&str, &str)] = &[
         "Work: tasks, jobs, loops, goal, calendar, plugins",
     ),
     ("/model", "models"),
-    ("F4", "themes"),
-    ("F6", "saved history"),
-    ("F7", "held input"),
     ("/resume", "conversations"),
     ("/backend", "backend"),
     ("/settings", "settings"),
-    ("F11", "command palette and skills"),
+    (
+        "Ctrl+\\",
+        "command palette: themes, saved history, held input, skills (Tab)",
+    ),
     ("/engine", "engine management"),
     ("Ctrl+T", "tool selection"),
     ("Ctrl+P", "plan mode"),
@@ -88,7 +88,7 @@ pub const KEYS: &[(&str, &str)] = &[
         "Ctrl+W / Ctrl+F",
         "delete the word before / after the cursor",
     ),
-    ("Ctrl+U / Ctrl+K", "delete to the start / end of the line"),
+    ("Ctrl+U / Ctrl+\\", "delete to the start / end of the line"),
     ("Ctrl+D", "delete the character under the cursor"),
     ("Ctrl+Shift+A", "select the whole draft"),
 ];
@@ -130,10 +130,12 @@ impl View {
                 }
                 let skills = catalog.entries.iter().filter(|e| e.kind == "skill").count();
                 commands.push(format!(
-                    "  {skills} skills are listed under Tab in the F11 palette; /<skill name> prepares one for review."
+                    "  {skills} skills are listed under Tab in the Ctrl+\\ palette; /<skill name> prepares one for review."
                 ));
             }
-            None => commands.push("  The command catalog has not been read yet; press F11.".into()),
+            None => {
+                commands.push("  The command catalog has not been read yet; press Ctrl+\\.".into())
+            }
         }
         let mut keys = vec!["Keys (this frontend)".to_owned()];
         keys.extend(KEYS.iter().map(|(key, what)| format!("  {key}: {what}")));
@@ -263,7 +265,7 @@ mod tests {
         assert!(view.lines[0].starts_with("Keys"));
         view.open(None, false);
         assert!(view.lines[0].starts_with("Commands"));
-        assert!(view.lines.iter().any(|l| l.contains("press F11")));
+        assert!(view.lines.iter().any(|l| l.contains("press Ctrl+\\")));
         assert!(
             view.lines
                 .iter()

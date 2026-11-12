@@ -705,7 +705,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                 t,
                 &mut lines,
                 &format!(
-                    "Saved context: {} messages · F6 Saved History (separate from live activity)",
+                    "Saved context: {} messages · Saved history in Ctrl+\\ (separate from live activity)",
                     descriptor.counts.messages
                 ),
                 t.thinking_text,
@@ -1268,7 +1268,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                     .join("\n")
             } else if let Some(chat) = &app.live {
                 format!(
-                    " LIVE · {} · F4 themes · Ctrl+G view · Ctrl+Q quits",
+                    " LIVE · {} · Ctrl+\\ commands · Ctrl+G view · Ctrl+Q quits",
                     chat.theme_status
                 )
             } else {
@@ -1532,7 +1532,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             Block::default()
                 .borders(Borders::ALL)
                 .title_bottom(if app.live.is_some() {
-                    " F7 held · F4 themes · Esc stops · Ctrl+Q "
+                    " Ctrl+\\ commands · Esc stops · Ctrl+Q "
                 } else {
                     " F4 themes · F6 approval · Ctrl+Q "
                 })

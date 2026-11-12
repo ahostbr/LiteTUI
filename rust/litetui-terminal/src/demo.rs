@@ -337,6 +337,8 @@ impl Demo {
                 Action::ClearScreen => self.clear_screen(),
                 Action::Settings => self.open_settings(),
                 Action::Themes => self.open_themes(),
+                Action::SavedHistory => self.open_history(),
+                Action::HeldInput => self.open_queue(),
                 Action::ConversationNew => {
                     self.open_conversation_action(crate::conversation_actions::Action::New, "")?
                 }
