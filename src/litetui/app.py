@@ -4927,7 +4927,10 @@ class LiteTUI(App):
         parts = [p for p in (engine, self.model_id, mode, think, cwd) if p]
         self.sub_title = " \u00b7 ".join(parts)
         # A native frontend draws this header from model_state; tell it when the text changed.
-        if getattr(self, "_rpc", False) and getattr(self, "_rpc_ready_sent", False):
+        # Only once its gui.hello has completed: an event between hello and its reply makes the
+        # frontend's activation uncertain and it stops (Ryan's Rust run, 2026-11-12).
+        if (getattr(self, "_rpc", False) and getattr(self, "_rpc_ready_sent", False)
+                and getattr(self, "_gui_rpc_enabled", False)):
             header = LiteTUI._header_text(self)
             if header is not None and getattr(self, "_rpc_header_sent", None) != header:
                 self._rpc_header_sent = header
@@ -6371,6 +6374,8 @@ class LiteTUI(App):
             **(owner_mode.native_binding(self) if conversation_compact.owner_review_required(self) else {}),
         })
         self._rpc_ready_sent = True
+        # ready carried the header; only a later change is news.
+        self._rpc_header_sent = LiteTUI._header_text(self)
 
     def _resume_cli_convo(self) -> bool:
         """`--convo <id>`: resume that conversation instead of the fresh one.
