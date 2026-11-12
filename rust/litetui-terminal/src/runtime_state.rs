@@ -189,6 +189,9 @@ impl State {
             ready.thinking = None;
         }
         self.presentation = (*snapshot.presentation).clone();
+        if snapshot.title.is_some() {
+            self.title.clone_from(&snapshot.title);
+        }
         self.startup = Some(snapshot);
         self.usage = None;
         self.rate = None;
@@ -223,6 +226,9 @@ impl State {
             }
             UpdateKind::Startup(snapshot) => {
                 self.presentation = (*snapshot.presentation).clone();
+                if snapshot.title.is_some() {
+                    self.title.clone_from(&snapshot.title);
+                }
                 self.startup = Some(snapshot);
             }
             UpdateKind::Held(count) => {

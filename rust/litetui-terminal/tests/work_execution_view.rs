@@ -857,6 +857,7 @@ fn changed_action(chat: &Chat) -> litetui_terminal::management::RewriteChanged {
             jobs: 0,
             tasks: 0,
             presentation: Default::default(),
+            title: None,
         },
         history,
         queue: litetui_terminal::restored_queue::Snapshot {

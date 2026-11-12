@@ -612,6 +612,7 @@ fn live_state(session: &str) -> litetui_terminal::management::Snapshot {
         jobs: 0,
         tasks: 0,
         presentation: Default::default(),
+        title: None,
     }
 }
 #[test]
@@ -773,4 +774,56 @@ fn newly_pending_source_work_refuses_review_without_losing_connection() {
         ));
         assert!(m.ready());
     }
+}
+
+/// Ryan 2026-11-12 on /new: "all it should do is auto start a new convo thats it". Python's /new
+/// shows no dialog. The reviewed steps still run (read, validate, apply), unattended.
+#[test]
+fn new_runs_its_reviewed_steps_without_a_dialog() {
+    let mut v = View::default();
+    v.open_immediate(Action::New);
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::Read {
+            action: Action::New
+        })
+    );
+    v.observe(Update::Snapshot(Box::new(snapshot())));
+    assert!(matches!(
+        v.take_intent(),
+        Some(Intent::Validate {
+            action: Action::New,
+            ..
+        })
+    ));
+    // Nothing is drawn while it runs.
+    assert!(!draw(&mut v, 80, 28).contains("Enter to review"));
+    v.observe(Update::Review(Box::new(review(Action::New))));
+    let token = review(Action::New).token;
+    assert_eq!(v.take_intent(), Some(Intent::Apply { review: token }));
+    assert!(v.owns_input(), "input waits for the outcome");
+    v.complete(Action::New, &review(Action::New).target)
+        .unwrap();
+    assert!(!v.owns_input());
+    // Ineligible: no dialog either, just the reason.
+    let mut held = data(SESSION, false, "Old");
+    held["actions"]["new"] = json!({"eligible":false,"reason":"Resolve held input"});
+    let mut v = View::default();
+    v.open_immediate(Action::New);
+    v.take_intent();
+    v.observe(Update::Snapshot(Box::new(
+        Snapshot::parse(&held, &identity(SESSION)).unwrap(),
+    )));
+    assert_eq!(v.take_intent(), None);
+    assert!(!v.owns_input());
+    assert_eq!(v.notice, "Resolve held input");
+    // A refused validation closes with the source's words.
+    let mut v = View::default();
+    v.open_immediate(Action::New);
+    v.take_intent();
+    v.observe(Update::Snapshot(Box::new(snapshot())));
+    v.take_intent();
+    v.observe(Update::Rejected("Conversation changed".into()));
+    assert!(!v.owns_input());
+    assert_eq!(v.notice, "Conversation changed");
 }

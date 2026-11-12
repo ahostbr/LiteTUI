@@ -237,6 +237,10 @@ async def transition(app, cmd):
         return _receipt(app, cmd, "refused", error=str(exc)[:2048])
 
     app._backend_transition_inflight = True
+    # Until the candidate has been checked, nothing of the running session has changed: a
+    # failure there (connect, model list, an unsupported thinking level, its timeout) is a
+    # refusal in Python's words and the session goes on (Ryan's LM Studio switch, 2026-11-12).
+    checked = False
     try:
         from litetui.launch_options import prepare
 
@@ -252,6 +256,7 @@ async def transition(app, cmd):
             if len(selected) != 1:
                 raise ValueError("Requested model is unavailable; no fallback was used")
             _check_thinking(candidate, settings, model, context.authority.thinking_level)
+        checked = True
         _quiet(app)
         if (app.conversation is not conversation or app.conversation != history
                 or backend_catalog.catalog(app, {"session_id": context.session_id})["snapshot"] != token):
@@ -336,6 +341,15 @@ async def transition(app, cmd):
         receipt.update(background_input.after_identity_transition(app, work_proof))
         return receipt
     except BaseException as exc:
+        if not checked and not mutated and not isinstance(exc, asyncio.CancelledError):
+            error = str(exc) or type(exc).__name__
+            if isinstance(exc, TimeoutError):
+                error = f"{name} did not answer in time; nothing changed"
+            try:
+                await _close_backend(app, candidate)
+            except Exception as cleanup:  # noqa: BLE001 - the session is untouched; report both
+                error += "; cleanup: " + (str(cleanup) or type(cleanup).__name__)
+            return _receipt(app, cmd, "refused", error=error[:2048])
         # Publication can fail after the atomic replace but before its readback.
         try:
             mutated = mutated or context.session.authority != context.authority

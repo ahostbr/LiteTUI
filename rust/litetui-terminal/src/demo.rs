@@ -344,9 +344,7 @@ impl Demo {
                 Action::Themes => self.open_themes(),
                 Action::SavedHistory => self.open_history(),
                 Action::HeldInput => self.open_queue(),
-                Action::ConversationNew => {
-                    self.open_conversation_action(crate::conversation_actions::Action::New, "")?
-                }
+                Action::ConversationNew => self.start_new_conversation(),
                 Action::ConversationRename => self.open_conversation_action(
                     crate::conversation_actions::Action::Rename,
                     &route_arguments,
@@ -925,6 +923,30 @@ impl Demo {
                 return;
             }
             chat.browser.open();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
+    /// `/new`: a fresh conversation at once, as Python's /new; the reviewed steps run unattended.
+    pub fn start_new_conversation(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready
+                || chat.busy
+                || chat.closed
+                || chat.quitting
+                || (chat.queue_pending() || chat.rewrite_pending())
+                || chat.engine.pending()
+            {
+                self.notice = "Finish current work before changing conversations.".into();
+                return;
+            }
+            chat.browser
+                .actions
+                .open_immediate(crate::conversation_actions::Action::New);
             self.themes_open = false;
             self.completion.dismiss();
             self.footer.leave();

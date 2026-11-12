@@ -152,6 +152,8 @@ pub struct Snapshot {
     pub tasks: usize,
     /// Effective device presentation preferences; defaults when the runtime reports none.
     pub presentation: Box<crate::presentation::Presentation>,
+    /// Python's title bar text (model.title), so it follows a backend or model change.
+    pub title: Option<String>,
 }
 impl Snapshot {
     fn parse(value: &Value) -> io::Result<Self> {
@@ -190,6 +192,11 @@ impl Snapshot {
                     effective,
                 )?),
                 None => Default::default(),
+            },
+            title: match &value["model"]["title"] {
+                Value::Null => None,
+                Value::String(title) if title.len() <= 4096 => Some(title.clone()),
+                _ => return Err(fail("Invalid runtime title")),
             },
         })
     }
@@ -2995,9 +3002,16 @@ impl Management {
                         self.work_transition_receipt(result, true)?;
                     }
                     _ => {
-                        return Err(fail(
-                            "Backend transition failed or contradicted its receipt; connection closed",
-                        ));
+                        // Say why in Python's words: the session closes, so this is the last line.
+                        let reason = result["error"]
+                            .as_str()
+                            .map(crate::live::terminal_text)
+                            .unwrap_or_else(|| {
+                                "the switch receipt contradicted the request".into()
+                            });
+                        return Err(fail(&format!(
+                            "Backend switch failed: {reason}. The session was closed; relaunch to continue."
+                        )));
                     }
                 }
             }

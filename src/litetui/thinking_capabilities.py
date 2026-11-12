@@ -107,3 +107,8 @@ def set_thinking(app, level):
         from litetui import settings_runtime
         settings_runtime.persist_or_raise(app, app.settings)
         effort_projection.install(app)
+    # Python's /think refreshes the title bar too ("think:<level>"); without this a native
+    # frontend's title kept the old level (Ryan's Rust run, 2026-11-12).
+    update_header = getattr(app, "update_header", None)
+    if callable(update_header):
+        update_header()

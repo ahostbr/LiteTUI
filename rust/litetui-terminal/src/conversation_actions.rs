@@ -408,8 +408,18 @@ pub struct View {
     page: usize,
     pages: usize,
     pub notice: String,
+    /// `/new`: validate and apply at once, no dialog, as Python's /new (Ryan 2026-11-12: "all it
+    /// should do is auto start a new convo thats it"). The reviewed contract is unchanged.
+    immediate: bool,
 }
 impl View {
+    pub fn open_immediate(&mut self, action: Action) {
+        if self.waiting {
+            return;
+        }
+        self.open(action);
+        self.immediate = true;
+    }
     pub fn open(&mut self, action: Action) {
         if self.waiting {
             return;
@@ -462,6 +472,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.immediate = false;
         if self.intent.take().is_some() {
             self.waiting = false;
             self.executing = false;
@@ -504,10 +515,37 @@ impl View {
                 };
                 self.snapshot = Some(*s);
                 self.review = None;
+                if self.immediate {
+                    let action = self.action.expect("open");
+                    let snapshot = self.snapshot.as_ref().expect("snapshot");
+                    if snapshot.eligible(action) && snapshot.request(action, "").is_ok() {
+                        self.intent = Some(Intent::Validate {
+                            snapshot: snapshot.token.clone(),
+                            action,
+                            title: String::new(),
+                        });
+                        self.waiting = true;
+                    } else {
+                        let reason = snapshot.reason(action).to_owned();
+                        self.close();
+                        self.notice = reason;
+                    }
+                }
             }
             Update::Review(r) => {
                 self.review = Some(*r);
                 self.notice = "Read every page, then confirm once.".into();
+                if self.immediate {
+                    let token = self.review.as_ref().expect("review").token.clone();
+                    self.intent = Some(Intent::Apply { review: token });
+                    self.waiting = true;
+                    self.executing = true;
+                    self.notice.clear();
+                }
+            }
+            Update::Rejected(s) if self.immediate => {
+                self.close();
+                self.notice = s;
             }
             Update::Rejected(s) => {
                 self.snapshot = None;
@@ -650,6 +688,11 @@ impl View {
         self.hide();
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.immediate {
+            // No dialog for /new: the chat shows the outcome.
+            self.hide();
+            return;
+        }
         self.visible = false;
         if !self.owns_input() {
             return;

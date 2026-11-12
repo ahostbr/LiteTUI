@@ -229,6 +229,8 @@ pub struct Chat {
     pub theme_status: String,
     /// Python's `_system(f"Connected — model: {model_id}")`, drawn under the start banner.
     pub connected: Option<String>,
+    /// The start banner shows until /new clears the chat, as Python's does.
+    pub splash: bool,
     pub work: crate::work_view::View,
     pub settings: crate::settings_view::View,
     pub backend_controls: crate::backend_controls::View,
@@ -416,6 +418,7 @@ impl Chat {
             effective_theme: None,
             theme_status: "Theme: local fallback; source pending".into(),
             connected: None,
+            splash: true,
             work: crate::work_view::View::default(),
             settings: crate::settings_view::View::default(),
             backend_controls: crate::backend_controls::View::default(),
@@ -1686,9 +1689,12 @@ impl Chat {
                 }
                 self.browser.action_completed(&changed)?;
                 if changed.action == crate::conversation_actions::Action::New {
+                    // Python's /new clears the chat log and says only this.
+                    let session = changed.snapshot.session.clone();
                     self.install_conversation(changed.snapshot, changed.history, changed.queue);
-                    self.notice =
-                        "New conversation verified. Composer kept; no prompt sent.".into();
+                    self.splash = false;
+                    self.connected = Some(format!("New conversation — {session}"));
+                    self.notice.clear();
                 } else {
                     self.queue
                         .observe(crate::restored_queue::Update::Snapshot(changed.queue));

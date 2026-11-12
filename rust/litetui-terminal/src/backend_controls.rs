@@ -527,7 +527,10 @@ impl View {
                 self.preselect = None;
                 self.pending = None;
                 if self.stage == Stage::Engines {
+                    // Python closes its picker and says why in the chat. Keeping this open on an
+                    // emptied list left nothing for the arrows or Enter to act on (Ryan 2026-11-12).
                     self.catalog = None;
+                    self.close();
                 } else {
                     self.stage = Stage::Models;
                 }

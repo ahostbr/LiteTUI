@@ -224,7 +224,9 @@ async def test_snapshot_binds_disk_policy_launch_and_history(switch_app, change)
 # A cold (unloaded) model is no longer a failure: Python selects and loads it
 # (test_picking_an_unloaded_model_selects_it_and_loads_it_like_python).
 @pytest.mark.parametrize("failure", ["missing-model", "connection", "thinking"])
-async def test_candidate_failure_is_fatal_without_claiming_authority_publication(switch_app, monkeypatch, failure):
+async def test_candidate_failure_is_a_refusal_and_the_session_goes_on(switch_app, monkeypatch, failure):
+    # Ryan's LM Studio switch (2026-11-12) ended his session on a failure that had changed
+    # nothing yet. Before publication only the candidate was touched: refuse in Python's words.
     app = switch_app
     if failure == "thinking":
         app.thinking_level = "low"
@@ -238,11 +240,16 @@ async def test_candidate_failure_is_fatal_without_claiming_authority_publication
 
     monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
     before = (app._agent_session.authority.backend, app._agent_session.authority.model)
+    backend, client, files = app.backend, app.client, disk(app)
     result = await gui_rpc.async_dispatch(app, request)
-    assert result["status"] == "failed" and result["close_required"], result
-    assert not result["mutated"]
+    assert result["status"] == "refused" and not result["close_required"], result
+    assert not result["mutated"] and result["error"]
+    if failure == "connection":
+        assert "Controlled connection failure" in result["error"]
     assert (app._agent_session.authority.backend, app._agent_session.authority.model) == before
-    assert app._backend_transition_error
+    assert app.backend is backend and app.client is client and disk(app) == files
+    assert not getattr(app, "_backend_transition_error", None)
+    assert not app._backend_transition_inflight
 
 
 @pytest.mark.asyncio

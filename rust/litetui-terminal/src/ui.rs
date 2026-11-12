@@ -741,7 +741,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
         // below it (centered, muted, italic system line); both scroll with the chat.
         if !chat.has_older_live_page() {
             let muted = style(t.thinking_text, t.background);
-            if let Some(banner) = chat.runtime_state.banner() {
+            if let Some(banner) = chat.runtime_state.banner().filter(|_| chat.splash) {
                 for row in splash_rows(banner, width) {
                     lines.push(Line::styled(centered(&row, width), muted));
                 }

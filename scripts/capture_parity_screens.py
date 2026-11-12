@@ -66,6 +66,11 @@ PROFILES = {
     "settings": {frontend: [("settings-open", ["/settings\r"], "none"), ("tab-01", ["\t", "\t"], "none")]
                  + [(f"tab-{n:02d}", ["\x1b[C"], "none") for n in range(2, len(PY_TABS) + 1)]
                  for frontend in ("textual", "rust")},
+    # Ryan 2026-11-12: "the /backend screen can't be navigated with the arrow keys, and Enter
+    # doesn't confirm or close it". Arrow keys are ESC [ B (down) and ESC [ A (up).
+    "backend": {frontend: [("backend-open", ["/backend\r"], "none"), ("down-1", ["\x1b[B"], "none"),
+                           ("down-2", ["\x1b[B"], "none"), ("enter", ["\r"], "none")]
+                for frontend in ("textual", "rust")},
 }
 
 

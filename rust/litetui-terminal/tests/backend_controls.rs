@@ -607,3 +607,30 @@ fn oversized_source_history_refusal_keeps_original_backend_ready_without_mutatio
     assert_eq!(m.backend(), Some("custom"));
     m.prompt("explicit-original-backend-prompt").unwrap();
 }
+
+/// Ryan 2026-11-12: "the /backend screen can't be navigated with the arrow keys, and Enter
+/// doesn't confirm or close it". A refused model listing (server down, not logged in) left the
+/// picker open on an emptied list. Python closes its picker and says why in the chat.
+#[test]
+fn a_refused_model_listing_closes_the_picker_with_the_reason() {
+    let mut v = view();
+    draw(&mut v, 100, 30);
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    assert!(
+        matches!(v.take_intent(), Some(Intent::Models { .. })),
+        "Enter lists the engine's models"
+    );
+    v.observe(Update::Rejected("No server at the LM Studio host".into()))
+        .unwrap();
+    assert!(!v.owns_input(), "the picker closes");
+    assert_eq!(v.notice, "No server at the LM Studio host");
+    // /backend opens it again, navigable.
+    v.open();
+    assert_eq!(v.take_intent(), Some(Intent::Read));
+    v.observe(Update::Catalog(catalog())).unwrap();
+    draw(&mut v, 100, 30);
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    assert!(matches!(v.take_intent(), Some(Intent::Models { .. })));
+}

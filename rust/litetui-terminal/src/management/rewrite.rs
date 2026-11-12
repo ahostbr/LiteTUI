@@ -47,18 +47,18 @@ pub(super) enum Stage {
     History {
         admission: r::Admission,
         settled: r::Settlement,
-        state: Snapshot,
+        state: Box<Snapshot>,
         policy: Value,
     },
     Page {
         admission: r::Admission,
-        state: Snapshot,
+        state: Box<Snapshot>,
         policy: Value,
         history: crate::resume::History,
     },
     Queue {
         admission: r::Admission,
-        state: Snapshot,
+        state: Box<Snapshot>,
         policy: Value,
         history: crate::resume::History,
     },
@@ -470,7 +470,7 @@ impl Management {
                     Stage::History {
                         admission,
                         settled,
-                        state,
+                        state: Box::new(state),
                         policy,
                     },
                     command,
@@ -556,7 +556,7 @@ impl Management {
                 return Ok(Step::RewriteSettled(Box::new(Changed {
                     key,
                     admission,
-                    snapshot: state,
+                    snapshot: *state,
                     history,
                     queue,
                     policy,
