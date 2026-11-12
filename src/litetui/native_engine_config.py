@@ -1,4 +1,8 @@
-"""One reviewed conversation preference for an explicitly managed, current local engine."""
+"""One reviewed preference for an explicitly managed, current local engine.
+
+Where to connect (*_host) is per conversation; what starts the engine is device-wide
+(develop 5f5ef63f, Ryan 2026-10-24), so each field carries its own scope and destination.
+"""
 
 from __future__ import annotations
 
@@ -115,9 +119,9 @@ def _snapshot(app, cmd):
     fields = {}
     for field in FIELDS[context.selected]:
         spec = SETTING_SPECS[field]
-        if spec.scope.value != "conversation" or spec.apply_timing not in (
-            "restart",
-            "reconnect",
+        if (spec.scope.value, spec.apply_timing) not in (
+            ("conversation", "reconnect"),
+            ("device", "restart"),
         ):
             raise ValueError("Engine preference scope or timing changed")
         reason = None
@@ -129,6 +133,7 @@ def _snapshot(app, cmd):
             "saved": getattr(before.saved, field),
             "effective": getattr(app.settings, field),
             "timing": spec.apply_timing,
+            "scope": spec.scope.value,
             "locked": reason,
         }
         for value in (fields[field]["saved"], fields[field]["effective"]):
@@ -137,12 +142,12 @@ def _snapshot(app, cmd):
     result = {
         "kind": "engine_config_snapshot",
         **common,
-        "scope": "conversation",
+        "scope": "mixed",
         "generation": current.generation,
         "admission": current.admission,
         "fields": fields,
         "revisions": revisions,
-        "destination": str(paths["conversation"]),
+        "destination": {"conversation": str(paths["conversation"]), "device": str(paths["global"])},
     }
     result["snapshot"] = backend_catalog.fingerprint(app, context, result)
     return result, context, service, before
@@ -169,6 +174,9 @@ def _review(app, cmd, snapshot, field, value):
         {
             "kind": "engine_config_review",
             **{k: v for k, v in snap.items() if k not in ("kind", "fields")},
+            # One field, one canonical document: the publication core routes by this scope.
+            "scope": row["scope"],
+            "destination": snap["destination"][row["scope"]],
             "field": field,
             "value": value,
             "saved_before": row["saved"],

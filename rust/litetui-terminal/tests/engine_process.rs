@@ -633,7 +633,15 @@ fn configure_both_engines_saves_one_conversation_preference_and_never_starts() {
                 app.observe_live(event)?;
             }
             let snapshot = snapshot.unwrap();
-            let destination = PathBuf::from(snapshot.wire["destination"].as_str().unwrap());
+            // {backend}_max_context starts the engine, so it is device-wide (develop 5f5ef63f):
+            // it saves to the global document and leaves the conversation's untouched.
+            let destination =
+                PathBuf::from(snapshot.wire["destination"]["device"].as_str().unwrap());
+            let conversation = PathBuf::from(
+                snapshot.wire["destination"]["conversation"]
+                    .as_str()
+                    .unwrap(),
+            );
             assert!(
                 destination.starts_with(root.canonicalize()?)
                     && destination.file_name().unwrap() == "settings.json"
@@ -643,7 +651,8 @@ fn configure_both_engines_saves_one_conversation_preference_and_never_starts() {
             } else {
                 None
             };
-            let global_before = fs::read(root.join("settings.json"))?;
+            assert_eq!(destination, root.canonicalize()?.join("settings.json"));
+            let conversation_before = fs::read(&conversation).ok();
             let setting = format!("{backend}_max_context");
             assert_eq!(snapshot.names[3], setting);
             for _ in 0..3 {
@@ -696,8 +705,8 @@ fn configure_both_engines_saves_one_conversation_preference_and_never_starts() {
             wait_engine(runtime, &mut app)?; // automatic post-save refresh
             let saved: Value = serde_json::from_slice(&fs::read(&destination)?)?;
             assert_eq!(saved["future_extension"], altered["future_extension"]);
-            assert_eq!(saved["execution"][&setting], 12001);
-            assert_eq!(fs::read(root.join("settings.json"))?, global_before);
+            assert_eq!(saved[&setting], 12001);
+            assert_eq!(fs::read(&conversation).ok(), conversation_before);
             assert_eq!(admission(&app), Some(Admission::ManagementOnly));
             assert_eq!(app.composer.text(), "F12 private draft");
             runtime.quit()?;

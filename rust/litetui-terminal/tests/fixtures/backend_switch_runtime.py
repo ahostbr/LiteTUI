@@ -37,6 +37,7 @@ target = os.environ.get("RUST_BACKEND_SWITCH_TARGET", "lmstudio")
 driver = os.environ.get("RUST_BACKEND_SWITCH_DRIVER", "self")
 old_model = "switch-old"
 new_model = "switch-new"
+global_settings_may_change = False
 records: list[dict] = []
 calls: list[dict] = []
 requests: list[dict] = []
@@ -395,7 +396,9 @@ def main():
             gpu_gate.is_rtx_5090.cache_clear()
         assert not denied, denied
         assert all(stream.closed for stream in streams)
-        assert (root / "settings.json").read_bytes() == global_before
+        # A device-wide engine preference save (develop 5f5ef63f) is the one sanctioned write.
+        if not global_settings_may_change:
+            assert (root / "settings.json").read_bytes() == global_before
 
 
 if __name__ == "__main__":

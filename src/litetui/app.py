@@ -3997,8 +3997,10 @@ class LiteTUI(App):
         return ((launch + "\n\n" if launch else "") + base
                 + "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
 
-    def _host_prompt_message(self) -> dict:
-        base = self._system_prompt_text()
+    def _host_prompt_message(self, base=None) -> dict:
+        # base: a pure Review passes _runtime_control_prompt(...) to predict this row
+        # without the live builder's store-identity side effects.
+        base = self._system_prompt_text() if base is None else base
         floor = prompt_compiler.compile_prompt_file(
             paths.SYSTEM_PROMPT_FILE, root=paths.ROOT, user_name=self.settings.user_name).strip()
         # Fleet text is a suffix: request-time base recomposition must preserve it.
@@ -4199,9 +4201,12 @@ class LiteTUI(App):
                     messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + guidance}
                 else:
                     messages.insert(0, {"role": "system", "content": guidance})
-        # Host bookkeeping must never reach OpenAI-compatible wire messages.
-        return [{k: v for k, v in message.items() if not k.startswith("litetui_prompt_")
-                 and k not in {"litetui_ordinary_text", "litetui_seat_text"}}
+        # Host bookkeeping must never reach OpenAI-compatible wire messages. Only rows that
+        # carry it are copied: Codex finds its accepted user row by identity (`original is m`
+        # in codex_app_server), so copying every row silently disabled mid-turn steering.
+        def private(key):
+            return key.startswith("litetui_prompt_") or key in {"litetui_ordinary_text", "litetui_seat_text"}
+        return [{k: v for k, v in message.items() if not private(k)} if any(map(private, message)) else message
                 for message in messages]
     def _ensure_legacy_store_notice(self, *, native_unknown: bool = False) -> None:
         if getattr(self, "_store_notice_text", None):

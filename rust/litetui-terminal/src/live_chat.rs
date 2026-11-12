@@ -607,6 +607,7 @@ impl Chat {
             || self.engine.owns_input()
             || self.engine.pending()
             || self.commands.owns_input()
+            || self.commands.prefetching()
             || self.themes.owns_input()
             || self.saved_history.owns_input()
             || self.work.owns_input()
@@ -1798,7 +1799,6 @@ impl Chat {
             }
             Observation::Ready => {
                 self.ready = true;
-                self.commands.prefetch();
                 self.notice = format!(
                     "Connected. Enter sends; Ctrl+Q quits. {}",
                     self.runtime_state
@@ -2866,12 +2866,23 @@ mod slash_completion_prefetch_tests {
     use super::*;
 
     /// Ryan 2026-11-11: typing "/" showed nothing until F11 had been opened once, because the
-    /// registry was only read when the palette opened. Python LiteTUI has its command list from
-    /// startup, so the first "/" already completes.
+    /// registry was only read when the palette opened. The first "/" now reads it in the
+    /// background. Reading at Ready instead raced the first prompt: the runtime refuses a prompt
+    /// while a management read is in flight, which closed the session (claude_reset_process).
     #[test]
-    fn ready_reads_the_command_registry_without_taking_the_composer() {
-        let mut chat = Chat::new("custom".into(), "fixture".into());
-        chat.observe(Observation::Ready).unwrap();
+    fn first_slash_reads_the_command_registry_without_taking_the_composer() {
+        let mut app = crate::demo::Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        let chat = app.live.as_mut().unwrap();
+        assert!(
+            chat.commands.take_intent().is_none(),
+            "Ready alone reads nothing"
+        );
+        chat.submit("plain prompt right after ready").unwrap();
+        let mut app = crate::demo::Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.insert_text("/");
+        let chat = app.live.as_mut().unwrap();
         assert!(matches!(
             chat.commands.take_intent(),
             Some(crate::command_palette::Intent::Read { skills: false })
@@ -2881,8 +2892,10 @@ mod slash_completion_prefetch_tests {
             "a background read must not own input"
         );
         assert!(!chat.commands.open);
-        // A second ready (reconnect) does not queue a duplicate while the first is unanswered.
-        chat.observe(Observation::Ready).unwrap();
-        assert!(chat.commands.take_intent().is_none());
+        // While the read is unanswered a prompt waits instead of reaching the runtime.
+        assert!(chat.submit("prompt during the read").is_err());
+        // A second keystroke does not queue a duplicate while the first is unanswered.
+        app.insert_text("m");
+        assert!(app.live.as_mut().unwrap().commands.take_intent().is_none());
     }
 }

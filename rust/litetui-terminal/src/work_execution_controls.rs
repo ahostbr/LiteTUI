@@ -149,24 +149,24 @@ fn projected(v: &Value, fields: &[&str]) -> io::Result<Value> {
 }
 pub(crate) fn canonical(v: &Value, action: Action) -> io::Result<Value> {
     let fields = if action == Action::JobRun {
-        work_controls::JOB
+        work_controls::job_fields(v)
     } else {
-        work_controls::GOAL
+        work_controls::GOAL.to_vec()
     };
     let mut defaults = if action == Action::JobRun {
-        json!({"enabled":true,"new_conversation":false,"last_fired_slot":null,"run_count":0,"label":"","tool_profile":"interactive","kind":"cron","owner_convo_id":"","interval_minutes":0,"next_run_at":null,"owner_agent_id":"","deferred_slot":null})
+        json!({"enabled":true,"new_conversation":false,"last_fired_slot":null,"run_count":0,"label":"","tool_profile":"interactive","kind":"cron","owner_convo_id":"","interval_minutes":0,"next_run_at":null})
     } else {
         json!({"status":"active","evaluated_turns":0,"max_turns":0,"last_verdict":"","last_reason":"","missing_evidence":[],"no_progress_count":0,"tool_profile":"interactive","started_by":""})
     };
     let map = v
         .as_object()
         .ok_or_else(|| bad("Saved execution row is not an object"))?;
-    for key in fields {
+    for key in &fields {
         if let Some(value) = map.get(*key) {
             defaults[*key] = value.clone();
         }
     }
-    projected(&defaults, fields)
+    projected(&defaults, &fields)
 }
 fn saved(v: &Value, action: Action) -> io::Result<()> {
     bounded(v, 131_072)?;

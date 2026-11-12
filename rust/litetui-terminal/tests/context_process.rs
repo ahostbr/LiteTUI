@@ -3371,45 +3371,29 @@ fn effort_submit(runtime: &mut Interactive, app: &mut Demo, text: &str) -> io::R
 }
 
 fn effort_switch(runtime: &mut Interactive, app: &mut Demo, model: &str) -> io::Result<()> {
-    app.open_backend();
-    runtime.backend(
-        app.live
-            .as_mut()
-            .unwrap()
-            .backend_controls
-            .take_intent()
-            .unwrap(),
-    )?;
+    // llamacpp is already the current engine, so /backend answers "Already on llamacpp" as in
+    // Python; another model on the same engine is picked from /model (F3). None keeps the
+    // current context length.
+    use litetui_terminal::model_controls::{Intent, Kind, Update};
+    runtime.control(Intent::Open(Kind::Model))?;
+    let revision = std::cell::Cell::new(None);
     observe(runtime, app, |event| {
-        matches!(
-            event,
-            Observation::Backend(litetui_terminal::backend_controls::Update::Catalog(_))
-        )
+        if let Observation::Controls(Update::Choices(menu)) = event {
+            revision.set(Some(menu.revision));
+            return true;
+        }
+        false
     })?;
-    draw(app);
-    let view = &mut app.live.as_mut().unwrap().backend_controls;
-    let index = view
-        .catalog
-        .as_ref()
-        .unwrap()
-        .entries
-        .iter()
-        .position(|row| row.name == "llamacpp")
-        .unwrap();
-    view.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
-    for _ in 0..index {
-        view.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    }
-    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    view.paste(model);
-    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    draw(app);
-    let view = &mut app.live.as_mut().unwrap().backend_controls;
-    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    runtime.backend(view.take_intent().expect("drawn exact model selection"))?;
-    observe(runtime, app, |event| {
-        matches!(event, Observation::BackendChanged(_))
-    })
+    runtime.control(Intent::Select {
+        revision: revision.get().expect("model menu"),
+        value: model.into(),
+        context: None,
+    })?;
+    observe(
+        runtime,
+        app,
+        |event| matches!(event, Observation::Controls(Update::Choices(menu)) if menu.current == model),
+    )
 }
 
 #[test]

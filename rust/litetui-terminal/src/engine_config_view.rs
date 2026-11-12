@@ -242,10 +242,15 @@ impl View {
             (
                 "Review engine preference".into(),
                 format!(
-                    "{}\nConversation {}\nDestination {}\n\nSaved before: {}\nProposed: {}\nEffective now: {}\n\nSaving will defer this change until {}. Reopen before using the saved configuration.",
+                    "{}\nScope {} · conversation {}\nDestination {}\n\nSaved before: {}\nProposed: {}\nEffective now: {}\n\nSaving will defer this change until {}. Reopen before using the saved configuration.",
                     r.field,
+                    row["scope"].as_str().unwrap_or("conversation"),
                     r.snap.id.session,
-                    ui::display_safe(r.snap.wire["destination"].as_str().unwrap()),
+                    ui::display_safe(
+                        r.snap.wire["destination"][row["scope"].as_str().unwrap_or("conversation")]
+                            .as_str()
+                            .unwrap_or_default()
+                    ),
                     display(&row["saved"]),
                     display(&r.value),
                     display(&row["effective"]),
@@ -273,7 +278,10 @@ impl View {
             );
             cursor_line = Some(ui::wrap(&format!("{prefix}▏"), width).len() - 1);
             (
-                format!("Edit {name} · conversation"),
+                format!(
+                    "Edit {name} · {}",
+                    row["scope"].as_str().unwrap_or("conversation")
+                ),
                 format!(
                     "{prefix}{}{}",
                     if self.replace { " [replace] " } else { "▏" },
@@ -307,14 +315,14 @@ impl View {
                 })
                 .collect::<Vec<_>>();
             (
-                "Engine preferences · current conversation".into(),
+                "Engine preferences · device-wide, hosts per conversation".into(),
                 lines.join("\n"),
                 "↑ ↓ select · Enter edit · F5 refresh · Esc engine",
             )
         } else {
             (
                 "Engine preferences".into(),
-                "Reading current conversation settings…".to_owned(),
+                "Reading engine settings…".to_owned(),
                 "Esc engine",
             )
         };

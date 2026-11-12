@@ -528,11 +528,16 @@ fn exact_save(r: &Value, field: &str, value: &Value, partial: bool) {
     } else {
         expected["execution"][field] = value.clone();
     }
-    assert_eq!(
-        serde_json::from_str::<Value>(r["documents"][destination]["raw"].as_str().unwrap())
-            .unwrap(),
-        expected
-    );
+    // Develop's conversation_document materializes every missing conversation key from the
+    // inherited settings; an inherited unset field lands as an explicit null (no value change).
+    let mut saved: Value =
+        serde_json::from_str(r["documents"][destination]["raw"].as_str().unwrap()).unwrap();
+    for doc in [&mut saved, &mut expected] {
+        if let Some(map) = doc["execution"].as_object_mut() {
+            map.retain(|_, v| !v.is_null());
+        }
+    }
+    assert_eq!(saved, expected);
     assert_eq!(receipt["destination"], r["documents"][destination]["path"]);
     assert_eq!(
         receipt["persistence"][0]["destination"],

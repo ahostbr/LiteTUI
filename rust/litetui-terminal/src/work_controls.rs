@@ -36,10 +36,18 @@ pub(crate) const JOB: &[&str] = &[
     "owner_convo_id",
     "interval_minutes",
     "next_run_at",
-    // develop scheduler.Job (T0495 self-schedules and the deferred slot)
-    "owner_agent_id",
-    "deferred_slot",
 ];
+/// develop scheduler.Job (T0495 self-schedules and the deferred slot). Develop always writes
+/// both; a row saved by an older source has neither, and is never given invented values.
+pub(crate) const JOB_DEVELOP: &[&str] = &["owner_agent_id", "deferred_slot"];
+/// The exact job fields of this row: the base set, plus develop's pair when the row has it.
+pub(crate) fn job_fields(v: &Value) -> Vec<&'static str> {
+    let mut fields = JOB.to_vec();
+    if JOB_DEVELOP.iter().any(|k| v.get(*k).is_some()) {
+        fields.extend_from_slice(JOB_DEVELOP);
+    }
+    fields
+}
 pub(crate) const GOAL: &[&str] = &[
     "objective",
     "id",
@@ -115,7 +123,8 @@ fn timestamp(v: &Value, key: &str, nullable: bool) -> io::Result<()> {
 }
 pub(crate) fn job(v: &Value) -> io::Result<()> {
     bounded(v, 128 * 1024)?;
-    keys(v, JOB)?;
+    let fields = job_fields(v);
+    keys(v, &fields)?;
     for (key, max, empty) in [
         ("id", 128, false),
         ("prompt", 65536, true),
@@ -123,11 +132,13 @@ pub(crate) fn job(v: &Value) -> io::Result<()> {
         ("label", 4096, true),
         ("tool_profile", 4096, true),
         ("owner_convo_id", 128, true),
-        ("owner_agent_id", 128, true),
     ] {
         text(v, key, max, empty)?;
     }
-    timestamp(v, "deferred_slot", true)?;
+    if fields.len() > JOB.len() {
+        text(v, "owner_agent_id", 128, true)?;
+        timestamp(v, "deferred_slot", true)?;
+    }
     boolean(v, "enabled")?;
     boolean(v, "new_conversation")?;
     integer(v, "run_count", false)?;
@@ -707,8 +718,8 @@ impl Readback {
                 }
             } else {
                 execution_progress(row, &receipt.row)?;
-                for key in JOB {
-                    if !EXECUTION.contains(key) && row[*key] != receipt.row[*key] {
+                for key in job_fields(row) {
+                    if !EXECUTION.contains(&key) && row[key] != receipt.row[key] {
                         return Err(bad("Scheduler execution changed saved configuration"));
                     }
                 }

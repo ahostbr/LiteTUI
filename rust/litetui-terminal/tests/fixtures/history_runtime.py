@@ -387,8 +387,11 @@ async def completions(resource, **request):
         if saved.get("role") == "system" and isinstance(saved.get("content"), str):
             # Canonical request preparation may append its once-only project/store block.
             assert prepared["role"] == "system" and saved["content"] in prepared["content"]
+            # Develop's host row carries private litetui_prompt_* provenance; request preparation
+            # strips it, so the wire row must hold none of it and otherwise match.
+            assert not any(key.startswith("litetui_") for key in prepared)
             assert {key: value for key, value in prepared.items() if key != "content"} == {
-                key: value for key, value in saved.items() if key != "content"}
+                key: value for key, value in saved.items() if key != "content" and not key.startswith("litetui_")}
         else:
             assert saved == prepared, "Saved assistant/tool/user/provider rows changed before the explicit request"
     assert all(not {"provider_metadata", "codex_delivery", "work_input_id", "work_payload_sha256"}.intersection(row) for row in messages)

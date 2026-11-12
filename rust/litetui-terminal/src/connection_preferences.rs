@@ -42,7 +42,8 @@ const FIELDS: [&str; 16] = [
     "llama_models_dirs",
 ];
 /// The free-tier key settings. Their values are secrets and are never part of this wire.
-const KEY_SETTINGS: [&str; 12] = [
+const KEY_SETTINGS: [&str; 13] = [
+    "anthropic_api_key",
     "cerebras_api_key",
     "cloudflare_api_key",
     "gemini_api_key",

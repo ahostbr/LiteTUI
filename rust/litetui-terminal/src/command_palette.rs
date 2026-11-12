@@ -596,9 +596,15 @@ impl View {
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
     }
-    /// Read the registry in the background so "/" completes from the first keystroke, as in
-    /// Python LiteTUI. Owns no input and paints nothing; a refusal while the runtime is busy is
-    /// dropped (observe ignores updates while closed) and the next ready retries.
+    /// True while a background registry read is unanswered; the composer waits for it, because
+    /// the runtime refuses a prompt while a management read is in flight.
+    pub fn prefetching(&self) -> bool {
+        self.prefetching
+    }
+    /// Read the registry in the background when the composer first starts with "/", so the
+    /// completion list fills in as in Python LiteTUI. Owns no input and paints nothing; a refusal
+    /// while the runtime is busy is dropped (observe ignores updates while closed) and the next
+    /// keystroke retries.
     pub fn prefetch(&mut self) {
         if self.open || self.waiting || self.intent.is_some() || self.prefetching {
             return;

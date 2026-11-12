@@ -36,9 +36,13 @@ async def test_owned_save_and_independent_readback_defer_engine_change(engine_ap
     assert set(initial["fields"]) == set(native_engine_config.FIELDS["strata"])
     service = settings_runtime.service_for(app)
     paths = service._paths(app.convo_id)
-    target = paths["conversation"]
-    global_before = paths["global"].read_bytes() if paths["global"].exists() else None
-    old = json.loads(target.read_bytes())
+    # Engine-start settings are device-wide (develop 5f5ef63f): the save lands in the
+    # global document and leaves this conversation's document untouched.
+    target = paths["global"]
+    conversation_before = paths["conversation"].read_bytes()
+    old = json.loads(target.read_bytes()) if target.exists() else {}
+    assert initial["fields"]["strata_max_context"]["scope"] == "device"
+    assert initial["fields"]["strata_host"]["scope"] == "conversation"
     r = await gui_rpc.async_dispatch(
         app,
         request(
@@ -49,7 +53,8 @@ async def test_owned_save_and_independent_readback_defer_engine_change(engine_ap
             value=12345,
         ),
     )
-    assert json.loads(target.read_bytes()) == old
+    assert (json.loads(target.read_bytes()) if target.exists() else {}) == old
+    assert r["scope"] == "device" and r["destination"] == str(target)
     a = await gui_rpc.async_dispatch(app, request(app, "save", review=r["review"]))
     assert a["saved"] == 12345 and a["effective"] == before and a["timing"] == "restart"
     assert (
@@ -57,16 +62,14 @@ async def test_owned_save_and_independent_readback_defer_engine_change(engine_ap
         and app.backend._owned is None
         and a["admission"] == "management_only"
     )
-    assert json.loads(target.read_bytes())["execution"]["strata_max_context"] == 12345
-    assert (
-        paths["global"].read_bytes() if paths["global"].exists() else None
-    ) == global_before
+    assert json.loads(target.read_bytes())["strata_max_context"] == 12345
+    assert paths["conversation"].read_bytes() == conversation_before
     read = request(app, "readback", review=r["review"], save_id="save")
     assert (await gui_rpc.async_dispatch(app, read))["kind"] == "engine_config_readback"
     with pytest.raises(ValueError, match="Review"):
         await gui_rpc.async_dispatch(app, request(app, "save", review=r["review"]))
     target.write_text(
-        json.dumps({**old, "strata_max_context": 23456}), encoding="utf-8"
+        json.dumps({**json.loads(target.read_bytes()), "strata_max_context": 23456}), encoding="utf-8"
     )
     with pytest.raises(ValueError, match="changed after save"):
         await gui_rpc.async_dispatch(app, read)
@@ -180,6 +183,6 @@ async def test_publication_that_raises_after_writing_closes_engine_admission(
     monkeypatch.setattr(type(service), "save_patch", fail_after_write)
     with pytest.raises(RuntimeError, match="uncertain"):
         await gui_rpc.async_dispatch(app, request(app, "save", review=review["review"]))
-    path = service._paths(app.convo_id)["conversation"]
-    assert json.loads(path.read_bytes())["execution"]["strata_max_context"] == 12346
+    path = service._paths(app.convo_id)["global"]
+    assert json.loads(path.read_bytes())["strata_max_context"] == 12346
     assert native_engine.state(app).fatal and app._owned_launch_error

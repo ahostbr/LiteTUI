@@ -715,6 +715,7 @@ def main():
             (strata_engine, "start", launch_with_controlled_spawn(strata_engine.start)),
         ):
             stack.enter_context(patch.object(obj, name, replacement))
+        boundary.global_settings_may_change = case == "config-only"
         boundary.main()
 
 

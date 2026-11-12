@@ -1,4 +1,5 @@
-//! Configuration belongs to the current engine conversation. Saving cannot authorize Start or Stop.
+//! Where to connect (*_host) belongs to the conversation; what starts the engine is device-wide
+//! (develop 5f5ef63f, Ryan 2026-10-24). Saving cannot authorize Start or Stop.
 use crate::{
     engine_controls::{Admission, Identity},
     work_lifecycle as life,
@@ -54,6 +55,14 @@ fn revisions(v: &Value) -> io::Result<()> {
         }
     }
     Ok(())
+}
+/// The canonical scope of one engine preference, and the revision key of its document.
+fn scope(name: &str) -> (&'static str, &'static str) {
+    if name.ends_with("_host") {
+        ("conversation", "conversation")
+    } else {
+        ("device", "global")
+    }
 }
 fn numeric(name: &str) -> bool {
     matches!(
@@ -124,7 +133,7 @@ impl Snapshot {
                 "snapshot",
             ],
         )?;
-        if v["scope"] != "conversation"
+        if v["scope"] != "mixed"
             || v["generation"].as_u64() != Some(generation)
             || Admission::parse(&v["admission"])? != admission
         {
@@ -133,7 +142,9 @@ impl Snapshot {
             ));
         }
         revisions(&v["revisions"])?;
-        life::text(v, "destination", 4096)?;
+        life::keys(&v["destination"], &["conversation", "device"])?;
+        life::text(&v["destination"], "conversation", 4096)?;
+        life::text(&v["destination"], "device", 4096)?;
         let names: &[&str] = if id.backend == "ninfer" {
             &NINFER
         } else {
@@ -142,7 +153,7 @@ impl Snapshot {
         life::keys(&v["fields"], names)?;
         for key in names {
             let row = &v["fields"][key];
-            life::keys(row, &["saved", "effective", "timing", "locked"])?;
+            life::keys(row, &["saved", "effective", "timing", "scope", "locked"])?;
             let timing = if key.ends_with("_host") {
                 "reconnect"
             } else {
@@ -151,6 +162,7 @@ impl Snapshot {
             if !typed(key, &row["saved"])
                 || !typed(key, &row["effective"])
                 || row["timing"] != timing
+                || row["scope"] != scope(key).0
                 || !(row["locked"].is_null()
                     || row["locked"]
                         .as_str()
@@ -214,16 +226,12 @@ impl Review {
         )?;
         snap.review_command(field, value)?;
         let row = &snap.wire["fields"][field];
-        if [
-            "scope",
-            "generation",
-            "admission",
-            "revisions",
-            "destination",
-            "snapshot",
-        ]
-        .iter()
-        .any(|k| v[*k] != snap.wire[*k])
+        let (field_scope, _) = scope(field);
+        if ["generation", "admission", "revisions", "snapshot"]
+            .iter()
+            .any(|k| v[*k] != snap.wire[*k])
+            || v["scope"] != field_scope
+            || v["destination"] != snap.wire["destination"][field_scope]
             || v["field"] != field
             || v["value"] != *value
             || v["saved_before"] != row["saved"]
@@ -292,10 +300,11 @@ impl Review {
             || v["timing"] != row["timing"]
             || v["generation"] != before["generation"]
             || v["admission"] != before["admission"]
-            || v["revisions"]["conversation"] == "absent"
-            || v["revisions"]["conversation"] == before["revisions"]["conversation"]
-            || ["global", "agent"]
+            || v["revisions"][scope(&self.field).1] == "absent"
+            || v["revisions"][scope(&self.field).1] == before["revisions"][scope(&self.field).1]
+            || ["global", "agent", "conversation"]
                 .iter()
+                .filter(|k| **k != scope(&self.field).1)
                 .any(|k| v["revisions"][*k] != before["revisions"][*k])
         {
             return Err(life::bad(

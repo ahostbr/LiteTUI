@@ -252,7 +252,13 @@ impl Demo {
             Vec::new()
         };
         if let Some(catalog) = &chat.commands.catalog {
+            let fresh = self.completion_candidates.is_empty();
             self.completion_candidates = catalog.completions();
+            if fresh && self.composer.text().starts_with('/') {
+                // The registry arrived after "/" was typed: show it now, not on the next key.
+                self.completion
+                    .refilter(&self.completion_candidates, self.composer.text());
+            }
         }
         let route = chat.commands.take_route();
         let route_arguments = chat.commands.take_route_arguments();
@@ -1182,6 +1188,14 @@ impl Demo {
     }
 
     pub fn sync_completion(&mut self) {
+        if self.composer.text().starts_with('/')
+            && let Some(chat) = self.live.as_mut()
+            && chat.ready
+            && !chat.closed
+            && chat.commands.catalog.is_none()
+        {
+            chat.commands.prefetch();
+        }
         self.completion
             .refilter(&self.completion_candidates, self.composer.text());
         if self.completion.is_open() {

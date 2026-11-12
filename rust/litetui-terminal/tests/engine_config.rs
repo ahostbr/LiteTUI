@@ -37,11 +37,11 @@ fn state() -> Value {
         } else {
             json!("")
         };
-        fields[name] = json!({"saved":value,"effective":value,"timing":if name=="strata_host"{"reconnect"}else{"restart"},"locked":null});
+        fields[name] = json!({"saved":value,"effective":value,"timing":if name=="strata_host"{"reconnect"}else{"restart"},"scope":if name=="strata_host"{"conversation"}else{"device"},"locked":null});
     }
     wire(
         "engine_config_snapshot",
-        json!({"scope":"conversation","generation":0,"admission":"management_only","fields":fields,"revisions":{"global":"absent","agent":"absent","conversation":"absent"},"destination":"owned/conversation/settings.json","snapshot":"a".repeat(64)}),
+        json!({"scope":"mixed","generation":0,"admission":"management_only","fields":fields,"revisions":{"global":"absent","agent":"absent","conversation":"absent"},"destination":{"conversation":"owned/conversation/settings.json","device":"owned/settings.json"},"snapshot":"a".repeat(64)}),
     )
 }
 fn parse(v: &Value) -> std::io::Result<cfg::Snapshot> {
@@ -52,6 +52,8 @@ fn reviewed(s: &cfg::Snapshot, field: &str, value: &Value) -> (Value, cfg::Revie
     v.as_object_mut().unwrap().remove("fields");
     let row = &s.wire["fields"][field];
     v["kind"] = json!("engine_config_review");
+    v["scope"] = row["scope"].clone();
+    v["destination"] = s.wire["destination"][row["scope"].as_str().unwrap()].clone();
     v["field"] = json!(field);
     v["value"] = value.clone();
     v["saved_before"] = row["saved"].clone();
@@ -65,7 +67,8 @@ fn reviewed(s: &cfg::Snapshot, field: &str, value: &Value) -> (Value, cfg::Revie
 fn preference_review_refusal_save_and_readback_bind_only_the_reviewed_destination() {
     let valid = state();
     for (field, value) in [
-        ("scope", json!("device")),
+        ("scope", json!("conversation")),
+        ("destination", json!("owned/settings.json")),
         ("management_instance", json!("2".repeat(64))),
         ("generation", json!(1)),
         ("snapshot", json!("bad")),
@@ -103,7 +106,7 @@ fn preference_review_refusal_save_and_readback_bind_only_the_reviewed_destinatio
     assert!(r.refusal(&refusal, "g1-c9").is_err());
     let mut saved = wire(
         "engine_config_save",
-        json!({"review":r.token,"field":r.field,"save_id":"g1-c9","saved":r.value,"effective":"","timing":"restart","revisions":{"global":"absent","agent":"absent","conversation":"f".repeat(64)},"generation":0,"admission":"management_only"}),
+        json!({"review":r.token,"field":r.field,"save_id":"g1-c9","saved":r.value,"effective":"","timing":"restart","revisions":{"global":"f".repeat(64),"agent":"absent","conversation":"absent"},"generation":0,"admission":"management_only"}),
     );
     assert_eq!(r.receipt(&saved, "g1-c9").unwrap()["type"], cfg::READBACK);
     let mut read = saved.clone();
@@ -113,6 +116,12 @@ fn preference_review_refusal_save_and_readback_bind_only_the_reviewed_destinatio
     assert!(r.verify(&read, &saved).is_err());
     saved["revisions"]["agent"] = json!("a".repeat(64));
     assert!(r.receipt(&saved, "g1-c9").is_err());
+    // strata_config starts the engine, so it is device-wide: a conversation write is not its save.
+    saved["revisions"] = json!({"global":"absent","agent":"absent","conversation":"f".repeat(64)});
+    assert!(r.receipt(&saved, "g1-c9").is_err());
+    let mut row_scope = valid.clone();
+    row_scope["fields"]["strata_config"]["scope"] = json!("conversation");
+    assert!(parse(&row_scope).is_err());
 }
 fn draw(view: &mut View, w: u16, h: u16) -> String {
     let theme = litetui_terminal::theme::builtin_themes().remove(0);

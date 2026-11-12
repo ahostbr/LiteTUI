@@ -518,7 +518,8 @@ def validate(app, cmd):
     first = _system(app)
     next_system = copy.deepcopy(first)
     if first is not None and key in {"tools_enabled", "plan_mode"} and before["facts"][key] != selected:
-        next_system["content"] = app._runtime_control_prompt(**{key: selected})
+        # The toggles rebuild message 0 through app._host_prompt_message(), so predict the same row.
+        next_system = app._host_prompt_message(base=app._runtime_control_prompt(**{key: selected}))
     consequence = ("Apply one explicit conversation policy choice. New authorizations and admissions wait for published readback; "
                    "already captured calls retain their original authority. "
                    + ("Plan mode is runtime prompt guidance; it is not a tool permission profile. " if key == "plan_mode" else "The selected preference is saved for this conversation. "))
