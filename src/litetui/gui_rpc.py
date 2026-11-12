@@ -94,7 +94,7 @@ OPERATIONS = (
     "work.native_pause_validate", "work.native_pause_apply", "work.native_pause_readback",
     "work.native_stop_validate", "work.native_stop_apply", "work.native_stop_settled",
     "work.native_control_validate", "work.native_control_apply", "work.native_control_readback",
-    "thinking.set", "context.set", "backend.set", "models.capabilities",
+    "thinking.set", "context.set", "backend.set", "backends.native_models", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
     "engine.native_inspect", "engine.native_validate", "engine.native_peer_validate", "engine.native_reconnect_validate", "engine.native_action", "engine.native_readback",
     "engine.native_config_snapshot", "engine.native_config_review", "engine.native_config_save", "engine.native_config_readback",
@@ -104,6 +104,34 @@ OPERATIONS = (
     "commands.list", "commands.resolve", "skills.native_prepare",
     "restored_input.list", "restored_input.cancel", "restored_input.continue", "restored_input.settled", "restored_input.reconcile", "restored_input.resolve",
 )
+
+
+def _model_picker_state(app):
+    """`gui.models.list`: the model state plus what Python's /model picker shows and asks.
+
+    `labels` is plugins/model_switch._row_label for each row; `context` is what
+    context_choice.ask needs for this backend (None for hosted providers, which are not asked).
+    Additive keys only: `model_state` events keep the plain `_rpc_model_state` shape.
+    """
+    from litetui import context_choice
+    state = app._rpc_model_state()
+    backend = getattr(app, "backend", None)
+    name = getattr(backend, "name", None) or ""
+    status = "ready" if getattr(backend, "remote", False) else "loaded"
+    labels = {}
+    for slug in getattr(app, "available_models", []):
+        row = getattr(app, "model_rows", {}).get(slug)
+        tag = f"  · {row.source}" + (f"  · {status}" if row.loaded else "") if row is not None else ""
+        labels[slug] = ("▸ " if slug == getattr(app, "model_id", "") else "  ") + slug + tag
+    state["labels"] = labels
+    key = context_choice.main_key(name)
+    state["context"] = None if key is None else {
+        "setting": key,
+        "applies_on_engine_start": name in context_choice.APPLIES_ON_ENGINE_START,
+        "suggestions": {s: context_choice.suggestion(app.settings, name, s) for s in labels},
+        "remembered": {s: context_choice.remembered(app.settings, name, s) for s in labels},
+    }
+    return state
 
 
 def active_work(app):
@@ -838,7 +866,7 @@ def dispatch(app, cmd):
         return _conversations(app, action, cmd)
     if domain == "models":
         if action == "list":
-            return app._rpc_model_state()
+            return _model_picker_state(app)
         if action == "confirm":
             if type(cmd.get("allow")) is not bool:
                 raise ValueError("allow must be a boolean")
@@ -1101,7 +1129,7 @@ async def async_dispatch(app, cmd):
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
     _restart_gate(app, operation[4:])
-    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
+    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.backends.native_models", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
     if operation.startswith(("gui.models.native_preferences_", "gui.models.native_lifecycle_", "gui.mcp.native_lifecycle_")):
         blocking = True
     if operation == "gui.models.select":
@@ -1174,7 +1202,32 @@ async def _async_dispatch(app, cmd):
     if operation == "gui.models.select":
         from litetui.plugins.model_switch import switch_model_captured
         _idle(app)
-        return await switch_model_captured(app, str(cmd.get("slug", "")))
+        target = str(cmd.get("slug", ""))
+        tokens = cmd.get("context")
+        changed = False
+        if tokens is not None:
+            # plugins/model_switch._choose_model: remember the size for this model, make it the
+            # backend's main context setting, then switch; a re-pick with a new size applies it.
+            from litetui import context_choice
+            name = getattr(app.backend, "name", "")
+            key = context_choice.main_key(name)
+            if (type(tokens) is not int or key is None
+                    or not context_choice.CTX_FLOOR <= tokens <= context_choice.CTX_CEILING):
+                raise ValueError("Context length must be a token count this backend reads")
+            if target not in app.available_models:
+                raise ValueError("Model is not available")
+            chosen = context_choice.settings_after(app.settings, name, target, tokens)
+            changed = getattr(app.settings, key, None) != tokens
+            settings_runtime.persist_or_raise(app, chosen, baseline=app.settings)
+            app.settings = chosen
+            set_settings = getattr(app.backend, "set_settings", None)
+            if set_settings is not None:
+                set_settings(chosen)
+        unchanged_model = target == app.model_id
+        result = await switch_model_captured(app, target)
+        if tokens is not None and changed and unchanged_model:
+            app.apply_context_length(force=True)  # a worker, as _choose_model starts it
+        return result
     if operation == "gui.conversations.native_open":
         from litetui import native_history
         return await native_history.open_conversation(app, cmd)
@@ -1228,6 +1281,9 @@ async def _async_dispatch(app, cmd):
         return await restored_input.continue_input(app, cmd)
     if operation == "gui.restored_input.settled":
         return await restored_input.settled(app, cmd)
+    if operation == "gui.backends.native_models":
+        from litetui.backend_transition import candidate_models
+        return await candidate_models(app, cmd)
     if operation == "gui.backend.set":
         from litetui.backend_transition import GUARDED_FIELDS, transition
 

@@ -590,10 +590,21 @@ pub struct View {
     pages: usize,
     hits: Vec<(Rect, usize)>,
     pressed: Option<usize>,
+    prefetching: bool,
 }
 impl View {
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
+    }
+    /// Read the registry in the background so "/" completes from the first keystroke, as in
+    /// Python LiteTUI. Owns no input and paints nothing; a refusal while the runtime is busy is
+    /// dropped (observe ignores updates while closed) and the next ready retries.
+    pub fn prefetch(&mut self) {
+        if self.open || self.waiting || self.intent.is_some() || self.prefetching {
+            return;
+        }
+        self.prefetching = true;
+        self.intent = Some(Intent::Read { skills: false });
     }
     pub fn open(&mut self, skills: bool) {
         if self.waiting {
@@ -671,6 +682,7 @@ impl View {
         self.arguments.text()
     }
     pub fn observe(&mut self, u: Update) {
+        self.prefetching = false;
         let active = self.open;
         self.waiting = false;
         self.intent = None;

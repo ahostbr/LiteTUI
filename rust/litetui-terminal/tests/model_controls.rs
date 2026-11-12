@@ -74,6 +74,7 @@ fn model_event_and_ack_do_not_release_control_until_readback() {
         .request_control(Intent::Select {
             revision: menu.revision,
             value: "model-B".into(),
+            context: None,
         })
         .unwrap();
     assert_eq!(cmd["type"], "gui.models.select");
@@ -103,6 +104,7 @@ fn negative_apply_reads_actual_state_without_resending_or_rolling_back() {
             .request_control(Intent::Select {
                 revision: menu.revision,
                 value: "model-B".into(),
+                context: None,
             })
             .unwrap();
         let Step::Write(read) = m
@@ -128,14 +130,16 @@ fn stale_unoffered_and_concurrent_choices_never_allocate_commands() {
     assert!(
         m.request_control(Intent::Select {
             revision: menu.revision + 1,
-            value: "model-B".into()
+            value: "model-B".into(),
+            context: None,
         })
         .is_err()
     );
     assert!(
         m.request_control(Intent::Select {
             revision: menu.revision,
-            value: "invented".into()
+            value: "invented".into(),
+            context: None,
         })
         .is_err()
     );
@@ -143,6 +147,7 @@ fn stale_unoffered_and_concurrent_choices_never_allocate_commands() {
         .request_control(Intent::Select {
             revision: menu.revision,
             value: "model-B".into(),
+            context: None,
         })
         .unwrap();
     assert!(m.request_control(Intent::Open(Kind::Thinking)).is_err());
@@ -153,7 +158,8 @@ fn stale_unoffered_and_concurrent_choices_never_allocate_commands() {
     assert!(
         m.request_control(Intent::Select {
             revision: menu.revision,
-            value: "model-A".into()
+            value: "model-A".into(),
+            context: None,
         })
         .is_err()
     );
@@ -167,6 +173,7 @@ fn thinking_default_is_explicit_and_effective_level_requires_readback() {
         .request_control(Intent::Select {
             revision: menu.revision,
             value: "high".into(),
+            context: None,
         })
         .unwrap();
     assert_eq!(cmd["level"], "high");
@@ -188,6 +195,7 @@ fn failed_readback_or_success_with_wrong_effect_blocks_the_connection() {
             .request_control(Intent::Select {
                 revision: menu.revision,
                 value: "high".into(),
+                context: None,
             })
             .unwrap();
         let Step::Write(read) = reply(&mut m, &cmd, json!({"level":"high"})) else {
@@ -218,6 +226,7 @@ fn read_only_error_is_recoverable_but_model_events_need_owned_operation() {
     m.request_control(Intent::Select {
         revision: menu.revision,
         value: "model-B".into(),
+        context: None,
     })
     .unwrap();
     let event = json!({"type":"model_state","backend":"claude","model":"model-B"});
@@ -411,6 +420,7 @@ fn horizontal_inspection_reaches_every_source_field_without_losing_graphemes() {
     menu.rows[0].label = format!("{}ROW_TAIL", "雪👩‍💻".repeat(500));
     menu.note = format!("{}NOTE_TAIL", "\u{1b}".repeat(1024));
     v.notice = format!("{}ERROR_TAIL", "e".repeat(4096));
+    assert!(draw(&mut v, 80, 24).contains("Select a model"));
     let mut found = [false; 4];
     for _ in 0..750 {
         let text = draw(&mut v, 80, 24);
@@ -423,7 +433,8 @@ fn horizontal_inspection_reaches_every_source_field_without_losing_graphemes() {
         assert!(!text.contains('\u{1b}'));
         v.key(key(KeyCode::Right));
     }
-    assert_eq!(found, [true; 4]);
+    // Python's "Select a model" picker has no separate current line: the current row carries "▸ ".
+    assert_eq!(found, [false, true, true, true]);
     // Inspection never changes or applies the selected source value.
     v.key(key(KeyCode::Enter));
     assert!(matches!(v.take_intent(), Some(Intent::Select { value, .. }) if value == "model-A"));

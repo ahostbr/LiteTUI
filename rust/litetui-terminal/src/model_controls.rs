@@ -36,7 +36,12 @@ impl Kind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     Open(Kind),
-    Select { revision: u64, value: String },
+    /// `context` is the context-length answer for a local backend's model (None: Keep current).
+    Select {
+        revision: u64,
+        value: String,
+        context: Option<u64>,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Choice {
@@ -54,6 +59,8 @@ pub struct Choices {
     pub rows: Vec<Choice>,
     pub note: String,
     pub message: Option<String>,
+    /// What litetui/context_choice.ask needs for this backend; None for hosted providers.
+    pub context: Option<Box<crate::backend_controls::ContextFacts>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -95,12 +102,18 @@ impl Choices {
                     {
                         return Err(fail("Model loaded state must be nullable boolean"));
                     }
+                    // Python's /model row (plugins/model_switch._row_label) when the source sends it.
+                    let python = value
+                        .get("labels")
+                        .and_then(|labels| labels.get(slug))
+                        .and_then(Value::as_str)
+                        .filter(|l| l.len() <= 4096 && !l.chars().any(char::is_control));
                     rows.push(Choice {
                         value: slug.to_owned(),
-                        label: if name == slug {
-                            slug.to_owned()
-                        } else {
-                            format!("{name} · {slug}")
+                        label: match python {
+                            Some(label) => label.to_owned(),
+                            None if name == slug => slug.to_owned(),
+                            None => format!("{name} · {slug}"),
                         },
                     });
                 }
@@ -159,6 +172,37 @@ impl Choices {
         if budget > 65536 {
             return Err(fail("Model controls text budget exceeded"));
         }
+        let context = match (kind, value.get("context")) {
+            (Kind::Model, Some(facts)) if !facts.is_null() => {
+                let mut suggestions = std::collections::HashMap::new();
+                let mut remembered = std::collections::HashMap::new();
+                for row in &rows {
+                    for (field, into) in [
+                        ("suggestions", &mut suggestions),
+                        ("remembered", &mut remembered),
+                    ] {
+                        match &facts[field][&row.value] {
+                            Value::Null => {}
+                            v => {
+                                let n = v
+                                    .as_u64()
+                                    .filter(|n| *n > 0)
+                                    .ok_or_else(|| fail("Invalid context suggestion"))?;
+                                into.insert(row.value.clone(), n);
+                            }
+                        }
+                    }
+                }
+                Some(Box::new(crate::backend_controls::ContextFacts {
+                    applies_on_engine_start: facts["applies_on_engine_start"]
+                        .as_bool()
+                        .ok_or_else(|| fail("Invalid context facts"))?,
+                    suggestions,
+                    remembered,
+                }))
+            }
+            _ => None,
+        };
         Ok(Self {
             revision,
             kind,
@@ -169,6 +213,7 @@ impl Choices {
             rows,
             note,
             message: None,
+            context,
         })
     }
 }
@@ -197,8 +242,38 @@ pub struct View {
     hits: Vec<(Rect, usize)>,
     pressed: Option<usize>,
     preselect: Option<String>,
+    /// The context-length dialog that follows a model pick on a local backend.
+    context_input: Option<String>,
+    context_error: String,
 }
 impl View {
+    pub fn asking_context(&self) -> bool {
+        self.open && self.visible && !self.waiting && self.context_input.is_some()
+    }
+    pub fn paste(&mut self, text: &str) {
+        if self.asking_context()
+            && !text.chars().any(char::is_control)
+            && let Some(input) = &mut self.context_input
+            && input.len() + text.len() <= 64
+        {
+            input.push_str(text);
+        }
+    }
+    fn select(&mut self, context: Option<u64>) {
+        if let Some(menu) = &self.menu
+            && let Some(row) = menu.rows.get(self.cursor)
+        {
+            self.intent = Some(Intent::Select {
+                revision: menu.revision,
+                value: row.value.clone(),
+                context,
+            });
+            self.context_input = None;
+            self.waiting = true;
+            self.notice = "Applying selection; waiting for runtime readback…".into();
+            self.hide();
+        }
+    }
     /// A command argument only moves the cursor once the runtime choices arrive.
     /// Applying still needs Enter on the visible row, as for any other selection.
     pub fn preselect(&mut self, wanted: &str) {
@@ -265,6 +340,7 @@ impl View {
     pub fn close(&mut self) {
         self.open = false;
         self.preselect = None;
+        self.context_input = None;
         self.hide();
         if self.intent.take().is_some() {
             self.waiting = false;
@@ -308,7 +384,40 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
-        if key.kind == KeyEventKind::Release || !key.modifiers.is_empty() {
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        if self.asking_context() {
+            match key.code {
+                // context_choice: Esc is "Keep current"; the pick itself still happens.
+                KeyCode::Esc if key.kind == KeyEventKind::Press => self.select(None),
+                KeyCode::Enter if key.kind == KeyEventKind::Press => {
+                    match crate::backend_controls::parse_context(
+                        self.context_input.as_deref().unwrap_or(""),
+                    ) {
+                        Ok(tokens) => self.select(Some(tokens)),
+                        Err(error) => self.context_error = error,
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(input) = &mut self.context_input {
+                        input.pop();
+                    }
+                }
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) && !c.is_control() =>
+                {
+                    if let Some(input) = &mut self.context_input
+                        && input.len() < 64
+                    {
+                        input.push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        if !key.modifiers.is_empty() {
             return;
         }
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
@@ -351,16 +460,23 @@ impl View {
                     .min(self.inspection_end())
             }
             KeyCode::Enter if key.kind == KeyEventKind::Press => {
-                if let Some(menu) = &self.menu
-                    && let Some(row) = menu.rows.get(self.cursor)
-                {
-                    self.intent = Some(Intent::Select {
-                        revision: menu.revision,
-                        value: row.value.clone(),
-                    });
-                    self.waiting = true;
-                    self.notice = "Applying selection; waiting for runtime readback…".into();
-                    self.hide();
+                let ask = self.menu.as_ref().and_then(|menu| {
+                    let row = menu.rows.get(self.cursor)?;
+                    let facts = menu.context.as_ref()?;
+                    Some(
+                        facts
+                            .suggestions
+                            .get(&row.value)
+                            .map(u64::to_string)
+                            .unwrap_or_default(),
+                    )
+                });
+                match ask {
+                    Some(prefill) => {
+                        self.context_input = Some(prefill);
+                        self.context_error.clear();
+                    }
+                    None => self.select(None),
                 }
             }
             _ => {}
@@ -443,7 +559,11 @@ impl View {
             .border_style(Style::default().fg(t.title));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
-        let current = self.current_label();
+        let current = if self.kind == Some(Kind::Model) {
+            crate::backend_controls::MODEL_TITLE.to_owned()
+        } else {
+            self.current_label()
+        };
         frame.render_widget(
             Paragraph::new(display_line(&current, self.horizontal)),
             Rect::new(inner.x, inner.y, inner.width, 1),
@@ -499,17 +619,56 @@ impl View {
                 self.hits.push((hit, index));
             }
         }
+        if let (Some(input), Some(menu)) = (&self.context_input, &self.menu) {
+            let key = menu.rows.get(self.cursor).map_or("", |r| r.value.as_str());
+            let facts = menu.context.as_ref();
+            let mut hint = if facts.is_some_and(|f| f.applies_on_engine_start) {
+                "Applies on the next /engine start (stop a running engine first).".to_owned()
+            } else {
+                "The model is loaded at this size.".to_owned()
+            };
+            if let Some(last) = facts.and_then(|f| f.remembered.get(key)) {
+                hint.push_str(&format!(" Last used for this model: {last}."));
+            }
+            let box_area = Rect::new(
+                inner.x,
+                list.y + list.height.saturating_sub(6),
+                inner.width,
+                6.min(list.height),
+            );
+            frame.render_widget(Clear, box_area);
+            for (dy, line) in [
+                format!("Context length for {} (tokens)", display_line(key, 0)),
+                hint,
+                format!("{input}▏"),
+                self.context_error.clone(),
+                "Enter: Set context · Esc: Keep current".into(),
+            ]
+            .into_iter()
+            .enumerate()
+            .take(usize::from(box_area.height))
+            {
+                frame.render_widget(
+                    Paragraph::new(line),
+                    Rect::new(box_area.x, box_area.y + dy as u16, box_area.width, 1),
+                );
+            }
+        }
         let status = display_line(&self.notice, self.horizontal);
         frame.render_widget(
             Paragraph::new(status),
             Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("↑↓ choose · ←→ inspect · Enter apply"),
+            Paragraph::new(if self.kind == Some(Kind::Model) {
+                crate::backend_controls::PICKER_HINT
+            } else {
+                "↑↓ choose · ←→ inspect · Enter apply"
+            }),
             Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("Tab models/thinking · R refresh · Esc close"),
+            Paragraph::new("Tab models/thinking · R refresh"),
             Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
         );
         self.visible = self.open && !self.waiting;

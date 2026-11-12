@@ -1624,6 +1624,7 @@ fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn(
                             runtime.control(Intent::Select {
                                 revision: menu.revision,
                                 value: "claude-opus-5".into(),
+                                context: None,
                             })?;
                             phase = 2;
                         }
@@ -1642,6 +1643,7 @@ fn model_and_thinking_controls_reach_source_setters_persist_and_drive_next_turn(
                             runtime.control(Intent::Select {
                                 revision: menu.revision,
                                 value: "high".into(),
+                                context: None,
                             })?;
                             phase = 4;
                         }

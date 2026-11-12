@@ -162,6 +162,20 @@ def fingerprint(app, context, result, *, include_pending=True):
     }
     return hashlib.sha256(_encoded(facts, 1024 * 1024)).hexdigest()
 
+def _marks(app, names):
+    try:
+        from litetui.plugins.model_switch import backend_rows
+        rows = backend_rows(app)
+    except Exception:  # noqa: BLE001 - a mark that cannot be read is simply not shown
+        return {}
+    marks = {}
+    for name, text in rows:
+        label, sep, mark = text.partition("  · ")
+        if name in names and sep and isinstance(mark, str) and mark and len(mark) <= MAX_LABEL:
+            marks[name] = mark
+    return marks
+
+
 def catalog(app, cmd):
     """Read bounded source metadata for this owned idle session without mutation."""
     before = _context(app, cmd.get("session_id"))
@@ -186,6 +200,9 @@ def catalog(app, cmd):
     if fingerprint(app, after, result) != snapshot:
         raise ValueError("Backend catalog changed while reading; refresh before continuing")
     result["snapshot"] = snapshot
+    # Python's /backend rows read "Label  · readiness" (plugins/model_switch.backend_rows). The
+    # marks are display only: outside the snapshot, never a readiness claim the switch relies on.
+    result["marks"] = _marks(app, {row["name"] for row in rows})
     if len(json.dumps(result, allow_nan=False).encode("utf-8")) > MAX_RESPONSE:
         raise ValueError("Backend catalog exceeds the response byte budget")
     return result

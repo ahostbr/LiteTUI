@@ -1798,6 +1798,7 @@ impl Chat {
             }
             Observation::Ready => {
                 self.ready = true;
+                self.commands.prefetch();
                 self.notice = format!(
                     "Connected. Enter sends; Ctrl+Q quits. {}",
                     self.runtime_state
@@ -2857,5 +2858,31 @@ mod paging_budget_tests {
         assert_eq!(chat.visible_row_range(), 0..0);
         assert!(chat.newer_live_page());
         assert_eq!(chat.visible_row_range(), 0..2);
+    }
+}
+
+#[cfg(test)]
+mod slash_completion_prefetch_tests {
+    use super::*;
+
+    /// Ryan 2026-11-11: typing "/" showed nothing until F11 had been opened once, because the
+    /// registry was only read when the palette opened. Python LiteTUI has its command list from
+    /// startup, so the first "/" already completes.
+    #[test]
+    fn ready_reads_the_command_registry_without_taking_the_composer() {
+        let mut chat = Chat::new("custom".into(), "fixture".into());
+        chat.observe(Observation::Ready).unwrap();
+        assert!(matches!(
+            chat.commands.take_intent(),
+            Some(crate::command_palette::Intent::Read { skills: false })
+        ));
+        assert!(
+            !chat.commands.owns_input(),
+            "a background read must not own input"
+        );
+        assert!(!chat.commands.open);
+        // A second ready (reconnect) does not queue a duplicate while the first is unanswered.
+        chat.observe(Observation::Ready).unwrap();
+        assert!(chat.commands.take_intent().is_none());
     }
 }

@@ -975,25 +975,14 @@ fn backend_and_resume_arguments_preselect_rows_without_switching_or_opening() {
         catalog,
     )))
     .unwrap();
+    // Python's `/backend codex` switches at once; natively that is codex's model list, then a pick.
     let backend = &mut app.live.as_mut().unwrap().backend_controls;
-    assert!(
-        backend.notice.contains("selected codex"),
-        "{}",
-        backend.notice
-    );
-    assert_eq!(backend.take_intent(), None);
-    let shown = paint(&mut app, 100, 30);
-    assert!(shown.contains(">  Codex [codex]"), "{shown}");
-    assert!(
-        shown.contains("● Custom [custom]"),
-        "current backend stays marked"
-    );
-    let backend = &mut app.live.as_mut().unwrap().backend_controls;
-    backend.key(key(KeyCode::Enter));
     assert_eq!(
         backend.take_intent(),
-        None,
-        "Enter only starts typing the model"
+        Some(backend_controls::Intent::Models {
+            revision: 7,
+            name: "codex".into()
+        })
     );
 
     let page = |offset: usize| {

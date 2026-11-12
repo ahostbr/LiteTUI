@@ -486,3 +486,88 @@ async def test_backend_switch_preserves_negotiated_history_protocol(switch_app, 
     assert app._launch_options.server_mode == "connect" and app._launch_options.load_model is False
     for path in (app.convo_dir / "settings.json", app._agent_session.store.data_root / "settings.json"):
         assert "history_projection_version" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+# -- Python's /backend then /model, for the native frontend (Ryan 2026-11-11) ------------------
+# "/backend switches backend only /model displays models that backend provides and always allows a
+# context to be choosen for local models". The native picker asks the source for the other
+# backend's list (connect-only, nothing loaded) and publishes the pick and the switch together.
+
+
+def listing_command(app, name="lmstudio"):
+    catalog = backend_catalog.catalog(app, {"session_id": app.convo_id})
+    return {"type": "gui.backends.native_models", "id": "listing", "version": 1,
+            "session_id": app.convo_id, "agent_id": catalog["agent_id"],
+            "snapshot": catalog["snapshot"], "name": name}
+
+
+@pytest.mark.asyncio
+async def test_listing_another_backend_shows_python_rows_and_changes_nothing(switch_app):
+    app = switch_app
+    before = disk(app)
+    authority = (app._agent_session.authority.backend, app._agent_session.authority.model)
+    result = await gui_rpc.async_dispatch(app, listing_command(app))
+    assert result["kind"] == "backend_models" and result["name"] == "lmstudio"
+    assert [row["key"] for row in result["models"]] == ["old-model", "new-model"]
+    # plugins/model_switch._row_label, without the current marker (nothing is chosen yet).
+    assert result["models"][1]["label"] == "  new-model  · fixture  · loaded"
+    assert result["context"]["setting"] == "default_context_length"
+    assert result["context"]["applies_on_engine_start"] is False
+    assert disk(app) == before
+    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == authority
+    assert app.backend.name == "custom" and app.model_id == "old-model"
+
+
+@pytest.mark.asyncio
+async def test_listing_the_current_backend_says_already_on_it(switch_app):
+    with pytest.raises(ValueError, match="Already on custom"):
+        await gui_rpc.async_dispatch(switch_app, listing_command(switch_app, "custom"))
+
+
+@pytest.mark.asyncio
+async def test_listing_refuses_a_stale_snapshot(switch_app):
+    request = listing_command(switch_app)
+    request["snapshot"] = "0" * 64
+    with pytest.raises(ValueError, match="stale"):
+        await gui_rpc.async_dispatch(switch_app, request)
+
+
+@pytest.mark.asyncio
+async def test_switch_with_a_context_saves_python_context_choice(switch_app):
+    app = switch_app
+    result = await gui_rpc.async_dispatch(app, command(app, context=65536))
+    assert result["status"] == "connected", result
+    # context_choice.settings_after: the backend's main setting and the per-model memory.
+    assert app.settings.default_context_length == 65536
+    assert app.settings.model_context_overrides["lmstudio:new-model"] == 65536
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [100, 1 << 21, "65536", True])
+async def test_switch_refuses_an_implausible_context_before_anything_changes(switch_app, value):
+    app = switch_app
+    before = disk(app)
+    result = await gui_rpc.async_dispatch(app, command(app, context=value))
+    assert result["status"] == "refused" and not result["mutated"], result
+    assert disk(app) == before
+
+
+@pytest.mark.asyncio
+async def test_model_list_carries_python_row_labels_and_context_facts(switch_app):
+    state = await gui_rpc.async_dispatch(switch_app, {"type": "gui.models.list", "id": "models"})
+    assert state["labels"] == {"old-model": "▸ old-model  · fixture  · loaded"}
+    assert state["context"]["setting"] == "custom_context_length"
+
+
+@pytest.mark.asyncio
+async def test_model_select_with_a_context_saves_it_like_choose_model(switch_app, monkeypatch):
+    app = switch_app
+    applied = []
+    monkeypatch.setattr(app, "apply_context_length", lambda force=False: applied.append(force))
+    result = await gui_rpc.async_dispatch(
+        app, {"type": "gui.models.select", "id": "pick", "slug": "old-model", "context": 4096})
+    assert result["model"] == "old-model"
+    assert app.settings.custom_context_length == 4096
+    assert app.settings.model_context_overrides["custom:old-model"] == 4096
+    # Re-picking the active model with a new size applies it explicitly (plugins/model_switch).
+    assert applied == [True]

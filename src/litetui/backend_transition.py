@@ -14,7 +14,7 @@ from litetui.launch_options import LaunchOptions
 from litetui.settings_service import SettingChange
 
 VERSION = 1
-_LOCAL = frozenset({"custom", "lmstudio", "llamacpp", "ninfer", "strata"})
+_LOCAL = frozenset({"custom", "lmstudio", "llamacpp", "ninfer", "strata", "xolotl"})
 GUARDED_FIELDS = frozenset({"version", "session_id", "agent_id", "snapshot", "model"})
 CLOSE_REQUIRED = "Backend transition is uncertain; close this runtime and reopen explicitly."
 
@@ -201,6 +201,12 @@ async def transition(app, cmd):
         model = backend_catalog._text(cmd.get("model"), 4096)
         if not model.strip() or any(ord(char) < 32 or ord(char) == 127 for char in model):
             raise ValueError("Select a nonempty explicit model without control characters")
+        from litetui import context_choice
+        tokens = cmd.get("context")
+        if tokens is not None:
+            if (type(tokens) is not int or context_choice.main_key(name) is None
+                    or not context_choice.CTX_FLOOR <= tokens <= context_choice.CTX_CEILING):
+                raise ValueError("Context length must be a token count this backend reads")
         context = backend_catalog._context(app, catalog["session_id"])
         if getattr(app, "_startup_history_path", None) is not None:
             raise ValueError("Current history is still connecting")
@@ -311,6 +317,15 @@ async def transition(app, cmd):
             app._gui_effective_settings = asdict(app.settings)
         for key in ("backend", "default_model"):
             app._gui_effective_settings[key] = getattr(app.settings, key)
+        if tokens is not None:
+            # plugins/model_switch._choose_model: remember it for this model and make it the backend's
+            # main context setting. Saving loads nothing; the setting applies when the model loads.
+            chosen = context_choice.settings_after(app.settings, name, model, tokens)
+            settings_runtime.persist_or_raise(app, chosen, baseline=app.settings)
+            app.settings = chosen
+            set_settings = getattr(app.backend, "set_settings", None)
+            if set_settings is not None:
+                set_settings(chosen)
         receipt = _receipt(app, cmd, "connected", mutated=True)
         receipt.update(background_input.after_identity_transition(app, work_proof))
         return receipt
@@ -336,3 +351,73 @@ async def transition(app, cmd):
         return _receipt(app, cmd, "failed", mutated=mutated, close_required=True, error=error[:2048])
     finally:
         app._backend_transition_inflight = False
+
+
+MODEL_ROWS = 512
+
+
+def _model_label(row, remote: bool) -> str:
+    """Python's /model row (plugins/model_switch._row_label) for a row that is not yet current."""
+    status = "ready" if remote else "loaded"
+    return "  " + row.key + f"  · {row.source}" + (f"  · {status}" if row.loaded else "")
+
+
+async def candidate_models(app, cmd):
+    """List the models another backend serves, the way /model lists them after /backend.
+
+    Python LiteTUI switches the backend, then connect() lists the new backend's models and, because a
+    backend switch leaves the seat's model unchosen, opens the "Select a model" picker. The native
+    frontend asks for that list first so the pick and the switch publish together. Connect-only for
+    local backends: nothing is started or loaded. The candidate is closed before returning.
+    """
+    from litetui import context_choice
+    require_open(app)
+    if type(cmd.get("version")) is not int or cmd["version"] != VERSION:
+        raise ValueError("Backend model listing requires version 1")
+    _quiet(app)
+    catalog = backend_catalog.catalog(app, {"session_id": cmd.get("session_id")})
+    if valid_id(cmd.get("agent_id")) != catalog["agent_id"]:
+        raise ValueError("Backend selection belongs to another agent")
+    if cmd.get("snapshot") != catalog["snapshot"]:
+        raise ValueError("Backend selection is stale; refresh before switching")
+    name = cmd.get("name")
+    if name not in {row["name"] for row in catalog["entries"]}:
+        raise ValueError("Backend selection is not visible in the source catalog")
+    if name == catalog["selected_backend"]:
+        raise ValueError(f"Already on {name}")  # plugins/model_switch._switch_backend says the same
+    settings = copy.deepcopy(app.settings)
+    settings.backend = name
+    old_launch = getattr(app, "_launch_options", None)
+    launch = LaunchOptions(server_mode="connect" if name in _LOCAL else "auto",
+                           timeout=getattr(old_launch, "timeout", 600))
+    candidate = llm_backend.make_backend(settings)
+    if candidate.name != name:
+        raise ValueError("Backend factory substituted the requested backend")
+    try:
+        if name == "llamacpp":
+            candidate.require_existing_server()
+        view = SimpleNamespace(backend=candidate, _launch_options=launch,
+                               _launch_backend=name, _launch_prepared=False, _system=app._system)
+        from litetui.launch_options import prepare
+        async with asyncio.timeout(min(launch.timeout, 60)):
+            await prepare(view)
+            rows = await candidate.list_models()
+    finally:
+        await _close_backend(app, candidate)
+    rows = [row for row in rows if not any(skip in row.key.lower() for skip in ("embed", "embedding"))]
+    if len(rows) > MODEL_ROWS:
+        raise ValueError("Backend model list exceeds the picker budget")
+    remote = bool(getattr(candidate, "remote", False))
+    key = context_choice.main_key(name)
+    return {
+        "version": VERSION, "kind": "backend_models", "session_id": catalog["session_id"],
+        "agent_id": catalog["agent_id"], "snapshot": catalog["snapshot"], "name": name,
+        "models": [{"key": row.key, "label": _model_label(row, remote), "loaded": bool(row.loaded)}
+                   for row in rows],
+        "context": None if key is None else {
+            "setting": key,
+            "applies_on_engine_start": name in context_choice.APPLIES_ON_ENGINE_START,
+            "suggestions": {row.key: context_choice.suggestion(settings, name, row.key) for row in rows},
+            "remembered": {row.key: context_choice.remembered(settings, name, row.key) for row in rows},
+        },
+    }

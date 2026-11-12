@@ -117,7 +117,7 @@ impl Panel {
         match self {
             Self::Engine => "Owned engine",
             Self::Commands => "Prepared skill",
-            Self::Backend => "Backend and model",
+            Self::Backend => "Select the engine for this conversation",
             Self::Browser => "Conversations",
             Self::Models => "Models",
         }
@@ -143,6 +143,7 @@ impl Panel {
                 ],
                 note: "Source choices".into(),
                 message: None,
+                context: None,
             })),
             Self::Backend => Observation::Backend(b::Update::Catalog(b::Catalog {
                 revision: 1,
@@ -161,12 +162,14 @@ impl Panel {
                         label: "Strata".into(),
                         selected: true,
                         owned_engine_controls: true,
+                        mark: None,
                     },
                     b::Entry {
                         name: "custom".into(),
                         label: "Custom".into(),
                         selected: false,
                         owned_engine_controls: false,
+                        mark: None,
                     },
                 ],
             })),

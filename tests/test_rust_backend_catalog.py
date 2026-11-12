@@ -96,6 +96,10 @@ async def test_catalog_uses_real_source_visibility_labels_order_and_engine_contr
     before = tree(app)
     result = read(app)
     visible = llm_backend.visible_backends()
+    # Display-only readiness marks (plugins/model_switch.backend_rows) ride outside the snapshot.
+    marks = result.pop("marks")
+    assert set(marks) <= {row["name"] for row in result["entries"]}
+    assert all(isinstance(mark, str) and mark for mark in marks.values())
     assert result == {
         "version": 1, "kind": "support_metadata", "readiness_checked": False,
         "session_id": app.convo_id, "agent_id": app._agent_session.authority.agent_id,

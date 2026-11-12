@@ -610,6 +610,7 @@ fn select_model(m: &mut Management, value: &str) -> Value {
     m.request_control(Intent::Select {
         revision: menu.revision,
         value: value.into(),
+        context: None,
     })
     .unwrap()
 }

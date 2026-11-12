@@ -176,7 +176,7 @@ fn floor_and_async_hook_refusals_settle_exact_attempts_then_medium_recovers() {
         let menu=menu.unwrap();
         assert_eq!(menu.current,"low");
         assert!(menu.rows.iter().any(|row|row.value=="medium"));
-        runtime.control(Intent::Select{revision:menu.revision,value:"medium".into()})?;
+        runtime.control(Intent::Select{revision:menu.revision,value:"medium".into(),context:None})?;
         observe(runtime,&mut app,|event|matches!(event,Observation::Controls(Update::Choices(value)) if value.current=="medium"))?;
         prompt(runtime,&mut app,"deny this hook")?;
         observe(runtime,&mut app,|e|matches!(e,Observation::Refused(_)))?;

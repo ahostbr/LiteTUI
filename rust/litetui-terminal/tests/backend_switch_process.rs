@@ -155,26 +155,56 @@ fn read_catalog(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
     })
 }
 fn select(runtime: &mut Interactive, app: &mut Demo, target: &str) -> io::Result<()> {
+    // Python's flow: pick the engine, then pick from the models it serves (no typed model).
     draw(app);
     let view = &mut app.live.as_mut().unwrap().backend_controls;
     let c = view.catalog.as_ref().unwrap();
     let index = c.entries.iter().position(|r| r.name == target).unwrap();
+    let revision = c.revision;
     view.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
     for _ in 0..index {
         view.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
     view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    view.paste("switch-new");
-    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(
-        view.take_intent().is_none(),
-        "confirmation has not been drawn"
-    );
+    let listing = view.take_intent().unwrap();
+    assert!(matches!(&listing, Intent::Models { name, .. } if name == target));
+    runtime.backend(listing)?;
+    wait(runtime, app, |e| {
+        matches!(
+            e,
+            Observation::Backend(Update::Models(_) | Update::Rejected(_))
+        )
+    })?;
     draw(app);
     let view = &mut app.live.as_mut().unwrap().backend_controls;
-    view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let intent = view.take_intent().unwrap();
+    let row = view
+        .models
+        .as_ref()
+        .and_then(|m| m.rows.iter().position(|r| r.key == "switch-new"));
+    let intent = match row {
+        Some(row) => {
+            for _ in 0..row {
+                view.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            }
+            view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            if view.editing() {
+                draw(app);
+                let view = &mut app.live.as_mut().unwrap().backend_controls;
+                view.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // Keep current
+                view.take_intent().unwrap()
+            } else {
+                view.take_intent().unwrap()
+            }
+        }
+        // The model vanished between listing and switch: the stale pick must still be refused by
+        // the source with no fallback, exactly as before.
+        None => Intent::Select {
+            revision,
+            name: target.into(),
+            model: "switch-new".into(),
+            context: None,
+        },
+    };
     assert!(matches!(&intent,Intent::Select{name,model,..} if name==target&&model=="switch-new"));
     runtime.backend(intent)
 }

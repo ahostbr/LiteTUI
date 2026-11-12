@@ -1,8 +1,6 @@
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use litetui_terminal::{
-    backend_controls::{Catalog, Intent, Update, View},
+    backend_controls::{Catalog, Intent, ModelList, Update, View},
     management::{Management, Step},
 };
 use ratatui::{Terminal, backend::TestBackend};
@@ -38,11 +36,32 @@ fn draw(v: &mut View, w: u16, h: u16) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-fn edit(v: &mut View, model: &str) {
-    draw(v, 80, 28);
+fn listing(models: Value, context: Value) -> Value {
+    json!({"version":1,"kind":"backend_models","session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"name":"lmstudio","models":models,"context":context})
+}
+fn models_view(context: Value) -> View {
+    let mut v = view();
+    draw(&mut v, 80, 28);
     v.key(key(KeyCode::Down));
     v.key(key(KeyCode::Enter));
-    v.paste(model);
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::Models {
+            revision: 7,
+            name: "lmstudio".into()
+        })
+    );
+    let list = ModelList::parse(
+        &listing(
+            json!([{"key":"a-model","label":"  a-model  · lmstudio  · loaded","loaded":true},{"key":"b-model","label":"  b-model  · lmstudio","loaded":false}]),
+            context,
+        ),
+        &catalog(),
+        "lmstudio",
+    )
+    .unwrap();
+    v.observe(Update::Models(list)).unwrap();
+    v
 }
 #[test]
 fn metadata_is_owned_bounded_and_never_readiness() {
@@ -108,138 +127,186 @@ fn malformed_or_foreign_catalog_cannot_be_presented() {
     }
 }
 #[test]
-fn model_is_explicit_and_fresh_draw_is_required_to_apply() {
-    let mut v = view();
-    edit(&mut v, "new");
-    v.key(key(KeyCode::Enter));
-    v.key(key(KeyCode::Enter));
-    assert!(v.take_intent().is_none());
+fn engine_picker_reads_like_python_with_readiness_marks() {
+    let mut d = data("custom", "old");
+    d["marks"] = json!({"lmstudio":"installed","custom":"set URL in /settings","unknown":"x"});
+    let mut v = View::default();
+    v.open();
+    v.take_intent();
+    v.observe(Update::Catalog(
+        Catalog::parse(&d, 7, SESSION, AGENT).unwrap(),
+    ))
+    .unwrap();
     let text = draw(&mut v, 80, 28);
-    assert!(text.contains("Backend: lmstudio") && text.contains("Model: new"));
-    v.key(KeyEvent::new_with_kind(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-        KeyEventKind::Repeat,
-    ));
-    assert!(v.take_intent().is_none());
+    assert!(
+        text.contains("Select the engine for this conversation"),
+        "{text}"
+    );
+    assert!(
+        text.contains("▸ Custom server  · set URL in /settings"),
+        "{text}"
+    );
+    assert!(text.contains("LM Studio  · installed"), "{text}");
+    assert!(
+        text.contains("↑↓ move · Enter or click to select · Esc to cancel"),
+        "{text}"
+    );
+    assert!(!text.contains("Model:"), "{text}");
+}
+#[test]
+fn picking_a_loaded_model_on_a_hosted_backend_switches_without_a_context_question() {
+    let mut v = models_view(Value::Null);
+    let text = draw(&mut v, 80, 28);
+    assert!(text.contains("Select a model") && text.contains("a-model  · lmstudio  · loaded"));
     v.key(key(KeyCode::Enter));
     assert_eq!(
         v.take_intent(),
         Some(Intent::Select {
             revision: 7,
             name: "lmstudio".into(),
-            model: "new".into()
+            model: "a-model".into(),
+            context: None,
         })
     );
     assert!(v.waiting);
-    v.close();
-    assert!(v.owns_input());
     assert!(
         v.observe(Update::Changed {
             backend: "foreign".into(),
-            model: "new".into()
+            model: "a-model".into()
         })
         .is_err()
     );
     v.observe(Update::Changed {
         backend: "lmstudio".into(),
-        model: "new".into(),
+        model: "a-model".into(),
     })
     .unwrap();
     assert!(!v.owns_input());
 }
 #[test]
-fn resize_focus_selection_and_modifiers_disarm_confirmation() {
-    for change in ["resize", "hide", "modifier", "mouse", "paste"] {
-        let mut v = view();
-        edit(&mut v, "new");
-        v.key(key(KeyCode::Enter));
-        draw(&mut v, 80, 28);
-        match change {
-            "resize" => {
-                draw(&mut v, 36, 14);
-            }
-            "hide" => v.hide(),
-            "modifier" => v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
-            "mouse" => v.mouse(MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            }),
-            "paste" => v.paste("changed"),
-            _ => unreachable!(),
-        };
-        v.key(key(KeyCode::Enter));
-        assert!(v.take_intent().is_none(), "{change}");
-    }
-}
-#[test]
-fn exact_model_paste_rejects_multiline_or_oversized_without_truncating() {
-    let mut v = view();
-    edit(&mut v, "new");
-    for text in [
-        "\nother".to_owned(),
-        "\u{1b}escape".into(),
-        "雪".repeat(400),
-    ] {
-        v.paste(&text);
-        assert_eq!(v.model_text(), "new");
-    }
-    v.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
-    v.paste("雪 model");
-    assert_eq!(v.model_text(), "雪 model");
-    v.key(key(KeyCode::Tab));
+fn local_backend_asks_context_and_esc_keeps_current() {
+    let facts = json!({"setting":"default_context_length","applies_on_engine_start":false,"suggestions":{"a-model":null,"b-model":8192},"remembered":{"a-model":null,"b-model":8192}});
+    let mut v = models_view(facts.clone());
+    draw(&mut v, 80, 28);
     v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    let text = draw(&mut v, 80, 28);
+    assert!(
+        text.contains("Context length for b-model (tokens)"),
+        "{text}"
+    );
+    assert!(text.contains("The model is loaded at this size. Last used for this model: 8,192."));
+    assert_eq!(v.model_text(), "8192");
+    v.key(key(KeyCode::Esc));
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::Select {
+            revision: 7,
+            name: "lmstudio".into(),
+            model: "b-model".into(),
+            context: None,
+        })
+    );
+    let mut v = models_view(facts);
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Enter));
     assert_eq!(v.model_text(), "");
+    v.paste("131,072");
+    v.key(key(KeyCode::Enter));
+    assert!(matches!(
+        v.take_intent(),
+        Some(Intent::Select {
+            context: Some(131072),
+            ..
+        })
+    ));
 }
 #[test]
-fn minimum_geometry_and_all_themes_render_without_default_model() {
+fn context_answer_follows_python_parse_rules() {
+    use litetui_terminal::backend_controls::parse_context;
+    assert_eq!(parse_context(" 100_000 "), Ok(100000));
+    assert_eq!(parse_context("131,072"), Ok(131072));
+    assert!(
+        parse_context("100k")
+            .unwrap_err()
+            .contains("Type a number of tokens")
+    );
+    assert!(
+        parse_context("511")
+            .unwrap_err()
+            .contains("512 to 1,048,576")
+    );
+    assert!(parse_context(&(1u64 << 21).to_string()).is_err());
+}
+#[test]
+fn current_engine_says_already_on_and_mouse_click_selects_like_python() {
+    let mut v = view();
+    draw(&mut v, 80, 28);
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none());
+    assert_eq!(v.notice, "Already on custom");
+    let mut v = view();
+    let text = draw(&mut v, 80, 28);
+    let row = text.lines().position(|l| l.contains("LM Studio")).unwrap() as u16;
+    let m = |kind| MouseEvent {
+        kind,
+        column: 20,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    v.mouse(m(MouseEventKind::Up(MouseButton::Left)));
+    assert!(
+        v.take_intent().is_none(),
+        "an unpaired release selects nothing"
+    );
+    v.mouse(m(MouseEventKind::Down(MouseButton::Left)));
+    v.mouse(m(MouseEventKind::Up(MouseButton::Left)));
+    assert!(matches!(v.take_intent(), Some(Intent::Models { name, .. }) if name == "lmstudio"));
+}
+#[test]
+fn foreign_or_malformed_model_lists_are_refused() {
+    for fault in [
+        "kind",
+        "snapshot",
+        "name",
+        "duplicate",
+        "control",
+        "suggestion",
+    ] {
+        let mut d = listing(
+            json!([{"key":"a","label":"a","loaded":true}]),
+            json!({"setting":"default_context_length","applies_on_engine_start":false,"suggestions":{"a":4096},"remembered":{"a":null}}),
+        );
+        match fault {
+            "kind" => d["kind"] = json!("support_metadata"),
+            "snapshot" => d["snapshot"] = json!("b".repeat(64)),
+            "name" => d["name"] = json!("codex"),
+            "duplicate" => {
+                d["models"] = json!([{"key":"a","label":"a","loaded":true},{"key":"a","label":"a","loaded":true}])
+            }
+            "control" => d["models"][0]["key"] = json!("a\n"),
+            "suggestion" => d["context"]["suggestions"]["a"] = json!(-1),
+            _ => unreachable!(),
+        }
+        assert!(
+            ModelList::parse(&d, &catalog(), "lmstudio").is_err(),
+            "{fault}"
+        );
+    }
+}
+#[test]
+fn minimum_geometry_and_all_themes_render() {
     for theme in litetui_terminal::theme::builtin_themes() {
         let mut v = view();
         let mut terminal = Terminal::new(TestBackend::new(36, 14)).unwrap();
         terminal.draw(|f| v.draw(f, f.area(), &theme)).unwrap();
-        assert_eq!(v.model_text(), "");
     }
     let mut v = view();
-    edit(&mut v, "new");
-    draw(&mut v, 35, 13);
+    draw(&mut v, 35, 9);
     v.key(key(KeyCode::Enter));
     assert!(v.take_intent().is_none());
     v.key(key(KeyCode::Esc));
     assert!(!v.waiting);
-}
-#[test]
-fn long_confirmation_requires_review_pages_and_a_fresh_last_page() {
-    let mut v = view();
-    edit(&mut v, &"m".repeat(1024));
-    draw(&mut v, 36, 14);
-    v.key(key(KeyCode::Enter));
-    draw(&mut v, 36, 14);
-    v.key(key(KeyCode::Enter));
-    assert!(v.take_intent().is_none());
-    for _ in 0..10 {
-        v.key(key(KeyCode::PageDown));
-        draw(&mut v, 36, 14);
-    }
-    v.key(key(KeyCode::Enter));
-    assert!(matches!(v.take_intent(),Some(Intent::Select{model,..}) if model.len()==1024));
-}
-#[test]
-fn paired_mouse_selection_cannot_apply() {
-    let mut v = view();
-    draw(&mut v, 80, 28);
-    let m = |kind| MouseEvent {
-        kind,
-        column: 3,
-        row: 7,
-        modifiers: KeyModifiers::NONE,
-    };
-    v.mouse(m(MouseEventKind::Up(MouseButton::Left)));
-    assert!(v.take_intent().is_none());
-    v.mouse(m(MouseEventKind::Down(MouseButton::Left)));
-    v.mouse(m(MouseEventKind::Up(MouseButton::Left)));
-    assert!(v.take_intent().is_none());
 }
 fn state(backend: &str, model: &str) -> Value {
     json!({"session_id":SESSION,"busy":false,"mode":"normal","tool_profile":"strict","model":{"backend":backend,"model":model},"ownership":{"data_version":1,"writable":true,"agent_id":AGENT},"restored_input":{"policy":"hold","held":0},"schedules_paused":false,"conversations":[],"jobs":[],"tasks":[],"active_work":[],"pending_approvals":[],"pending_questions":[],"pending_model_loads":[],"tool_policy":{"checked":"later in driver"}})
@@ -274,6 +341,7 @@ fn prepare(m: &mut Management) -> Value {
             revision: c.revision,
             name: "lmstudio".into(),
             model: "new".into(),
+            context: None,
         })
         .unwrap();
     assert_eq!(before["type"], "gui.conversations.read");
@@ -413,6 +481,7 @@ fn unsupported_history_is_rejected_before_mutation_and_empty_owned_history_is_va
             revision: c.revision,
             name: "lmstudio".into(),
             model: "new".into(),
+            context: None,
         })
         .unwrap();
     let mut h = history();
@@ -435,18 +504,6 @@ fn unsupported_history_is_rejected_before_mutation_and_empty_owned_history_is_va
 }
 
 #[test]
-fn confirmation_escapes_bidirectional_controls_without_changing_exact_model() {
-    let mut v = view();
-    edit(&mut v, "model\u{202e}txt");
-    v.key(key(KeyCode::Enter));
-    let text = draw(&mut v, 80, 28);
-    assert!(!text.contains('\u{202e}'));
-    assert!(text.contains("\\u{202e}"), "{text}");
-    v.key(key(KeyCode::Enter));
-    assert!(matches!(v.take_intent(),Some(Intent::Select{model,..}) if model=="model\u{202e}txt"));
-}
-
-#[test]
 fn over_limit_explicit_model_fails_before_any_management_command() {
     let c = catalog();
     assert!(c.selection(7, "lmstudio", &"x".repeat(1024)).is_ok());
@@ -461,7 +518,8 @@ fn over_limit_explicit_model_fails_before_any_management_command() {
         m.request_backend(Intent::Select {
             revision: c.revision,
             name: "lmstudio".into(),
-            model: "x".repeat(1025)
+            model: "x".repeat(1025),
+            context: None,
         })
         .is_err()
     );
@@ -506,23 +564,6 @@ fn settings_requires_fresh_unchanged_owned_state_and_masks_secrets() {
 }
 
 #[test]
-fn confirmation_pages_cannot_be_skipped_before_they_are_drawn_and_editor_shows_caret() {
-    let mut v = view();
-    edit(&mut v, &"m".repeat(1024));
-    draw(&mut v, 36, 14);
-    v.key(key(KeyCode::Enter));
-    for _ in 0..40 {
-        v.key(key(KeyCode::PageDown));
-    }
-    draw(&mut v, 36, 14);
-    v.key(key(KeyCode::Enter));
-    assert!(v.take_intent().is_none());
-    v.key(key(KeyCode::Esc));
-    v.key(key(KeyCode::Home));
-    let rendered = draw(&mut v, 36, 14);
-    assert!(rendered.contains("Model: ▏mmm"), "{rendered}");
-}
-#[test]
 fn settings_refuses_lost_hold_policy_but_allows_held_count() {
     for held in [0, 2] {
         let mut m = connected();
@@ -555,6 +596,7 @@ fn oversized_source_history_refusal_keeps_original_backend_ready_without_mutatio
             revision: c.revision,
             name: "lmstudio".into(),
             model: "new".into(),
+            context: None,
         })
         .unwrap();
     assert_eq!(before["type"], "gui.conversations.read");

@@ -3856,9 +3856,11 @@ mod tests {
         assert!(app.live.as_mut().unwrap().take_submission().is_none());
     }
     #[test]
-    fn backend_selector_owns_model_editor_clipboard_confirmation_and_main_draft() {
+    fn backend_selector_follows_python_backend_then_model_then_context() {
+        // Ryan 2026-11-11: "/backend switches backend only, /model displays models that backend
+        // provides and always allows a context to be chosen for local models" — no typed model.
         use litetui_terminal::{
-            backend_controls::{Catalog, Intent, Update},
+            backend_controls::{Catalog, Intent, ModelList, Update},
             live::Observation,
         };
         let mut app = Demo::live("custom".into(), "old".into());
@@ -3876,32 +3878,31 @@ mod tests {
         );
         let id = "00000000-0000-4000-8000-000000000001";
         let data = serde_json::json!({"version":1,"kind":"support_metadata","readiness_checked":false,"session_id":id,"agent_id":id,"agent_name":"Agent","snapshot":"a".repeat(64),"selected_backend":"custom","configured_backend":"custom","selected_model":"old","codex_engine":{"requested_native":false,"effective":null},"entries":[{"name":"custom","label":"Custom","selected":true,"owned_engine_controls":false},{"name":"lmstudio","label":"LM Studio","selected":false,"owned_engine_controls":true}]});
-        app.observe_live(Observation::Backend(Update::Catalog(
-            Catalog::parse(&data, 1, id, id).unwrap(),
-        )))
-        .unwrap();
+        let catalog = Catalog::parse(&data, 1, id, id).unwrap();
+        app.observe_live(Observation::Backend(Update::Catalog(catalog.clone())))
+            .unwrap();
         render_footer(&mut app);
-        let mut clipboard = TestClipboard {
-            read: Some("new-model".into()),
-            ..Default::default()
+        let screen = |app: &mut Demo| {
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+            terminal.draw(|f| ui::draw(f, app)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..30)
+                .map(|y| {
+                    (0..100)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
         };
-        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-        handle_key(&mut app, &mut router, ctrl_v, &mut clipboard);
-        assert_eq!(clipboard.reads, 0);
-        plain(&mut app, &mut router, KeyCode::Down);
-        plain(&mut app, &mut router, KeyCode::Enter);
-        handle_key(&mut app, &mut router, ctrl_v, &mut clipboard);
-        assert_eq!(clipboard.reads, 1);
-        assert_eq!(
-            app.live.as_ref().unwrap().backend_controls.model_text(),
-            "new-model"
+        let shown = screen(&mut app);
+        assert!(
+            shown.contains("Select the engine for this conversation"),
+            "{shown}"
         );
-        paste(&mut app, "\nnot-a-model");
-        assert_eq!(
-            app.live.as_ref().unwrap().backend_controls.model_text(),
-            "new-model"
-        );
-        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(shown.contains("Enter or click to select"), "{shown}");
+        assert!(!shown.contains("Model:"), "no typed model field: {shown}");
+        // Enter on the current engine says so, as Python's /backend does, and switches nothing.
         plain(&mut app, &mut router, KeyCode::Enter);
         assert!(
             app.live
@@ -3911,23 +3912,103 @@ mod tests {
                 .take_intent()
                 .is_none()
         );
+        assert!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .backend_controls
+                .notice
+                .contains("Already on custom")
+        );
+        plain(&mut app, &mut router, KeyCode::F(9));
+        app.live.as_mut().unwrap().backend_controls.take_intent();
+        app.observe_live(Observation::Backend(Update::Catalog(catalog.clone())))
+            .unwrap();
         render_footer(&mut app);
+        plain(&mut app, &mut router, KeyCode::Down);
         plain(&mut app, &mut router, KeyCode::Enter);
-        assert!(matches!(
+        assert_eq!(
             app.live.as_mut().unwrap().backend_controls.take_intent(),
-            Some(Intent::Select { .. })
-        ));
+            Some(Intent::Models {
+                revision: 1,
+                name: "lmstudio".into()
+            })
+        );
+        let listing = serde_json::json!({"version":1,"kind":"backend_models","session_id":id,"agent_id":id,"snapshot":"a".repeat(64),"name":"lmstudio","models":[{"key":"qwen-a","label":"  qwen-a  · lmstudio  · loaded","loaded":true},{"key":"qwen-b","label":"  qwen-b  · lmstudio","loaded":false}],"context":{"setting":"default_context_length","applies_on_engine_start":false,"suggestions":{"qwen-a":32768,"qwen-b":null},"remembered":{"qwen-a":32768,"qwen-b":null}}});
+        app.observe_live(Observation::Backend(Update::Models(
+            ModelList::parse(&listing, &catalog, "lmstudio").unwrap(),
+        )))
+        .unwrap();
+        let shown = screen(&mut app);
+        assert!(shown.contains("Select a model"), "{shown}");
+        assert!(shown.contains("qwen-a  · lmstudio  · loaded"), "{shown}");
+        plain(&mut app, &mut router, KeyCode::Enter);
+        let shown = screen(&mut app);
+        assert!(
+            shown.contains("Context length for qwen-a (tokens)"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("Last used for this model: 32,768."),
+            "{shown}"
+        );
+        assert_eq!(
+            app.live.as_ref().unwrap().backend_controls.model_text(),
+            "32768"
+        );
+        // A bad number stays in the dialog with Python's words; nothing is sent.
+        for _ in 0..5 {
+            plain(&mut app, &mut router, KeyCode::Backspace);
+        }
+        plain(&mut app, &mut router, KeyCode::Char('9'));
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert!(
+            app.live
+                .as_mut()
+                .unwrap()
+                .backend_controls
+                .take_intent()
+                .is_none()
+        );
+        assert!(screen(&mut app).contains("is not a plausible"));
+        plain(&mut app, &mut router, KeyCode::Backspace);
+        paste(&mut app, "65,536");
+        plain(&mut app, &mut router, KeyCode::Enter);
+        assert_eq!(
+            app.live.as_mut().unwrap().backend_controls.take_intent(),
+            Some(Intent::Select {
+                revision: 1,
+                name: "lmstudio".into(),
+                model: "qwen-a".into(),
+                context: Some(65536),
+            })
+        );
         assert_eq!(app.composer.text(), "unsent main draft");
         assert!(app.live.as_ref().unwrap().rows.is_empty());
         app.observe_live(Observation::Backend(Update::Rejected(
-            "stale selection".into(),
+            "Requested model is unavailable or not loaded".into(),
         )))
         .unwrap();
+        // Esc in the context dialog is "Keep current": the pick still happens, with no size.
+        assert!(screen(&mut app).contains("Requested model is unavailable"));
+        plain(&mut app, &mut router, KeyCode::Enter);
+        screen(&mut app);
         plain(&mut app, &mut router, KeyCode::Esc);
-        plain(&mut app, &mut router, KeyCode::F(9));
-        let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 13)).unwrap();
+        assert_eq!(
+            app.live.as_mut().unwrap().backend_controls.take_intent(),
+            Some(Intent::Select {
+                revision: 1,
+                name: "lmstudio".into(),
+                model: "qwen-a".into(),
+                context: None,
+            })
+        );
+        app.observe_live(Observation::Backend(Update::Rejected("stale".into())))
+            .unwrap();
+        plain(&mut app, &mut router, KeyCode::Esc);
+        plain(&mut app, &mut router, KeyCode::Esc);
+        let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 9)).unwrap();
         small.draw(|f| ui::draw(f, &mut app)).unwrap();
-        plain(&mut app, &mut router, KeyCode::Esc);
         assert!(!app.has_live_backend());
         assert_eq!(app.composer.text(), "unsent main draft");
     }
