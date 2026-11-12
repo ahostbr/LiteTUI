@@ -263,7 +263,7 @@ static SPECS: [Spec; 21] = [
         "Fleet seat name",
         "identity",
         Kind::Text,
-        "conversation",
+        "defaults",
         "next_turn",
         "Name requested from the registry the next time this seat registers; blank is LiteTUI.",
     ),

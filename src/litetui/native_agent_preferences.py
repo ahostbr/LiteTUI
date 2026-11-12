@@ -58,7 +58,7 @@ _ROWS = (
     ("subagent_model", "optional_text", "routes", None, None, (), "conversation", "next_turn"),
     ("tool_summary_model", "optional_text", "routes", None, None, (), "conversation", "next_turn"),
     ("user_name", "text", "identity", None, None, (), "defaults", "next_turn"),
-    ("seat_name", "text", "identity", None, None, (), "conversation", "next_turn"),
+    ("seat_name", "text", "identity", None, None, (), "defaults", "next_turn"),
     ("owner_domain_cap", "integer", "identity", 1, MAXIMUM, (), "conversation", "next_turn"),
     ("skills_enabled", "boolean", "identity", None, None, (), "conversation", "reconnect"),
     ("skill_roots", "list", "identity", None, None, (), "conversation", "reconnect"),

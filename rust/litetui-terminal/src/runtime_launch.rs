@@ -9,21 +9,25 @@ pub enum Backend {
     LlamaCpp,
     Ninfer,
     Strata,
+    Xolotl,
     Codex,
     Claude,
+    Anthropic,
     Cline,
     Free,
 }
 impl Backend {
     /// Checked against llm_backend.BACKENDS by the controlled source gate.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Custom,
         Self::LmStudio,
         Self::LlamaCpp,
         Self::Ninfer,
         Self::Strata,
+        Self::Xolotl,
         Self::Codex,
         Self::Claude,
+        Self::Anthropic,
         Self::Cline,
         Self::Free,
     ];
@@ -34,8 +38,10 @@ impl Backend {
             Self::LlamaCpp => "llamacpp",
             Self::Ninfer => "ninfer",
             Self::Strata => "strata",
+            Self::Xolotl => "xolotl",
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Anthropic => "anthropic",
             Self::Cline => "cline",
             Self::Free => "free",
         }
@@ -49,7 +55,12 @@ impl Backend {
     pub fn local(self) -> bool {
         matches!(
             self,
-            Self::Custom | Self::LmStudio | Self::LlamaCpp | Self::Ninfer | Self::Strata
+            Self::Custom
+                | Self::LmStudio
+                | Self::LlamaCpp
+                | Self::Ninfer
+                | Self::Strata
+                | Self::Xolotl
         )
     }
 }
@@ -258,7 +269,7 @@ impl LaunchOptions {
         }
         let mode = self.effective_mode(backend);
         if self.engine_management
-            && (!matches!(backend, Backend::Ninfer | Backend::Strata)
+            && (!matches!(backend, Backend::Ninfer | Backend::Strata | Backend::Xolotl)
                 || mode != ServerMode::Connect
                 || self.load_model)
         {
@@ -304,7 +315,9 @@ impl LaunchOptions {
                     "llama.cpp context changes require --start-server to permit a preset rebuild",
                 ));
             }
-            if matches!(backend, Backend::Ninfer | Backend::Strata) && mode != ServerMode::Start {
+            if matches!(backend, Backend::Ninfer | Backend::Strata | Backend::Xolotl)
+                && mode != ServerMode::Start
+            {
                 return Err(io::Error::other(
                     "Engine context is fixed at startup; use --start-server",
                 ));
@@ -318,7 +331,8 @@ impl LaunchOptions {
             ));
         }
         if self.model_path.is_some()
-            && !(matches!(backend, Backend::Ninfer | Backend::Strata) && mode == ServerMode::Start
+            && !(matches!(backend, Backend::Ninfer | Backend::Strata | Backend::Xolotl)
+                && mode == ServerMode::Start
                 || backend == Backend::LlamaCpp && self.load_model
                 || backend == Backend::Custom && self.server_command.is_some())
         {

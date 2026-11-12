@@ -4637,7 +4637,7 @@ class LiteTUI(App):
             return False
         from litetui.claude_persistence import LedgerError
         from litetui.owner_mode import OwnerModeError
-        from litetui.store_identity import launch_message_matches, resume_store_match
+        from litetui.store_identity import UNRECORDED, launch_message_matches, resume_store_match
         try:
             saved_identity = resume_store_match(self, path, meta, msgs)
         except (OwnerModeError, LedgerError) as exc:
@@ -9571,8 +9571,7 @@ class LiteTUI(App):
         """Capture one invocation BEFORE Textual can start its asynchronous body."""
         captured = conversation_rewrite.stream_origin(self, origin).scheduled()
         background_input.before_stream(self, captured)
-        runner = conversation_rewrite.stream_runner(
-            self, captured, partial(self._stream_worker, captured, restart_maintenance=restart_maintenance))
+        runner = conversation_rewrite.stream_runner(self, captured, self._stream_body(captured, restart_maintenance))
         runner = background_input.stream_runner(self, captured, runner)
         worker = self.run_worker(
             runner, name="_stream", group="chat", exclusive=True,
@@ -9589,7 +9588,14 @@ class LiteTUI(App):
         """Capture now, return an unscheduled coroutine for driven compaction."""
         captured = conversation_rewrite.stream_origin(self, origin).scheduled()
         return background_input.inline_runner(self, captured, conversation_rewrite.inline_runner(
-            self, captured, partial(self._stream_worker, captured, restart_maintenance=restart_maintenance)))
+            self, captured, self._stream_body(captured, restart_maintenance)))
+
+    def _stream_body(self, captured, restart_maintenance):
+        """The worker callable. Only a restart maintenance grant is passed as a keyword, so the
+        ordinary one-argument `_stream_worker(origin)` seam stays the contract every caller sees."""
+        if restart_maintenance is None:
+            return partial(self._stream_worker, captured)
+        return partial(self._stream_worker, captured, restart_maintenance=restart_maintenance)
 
     async def _stream_worker(self, origin: EventOrigin, *, restart_maintenance=None) -> None:
         """Agent loop: stream a turn; if the model called tools, execute them,
