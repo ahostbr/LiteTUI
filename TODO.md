@@ -1,6 +1,6 @@
 # LiteTUI — TODO
 
-One line per item, newest section at the top. The portfolio board (`C:/Projects/scripts/portfolio.py`)
+One line per item, newest section at the top. The portfolio board (`<projects>/scripts/portfolio.py`)
 reads the first open line of this file, so keep the next thing to do at the top.
 
 ## Compaction — completed 2026-09-14

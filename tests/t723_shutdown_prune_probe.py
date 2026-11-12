@@ -1,6 +1,6 @@
 """AN INSTRUMENT, NOT A GATE. The reproduction T723's fix is measured against.
 
-    PYTHONUTF8=1 C:/Projects/LiteTUI/.venv/Scripts/python.exe -m pytest -q -s \\
+    PYTHONUTF8=1 <LiteTUI venv python> -m pytest -q -s \\
         tests/t723_shutdown_prune_probe.py
 
 Count the `[faithful]` lines that report NoMatches. Roughly 3 whole-file runs in

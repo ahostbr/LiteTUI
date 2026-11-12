@@ -68,8 +68,8 @@ def test_the_install_folder_is_the_setting_else_litesuites_else_the_default(tmp_
     llm = tmp_path / "llm"
     assert eng.strata_root(settings) == llm / "strata"
     llm.mkdir()
-    (llm / "config.json").write_text('{"strataRoot": " F:/Strata "}', encoding="utf-8")
-    assert eng.strata_root(settings) == Path("F:/Strata")
+    (llm / "config.json").write_text('{"strataRoot": " D:/Example/Strata "}', encoding="utf-8")
+    assert eng.strata_root(settings) == Path("D:/Example/Strata")
     settings.strata_root = "D:/mine"
     assert eng.strata_root(settings) == Path("D:/mine")
     (llm / "config.json").write_text("not json", encoding="utf-8")

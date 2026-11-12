@@ -7,7 +7,7 @@ description: Generate or edit images through Codex's ChatGPT OAuth (no OPENAI_AP
 
 Generate or edit PNGs through your Codex/ChatGPT login by spoofing the
 `codex_cli_rs` client against `https://chatgpt.com/backend-api/codex`.
-Stdlib-only Python: `C:\Projects\LiteTUI\skills\codex-imagegen\codex_image.py`.
+Stdlib-only Python: `<LiteTUI repo>\skills\codex-imagegen\codex_image.py`.
 
 ## The loop
 

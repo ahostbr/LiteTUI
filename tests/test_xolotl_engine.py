@@ -74,9 +74,9 @@ def test_the_checkout_is_the_setting_else_litesuites_else_the_default(tmp_path):
     llm = tmp_path / "llm"
     assert eng.xolotl_root(settings) == llm / "xolotl"
     llm.mkdir()
-    (llm / "config.json").write_text('{"strataRoot": "F:/Strata", "xolotlRoot": " F:/REPO_CLONES/Xolotl "}',
+    (llm / "config.json").write_text('{"strataRoot": "D:/Example/Strata", "xolotlRoot": " D:/Example/Xolotl "}',
                                      encoding="utf-8")
-    assert eng.xolotl_root(settings) == Path("F:/REPO_CLONES/Xolotl")
+    assert eng.xolotl_root(settings) == Path("D:/Example/Xolotl")
     settings.xolotl_root = "D:/mine"
     assert eng.xolotl_root(settings) == Path("D:/mine")
 
@@ -103,7 +103,7 @@ def test_the_host_is_the_setting_else_the_configs_port_else_8150(tmp_path):
 
 def test_a_deepseek_config_runs_its_shim_and_a_qwen_config_runs_the_plain_server(tmp_path):
     root = tmp_path / "x"
-    assert eng.exe_stem({"exe": "F:\\REPO_CLONES\\Xolotl\\build-win\\ds41_generate.exe"}) == "ds41_generate"
+    assert eng.exe_stem({"exe": "D:\\Example\\Xolotl\\build-win\\ds41_generate.exe"}) == "ds41_generate"
     assert eng.server_script(root, {"exe": "a/ds41_generate.exe"}) == root / "tools" / "v41" / "serve" / "serve_ds41.py"
     assert eng.server_script(root, {"exe": "a/glm_generate"}) == root / "tools" / "glm" / "serve" / "serve_glm.py"
     assert eng.server_script(root, {"exe": "engine/strata.exe"}) == root / "serve" / "server.py"

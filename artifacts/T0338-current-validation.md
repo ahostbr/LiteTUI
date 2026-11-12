@@ -118,9 +118,9 @@ Each has 16 prompt files. SHA256 values and exact Unicode headers are in JSON; U
 
 ## Cross-repository producer evidence (owner-supplied, not rerun here)
 
-- Harness `dc186bb311574f08eda9eec0e85e2ee0a796b236`: **387 passed, 17.01s**, 13 files including T0586, no failures/skips/warnings. Exact receipt: `C:/Projects/LiteTUI/output/tasks/t-7849b3cf541646d8bb42fb75036e6226.log`.
+- Harness `dc186bb311574f08eda9eec0e85e2ee0a796b236`: **387 passed, 17.01s**, 13 files including T0586, no failures/skips/warnings. Exact receipt: `<LiteTUI repo>/output/tasks/t-7849b3cf541646d8bb42fb75036e6226.log`.
 - Harness map: `cli.py:3472,3986,4332,4462`; `resume_seat.py:233,252-258`; `owned_resume.py:17,73-91,97,105`; `owned_launch.py:85-97`. NEW explicit file routing supports dead owned named resume, validates exact bridge echo, and loudly refuses unsupported/live custom routes. Producers do not publish consumer HOME files.
-- Suite `66f2231cd4f41dcba88d241cbaef870279dbeeb2`: owner-supplied prior **104 passed, 2 skipped**, receipt `C:/Projects/.scratch/T0338/vitest_66f2231_sentinel.log` (skip names not embedded in supplied receipt). Four-file oxlint 0/0. Auth bridge route suite collected **zero tests** because the effect loader was missing; this is NOT route-test coverage. Main typecheck has TS2688 electron dependency failure, receipt task `t-dd7fb86768274841bf2ccf5710a158b9`.
+- Suite `66f2231cd4f41dcba88d241cbaef870279dbeeb2`: owner-supplied prior **104 passed, 2 skipped**, receipt `<scratch>/T0338/vitest_66f2231_sentinel.log` (skip names not embedded in supplied receipt). Four-file oxlint 0/0. Auth bridge route suite collected **zero tests** because the effect loader was missing; this is NOT route-test coverage. Main typecheck has TS2688 electron dependency failure, receipt task `t-dd7fb86768274841bf2ccf5710a158b9`.
 - Suite map: `spawn-service.ts:71,135,231-260`; `cli-adapters.ts:186-198`; `agent-bridge.ts:564-575`. Existing typed `systemPromptFile`/`spawnedBy` contract is unchanged by resume authoring.
 - **MAIN POSTMERGE hard gate, before ANY launch/restart:** run `agent-bridge-litetui-spawn.test.ts` and `tsc`; RED means Sentinel reverts. Old 190-test producer evidence is not represented as current new-route coverage.
 

@@ -467,7 +467,7 @@ def test_t0197_foreign_literal_read_only_forms_are_non_prompting(shell, inspecti
 @pytest.mark.parametrize("command", [
     "Get-ChildItem -LiteralPath 'E:/notes' | Select-Object -First 5",
     "Get-Content -LiteralPath 'E:/notes.txt' -Raw",
-    "& 'E:/WinGet Media/ffprobe.exe' -v error -show_entries format=duration 'clip.mp4' | Select-Object -First 1",
+    "& 'D:/Example Media/ffprobe.exe' -v error -show_entries format=duration 'clip.mp4' | Select-Object -First 1",
 ])
 def test_t0197_powershell_inspection_pipelines_do_not_prompt(command):
     assert _shell(command, shell="powershell").action == tp.ALLOW
@@ -475,7 +475,7 @@ def test_t0197_powershell_inspection_pipelines_do_not_prompt(command):
 
 @pytest.mark.parametrize("shell,command", [
     ("bash", "E:/untrusted/rg.exe -n TODO src | E:/untrusted/ffprobe.exe -show_format clip.mp4"),
-    ("powershell", r'& "E:\WinGet Media\ffprobe.exe" -v error -show_entries format=duration "clip.mp4"'),
+    ("powershell", r'& "D:\Example Media\ffprobe.exe" -v error -show_entries format=duration "clip.mp4"'),
 ])
 def test_t0197_literal_paths_and_inspection_only_chains(shell, command):
     assert _shell(command, shell=shell).action == tp.ALLOW

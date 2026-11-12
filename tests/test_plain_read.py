@@ -904,7 +904,7 @@ _C5 = ("python -m litesuite_tools.cli run tasks action=list | ConvertFrom-Json |
 _C6 = ("python -m litesuite_tools.cli run tasks action=list status=fixing | ConvertFrom-Json "
        "| Select-Object -ExpandProperty tasks | Where-Object { $_.id -eq 'T0306' } "
        "| ConvertTo-Json -Depth 8")
-_EXCLUDED = ("$r='C:/Projects/.scratch/board-zero/20261006-close'; Get-FileHash "
+_EXCLUDED = ("$r='C:/ExampleProjects/.scratch/board-zero/20261006-close'; Get-FileHash "
              "\"$r/BoardCloseAstra-LANE-HANDOFF-20261007.md\" -Algorithm SHA256; Get-ChildItem $r "
              "| Select-Object Name; Get-Command liteharness,lst -ErrorAction SilentlyContinue "
              "| Select-Object Name,Source; Get-ChildItem Env: | Where-Object { $_.Name -match "

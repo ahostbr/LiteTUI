@@ -3,7 +3,7 @@ auto-memory index (plan claude-backend-litetui-identity, phase 1).
 
 DISTINGUISHING by construction: auto-memory only loads when the working folder has a
 Claude Code memory index, so the workspace is pointed at a folder that HAS one
-(LITETUI_IDENTITY_WS, default C:\\Projects\\LiteTUI), and a CONTROL session runs with the
+(LITETUI_IDENTITY_WS, default: this LiteTUI checkout), and a CONTROL session runs with the
 auto-memory switch removed. The control must see the index; the real session must not.
 Tools are off: nothing in that folder is touched.
 """
@@ -26,8 +26,8 @@ except ModuleNotFoundError as exc:
 from litetui import app as app_mod  # noqa: E402
 from litetui import claude_backend, paths, settings  # noqa: E402
 
-WS = Path(os.environ.get("LITETUI_IDENTITY_WS", r"C:\Projects\LiteTUI"))
-#: A phrase that exists ONLY in Claude Code's auto-memory index for C:\Projects\LiteTUI
+WS = Path(os.environ.get("LITETUI_IDENTITY_WS") or Path(__file__).resolve().parents[1])
+#: A phrase that exists ONLY in Claude Code's auto-memory index for the LiteTUI checkout
 #: (~/.claude/projects/C--Projects-LiteTUI/memory/MEMORY.md), never in LiteTUI's prompt.
 #: "MEMORY.md" itself is useless here: LiteTUI's store section describes its own memory.md.
 TRAP = "Truncation reads as completeness"

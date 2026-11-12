@@ -4,8 +4,8 @@ i just ran it from there".
 
 Run it FROM the folder under test; that folder is where Claude's `pwd` must land:
 
-    cd C:\\Projects\\LiteBench
-    set LITETUI_CLAUDE_LIVE=1 && python C:\\Projects\\LiteTUI\\e2e\\claude_cwd_smoke.py
+    cd <projects>\\LiteBench
+    set LITETUI_CLAUDE_LIVE=1 && python <LiteTUI repo>\\e2e\\claude_cwd_smoke.py
 
 Isolated LiteTUI state; the only command Claude is asked to run is `pwd`.
 """

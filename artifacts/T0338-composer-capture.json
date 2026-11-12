@@ -1,7 +1,7 @@
 {
   "kind": "isolated candidate CLI/app composer capture; NOT running-seat proof",
   "git_head": "337df18aa0754b4692aa95e6294c00d71f57453c",
-  "module": "C:\\Projects\\.scratch\\T0338\\AgentPromptsGammaSol\\LiteTUI\\src\\litetui\\app.py",
+  "module": "<scratch>\\T0338\\AgentPromptsGammaSol\\LiteTUI\\src\\litetui\\app.py",
   "captures": [
     {
       "role": "OWNER",

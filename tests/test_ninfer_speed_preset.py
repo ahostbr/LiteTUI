@@ -1,7 +1,7 @@
 """NInfer speed presets (Ryan 2026-11-08: "add this to settings default to fastest, add these speed examples and tierd preset options in a dropdown").
 
 A DeepSeek launch recipe streams experts from disk; two of its flags decide the speed: how many of the 7,680 experts stay in pinned RAM
-(--expert-host-mib) and --prefill-chunk. The bench of 2026-11-08 (C:/Projects/.scratch/T1192/bench-*) measured three tiers; the setting picks one.
+(--expert-host-mib) and --prefill-chunk. The bench of 2026-11-08 (<scratch>/T1192/bench-*) measured three tiers; the setting picks one.
 """
 from pathlib import Path
 
