@@ -16,6 +16,23 @@ function Resolve-LiteTuiPython {
     return (Get-Command python -ErrorAction Stop).Source
 }
 
+# Python LiteTUI's data root: $env:LITETUI_DATA_ROOT, else the main checkout (paths.ROOT).
+function Resolve-LiteTuiPythonData {
+    param([string]$Source)
+    if ($env:LITETUI_DATA_ROOT) { return [System.IO.Path]::GetFullPath($env:LITETUI_DATA_ROOT) }
+    $common = & git -C $Source rev-parse --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -eq 0 -and $common) { return (Split-Path $common -Parent) }
+    return $Source
+}
+
+# The Rust frontend's one persistent data root, beside Python's and marked as Rust (Ryan
+# 2026-11-12: "copy all settings keep them separate marked as rust").
+function Resolve-LiteTuiRustData {
+    param([string]$PythonData)
+    $parent = Split-Path $PythonData -Parent
+    return Join-Path $parent ((Split-Path $PythonData -Leaf) + '-rust-data')
+}
+
 # Invocation-only forwarding shared by checkout and portable launchers.
 # Rust validates combinations before runtime state is created; Python owns readiness.
 function Get-LiteTuiLaunchArguments {

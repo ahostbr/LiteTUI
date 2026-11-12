@@ -38,6 +38,7 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
     let runtime = Interactive::start(Options {
         launch: Default::default(),
         resume: None,
+        seed_from: None,
         owner: None,
         python,
         source,

@@ -52,12 +52,15 @@ if ([string]::IsNullOrWhiteSpace($Python)) { $Python = Resolve-LiteTuiPython $so
 Write-Host "Python backend: $Python"
 & cargo build --manifest-path "$PSScriptRoot/Cargo.toml" --locked --offline
 if ($LASTEXITCODE -ne 0) { throw "Rust build failed: $LASTEXITCODE" }
-$scratch = if ($env:LITETUI_SCRATCH) { $env:LITETUI_SCRATCH } else { Join-Path ([System.IO.Path]::GetTempPath()) 'litetui-rust' }
+# One persistent Rust data root; its first run copies Python LiteTUI's settings (never written).
+$seedArgs = @()
 $root = if ([string]::IsNullOrWhiteSpace($DataRoot)) {
-    Join-Path $scratch ('claude-chat-' + [guid]::NewGuid().ToString('N'))
+    $pythonData = Resolve-LiteTuiPythonData $source
+    $seedArgs = @('--seed-from', $pythonData)
+    Resolve-LiteTuiRustData $pythonData
 } else {
     [System.IO.Path]::GetFullPath($DataRoot)
 }
-Write-Host "Live conversation data (retained): $root"
-& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 --tools $Tools @profileArgs @workspaceArgs @resumeArgs @backendArgs
+Write-Host "Rust LiteTUI data: $root"
+& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 --tools $Tools @profileArgs @workspaceArgs @resumeArgs @seedArgs @backendArgs
 if ($LASTEXITCODE -ne 0) { throw "Live runtime failed: $LASTEXITCODE (data retained at $root)" }

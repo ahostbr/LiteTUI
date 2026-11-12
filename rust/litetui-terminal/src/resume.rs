@@ -9,6 +9,9 @@ use std::{
 
 pub const MARKER: &str = "rust-frontend.json";
 const FORMAT: &str = "litetui-rust-owned-root";
+/// What a persistent root copies from the Python data root on its first run: settings only
+/// (global settings with themes, per-model choices and keys; MCP server declarations).
+pub const SEEDED: [&str; 3] = ["settings.json", "mcp.json", ".mcp.json"];
 
 pub fn conversation_id(value: &str) -> io::Result<()> {
     crate::stream::required_uuid4(&json!({"id": value}), "id")
@@ -47,16 +50,27 @@ pub fn mark_fresh(root: &Path) -> io::Result<()> {
     file.write_all(&serde_json::to_vec(&json!({"format":FORMAT,"version":1}))?)
 }
 
-/// Read-only preflight. Never create, migrate or overwrite an existing root.
-pub fn validate_root(root: &Path, tools: bool) -> io::Result<()> {
+/// The root carries this frontend's marker (it made the root).
+pub fn validate_marker(root: &Path) -> io::Result<()> {
     let marker = read_json(&root.join(MARKER), 1024).map_err(|e| {
         io::Error::other(format!(
-            "Resume needs a root created by this Rust frontend: {e}"
+            "This data root was not created by the Rust frontend: {e}"
         ))
     })?;
     if marker["format"] != FORMAT || marker["version"].as_u64() != Some(1) {
         return Err(io::Error::other("Unsupported Rust frontend root marker"));
     }
+    Ok(())
+}
+
+/// The root's settings.json, bounded and regular.
+pub fn read_settings(root: &Path) -> io::Result<Value> {
+    read_json(&root.join("settings.json"), 1024 * 1024)
+}
+
+/// Read-only preflight. Never create, migrate or overwrite an existing root.
+pub fn validate_root(root: &Path, tools: bool) -> io::Result<()> {
+    validate_marker(root)?;
     let settings = read_json(&root.join("settings.json"), 256 * 1024)?;
     // The explicit lifecycle launch capability overlays MCP off before Python
     // constructs any manager, even when the saved preference is enabled.

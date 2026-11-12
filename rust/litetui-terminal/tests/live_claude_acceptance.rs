@@ -578,6 +578,7 @@ fn real_claude_reads_a_file_compacts_with_tools_and_recalls_it() {
     let runtime = Interactive::start(Options {
         launch: Default::default(),
         resume: None,
+        seed_from: None,
         owner: None,
         python,
         source,

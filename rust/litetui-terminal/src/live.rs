@@ -67,6 +67,8 @@ pub struct Options {
     pub tool_profile: Option<crate::tool_mode::Profile>,
     pub workspace: Option<PathBuf>,
     pub resume: Option<String>,
+    /// First run of a persistent root: the Python data root its settings are copied from.
+    pub seed_from: Option<PathBuf>,
     pub owner: Option<OwnerStore>,
     pub launch: crate::runtime_launch::LaunchOptions,
 }
@@ -152,6 +154,7 @@ impl Options {
                     "--resume",
                     "--owner",
                     "--memory",
+                    "--seed-from",
                 ]
                 .contains(&pair[0].as_str())
                 || fields.insert(pair[0].as_str(), pair[1].clone()).is_some()
@@ -183,6 +186,12 @@ impl Options {
         let resume = fields.remove("--resume");
         if let Some(id) = &resume {
             crate::resume::conversation_id(id)?;
+        }
+        let seed_from = fields.remove("--seed-from").map(PathBuf::from);
+        if seed_from.as_ref().is_some_and(|p| !p.is_absolute()) {
+            return Err(io::Error::other(
+                "--seed-from must be an absolute directory",
+            ));
         }
         let tools_enabled = match fields.remove("--tools").as_deref().unwrap_or("off") {
             "on" => true,
@@ -226,6 +235,7 @@ impl Options {
             workspace,
             owner,
             resume,
+            seed_from,
             launch,
         })
     }
@@ -1972,6 +1982,40 @@ pub fn terminal_text(text: &str) -> String {
         .collect()
 }
 
+/// The launch's own keys over `saved`: backend, model, tools, profile, seat, MCP off. A fresh
+/// unseeded root also takes the launch thinking level; a seeded or reused one keeps its own.
+fn launch_settings(
+    saved: Value,
+    options: &Options,
+    backend: crate::runtime_launch::Backend,
+    profile: crate::tool_mode::Profile,
+    fresh: bool,
+) -> Value {
+    let mut settings = match saved {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    for (key, value) in [
+        ("backend", json!(options.backend)),
+        ("default_model", json!(options.model)),
+        ("backend_chosen", json!(true)),
+        ("user_name_asked", json!(true)),
+        ("tools_enabled", json!(options.tools_enabled)),
+        ("mcp_enabled", json!(false)),
+        ("seat_name", json!("RustLive")),
+        ("tool_policy_profile", json!(profile.as_str())),
+    ] {
+        settings.insert(key.into(), value);
+    }
+    if fresh || !settings.contains_key("thinking_level") {
+        settings.insert(
+            "thinking_level".into(),
+            json!(options.launch.initial_thinking(backend)),
+        );
+    }
+    Value::Object(settings)
+}
+
 fn send(stdin: &mut ChildStdin, value: Value) -> io::Result<()> {
     serde_json::to_writer(&mut *stdin, &value)?;
     stdin.write_all(b"\n")?;
@@ -2105,6 +2149,67 @@ fn reader(mut input: impl Read + Send + 'static, stdout: bool, tx: mpsc::SyncSen
     });
 }
 
+/// The data root for this launch: `--resume` reopens one; a root this frontend made (its marker)
+/// starts a new conversation (one persistent root, Ryan 2026-11-12); otherwise a new root, seeded
+/// from `--seed-from` on its first run. Never writes outside the root.
+pub fn prepare_root(
+    options: &Options,
+    backend: crate::runtime_launch::Backend,
+    profile: crate::tool_mode::Profile,
+) -> io::Result<PathBuf> {
+    Ok(if let Some(id) = &options.resume {
+        crate::resume::conversation_id(id)?;
+        let root = options.data_root.canonicalize()?;
+        crate::resume::validate_root(&root, options.tools_enabled)?;
+        root
+    } else if options.data_root.join(crate::resume::MARKER).is_file() {
+        // Ryan 2026-11-12: one persistent root of the Rust frontend's own. A root this frontend
+        // made (its marker) starts a new conversation; only the launch's own keys are refreshed.
+        let root = options.data_root.canonicalize()?;
+        crate::resume::validate_marker(&root)?;
+        let saved = crate::resume::read_settings(&root)?;
+        fs::write(
+            root.join("settings.json"),
+            serde_json::to_vec_pretty(&launch_settings(saved, options, backend, profile, false))?,
+        )?;
+        root
+    } else {
+        // Fresh launch never adopts an existing seat; an existing root without the marker is refused.
+        if let Some(parent) = options.data_root.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::create_dir(&options.data_root)?;
+        let root = options.data_root.canonicalize()?;
+        // First run of a persistent root: copy the Python settings (never written to), then the
+        // launch's own keys over them. Conversations and agent memory are not settings; not copied.
+        let mut seeded = json!({});
+        if let Some(seed) = &options.seed_from {
+            let seed = seed.canonicalize()?;
+            if seed == root || root.starts_with(&seed) || seed.starts_with(&root) {
+                return Err(io::Error::other(
+                    "--seed-from must be a separate Python data root (never inside or around this one)",
+                ));
+            }
+            for name in crate::resume::SEEDED {
+                let from = seed.join(name);
+                if from.is_file() {
+                    fs::copy(&from, root.join(name))?;
+                }
+            }
+            if root.join("settings.json").is_file() {
+                seeded = crate::resume::read_settings(&root)?;
+            }
+        }
+        let fresh = options.seed_from.is_none();
+        fs::write(
+            root.join("settings.json"),
+            serde_json::to_vec_pretty(&launch_settings(seeded, options, backend, profile, fresh))?,
+        )?;
+        crate::resume::mark_fresh(&root)?;
+        root
+    })
+}
+
 fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     if options.launch.engine_management && !options.prompt.is_empty() {
         return Err(io::Error::other(
@@ -2124,7 +2229,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
         || !options.data_root.is_absolute()
     {
         return Err(io::Error::other(
-            "Expected Python executable, LiteTUI source tree, and absolute data root (new unless --resume)",
+            "Expected Python executable, LiteTUI source tree, and an absolute data root",
         ));
     }
     let workspace = match &options.workspace {
@@ -2141,31 +2246,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
             ));
         }
     };
-    let root = if let Some(id) = &options.resume {
-        crate::resume::conversation_id(id)?;
-        let root = options.data_root.canonicalize()?;
-        crate::resume::validate_root(&root, options.tools_enabled)?;
-        root
-    } else {
-        // Fresh launch never adopts an existing seat or rewrites its settings.
-        if let Some(parent) = options.data_root.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::create_dir(&options.data_root)?;
-        let root = options.data_root.canonicalize()?;
-        fs::write(
-            root.join("settings.json"),
-            serde_json::to_vec_pretty(&json!({
-                "backend": options.backend, "default_model": options.model,
-                "thinking_level": options.launch.initial_thinking(backend),
-                "backend_chosen": true, "user_name_asked": true,
-                "tools_enabled": options.tools_enabled, "mcp_enabled": false, "seat_name": "RustLive",
-                "tool_policy_profile": profile.as_str()
-            }))?,
-        )?;
-        crate::resume::mark_fresh(&root)?;
-        root
-    };
+    let root = prepare_root(&options, backend, profile)?;
     let mut command = Command::new(&python);
     command
         .current_dir(&workspace)
