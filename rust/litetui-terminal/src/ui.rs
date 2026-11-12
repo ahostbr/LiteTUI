@@ -655,6 +655,75 @@ fn stop_line(
     };
     row.timing.line(ending, presentation)
 }
+/// Textual's centering, `(width - text) // 2` cells of padding. Ratatui's Center rounds the
+/// other way for odd remainders, one column right of Python.
+fn centered(text: &str, width: usize) -> String {
+    format!(
+        "{}{text}",
+        " ".repeat(width.saturating_sub(text.width()) / 2)
+    )
+}
+/// Python's `Splash.render` (splash.py): the wordmark from `ready.banner` when it fits,
+/// the compact wordmark when it does not, "LiteTUI" when neither fits, then the tagline.
+fn splash_rows(banner: &str, width: usize) -> Vec<String> {
+    const COMPACT: [&str; 5] = [
+        "█   ███ ███ ███ ███ █ █ ███",
+        "█    █   █  █    █  █ █  █ ",
+        "█    █   █  ██   █  █ █  █ ",
+        "█    █   █  █    █  █ █  █ ",
+        "███ ███  █  ███  █  ███ ███",
+    ];
+    let mut lines: Vec<String> = banner
+        .trim_matches('\n')
+        .lines()
+        .map(display_safe)
+        .collect();
+    let Some(tagline) = lines.pop() else {
+        return Vec::new();
+    };
+    let large: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .skip(2)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect();
+    let widest = |rows: &[String]| rows.iter().map(|row| row.width()).max().unwrap_or(0);
+    // Python's content width: the chat column less the splash's two-cell side margins.
+    let room = width.saturating_sub(2);
+    let mut rows = if !large.is_empty() && room >= widest(&large) {
+        large
+    } else {
+        COMPACT.iter().map(|row| (*row).to_owned()).collect()
+    };
+    if room < widest(&rows) {
+        rows = vec!["LiteTUI".into()];
+    }
+    let art = widest(&rows);
+    let mut out = vec![String::new()];
+    out.extend(
+        rows.into_iter()
+            .map(|row| format!("{row}{}", " ".repeat(art.saturating_sub(row.width())))),
+    );
+    out.push(String::new());
+    // Textual wraps a tagline wider than the column; break between words like it does.
+    let mut current = String::new();
+    for word in tagline.trim().split(' ').filter(|w| !w.is_empty()) {
+        if !current.is_empty() && current.width() + 1 + word.width() > room.max(1) {
+            out.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    out.push(current);
+    out.push(String::new());
+    out
+}
 fn transcript(app: &Demo, width: usize) -> Transcript {
     use crate::compact_display::{Header, HeaderHit, Target};
     let mut headers: Headers = Vec::new();
@@ -668,6 +737,25 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
         let visible = chat.visible_row_range();
         #[cfg(test)]
         let mut rendered_rows = 0;
+        // Python mounts the splash first in the chat log and says "Connected — model: X"
+        // below it (centered, muted, italic system line); both scroll with the chat.
+        if !chat.has_older_live_page() {
+            let muted = style(t.thinking_text, t.background);
+            if let Some(banner) = chat.runtime_state.banner() {
+                for row in splash_rows(banner, width) {
+                    lines.push(Line::styled(centered(&row, width), muted));
+                }
+            }
+            if let Some(connected) = &chat.connected {
+                lines.push(Line::styled(
+                    centered(
+                        &clip_label(&display_safe(connected), width.saturating_sub(8)),
+                        width,
+                    ),
+                    muted.add_modifier(Modifier::ITALIC),
+                ));
+            }
+        }
         if chat.has_older_live_page() || chat.has_newer_live_page() {
             let location = if visible.is_empty() && chat.show_live_history() {
                 "Saved startup history".to_owned()
@@ -1223,11 +1311,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         } else { "LOCAL PREVIEW\nResize to 36 x 14.\nCtrl+Q exits.\nNo tools execute." }).style(style(t.foreground, t.background)), area);
         return;
     }
-    let areas = Layout::vertical([
+    // Python's stack: title, now row, chat, composer, one spare row, footer. The notice uses
+    // that spare row (blank at rest, as Python's is); `areas` keeps its historic roles.
+    let split = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(if compact { 3 } else { 1 }),
         Constraint::Min(3),
-        Constraint::Length(1),
         Constraint::Length(
             if compact
                 && app.composer.text().is_empty()
@@ -1238,23 +1327,48 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 5
             },
         ),
+        Constraint::Length(1),
         Constraint::Length(2),
     ])
     .split(area);
-    frame.render_widget(
-        Paragraph::new(if let Some(chat) = &app.live {
+    let areas = [split[0], split[1], split[2], split[4], split[3], split[5]];
+    app.palette_button = None;
+    if let Some(chat) = &app.live {
+        // Python's Header: the ⭘ palette button (HeaderIcon, 8 cells, padding 1) on the left,
+        // the title centered between it and the 10-cell clock space, cut with "…".
+        let title = chat.runtime_state.title().unwrap_or_else(|| {
             format!(
                 "LiteTUI — Rust LIVE · {} · {}",
                 display_safe(&chat.backend),
                 display_safe(&chat.model)
             )
-        } else {
-            "LiteTUI — Rust preview · mock-model · tools:5 · think:high".into()
-        })
-        .alignment(Alignment::Center)
-        .style(style(t.title, t.surface)),
-        areas[0],
-    );
+        });
+        let bar = areas[0];
+        frame.render_widget(Block::default().style(style(t.title, t.surface)), bar);
+        let icon = Rect::new(bar.x, bar.y, bar.width.min(8), 1);
+        frame.render_widget(Paragraph::new(" ⭘").style(style(t.title, t.surface)), icon);
+        app.palette_button = Some(icon);
+        let room = bar.width.saturating_sub(18);
+        if room > 0 {
+            let room_cells = usize::from(room);
+            let text = if title.width() > room_cells {
+                format!("{}…", clip_label(&title, room_cells - 1))
+            } else {
+                title
+            };
+            frame.render_widget(
+                Paragraph::new(centered(&text, room_cells)).style(style(t.title, t.surface)),
+                Rect::new(bar.x + 8, bar.y, room, 1),
+            );
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new("LiteTUI — Rust preview · mock-model · tools:5 · think:high")
+                .alignment(Alignment::Center)
+                .style(style(t.title, t.surface)),
+            areas[0],
+        );
+    }
     frame.render_widget(
         Paragraph::new(
             if let Some(chat) = &app.live
@@ -1266,11 +1380,9 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                     .map(|line| clip_label(line, usize::from(areas[1].width)))
                     .collect::<Vec<_>>()
                     .join("\n")
-            } else if let Some(chat) = &app.live {
-                format!(
-                    " LIVE · {} · Ctrl+\\ commands · Ctrl+G view · Ctrl+Q quits",
-                    chat.theme_status
-                )
+            } else if app.live.is_some() {
+                // Python's row under the title is blank until the now card has something.
+                String::new()
             } else {
                 " LOCAL PREVIEW · No model connected · all calls, timings and counts are fixtures"
                     .into()
@@ -1433,7 +1545,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     frame.render_widget(
         Paragraph::new(format!(
-            " {}{} · scroll {}/{}",
+            " {}{}",
             app.live
                 .as_ref()
                 .and_then(|c| c.work.image.attached.as_ref())
@@ -1443,8 +1555,6 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 ))
                 .unwrap_or_default(),
             display_safe(&app.notice),
-            app.scroll,
-            app.max_scroll
         ))
         .style(style(t.title, t.background)),
         areas[3],

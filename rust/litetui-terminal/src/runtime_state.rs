@@ -23,6 +23,10 @@ struct ReadyFacts {
     glyphs: std::collections::BTreeMap<String, String>,
     /// ready.version: LiteTUI's version, right-aligned on the second footer row.
     version: Option<String>,
+    /// ready.title: Python's title bar text (update_header), carried rather than rebuilt.
+    title: Option<String>,
+    /// ready.banner: Python's start-screen wordmark and tagline (LITETUI_SPLASH).
+    banner: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Update(UpdateKind);
@@ -43,6 +47,8 @@ enum UpdateKind {
         reset_rate: bool,
     },
     SettledRate(Option<f64>),
+    /// model_state.title: Python re-emits model_state when its title bar text changes.
+    Title(String),
 }
 fn optional_text(event: &Value, key: &str, limit: usize) -> io::Result<Option<String>> {
     match event.get(key) {
@@ -94,6 +100,8 @@ impl Update {
                     .unwrap_or(false),
                 seat: optional_text(event, "seat_name", 256)?,
                 version: optional_text(event, "version", 64)?,
+                title: optional_text(event, "title", 4096)?,
+                banner: optional_text(event, "banner", 8192)?,
                 glyphs: match event.get("authority_glyphs") {
                     None | Some(Value::Null) => Default::default(),
                     Some(Value::Object(map)) => map
@@ -108,6 +116,7 @@ impl Update {
                     Some(_) => return Err(io::Error::other("Invalid runtime authority glyphs")),
                 },
             })),
+            Some("model_state") => optional_text(event, "title", 4096)?.map(UpdateKind::Title),
             Some("usage") => {
                 let usage = event
                     .get("usage")
@@ -158,6 +167,9 @@ pub struct State {
     usage: Option<(u64, Option<u64>)>,
     rate: Option<f64>,
     presentation: crate::presentation::Presentation,
+    /// Python's title bar and start banner outlive an engine change, like Python's widgets.
+    title: Option<String>,
+    banner: Option<String>,
 }
 impl State {
     pub fn install_runtime_policy(&mut self, facts: crate::runtime_controls::Facts) {
@@ -219,6 +231,12 @@ impl State {
                 }
             }
             UpdateKind::Ready(ready) => {
+                if ready.title.is_some() {
+                    self.title.clone_from(&ready.title);
+                }
+                if ready.banner.is_some() {
+                    self.banner.clone_from(&ready.banner);
+                }
                 self.ready = Some(ready);
                 self.usage = None;
                 self.rate = None;
@@ -230,6 +248,7 @@ impl State {
                 }
             }
             UpdateKind::SettledRate(rate) => self.rate = rate,
+            UpdateKind::Title(title) => self.title = Some(title),
         }
     }
     /// Initial read-only facts, never a substitute for current turn settlement.
@@ -255,6 +274,14 @@ impl State {
             .tools
             .as_ref()
             .map(|facts| facts.description())
+    }
+    /// Python's title bar text, display-safe, once ready or model_state reported it.
+    pub fn title(&self) -> Option<String> {
+        self.title.as_deref().map(label)
+    }
+    /// Python's start banner (raw LITETUI_SPLASH text; the renderer sanitizes each line).
+    pub fn banner(&self) -> Option<&str> {
+        self.banner.as_deref()
     }
     /// The source's version for the footer, once ready reported it.
     pub fn version(&self) -> Option<&str> {

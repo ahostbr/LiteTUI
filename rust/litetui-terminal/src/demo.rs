@@ -34,6 +34,9 @@ pub struct Demo {
     pub transcript_selection: crate::transcript_selection::TranscriptSelection,
     pub compact_display: crate::compact_display::Profile,
     pub transcript_viewport: Option<(u16, u16)>,
+    /// Where the title bar's ⭘ was drawn (Python's HeaderIcon opens the command palette).
+    pub palette_button: Option<ratatui::layout::Rect>,
+    pub palette_pressed: bool,
     pub transcript_rows: Option<(usize, usize, bool)>,
     pub viewport_too_small: bool,
     pub command_quit: bool,
@@ -131,6 +134,8 @@ impl Default for Demo {
             transcript_selection: Default::default(),
             compact_display: Default::default(),
             transcript_viewport: None,
+            palette_button: None,
+            palette_pressed: false,
             transcript_rows: None,
             viewport_too_small: false,
             command_quit: false,
@@ -483,6 +488,27 @@ impl Demo {
         self.live
             .as_ref()
             .is_some_and(|chat| chat.commands.owns_input())
+    }
+    /// A click (press and release) on the title bar's ⭘ opens the palette, as Python's does.
+    pub fn palette_button_mouse(&mut self, event: crossterm::event::MouseEvent) -> bool {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let on = self.palette_button.is_some_and(|rect| {
+            rect.contains(ratatui::layout::Position::new(event.column, event.row))
+        });
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.palette_pressed = on;
+                on
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.palette_pressed => {
+                self.palette_pressed = false;
+                if on {
+                    self.open_commands();
+                }
+                true
+            }
+            _ => false,
+        }
     }
     pub fn open_commands(&mut self) {
         if self.has_live_input() {

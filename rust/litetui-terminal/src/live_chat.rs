@@ -227,6 +227,8 @@ pub struct Chat {
     pub themes: crate::theme_controls::View,
     pub effective_theme: Option<crate::theme::Theme>,
     pub theme_status: String,
+    /// Python's `_system(f"Connected — model: {model_id}")`, drawn under the start banner.
+    pub connected: Option<String>,
     pub work: crate::work_view::View,
     pub settings: crate::settings_view::View,
     pub backend_controls: crate::backend_controls::View,
@@ -413,6 +415,7 @@ impl Chat {
             themes: crate::theme_controls::View::default(),
             effective_theme: None,
             theme_status: "Theme: local fallback; source pending".into(),
+            connected: None,
             work: crate::work_view::View::default(),
             settings: crate::settings_view::View::default(),
             backend_controls: crate::backend_controls::View::default(),
@@ -1799,20 +1802,17 @@ impl Chat {
             }
             Observation::Ready => {
                 self.ready = true;
-                self.notice = format!(
-                    "Connected. Enter sends; Ctrl+Q quits. {}",
-                    self.runtime_state
-                        .tool_description()
-                        .unwrap_or_else(|| "Tool policy unavailable.".into())
-                );
+                // Python says this in the transcript (centered system line), not a status row;
+                // the tool policy is the footer's authority field and the title's tools count.
+                self.connected = Some(format!("Connected — model: {}", self.model));
+                self.notice.clear();
                 if let Some(held) = self
                     .runtime_state
                     .startup()
                     .and_then(|s| s.held_restored_input)
                     && held > 0
                 {
-                    self.notice
-                        .push_str(&format!(" Restored input held: {held}. Nothing replayed."));
+                    self.notice = format!("Restored input held: {held}. Nothing replayed.");
                 }
             }
             Observation::Content { card, kind, text } => self.content(Some(card), kind, text)?,

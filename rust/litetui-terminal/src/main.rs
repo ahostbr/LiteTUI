@@ -1087,6 +1087,15 @@ fn terminal_mouse(app: &mut Demo, event: MouseEvent, shown: &ratatui::buffer::Bu
         && !app.approval_open
         && !app.themes_open
         && !app.viewport_too_small
+        && app.palette_button_mouse(event)
+    {
+        return;
+    }
+    if app.live.is_some()
+        && !app.has_live_input()
+        && !app.approval_open
+        && !app.themes_open
+        && !app.viewport_too_small
         && !app.completion.is_open()
         && let Some(hit) = app.compact_display.click(event)
         && app.activate_header(hit)

@@ -194,7 +194,8 @@ fn footer_and_ready_notice_use_reported_tool_policy() {
     }))))
     .unwrap();
     app.observe_live(Observation::Ready).unwrap();
-    assert!(app.notice.contains("Tools on") && app.notice.contains("strict"));
+    // Python reports the policy in the footer (below), not in a ready notice.
+    assert!(!app.notice.contains("Tools on"), "{}", app.notice);
     // Python's footer (textfmt.profile_text): "<glyph> <profile> on", no tools on/off.
     let state = &app.live.as_ref().unwrap().runtime_state;
     assert_eq!(field(state, K::Authority).as_deref(), Some("|| strict on"));
@@ -222,4 +223,109 @@ fn footer_and_ready_notice_use_reported_tool_policy() {
     assert!(cells.contains(" ○ mic  ⏸ pause  ▁▎"), "{cells}");
     app.finish_live(None);
     assert!(app.footer_fields.is_empty());
+}
+
+fn screen(app: &mut Demo, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|f| ui::draw(f, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+const SPLASH: &str =
+    "\n  ██     ██████\n  ██       ██  \n  ██████ ██████\n      a tagline · /help\n";
+
+#[test]
+fn start_screen_is_pythons_title_banner_and_connected_line() {
+    let mut app = Demo::live("custom".into(), "perf-fixture".into());
+    app.observe_live(Observation::State(update(json!({
+        "type":"ready","model":"perf-fixture",
+        "title":"LiteTUI — Custom server · perf-fixture · no tools · think:default",
+        "banner":SPLASH,
+    }))))
+    .unwrap();
+    app.observe_live(Observation::Ready).unwrap();
+    let rows = screen(&mut app, 100, 30);
+    // Row 0: " ⭘" at column 1, the title centered between the 8-cell icon and 10-cell clock.
+    assert!(rows[0].starts_with(" ⭘      "), "{}", rows[0]);
+    let title = "LiteTUI — Custom server · perf-fixture · no tools · think:default";
+    let room = 100 - 18;
+    let left = 8 + (room - title.chars().count()) / 2;
+    assert_eq!(
+        rows[0].chars().skip(left).collect::<String>().trim_end(),
+        title
+    );
+    // Row 1 is blank (Python's now row), then the splash, centered, then the system line.
+    assert_eq!(rows[1].trim(), "");
+    let at = |needle: &str| rows.iter().position(|r| r.contains(needle)).expect(needle);
+    let art = at("██     ██████");
+    assert_eq!(rows[art - 1].trim(), "");
+    assert_eq!(rows[art + 2].trim(), "██████ ██████");
+    let tagline = at("a tagline · /help");
+    assert_eq!(tagline, art + 4);
+    let connected = at("Connected — model: perf-fixture");
+    assert_eq!(connected, tagline + 2);
+    let row = &rows[connected];
+    let text = "Connected — model: perf-fixture";
+    assert_eq!(
+        row.find(text).map(|b| row[..b].chars().count()),
+        Some(1 + (98 - 31) / 2)
+    );
+    // No Rust-only status or ready notice rows remain.
+    assert!(
+        rows.iter()
+            .all(|r| !r.contains("Ctrl+Q quits") && !r.contains("scroll 0/0"))
+    );
+    // A later model_state carries Python's new title.
+    app.observe_live(Observation::State(update(json!({
+        "type":"model_state","backend":"custom","model":"perf-fixture","title":"LiteTUI — retitled",
+    }))))
+    .unwrap();
+    assert!(screen(&mut app, 100, 30)[0].contains("LiteTUI — retitled"));
+}
+
+#[test]
+fn long_title_is_cut_with_an_ellipsis_and_narrow_splash_falls_back() {
+    let mut app = Demo::live("custom".into(), "m".into());
+    let long = format!("LiteTUI — {}", "x".repeat(200));
+    app.observe_live(Observation::State(update(json!({
+        "type":"ready","model":"m","title":long,"banner":format!("\n  {}\n  ██\n      tag\n", "█".repeat(48)),
+    }))))
+    .unwrap();
+    app.observe_live(Observation::Ready).unwrap();
+    let rows = screen(&mut app, 60, 20);
+    let bar: Vec<char> = rows[0].chars().collect();
+    // Title cells 8..50 are filled and end with "…"; the clock space stays blank.
+    assert_eq!(bar[49], '…', "{}", rows[0]);
+    assert!(bar[50..].iter().all(|c| *c == ' '));
+    let narrow = screen(&mut app, 40, 20);
+    // 48-cell art does not fit 40 columns: Python's compact wordmark replaces it.
+    assert!(rows.iter().any(|r| r.contains(&"█".repeat(48))));
+    assert!(
+        narrow.iter().any(|r| r.contains("█   ███ ███ ███")),
+        "{narrow:?}"
+    );
+}
+
+#[test]
+fn malformed_title_or_banner_is_refused() {
+    for (key, limit) in [("title", 4096), ("banner", 8192)] {
+        for bad in [json!(7), json!("x".repeat(limit + 1))] {
+            let mut event = json!({"type":"ready","model":"m"});
+            event[key] = bad.clone();
+            assert!(Update::from_event(&event).is_err(), "{key}");
+        }
+    }
+    assert!(Update::from_event(&json!({"type":"model_state","title":3})).is_err());
+    assert!(
+        Update::from_event(&json!({"type":"model_state","backend":"b","model":"m"}))
+            .unwrap()
+            .is_none()
+    );
 }
