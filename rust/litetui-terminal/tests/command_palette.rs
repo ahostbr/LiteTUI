@@ -1271,3 +1271,50 @@ fn unavailable_commands_show_their_own_reason_in_completion_and_palette() {
     v.key(key(KeyCode::Down));
     assert!(draw(&mut v, 80, 28).contains("Textual window action"));
 }
+
+/// Ryan's capture 2026-11-12: "/settings" typed and entered while the background registry read
+/// (started by the first "/") was out opened the palette on Settings, needing a second Enter.
+/// The prefetch's catalog must never answer the typed command.
+#[test]
+fn command_typed_during_the_background_read_resolves_after_it_not_as_its_catalog() {
+    let mut v = View::default();
+    v.prefetch();
+    assert_eq!(v.take_intent(), Some(Intent::Read { skills: false }));
+    v.raw("/settings");
+    assert_eq!(
+        v.take_intent(),
+        None,
+        "nothing is sent while the read is out"
+    );
+    assert!(v.owns_input());
+    v.observe(Update::Catalog {
+        catalog: catalog(),
+        skills: false,
+    });
+    assert_eq!(v.take_intent(), Some(Intent::Raw("/settings".into())));
+    assert!(v.owns_input());
+    let c = catalog();
+    let route = Route::parse(
+        &route_data(&c, Some("/settings")),
+        &c,
+        None,
+        Some("/settings"),
+        "",
+    )
+    .unwrap();
+    v.observe(Update::Route { catalog: c, route });
+    assert_eq!(v.take_route(), Some(Action::Settings));
+    assert!(!v.owns_input());
+    // Closing while it waits drops the typed command.
+    let mut v = View::default();
+    v.prefetch();
+    v.take_intent();
+    v.raw("/settings");
+    v.close();
+    assert!(!v.owns_input());
+    v.observe(Update::Catalog {
+        catalog: catalog(),
+        skills: false,
+    });
+    assert_eq!(v.take_intent(), None);
+}

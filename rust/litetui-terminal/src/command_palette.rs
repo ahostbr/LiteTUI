@@ -642,6 +642,9 @@ pub struct View {
     hits: Vec<(Rect, usize)>,
     pressed: Option<usize>,
     prefetching: bool,
+    /// A command typed while the background registry read was still out: sent when it settles,
+    /// so that read's catalog is never taken as the command's answer.
+    deferred_raw: Option<String>,
 }
 impl View {
     pub fn owns_input(&self) -> bool {
@@ -682,6 +685,15 @@ impl View {
         }
         self.open = true;
         self.waiting = true;
+        if self.prefetching && self.intent.take().is_some() {
+            // The background read was never sent: the command replaces it.
+            self.prefetching = false;
+        } else if self.prefetching {
+            self.deferred_raw = Some(text.into());
+            self.notice = "Resolving exact command with source…".into();
+            self.hide();
+            return;
+        }
         self.intent = Some(Intent::Raw(text.into()));
         self.notice = "Resolving exact command with source…".into();
         self.hide();
@@ -716,13 +728,15 @@ impl View {
     }
     pub fn close(&mut self) {
         self.open = false;
-        if self.intent.take().is_some() {
+        let deferred = self.deferred_raw.take().is_some();
+        if self.intent.take().is_some() || deferred {
             self.waiting = false;
         }
         self.hide();
     }
     pub fn finish(&mut self) {
         self.close();
+        self.deferred_raw = None;
         self.waiting = false;
         self.prepared = None;
         self.catalog = None;
@@ -739,7 +753,15 @@ impl View {
         self.arguments.text()
     }
     pub fn observe(&mut self, u: Update) {
-        self.prefetching = false;
+        let prefetched = std::mem::replace(&mut self.prefetching, false);
+        if prefetched && let Some(raw) = self.deferred_raw.take() {
+            // The background read settled; only now resolve the typed command.
+            if let Update::Catalog { catalog, .. } = u {
+                self.catalog = Some(with_local(catalog));
+            }
+            self.intent = Some(Intent::Raw(raw));
+            return;
+        }
         let active = self.open;
         self.waiting = false;
         self.intent = None;
