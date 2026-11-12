@@ -4,7 +4,7 @@
   "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
   "ledger": {
     "path": "docs/Plans/rust-tui-port/remaining-parity.md",
-    "sha256": "e616c322ee30e430fa6a7c17570feda2b49e416bbe27a893385a78b5131a5d1a"
+    "sha256": "7f8982e3a80bdde5295e52f89f6aeb4d2c554fa4bbb28511e65d8a2608a12767"
   },
   "source_hashes": {
     "rust/litetui-terminal/src/agent_preferences.rs": "b43234540a769666868542cd8fd130871c69e946fe89f071bca2d73cabbb7d0c",
@@ -7838,7 +7838,7 @@
       "evidence": [],
       "decision": {
         "path": "docs/Plans/rust-tui-port/acceptance-evidence/p0-closure.json",
-        "sha256": "e16fee7783a482d030cfad8263cf87e94f4daab55f3e5fa1329c7e00da702dfe",
+        "sha256": "6fd7134524aea761fc53b246a760c8825342a3c1a90a2482e636172f4037fab5",
         "pointer": "",
         "expected": {
           "type": "phase_closure",
@@ -7849,7 +7849,7 @@
           "quote": "Ryan directed this closure through Sentinel after observing that P0 had absorbed more than twelve hours of later-phase implementation. **P0 is closed now. It is not a gate for further offline expansion.**",
           "source": {
             "path": "docs/Plans/rust-tui-port/master.md",
-            "sha256": "eaec52a11a4fae149b46c8d44b93c3fe87475de2543ed5c80d6e4c236de1c9e9"
+            "sha256": "a8ee1845f123417a42d8271a5350392c24b7e8192f8e48e8b9281f700fb5895b"
           },
           "record_origin": "Derived from the canonical retained P0 exit section; this record checks that document, not an independent authentication of the speaker."
         },
@@ -8284,6 +8284,48 @@
               "P4"
             ],
             "description": "Failed diagnostic still retired the owned PTY root and readers; cleanup does not establish acceptance."
+          }
+        },
+        {
+          "path": "target/final-history-conpty-prep/v10-textual-budget/first-textual/summary.json",
+          "sha256": "28689d8750dfe69862d17b4f1d7195075801163fd4f8942f4dddd1c211941a2d",
+          "pointer": "/all_completed",
+          "expected": false,
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P4"
+            ],
+            "description": "Retained Textual v10 failed during first stream completion; full three-window comparison remains pending."
+          }
+        },
+        {
+          "path": "target/final-history-conpty-prep/v10-textual-budget/first-textual/hidden-conpty-00-textual/measurement.json",
+          "sha256": "a938985fe0adc55d1701657de5e2a5ae16a649d8285c40a9e151a549ea80d4d1",
+          "pointer": "/failure",
+          "expected": "TimeoutError: stream settled and completion cells",
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P4"
+            ],
+            "description": "First history cycle and active-stream draft echo passed; sampled progress does not establish eventual response completion."
+          }
+        },
+        {
+          "path": "target/final-history-conpty-prep/v10-textual-budget/first-textual/hidden-conpty-00-textual/transport-proof.json",
+          "sha256": "ae4e8c228e871b6e04e306ecaf94d892ef12095d83c3515fe334c90083906683",
+          "pointer": "/root_alive",
+          "expected": false,
+          "provenance": {
+            "kind": "controlled_process",
+            "product_revision": "c6a643fa4a353b52792a3b286ba33c85d65df9c4",
+            "covers": [
+              "P4"
+            ],
+            "description": "Failed v10 diagnostic retired all observed owned processes/readers without forced cleanup; not an acceptance pass."
           }
         }
       ],
