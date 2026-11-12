@@ -221,7 +221,9 @@ async def test_snapshot_binds_disk_policy_launch_and_history(switch_app, change)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["missing-model", "cold-model", "connection", "thinking"])
+# A cold (unloaded) model is no longer a failure: Python selects and loads it
+# (test_picking_an_unloaded_model_selects_it_and_loads_it_like_python).
+@pytest.mark.parametrize("failure", ["missing-model", "connection", "thinking"])
 async def test_candidate_failure_is_fatal_without_claiming_authority_publication(switch_app, monkeypatch, failure):
     app = switch_app
     if failure == "thinking":
@@ -232,7 +234,7 @@ async def test_candidate_failure_is_fatal_without_claiming_authority_publication
         if failure == "connection":
             raise llm_backend.BackendError("Controlled connection failure")
         return [llm_backend.ModelRow("different" if failure == "missing-model" else "new-model",
-                                    None, "fixture", failure != "cold-model")]
+                                    None, "fixture", True)]
 
     monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
     before = (app._agent_session.authority.backend, app._agent_session.authority.model)
@@ -391,7 +393,26 @@ async def test_codex_cleanup_awaits_reader_after_process_exit(reader_fails):
 
 
 @pytest.mark.asyncio
-async def test_model_unloaded_during_actual_connect_cannot_report_connected(switch_app, monkeypatch):
+async def test_picking_an_unloaded_model_selects_it_and_loads_it_like_python(switch_app, monkeypatch):
+    # Sentinel 55fee807 (Ryan: 1:1 with Python): a picked model that is not loaded is selected and
+    # loaded through switch_model's own apply_context_length; the fixture's load stays forbidden.
+    app = switch_app
+    request = command(app)
+    loads = []
+    monkeypatch.setattr(app, "apply_context_length", lambda force=False: loads.append(force))
+
+    async def listing(_backend):
+        return [llm_backend.ModelRow("new-model", None, "fixture", False)]
+
+    monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
+    result = await gui_rpc.async_dispatch(app, request)
+    assert result["status"] == "connected", result
+    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("lmstudio", "new-model")
+    assert loads == [False]
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_vanishes_during_connect_is_not_replaced(switch_app, monkeypatch):
     app = switch_app
     request = command(app)
     listings = 0
@@ -399,13 +420,12 @@ async def test_model_unloaded_during_actual_connect_cannot_report_connected(swit
     async def listing(_backend):
         nonlocal listings
         listings += 1
-        return [llm_backend.ModelRow("new-model", None, "fixture", listings == 1)]
+        return [llm_backend.ModelRow("new-model" if listings == 1 else "other-model", None, "fixture", True)]
 
     monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
     result = await gui_rpc.async_dispatch(app, request)
     assert listings == 2
-    assert result["status"] == "failed" and result["mutated"] and result["close_required"], result
-    assert "not loaded after connection" in result["error"]
+    assert result["status"] == "failed" and result["close_required"], result
     assert app._backend_transition_error
 
 

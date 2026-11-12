@@ -247,8 +247,10 @@ async def transition(app, cmd):
             rows = await candidate.list_models()
             selected = [row for row in rows if row.key == model and
                         not any(skip in row.key.lower() for skip in ("embed", "embedding"))]
-            if len(selected) != 1 or not selected[0].loaded:
-                raise ValueError("Requested model is unavailable or not loaded; no fallback or load was used")
+            # Python's /model lists every model the backend serves, loaded or not; picking one
+            # selects it (no fallback) and switch_model's apply_context_length loads it.
+            if len(selected) != 1:
+                raise ValueError("Requested model is unavailable; no fallback was used")
             _check_thinking(candidate, settings, model, context.authority.thinking_level)
         _quiet(app)
         if (app.conversation is not conversation or app.conversation != history
@@ -302,9 +304,8 @@ async def transition(app, cmd):
             if getattr(app, "_native_history_worker", None) is not worker:
                 raise ValueError("Native history worker changed during transition")
         row = app.model_rows.get(model)
-        if (row is None or row.key != model or not row.loaded
-                or app.available_models.count(model) != 1):
-            raise ValueError("Requested model is not loaded after connection; no load was authorized")
+        if row is None or row.key != model or app.available_models.count(model) != 1:
+            raise ValueError("Requested model is not listed after connection; no fallback was used")
         if app.client is not old_client:
             await old_client.close()
         _check_thinking(candidate, app.settings, model, authority.thinking_level)
@@ -326,6 +327,11 @@ async def transition(app, cmd):
             set_settings = getattr(app.backend, "set_settings", None)
             if set_settings is not None:
                 set_settings(chosen)
+        if not row.loaded:
+            # The user picked it: plugins/model_switch.switch_model's tail. Loads at the backend's
+            # context setting (the answer above, if any) only when the model is not already serving
+            # that much; a backend error is reported in its own words. A worker, as in Python.
+            app.apply_context_length()
         receipt = _receipt(app, cmd, "connected", mutated=True)
         receipt.update(background_input.after_identity_transition(app, work_proof))
         return receipt
