@@ -8,7 +8,11 @@
 //! and presses its own Save, so parsing, validation, persistence and the messages
 //! are Python's. Secrets never arrive here: a password input says only whether a
 //! value is set.
-use crate::{live::terminal_text, theme::Theme};
+use crate::{
+    live::terminal_text,
+    settings_picker::{self, Outcome as Picked, Part, Picker},
+    theme::Theme,
+};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -420,6 +424,12 @@ enum Hit {
     Confirm(usize),
     Search,
     Clear,
+    /// The colour picker's parts.
+    PickField,
+    PickHue,
+    PickPreset,
+    PickHex,
+    PickDock,
 }
 const CONFIRM: [&str; 3] = ["Save", "Discard", "Keep editing"];
 const RESTORE_CONFIRM: [&str; 2] = ["Restore defaults", "Keep editing"];
@@ -452,6 +462,8 @@ pub struct View {
     route: Option<Route>,
     /// Capture key: the next key pressed becomes the record hotkey (Python's on_key).
     capturing: bool,
+    /// The theme creator's colour picker, open over the dialog (Python's ColorPickerScreen).
+    picker: Option<Picker>,
     intent: Option<Intent>,
     hits: Vec<(Rect, Hit)>,
     visible: bool,
@@ -792,6 +804,71 @@ impl View {
         }
         self.message.clear();
     }
+    /// A theme creator token field (Python's `ct-<token>` hex inputs, not `ct-name`).
+    fn token_field(control: &Control) -> Option<&str> {
+        match &control.kind {
+            Kind::Input {
+                password: false, ..
+            } if !control.disabled && control.id != "ct-name" => control.id.strip_prefix("ct-"),
+            _ => None,
+        }
+    }
+    /// SettingsBody.on_click on a token field: the picker, starting from the field's value,
+    /// with the current theme's colours (the fields as Python filled them) as presets.
+    fn open_picker(&mut self) -> bool {
+        let Some(control) = self.focused_control().cloned() else {
+            return false;
+        };
+        let Some(token) = Self::token_field(&control) else {
+            return false;
+        };
+        let mut presets = Vec::new();
+        fn visit(items: &[Item], out: &mut Vec<(String, String)>) {
+            for item in items {
+                match item {
+                    Item::Control(c) => {
+                        if let (Some(token), Kind::Input { value: Some(v), .. }) =
+                            (View::token_field(c), &c.kind)
+                            && crate::color_picker::hex_to_hsv(v).is_ok()
+                        {
+                            out.push((token.to_owned(), v.clone()));
+                        }
+                    }
+                    Item::Line(items) | Item::Row { items, .. } => visit(items, out),
+                    _ => {}
+                }
+            }
+        }
+        if let Some(form) = &self.form {
+            for tab in &form.tabs {
+                visit(&tab.items, &mut presets);
+            }
+        }
+        let current = self.text(&control);
+        let initial = if current.trim().is_empty() {
+            "#808080".to_owned()
+        } else {
+            current.trim().to_owned()
+        };
+        self.picker = Some(Picker::new(&control.id, token, &initial, presets));
+        true
+    }
+    /// The picker's answer: a colour goes into the field's draft, as Python's `_picked`.
+    fn picked(&mut self, outcome: Picked) {
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        if let Picked::Accept(hex) = &outcome {
+            let id = picker.control.clone();
+            if let Some(control) = self.form.as_ref().and_then(|f| f.control(&id)).cloned() {
+                self.set(&control, json!(hex));
+                self.cursor = hex.chars().count();
+            }
+        }
+        if outcome != Picked::Open {
+            self.picker = None;
+        }
+    }
     fn editing_text(&self) -> bool {
         self.popup.is_none()
             && self.confirm.is_none()
@@ -800,10 +877,17 @@ impl View {
             })
     }
     pub fn accepts_paste(&self) -> bool {
+        if let Some(picker) = &self.picker {
+            return self.open && !self.waiting && picker.accepts_paste();
+        }
         self.open && !self.waiting && (self.editing_text() || self.focus == Focus::Search)
     }
     pub fn paste(&mut self, text: &str) {
         if !self.accepts_paste() {
+            return;
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            picker.paste(text);
             return;
         }
         if self.focus == Focus::Search {
@@ -948,7 +1032,11 @@ impl View {
                                 Some(options.iter().position(|o| o.1 == current).unwrap_or(0));
                         }
                         Kind::TextArea(_) => self.paste("\n"),
-                        Kind::Input { .. } => self.step(1),
+                        Kind::Input { .. } => {
+                            if !self.open_picker() {
+                                self.step(1)
+                            }
+                        }
                     }
                 }
                 None => {}
@@ -1003,6 +1091,17 @@ impl View {
             if self.form.is_none() && self.early.len() < 64 {
                 self.early.push(key);
             }
+            return;
+        }
+        if let Some(picker) = self.picker.as_mut() {
+            let outcome = picker.key(key);
+            if picker.focus == Part::Dock && key.code == KeyCode::Char(' ') {
+                self.message = format!(
+                    "{}: not available in this frontend yet.",
+                    settings_picker::DOCK
+                );
+            }
+            self.picked(outcome);
             return;
         }
         if let Some(choice) = self.confirm {
@@ -1163,21 +1262,43 @@ impl View {
         if !self.open || self.waiting {
             return;
         }
+        // Textual's scroll_sensitivity_y: two rows per wheel notch. The picker's modal
+        // covers the dialog, so the wheel does not scroll the rows under it.
+        let wheel = self.picker.is_none();
         match event.kind {
-            MouseEventKind::ScrollDown => self.scroll = self.scroll.saturating_add(3),
-            MouseEventKind::ScrollUp => self.scroll = self.scroll.saturating_sub(3),
+            MouseEventKind::ScrollDown if wheel => self.scroll = self.scroll.saturating_add(2),
+            MouseEventKind::ScrollUp if wheel => self.scroll = self.scroll.saturating_sub(2),
             MouseEventKind::Down(MouseButton::Left) => {
                 let at = Position::new(event.column, event.row);
-                let Some(hit) = self
+                let Some((rect, hit)) = self
                     .hits
                     .iter()
                     .rev()
                     .find(|(rect, _)| rect.contains(at))
-                    .map(|(_, hit)| hit.clone())
+                    .cloned()
                 else {
                     self.popup = None;
                     return;
                 };
+                let (dx, dy) = (event.column - rect.x, event.row - rect.y);
+                if let Some(picker) = self.picker.as_mut() {
+                    match hit {
+                        // Each text row of the field is two logical cells; the top one is the click.
+                        Hit::PickField => picker.click_field(dx, dy * 2),
+                        Hit::PickHue => picker.click_hue(dx),
+                        Hit::PickPreset => picker.click_preset(dx),
+                        Hit::PickHex => picker.click_hex(),
+                        Hit::PickDock => {
+                            picker.focus = Part::Dock;
+                            self.message = format!(
+                                "{}: not available in this frontend yet.",
+                                settings_picker::DOCK
+                            );
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 match hit {
                     Hit::Tab(i) => {
                         self.tab = i;
@@ -1192,6 +1313,9 @@ impl View {
                             .map_or(0, |c| self.text(c).chars().count());
                         if !self.editing_text() {
                             self.activate();
+                        } else {
+                            // A click on a theme token field opens the picker (Python's on_click).
+                            self.open_picker();
                         }
                     }
                     Hit::Button(i) => {
@@ -1214,6 +1338,11 @@ impl View {
                         self.focus = Focus::Clear;
                         self.activate();
                     }
+                    Hit::PickField
+                    | Hit::PickHue
+                    | Hit::PickPreset
+                    | Hit::PickHex
+                    | Hit::PickDock => {}
                 }
             }
             _ => {}
@@ -1755,7 +1884,180 @@ impl Layout<'_> {
     }
 }
 
+/// Textual's `tint`: the colour moved `amount` of the way to `toward`, channels truncated.
+fn tint(color: Color, toward: Color, amount: f64) -> Color {
+    match (color, toward) {
+        (Color::Rgb(r, g, b), Color::Rgb(tr, tg, tb)) => {
+            let mix = |c: u8, t: u8| (f64::from(c) + (f64::from(t) - f64::from(c)) * amount) as u8;
+            Color::Rgb(mix(r, tr), mix(g, tg), mix(b, tb))
+        }
+        _ => color,
+    }
+}
 impl View {
+    /// Python's ColorPickerScreen: #cp-box (54 wide, the full height, solid $primary border,
+    /// padding 1 2) centred, holding the title, the field, the hue bar, the presets, the
+    /// swatch / hex / hint row and Dock to side.
+    fn draw_picker(&mut self, frame: &mut Frame, area: Rect, p: &Paint) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        let bw = area.width.min(54);
+        if bw < 14 || area.height < 4 {
+            return;
+        }
+        let rect = Rect::new(area.x + (area.width - bw) / 2, area.y, bw, area.height);
+        let surface = Style::default().fg(p.text).bg(p.surface);
+        let edge = Style::default().fg(p.accent).bg(p.surface);
+        let inner = usize::from(bw - 2);
+        let buf = frame.buffer_mut();
+        for y in rect.top()..rect.bottom() {
+            let (l, m, r) = if y == rect.top() {
+                ("┌", "─".repeat(inner), "┐")
+            } else if y + 1 == rect.bottom() {
+                ("└", "─".repeat(inner), "┘")
+            } else {
+                ("│", " ".repeat(inner), "│")
+            };
+            buf.set_string(rect.x, y, l, edge);
+            buf.set_string(rect.x + 1, y, m, if l == "│" { surface } else { edge });
+            buf.set_string(rect.right() - 1, y, r, edge);
+        }
+        let cx = rect.x + 3;
+        let cw = bw - 6;
+        let last = rect.bottom() - 2; // the padding row above the bottom border
+        let mut hits = Vec::new();
+        let put = |buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, text: &str, style: Style| {
+            if y < last {
+                let room = usize::from((cx + cw).saturating_sub(x));
+                buf.set_string(x, y, clip(text, room), style);
+            }
+        };
+        let y0 = rect.y + 2;
+        put(
+            buf,
+            cx,
+            y0,
+            &shown(&picker.title()),
+            Style::default()
+                .fg(p.accent)
+                .bg(p.surface)
+                .add_modifier(Modifier::BOLD),
+        );
+        // The field is painted at the width it has; clicks and nudges use the same number.
+        let w = crate::color_picker::clamp_width(i32::from(cw));
+        picker.painted = w;
+        let focused = picker.focus == Part::Field;
+        let field_y = y0 + 2;
+        let lines = crate::color_picker::render_sv_field(picker.h, picker.s, picker.v, w as i32);
+        for (row, line) in lines.iter().enumerate() {
+            for (col, span) in line.spans.iter().enumerate() {
+                let mut style = span.style;
+                if focused {
+                    // _SVField:focus { tint: $accent 10%; }
+                    style.fg = style.fg.map(|c| tint(c, p.accent, 0.1));
+                    style.bg = style.bg.map(|c| tint(c, p.accent, 0.1));
+                }
+                put(
+                    buf,
+                    cx + col as u16,
+                    field_y + row as u16,
+                    &span.content,
+                    style,
+                );
+            }
+        }
+        hits.push((
+            Rect::new(cx, field_y, w as u16, lines.len() as u16),
+            Hit::PickField,
+        ));
+        let hue_y = field_y + lines.len() as u16 + 1;
+        let hue = crate::color_picker::render_hue_bar(picker.h, w as i32);
+        for (col, span) in hue.spans.iter().enumerate() {
+            put(buf, cx + col as u16, hue_y, &span.content, span.style);
+        }
+        hits.push((Rect::new(cx, hue_y, w as u16, 1), Hit::PickHue));
+        let mut row_y = hue_y + 2;
+        if !picker.presets.is_empty() {
+            let mut x = cx;
+            for (_, hex) in &picker.presets {
+                if let Some((r, g, b)) = crate::color_picker::hex_to_hsv(hex)
+                    .ok()
+                    .map(|(h, s, v)| crate::color_picker::hsv_to_rgb(h, s, v))
+                    .map(|[r, g, b]| (r, g, b))
+                {
+                    put(
+                        buf,
+                        x,
+                        row_y,
+                        "  ",
+                        Style::default().bg(Color::Rgb(r, g, b)),
+                    );
+                }
+                x += 3;
+            }
+            hits.push((Rect::new(cx, row_y, (x - cx).min(cw), 1), Hit::PickPreset));
+            row_y += 2;
+        }
+        // #cp-row: the swatch (8, margin-right 1), the hex box (12), the hint (margin-left 1).
+        let [r, g, b] = crate::color_picker::hsv_to_rgb(picker.h, picker.s, picker.v);
+        put(
+            buf,
+            cx,
+            row_y,
+            "      ",
+            Style::default().bg(Color::Rgb(r, g, b)),
+        );
+        let hex_x = cx + 9;
+        let hex_focused = picker.focus == Part::Hex;
+        let body = 6usize;
+        let start = if hex_focused {
+            picker.cursor.saturating_sub(body - 1)
+        } else {
+            0
+        };
+        let visible: String = shown(&picker.hex).chars().skip(start).collect();
+        let hex_edge = Style::default()
+            .fg(if hex_focused { p.accent } else { p.border })
+            .bg(p.surface);
+        let caret = hex_focused.then(|| (hex_x + 3 + (picker.cursor - start) as u16, row_y + 1));
+        let dock_focused = picker.focus == Part::Dock;
+        let probe = Layout {
+            view: &View::default(),
+            paint: p,
+            targets: Vec::new(),
+            rows: Vec::new(),
+            margin: false,
+        };
+        let hex_rows = probe.tall(hex_x, 12, &visible, "", surface, hex_edge);
+        let dock = probe.button(settings_picker::DOCK, cx, cw, dock_focused, false);
+        for (i, spans) in hex_rows.iter().enumerate() {
+            for (x, text, style) in spans {
+                put(buf, *x, row_y + i as u16, text, *style);
+            }
+        }
+        hits.push((Rect::new(hex_x, row_y, 12, 3), Hit::PickHex));
+        put(
+            buf,
+            hex_x + 13,
+            row_y,
+            settings_picker::HINT,
+            Style::default().fg(p.muted).bg(p.surface),
+        );
+        let dock_y = row_y + 3;
+        for (i, spans) in dock.iter().enumerate() {
+            for (x, text, style) in spans {
+                put(buf, *x, dock_y + i as u16, text, *style);
+            }
+        }
+        hits.push((Rect::new(cx, dock_y, cw, 3), Hit::PickDock));
+        self.hits.extend(hits);
+        if let Some(position) = caret
+            && position.1 < last
+        {
+            frame.set_cursor_position(position);
+        }
+    }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         self.visible = false;
         self.hits.clear();
@@ -1768,6 +2070,11 @@ impl View {
         frame
             .buffer_mut()
             .set_style(area, Style::default().fg(p.text).bg(p.background));
+        if self.picker.is_some() {
+            self.draw_picker(frame, area, &p);
+            self.visible = true;
+            return;
+        }
         // Python's #set-box: 92 wide (or the screen), 88% tall, centered; thick border, padding 1 2.
         let width = area.width.min(92);
         let height = (u32::from(area.height) * 88 / 100) as u16;

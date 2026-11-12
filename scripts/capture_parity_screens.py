@@ -71,7 +71,33 @@ PROFILES = {
     "backend": {frontend: [("backend-open", ["/backend\r"], "none"), ("down-1", ["\x1b[B"], "none"),
                            ("down-2", ["\x1b[B"], "none"), ("enter", ["\r"], "none")]
                 for frontend in ("textual", "rust")},
+    # The theme creator's colour picker opens on a CLICK on a token field (settings_screen
+    # on_click). Themes is reached from the tab bar by Left twice (the tabs wrap); the rest click
+    # by on-screen text: "click:<text>" presses the left button on the first cell of the first
+    # row showing <text>; "click:<text>@<dy>" clicks <dy> rows below it (an input's text line is
+    # two rows under its label).
+    "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
+                          ("tokens", ["click:Palette tokens"], "none"),
+                          ("scrolled", ["wheel:New theme name"] * 4, "none"),
+                          ("picker-open", ["click: primary@2"], "none"), ("nudge", ["\x1b[A", "\x1b[C"], "none"),
+                          ("accept", ["\r"], "none")]
+               for frontend in ("textual", "rust")},
 }
+
+
+def click(screen_text, spec):
+    """The SGR mouse bytes for a "click:<text>[@dy]" step (left press and release) or a
+    "wheel:<text>[@dy]" step (one wheel-down notch), or None if <text> is not shown."""
+    verb, _, rest = spec.partition(":")
+    text, _, dy = rest.partition("@")
+    for row, line in enumerate(screen_text().splitlines()):
+        col = line.find(text)
+        if col >= 0:
+            x, y = col + 1 + (1 if text.startswith(" ") else 0), row + 1 + int(dy or 0)
+            if verb == "wheel":
+                return f"\x1b[<65;{x};{y}M"
+            return f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m"
+    return None
 
 
 def settle(screen_text, *, quiet=2.0, minimum=1.0, limit=60.0):
@@ -154,6 +180,13 @@ def run(frontend, args):
             for index, keys in enumerate(writes):
                 if index:
                     settle(text, quiet=1.5, limit=30)
+                if keys.startswith(("click:", "wheel:")):
+                    settle(text, quiet=1.5, limit=30)
+                    found = click(text, keys)
+                    if found is None:
+                        errors.append(f"step {name}: {keys[6:]!r} is not on screen")
+                        continue
+                    keys = found
                 pty.write(keys)
             shoot(name)
             if reset == "full":

@@ -58,6 +58,7 @@ pub mod connection_preferences;
 pub mod runtime_launch;
 pub mod settings_editor;
 pub mod settings_form;
+pub mod settings_picker;
 pub mod settings_view;
 
 pub mod chat_pause;
