@@ -56,6 +56,10 @@ class _Seat:
     def _stream(self):
         self.streams += 1
 
+    def _ordinary_prompt_text(self, name, *, fresh=False):
+        # The wake text is authored guidance (prompt_overrides); its content is not the subject.
+        return f"[{name}]"
+
 
 def _typed(seat, text="hello", source="typed"):
     hook_host.start_prompt(seat, {"content": text, "source": source,
@@ -891,7 +895,13 @@ def test_F_the_owner_mark_is_PROCESS_ONLY_not_a_conversation_fact(tmp_path, monk
     host._spawned_marker, host._owner_seat = False, True
     host._adopt_convo_settings(born=True)
     raw = _cs.path_for(tmp_path).read_text(encoding="utf-8")
-    assert "owner" not in raw.lower()
+    # No owner mark is stored. Ordinary settings whose names contain the word are not marks.
+    import json
+    from litetui.settings_scope import SETTING_SPECS
+    saved = json.loads(raw)
+    keys = set(saved) | set(saved.get("execution") or {})
+    marks = {k for k in keys if "owner" in k.lower() and k not in SETTING_SPECS}
+    assert not marks, sorted(marks)
     fleet = _resumed(tmp_path, monkeypatch, False)
     fleet._owner_seat = False            # a fleet process, not Owner's launcher
     assert seat_authority.floor_refusal(fleet, "typed") is not None

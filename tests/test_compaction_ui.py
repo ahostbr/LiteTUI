@@ -264,7 +264,8 @@ def test_store_writes_render_as_tool_cards_and_reach_the_ledger(tmp_path, monkey
             tool = tools.first()
             assert tool.tool_name == "write"
             assert tool._result == "ok"
-            assert written.get("path") == "memory.md", "the tool never ran"
+            # The write tool resolves a relative path against the workspace before it runs.
+            assert Path(written.get("path", "")).name == "memory.md", "the tool never ran"
 
             status = str(card.status.render())
             assert "persisted" in status and "memory.md" in status, status

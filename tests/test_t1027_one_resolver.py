@@ -47,6 +47,23 @@ def _no_invocation_environment(monkeypatch):
 # ── 1. the turn's authority ──────────────────────────────────────────────────
 
 
+class _OwnedFolder:
+    """The owning agent of one fixture conversation folder.
+
+    Conversation settings are written only through their owning agent
+    (owned_storage.require_conversation); launch flags are checked against its
+    execution authority (agent_launch_context.validate_execution). Unset fields
+    there mean "no saved authority to disagree with".
+    """
+
+    def __init__(self, convo_dir):
+        self._directory = Path(convo_dir)
+        self.authority = SimpleNamespace(backend=None, model=None, thinking_level=None)
+
+    def conversation_directory(self, _name):
+        return self._directory
+
+
 class _Host:
     """Just enough app for `hook_host.accept_prompt` and the real resolver."""
 
@@ -58,7 +75,8 @@ class _Host:
     def __init__(self, saved_profile: str, flag: str | None, convo_dir: Path):
         self.settings = st.Settings()
         self.settings.tool_policy_profile = saved_profile
-        cs_mod.save(convo_dir, cs_mod.ConvoSettings(tool_policy_profile=saved_profile))
+        cs_mod.save(convo_dir, cs_mod.ConvoSettings(tool_policy_profile=saved_profile),
+                    agent_session=_OwnedFolder(convo_dir))
         self._convo_settings = cs_mod.load(convo_dir)
         self._cli_tool_profile = flag
         self._active_tool_profile = flag or saved_profile
@@ -221,6 +239,7 @@ class _BornHost:
         self._cli_initial_model = None
         self._cli_thinking_level = None
         self._cli_tool_profile = None
+        self._agent_session = _OwnedFolder(convo_dir)
 
     def _system(self, text):
         self.said.append(text)

@@ -23,7 +23,10 @@ def source(tmp_path, name, text):
 def test_one_actual_role_and_method_emitted_in_one_system(tmp_path, role):
     role_file = source(tmp_path, "role.md", f"# {role.upper()} ROLE — {role.title()} Mode\n\nGeneric role body")
     method = source(tmp_path, "method.md", "# POLYMATHIC GAMMA\n\nMethod only")
+    # A spawned seat names its execution authority ("Agent execution authority is
+    # incomplete" otherwise); the fixture backend keeps the prompt the subject.
     app = owned_app(spawn_identity=("00000000-0000-4000-8000-000000000001", "probe", role),
+                    initial_backend="custom", initial_model="fixture",
                     role_prompt_file=role_file, cognitive_file=method)
     messages = app._request_messages()
     systems = [m["content"] for m in messages if m["role"] == "system"]
@@ -61,7 +64,8 @@ def test_caller_replaces_default_role_body_and_next_turn_changes_system(tmp_path
 @pytest.mark.parametrize("body", ["# LEADER ROLE — Leader Mode", "# WORKER ROLE\n# WORKER ROLE", "# POLYMATHIC GAMMA — Worker Mode"])
 def test_role_scaffolds_refused(tmp_path, body):
     with pytest.raises(ValueError, match="role|Role|scaffold"):
-        owned_app(system_prompt=body, spawn_identity=("00000000-0000-4000-8000-000000000001", "probe", "worker"))
+        owned_app(system_prompt=body, spawn_identity=("00000000-0000-4000-8000-000000000001", "probe", "worker"),
+                  initial_backend="custom", initial_model="fixture")
 
 
 def test_pure_catalog_not_header_splitter():

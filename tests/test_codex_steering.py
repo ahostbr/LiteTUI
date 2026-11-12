@@ -373,11 +373,24 @@ async def test_failed_journal_write_keeps_queue_and_does_not_send():
 
 @pytest.mark.asyncio
 async def test_uncertain_delivery_survives_actual_conversation_store_reload(tmp_path):
+    import json
+    from uuid import uuid4
+
+    from litetui import agent_ownership, agent_store
     from litetui.conversation import ConversationRepository
 
-    store = ConversationRepository()
-    store.convo_dir = tmp_path
-    store.convo_path = tmp_path / "conversation.jsonl"
+    # Writes need an owned agent session (an unowned repository is a read-only archive).
+    agent_id = str(uuid4())
+    home = tmp_path / ".agents" / "SteerProbe"
+    home.mkdir(parents=True)
+    (home / "settings.json").write_text(json.dumps({
+        "schema_version": 1, "name": home.name, "agent_id": agent_id,
+        "execution": {"backend": "codex", "model": "fixture", "thinking_level": "high"}}), encoding="utf-8")
+    session = agent_ownership.AgentSession.acquire_existing(agent_store.AgentStore(tmp_path), agent_id=agent_id)
+    store = ConversationRepository(agent_session=session)
+    store.stage(str(uuid4()))
+    store.acquire()
+    store.pending = False
     message = {
         "role": "user",
         "content": "original",
@@ -407,6 +420,7 @@ async def test_uncertain_delivery_survives_actual_conversation_store_reload(tmp_
         assert restored["admission"]["source"] == "queued"
     finally:
         store.release()
+        session.release()
 
 
 @pytest.mark.asyncio

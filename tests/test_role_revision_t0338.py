@@ -12,7 +12,8 @@ def test_restart_role_change_with_same_body_method_changes_revision_and_rotates(
     method.write_text("# POLYMATHIC GAMMA\nSAME METHOD", encoding="utf-8")
     kwargs = {"initial_backend": "claude", "initial_model": "claude-sonnet", "system_prompt": "SAME HEADERLESS BODY",
               "cognitive_file": str(method)}
-    first = owned_app(**kwargs, spawn_identity=(str(uuid4()), "builder", "worker"))
+    seat_id = str(uuid4())
+    first = owned_app(**kwargs, spawn_identity=(seat_id, "builder", "worker"))
     first._materialise_convo()
     ledger = claude_turn.ledger_for(first)
     original = ledger.select_segment(claude_turn.launch_workspace(first))
@@ -23,7 +24,9 @@ def test_restart_role_change_with_same_body_method_changes_revision_and_rotates(
     path = first.convo_path
     first.store.release()
     first._agent_session.release()
-    critic = owned_app(**kwargs, spawn_identity=(str(uuid4()), "critic", "reviewer"))
+    # The same seat (id and name) restarted with another role. Another name or id is another
+    # agent, whose conversation is refused ("outside the selected agent").
+    critic = owned_app(**kwargs, spawn_identity=(seat_id, "builder", "reviewer"))
     critic._render_resumed = lambda _: None
     critic._system = lambda _: None
     assert critic._resume(path, startup=True)

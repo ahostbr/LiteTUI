@@ -77,6 +77,13 @@ class _App:
     def _on_settings_saved(self, new):
         self.settings = new
 
+    def push_screen(self, screen, callback=None):
+        # The pick now asks the context length (Ryan 2026-10-24, c6539b4d); answer it like Esc,
+        # "keep current", so the artifact choice itself is what this test checks.
+        self.asked = getattr(self, "asked", []) + [screen]
+        if callback is not None:
+            callback(None)
+
 
 class _NInferish:
     name = "ninfer"
@@ -130,6 +137,7 @@ def test_three_artifacts_offer_a_choice_and_picking_sets_the_setting(artifacts):
     assert sorted(r[0] for r in rows) == [str(p) for p in made]
 
     on_pick(str(made[1]))
+    assert len(app.asked) == 1, "picking an artifact asks its context length once"
     assert app.settings.ninfer_artifact == str(made[1])
     # The next step is named, and it is the one that actually works.
     assert any("/engine start" in s for s in app.said), app.said

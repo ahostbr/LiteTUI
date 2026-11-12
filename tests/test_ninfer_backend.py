@@ -743,6 +743,10 @@ _NOT_OURS = {
     # llama.cpp's owned-server recovery, and app.py:3480 wraps it in try/except
     # precisely because not every backend has one.
     "recover_owner_exit",
+    # Strata/Xolotl-only: `_pick_server_config` reads them, and `_cmd_model` reaches it
+    # only behind `name in ("strata", "xolotl")` (plugins/model_switch.py `_cmd_model`).
+    "_install_where",
+    "_setting_prefix",
 }
 
 
@@ -801,6 +805,9 @@ def test_every_unguarded_backend_call_is_implemented():
         if not path.exists():
             continue
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            # A quoted dotted name ("backend.set", "gui.backend.set") is an RPC operation
+            # name (gui_rpc.py), not an attribute; f-string expressions are still read.
+            line = re.sub(r"([\"'])[\w.]*\1", "", line)
             for m in re.finditer(r"\bbackend\.([A-Za-z_]\w*)", line):
                 called.setdefault(m.group(1), f"{rel}:{n}")
 
