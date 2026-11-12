@@ -97,6 +97,15 @@ class Block:
                 "metadata": json.loads(self.metadata_bytes), "block_sha256": self.block_sha256}
 
 
+#: A brand-new conversation holds only system context. Develop's host prompt message (app.
+#: _host_prompt_message, seat_prompts) carries its provenance on message 0; those keys are still
+#: system context, not history.
+FRESH_SYSTEM_KEYS = frozenset({
+    "role", "content", "litetui_prompt_owner", "litetui_prompt_version", "litetui_prompt_base",
+    "litetui_prompt_ordinary_start", "litetui_ordinary_text", "litetui_seat_text",
+})
+
+
 @dataclass(frozen=True)
 class Projection:
     context_sha256: str
@@ -263,7 +272,7 @@ def project(messages: list[dict[str, Any]], summaries: dict[str, str] | None = N
     fresh = True
     for index, message in enumerate(messages):
         role = message["role"]
-        fresh = fresh and role == "system" and set(message).issubset({"role", "content"})
+        fresh = fresh and role == "system" and set(message).issubset(FRESH_SYSTEM_KEYS)
         if role == "system":
             system += 1
             continue

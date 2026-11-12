@@ -318,6 +318,7 @@ def main():
     import httpx
 
     from litetui import (
+        backend_catalog,
         claude_backend,
         gpu_gate,
         harness,
@@ -359,6 +360,9 @@ def main():
             (httpx.Client, "send", forbidden), (httpx.AsyncClient, "send", forbidden_async),
             (ttyguard, "run", command), (ttyguard, "popen", forbidden),
             (gpu_gate, "nvidia_smi", lambda: "fixture-nvidia-smi"),
+            # Display-only readiness marks probe engines exactly as Python's /backend does
+            # (plugins/model_switch.backend_rows); this fixture forbids those boundaries.
+            (backend_catalog, "_marks", lambda _app, _names: {}),
             (plugins, "PLUGIN_LOAD_ORDER", ("litetui.plugins.core_tools", "litetui.plugins.self_compact")),
             (rpc, "start_rpc_reader", lambda _app: None), (rpc, "rpc_emit", emit),
             (harness.Seat, "register", registered), (update_check, "start_background_check", lambda _app: None),

@@ -154,7 +154,7 @@ pub(crate) fn canonical(v: &Value, action: Action) -> io::Result<Value> {
         work_controls::GOAL
     };
     let mut defaults = if action == Action::JobRun {
-        json!({"enabled":true,"new_conversation":false,"last_fired_slot":null,"run_count":0,"label":"","tool_profile":"interactive","kind":"cron","owner_convo_id":"","interval_minutes":0,"next_run_at":null})
+        json!({"enabled":true,"new_conversation":false,"last_fired_slot":null,"run_count":0,"label":"","tool_profile":"interactive","kind":"cron","owner_convo_id":"","interval_minutes":0,"next_run_at":null,"owner_agent_id":"","deferred_slot":null})
     } else {
         json!({"status":"active","evaluated_turns":0,"max_turns":0,"last_verdict":"","last_reason":"","missing_evidence":[],"no_progress_count":0,"tool_profile":"interactive","started_by":""})
     };

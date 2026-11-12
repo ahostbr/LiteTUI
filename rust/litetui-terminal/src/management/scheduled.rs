@@ -464,7 +464,21 @@ impl Management {
                     rows.iter().all(|m| {
                         m["role"] == "system"
                             && m.as_object().is_some_and(|o| {
-                                o.keys().all(|k| matches!(k.as_str(), "role" | "content"))
+                                // Develop's host prompt message carries its provenance on message 0
+                                // (history_projection.FRESH_SYSTEM_KEYS); still system context.
+                                o.keys().all(|k| {
+                                    matches!(
+                                        k.as_str(),
+                                        "role"
+                                            | "content"
+                                            | "litetui_prompt_owner"
+                                            | "litetui_prompt_version"
+                                            | "litetui_prompt_base"
+                                            | "litetui_prompt_ordinary_start"
+                                            | "litetui_ordinary_text"
+                                            | "litetui_seat_text"
+                                    )
+                                })
                             })
                     })
                 })

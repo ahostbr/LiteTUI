@@ -93,6 +93,15 @@ runpy.run_path({}, run_name='__main__')
 fn json_file(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
+/// The conversation's execution block, with explicit nulls treated as absent: develop's settings
+/// save writes an unset field as `null` (an explicit "unset"), which changes no effective value.
+fn execution_of(path: &Path) -> Value {
+    let mut value = json_file(path)["execution"].clone();
+    if let Some(map) = value.as_object_mut() {
+        map.retain(|_, v| !v.is_null());
+    }
+    value
+}
 fn conversation_settings(data: &Path) -> PathBuf {
     fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
         if depth == 0 {
@@ -223,7 +232,7 @@ fn agent_preferences_review_every_group_and_authority_change_without_side_effect
             let global = data.join("settings.json");
             let conversation = conversation_settings(&data);
             let mut globals = json_file(&global);
-            let mut execution = json_file(&conversation)["execution"].clone();
+            let mut execution = execution_of(&conversation).clone();
 
             // Execution limits (conversation, next turn): review is inert until confirmed.
             key(runtime, &mut app, KeyCode::Char('e'))?;
@@ -238,11 +247,11 @@ fn agent_preferences_review_every_group_and_authority_change_without_side_effect
                     && review.contains("Applies from the next turn."),
                 "{review}"
             );
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
             let saved = key(runtime, &mut app, KeyCode::Enter)?;
             assert!(saved.contains("Saved and verified on disk"), "{saved}");
             execution["tool_iterations"] = json!(17);
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
             assert_eq!(json_file(&global), globals);
 
             // Subagent route (device, immediate): writes the shared device document only.
@@ -259,7 +268,7 @@ fn agent_preferences_review_every_group_and_authority_change_without_side_effect
             assert!(saved.contains("Saved and verified on disk"), "{saved}");
             globals["subagent_route"] = json!({"backend": "codex", "model": "gpt-5.1"});
             assert_eq!(json_file(&global), globals);
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
 
             // Authority list: a widening change is stated, cancellable, then verified.
             go_to(runtime, &mut app, 10, 7)?;
@@ -273,14 +282,14 @@ fn agent_preferences_review_every_group_and_authority_change_without_side_effect
                 "{review}"
             );
             key(runtime, &mut app, KeyCode::Esc)?;
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
             key(runtime, &mut app, KeyCode::Char('a'))?;
             type_text(runtime, &mut app, "bash:process_execution")?;
             key(runtime, &mut app, KeyCode::Enter)?;
             let saved = key(runtime, &mut app, KeyCode::Enter)?;
             assert!(saved.contains("Saved and verified on disk"), "{saved}");
             execution["tool_always_allow"] = json!(["bash:process_execution"]);
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
             // The source refuses a hand-written approval for irreversible actions.
             key(runtime, &mut app, KeyCode::Char('a'))?;
             type_text(runtime, &mut app, "bash:destructive_irreversible")?;
@@ -289,7 +298,7 @@ fn agent_preferences_review_every_group_and_authority_change_without_side_effect
                 refused.contains("approval prompt that shows the call"),
                 "{refused}"
             );
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
             let refreshed = key(runtime, &mut app, KeyCode::F(5))?;
             assert!(
                 refreshed.contains("Always-allow rules: 1 entry"),
@@ -305,7 +314,7 @@ fn agent_preferences_review_every_group_and_authority_change_without_side_effect
             );
             key(runtime, &mut app, KeyCode::Enter)?;
             execution["tool_always_allow"] = json!([]);
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
 
             // Identity (defaults scope) and a reconnect-timed switch.
             go_to(runtime, &mut app, 7, 16)?;
@@ -329,7 +338,7 @@ fn agent_preferences_review_every_group_and_authority_change_without_side_effect
                 "{saved}"
             );
             execution["skills_enabled"] = json!(true);
-            assert_eq!(json_file(&conversation)["execution"], execution);
+            assert_eq!(execution_of(&conversation), execution);
             assert_eq!(json_file(&global), globals);
 
             key(runtime, &mut app, KeyCode::F(5))?;

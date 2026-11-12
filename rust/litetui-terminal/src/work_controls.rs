@@ -36,6 +36,9 @@ pub(crate) const JOB: &[&str] = &[
     "owner_convo_id",
     "interval_minutes",
     "next_run_at",
+    // develop scheduler.Job (T0495 self-schedules and the deferred slot)
+    "owner_agent_id",
+    "deferred_slot",
 ];
 pub(crate) const GOAL: &[&str] = &[
     "objective",
@@ -120,9 +123,11 @@ pub(crate) fn job(v: &Value) -> io::Result<()> {
         ("label", 4096, true),
         ("tool_profile", 4096, true),
         ("owner_convo_id", 128, true),
+        ("owner_agent_id", 128, true),
     ] {
         text(v, key, max, empty)?;
     }
+    timestamp(v, "deferred_slot", true)?;
     boolean(v, "enabled")?;
     boolean(v, "new_conversation")?;
     integer(v, "run_count", false)?;

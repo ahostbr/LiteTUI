@@ -38,6 +38,13 @@ def seed(app):
     )
     directory = root / "private-schemas"
     directory.mkdir()
+    # Every real schema first: plugins registered later (develop's scheduler loads schedule_self
+    # at registration) must still find theirs. Only the selected tool's copy is changed below.
+    package = tool_schemas._package_dir()
+    if package is not None:
+        for entry in package.iterdir():
+            if entry.name.endswith(".json"):
+                (directory / entry.name).write_bytes(entry.read_bytes())
     schema = copy.deepcopy(selected.spec)
     schema["function"]["description"] = (
         "A reviewed replacement\nCurrent static tool description."
