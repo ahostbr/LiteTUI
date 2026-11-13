@@ -1048,14 +1048,21 @@ fn backend_and_resume_arguments_preselect_rows_without_switching_or_opening() {
         )
         .unwrap()
     };
-    for (argument, notice) in [
+    // Python's `/resume <id>` (convo._cmd_resume) opens the first conversation whose id starts
+    // with the argument; none, or the current one, opens nothing and says why.
+    for (argument, opened, line) in [
         (
             "00000000-0000-4000-8000-000000000003",
-            "selected 00000000-0000-4000-8000-000000000003",
+            Some("00000000-0000-4000-8000-000000000003"),
+            "",
         ),
-        ("00000000-", "matches 2 rows"),
-        ("ffff", "is not on this first page"),
-        (SESSION, "current conversation"),
+        (
+            "00000000-",
+            Some("00000000-0000-4000-8000-000000000002"),
+            "",
+        ),
+        ("ffff", None, "No conversation matches 'ffff'"),
+        (SESSION, None, "Already open"),
     ] {
         let mut app = routed_app("conversation_resume", true, "custom", argument);
         assert_eq!(
@@ -1065,20 +1072,18 @@ fn backend_and_resume_arguments_preselect_rows_without_switching_or_opening() {
         app.observe_live(Observation::Browser(browser::Update::Page(page(0))))
             .unwrap();
         let view = &mut app.live.as_mut().unwrap().browser;
-        assert!(view.notice.contains(notice), "{argument}: {}", view.notice);
-        assert!(
-            view.notice.contains("Nothing has been opened"),
-            "{}",
-            view.notice
-        );
-        paint(&mut app, 100, 30);
-        let view = &mut app.live.as_mut().unwrap().browser;
-        view.key(key(KeyCode::Enter));
         assert_eq!(
             view.take_intent(),
-            None,
-            "{argument}: Enter without O must not open"
+            opened.map(|session| browser::Intent::Open {
+                revision: 1,
+                session: session.into()
+            }),
+            "{argument}"
         );
+        if opened.is_none() {
+            let screen = paint(&mut app, 100, 30);
+            assert!(screen.contains(line), "{argument}: {screen}");
+        }
     }
 }
 

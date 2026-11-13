@@ -234,46 +234,66 @@ fn opening_requires_an_offered_selection_drawn_confirmation_and_fresh_enter() {
     }
 }
 #[test]
-fn geometry_focus_selection_pointer_modifier_and_source_changes_disarm_open() {
+fn enter_opens_the_highlighted_row_like_python_and_nothing_else_does() {
+    // Python's picker: Enter on a row opens it at once (Sentinel 5eb26818, 1:1 with Python).
     for change in [
         "resize",
         "hidden",
-        "hide",
         "selection",
         "pointer",
         "inspect",
         "source",
-        "modifier",
-        "escape",
         "paging",
     ] {
         let mut v = view();
         select_second(&mut v);
-        arm(&mut v);
         match change {
             "resize" => {
                 draw(&mut v, 90, 30);
             }
             "hidden" => {
-                draw(&mut v, 35, 13);
+                draw(&mut v, 12, 6);
             }
-            "hide" => v.hide(),
             "selection" => v.key(key(KeyCode::Down)),
             "pointer" => v.mouse(mouse(MouseEventKind::Moved, 0, 0)),
             "inspect" => v.key(key(KeyCode::Right)),
             "source" => v.observe(Update::Page(page())).unwrap(),
-            "modifier" => v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
-            "escape" => v.key(key(KeyCode::Esc)),
             "paging" => v.key(key(KeyCode::PageUp)),
             _ => unreachable!(),
         }
-        draw(&mut v, 80, 30);
+        let screen = draw(&mut v, 80, 30);
         v.key(key(KeyCode::Enter));
-        assert!(v.take_intent().is_none(), "{change}");
+        let want = match change {
+            "selection" => Some(id(3)),
+            // A fresh page highlights the current conversation again: "Already open".
+            "source" => None,
+            _ => Some(id(2)),
+        };
+        assert_eq!(
+            v.take_intent(),
+            want.map(|session| Intent::Open {
+                revision: 7,
+                session
+            }),
+            "{change}: {screen}"
+        );
+        if change == "source" {
+            assert!(draw(&mut v, 80, 30).contains("Already open"));
+        }
     }
+    // Esc closes the picker; Ctrl+Enter is not Enter.
+    let mut v = view();
+    select_second(&mut v);
+    v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    assert!(v.take_intent().is_none());
+    v.key(key(KeyCode::Esc));
+    v.key(key(KeyCode::Enter));
+    assert!(v.take_intent().is_none() && !v.open);
 }
+
 #[test]
-fn pointer_requires_a_paired_visible_row_and_never_opens_it() {
+fn a_paired_click_on_a_row_opens_it_like_python() {
+    // "Enter or click to select": a press and release on the same row opens it.
     for paired in [false, true] {
         let mut v = view();
         draw(&mut v, 80, 30);
@@ -282,23 +302,16 @@ fn pointer_requires_a_paired_visible_row_and_never_opens_it() {
             v.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 12));
         }
         v.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 10, 12));
-        assert!(v.take_intent().is_none());
-        v.key(key(KeyCode::Char('o')));
-        draw(&mut v, 80, 30);
-        v.key(key(KeyCode::Enter));
         assert_eq!(
             v.take_intent(),
-            if paired {
-                Some(Intent::Open {
-                    revision: 7,
-                    session: id(2),
-                })
-            } else {
-                None
-            }
+            paired.then(|| Intent::Open {
+                revision: 7,
+                session: id(2),
+            })
         );
     }
 }
+
 #[test]
 fn paging_requests_only_offered_cursors_and_refresh_invalidates_confirmation() {
     let mut v = view();
@@ -801,46 +814,34 @@ fn requested_native_preview() -> View {
     view
 }
 #[test]
-fn native_open_requires_new_visible_review_after_preview_and_never_auto_opens() {
+fn native_preview_is_confirmed_at_once_like_python() {
+    // Python opens on the pick: the reviewed open is confirmed when its preview arrives.
     let mut view = requested_native_preview();
     view.observe(Update::Preview(native_preview(false)))
         .unwrap();
-    view.key(key(KeyCode::Enter));
-    assert!(view.take_intent().is_none());
-    for _ in 0..20 {
-        let screen = draw(&mut view, 42, 18);
-        if screen.contains("Enter: open once") {
-            view.key(key(KeyCode::Enter));
-            assert!(matches!(
-                view.take_intent(),
-                Some(Intent::ConfirmOpen { .. })
-            ));
-            return;
-        }
-        view.key(key(KeyCode::PageDown));
-    }
-    panic!("Review never became fully visible");
+    assert!(matches!(
+        view.take_intent(),
+        Some(Intent::ConfirmOpen { .. })
+    ));
+    assert!(view.waiting);
 }
+
 #[test]
-fn read_only_native_preview_stays_non_actionable_and_late_preview_never_reopens() {
+fn read_only_native_preview_is_refused_with_its_reason_and_late_preview_never_reopens() {
     let mut view = requested_native_preview();
     view.observe(Update::Preview(native_preview(true))).unwrap();
-    for _ in 0..10 {
-        let screen = draw(&mut view, 80, 30);
-        assert!(screen.contains("read-only"));
-        assert!(!screen.contains("Enter: open once"));
-        view.key(key(KeyCode::Enter));
-        assert!(view.take_intent().is_none());
-        view.key(key(KeyCode::PageDown));
-    }
-    view.key(key(KeyCode::Esc));
-    assert!(view.open);
+    // The source's check refused it: no confirmation, the reason in the picker.
+    assert!(view.take_intent().is_none());
+    let screen = draw(&mut view, 80, 30);
+    assert!(screen.contains("read-only"), "{screen}");
+    assert!(view.open && !view.waiting);
     let mut view = requested_native_preview();
     view.key(key(KeyCode::Esc));
     assert!(view.owns_input());
     view.observe(Update::Preview(native_preview(false)))
         .unwrap();
     assert!(!view.owns_input());
+    assert!(view.take_intent().is_none());
 }
 
 #[test]
@@ -938,9 +939,7 @@ fn inspection_preserves_page_selection_and_requires_fresh_open_confirmation_afte
     assert_eq!(v.page, retained);
     assert!(v.open && !v.waiting);
     draw(&mut v, 80, 30);
-    v.key(key(KeyCode::Enter));
-    assert!(v.take_intent().is_none());
-    arm(&mut v);
+    // Back in the picker, Enter opens the retained selection, as Python's picker does.
     v.key(key(KeyCode::Enter));
     assert_eq!(
         v.take_intent(),

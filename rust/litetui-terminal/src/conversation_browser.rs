@@ -343,42 +343,29 @@ impl View {
             self.preselect = Some(prefix.trim().to_owned());
         }
     }
-    fn apply_preselection(&mut self, page: &Page) {
+    /// Python's `/resume <id>` (_cmd_resume): the first conversation whose id starts with the
+    /// argument is opened; none says so. True when the caller must open the selection.
+    fn apply_preselection(&mut self, page: &Page) -> bool {
         let Some(prefix) = self.preselect.take() else {
-            return;
+            return false;
         };
-        let hits: Vec<usize> = page
+        let Some(index) = page
             .entries
             .iter()
-            .enumerate()
-            .filter(|(_, row)| row.session.starts_with(&prefix))
-            .map(|(index, _)| index)
-            .collect();
-        self.notice = match hits.as_slice() {
-            [index] => {
-                self.selected = *index;
-                let row = &page.entries[*index];
-                format!(
-                    "Command argument selected {}. Nothing has been opened; {}",
-                    row.session,
-                    if row.current {
-                        "it is the current conversation.".to_owned()
-                    } else if row.can_open {
-                        "press O to review opening it.".to_owned()
-                    } else {
-                        row.reason.clone()
-                    }
-                )
-            }
-            [] => format!(
-                "Command argument {prefix:?} is not on this first page of {} conversations; use PgDn or choose a row. Nothing has been opened.",
-                page.total
-            ),
-            many => format!(
-                "Command argument {prefix:?} matches {} rows on this page; choose one. Nothing has been opened.",
-                many.len()
-            ),
+            .position(|row| row.session.starts_with(&prefix))
+        else {
+            self.line = Some(format!(
+                "No conversation matches '{prefix}'. Run /resume with no argument to pick one."
+            ));
+            return false;
         };
+        self.selected = index;
+        let row = &page.entries[index];
+        if row.can_open && !row.current {
+            return true;
+        }
+        self.line = Some(row.reason.clone());
+        false
     }
     pub fn open(&mut self) {
         if self.waiting {
@@ -505,12 +492,27 @@ impl View {
                     if self.pending_open.as_ref() != Some(&preview.identity.session) {
                         return Err(fail("Preview changed the selected conversation"));
                     }
-                    self.notice = if preview.read_only {
-                        "Saved history is read-only; opening is unavailable. Current conversation is unchanged."
+                    if preview.read_only {
+                        // Refused by the source's check: say why, open nothing.
+                        self.pending_open = None;
+                        self.line =
+                            Some("Saved history is read-only; opening is unavailable.".into());
+                        self.notice =
+                            "Saved history is read-only; opening is unavailable. Current conversation is unchanged."
+                                .into();
                     } else {
-                        "Review opening effects. No conversation has changed."
-                    }.into();
-                    self.preview = Some(preview);
+                        // Python opens on the pick: the reviewed open is confirmed at once.
+                        self.intent = Some(Intent::ConfirmOpen {
+                            snapshot: preview.token.clone(),
+                            action_id: preview.open_action_id.clone().ok_or_else(|| {
+                                fail("Conversation preview lacks its open action")
+                            })?,
+                        });
+                        self.waiting = true;
+                        self.notice =
+                            "Opening reviewed conversation; waiting for lifecycle and owned readback…"
+                                .into();
+                    }
                 } else {
                     self.pending_open = None;
                 }
@@ -537,8 +539,11 @@ impl View {
                 }
                 self.line = None;
                 self.notice = "Choose a saved conversation. Nothing has been opened.".into();
-                self.apply_preselection(&page);
+                let open = self.apply_preselection(&page);
                 self.page = Some(page);
+                if open {
+                    self.open_selected();
+                }
             }
             Update::Opened { .. } => {
                 self.finish();
@@ -756,8 +761,11 @@ impl View {
                     self.hide();
                 }
             }
-            // Enter on a row asks "Open this conversation?"; the drawn question's Enter opens.
-            KeyCode::Enter if key.kind == KeyEventKind::Press && !self.armed => self.arm_selected(),
+            // "Enter or click to select": Python opens the picked conversation at once
+            // (Sentinel 5eb26818: 1:1, no question, no review screen).
+            KeyCode::Enter if key.kind == KeyEventKind::Press && !self.armed => {
+                self.open_selected()
+            }
             _ => {}
         }
     }
@@ -784,17 +792,27 @@ impl View {
         self.stage = Stage::Conversations;
         self.line = None;
     }
-    /// Arm the highlighted conversation (as O does); opening needs the drawn question's Enter.
-    fn arm_selected(&mut self) {
-        let Some(row) = self.selected() else {
+    /// Open the highlighted conversation. The source's checks still run (the open is refused
+    /// with its reason when they fail) and its history review is confirmed when it arrives.
+    fn open_selected(&mut self) {
+        let Some(page) = &self.page else {
             return;
         };
-        if row.can_open && !row.current {
-            self.armed = true;
-            self.line = None;
-        } else {
+        let Some(row) = page.entries.get(self.selected) else {
+            return;
+        };
+        if !row.can_open || row.current {
             self.line = Some(row.reason.clone());
+            return;
         }
+        self.intent = Some(Intent::Open {
+            revision: page.revision,
+            session: row.session.clone(),
+        });
+        self.pending_open = Some(row.session.clone());
+        self.waiting = true;
+        self.notice = "Opening the selected conversation…".into();
+        self.hide();
     }
     pub fn mouse(&mut self, event: MouseEvent) {
         if self.actions.owns_input() {
@@ -831,8 +849,9 @@ impl View {
                         self.agent_selected = index;
                         self.agent_enter();
                     } else {
-                        // A click only selects a conversation; opening is never a click.
+                        // "Enter or click to select": a click opens, as in Python.
                         self.selected = index;
+                        self.open_selected();
                     }
                 }
             }
