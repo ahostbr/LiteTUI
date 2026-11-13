@@ -1394,7 +1394,35 @@ fn one_shot_profile(options: &mut litetui_terminal::live::Options) -> io::Result
     Ok(options.tool_profile.is_some())
 }
 
-fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<()> {
+/// The next launch of an interactive window that is switching agents.
+struct Relaunch {
+    agent: String,
+    profile: Option<String>,
+}
+/// The same arguments as a new launch: this agent, the profile already chosen, no `--resume`
+/// (that conversation belongs to the agent being left).
+fn relaunch_args(args: &[String], next: &Relaunch) -> Vec<String> {
+    let mut out = vec![args[0].clone()];
+    let mut index = 1;
+    while index < args.len() {
+        if matches!(
+            args[index].as_str(),
+            "--agent" | "--resume" | "--tool-profile"
+        ) {
+            index += 2;
+            continue;
+        }
+        out.push(args[index].clone());
+        index += 1;
+    }
+    out.extend(["--agent".to_owned(), next.agent.clone()]);
+    if let Some(profile) = &next.profile {
+        out.extend(["--tool-profile".to_owned(), profile.clone()]);
+    }
+    out
+}
+
+fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<Option<Relaunch>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
             "--interactive requires a real terminal; --live supports redirected pipes",
@@ -1424,10 +1452,11 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
     if options.tool_profile.is_none() {
         options.tool_profile = choose_profile(&mut terminal, options.tools_enabled)?;
         if options.tool_profile.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         terminal.clear()?;
     }
+    let profile = options.tool_profile.map(|p| p.as_str().to_owned());
     let mut app = Demo::live(options.backend.clone(), options.model.clone());
     let retained_root = options.data_root.clone();
     let runtime = litetui_terminal::live::Interactive::start(options);
@@ -1544,6 +1573,7 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                 app.finish_live(view_failure.clone());
                 let _ = runtime.quit();
             }
+            app.poll_agent_switch();
             if !quitting && app.command_quit {
                 app.command_quit = false;
                 quitting = true;
@@ -1762,6 +1792,11 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
     });
     drop(terminal);
     drop(_guard);
+    if outcome.is_ok()
+        && let Some(agent) = app.relaunch_agent.take()
+    {
+        return Ok(Some(Relaunch { agent, profile }));
+    }
     println!(
         "Retained data root: {}",
         litetui_terminal::live::terminal_text(&retained_root.to_string_lossy())
@@ -1789,13 +1824,21 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
     {
         println!("{}", litetui_terminal::live::terminal_text(message));
     }
-    outcome
+    outcome.map(|_| None)
 }
 
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|arg| arg == "--interactive") {
-        return run_interactive(litetui_terminal::live::Options::parse(&args[1..])?);
+        // A switch to another agent (/agent-new, /resume) relaunches in this console, as
+        // Python's cli does after its app has released the old agent's home.
+        let mut args = args;
+        loop {
+            match run_interactive(litetui_terminal::live::Options::parse(&args[1..])?)? {
+                None => return Ok(()),
+                Some(next) => args = relaunch_args(&args, &next),
+            }
+        }
     }
     if args.first().is_some_and(|arg| arg == "--live") {
         let mut options = litetui_terminal::live::Options::parse(&args[1..])?;
@@ -1822,6 +1865,68 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_switch_relaunches_with_the_agent_and_profile_and_without_the_old_conversation() {
+        let args: Vec<String> = [
+            "--interactive",
+            "--python",
+            "py",
+            "--resume",
+            "00000000-0000-4000-8000-000000000001",
+            "--start-server",
+            "--agent",
+            "Old",
+            "--backend",
+            "claude",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let next = Relaunch {
+            agent: "Nova".into(),
+            profile: Some("autonomous".into()),
+        };
+        assert_eq!(
+            relaunch_args(&args, &next),
+            [
+                "--interactive",
+                "--python",
+                "py",
+                "--start-server",
+                "--backend",
+                "claude",
+                "--agent",
+                "Nova",
+                "--tool-profile",
+                "autonomous"
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_switch_waits_for_an_idle_turn_then_quits_for_the_relaunch() {
+        use litetui_terminal::live::Observation;
+        let mut app = Demo::live("custom".into(), "fixture".into());
+        app.observe_live(Observation::Ready).unwrap();
+        app.live.as_mut().unwrap().busy = true;
+        app.request_agent_switch("Nova");
+        assert!(app.relaunch_agent.is_none() && !app.command_quit);
+        assert!(app.notice.contains("Finish or stop the current turn"));
+        app.live.as_mut().unwrap().busy = false;
+        app.request_agent_switch("Nova");
+        assert_eq!(app.relaunch_agent.as_deref(), Some("Nova"));
+        assert!(app.command_quit);
+        assert_eq!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .system_lines
+                .last()
+                .map(|l| l.text.as_str()),
+            Some("Switching this window to Nova ...")
+        );
+    }
 
     #[test]
     fn mark_overlay_keeps_paste_repeat_and_small_viewport_escape_owned() {

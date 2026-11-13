@@ -71,6 +71,32 @@ pub struct Options {
     pub seed_from: Option<PathBuf>,
     pub owner: Option<OwnerStore>,
     pub launch: crate::runtime_launch::LaunchOptions,
+    /// `--agent NAME`: the owned agent this window runs as (its home is created on first use);
+    /// RustLive when absent.
+    pub agent: Option<String>,
+}
+/// Python's agent folder rules (agent_store.valid_name), checked before anything starts; Python
+/// checks again when it opens the home.
+fn agent_name(value: &str) -> io::Result<String> {
+    let stem = value.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if value.is_empty()
+        || value != value.trim()
+        || value.ends_with('.')
+        || value.chars().count() > 255
+        || value
+            .chars()
+            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+        || reserved
+    {
+        return Err(io::Error::other(format!(
+            "{value:?} cannot be an agent name: it must be one valid folder name"
+        )));
+    }
+    Ok(value.to_owned())
 }
 #[derive(Debug)]
 pub struct OwnerStore {
@@ -155,6 +181,7 @@ impl Options {
                     "--owner",
                     "--memory",
                     "--seed-from",
+                    "--agent",
                 ]
                 .contains(&pair[0].as_str())
                 || fields.insert(pair[0].as_str(), pair[1].clone()).is_some()
@@ -187,6 +214,10 @@ impl Options {
         if let Some(id) = &resume {
             crate::resume::conversation_id(id)?;
         }
+        let agent = fields
+            .remove("--agent")
+            .map(|v| agent_name(&v))
+            .transpose()?;
         let seed_from = fields.remove("--seed-from").map(PathBuf::from);
         if seed_from.as_ref().is_some_and(|p| !p.is_absolute()) {
             return Err(io::Error::other(
@@ -237,6 +268,7 @@ impl Options {
             resume,
             seed_from,
             launch,
+            agent,
         })
     }
 }
@@ -2029,7 +2061,10 @@ fn launch_settings(
         ("user_name_asked", json!(true)),
         ("tools_enabled", json!(options.tools_enabled)),
         ("mcp_enabled", json!(false)),
-        ("seat_name", json!("RustLive")),
+        (
+            "seat_name",
+            json!(options.agent.as_deref().unwrap_or("RustLive")),
+        ),
         ("tool_policy_profile", json!(profile.as_str())),
     ] {
         settings.insert(key.into(), value);

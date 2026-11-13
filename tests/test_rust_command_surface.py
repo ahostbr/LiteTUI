@@ -573,3 +573,14 @@ async def test_raw_unknown_command_is_pythons_own_line(command_app):
     with pytest.raises(ValueError) as refused:
         command_surface.resolve(app, {**request, "command": "/NoSuchThing extra words"})
     assert str(refused.value) == "Unknown: /nosuchthing — try /help"
+
+
+@pytest.mark.asyncio
+async def test_agent_new_routes_with_pythons_own_checks(command_app):
+    # /agent-new NAME: the native frontend relaunches as that agent; Python's checks and words first.
+    app = command_app
+    request = {key: value for key, value in selection(app, read(app)).items() if key != "row_id"}
+    for command, refusal in [("/agent-new", "Usage: /agent-new NAME"),
+                             ("/agent-new bad/name", "cannot be an agent name")]:
+        with pytest.raises(ValueError, match=refusal):
+            command_surface.resolve(app, {**request, "command": command})

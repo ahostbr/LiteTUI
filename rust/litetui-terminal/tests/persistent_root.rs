@@ -38,6 +38,42 @@ fn options(root: &Path, seed: Option<&Path>) -> Options {
     }
     Options::parse(&args).unwrap()
 }
+#[test]
+fn agent_option_names_the_seat_and_refuses_an_invalid_folder_name() {
+    let root = Path::new("C:/fixture/root");
+    let mut args: Vec<String> = [
+        "--python",
+        "C:/fixture/python.exe",
+        "--source",
+        "C:/fixture/source",
+        "--backend",
+        "claude",
+        "--model",
+        "claude-sonnet-5-5",
+        "--tool-profile",
+        "strict",
+        "--data-root",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.push(root.display().to_string());
+    assert_eq!(Options::parse(&args).unwrap().agent, None);
+    for (name, ok) in [
+        ("Nova", true),
+        ("Bad/Name", false),
+        ("trailing.", false),
+        ("CON", false),
+        (" lead", false),
+    ] {
+        let mut with = args.clone();
+        with.extend(["--agent".into(), name.into()]);
+        match Options::parse(&with) {
+            Ok(options) => assert!(ok && options.agent.as_deref() == Some(name), "{name}"),
+            Err(_) => assert!(!ok, "{name}"),
+        }
+    }
+}
 fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
     let mut stack = vec![root.to_path_buf()];

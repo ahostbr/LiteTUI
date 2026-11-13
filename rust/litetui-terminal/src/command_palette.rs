@@ -71,6 +71,8 @@ pub enum Action {
     Skills,
     SkillPrepare,
     ConversationNew,
+    /// /agent-new NAME: relaunch this window as a new owned agent.
+    AgentNew,
     ConversationRename,
     SystemPrompt,
     Work(crate::work_view::Destination),
@@ -121,6 +123,7 @@ impl Action {
             Some("skills") => Some(Self::Skills),
             Some("skill_prepare") => Some(Self::SkillPrepare),
             Some("conversation_new") => Some(Self::ConversationNew),
+            Some("agent_new") => Some(Self::AgentNew),
             Some("conversation_rename") => Some(Self::ConversationRename),
             Some("system_prompt") => Some(Self::SystemPrompt),
             Some("themes") => Some(Self::Themes),
@@ -339,6 +342,7 @@ impl Catalog {
                                 | Action::Backend
                                 | Action::ConversationResume
                                 | Action::Claude
+                                | Action::AgentNew
                                 | Action::Mcp
                         )
                     ) || kind == "command"

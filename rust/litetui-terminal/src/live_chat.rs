@@ -325,6 +325,10 @@ impl Chat {
     pub fn visible_row_range(&self) -> std::ops::Range<usize> {
         self.live_page().0
     }
+    /// A system line of this frontend's own, drawn as Python's are.
+    pub fn add_system_line(&mut self, text: String) {
+        self.system_line(text, false);
+    }
     /// Ask Python for its held chat-log lines: once, when ready and idle.
     pub fn take_system_lines_request(&mut self) -> bool {
         if self.system_ask != SystemAsk::Wanted

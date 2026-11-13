@@ -40,6 +40,8 @@ pub struct Demo {
     pub transcript_rows: Option<(usize, usize, bool)>,
     pub viewport_too_small: bool,
     pub command_quit: bool,
+    /// The owned agent this window relaunches as once it has quit (/agent-new, /resume).
+    pub relaunch_agent: Option<String>,
     pub approval_open: bool,
     pub approval_allow: bool,
     pub ticks: u64,
@@ -139,6 +141,7 @@ impl Default for Demo {
             transcript_rows: None,
             viewport_too_small: false,
             command_quit: false,
+            relaunch_agent: None,
             approval_open: false,
             approval_allow: false,
             ticks: 0,
@@ -345,6 +348,7 @@ impl Demo {
                 Action::SavedHistory => self.open_history(),
                 Action::HeldInput => self.open_queue(),
                 Action::ConversationNew => self.start_new_conversation(),
+                Action::AgentNew => self.request_agent_switch(&route_arguments),
                 Action::ConversationRename => self.open_conversation_action(
                     crate::conversation_actions::Action::Rename,
                     &route_arguments,
@@ -362,6 +366,33 @@ impl Demo {
             }
         }
         Ok(())
+    }
+    /// Continue this window as another owned agent (Python convo._switch_window_to): quit,
+    /// then the interactive loop relaunches with `--agent NAME`.
+    pub fn request_agent_switch(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if chat.busy {
+                self.notice = "Finish or stop the current turn before switching agents.".into();
+                return;
+            }
+            chat.add_system_line(format!("Switching this window to {name} ..."));
+        }
+        self.relaunch_agent = Some(name.to_owned());
+        self.command_quit = true;
+    }
+    /// The /resume agent picker chose another agent.
+    pub fn poll_agent_switch(&mut self) {
+        if let Some(name) = self
+            .live
+            .as_mut()
+            .and_then(|chat| chat.browser.take_switch())
+        {
+            self.request_agent_switch(&name);
+        }
     }
     pub fn take_schedule_decision(&mut self) -> Option<(String, bool)> {
         let idle = !self.command_quit

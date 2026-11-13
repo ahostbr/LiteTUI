@@ -74,6 +74,9 @@ PROFILES = {
     # Parity item 4: an unknown slash command. Python says "Unknown: /nope — try /help" in the
     # chat log and opens nothing.
     "unknown": {frontend: [("unknown", ["/nope\r"], "none")] for frontend in ("textual", "rust")},
+    # /agent-new relaunches the window as the new agent; /resume then lists both agents.
+    "agentswitch": {frontend: [("agent-new", ["/agent-new Nova\r"], "none"), ("resume", ["/resume\r"], "none")]
+                    for frontend in ("textual", "rust")},
     # The theme creator's colour picker opens on a CLICK on a token field (settings_screen
     # on_click). Themes is reached from the tab bar by Left twice (the tabs wrap); the rest click
     # by on-screen text: "click:<text>" presses the left button on the first cell of the first

@@ -48,6 +48,7 @@ _ROUTES = {
     ("convo", "/resume"): "conversation_resume",
     ("convo", "/claude"): "claude",
     ("convo", "/new"): "conversation_new",
+    ("convo", "/agent-new"): "agent_new",
     ("convo", "/rename"): "conversation_rename",
     ("settings-ui", "/settings"): "settings",
     ("skills", "/skills"): "skills",
@@ -125,6 +126,7 @@ def _row(kind, owner, title, help_text, group, order, tokens, binding, action, p
             "skill_prepare", "conversation_rename", "glassbox", "conversation_compact",
             "model_load", "model_unload", "engine", "plugin_reload", "plan", "system_prompt", "monitor",
             "models", "thinking", "backend", "conversation_resume", "claude", "mcp", "sidecar",
+            "agent_new",
         } or kind == "command" and action in _WORK_INSPECTION),
         "unavailable_reason": "" if action else _UNAVAILABLE.get(
             (owner, tokens[0] if tokens else ""), "This contribution has no native action adapter yet."),
@@ -240,6 +242,34 @@ def _selection(app, cmd):
     return current
 
 
+def _agent_new(app, wanted):
+    """plugins/convo._create_agent_and_relaunch's checks, in its words. The native frontend then
+    relaunches its window as that agent (`--agent NAME`), which creates the home on first use."""
+    from litetui.agent_store import AgentStore, StoreError, name_key, valid_name
+
+    if not wanted:
+        raise ValueError("Usage: /agent-new NAME  (creates the agent home NAME and switches this window to it)")
+    try:
+        wanted = valid_name(wanted)
+    except StoreError:
+        raise ValueError(f"{wanted!r} cannot be an agent name: it must be one valid folder name "
+                         "(no slashes, colon, * ? < > | or quotes; no leading or trailing space or dot).") from None
+    if getattr(app, "_chat_running", lambda: False)():
+        raise ValueError("Finish or stop the current turn before switching agents.")
+    session = getattr(app, "_agent_session", None)
+    if session is None:
+        raise ValueError("/agent-new is for a hand-launched window; a spawned or headless seat keeps its agent.")
+    if session.authority.model is None:
+        raise ValueError("Choose a model first (/model, or /engine start on an engine backend): "
+                         "a new agent is created with this seat's backend, model and thinking level.")
+    try:
+        existing = AgentStore(session.store.data_root).list_agents()
+    except (StoreError, OSError) as exc:
+        raise ValueError(f"Cannot read the agent catalog: {exc}") from exc
+    if any(name_key(agent.name) == name_key(wanted) for agent in existing):
+        raise ValueError(f"An agent named {wanted} already exists. Open it with /resume.")
+
+
 def _preselection(app, action, arguments):
     """Refuse arguments a native control cannot honor; honored ones only preselect.
 
@@ -247,6 +277,8 @@ def _preselection(app, action, arguments):
     argument reaches the same reviewed control the palette opens.
     """
     wanted = arguments.strip()
+    if action == "agent_new":
+        _agent_new(app, wanted)
     if action == "monitor":
         from litetui.native_monitor_files import parse_arguments
         parse_arguments(arguments)
@@ -384,7 +416,7 @@ def resolve(app, cmd):
             raise ValueError("Open Work and review this action there. This command accepts inspection verbs only.")
     if arguments != "" and action in _NO_ARGUMENTS:
         raise ValueError(_NO_ARGUMENTS[action])
-    if arguments != "" or action == "claude":
+    if arguments != "" or action in ("claude", "agent_new"):
         _preselection(app, action, arguments)
     if arguments != "" and not selected["accepts_arguments"]:
         raise ValueError("This native control adapter does not accept command arguments")

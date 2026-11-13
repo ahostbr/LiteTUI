@@ -5,6 +5,7 @@ param(
     [string]$Workspace,
     [string]$DataRoot,
     [string]$Resume,
+    [string]$Agent,
     [string]$Owner,
     [string]$Memory,
     [string]$Backend = 'claude',
@@ -33,6 +34,8 @@ if ($Backend -ne 'claude' -and -not $PSBoundParameters.ContainsKey('Model')) {
 if ($Tools -eq 'on' -and [string]::IsNullOrWhiteSpace($Workspace)) {
     throw 'Tools on requires -Workspace naming the directory to work in'
 }
+$agentArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($Agent)) { $agentArgs = @('--agent', $Agent) }
 $resumeArgs = @()
 if (-not [string]::IsNullOrWhiteSpace($Resume)) {
     if ([string]::IsNullOrWhiteSpace($DataRoot)) { throw 'Resume requires -DataRoot naming the retained Rust conversation root' }
@@ -62,5 +65,5 @@ $root = if ([string]::IsNullOrWhiteSpace($DataRoot)) {
     [System.IO.Path]::GetFullPath($DataRoot)
 }
 Write-Host "Rust LiteTUI data: $root"
-& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 --tools $Tools @profileArgs @workspaceArgs @resumeArgs @seedArgs @backendArgs
+& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 --tools $Tools @profileArgs @workspaceArgs @resumeArgs @agentArgs @seedArgs @backendArgs
 if ($LASTEXITCODE -ne 0) { throw "Live runtime failed: $LASTEXITCODE (data retained at $root)" }

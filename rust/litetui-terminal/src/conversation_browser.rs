@@ -328,6 +328,8 @@ pub struct View {
     paging: bool,
     /// Why a pick did nothing, shown in the picker.
     line: Option<String>,
+    /// Another agent was picked: the window relaunches as it.
+    switch_to: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Stage {
@@ -384,6 +386,10 @@ impl View {
     }
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting || self.actions.owns_input()
+    }
+    /// The agent the /resume picker chose to switch this window to, once.
+    pub fn take_switch(&mut self) -> Option<String> {
+        self.switch_to.take()
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.actions
@@ -779,9 +785,8 @@ impl View {
         };
         if *id != page.agent {
             // Python relaunches the window as that agent (convo._switch_window_to).
-            self.line = Some(format!(
-                "{name}: opening another agent's conversations is not available in the Rust frontend yet."
-            ));
+            self.switch_to = Some(name.clone());
+            self.close();
             return;
         }
         if page.entries.is_empty() {

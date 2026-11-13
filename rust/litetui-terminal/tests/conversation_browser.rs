@@ -40,6 +40,25 @@ fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
         modifiers: KeyModifiers::NONE,
     }
 }
+#[test]
+fn picking_another_agent_hands_the_window_over_to_it() {
+    // Python's /resume relaunches the window as the picked agent (convo._switch_window_to).
+    let mut value = data(0, 3);
+    value["agents"] = json!([
+        [AGENT, "RustLive"],
+        ["22222222-2222-4222-8222-222222222222", "Nova"]
+    ]);
+    let mut v = View::default();
+    v.open();
+    v.take_intent();
+    v.observe(Update::Page(Page::parse(&value, 7, CURRENT).unwrap()))
+        .unwrap();
+    assert!(draw(&mut v, 80, 30).contains("Choose an agent"));
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    assert_eq!(v.take_switch().as_deref(), Some("Nova"));
+    assert!(!v.open && v.take_intent().is_none());
+}
 fn view() -> View {
     let mut view = View::default();
     view.open();
