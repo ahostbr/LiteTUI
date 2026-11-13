@@ -117,6 +117,17 @@ PROFILES = {
                              ("wheel", ["wheel:Close@-5"] * 25, "none"),
                              ("save", ["click:Save hooks"], "none")]
                   for frontend in ("textual", "rust")},
+    # /mcp is Python's MCPListBody: type a name and a loopback URL on a closed port (the
+    # connect fails at once, nothing is spawned), Tab to Add (it sits off-screen at x165 at
+    # 140 columns) and press it, then Close. The fixture runs with MCP off, so the new server is
+    # "excluded" in both (no row buttons); .mcp.json lands in the data root. --mcp turns MCP on,
+    # but the Rust launch (--mcp-lifecycle-version 1) starts every session with MCP off.
+    "mcpedit": {frontend: [("mcp-open", ["/mcp\r"], "none"),
+                           ("typed", ["click:name", "fixmcp", "click:https://host/mcp", "http://127.0.0.1:9/mcp"],
+                            "none"),
+                           ("added", ["\t", "\r"], "none"),
+                           ("closed", ["click:Close"], "none")]
+                for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),
@@ -167,6 +178,8 @@ def run(frontend, args):
         env["LITETUI_PERF_ALL_PLUGINS"] = "1"  # child_environment drops inherited LITETUI_* keys
     if args.skills:
         env["LITETUI_PERF_SKILLS"] = "1"  # skills on, two fixture skills in the private data root
+    if args.mcp:
+        env["LITETUI_PERF_MCP"] = "1"  # MCP on, no servers declared at start
     common = ["--backend", "custom", "--model", "perf-fixture", "--tool-profile", "strict", "--thinking-level",
               "default", "--server-mode", "connect", "--base-url", "http://127.0.0.1:45120/v1"]
     if frontend == "rust":
@@ -267,6 +280,8 @@ def main():
     parser.add_argument("--profile", choices=sorted(PROFILES), default="screens")
     parser.add_argument("--skills", action="store_true",
                         help="turn skills on with two fixture skills (the fixture must support it)")
+    parser.add_argument("--mcp", action="store_true",
+                        help="turn MCP on with no servers declared (the fixture must support it)")
     parser.add_argument("--frontends", default="textual,rust", help="comma list of textual, rust")
     parser.add_argument("--all-plugins", action="store_true",
                         help="load every plugin in the controlled runtime (needed for /settings)")

@@ -28,13 +28,46 @@ pub const OPEN: &str = "gui.hooks.native_editor_open";
 pub const ACT: &str = "gui.hooks.native_editor_act";
 pub const READ: &str = "gui.hooks.native_editor_read";
 pub const CLOSE: &str = "gui.hooks.native_editor_close";
+/// The same four for /mcp (native_mcp_dialog.py).
+pub const MCP_OPS: [&str; 4] = [
+    "gui.mcp.native_dialog_open",
+    "gui.mcp.native_dialog_act",
+    "gui.mcp.native_dialog_read",
+    "gui.mcp.native_dialog_close",
+];
+
+/// Which Python dialog this view draws.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// /hooks: HooksScreen (hooks_screen.py).
+    #[default]
+    Hooks,
+    /// /mcp: MCPListBody in the modal host (mcp_list.py).
+    Mcp,
+}
+impl Kind {
+    pub fn operations(self) -> [&'static str; 4] {
+        match self {
+            Kind::Hooks => [OPEN, ACT, READ, CLOSE],
+            Kind::Mcp => MCP_OPS,
+        }
+    }
+    fn snapshot_kind(self) -> &'static str {
+        match self {
+            Kind::Hooks => "hooks_editor",
+            Kind::Mcp => "mcp_dialog",
+        }
+    }
+}
 const MAX_ENTRIES: usize = 256;
 const TEXTAREA_ROWS: u16 = 8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
     Text {
+        id: Option<String>,
         text: String,
+        classes: Vec<String>,
     },
     Label {
         text: String,
@@ -68,7 +101,16 @@ pub enum Entry {
         variant: String,
         disabled: bool,
     },
-    Line(Vec<Entry>),
+    Line {
+        id: Option<String>,
+        classes: Vec<String>,
+        items: Vec<Entry>,
+    },
+    /// A nested scroll region (the MCP dialog's server rows).
+    Scroll {
+        id: Option<String>,
+        items: Vec<Entry>,
+    },
 }
 impl Entry {
     fn id(&self) -> Option<&str> {
@@ -116,15 +158,46 @@ fn wid(v: &Value) -> io::Result<String> {
         .map(str::to_owned)
         .ok_or_else(bad)
 }
+fn optional_id(v: &Value) -> io::Result<Option<String>> {
+    match v.get("id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => wid(v).map(Some),
+    }
+}
+fn classes(v: &Value) -> io::Result<Vec<String>> {
+    match v.get("classes") {
+        None => Ok(Vec::new()),
+        Some(Value::Array(list)) if list.len() <= 16 => list
+            .iter()
+            .map(|c| {
+                c.as_str()
+                    .filter(|c| c.len() <= 64)
+                    .map(str::to_owned)
+                    .ok_or_else(bad)
+            })
+            .collect(),
+        Some(_) => Err(bad()),
+    }
+}
+fn entries(v: &Value, depth: usize, count: &mut usize) -> io::Result<Vec<Entry>> {
+    v.get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(bad)?
+        .iter()
+        .map(|i| entry(i, depth + 1, count))
+        .collect()
+}
 fn entry(v: &Value, depth: usize, count: &mut usize) -> io::Result<Entry> {
     *count += 1;
-    if *count > MAX_ENTRIES || depth > 2 {
+    if *count > MAX_ENTRIES || depth > 3 {
         return Err(bad());
     }
     let disabled = v.get("disabled").and_then(Value::as_bool).unwrap_or(false);
     Ok(match v.get("kind").and_then(Value::as_str) {
         Some("text") => Entry::Text {
+            id: optional_id(v)?,
             text: text(v, "text")?,
+            classes: classes(v)?,
         },
         Some("label") => Entry::Label {
             text: text(v, "text")?,
@@ -172,20 +245,24 @@ fn entry(v: &Value, depth: usize, count: &mut usize) -> io::Result<Entry> {
             variant: text(v, "variant")?,
             disabled,
         },
-        Some("line") => Entry::Line(
-            v.get("items")
-                .and_then(Value::as_array)
-                .ok_or_else(bad)?
-                .iter()
-                .map(|i| entry(i, depth + 1, count))
-                .collect::<io::Result<Vec<_>>>()?,
-        ),
+        Some("line") => Entry::Line {
+            id: optional_id(v)?,
+            classes: classes(v)?,
+            items: entries(v, depth, count)?,
+        },
+        Some("scroll") => Entry::Scroll {
+            id: optional_id(v)?,
+            items: entries(v, depth, count)?,
+        },
         _ => return Err(bad()),
     })
 }
 impl Snapshot {
     pub fn parse(v: &Value) -> io::Result<Self> {
-        if v["version"] != 1 || v["kind"] != "hooks_editor" {
+        Self::parse_kind(v, Kind::Hooks)
+    }
+    pub fn parse_kind(v: &Value, kind: Kind) -> io::Result<Self> {
+        if v["version"] != 1 || v["kind"] != kind.snapshot_kind() {
             return Err(bad());
         }
         let mut count = 0;
@@ -214,12 +291,16 @@ pub enum Intent {
 }
 impl Intent {
     pub fn command(&self) -> Value {
+        self.command_for(Kind::Hooks)
+    }
+    pub fn command_for(&self, kind: Kind) -> Value {
+        let [open, act, read, close] = kind.operations();
         match self {
-            Intent::Open => json!({"type": OPEN, "version": 1}),
-            Intent::Read => json!({"type": READ, "version": 1}),
-            Intent::Close => json!({"type": CLOSE, "version": 1}),
+            Intent::Open => json!({"type": open, "version": 1}),
+            Intent::Read => json!({"type": read, "version": 1}),
+            Intent::Close => json!({"type": close, "version": 1}),
             Intent::Act { values, action } => {
-                json!({"type": ACT, "version": 1, "values": values, "action": action})
+                json!({"type": act, "version": 1, "values": values, "action": action})
             }
         }
     }
@@ -244,6 +325,7 @@ enum Stop {
 
 #[derive(Default)]
 pub struct View {
+    pub kind: Kind,
     pub open: bool,
     waiting: bool,
     snapshot: Option<Snapshot>,
@@ -263,6 +345,10 @@ pub struct View {
     /// The stop last scrolled into view: Textual reveals a widget when it gains focus, not
     /// on every frame, so the wheel can move away from it.
     revealed: Option<Stop>,
+    /// /mcp: the server rows' own 16-row scroll region, and where it is on screen.
+    inner_scroll: usize,
+    inner_max: usize,
+    inner_region: Option<Rect>,
     pub notice: String,
 }
 
@@ -340,10 +426,15 @@ impl View {
         self.intent.take()
     }
     pub fn open(&mut self) {
+        let kind = self.kind;
+        self.open_kind(kind);
+    }
+    pub fn open_kind(&mut self, kind: Kind) {
         if self.waiting {
             return;
         }
         *self = Self {
+            kind,
             open: true,
             waiting: true,
             intent: Some(Intent::Open),
@@ -373,13 +464,20 @@ impl View {
                 self.cursor = self.text_of_focus().map_or(0, |t| t.chars().count());
             }
             Update::Closed => {
-                *self = Self::default();
+                *self = Self {
+                    kind: self.kind,
+                    ..Self::default()
+                };
             }
             Update::Rejected(reason) => {
                 // A refused open or act: Python's editor is unchanged; say why and stay.
                 self.notice = reason;
                 if self.snapshot.is_none() {
-                    *self = Self::default();
+                    *self = Self {
+                        kind: self.kind,
+                        notice: std::mem::take(&mut self.notice),
+                        ..Self::default()
+                    };
                 }
             }
         }
@@ -388,7 +486,7 @@ impl View {
         fn visit<'a>(entries: &'a [Entry], out: &mut Vec<&'a Entry>) {
             for e in entries {
                 match e {
-                    Entry::Line(items) => visit(items, out),
+                    Entry::Line { items, .. } | Entry::Scroll { items, .. } => visit(items, out),
                     e if e.id().is_some() => out.push(e),
                     _ => {}
                 }
@@ -400,7 +498,8 @@ impl View {
         }
         out
     }
-    /// Textual's focus chain: the editor's controls in order, then Close and Dock to side.
+    /// Textual's focus chain: the dialog's controls in order, then Close (drawn here for
+    /// /hooks; the body's own for /mcp) and Dock to side.
     fn stops(&self) -> Vec<Stop> {
         let mut out: Vec<Stop> = self
             .controls()
@@ -408,7 +507,9 @@ impl View {
             .filter(|e| !e.disabled())
             .filter_map(|e| e.id().map(|id| Stop::Control(id.to_owned())))
             .collect();
-        out.push(Stop::Close);
+        if self.kind == Kind::Hooks {
+            out.push(Stop::Close);
+        }
         out.push(Stop::Dock);
         out
     }
@@ -457,6 +558,8 @@ impl View {
             Stop::Close => self.close(),
             // Dock to side stays inert, as everywhere so far.
             Stop::Dock => {}
+            // The body's own Close (/mcp) closes here: Python's would dismiss the host.
+            Stop::Control(id) if id == "mcp-close" => self.close(),
             Stop::Control(id) => match self.entry(&id).cloned() {
                 Some(Entry::Button {
                     disabled: false, ..
@@ -664,6 +767,12 @@ impl View {
                     self.press(stop);
                 }
             }
+            MouseEventKind::ScrollDown if self.inner_region.is_some_and(|r| r.contains(at)) => {
+                self.inner_scroll = (self.inner_scroll + 2).min(self.inner_max)
+            }
+            MouseEventKind::ScrollUp if self.inner_region.is_some_and(|r| r.contains(at)) => {
+                self.inner_scroll = self.inner_scroll.saturating_sub(2)
+            }
             MouseEventKind::ScrollDown => self.scroll = (self.scroll + 2).min(self.max_scroll),
             MouseEventKind::ScrollUp => self.scroll = self.scroll.saturating_sub(2),
             _ => {}
@@ -679,7 +788,7 @@ impl View {
         let surface = Style::default().fg(p.text).bg(p.surface);
         for e in self.snapshot.iter().flat_map(|s| s.entries.iter()) {
             match e {
-                Entry::Text { text } => {
+                Entry::Text { text, .. } => {
                     for line in crate::picker_box::wrap(text, w) {
                         rows.push(Row {
                             spans: vec![(0, line, surface)],
@@ -694,7 +803,8 @@ impl View {
                         });
                     }
                 }
-                Entry::Line(items) => {
+                Entry::Scroll { .. } => {}
+                Entry::Line { items, .. } => {
                     let top = rows.len();
                     let mut block = [Row::default(), Row::default(), Row::default()];
                     let mut x = 0u16;
@@ -911,6 +1021,10 @@ impl View {
         if !self.open {
             return;
         }
+        if self.kind == Kind::Mcp {
+            self.draw_mcp(frame, area, theme);
+            return;
+        }
         let p = Paint::of(theme);
         frame.render_widget(Clear, area);
         let buf = frame.buffer_mut();
@@ -1101,6 +1215,307 @@ impl View {
     }
 }
 
+impl View {
+    /// MCPListBody's rows (mcp_list.py CSS): the server rows of #mcp-scroll at `width`.
+    fn mcp_rows(&self, items: &[Entry], width: u16, p: &Paint) -> (Vec<Row>, Vec<Placed>) {
+        let mut rows: Vec<Row> = Vec::new();
+        let mut boxes = Vec::new();
+        let focused = self.focused();
+        let w = usize::from(width);
+        let plain = Style::default().fg(p.text).bg(p.background);
+        let muted = Style::default().fg(p.muted).bg(p.background);
+        for e in items {
+            match e {
+                Entry::Text { text, classes, .. } => {
+                    let has = |c: &str| classes.iter().any(|k| k == c);
+                    if has("mcp-name") {
+                        // padding 1 0 0 0, bold.
+                        rows.push(Row::default());
+                        for line in crate::picker_box::wrap(text, w) {
+                            rows.push(Row {
+                                spans: vec![(0, line, plain.add_modifier(Modifier::BOLD))],
+                            });
+                        }
+                    } else {
+                        // .mcp-detail / .mcp-error: padding 0 0 0 2.
+                        let style = if has("mcp-error") {
+                            Style::default().fg(p.error).bg(p.background)
+                        } else {
+                            muted
+                        };
+                        for line in crate::picker_box::wrap(text, w.saturating_sub(2)) {
+                            rows.push(Row {
+                                spans: vec![(2, line, style)],
+                            });
+                        }
+                    }
+                }
+                Entry::Line { items, .. } => {
+                    // .mcp-actions: padding 0 0 1 2; Buttons min-width 12, margin-right 1.
+                    let top = rows.len();
+                    let mut block = [Row::default(), Row::default(), Row::default()];
+                    let mut x = 2u16;
+                    for item in items {
+                        if let Entry::Button {
+                            id,
+                            label,
+                            variant,
+                            disabled,
+                        } = item
+                        {
+                            let bw = (label.width() as u16 + 2).max(12);
+                            let is_focus = focused == Some(Stop::Control(id.clone()));
+                            for (row, spans) in block
+                                .iter_mut()
+                                .zip(self.button(label, variant, x, bw, is_focus, *disabled, p))
+                            {
+                                row.spans.extend(spans);
+                            }
+                            boxes.push((Stop::Control(id.clone()), top as u16, 3, x, bw));
+                            x += bw + 1;
+                        }
+                    }
+                    rows.extend(block);
+                    rows.push(Row::default());
+                }
+                _ => {}
+            }
+        }
+        (rows, boxes)
+    }
+    /// Python's /mcp: MCPListBody in the modal host, full width and centred.
+    fn draw_mcp(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let p = Paint::of(theme);
+        frame.render_widget(Clear, area);
+        let buf = frame.buffer_mut();
+        let plain = Style::default().fg(p.text).bg(p.background);
+        let muted = Style::default().fg(p.muted).bg(p.background);
+        buf.set_style(area, plain);
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        let width = area.width;
+        let w = usize::from(width);
+        let focused = self.focused();
+        let mut rows: Vec<Row> = Vec::new();
+        let mut boxes: Vec<Placed> = Vec::new();
+        // (first row, inner rows, inner boxes) of the scroll region.
+        let mut region: Option<(usize, Vec<Row>, Vec<Placed>)> = None;
+        for e in &snapshot.entries {
+            match e {
+                Entry::Text { id, text, .. } => {
+                    let (style, pad) = match id.as_deref() {
+                        Some("mcp-title") => (plain.add_modifier(Modifier::BOLD), true),
+                        Some("mcp-note") => (muted, true),
+                        _ => (plain, false),
+                    };
+                    for line in crate::picker_box::wrap(text, w) {
+                        rows.push(Row {
+                            spans: vec![(0, line, style)],
+                        });
+                    }
+                    if pad {
+                        rows.push(Row::default());
+                    }
+                }
+                Entry::Scroll { items, .. } => {
+                    // #mcp-scroll: height 16, padding 0 1.
+                    let (inner, inner_boxes) = self.mcp_rows(items, width.saturating_sub(2), &p);
+                    region = Some((rows.len(), inner, inner_boxes));
+                    rows.extend(std::iter::repeat_n(Row::default(), 16));
+                }
+                Entry::Line { id, items, .. } if id.as_deref() == Some("mcp-add") => {
+                    // #mcp-add: border-top solid, padding-top 1; the name Input 24 wide
+                    // (margin-right 1), the target Input 1fr of the full width (so it and Add
+                    // run past the right edge, as Textual lays it out).
+                    rows.push(Row {
+                        spans: vec![(
+                            0,
+                            "─".repeat(w),
+                            Style::default().fg(p.border).bg(p.background),
+                        )],
+                    });
+                    rows.push(Row::default());
+                    let top = rows.len();
+                    let mut block = [Row::default(), Row::default(), Row::default()];
+                    let mut x = 0u16;
+                    for item in items {
+                        let (cw, gap) = match item {
+                            Entry::Input { id, .. } if id == "mcp-add-name" => (24, 1),
+                            Entry::Input { .. } => (width.saturating_sub(1), 1),
+                            Entry::Button { label, .. } => ((label.width() as u16 + 2).max(16), 0),
+                            _ => (0, 0),
+                        };
+                        let Some(eid) = item.id().map(str::to_owned) else {
+                            continue;
+                        };
+                        let is_focus = focused == Some(Stop::Control(eid.clone()));
+                        let parts = match item {
+                            Entry::Button {
+                                label,
+                                variant,
+                                disabled,
+                                ..
+                            } => self
+                                .button(label, variant, 0, cw, is_focus, *disabled, &p)
+                                .to_vec(),
+                            other => self.control(other, cw, is_focus, &p),
+                        };
+                        for (row, spans) in block.iter_mut().zip(parts) {
+                            row.spans
+                                .extend(spans.into_iter().map(|(dx, t, st)| (x + dx, t, st)));
+                        }
+                        boxes.push((Stop::Control(eid), top as u16, 3, x, cw));
+                        x = x.saturating_add(cw + gap);
+                    }
+                    rows.extend(block);
+                }
+                Entry::Line { id, items, .. } if id.as_deref() == Some("mcp-buttons") => {
+                    // #mcp-buttons: padding-top 1, centred; Close (primary) and the inline
+                    // Dock to side, each margin-right 1.
+                    rows.push(Row::default());
+                    let top = rows.len();
+                    let total = 16 + 1 + 16 + 1;
+                    let x = width.saturating_sub(total) / 2;
+                    let mut block = [Row::default(), Row::default(), Row::default()];
+                    let close = items.iter().find_map(|i| match i {
+                        Entry::Button {
+                            id,
+                            label,
+                            variant,
+                            disabled,
+                        } => Some((id.clone(), label.clone(), variant.clone(), *disabled)),
+                        _ => None,
+                    });
+                    if let Some((cid, label, variant, disabled)) = close {
+                        let is_focus = focused == Some(Stop::Control(cid.clone()));
+                        for (row, spans) in block
+                            .iter_mut()
+                            .zip(self.button(&label, &variant, x, 16, is_focus, disabled, &p))
+                        {
+                            row.spans.extend(spans);
+                        }
+                        boxes.push((Stop::Control(cid), top as u16, 3, x, 16));
+                    }
+                    let dock_focus = focused == Some(Stop::Dock);
+                    for (row, spans) in block.iter_mut().zip(self.button(
+                        "Dock to side",
+                        "default",
+                        x + 17,
+                        16,
+                        dock_focus,
+                        false,
+                        &p,
+                    )) {
+                        row.spans.extend(spans);
+                    }
+                    boxes.push((Stop::Dock, top as u16, 3, x + 17, 16));
+                    rows.extend(block);
+                }
+                _ => {}
+            }
+        }
+        let top = area.y + (area.height.saturating_sub(rows.len() as u16)) / 2;
+        let buf = frame.buffer_mut();
+        let put = |buf: &mut Buffer, row: &Row, y: u16, dx: u16, room: u16| {
+            for (x, text, style) in &row.spans {
+                if *x < room {
+                    buf.set_string(
+                        area.x + dx + x,
+                        y,
+                        clip(text, usize::from(room - x)),
+                        *style,
+                    );
+                }
+            }
+        };
+        for (dy, row) in rows.iter().enumerate() {
+            let y = top + dy as u16;
+            if y >= area.bottom() {
+                break;
+            }
+            put(buf, row, y, 0, width);
+        }
+        for (stop, btop, h, x, bw) in &boxes {
+            if *x < width {
+                self.hits.push((
+                    Rect::new(area.x + x, top + btop, (*bw).min(width - x), *h),
+                    stop.clone(),
+                ));
+            }
+        }
+        self.inner_region = None;
+        if let Some((first, inner, inner_boxes)) = region {
+            let height = 16usize;
+            self.inner_max = inner.len().saturating_sub(height);
+            // Focus inside the rows reveals its button when it moves there.
+            if focused != self.revealed
+                && let Some(&(_, btop, bh, _, _)) =
+                    inner_boxes.iter().find(|b| Some(&b.0) == focused.as_ref())
+            {
+                let (btop, bh) = (usize::from(btop), usize::from(bh));
+                if btop < self.inner_scroll {
+                    self.inner_scroll = btop;
+                } else if btop + bh > self.inner_scroll + height {
+                    self.inner_scroll = btop + bh - height;
+                }
+            }
+            self.revealed = focused.clone();
+            self.inner_scroll = self.inner_scroll.min(self.inner_max);
+            let y0 = top + first as u16;
+            for (dy, row) in inner
+                .iter()
+                .skip(self.inner_scroll)
+                .take(height)
+                .enumerate()
+            {
+                put(buf, row, y0 + dy as u16, 1, width.saturating_sub(2));
+            }
+            for (stop, btop, h, x, bw) in &inner_boxes {
+                let (btop, bottom) = (usize::from(*btop), usize::from(*btop + *h));
+                if bottom <= self.inner_scroll || btop >= self.inner_scroll + height {
+                    continue;
+                }
+                let shown = btop.max(self.inner_scroll);
+                let end = bottom.min(self.inner_scroll + height);
+                self.hits.push((
+                    Rect::new(
+                        area.x + 1 + x,
+                        y0 + (shown - self.inner_scroll) as u16,
+                        *bw,
+                        (end - shown) as u16,
+                    ),
+                    stop.clone(),
+                ));
+            }
+            if inner.len() > height {
+                for col in [area.x + width - 3, area.x + width - 2] {
+                    crate::picker_box::scrollbar(
+                        buf,
+                        col,
+                        y0,
+                        16,
+                        inner.len(),
+                        self.inner_scroll,
+                        theme,
+                    );
+                }
+            }
+            self.inner_region = Some(Rect::new(area.x, y0, width, 16));
+        }
+        if !self.notice.is_empty() {
+            let y = area.bottom().saturating_sub(1);
+            let msg = clip(&format!(" {} ", self.notice), w.saturating_sub(2));
+            buf.set_string(
+                area.x + 1,
+                y,
+                msg,
+                Style::default().fg(p.error).bg(p.background),
+            );
+        }
+    }
+}
+
 fn draw_option(buf: &mut Buffer, x: u16, y: u16, w: u16, text: &str, style: Style) {
     buf.set_string(x, y, pad(&format!(" {text}"), usize::from(w)), style);
 }
@@ -1174,5 +1589,55 @@ mod tests {
         assert_eq!(v.take_intent(), Some(Intent::Close));
         v.observe(Update::Closed);
         assert!(!v.owns_input());
+    }
+
+    fn mcp_snapshot() -> Value {
+        json!({"version": 1, "kind": "mcp_dialog", "testing": false, "disabled": false, "items": [
+            {"kind": "text", "id": "mcp-title", "text": "MCP servers", "classes": []},
+            {"kind": "scroll", "id": "mcp-scroll", "items": [
+                {"kind": "text", "id": null, "text": "fixmcp  ·  failed", "classes": ["mcp-name"]},
+                {"kind": "line", "id": null, "classes": ["mcp-actions"], "items": [
+                    {"kind": "button", "id": "mcp-act-0-connect", "label": "Connect", "variant": "default", "disabled": false}
+                ]}
+            ]},
+            {"kind": "line", "id": "mcp-add", "classes": [], "items": [
+                {"kind": "input", "id": "mcp-add-name", "value": "", "placeholder": "name", "disabled": false},
+                {"kind": "button", "id": "mcp-add-go", "label": "Add", "variant": "primary", "disabled": false}
+            ]},
+            {"kind": "line", "id": "mcp-buttons", "classes": [], "items": [
+                {"kind": "button", "id": "mcp-close", "label": "Close", "variant": "primary", "disabled": false}
+            ]}
+        ]})
+    }
+
+    #[test]
+    fn mcp_reads_its_own_kind_and_its_close_is_the_bodys() {
+        // Each dialog reads only its own snapshot kind.
+        assert!(Snapshot::parse(&mcp_snapshot()).is_err());
+        let snap = Snapshot::parse_kind(&mcp_snapshot(), Kind::Mcp).unwrap();
+        assert!(Snapshot::parse_kind(&snapshot(), Kind::Mcp).is_err());
+        let mut v = View::default();
+        v.open_kind(Kind::Mcp);
+        let intent = v.take_intent().unwrap();
+        assert_eq!(
+            intent.command_for(Kind::Mcp)["type"],
+            json!("gui.mcp.native_dialog_open")
+        );
+        v.observe(Update::Snapshot(Box::new(snap)));
+        // Focus chain: the row's Connect (nested in the scroll), name, Add, the body's own
+        // Close, then Dock; no second, Rust-drawn Close.
+        let ids: Vec<Stop> = v.stops();
+        assert_eq!(ids.len(), 5);
+        assert_eq!(ids[0], Stop::Control("mcp-act-0-connect".into()));
+        assert_eq!(ids[3], Stop::Control("mcp-close".into()));
+        assert_eq!(ids[4], Stop::Dock);
+        for _ in 0..3 {
+            v.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(v.take_intent(), Some(Intent::Close));
+        v.observe(Update::Closed);
+        // The kind survives a close, so the next open asks the same dialog.
+        assert_eq!(v.kind, Kind::Mcp);
     }
 }

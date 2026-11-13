@@ -51,8 +51,8 @@ pub enum Intent {
     Compaction(crate::compaction_settings::Intent),
     /// `/settings`: Python's own dialog as data (settings_form).
     Form(crate::settings_form::Intent),
-    /// `/hooks` and the Settings Hooks tab: Python's HooksEditor, run in the source.
-    Hooks(crate::hooks_dialog::Intent),
+    /// `/hooks` and the Settings Hooks tab (and `/mcp`): Python's dialog, run in the source.
+    Hooks(crate::hooks_dialog::Kind, crate::hooks_dialog::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -425,12 +425,17 @@ impl View {
     }
     /// `/hooks`: Python's HooksScreen.
     pub fn open_hooks(&mut self) {
-        self.hooks.open();
+        self.hooks.open_kind(crate::hooks_dialog::Kind::Hooks);
+    }
+    /// Bare `/mcp`: Python's MCPListBody.
+    pub fn open_mcp_dialog(&mut self) {
+        self.hooks.open_kind(crate::hooks_dialog::Kind::Mcp);
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
+        let kind = self.hooks.kind;
         self.hooks
             .take_intent()
-            .map(Intent::Hooks)
+            .map(|intent| Intent::Hooks(kind, intent))
             .or_else(|| self.form.take_intent().map(Intent::Form))
             .or_else(|| self.editor.take_intent().map(Intent::Editor))
             .or_else(|| self.compaction.take_intent().map(Intent::Compaction))

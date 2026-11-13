@@ -74,8 +74,20 @@ async def dispatch(app, cmd):
         body = _body(app)
         _set(body, cmd["values"])
         await _settle(app)
-        _action(body, cmd["action"])
-        await _settle(app)
+        # The press is handled while this command's own gui-management worker is still
+        # running. In Python's modal host the body's host worker is left out of its activity
+        # gate by identity (MCPListBody._own_workers); this worker is the host here, so it is
+        # left out the same way, for this press only. Any other worker still blocks.
+        from textual.worker import get_current_worker
+        try:
+            body._dialog_host_worker = get_current_worker()
+        except Exception:  # noqa: BLE001 - no worker: nothing is excluded (fail-closed)
+            body._dialog_host_worker = None
+        try:
+            _action(body, cmd["action"])
+            await _settle(app)
+        finally:
+            body._dialog_host_worker = None
         return snapshot(app)
     if operation == PREFIX + "close":
         _check(cmd, ())

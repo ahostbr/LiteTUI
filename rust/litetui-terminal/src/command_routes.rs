@@ -71,6 +71,23 @@ impl Demo {
     }
     /// Bare `/mcp` is the F10 `M` panel; `list` opens it without review or runtime tab.
     pub(crate) fn open_mcp(&mut self, verb: &str) {
+        if verb.trim().is_empty() {
+            // Bare /mcp: Python's MCPListBody (hooks_dialog, Kind::Mcp).
+            if self.has_live_input() {
+                return;
+            }
+            if let Some(chat) = self.live.as_mut() {
+                if !chat.ready || chat.busy || chat.closed || chat.quitting {
+                    self.notice = "Finish current work before opening MCP servers.".into();
+                    return;
+                }
+                chat.settings.open_mcp_dialog();
+                self.themes_open = false;
+                self.completion.dismiss();
+                self.footer.leave();
+            }
+            return;
+        }
         self.open_settings();
         if let Some(chat) = self.live.as_mut()
             && chat.settings.open

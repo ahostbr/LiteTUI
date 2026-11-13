@@ -1131,8 +1131,17 @@ fn claude_routes_open_only_existing_reviewed_controls() {
 
 #[test]
 fn mcp_routes_reuse_the_settings_panel_and_list_is_inspection_only() {
-    use litetui_terminal::{mcp_config, mcp_lifecycle, settings_view};
-    for (verb, read_only) in [("", false), ("list", true), ("LS", true), ("status", true)] {
+    use litetui_terminal::{hooks_dialog, mcp_config, settings_view};
+    // Bare /mcp is Python's MCPListBody (native_mcp_dialog), as Python's bare /mcp.
+    let mut app = routed_app("mcp", true, "custom", "");
+    assert_eq!(
+        app.live.as_mut().unwrap().settings.take_intent(),
+        Some(settings_view::Intent::Hooks(
+            hooks_dialog::Kind::Mcp,
+            hooks_dialog::Intent::Open
+        ))
+    );
+    for verb in ["list", "LS", "status"] {
         let mut app = routed_app("mcp", true, "custom", verb);
         assert_eq!(
             app.live.as_mut().unwrap().settings.take_intent(),
@@ -1146,23 +1155,14 @@ fn mcp_routes_reuse_the_settings_panel_and_list_is_inspection_only() {
         .unwrap();
         let settings = &mut app.live.as_mut().unwrap().settings;
         settings.key(key(KeyCode::Tab));
-        let switched = settings.take_intent();
-        if read_only {
-            assert_eq!(
-                switched, None,
-                "{verb}: list must not reach the runtime tab"
-            );
-            settings.key(key(KeyCode::Char('e')));
-            assert_eq!(settings.take_intent(), None);
-            settings.key(key(KeyCode::Esc));
-        } else {
-            assert_eq!(
-                switched,
-                Some(settings_view::Intent::McpLifecycle(Box::new(
-                    mcp_lifecycle::Request::List
-                )))
-            );
-        }
+        assert_eq!(
+            settings.take_intent(),
+            None,
+            "{verb}: list must not reach the runtime tab"
+        );
+        settings.key(key(KeyCode::Char('e')));
+        assert_eq!(settings.take_intent(), None);
+        settings.key(key(KeyCode::Esc));
     }
 }
 
