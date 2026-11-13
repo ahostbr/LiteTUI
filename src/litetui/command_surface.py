@@ -397,6 +397,16 @@ def resolve(app, cmd):
         # Prefill only; canonical normalization and mutation require a new review.
         arguments = validate_title_input(arguments)
     action = selected["native_action"]
+    if action == "skills" and selected["kind"] == "command" and not arguments.strip():
+        # Python's bare /skills answers in the chat log, opening nothing, when skills are
+        # off or none were found; a typed command's refusal is that line in the frontend.
+        from litetui.plugins.skills_plugin import nothing_to_pick
+
+        nothing = nothing_to_pick(app)
+        if nothing is not None:
+            if len(nothing.encode("utf-8")) > 4000:  # the frontend reads at most 4096 bytes
+                nothing = nothing.encode("utf-8")[:3990].decode("utf-8", "ignore") + "…"
+            raise ValueError(nothing)
     if action == "glassbox" and arguments.strip().lower() not in {"", "status", "start", "on", "stop", "off"}:
         raise ValueError("Glassbox accepts status, start/on or stop/off only; mutations require a fresh review")
     if action == "conversation_compact":

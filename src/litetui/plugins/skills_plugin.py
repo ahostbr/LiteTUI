@@ -138,16 +138,9 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         want, _, rest = arg.strip().partition(" ")
         _invoke(app, want, rest.strip())
         return
-    if not app.settings.skills_enabled:
-        app.system_message(
-            "Skills are OFF in /settings, so none were discovered and the "
-            "`skill` tool is not offered to the model."
-        )
-        return
-    if not app.skills:
-        # Nothing to pick. The report is the useful answer here: it says where
-        # it looked, which is the whole question when the list is empty.
-        app.system_message(_skills_report(app, base))
+    nothing = nothing_to_pick(app)
+    if nothing is not None:
+        app.system_message(nothing)
         return
 
     # A picker, not eighty lines of transcript. The full report stays one
@@ -179,6 +172,22 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         _picked,
         hint="↑↓ move · Enter or click to read one · Esc to cancel",
     )
+
+
+def nothing_to_pick(app) -> str | None:
+    """Bare /skills's chat-log answer when there is no picker to open, else None.
+
+    One function for _cmd_skills and the native frontend's command route, so both
+    say the same thing.
+    """
+    if not app.settings.skills_enabled:
+        return ("Skills are OFF in /settings, so none were discovered and the "
+                "`skill` tool is not offered to the model.")
+    if not app.skills:
+        # Nothing to pick. The report is the useful answer here: it says where
+        # it looked, which is the whole question when the list is empty.
+        return _skills_report(app, paths.data_root() / skills_mod.SKILLS_DIR_NAME)
+    return None
 
 
 def _skipped_lines(app, base) -> list[str]:

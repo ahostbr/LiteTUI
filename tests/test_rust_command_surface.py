@@ -268,7 +268,23 @@ async def test_skills_command_routes_view_and_exact_rows_disambiguate_names(comm
     app.skills.append(Skill("AAA", "Other source", Path("elsewhere/SKILL.md"), "other"))
     catalog = read(app)
     request = {key: value for key, value in selection(app, catalog).items() if key != "row_id"}
-    assert command_surface.resolve(app, {**request, "command": "/SKILL"})["native_action"] == "skills"
+    # Bare /skills answers in the chat log, as Python's _cmd_skills does, when skills are off
+    # (this fixture) or none were found; only then is there a picker to route to.
+    from litetui.plugins.skills_plugin import nothing_to_pick
+    with pytest.raises(ValueError) as off:
+        command_surface.resolve(app, {**request, "command": "/SKILL"})
+    assert str(off.value) == nothing_to_pick(app) and str(off.value).startswith("Skills are OFF in /settings")
+    app.settings.skills_enabled = True
+    try:
+        assert command_surface.resolve(app, {**request, "command": "/SKILL"})["native_action"] == "skills"
+        kept, app.skills[:] = list(app.skills), []
+        fresh = {key: value for key, value in selection(app, read(app)).items() if key != "row_id"}
+        with pytest.raises(ValueError) as empty:
+            command_surface.resolve(app, {**fresh, "command": "/skills"})
+        assert str(empty.value) == nothing_to_pick(app) and "0 skill(s)" in str(empty.value)
+        app.skills[:] = kept
+    finally:
+        app.settings.skills_enabled = False
     with pytest.raises(ValueError, match="arguments"):
         command_surface.resolve(app, {**request, "command": "/skills refresh"})
     with pytest.raises(ValueError, match="ambiguous"):
