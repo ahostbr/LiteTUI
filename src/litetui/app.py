@@ -10421,7 +10421,9 @@ class LiteTUI(App):
                         emit({
                             "type": "generic_tool_requested",
                             "observation_id": observation_id,
-                            "round": _iteration,
+                            # The batch's own 0-based round: _iteration was already counted
+                            # for this request (dd2b53dd moved the count before the tools).
+                            "round": _iteration - 1,
                             "slot": i,
                             "provider_call_id": tc_id,
                             "name": name,

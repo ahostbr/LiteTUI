@@ -98,7 +98,10 @@ def conversation_document(raw, inherited, changes):
     if not isinstance(execution, dict):
         raise ValueError('Invalid conversation execution snapshot')  # noqa: TRY004 - preserve canonical validation error
     execution_keys = {k for k, spec in SETTING_SPECS.items()
-                      if spec.scope == SettingScope.CONVERSATION}
+                      if spec.scope == SettingScope.CONVERSATION
+                      # convo_settings.from_global (af595454): the subagent route stays inherited,
+                      # never a materialized conversation override.
+                      and k != 'subagent_model'}
     for key in execution_keys - execution.keys():
         if inherited is None:
             raise ValueError('Legacy materialization requires inherited settings')
@@ -279,7 +282,8 @@ class SettingsService:
                         if not isinstance(execution, dict):
                             raise ValueError('Invalid conversation execution snapshot')
                         execution_keys = {k for k, spec in SETTING_SPECS.items()
-                                          if spec.scope == SettingScope.CONVERSATION}
+                                          if spec.scope == SettingScope.CONVERSATION
+                                          and k != 'subagent_model'}
                         inherited = None
                         if not raw or execution_keys - execution.keys():
                             with coordinated_write(paths['global']):

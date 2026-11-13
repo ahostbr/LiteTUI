@@ -163,6 +163,17 @@ def fingerprint(app, context, result, *, include_pending=True):
     return hashlib.sha256(_encoded(facts, 1024 * 1024)).hexdigest()
 
 def _marks(app, names):
+    # The marks read settings through settings.load(), which migrates legacy defaults ON DISK
+    # (subagent_routing.migrate_global_file). The catalog is a read without mutation, so while
+    # a migration is pending (the read-only service's own predicate) the marks are not shown.
+    try:
+        session = getattr(app, "_agent_session", None)
+        global_path = session.store.data_root / "settings.json"
+        if global_path.is_file() and "codex_subagent_model" in json.loads(
+                global_path.read_text(encoding="utf-8")):
+            return {}
+    except Exception:  # noqa: BLE001 - an unreadable file shows no marks rather than migrating
+        return {}
     try:
         from litetui.plugins.model_switch import backend_rows
         rows = backend_rows(app)
