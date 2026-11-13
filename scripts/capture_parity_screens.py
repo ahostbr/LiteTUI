@@ -160,6 +160,12 @@ PROFILES = {
                                  ("bad", ["/glassbox bogus\r"], "none"),
                                  ("start", ["/glassbox\r"], "none"), ("stop", ["/glassbox stop\r"], "none")]
                       for frontend in ("textual", "rust")},
+    # The palette's Theme row is Textual's own theme search (App.search_themes): the header's
+    # palette icon, "Theme", Enter, then Down and Enter picks a theme (applied, closed).
+    "themepick": {frontend: [("palette", ["click:⭘"], "none"), ("typed", ["Theme"], "none"),
+                             ("themes", ["\r"], "none"), ("down", ["\x1b[B"], "none"),
+                             ("picked", ["\r"], "none")]
+                  for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

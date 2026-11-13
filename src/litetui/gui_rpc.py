@@ -52,6 +52,8 @@ OPERATIONS = (
     "calendar.native_dialog_close",
     "modelcfg.native_dialog_open", "modelcfg.native_dialog_act", "modelcfg.native_dialog_read",
     "modelcfg.native_dialog_close",
+    "palette.native_dialog_open", "palette.native_dialog_act", "palette.native_dialog_read",
+    "palette.native_dialog_close",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.native_agent_rows", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -1205,6 +1207,9 @@ async def _async_dispatch(app, cmd):
     from litetui import native_modelcfg_dialog
     if operation in native_modelcfg_dialog.OPERATIONS:
         return await native_modelcfg_dialog.dispatch(app, cmd)
+    from litetui import native_palette_dialog
+    if operation in native_palette_dialog.OPERATIONS:
+        return await native_palette_dialog.dispatch(app, cmd)
     from litetui import native_system_lines
     if operation == native_system_lines.OPERATION:
         return native_system_lines.read(app, cmd)
