@@ -1137,6 +1137,11 @@ fn mouse(app: &mut Demo, event: MouseEvent) {
         }
         return;
     }
+    if app.help.open {
+        // Python's HelpScreen: Close takes a click; the wheel scrolls the text.
+        app.help.mouse(event);
+        return;
+    }
     if app.has_live_runtime_controls() && !app.has_live_question() {
         if !app.viewport_too_small && !app.stop_open() && !app.has_live_approval() {
             app.live
@@ -4626,6 +4631,7 @@ mod tests {
                 skill_order: Some(0),
                 source: Some("test".into()),
             }],
+            help_text: None,
         };
         app.observe_live(Observation::Commands(Update::Catalog {
             catalog: c,

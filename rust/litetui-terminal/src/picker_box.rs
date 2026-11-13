@@ -42,10 +42,15 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for paragraph in text.split('\n') {
-        let mut line = String::new();
+        // A line's leading spaces stay on its first row; wrapped rows start at column 0.
+        let body = paragraph.trim_start_matches(' ');
+        let indent = paragraph.len() - body.len();
+        let paragraph = body;
+        let mut line = " ".repeat(indent);
+        let mut first = true;
         for word in paragraph.split(' ') {
-            let candidate = if line.is_empty() {
-                word.to_owned()
+            let candidate = if std::mem::take(&mut first) || line.is_empty() {
+                format!("{line}{word}")
             } else {
                 format!("{line} {word}")
             };
@@ -220,6 +225,93 @@ pub fn draw(
     );
     put(buf, cx, dock + 2, &"▁".repeat(w), rim);
     Drawn { hits, rect }
+}
+
+/// Textual's thick border on $surface (#picker-box, #help-box): the box filled, its edges drawn.
+pub fn thick_box(buf: &mut ratatui::buffer::Buffer, rect: Rect, t: &Theme) {
+    let surface = Style::default().fg(t.foreground).bg(t.surface);
+    let edge = Style::default().fg(t.primary).bg(t.surface);
+    let inner = usize::from(rect.width.saturating_sub(2));
+    for y in rect.top()..rect.bottom() {
+        let row = if y == rect.top() {
+            format!("█{}█", "▀".repeat(inner))
+        } else if y + 1 == rect.bottom() {
+            format!("█{}█", "▄".repeat(inner))
+        } else {
+            format!("█{}█", " ".repeat(inner))
+        };
+        buf.set_string(rect.x, y, row, edge);
+        if y != rect.top() && y + 1 != rect.bottom() {
+            buf.set_string(rect.x + 1, y, " ".repeat(inner), surface);
+        }
+    }
+}
+/// A Textual Button (min-width 16): ▔ / centred label / ▁ rows; `primary` is the variant.
+pub fn button(
+    buf: &mut ratatui::buffer::Buffer,
+    x: u16,
+    y: u16,
+    label: &str,
+    t: &Theme,
+    primary: bool,
+) -> u16 {
+    let w = (label.width() + 2).max(16);
+    let face_bg = if primary { t.primary } else { t.panel };
+    let face = Style::default()
+        .fg(if primary { t.background } else { t.foreground })
+        .bg(face_bg)
+        .add_modifier(Modifier::BOLD);
+    let rim = Style::default().fg(t.thinking_border).bg(face_bg);
+    let pad = (w - label.width()) / 2;
+    buf.set_string(x, y, "▔".repeat(w), rim);
+    buf.set_string(
+        x,
+        y + 1,
+        format!(
+            "{}{label}{}",
+            " ".repeat(pad),
+            " ".repeat(w - pad - label.width())
+        ),
+        face,
+    );
+    buf.set_string(x, y + 2, "▁".repeat(w), rim);
+    w as u16
+}
+/// Textual's ScrollBarRender.render_bar, vertical, in eighths of a cell.
+#[allow(clippy::too_many_arguments)]
+pub fn scrollbar(
+    buf: &mut ratatui::buffer::Buffer,
+    column: u16,
+    top: u16,
+    height: u16,
+    lines: usize,
+    scroll: usize,
+    t: &Theme,
+) {
+    if lines <= usize::from(height) || height == 0 {
+        return;
+    }
+    const BARS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", " "];
+    let size = f64::from(height);
+    let virtual_size = lines as f64;
+    let thumb = (size / (virtual_size / size)).max(1.0);
+    let position = (size - thumb) * (scroll as f64 / (virtual_size - size));
+    let start = (position * 8.0) as usize;
+    let end = start + (thumb * 8.0).ceil() as usize;
+    let (start_index, start_bar) = (start / 8, start % 8);
+    let (end_index, end_bar) = (end / 8, end % 8);
+    let track = Style::default().fg(t.thinking_border).bg(t.surface);
+    let solid = Style::default().fg(t.surface).bg(t.thinking_border);
+    let rows = usize::from(height);
+    for i in start_index..end_index.min(rows) {
+        buf.set_string(column, top + i as u16, " ", solid);
+    }
+    if start_index < rows && BARS[7 - start_bar] != " " {
+        buf.set_string(column, top + start_index as u16, BARS[7 - start_bar], track);
+    }
+    if end_index < rows && BARS[7 - end_bar] != " " {
+        buf.set_string(column, top + end_index as u16, BARS[7 - end_bar], solid);
+    }
 }
 
 #[cfg(test)]

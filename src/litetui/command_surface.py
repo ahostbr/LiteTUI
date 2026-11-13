@@ -229,6 +229,9 @@ def catalog(app, cmd):
     result = {"version": VERSION, "kind": "command_catalog", "session_id": before.session_id,
               "agent_id": valid_id(before.authority.agent_id), "snapshot": token,
               "backend": before.selected, "model": app.model_id, "entries": rows}
+    # /help's own text (help_plugin.help_text), so a native frontend shows what /help shows.
+    from litetui.plugins.help_plugin import help_text
+    result["help_text"] = _text(help_text(app), 64 * 1024)
     _encoded(result)
     return result
 

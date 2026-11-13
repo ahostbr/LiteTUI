@@ -112,11 +112,8 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-def _cmd_help(app, name: str, arg: str) -> None:
-    # Scrollable dialog with a Close button; the text is unchanged. Both
-    # factories are built from ONE string here rather than passed twice --
-    # `picker.pick`'s reason: two factories built at two places are two chances
-    # for the sidebar and the modal to show different help.
+def help_text(app) -> str:
+    """The /help text, the same for the Textual dialog and a native frontend."""
     text = (
         "/settings        open the settings panel (every knob, scrollable)\n"
         "/skills [name]   list discovered skills, or show one as the model sees it\n"
@@ -156,6 +153,15 @@ def _cmd_help(app, name: str, arg: str) -> None:
         text = text.replace(
             "store: .agents/<Name>/ holds memory.md, soul.md, handoff.md and memories/\n",
             f"store: {owner_dir} holds SOUL.md, NOW.md, DOMAIN.md (owner mode)\n")
+    return text
+
+
+def _cmd_help(app, name: str, arg: str) -> None:
+    # Scrollable dialog with a Close button; the text is unchanged. Both
+    # factories are built from ONE string here rather than passed twice --
+    # `picker.pick`'s reason: two factories built at two places are two chances
+    # for the sidebar and the modal to show different help.
+    text = help_text(app)
     present_dialog(app, partial(HelpBody, text), partial(HelpScreen, text))
 
 

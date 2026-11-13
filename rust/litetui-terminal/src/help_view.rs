@@ -100,6 +100,9 @@ pub struct View {
     scroll: usize,
     max_scroll: usize,
     page: usize,
+    /// Python's /help text: drawn as its HelpScreen instead of this frontend's own list.
+    python: Option<String>,
+    close_hit: Option<Rect>,
 }
 fn display(text: &str) -> String {
     terminal_text(text).replace(['\n', '\t'], " ")
@@ -107,6 +110,10 @@ fn display(text: &str) -> String {
 impl View {
     /// `keys_first` only decides which section the reader lands on.
     pub fn open(&mut self, catalog: Option<&Catalog>, keys_first: bool) {
+        // /help is Python's HelpScreen when the source sends its text.
+        self.python = (!keys_first)
+            .then(|| catalog.and_then(|c| c.help_text.clone()))
+            .flatten();
         let mut commands = vec!["Commands (live source registry)".to_owned()];
         match catalog {
             Some(catalog) => {
@@ -155,6 +162,26 @@ impl View {
     pub fn close(&mut self) {
         self.open = false;
         self.lines.clear();
+        self.python = None;
+        self.close_hit = None;
+    }
+    /// A click on Close closes (HelpBody's #help-close).
+    pub fn mouse(&mut self, event: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if self
+                    .close_hit
+                    .is_some_and(|r| r.contains((event.column, event.row).into())) =>
+            {
+                self.close()
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll = self.scroll.saturating_add(2).min(self.max_scroll)
+            }
+            MouseEventKind::ScrollUp => self.scroll = self.scroll.saturating_sub(2),
+            _ => {}
+        }
     }
     pub fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release || !key.modifiers.is_empty() {
@@ -162,6 +189,12 @@ impl View {
         }
         match key.code {
             KeyCode::Esc if key.kind == KeyEventKind::Press => self.close(),
+            // HelpScreen binds q to close, and Enter presses the focused Close.
+            KeyCode::Char('q') | KeyCode::Enter
+                if self.python.is_some() && key.kind == KeyEventKind::Press =>
+            {
+                self.close()
+            }
             KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::Down => self.scroll = self.scroll.saturating_add(1).min(self.max_scroll),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(self.page),
@@ -173,8 +206,87 @@ impl View {
             _ => {}
         }
     }
+    /// Python's HelpScreen: #help-box (88 wide, the 80% body's height, thick $primary border,
+    /// padding 1 2) with the bold title, the text in a scroll region (1-column scrollbar) and the
+    /// Close + Dock to side row, centred, below it.
+    fn draw_python(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, text: &str) {
+        frame.render_widget(Clear, area);
+        frame.buffer_mut().set_style(
+            area,
+            Style::default().fg(theme.foreground).bg(theme.background),
+        );
+        let bw = area.width.min(88);
+        let body = (u32::from(area.height) * 80 / 100) as u16;
+        if bw < 14 || body < 11 {
+            return;
+        }
+        let rect = Rect::new(
+            area.x + (area.width - bw) / 2,
+            area.y + (area.height - body) / 2,
+            bw,
+            body,
+        );
+        let buf = frame.buffer_mut();
+        crate::picker_box::thick_box(buf, rect, theme);
+        let cx = rect.x + 3;
+        let cw = bw - 6;
+        buf.set_string(
+            cx,
+            rect.y + 2,
+            "Commands & keys",
+            Style::default()
+                .fg(theme.title)
+                .bg(theme.surface)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        );
+        // Scroll region: title 2 rows down, the button row (padding-top 1, 3 rows) and the
+        // box's padding and border below.
+        let top = rect.y + 4;
+        let height = body.saturating_sub(10);
+        let width = usize::from(cw.saturating_sub(1)).max(1);
+        let lines: Vec<String> = text
+            .split('\n')
+            .flat_map(|line| crate::picker_box::wrap(&terminal_text(line), width))
+            .collect();
+        self.page = usize::from(height).max(1);
+        self.max_scroll = lines.len().saturating_sub(usize::from(height));
+        self.scroll = self.scroll.min(self.max_scroll);
+        let style = Style::default().fg(theme.foreground).bg(theme.surface);
+        for (dy, line) in lines
+            .iter()
+            .skip(self.scroll)
+            .take(usize::from(height))
+            .enumerate()
+        {
+            buf.set_string(cx, top + dy as u16, line, style);
+        }
+        crate::picker_box::scrollbar(
+            buf,
+            cx + cw - 1,
+            top,
+            height,
+            lines.len(),
+            self.scroll,
+            theme,
+        );
+        // #help-buttons: Close (primary) and the inline Dock to side (margin-right 1), centred.
+        let buttons = top + height + 1;
+        let close_w = 16u16;
+        let dock_w = 16u16;
+        let total = close_w + dock_w + 1;
+        let x = cx + cw.saturating_sub(total) / 2;
+        crate::picker_box::button(buf, x, buttons, "Close", theme, true);
+        crate::picker_box::button(buf, x + close_w, buttons, "Dock to side", theme, false);
+        self.close_hit = Some(Rect::new(x, buttons, close_w, 3));
+    }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        if !self.open || area.width < 36 || area.height < 14 {
+        if !self.open {
+            return;
+        }
+        if let Some(text) = self.python.clone() {
+            return self.draw_python(frame, area, theme, &text);
+        }
+        if area.width < 36 || area.height < 14 {
             return;
         }
         let width = area.width.saturating_sub(2).min(100);

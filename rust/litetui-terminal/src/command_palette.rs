@@ -219,6 +219,8 @@ pub struct Catalog {
     pub model: String,
     pub snapshot: String,
     pub entries: Vec<Entry>,
+    /// /help's own text (help_plugin.help_text), when the source sends it.
+    pub help_text: Option<String>,
 }
 impl Catalog {
     pub fn parse(
@@ -387,6 +389,11 @@ impl Catalog {
             model: model.into(),
             snapshot: token(v, "snapshot")?,
             entries,
+            help_text: match v.get("help_text") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(text)) if text.len() <= 64 * 1024 => Some(text.clone()),
+                Some(_) => return Err(fail("Invalid help text")),
+            },
         })
     }
     pub fn request(&self) -> Value {

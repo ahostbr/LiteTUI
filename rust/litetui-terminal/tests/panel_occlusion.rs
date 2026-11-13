@@ -460,6 +460,7 @@ fn catalog() -> c::Catalog {
         backend: "strata".into(),
         model: "fixture".into(),
         snapshot: "a".repeat(64),
+        help_text: None,
         entries: vec![c::Entry {
             id: "b".repeat(64),
             kind: "skill".into(),
