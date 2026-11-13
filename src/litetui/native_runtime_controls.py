@@ -38,6 +38,8 @@ class Review:
     system_after: Any
     retired: bool = False
     consumed: bool = False
+    # The key that asked for an authority change, as Python's own line names it.
+    source: str = "native-review"
 
 
 @dataclass(eq=False)
@@ -219,8 +221,8 @@ def _same(state, *, historical=False):
     state.bridge.check(allow_closing=state.closing)
 
 
-def _command(app, cmd, operation, fields=(), *, attempt=None):
-    work._keys(cmd, ("type", "id", *COMMON, *fields))
+def _command(app, cmd, operation, fields=(), *, attempt=None, optional=()):
+    work._keys(cmd, ("type", "id", *COMMON, *fields), optional)
     if cmd["type"] != PREFIX + operation:
         raise ValueError("Unknown runtime control operation")
     for key in ("version", "runtime_controls_version"):
@@ -481,9 +483,14 @@ def _change(value):
 
 
 def validate(app, cmd):
-    state = _command(app, cmd, "validate", ("snapshot", "generation", "change"))
+    state = _command(app, cmd, "validate", ("snapshot", "generation", "change"), optional=("source",))
     _generation(cmd["generation"])
     key, selected = _change(cmd["change"])
+    # A native Shift+Tab or footer chip names itself, so the authority line says what Python's
+    # own key says ("(shift+tab)", "(footer chip)") rather than how the change travelled.
+    source = cmd.get("source", "native-review")
+    if "source" in cmd and (key != "tool_profile" or source not in {"shift+tab", "footer chip"}):
+        raise ValueError("Only an authority change names its key, shift+tab or footer chip")
     before = state.snapshot
     if (before is None or cmd["snapshot"] != before["snapshot"] or cmd["generation"] != state.generation
             or state.snapshot_context != _context(app)):
@@ -537,7 +544,8 @@ def validate(app, cmd):
               "context_sha256": work.digest(state.snapshot_context), "consequence": consequence,
               **({"tool": copy.deepcopy(tool)} if tool is not None else {})}
     _bounded(result)
-    state.review = Review(app, state, work.encoded(result), (*_references(app), app.settings), state.snapshot_context, first, next_system)
+    state.review = Review(app, state, work.encoded(result), (*_references(app), app.settings), state.snapshot_context, first, next_system,
+                          source=source)
     return result
 
 
@@ -733,7 +741,7 @@ async def apply(app, cmd):
         if key == "tools_enabled":
             app.set_tools_enabled(selected)
         elif key == "tool_profile":
-            if not app.set_tool_profile(selected, source="native-review"):
+            if not app.set_tool_profile(selected, source=attempt.review.source):
                 raise ValueError("Canonical profile setter refused its reviewed value")
         elif key == "tool_selection":
             from litetui.tool_list import set_tool_enabled

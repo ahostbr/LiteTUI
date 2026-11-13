@@ -15,6 +15,8 @@ pub enum Intent {
     Review {
         snapshot: Box<controls::Snapshot>,
         change: controls::Change,
+        /// The key that asked for an authority change ("shift+tab", "footer chip").
+        source: Option<&'static str>,
     },
     Apply(Box<controls::Review>),
 }
@@ -53,10 +55,15 @@ pub struct View {
     list: crate::tool_list_view::List,
     /// A change sent from the list: a refusal re-reads the list once.
     reread_on_reject: bool,
+    /// Ctrl+T and Shift+Tab: Python toggles at once with no page, so nothing is drawn and
+    /// the composer keeps the keys; the runtime's Read, Review and Apply still run.
+    quick: bool,
+    /// What opened a quick authority change, for Python's own line.
+    source: Option<&'static str>,
 }
 impl View {
     pub fn owns_input(&self) -> bool {
-        self.open
+        self.open && !self.quick
     }
     pub fn pending(&self) -> bool {
         self.waiting || self.intent.is_some()
@@ -80,10 +87,23 @@ impl View {
         self.intent = Some(Intent::Read(field));
         self.list_mode = field == Field::ToolSelection;
         self.reread_on_reject = false;
-        if self.list_mode {
+        self.quick = matches!(field, Field::Tools | Field::Profile);
+        self.source = None;
+        if self.list_mode || self.quick {
             self.list.reset();
             self.notice.clear();
         }
+    }
+    /// Name the key that opened this quick authority change.
+    pub fn set_source(&mut self, source: &'static str) {
+        self.source = Some(source);
+    }
+    /// The end of a quick toggle: nothing stays open.
+    fn finish_quick(&mut self) {
+        self.open = false;
+        self.quick = false;
+        self.review = None;
+        self.painted = false;
     }
     /// The list's own re-read after a change; keeps its focus, scroll and last snapshot.
     fn reread(&mut self) {
@@ -120,7 +140,11 @@ impl View {
         self.field = Some(change.field());
         self.waiting = true;
         self.reread_on_reject = true;
-        self.intent = Some(Intent::Review { snapshot, change });
+        self.intent = Some(Intent::Review {
+            snapshot,
+            change,
+            source: None,
+        });
     }
     pub(crate) fn plan_choice(&mut self, desired: Option<bool>) {
         if self.field == Some(Field::Plan) && matches!(self.intent, Some(Intent::Read(Field::Plan)))
@@ -152,6 +176,65 @@ impl View {
         self.selected_apply = false;
         self.scroll = 0;
         self.painted_until = 0;
+        if self.quick {
+            match update {
+                Update::Snapshot { field, snapshot } => {
+                    if self.field != Some(field) {
+                        return;
+                    }
+                    if let Some(reason) = snapshot.editable.get(&field).and_then(Option::as_deref) {
+                        self.notice = reason.to_owned();
+                        self.finish_quick();
+                        return;
+                    }
+                    let (change, source) = match field {
+                        Field::Tools => {
+                            (controls::Change::Tools(!snapshot.facts.tools_enabled), None)
+                        }
+                        _ => (
+                            controls::Change::Profile(snapshot.next_profile),
+                            self.source,
+                        ),
+                    };
+                    self.waiting = true;
+                    self.intent = Some(Intent::Review {
+                        snapshot,
+                        change,
+                        source,
+                    });
+                }
+                Update::Review(review) => {
+                    self.waiting = true;
+                    self.intent = Some(Intent::Apply(review));
+                }
+                Update::Settled(readback) => {
+                    // Python's own line ("Tools ON …", the authority level) arrives as a
+                    // system line from the source; only a failure is said here.
+                    self.notice = match (readback.release, readback.status) {
+                        (controls::Release::Install, controls::Status::SessionOnly) => format!(
+                            "Applied for this session; saving failed: {}",
+                            readback.wire["reason"].as_str().unwrap_or("unknown reason")
+                        ),
+                        (controls::Release::Install, _) => String::new(),
+                        (controls::Release::Unchanged, _) => format!(
+                            "Not applied: {}",
+                            readback.wire["reason"]
+                                .as_str()
+                                .unwrap_or("source refused the change")
+                        ),
+                        (controls::Release::Close, _) => {
+                            "The change could not be verified. The runtime is closing.".into()
+                        }
+                    };
+                    self.finish_quick();
+                }
+                Update::Rejected(reason) => {
+                    self.notice = reason;
+                    self.finish_quick();
+                }
+            }
+            return;
+        }
         if self.list_mode {
             match update {
                 Update::Snapshot { field, snapshot } if field == Field::ToolSelection => {
@@ -243,7 +326,11 @@ impl View {
                 };
                 self.waiting = true;
                 self.notice = "Preparing the exact change for review…".into();
-                self.intent = Some(Intent::Review { snapshot, change });
+                self.intent = Some(Intent::Review {
+                    snapshot,
+                    change,
+                    source: None,
+                });
             }
             Update::Review(review) => {
                 if self.open && self.field == Some(review.change.field()) {
@@ -282,7 +369,7 @@ impl View {
         }
     }
     pub fn key(&mut self, key: KeyEvent) {
-        if !self.open || key.kind != KeyEventKind::Press {
+        if !self.open || self.quick || key.kind != KeyEventKind::Press {
             return;
         }
         if self.list_mode {
@@ -339,7 +426,11 @@ impl View {
                         let snapshot = snapshot.clone();
                         self.field = Some(change.field());
                         self.waiting = true;
-                        self.intent = Some(Intent::Review { snapshot, change });
+                        self.intent = Some(Intent::Review {
+                            snapshot,
+                            change,
+                            source: None,
+                        });
                         self.hide();
                         return;
                     }
@@ -382,7 +473,7 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
-        if !self.open {
+        if !self.open || self.quick {
             return;
         }
         if self.list_mode {
@@ -400,7 +491,7 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        if !self.open || area.width < 24 || area.height < 8 {
+        if !self.open || self.quick || area.width < 24 || area.height < 8 {
             self.hide();
             return;
         }

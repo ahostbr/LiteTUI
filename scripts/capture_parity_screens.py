@@ -90,6 +90,10 @@ PROFILES = {
                             ("click", ["click:▐X▌ bash"], "none"),
                             ("switch", ["click:▊▔▔▔▔▔▔▔▔▎"], "none")]
                  for frontend in ("textual", "rust")},
+    # Ctrl+T (\x14) and Shift+Tab (ESC [ Z) toggle at once, with no page (Ryan 2026-11-12,
+    # via Sentinel: "Ctrl+T, no page"). Each shot is the chat after one key.
+    "quickkeys": {frontend: [("ctrl-t", ["\x14"], "none"), ("shift-tab", ["\x1b[Z"], "none")]
+                  for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

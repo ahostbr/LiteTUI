@@ -490,3 +490,74 @@ fn current_policy_does_not_resurrect_launch_profile_or_cli_override() {
             .is_err()
     );
 }
+#[test]
+fn ctrl_t_and_shift_tab_apply_at_once_with_no_page() {
+    // Python's Ctrl+T and Shift+Tab toggle at once. The view still reads, reviews and
+    // applies through the source, but draws nothing and never takes the composer's keys.
+    use litetui_terminal::runtime_controls_view as view;
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/runtime_controls.json"
+    ))
+    .unwrap();
+    for (name, field, change) in [
+        ("tools", r::Field::Tools, r::Change::Tools(true)),
+        // Shift+Tab cycles to the snapshot's next profile (Autonomous here); the fixture's
+        // own review is for another change, so this case stops at the review request.
+        (
+            "profile",
+            r::Field::Profile,
+            r::Change::Profile(Profile::Autonomous),
+        ),
+    ] {
+        let case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap();
+        let binding = r::Binding {
+            mcp_lifecycle: false,
+            identity: life::Identity::parse(&case["capture"]["identity"]).unwrap(),
+            work_instance: case["capture"]["instance"].as_str().unwrap().to_owned(),
+            provider: life::Provider::Host,
+            tool_selection: false,
+        };
+        let snapshot = r::Snapshot::parse(&case["snapshot"], &binding).unwrap();
+        let mut v = view::View::default();
+        v.open(field);
+        assert!(!v.owns_input(), "{name}: no page takes the keys");
+        assert!(v.notice.is_empty());
+        assert_eq!(v.take_intent(), Some(view::Intent::Read(field)));
+        v.apply(view::Update::Snapshot {
+            field,
+            snapshot: Box::new(snapshot.clone()),
+        });
+        match v.take_intent() {
+            Some(view::Intent::Review { change: got, .. }) => assert_eq!(got, change, "{name}"),
+            other => panic!("{name}: expected a review, got {other:?}"),
+        }
+        if field == r::Field::Tools {
+            let review = r::Review::parse(&case["review"], &snapshot, &change).unwrap();
+            v.apply(view::Update::Review(Box::new(review.clone())));
+            assert!(
+                matches!(v.take_intent(), Some(view::Intent::Apply(_))),
+                "{name}"
+            );
+            let apply = case["result"]["apply_operation_id"].as_str().unwrap();
+            let receipt = r::Receipt::parse(&case["result"], &review, apply).unwrap();
+            let readback = r::Readback::parse(&case["readback"], &receipt).unwrap();
+            v.apply(view::Update::Settled(Box::new(readback)));
+            assert!(v.take_intent().is_none() && !v.pending() && !v.owns_input());
+            assert!(
+                v.notice.is_empty(),
+                "{name}: Python's own line says what changed"
+            );
+        }
+        // A refusal is said, and nothing stays open.
+        v.open(field);
+        v.take_intent();
+        v.apply(view::Update::Rejected("Runtime policy changed".into()));
+        assert_eq!(v.notice, "Runtime policy changed");
+        assert!(!v.pending() && !v.owns_input());
+    }
+}

@@ -480,15 +480,20 @@ impl Management {
                     Read::Snapshot(field),
                 )
             }
-            view::Intent::Review { snapshot, change } => {
+            view::Intent::Review {
+                snapshot,
+                change,
+                source,
+            } => {
                 if self.runtime_controls.snapshot.as_ref() != Some(snapshot.as_ref()) {
                     return Err(fail("Runtime choice differs from the retained snapshot"));
                 }
                 policy.verify_stable(&snapshot.binding, snapshot.generation, &snapshot.facts)?;
-                (
-                    snapshot.validate_request(&change)?,
-                    Read::Review(snapshot, change),
-                )
+                let mut command = snapshot.validate_request(&change)?;
+                if let Some(source) = source {
+                    command["source"] = serde_json::json!(source);
+                }
+                (command, Read::Review(snapshot, change))
             }
             view::Intent::Apply(review) => {
                 if self.runtime_controls.review.as_ref() != Some(review.as_ref()) {

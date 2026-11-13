@@ -431,6 +431,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
                 match intent {
                     Some(FooterAction::Authority) => {
                         app.open_runtime_controls(Field::Profile);
+                        if let Some(chat) = app.live.as_mut() {
+                            chat.runtime_controls.set_source("footer chip");
+                        }
                         return false;
                     }
                     Some(FooterAction::Plan) => {
@@ -552,6 +555,9 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
                 && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
         {
             app.open_runtime_controls(litetui_terminal::runtime_controls_view::Field::Profile);
+            if let Some(chat) = app.live.as_mut() {
+                chat.runtime_controls.set_source("shift+tab");
+            }
         }
         // The one palette shortcut, Ctrl+\ (Ctrl+P is plan mode, as in Python, where the palette
         // opens from the title bar; Ctrl+\\ deletes to the line end; Ctrl+Shift+P is Windows
@@ -3414,7 +3420,13 @@ mod tests {
                     .text(),
                 "answer"
             );
-            assert_eq!(app.composer.selected_text(), selected);
+            if expected == Field::Plan {
+                assert_eq!(app.composer.selected_text(), selected);
+            } else {
+                // Ctrl+T and Shift+Tab open no page (Python toggles at once), so the composer
+                // keeps its keys and the paste replaced the selected draft, as in Python.
+                assert_eq!(app.composer.text(), "unowned paste");
+            }
             assert!(app.live.as_ref().unwrap().rows.len() == 1);
         }
     }
