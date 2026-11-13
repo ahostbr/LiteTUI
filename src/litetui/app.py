@@ -10427,6 +10427,11 @@ class LiteTUI(App):
                             "slot": i,
                             "provider_call_id": tc_id,
                             "name": name,
+                            # The raw JSON the ToolMessage card shows (its header summary and
+                            # "Arguments" body), with the result's own hygiene: escapes
+                            # stripped, secret-named values redacted (Sentinel 82b6ee9d).
+                            "arguments": sanitize.redact_secrets(
+                                sanitize.strip_escapes(args_json or "")),
                         })
                         result, ok = await self._execute_tool(name, args)
                         if ok and name not in {"self_compact", "tool_search"}:

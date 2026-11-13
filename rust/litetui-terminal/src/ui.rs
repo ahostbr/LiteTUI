@@ -259,14 +259,17 @@ fn assistant_card_with(
             format!("┏{}┓", "╍".repeat(inner_width.saturating_sub(2))),
             style(t.thinking_border, t.surface),
         )]));
-        for text in reasoning {
+        for (part, text) in reasoning.iter().enumerate() {
+            // .thinking-header is bold; .thinking-body is not.
+            let text_style = if part == 0 {
+                style(t.thinking_text, t.surface).add_modifier(Modifier::BOLD)
+            } else {
+                style(t.thinking_text, t.surface)
+            };
             for row in wrap(text, inner_width.saturating_sub(4)) {
                 lines.push(outer_row(vec![
                     Span::styled("╏ ", style(t.thinking_border, t.surface)),
-                    Span::styled(
-                        padded(&row, inner_width.saturating_sub(4)),
-                        style(t.thinking_text, t.surface).add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(padded(&row, inner_width.saturating_sub(4)), text_style),
                     Span::styled(" ╏", style(t.thinking_border, t.surface)),
                 ]));
             }
@@ -274,6 +277,11 @@ fn assistant_card_with(
         lines.push(outer_row(vec![Span::styled(
             format!("┗{}┛", "╍".repeat(inner_width.saturating_sub(2))),
             style(t.thinking_border, t.surface),
+        )]));
+        // .thinking-block { margin-bottom: 1; }
+        lines.push(outer_row(vec![Span::styled(
+            " ".repeat(inner_width),
+            style(t.foreground, t.surface),
         )]));
     }
     if let Some(rendered) = rendered {
@@ -686,6 +694,131 @@ fn work_source(
     );
 }
 
+/// Python's ToolMessage (widgets.py) for a host tool: `.tool-msg` (`margin: 0 2`,
+/// $surface-darken-2) with its bold `_header_content` row (padding 0 1) and, while expanded,
+/// `.tool-body` (padding 0 2 1 2, $text-muted, max-height 12): Arguments, then Result.
+fn host_tool(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    row: &crate::live_chat::Row,
+    index: usize,
+    width: usize,
+) {
+    use crate::native_activity::ResultState;
+    let tool = &row.tools[index];
+    let expanded = row.tool_expanded(index);
+    // Python's blank row between cards is the next card's margin-top; .tool-msg has none, so
+    // the tool sits right under whatever came before it.
+    if lines.last().is_some_and(|line| line.width() == 0) {
+        lines.pop();
+    }
+    let margin = if width < 78 { 0 } else { 2 };
+    let room = width.saturating_sub(2 * margin).max(4);
+    let bg = t.var("surface-darken-2", t.tool_background);
+    let bold = |color: Color| style(color, bg).add_modifier(Modifier::BOLD);
+    let (args_fg, done_fg) = (Color::Rgb(0x8b, 0x95, 0xa7), Color::Rgb(0x5c, 0x64, 0x70));
+    let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let input = tool.input.as_deref().unwrap_or("");
+    let mut summary = one_line(&display_safe(input));
+    if summary.chars().count() > 110 {
+        summary = summary.chars().take(107).collect::<String>() + "...";
+    }
+    let name = display_safe(tool.name.as_deref().unwrap_or(&tool.id)).replace('\n', " ");
+    let mut parts = vec![(
+        format!("{} \u{1F527} {name}", if expanded { "▾" } else { "▸" }),
+        bold(t.tool_text),
+    )];
+    if !summary.is_empty() {
+        parts.push((format!(" · {summary}"), bold(args_fg)));
+    }
+    let duration = |unknown: &str| {
+        tool.timing
+            .elapsed_at(std::time::Instant::now())
+            .map_or_else(|| unknown.to_owned(), crate::presentation::duration_text)
+    };
+    match &tool.result {
+        ResultState::Returned { text, is_error } => {
+            let status = if *is_error == Some(true) { "error" } else { "done" };
+            parts.push((
+                format!(" · {status} · {}", duration("duration unknown")),
+                bold(done_fg),
+            ));
+            parts.push((format!(" · {} chars", text.chars().count()), bold(done_fg)));
+        }
+        ResultState::Pending | ResultState::Incomplete => {
+            parts.push((format!(" · {} …", duration("0.0s")), bold(args_fg)));
+        }
+    }
+    let edge = Span::styled(" ".repeat(margin), style(t.foreground, t.screen()));
+    let boxed = |inside: Vec<Span<'static>>, used: usize| {
+        let mut spans = vec![edge.clone()];
+        spans.extend(inside);
+        spans.push(Span::styled(" ".repeat(room.saturating_sub(used)), style(t.foreground, bg)));
+        spans.push(edge.clone());
+        Line::from(spans)
+    };
+    // The header wraps like the Static it is, a part's style kept on every piece of it.
+    let header_room = room.saturating_sub(2).max(1);
+    let plain: String = parts.iter().map(|(text, _)| text.as_str()).collect();
+    let mut cursor = 0;
+    // Rust's Ctrl+B selection (Python selects only in compact mode) marks the header padding.
+    let selected = row.tool_view.selected == Some(index);
+    for (n, fragment) in wrap(&plain, header_room).into_iter().enumerate() {
+        let start = plain[cursor..].find(&fragment).map_or(cursor, |at| cursor + at);
+        let end = start + fragment.len();
+        cursor = end;
+        let pad = if selected && n == 0 { "›" } else { " " };
+        let mut inside = vec![Span::styled(pad, bold(t.title))];
+        let mut offset = 0;
+        for (text, part_style) in &parts {
+            let (from, to) = (offset, offset + text.len());
+            offset = to;
+            let (a, b) = (from.max(start), to.min(end));
+            if a < b {
+                inside.push(Span::styled(plain[a..b].to_owned(), *part_style));
+            }
+        }
+        lines.push(boxed(inside, 1 + rendered_width(&fragment)));
+    }
+    if expanded {
+        let body_room = room.saturating_sub(4).max(1);
+        let heading = bold(args_fg);
+        let mut body: Vec<(String, Style)> = Vec::new();
+        if !input.is_empty() {
+            body.push(("Arguments".into(), heading));
+            for line in wrap(&display_safe(input), body_room) {
+                body.push((line, style(t.css_over("text-muted", bg, MUTED), bg)));
+            }
+        }
+        if let ResultState::Returned { text, is_error } = &tool.result {
+            if !input.is_empty() {
+                body.push((String::new(), style(t.foreground, bg)));
+            }
+            body.push(("Result".into(), heading));
+            let result_style = if *is_error == Some(true) {
+                bold(Color::Rgb(0xe5, 0x53, 0x4b))
+            } else {
+                style(Color::Rgb(0x7d, 0x87, 0x99), bg)
+            };
+            for line in wrap(&display_safe(text), body_room) {
+                body.push((line, result_style));
+            }
+        }
+        for (text, text_style) in body.into_iter().take(12) {
+            let used = 2 + rendered_width(&text);
+            lines.push(boxed(
+                vec![
+                    Span::styled("  ", style(t.foreground, bg)),
+                    Span::styled(text, text_style),
+                ],
+                used,
+            ));
+        }
+        lines.push(boxed(Vec::new(), 0));
+    }
+    lines.push(Line::raw(""));
+}
+
 fn native_tool(
     t: &crate::theme::Theme,
     lines: &mut Vec<Line<'static>>,
@@ -695,6 +828,9 @@ fn native_tool(
     compact: bool,
 ) {
     use crate::native_activity::ResultState;
+    if !compact && row.tool_provider() == "Host tool" {
+        return host_tool(t, lines, row, index, width);
+    }
     let tool = &row.tools[index];
     let expanded = row.tool_expanded(index);
     let selected = row.tool_view.selected == Some(index);
@@ -1226,6 +1362,16 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                     }
                     crate::live_chat::Item::Tool(index) => {
                         let start = lines.len();
+                        if !app.compact_display.active() && row.tool_provider() == "Host tool" {
+                            headers.push(Header {
+                                line: start,
+                                span: None,
+                                hit: HeaderHit {
+                                    row: row_index,
+                                    target: Target::Tool(index),
+                                },
+                            });
+                        }
                         native_tool(
                             t,
                             &mut lines,
@@ -1350,7 +1496,10 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                             &if !thinking {
                                 Vec::new()
                             } else if expanded {
-                                vec!["▾ Thinking".to_owned(), display_safe(&card.reasoning)]
+                                vec![
+                                    card.thinking.header("▾", streaming),
+                                    display_safe(&card.reasoning),
+                                ]
                             } else {
                                 let text = card
                                     .reasoning
@@ -1366,8 +1515,12 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                             },
                             &display_safe(&card.answer),
                             rendered,
+                            // An earlier card of the turn (before a tool round) has no footer
+                            // in Python; only the last carries the stop line.
                             if last_card == Some(index) {
-                                &state_text
+                                state_text.as_str()
+                            } else if quiet {
+                                ""
                             } else {
                                 state
                             },
@@ -1408,6 +1561,11 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
             {
                 system_line(t, &mut lines, &line.text, width);
             }
+        }
+        // Python's cards space themselves with margin-top, so the log's content ends at the
+        // last card's border; the row under it is #chat-log's bottom padding.
+        while lines.last().is_some_and(|line| line.width() == 0) {
+            lines.pop();
         }
         return Transcript {
             lines,
@@ -1704,11 +1862,15 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             body.x += dock.width;
         }
     }
+    // Live: #chat-log's `padding: 1 1`. The row above is its top padding (the now row), and
+    // its bottom padding row is outside the scrolled viewport and the scrollbar.
     let viewport = Rect::new(
         body.x + 1,
         body.y,
         body.width.saturating_sub(2),
-        body.height.saturating_sub(picker_height),
+        body.height
+            .saturating_sub(picker_height)
+            .saturating_sub(u16::from(app.live.is_some())),
     );
     let page = app.live.as_ref().map(|chat| {
         let rows = chat.visible_row_range();

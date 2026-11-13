@@ -89,6 +89,7 @@ pub struct Card {
     answer_units: usize,
     reasoning_units: usize,
     pub(crate) reasoning_expanded: Option<bool>,
+    pub(crate) thinking: crate::presentation::ThinkingClock,
     pub fold: Fold,
 }
 impl Card {
@@ -179,6 +180,19 @@ impl Row {
     }
     pub(crate) fn tool_provider(&self) -> &'static str {
         self.tool_view.provider
+    }
+    /// A click on a tool card's header (`_FoldHeader.on_click`): toggle it, except that a
+    /// running call stays open (ToolMessage.set_expanded). False when there is no such tool.
+    pub(crate) fn toggle_tool(&mut self, index: usize) -> bool {
+        let Some(tool) = self.tools.get(index) else {
+            return false;
+        };
+        let expanded = self.tool_expanded(index);
+        let running = matches!(tool.result, crate::native_activity::ResultState::Pending);
+        if !(running && expanded) {
+            self.tool_view.expanded.insert(index, !expanded);
+        }
+        true
     }
     pub(crate) fn tool_expanded(&self, index: usize) -> bool {
         self.tool_view
@@ -2803,6 +2817,11 @@ impl Chat {
             row.items.push(Item::Card(index));
         }
         let card = &mut row.cards[index];
+        if kind == ContentKind::ReasoningDelta {
+            card.thinking.delta(&text);
+        } else if !kind.reasoning() && !text.is_empty() {
+            card.thinking.freeze();
+        }
         let (body, work) = if kind.reasoning() {
             (&mut card.reasoning, &mut card.reasoning_units)
         } else {
@@ -2867,6 +2886,11 @@ impl Chat {
         if let Some(index) = existing {
             row.tools[index] = tool;
         } else {
+            // A tool call ends the card's thinking trace (app.py: "A tool call is the
+            // trace's end too").
+            if let Some(card) = row.cards.get_mut(tool.card) {
+                card.thinking.freeze();
+            }
             row.items.push(Item::Tool(row.tools.len()));
             row.tools.push(tool);
         }

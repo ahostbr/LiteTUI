@@ -40,7 +40,9 @@ async def test_real_host_return_keeps_origin_across_queued_prompt(tmp_path, monk
         requested, returned = [row["event"] for row in rows]
         assert requested == {"type": "generic_tool_requested",
             "observation_id": requested["observation_id"], "round": 0, "slot": 0,
-            "provider_call_id": "fixture-tool-call", "name": "fixture_roundtrip"}
+            "provider_call_id": "fixture-tool-call", "name": "fixture_roundtrip",
+            "arguments": requested["arguments"]}
+        assert json.loads(requested["arguments"]) == {"value": "A"}
         assert UUID(requested["observation_id"]).version == 4
         assert returned == {"type": "generic_tool_returned",
             "observation_id": requested["observation_id"],
@@ -100,11 +102,11 @@ async def run_inline(app):
         raise
 
 
-async def test_distinct_calls_do_not_copy_arguments_and_clean_return(tmp_path, monkeypatch):
+async def test_distinct_calls_carry_redacted_arguments_and_clean_return(tmp_path, monkeypatch):
     runtime = MountedRuntime(tmp_path, monkeypatch)
     secret = "fixture-secret-value-123456789"
     monkeypatch.setenv("OPENAI_API_KEY", secret)
-    args_text = json.dumps({"nested": {"value": secret}, "background": True})
+    args_text = json.dumps({"nested": {"value": secret}, "api_key": secret, "background": True})
     # Absent IDs become call_0 again in round 1; provider IDs are not identities.
     script_rounds(runtime, monkeypatch, [[(None, args_text), ("repeated", "{}")],
                                        [(None, "{}"), ("repeated", "{}")]])
@@ -127,10 +129,18 @@ async def test_distinct_calls_do_not_copy_arguments_and_clean_return(tmp_path, m
             assert requested["provider_call_id"] == ("call_0" if n % 2 == 0 else "repeated")
             assert returned["observation_id"] == requested["observation_id"]
             assert returned["result"] == "OPENAI_API_KEY=" + sanitize.REDACTED_MARKER
-            assert secret not in json.dumps([requested, returned])
+            assert secret not in json.dumps(returned)
+            # The raw argument string ToolMessage shows, with the result's hygiene: no
+            # secret-NAMED value crosses (Sentinel 82b6ee9d changed the 6c146758 contract).
+            assert requested["arguments"] == sanitize.redact_secrets(args_text if n == 0 else "{}")
             assert "\x1b" not in returned["result"]
         assert len(ids) == 4
         assert all("arguments_text" not in event and "args" not in event for event in events)
+        first = json.loads(events[0]["arguments"])
+        assert first["api_key"] == sanitize.REDACTED_MARKER
+        # A value under an ordinary key is data to the redactor, as on Python's own screen and
+        # in the legacy tool_call event's args.
+        assert first["nested"]["value"] == secret
         assert received[0][1]["nested"]["value"] == secret  # execution unchanged
         assert received[0][1]["background"] is True
         assert len({row["execution_id"] for row in observations(runtime)}) == 1

@@ -1098,15 +1098,14 @@ impl Turn {
                         "Invalid or duplicate generic tool observation",
                     ));
                 }
-                let text = format!(
-                    "Host invocation observed; round {}, slot {}, provider call {}",
-                    event["round"], event["slot"], event["provider_call_id"]
-                );
+                // The observation is identity only (no arguments cross, by contract): the card
+                // shows Python's header without the argument summary. A runtime that sends
+                // the raw `arguments` string gets it shown as ToolMessage shows it.
                 (
                     id,
                     Some(name),
                     Detail::Input {
-                        text: Some(text),
+                        text: event["arguments"].as_str().map(str::to_owned),
                         complete: true,
                     },
                 )

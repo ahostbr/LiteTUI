@@ -6042,9 +6042,10 @@ mod live_keyboard_navigation_tests {
             Detail::Input("new arguments"),
         );
         press(&mut app, &mut router, 'b');
-        assert!(draw(&mut app, 110, 60).contains("› ▾ Host tool · NewRecord"));
+        let open = draw(&mut app, 110, 60);
+        assert!(open.contains("›▾ 🔧") && open.contains("NewRecord · {\"argument\":\"new arguments\"} ·"));
         press(&mut app, &mut router, 'e');
-        assert!(!draw(&mut app, 110, 60).contains("new arguments"));
+        assert!(!draw(&mut app, 110, 60).contains("Arguments"));
         record(
             &mut app,
             "same",
@@ -6052,7 +6053,10 @@ mod live_keyboard_navigation_tests {
             Detail::Result("new returned body", None),
         );
         let collapsed = draw(&mut app, 110, 60);
-        assert!(collapsed.contains("outcome unknown") && !collapsed.contains("new returned body"));
+        assert!(
+            collapsed.contains("NewRecord · {\"argument\":\"new arguments\"} · done ·")
+                && !collapsed.contains("new returned body")
+        );
         press(&mut app, &mut router, 'b');
         press(&mut app, &mut router, 'e');
         let small = draw(&mut app, 42, 18);
@@ -6060,7 +6064,7 @@ mod live_keyboard_navigation_tests {
         let full = draw(&mut app, 110, 60);
         assert!(full.contains("old returned body") && !full.contains("new returned body"));
         press(&mut app, &mut router, 'b');
-        assert!(draw(&mut app, 110, 60).contains("› ▸ Host tool · NewRecord"));
+        assert!(draw(&mut app, 110, 60).contains("›▸ 🔧  NewRecord"));
         app.open_work();
         press(&mut app, &mut router, 'e');
         assert!(app.live.as_ref().unwrap().work.owns_input());

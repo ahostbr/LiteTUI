@@ -20,6 +20,8 @@ pub enum Target {
     Speak,
     /// The attached-image line: opens the reviewed saved history.
     Image,
+    /// The header row of one host tool card: fold or unfold it.
+    Tool(usize),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeaderHit {
@@ -225,6 +227,11 @@ impl crate::demo::Demo {
                 None => return false,
             },
             Target::Prompt => row.prompt_fold.toggle(),
+            Target::Tool(tool) => {
+                if !row.toggle_tool(tool) {
+                    return false;
+                }
+            }
             Target::Speak | Target::Image => {
                 self.transcript_selection.clear();
                 self.open_history();

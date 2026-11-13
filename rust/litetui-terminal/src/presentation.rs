@@ -278,6 +278,70 @@ pub fn duration_text(elapsed: Duration) -> String {
     let minutes = (seconds / 60.0).floor();
     format!("{}m {:04.1}s", minutes as u64, seconds - minutes * 60.0)
 }
+/// ThinkingBlock's header readout (widgets.py `repaint_header` / `freeze_header`), timed by
+/// this frontend: from the first reasoning delta to the first answer token or tool call.
+/// Tokens are TpsState.reasoning_estimate's rule, max(deltas, (chars + 3) / 4).
+#[derive(Clone, Debug, Default)]
+pub struct ThinkingClock {
+    started: Option<Instant>,
+    last: Option<Instant>,
+    frozen: Option<(Duration, usize)>,
+    deltas: usize,
+    chars: usize,
+}
+impl ThinkingClock {
+    pub(crate) fn delta(&mut self, text: &str) {
+        let now = Instant::now();
+        self.started.get_or_insert(now);
+        self.last = Some(now);
+        self.deltas += 1;
+        self.chars += text.chars().count();
+    }
+    /// The trace stopped (`_thinking_done`): keep the readout. Only the first call counts.
+    pub(crate) fn freeze(&mut self) {
+        if let (Some(started), None) = (self.started, self.frozen) {
+            self.frozen = Some((started.elapsed(), self.tokens()));
+        }
+    }
+    fn tokens(&self) -> usize {
+        self.deltas.max(self.chars.div_ceil(4))
+    }
+    /// `thinking_header_text`: "▾ Thinking · 1.2s … · 16 tok · 13.3 tok/s". A trace that never
+    /// froze ends at its last delta once the turn is no longer `live`; a card with no observed
+    /// deltas (history) keeps the bare label.
+    pub fn header(&self, marker: &str, live: bool) -> String {
+        let (elapsed, tokens) = match (self.frozen, self.started) {
+            (Some(frozen), _) => frozen,
+            (None, Some(started)) if live => (started.elapsed(), self.tokens()),
+            (None, Some(started)) => (
+                self.last.map_or(Duration::ZERO, |last| last - started),
+                self.tokens(),
+            ),
+            (None, None) => return format!("{marker} Thinking"),
+        };
+        let mut text = format!("{marker} Thinking · {} …", duration_text(elapsed));
+        if tokens > 0 {
+            text.push_str(&format!(" · {} tok", grouped(tokens)));
+            let seconds = elapsed.as_secs_f64();
+            if seconds > 0.0 {
+                text.push_str(&format!(" · {:.1} tok/s", tokens as f64 / seconds));
+            }
+        }
+        text
+    }
+}
+/// `f"{n:,}"`.
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
 fn clock_text((hour, minute): (u8, u8)) -> String {
     let twelve = match hour % 12 {
         0 => 12,
@@ -398,6 +462,31 @@ impl TurnTiming {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn thinking_header_reads_like_thinking_header_text() {
+        assert_eq!(ThinkingClock::default().header("▾", true), "▾ Thinking");
+        let start = Instant::now();
+        let clock = ThinkingClock {
+            started: Some(start),
+            last: Some(start + Duration::from_millis(500)),
+            frozen: Some((Duration::from_millis(1200), 16)),
+            deltas: 3,
+            chars: 61,
+        };
+        assert_eq!(clock.header("▸", false), "▸ Thinking · 1.2s … · 16 tok · 13.3 tok/s");
+        // Never frozen and no longer live: the trace ends at its last delta.
+        let open = ThinkingClock { frozen: None, ..clock.clone() };
+        assert_eq!(open.header("▾", false), "▾ Thinking · 0.5s … · 16 tok · 32.0 tok/s");
+        // max(deltas, ceil(chars / 4)), and f"{n:,}".
+        let mut long = ThinkingClock::default();
+        for _ in 0..1234 {
+            long.delta("ab");
+        }
+        assert_eq!(long.tokens(), 1234);
+        assert_eq!(grouped(1_234_567), "1,234,567");
+        assert_eq!(grouped(999), "999");
+    }
 
     fn effective(extra: Value) -> Map<String, Value> {
         let mut map = Map::new();

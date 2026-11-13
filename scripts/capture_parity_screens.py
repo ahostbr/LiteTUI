@@ -117,6 +117,11 @@ PROFILES = {
     # and fails any other ("Something went wrong talking to the model server.").
     "turns": {frontend: [("normal", ["PERF hello\r"], "none"), ("failed", ["not a fixture prompt\r"], "none")]
               for frontend in ("textual", "rust")},
+    # Thinking and tool cards (--cards): PERFTHINK streams a reasoning trace and then the answer;
+    # PERFTOOL streams a trace and one `read` of the workspace's fixture.txt (read-only, so the
+    # strict profile runs it without asking), then the answer.
+    "cards": {frontend: [("think", ["PERFTHINK go\r"], "none"), ("tool", ["PERFTOOL go\r"], "none")]
+              for frontend in ("textual", "rust")},
     # /hooks is Python's HooksEditor: New adds new-hook (unsaved), the wheel scrolls the editor,
     # Save hooks writes the project hooks.json. Each shot is after one step.
     "hooksedit": {frontend: [("hooks-open", ["/hooks\r"], "none"), ("new", ["click:New"], "none"),
@@ -224,6 +229,9 @@ def run(frontend, args):
         env["LITETUI_PERF_SKILLS"] = "1"  # skills on, two fixture skills in the private data root
     if args.mcp:
         env["LITETUI_PERF_MCP"] = "1"  # MCP on, no servers declared at start
+    if args.cards:
+        env["LITETUI_PERF_CARDS"] = "1"  # scripted reasoning and tool-call streams, tools on
+        (workspace / "fixture.txt").write_text("hello from the fixture\n", encoding="utf-8")
     common = ["--backend", "custom", "--model", "perf-fixture", "--tool-profile", "strict", "--thinking-level",
               "default", "--server-mode", "connect", "--base-url", "http://127.0.0.1:45120/v1"]
     if frontend == "rust":
@@ -234,7 +242,8 @@ def run(frontend, args):
         (module / "cli.py").write_text("import runpy\nrunpy.run_path(" + repr(str(PREP / "performance_runtime.py"))
                                        + ",run_name='__main__')\n", encoding="utf-8")
         command = [str(args.binary), "--interactive", "--python", str(args.python), "--source", str(base / "overlay"),
-                   "--data-root", str(base / "data"), "--workspace", str(workspace), "--tools", "off",
+                   "--data-root", str(base / "data"), "--workspace", str(workspace),
+                   "--tools", "on" if args.cards else "off",
                    "--timeout", "120", *common]
     else:
         command = [str(args.python), "-B", str(PREP / "performance_runtime.py"), "--cwd", str(workspace), *common]
@@ -332,6 +341,8 @@ def main():
                         help="turn skills on with two fixture skills (the fixture must support it)")
     parser.add_argument("--mcp", action="store_true",
                         help="turn MCP on with no servers declared (the fixture must support it)")
+    parser.add_argument("--cards", action="store_true",
+                        help="scripted thinking and tool-call replies, tools on (the fixture must support it)")
     parser.add_argument("--raw", action="store_true",
                         help="also write each shot's whole terminal stream as <NN>-<name>.ansi")
     parser.add_argument("--frontends", default="textual,rust", help="comma list of textual, rust")
