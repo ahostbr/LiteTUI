@@ -7733,7 +7733,19 @@ class LiteTUI(App):
         created only when the line is enabled, keeping tool cards themselves
         unchanged while still giving interrupted/capped turns one terminus.
         """
-        if self._rpc or getattr(self, "_turn_stop_line_settled", False):
+        if self._rpc:
+            # The stop line is the native frontend's; its card titles still come from here
+            # (native_card_summary), as they do on screen.
+            from litetui import native_card_summary
+            if widget is not None and native_card_summary.wanted(self):
+                widget.settled = True
+                if getattr(widget, "recap", None):
+                    widget.set_summary(widget.recap)
+                    native_card_summary.publish(self, widget)
+                else:
+                    self._kick_card_summary(widget)
+            return
+        if getattr(self, "_turn_stop_line_settled", False):
             return
         # THE TURN IS OVER WHETHER OR NOT A STOP LINE IS DRAWN. `show_stop_line`
         # is a display preference and `format_turn_stop_line` returns None when
@@ -8015,6 +8027,8 @@ class LiteTUI(App):
             thought = _first_sentence(getattr(card.thinking, "source", ""))
             if thought:
                 card.set_summary(f"thinking: {thought}")
+                from litetui import native_card_summary
+                native_card_summary.publish(self, card)
                 card.summary_done = True
             return
         card.summary_done = True
@@ -8072,6 +8086,8 @@ class LiteTUI(App):
         if not card.is_mounted:        # conversation cleared while it was in flight
             return
         card.set_summary(text)
+        from litetui import native_card_summary
+        native_card_summary.publish(self, card)
         self._persist_card_summary(card, text)
 
     @staticmethod

@@ -130,7 +130,8 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                 Ok(Observation::SystemLine { .. }
                 | Observation::SystemLines(_)
                 | Observation::SystemLinesRefused(_)
-                | Observation::Markdown { .. }) => {}
+                | Observation::Markdown { .. }
+                | Observation::CardSummary { .. }) => {}
                 Ok(Observation::Ready) => {
                     if !saw_ready_facts {
                         return Err(std::io::Error::other("validated facts must precede Ready"));

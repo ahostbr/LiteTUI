@@ -392,6 +392,13 @@ pub enum Observation {
     },
     /// The lines Python held until this frontend asked: (text, before splash).
     SystemLines(Vec<(String, bool)>),
+    /// A reply card's title (native_card_summary.py): the sha256 of the trimmed answer (or of
+    /// the reasoning, for a thinking-only card) it describes.
+    CardSummary {
+        sha256: String,
+        thinking: bool,
+        summary: String,
+    },
     /// The read could not be sent now; the chat asks again later.
     SystemLinesRefused(String),
     /// Python's Markdown lines for one card (None: refused or not sent).
@@ -2015,6 +2022,25 @@ impl Turn {
                 Ok(Observation::SystemLine {
                     text: text.to_owned(),
                     before_splash,
+                })
+            }
+            "card_summary" => {
+                let bad = || fail("Malformed card summary");
+                if event["version"] != 1 {
+                    return Err(fail("Unsupported card summary version"));
+                }
+                let sha256 = event["sha256"]
+                    .as_str()
+                    .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .ok_or_else(bad)?;
+                let summary = event["summary"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 4096)
+                    .ok_or_else(bad)?;
+                Ok(Observation::CardSummary {
+                    sha256: sha256.to_owned(),
+                    thinking: event["thinking"].as_bool().ok_or_else(bad)?,
+                    summary: summary.to_owned(),
                 })
             }
             // These source-defined observations have no authority in this frontend.
@@ -4189,7 +4215,9 @@ impl Frontend for OneShot {
                     writeln!(self.output, "\n[System: {}]", terminal_text(&text))?
                 }
             }
-            Observation::SystemLinesRefused(_) | Observation::Markdown { .. } => {}
+            Observation::SystemLinesRefused(_)
+            | Observation::Markdown { .. }
+            | Observation::CardSummary { .. } => {}
             Observation::Cancelled(reason) => {
                 return Err(io::Error::other(format!(
                     "Turn cancelled: {}",

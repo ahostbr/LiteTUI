@@ -82,6 +82,8 @@ pub struct Card {
     /// The answer's Markdown lines from Python, per width (with and without the chat's
     /// scrollbar), when they have come back.
     pub rendered: Vec<Rendered>,
+    /// Python's one-line title for this reply (AssistantMessage.summary), once it lands.
+    pub summary: Option<String>,
     pub answer: String,
     pub reasoning: String,
     answer_units: usize,
@@ -1988,6 +1990,33 @@ impl Chat {
                 self.system_ask = SystemAsk::Done;
                 for (text, before_splash) in lines {
                     self.system_line(text, before_splash);
+                }
+            }
+            Observation::CardSummary {
+                sha256,
+                thinking,
+                summary,
+            } => {
+                use sha2::{Digest, Sha256};
+                let digest = |text: &str| format!("{:x}", Sha256::digest(text.trim().as_bytes()));
+                // The newest card whose answer (or trace) is the one summarised.
+                if let Some(card) = self
+                    .rows
+                    .iter_mut()
+                    .rev()
+                    .flat_map(|row| row.cards.iter_mut().rev())
+                    .find(|card| {
+                        let basis = if thinking {
+                            &card.reasoning
+                        } else {
+                            &card.answer
+                        };
+                        card.summary.is_none()
+                            && (thinking == card.answer.trim().is_empty())
+                            && digest(basis) == sha256
+                    })
+                {
+                    card.summary = Some(summary);
                 }
             }
             Observation::Markdown { key, width, lines } => {

@@ -31,6 +31,8 @@ const MIRRORED: &[&str] = &[
     "ready",
     // Python's chat-log system lines, once this client has asked (native_system_lines.py).
     "system_message",
+    // A reply card's one-line title, for the same client (native_card_summary.py).
+    "card_summary",
     "model_state",
     "usage",
     "turn_start",
@@ -1570,8 +1572,9 @@ impl Management {
                     return self.work_lifecycle_event(&frame, authority);
                 }
                 self.validate_event(&frame, &event)?;
-                if event["type"] == "system_message" {
-                    // A chat-log line is shown whatever owned operation is running.
+                if event["type"] == "system_message" || event["type"] == "card_summary" {
+                    // A chat-log line or a card title is shown whatever owned operation is
+                    // running.
                     return Ok(Step::Event(event));
                 }
                 if self
@@ -1609,9 +1612,9 @@ impl Management {
         if event.get("rewrite_origin").is_some() || event.get("compact_origin").is_some() {
             return Err(fail("Runtime supplied reserved native rewrite metadata"));
         }
-        if event["type"] == "system_message" {
-            // Python's chat-log lines come in any state, owned operations included; they
-            // change no authority here (live.rs checks their shape).
+        if event["type"] == "system_message" || event["type"] == "card_summary" {
+            // Python's chat-log lines and card titles come in any state, owned operations
+            // included; they change no authority here (live.rs checks their shape).
             crate::stream::required_uuid4(frame, "event_id")
                 .map_err(|_| fail("System line lacks emission identity"))?;
             return Ok(());

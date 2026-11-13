@@ -207,6 +207,13 @@ fn assistant_card(
 ) {
     assistant_card_with(t, lines, title, reasoning, answer, None, footer, width)
 }
+/// AssistantMessage._header_text's label: "<summary> - <model>", or the model alone.
+fn card_label(summary: Option<&str>, model: &str) -> String {
+    match summary {
+        Some(summary) => format!("{} - {}", display_safe(summary), display_safe(model)),
+        None => display_safe(model),
+    }
+}
 /// The answer's content width in a card at this transcript width (AnswerBody's region).
 pub(crate) fn answer_width(width: usize) -> u16 {
     card_geometry(width).1.saturating_sub(6) as u16
@@ -1239,7 +1246,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                             let title = format!(
                                 "▸ {}{}",
                                 if speak { "♫ Speak · " } else { "" },
-                                display_safe(&chat.model),
+                                card_label(card.summary.as_deref(), &chat.model),
                             );
                             let (left, outer) = card_geometry(width);
                             if speak {
@@ -1331,7 +1338,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                         assistant_card_with(
                             t,
                             &mut lines,
-                            &format!("▾ {}", display_safe(&chat.model)),
+                            &format!("▾ {}", card_label(card.summary.as_deref(), &chat.model)),
                             &if !thinking {
                                 Vec::new()
                             } else if expanded {
