@@ -388,7 +388,7 @@ impl View {
         f.render_widget(
             Block::bordered()
                 .title(" Glassbox controls ")
-                .style(Style::default().fg(theme.foreground).bg(theme.background)),
+                .style(Style::default().fg(theme.text()).bg(theme.screen())),
             area,
         );
         let body = area.inner(Margin::new(1, 1));

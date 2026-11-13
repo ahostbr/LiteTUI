@@ -1073,7 +1073,7 @@ impl View {
         let block = Block::default()
             .title(" Conversations ")
             .borders(Borders::ALL)
-            .style(Style::default().fg(theme.foreground).bg(theme.background))
+            .style(Style::default().fg(theme.text()).bg(theme.screen()))
             .border_style(Style::default().fg(theme.title));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);

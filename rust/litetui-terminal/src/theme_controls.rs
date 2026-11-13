@@ -197,6 +197,7 @@ impl Palette {
             error: c(11),
             footer_foreground: c(12),
             footer_background: c(13),
+            css: Default::default(),
         }
     }
 }
@@ -324,6 +325,9 @@ pub struct Snapshot {
     pub rows: Vec<Row>,
     pub registered_definitions: BTreeMap<String, String>,
     pub invalid: Vec<(String, String)>,
+    /// The running theme's resolved CSS variables (App.get_css_variables), for painting
+    /// each widget from the variable LiteTUI's stylesheet names. Empty from an older source.
+    pub css: BTreeMap<String, String>,
 }
 impl Snapshot {
     pub fn parse(v: &Value, identity: &Identity) -> io::Result<Self> {
@@ -389,6 +393,19 @@ impl Snapshot {
             })
             .collect::<io::Result<_>>()?;
         let (eligible, reason) = reason(v, "eligible")?;
+        let mut css = BTreeMap::new();
+        if let Some(map) = v.get("css").and_then(Value::as_object) {
+            if map.len() > 512 {
+                return Err(fail("Theme CSS variables exceed their budget"));
+            }
+            for (key, value) in map {
+                let value = value
+                    .as_str()
+                    .filter(|s| s.len() <= 64 && key.len() <= 64)
+                    .ok_or_else(|| fail("Invalid theme CSS variable"))?;
+                css.insert(key.clone(), value.to_owned());
+            }
+        }
         Ok(Self {
             identity: identity.clone(),
             token: hash(v, "snapshot")?,
@@ -399,6 +416,7 @@ impl Snapshot {
             rows,
             registered_definitions,
             invalid,
+            css,
         })
     }
     pub fn effective(&self) -> Option<&Row> {
@@ -1484,7 +1502,7 @@ impl View {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Themes · source authority ")
-            .style(Style::default().fg(theme.foreground).bg(theme.background))
+            .style(Style::default().fg(theme.text()).bg(theme.screen()))
             .border_style(Style::default().fg(theme.title));
         let inner = block.inner(panel);
         frame.render_widget(block, panel);

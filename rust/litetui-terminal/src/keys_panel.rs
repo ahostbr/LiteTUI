@@ -238,14 +238,17 @@ impl Panel {
         let pw = width(full.width);
         let rect = Rect::new(full.right() - pw, full.y, pw, full.height);
         self.hit = Some(rect);
-        let base = Style::default().fg(t.foreground).bg(t.background);
+        // KeyPanel has no background of its own: the screen's $surface-darken-1 shows.
+        let screen = t.screen();
+        let base = Style::default().fg(t.text()).bg(screen);
         buf.set_style(rect, base);
         for y in rect.top()..rect.bottom() {
             buf.set_string(rect.x, y, " ".repeat(usize::from(pw)), base);
         }
+        // border-left: vkey $foreground 30%.
         let edge = Style::default()
-            .fg(blend(t.foreground, t.background, 0.3))
-            .bg(t.background);
+            .fg(t.css_alpha("foreground", 30.0, screen, blend(t.foreground, t.background, 0.3)))
+            .bg(screen);
         for y in rect.top()..rect.bottom() {
             buf.set_string(rect.x, y, "▏", edge);
         }
@@ -265,9 +268,10 @@ impl Panel {
         self.scroll = self.scroll.min(self.max_scroll);
         let table_w = (kw + dw + 3).min(avail);
         let x0 = rect.x + 2 + ((avail - table_w) / 2) as u16;
+        // .bindings-table--key: bold $text-accent.
         let key_style = Style::default()
-            .fg(t.primary)
-            .bg(t.background)
+            .fg(t.css_over("text-accent", screen, t.primary))
+            .bg(screen)
             .add_modifier(Modifier::BOLD);
         for (dy, line) in table.iter().skip(self.scroll).take(height).enumerate() {
             let y = rect.y + dy as u16;
@@ -277,10 +281,11 @@ impl Panel {
             for (text, kind) in &line.cells {
                 let style = match kind {
                     Kind::Text => base,
-                    Kind::Tooltip => base.add_modifier(Modifier::DIM),
+                    Kind::Tooltip => crate::theme::textual_dim(base.add_modifier(Modifier::DIM)),
+                    // .bindings-table--header: underline $text-primary.
                     Kind::Title => Style::default()
-                        .fg(t.title)
-                        .bg(t.background)
+                        .fg(t.css_over("text-primary", screen, t.title))
+                        .bg(screen)
                         .add_modifier(Modifier::UNDERLINED),
                 };
                 buf.set_string(x, y, text, style);
@@ -295,8 +300,8 @@ impl Panel {
                 rect.height,
                 table.len(),
                 self.scroll,
-                t.thinking_border,
-                blend(Color::Rgb(0, 0, 0), t.background, 0.1),
+                t.var("scrollbar", t.thinking_border),
+                t.var("scrollbar-background", blend(Color::Rgb(0, 0, 0), t.background, 0.1)),
             );
         }
     }

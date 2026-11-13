@@ -17,7 +17,7 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
 };
 use serde_json::{Value, json};
 use std::io;
@@ -434,7 +434,7 @@ impl View {
         };
         let p = &s.paint;
         backdrop(buf, area, p.backdrop, p.alpha, theme);
-        let rs = |spec: &str| textual_dim(crate::calendar_dialog::rich_style(spec, Style::default()));
+        let rs = |spec: &str| crate::theme::textual_style(spec, Style::default());
         let boxed = rs(&p.boxed);
         fill_rect(buf, s.boxed, boxed);
         // #--input: `border: hkey black 50%`; the bottom edge goes when the list shows.
@@ -528,23 +528,9 @@ fn backdrop(buf: &mut Buffer, area: Rect, colour: Color, alpha: f32, theme: &The
                 Color::Reset => theme.background,
                 c => c,
             };
-            cell.fg = blend(colour, fg, alpha);
-            cell.bg = blend(colour, bg, alpha);
+            cell.fg = crate::theme::blend(fg, colour, alpha);
+            cell.bg = crate::theme::blend(bg, colour, alpha);
         }
-    }
-}
-
-/// Textual's compositor never emits DIM: it blends the foreground toward the background
-/// by DIM_FACTOR (0.66, `textual.filter.dim_color`, truncating) and drops the attribute.
-fn textual_dim(style: Style) -> Style {
-    match (style.add_modifier.contains(Modifier::DIM), style.fg, style.bg) {
-        (true, Some(Color::Rgb(fr, fg, fb)), Some(Color::Rgb(br, bg, bb))) => {
-            let mix = |b: u8, f: u8| (f32::from(b) + (f32::from(f) - f32::from(b)) * 0.66) as u8;
-            style
-                .fg(Color::Rgb(mix(br, fr), mix(bg, fg), mix(bb, fb)))
-                .remove_modifier(Modifier::DIM)
-        }
-        _ => style,
     }
 }
 
@@ -590,17 +576,6 @@ fn fill_rect(buf: &mut Buffer, r: Rect, style: Style) {
 fn line(buf: &mut Buffer, x: u16, y: u16, w: u16, glyph: &str, style: Style) {
     put(buf, x, y, &glyph.repeat(usize::from(w)), x.saturating_add(w), style);
 }
-/// `a` over `b` at `t` (0..1), for RGB theme colours; anything else keeps `b`.
-fn blend(a: Color, b: Color, t: f32) -> Color {
-    match (a, b) {
-        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
-            let mix = |x: u8, y: u8| (f32::from(x) * t + f32::from(y) * (1.0 - t)).round() as u8;
-            Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
-        }
-        _ => b,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

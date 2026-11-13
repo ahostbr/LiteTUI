@@ -1650,7 +1650,9 @@ impl Chat {
                     crate::theme_controls::Update::Snapshot(s)
                     | crate::theme_controls::Update::Applied { snapshot: s, .. } => {
                         if let Some(row) = s.effective() {
-                            self.effective_theme = Some(row.palette.theme(&row.name));
+                            let mut theme = row.palette.theme(&row.name);
+                            theme.css = std::sync::Arc::new(s.css.clone());
+                            self.effective_theme = Some(theme);
                             self.theme_status = format!(
                                 "Theme: {} · source verified",
                                 crate::live::terminal_text(&s.selection.effective)

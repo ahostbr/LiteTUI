@@ -42,6 +42,27 @@ def _encoded(value):
     return theme_palette.encoded(value, MAX_RESPONSE)
 
 
+MAX_CSS = 512
+
+
+def _css(app) -> dict:
+    """The running theme's resolved CSS variables (App.get_css_variables: Textual's colour
+    system plus LiteTUI's floor), which LiteTUI's stylesheet resolves every widget against.
+    The native frontend paints each widget from the same variable the CSS names."""
+    out = {}
+    for key, value in app.get_css_variables().items():
+        if isinstance(key, str) and isinstance(value, str) and len(key) <= 64 and len(value) <= 64:
+            out[key] = value
+        if len(out) >= MAX_CSS:
+            break
+    # app.py ContextFooter: only a theme that sets footer-foreground EXPLICITLY recolours the
+    # footer's neutral fields (neutral_style); every theme resolves the variable itself.
+    explicit = (getattr(getattr(app, "current_theme", None), "variables", None) or {}).get("footer-foreground")
+    if isinstance(explicit, str) and len(explicit) <= 64:
+        out["litetui-footer-neutral"] = explicit
+    return out
+
+
 def _bounded(value):
     return json.loads(_encoded(value))
 
@@ -219,7 +240,8 @@ def _snapshot(app, cmd):
         result = {"kind": "theme_snapshot", **identity, "revisions": saved.revisions,
                   "scope": "device", "apply_timing": "immediate", "selection": selection,
                   "eligible": reason is None, "reason": reason, "rows": rows, "invalid": invalid,
-                  "registered_definitions": {name: digest for name, _, digest in objects}}
+                  "registered_definitions": {name: digest for name, _, digest in objects},
+                  "css": _css(app)}
         token = backend_catalog.fingerprint(app, context, {"result": result, "registry": objects, "global": raw})
         if (service.snapshot(context.session_id, read_only=True).revisions != saved.revisions
                 or _registry(app) != registry

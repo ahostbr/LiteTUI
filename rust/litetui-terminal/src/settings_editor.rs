@@ -671,7 +671,7 @@ impl View {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Output budget · conversation ")
-            .style(Style::default().fg(theme.foreground).bg(theme.background))
+            .style(Style::default().fg(theme.text()).bg(theme.screen()))
             .border_style(Style::default().fg(theme.title));
         let inner = block.inner(r);
         frame.render_widget(block, r);

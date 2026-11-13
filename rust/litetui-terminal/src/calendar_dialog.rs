@@ -491,18 +491,28 @@ struct Paint {
     panel: Color,
     error: Color,
     background: Color,
+    /// Textual's Button for the running theme (None for the preview catalog).
+    buttons: crate::picker_box::Buttons,
+    /// `$scrollbar` on `$scrollbar-background`.
+    bar: Color,
+    bar_back: Color,
 }
 impl Paint {
     fn of(t: &Theme) -> Self {
+        // Textual's roles (see hooks_dialog::Paint::of).
+        let surface = t.surface_bg();
         Self {
-            surface: t.surface,
-            text: t.foreground,
-            muted: t.thinking_text,
-            border: t.thinking_border,
-            accent: t.primary,
-            panel: t.panel,
-            error: t.error,
-            background: t.background,
+            surface,
+            text: t.text(),
+            muted: t.muted_on(surface),
+            border: t.var("border-blurred", t.thinking_border),
+            accent: t.var("border", t.primary),
+            panel: t.var("panel", t.panel),
+            error: t.var("error", t.error),
+            background: t.screen(),
+            buttons: crate::picker_box::Buttons::of(t),
+            bar: t.var("scrollbar", t.primary),
+            bar_back: t.var("scrollbar-background", t.panel),
         }
     }
 }
@@ -1676,8 +1686,13 @@ fn button(
     } else {
         p.background
     };
-    let face = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
-    let rim = Style::default().fg(p.border).bg(bg);
+    let (face, rim, bottom) = match p.buttons.get(variant, focused, disabled) {
+        Some(look) => (look.face, look.top, look.bottom),
+        None => {
+            let rim = Style::default().fg(p.border).bg(bg);
+            (Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD), rim, rim)
+        }
+    };
     let w = usize::from(r.width);
     let lw = label.width();
     let left = w.saturating_sub(lw) / 2;
@@ -1689,7 +1704,7 @@ fn button(
         let (text, style) = if i == 0 {
             ("▔".repeat(w), rim)
         } else if i == r.height - 1 {
-            ("▁".repeat(w), rim)
+            ("▁".repeat(w), bottom)
         } else if i == r.height / 2 {
             (
                 format!(
@@ -1719,8 +1734,8 @@ fn scrollbar(buf: &mut Buffer, at: Rect, scroll_y: u16, max_scroll_y: u16, p: &P
     let window = size;
     let virtual_size = size + f64::from(max_scroll_y);
     let x = content.x;
-    let back = p.panel;
-    let bar = p.accent;
+    let back = p.bar_back;
+    let bar = p.bar;
     if size <= 0.0 {
         return;
     }

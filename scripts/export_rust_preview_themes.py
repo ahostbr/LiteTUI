@@ -39,6 +39,8 @@ def render_catalog() -> str:
         lines.extend(["        Theme {", f"            name: {json.dumps(name)}.into(),"])
         for field, (red, green, blue) in resolved_colors(theme).items():
             lines.append(f"            {field}: Color::Rgb({red}, {green}, {blue}),")
+        # The CSS variables come from the running app only (live snapshots).
+        lines.append("            css: Default::default(),")
         lines.append("        },")
     lines += ["    ]", "}", ""]
     return "\n".join(lines)

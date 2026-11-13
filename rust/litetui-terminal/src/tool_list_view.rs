@@ -198,7 +198,7 @@ impl List {
     ) {
         self.hits.clear();
         self.region = None;
-        let base = Style::default().fg(t.foreground).bg(t.background);
+        let base = Style::default().fg(t.text()).bg(t.screen());
         buf.set_style(area, base);
         for y in area.top()..area.bottom() {
             buf.set_string(area.x, y, " ".repeat(usize::from(area.width)), base);

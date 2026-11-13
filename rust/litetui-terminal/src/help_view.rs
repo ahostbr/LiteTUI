@@ -213,7 +213,7 @@ impl View {
         frame.render_widget(Clear, area);
         frame.buffer_mut().set_style(
             area,
-            Style::default().fg(theme.foreground).bg(theme.background),
+            Style::default().fg(theme.text()).bg(theme.screen()),
         );
         let bw = area.width.min(88);
         let body = (u32::from(area.height) * 80 / 100) as u16;
@@ -301,7 +301,7 @@ impl View {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Help · commands and keys · read only ")
-            .style(Style::default().fg(theme.foreground).bg(theme.background))
+            .style(Style::default().fg(theme.text()).bg(theme.screen()))
             .border_style(Style::default().fg(theme.title));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);

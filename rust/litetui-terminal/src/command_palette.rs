@@ -1300,7 +1300,7 @@ impl View {
                     Paragraph::new("Commands need 42×18.\nResize, or Esc to return.").block(
                         Block::bordered()
                             .title(" Commands ")
-                            .style(Style::default().fg(theme.foreground).bg(theme.background))
+                            .style(Style::default().fg(theme.text()).bg(theme.screen()))
                             .border_style(Style::default().fg(theme.title)),
                     ),
                     r,
@@ -1331,7 +1331,7 @@ impl View {
                 Mode::Preview => " Prepared skill · not submitted ",
                 Mode::Picker => " Skills ",
             })
-            .style(Style::default().fg(theme.foreground).bg(theme.background))
+            .style(Style::default().fg(theme.text()).bg(theme.screen()))
             .border_style(Style::default().fg(theme.title));
         let inner = block.inner(r);
         f.render_widget(block, r);

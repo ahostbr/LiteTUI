@@ -518,7 +518,7 @@ impl View {
                 }
                 None => frame.buffer_mut().set_style(
                     area,
-                    Style::default().fg(theme.foreground).bg(theme.background),
+                    Style::default().fg(theme.text()).bg(theme.screen()),
                 ),
             }
             self.painted = true;

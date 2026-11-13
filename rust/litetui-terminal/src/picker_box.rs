@@ -92,7 +92,7 @@ pub fn draw(
     frame.render_widget(Clear, area);
     frame
         .buffer_mut()
-        .set_style(area, Style::default().fg(t.foreground).bg(t.background));
+        .set_style(area, Style::default().fg(t.text()).bg(t.screen()));
     let bw = area.width.min(BOX_WIDTH);
     if bw < 14 || area.height < 8 {
         return Drawn::default();
@@ -139,9 +139,11 @@ pub fn draw(
     let left = area.x + (area.width - bw) / 2;
     let rect = Rect::new(left, top, bw, box_h);
     frame.render_widget(Clear, rect);
-    let surface = Style::default().fg(t.foreground).bg(t.surface);
-    let edge = Style::default().fg(t.primary).bg(t.surface);
-    let muted = Style::default().fg(t.thinking_text).bg(t.surface);
+    // #picker-box: `background: $surface; border: thick $primary`; #picker-hint $text-muted.
+    let surface_bg = t.surface_bg();
+    let surface = Style::default().fg(t.text()).bg(surface_bg);
+    let edge = Style::default().fg(t.var("primary", t.primary)).bg(surface_bg);
+    let muted = Style::default().fg(t.muted_on(surface_bg)).bg(surface_bg);
     let inner = usize::from(bw - 2);
     let buf = frame.buffer_mut();
     for y in rect.top()..rect.bottom() {
@@ -174,42 +176,52 @@ pub fn draw(
         cx,
         rect.y + 2,
         &terminal_text(title),
+        // #picker-title: bold $primary-lighten-2.
         Style::default()
-            .fg(t.title)
-            .bg(t.surface)
+            .fg(t.var("primary-lighten-2", t.title))
+            .bg(surface_bg)
             .add_modifier(Modifier::BOLD),
     );
     let list_top = rect.y + 4;
+    // #picker-list is the focused OptionList: `background-tint: $foreground 5%` over its
+    // $surface, the highlighted option in $block-cursor-* inside its `padding: 0 1`.
+    let styled = !t.css.is_empty();
+    let list_bg = if styled { t.input() } else { surface_bg };
     let mut hits = Vec::new();
     for (dy, (index, line)) in lines.iter().skip(*scroll).take(list_h).enumerate() {
         let y = list_top + dy as u16;
         let style = if *index == highlighted {
-            Style::default()
-                .fg(t.background)
-                .bg(t.primary)
-                .add_modifier(Modifier::BOLD)
+            {
+                // $block-cursor-foreground is `auto 87%`: the contrast text of the cursor.
+                let cursor = t.var("block-cursor-background", t.primary);
+                Style::default()
+                    .fg(t.css_over("block-cursor-foreground", cursor, t.background))
+                    .bg(cursor)
+                    .add_modifier(Modifier::BOLD)
+            }
         } else {
-            surface
+            surface.bg(list_bg)
         };
-        put(buf, cx, y, &" ".repeat(usize::from(cw)), style);
+        if styled {
+            put(buf, cx, y, &" ".repeat(usize::from(cw)), surface.bg(list_bg));
+            put(buf, cx + 1, y, &" ".repeat(usize::from(cw.saturating_sub(2))), style);
+        } else {
+            put(buf, cx, y, &" ".repeat(usize::from(cw)), style);
+        }
         put(buf, cx + 1, y, line, style);
         hits.push((Rect::new(cx, y, cw, 1), *index));
     }
     let mut y = list_top + list_h as u16;
     for (text, style) in &extra {
-        put(buf, cx, y, text, style.bg(t.surface));
+        put(buf, cx, y, text, style.bg(surface_bg));
         y += 1;
     }
     put(buf, cx, y + 1, &terminal_text(hint), muted);
-    // SwapButton: width 100%, margin-bottom 1.
+    // SwapButton: width 100%, margin-bottom 1; a default Button (see `button`).
     let dock = y + 2;
-    let face = Style::default()
-        .fg(t.foreground)
-        .bg(t.panel)
-        .add_modifier(Modifier::BOLD);
-    let rim = Style::default().fg(t.thinking_border).bg(t.panel);
+    let (face, top_rim, bottom_rim) = button_styles(t, false);
     let w = usize::from(cw);
-    put(buf, cx, dock, &"▔".repeat(w), rim);
+    put(buf, cx, dock, &"▔".repeat(w), top_rim);
     let label = clip(DOCK, w);
     let pad = w.saturating_sub(label.width()) / 2;
     put(
@@ -223,14 +235,129 @@ pub fn draw(
         ),
         face,
     );
-    put(buf, cx, dock + 2, &"▁".repeat(w), rim);
+    put(buf, cx, dock + 2, &"▁".repeat(w), bottom_rim);
     Drawn { hits, rect }
+}
+
+/// Textual's Button (`-style-default`): bold `$button-foreground` on `$surface` between a
+/// `tall $surface-lighten-1` top and a `tall $surface-darken-1` bottom; `-primary`: on
+/// `$primary`, `$button-color-foreground`, rims `$primary-lighten-3` / `$primary-darken-3`.
+/// Returns (face, top rim, bottom rim). The preview catalog keeps its panel-faced buttons.
+pub fn button_styles(t: &Theme, primary: bool) -> (Style, Style, Style) {
+    if t.css.is_empty() {
+        let face_bg = if primary { t.primary } else { t.panel };
+        let face = Style::default()
+            .fg(if primary { t.background } else { t.foreground })
+            .bg(face_bg)
+            .add_modifier(Modifier::BOLD);
+        let rim = Style::default().fg(t.thinking_border).bg(face_bg);
+        return (face, rim, rim);
+    }
+    let (bg, fg, top, bottom) = if primary {
+        (
+            t.var("primary", t.primary),
+            t.css_over("button-color-foreground", t.var("primary", t.primary), t.background),
+            t.var("primary-lighten-3", t.primary),
+            t.var("primary-darken-3", t.primary),
+        )
+    } else {
+        let bg = t.surface_bg();
+        (
+            bg,
+            t.css_over("button-foreground", bg, t.foreground),
+            t.var("surface-lighten-1", t.thinking_border),
+            t.var("surface-darken-1", t.thinking_border),
+        )
+    };
+    (
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        Style::default().fg(top).bg(bg),
+        Style::default().fg(bottom).bg(bg),
+    )
+}
+
+/// One Button's three rows: the tall top rim, the face, the tall bottom rim.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Look {
+    pub face: Style,
+    pub top: Style,
+    pub bottom: Style,
+}
+/// Textual's Button for the running theme, every variant the dialogs use, unfocused and
+/// focused (`:focus`: `background-tint: $foreground 5%`, `text-style: $button-focus-text-style`,
+/// "b reverse"); `get` returns None for the preview catalog, whose buttons keep their look.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Buttons {
+    styled: bool,
+    looks: [[Look; 2]; 4],
+}
+impl Buttons {
+    pub fn of(t: &Theme) -> Self {
+        if t.css.is_empty() {
+            return Self::default();
+        }
+        let variant = |name: &str| -> [Look; 2] {
+            let (bg, fg, top, bottom) = if name.is_empty() {
+                let bg = t.surface_bg();
+                (
+                    bg,
+                    t.css_value("button-foreground"),
+                    t.var("surface-lighten-1", bg),
+                    t.var("surface-darken-1", bg),
+                )
+            } else {
+                let bg = t.var(name, t.primary);
+                (
+                    bg,
+                    t.css_value("button-color-foreground"),
+                    t.var(&format!("{name}-lighten-3"), bg),
+                    t.var(&format!("{name}-darken-3"), bg),
+                )
+            };
+            let look = |bg: ratatui::style::Color| {
+                let fg = fg.map_or(t.text(), |c| c.over(bg));
+                Look {
+                    face: Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+                    top: Style::default().fg(top).bg(bg),
+                    bottom: Style::default().fg(bottom).bg(bg),
+                }
+            };
+            let tinted = t.css_alpha("foreground", 5.0, bg, bg);
+            let mut focused = look(tinted);
+            focused.face = focused.face.add_modifier(Modifier::REVERSED);
+            [look(bg), focused]
+        };
+        Self {
+            styled: true,
+            looks: [variant(""), variant("primary"), variant("warning"), variant("error")],
+        }
+    }
+    /// The variant's look (`default`, `primary`, `warning`, `error`); `:disabled` is
+    /// `text-opacity: 0.6`, the face's text blended toward its background.
+    pub fn get(&self, variant: &str, focused: bool, disabled: bool) -> Option<Look> {
+        if !self.styled {
+            return None;
+        }
+        let row = match variant {
+            "primary" => 1,
+            "warning" => 2,
+            "error" => 3,
+            _ => 0,
+        };
+        let mut look = self.looks[row][usize::from(focused)];
+        if disabled
+            && let (Some(fg), Some(bg)) = (look.face.fg, look.face.bg)
+        {
+            look.face = look.face.fg(crate::theme::blend(bg, fg, 0.6));
+        }
+        Some(look)
+    }
 }
 
 /// Textual's thick border on $surface (#picker-box, #help-box): the box filled, its edges drawn.
 pub fn thick_box(buf: &mut ratatui::buffer::Buffer, rect: Rect, t: &Theme) {
-    let surface = Style::default().fg(t.foreground).bg(t.surface);
-    let edge = Style::default().fg(t.primary).bg(t.surface);
+    let surface = Style::default().fg(t.text()).bg(t.surface_bg());
+    let edge = Style::default().fg(t.var("primary", t.primary)).bg(t.surface_bg());
     let inner = usize::from(rect.width.saturating_sub(2));
     for y in rect.top()..rect.bottom() {
         let row = if y == rect.top() {
@@ -256,14 +383,9 @@ pub fn button(
     primary: bool,
 ) -> u16 {
     let w = (label.width() + 2).max(16);
-    let face_bg = if primary { t.primary } else { t.panel };
-    let face = Style::default()
-        .fg(if primary { t.background } else { t.foreground })
-        .bg(face_bg)
-        .add_modifier(Modifier::BOLD);
-    let rim = Style::default().fg(t.thinking_border).bg(face_bg);
+    let (face, top_rim, bottom_rim) = button_styles(t, primary);
     let pad = (w - label.width()) / 2;
-    buf.set_string(x, y, "▔".repeat(w), rim);
+    buf.set_string(x, y, "▔".repeat(w), top_rim);
     buf.set_string(
         x,
         y + 1,
@@ -274,7 +396,7 @@ pub fn button(
         ),
         face,
     );
-    buf.set_string(x, y + 2, "▁".repeat(w), rim);
+    buf.set_string(x, y + 2, "▁".repeat(w), bottom_rim);
     w as u16
 }
 /// Textual's ScrollBarRender.render_bar, vertical, in eighths of a cell.
@@ -300,8 +422,12 @@ pub fn scrollbar(
     let end = start + (thumb * 8.0).ceil() as usize;
     let (start_index, start_bar) = (start / 8, start % 8);
     let (end_index, end_bar) = (end / 8, end % 8);
-    let track = Style::default().fg(t.thinking_border).bg(t.surface);
-    let solid = Style::default().fg(t.surface).bg(t.thinking_border);
+    // Textual's scrollbar: `scrollbar-color: $scrollbar` on `scrollbar-background:
+    // $scrollbar-background` (the preview catalog keeps its own pair).
+    let bar = t.var("scrollbar", t.thinking_border);
+    let back = t.var("scrollbar-background", t.surface);
+    let track = Style::default().fg(bar).bg(back);
+    let solid = Style::default().fg(back).bg(bar);
     let rows = usize::from(height);
     for i in start_index..end_index.min(rows) {
         buf.set_string(column, top + i as u16, " ", solid);

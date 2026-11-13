@@ -581,7 +581,7 @@ impl View {
         frame.render_widget(
             Block::bordered()
                 .title(" Browser monitor ")
-                .style(Style::default().fg(theme.foreground).bg(theme.background)),
+                .style(Style::default().fg(theme.text()).bg(theme.screen())),
             area,
         );
         let body = area.inner(Margin::new(1, 1));

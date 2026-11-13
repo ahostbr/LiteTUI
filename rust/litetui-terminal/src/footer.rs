@@ -48,13 +48,21 @@ impl FieldKey {
 pub struct FooterField {
     pub key: FieldKey,
     pub text: String,
+    /// The field's Rich style as Python's footer markup gives it (app.py ContextFooter),
+    /// "" for the label's own colours.
+    pub style: &'static str,
 }
 impl FooterField {
     pub fn new(key: FieldKey, text: impl Into<String>) -> Self {
         Self {
             key,
             text: text.into(),
+            style: "",
         }
+    }
+    pub fn styled(mut self, style: &'static str) -> Self {
+        self.style = style;
+        self
     }
 }
 #[derive(Debug)]
@@ -131,7 +139,7 @@ impl FooterLayout {
             } else {
                 &mut status
             };
-            row.fields.push(FooterField::new(field.key, text));
+            row.fields.push(FooterField::new(field.key, text).styled(field.style));
         }
         if status.width() > status_width {
             status.separator = " · ";

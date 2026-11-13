@@ -863,7 +863,7 @@ impl View {
         frame.render_widget(
             Block::bordered()
                 .title(" Optional Sidecar ")
-                .style(Style::default().fg(theme.foreground).bg(theme.background)),
+                .style(Style::default().fg(theme.text()).bg(theme.screen())),
             area,
         );
         let body = area.inner(Margin::new(1, 1));
@@ -894,7 +894,7 @@ impl View {
                     .collect::<Vec<_>>()
                     .join("\n"),
             )
-            .style(Style::default().fg(theme.foreground).bg(theme.background)),
+            .style(Style::default().fg(theme.text()).bg(theme.screen())),
             Rect::new(body.x, body.y, body.width, body.height - 1),
         );
         let footer = if self.review.is_some() {

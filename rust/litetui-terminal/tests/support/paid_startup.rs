@@ -243,6 +243,7 @@ mod tests {
                 rows: Vec::new(),
                 registered_definitions: BTreeMap::new(),
                 invalid: Vec::new(),
+                css: BTreeMap::new(),
             },
         )))
     }

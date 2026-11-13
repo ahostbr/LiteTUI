@@ -298,45 +298,76 @@ impl State {
             return Vec::new();
         };
         let mut fields = Vec::new();
+        // Python's footer colours (app.py ContextFooter): one scale for the count and the
+        // percent, so they cannot disagree about how alarming the same number is.
+        let pct = match self.usage {
+            Some((used, Some(maximum))) if maximum > 0 => Some(used as f64 / maximum as f64),
+            _ => None,
+        };
+        let ctx_style = match pct {
+            Some(p) if p >= 0.9 => "bold #e5534b",
+            Some(p) if p >= 0.7 => "#e8a33d",
+            _ => "#7d8799",
+        };
         // Facts are collected in source default order, then the effective device switches and
         // footer order arrange them. Missing facts do not become fabricated zeroes or authority.
         if let Some((used, Some(maximum))) = self.usage {
-            fields.push(F::new(
-                K::Percent,
-                format!("{:.0}%", (used as f64 / maximum as f64) * 100.0),
-            ));
+            fields.push(
+                F::new(
+                    K::Percent,
+                    format!("{:.0}%", (used as f64 / maximum as f64) * 100.0),
+                )
+                .styled(ctx_style),
+            );
         }
-        let context = match self.usage {
-            Some((used, Some(maximum))) => format!("ctx {} / {}", count(used), count(maximum)),
-            Some((used, None)) => format!("ctx {} / ?", count(used)),
+        let (context, context_style) = match self.usage {
+            Some((used, Some(maximum))) => {
+                (format!("ctx {} / {}", count(used), count(maximum)), ctx_style)
+            }
+            Some((used, None)) => (format!("ctx {} / ?", count(used)), ctx_style),
             None => match ready.context_ceiling {
                 // Python prints "max" only when the number is a ceiling, not the loaded window.
-                Some(ceiling) if ready.context_loaded => format!("ctx — / {}", count(ceiling)),
-                Some(ceiling) => format!("ctx — / {} max", count(ceiling)),
-                None => "ctx —".into(),
+                Some(ceiling) if ready.context_loaded => {
+                    (format!("ctx — / {}", count(ceiling)), ctx_style)
+                }
+                Some(ceiling) => (format!("ctx — / {} max", count(ceiling)), "#5c6370"),
+                None => ("ctx —".into(), "dim"),
             },
         };
-        fields.push(F::new(K::Context, context));
+        fields.push(F::new(K::Context, context).styled(context_style));
         if let Some(seat) = &ready.seat {
-            fields.push(F::new(K::Seat, label(seat)));
+            fields.push(F::new(K::Seat, label(seat)).styled("bold #7d8799"));
         }
         if let Some(conversation) = &ready.conversation {
-            fields.push(F::new(
-                K::Conversation,
-                label(&conversation.chars().take(8).collect::<String>()),
-            ));
+            fields.push(
+                F::new(
+                    K::Conversation,
+                    label(&conversation.chars().take(8).collect::<String>()),
+                )
+                .styled("#5c6370"),
+            );
         }
         if let Some(held) = self.startup.as_ref().and_then(|s| s.held_restored_input)
             && held > 0
         {
             fields.push(F::new(K::RestoredInput, format!("held:{held}")));
         }
-        fields.push(F::new(K::Model, label(&ready.model)));
+        fields.push(F::new(K::Model, label(&ready.model)).styled("#7d8799"));
         if let Some(thinking) = &ready.thinking {
-            fields.push(F::new(K::Thinking, format!("think:{}", label(thinking))));
+            fields.push(
+                F::new(K::Thinking, format!("think:{}", label(thinking))).styled("#5c6370"),
+            );
         }
         if let Some(rate) = self.rate {
-            fields.push(F::new(K::Throughput, format!("{rate:.1} tok/s")));
+            // appsvc.append_tps_into: red under 5 tok/s, amber under 15.
+            let style = if rate < 5.0 {
+                "#e5534b"
+            } else if rate < 15.0 {
+                "#e8a33d"
+            } else {
+                "#7d8799"
+            };
+            fields.push(F::new(K::Throughput, format!("{rate:.1} tok/s")).styled(style));
         }
         // Python's authority field: "<glyph> <profile> on" (textfmt.profile_text); tools on/off
         // is the title bar's, not the footer's.
@@ -344,21 +375,28 @@ impl State {
             Some(glyph) => format!("{glyph} {profile} on"),
             None => profile.to_owned(),
         };
+        // tool_policy.stops_you, which the glyph is derived from (">>" never stops you; an
+        // unknown authority is not advertised as free).
+        let authority_style = |profile: &str| {
+            if ready.glyphs.get(profile).is_some_and(|g| g == ">>") {
+                "#7aa2f7"
+            } else {
+                "#7d8799"
+            }
+        };
         if let Some(policy) = &self.runtime_policy {
-            fields.push(F::new(
-                K::Authority,
-                authority(policy.effective_profile.as_str()),
-            ));
-            fields.push(F::new(
-                K::Plan,
+            let profile = policy.effective_profile.as_str();
+            fields.push(F::new(K::Authority, authority(profile)).styled(authority_style(profile)));
+            fields.push(
                 if policy.plan_mode {
-                    "plan:on"
+                    F::new(K::Plan, "plan:on").styled("bold #bb9af7")
                 } else {
-                    "plan:off"
+                    F::new(K::Plan, "plan:off").styled("#5c6370")
                 },
-            ));
+            );
         } else if let Some(tools) = &ready.tools {
-            fields.push(F::new(K::Authority, authority(tools.profile.as_str())));
+            let profile = tools.profile.as_str();
+            fields.push(F::new(K::Authority, authority(profile)).styled(authority_style(profile)));
         }
         // No seat registration, plan, cache or background facts
         // are available in these events. Never infer them from launch arguments.

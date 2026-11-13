@@ -810,7 +810,7 @@ fn stop_line(
 /// Python's `.system-msg`: muted italic, centred, `margin: 0 4`, wrapped at the words.
 fn system_line(t: &crate::theme::Theme, lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
     let room = width.saturating_sub(8).max(1);
-    let style = style(t.thinking_text, t.background).add_modifier(Modifier::ITALIC);
+    let style = style(t.muted_on(t.screen()), t.screen()).add_modifier(Modifier::ITALIC);
     for paragraph in display_safe(text).split('\n') {
         let mut line = String::new();
         let mut rows = Vec::new();
@@ -924,7 +924,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
         // Python mounts the splash first in the chat log and says "Connected — model: X"
         // below it (centered, muted, italic system line); both scroll with the chat.
         if !chat.has_older_live_page() {
-            let muted = style(t.thinking_text, t.background);
+            let muted = style(t.muted_on(t.screen()), t.screen());
             for line in chat.system_lines.iter().filter(|l| l.before_splash) {
                 system_line(t, &mut lines, &line.text, width);
             }
@@ -1529,10 +1529,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     }
     let compact = app.live.is_some() && app.compact_display.active();
     let presentation = app.presentation();
-    frame.render_widget(
-        Block::default().style(style(t.foreground, t.background)),
-        area,
-    );
+    frame.render_widget(Block::default().style(style(t.text(), t.screen())), area);
     app.viewport_too_small = area.width < 36 || area.height < 14;
     if (app.viewport_too_small || app.has_live_approval() || app.stop_open())
         && let Some(chat) = app.live.as_mut()
@@ -1607,9 +1604,14 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             )
         });
         let bar = areas[0];
-        frame.render_widget(Block::default().style(style(t.title, t.surface)), bar);
+        let head = if t.css.is_empty() {
+            style(t.title, t.surface)
+        } else {
+            style(t.text(), t.header())
+        };
+        frame.render_widget(Block::default().style(head), bar);
         let icon = Rect::new(bar.x, bar.y, bar.width.min(8), 1);
-        frame.render_widget(Paragraph::new(" ⭘").style(style(t.title, t.surface)), icon);
+        frame.render_widget(Paragraph::new(" ⭘").style(head), icon);
         app.palette_button = Some(icon);
         let room = bar.width.saturating_sub(18);
         if room > 0 {
@@ -1619,8 +1621,20 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             } else {
                 title
             };
+            let line = centered(&text, room_cells);
+            let line = match line.split_once(" — ").filter(|_| !t.css.is_empty()) {
+                // Textual's HeaderTitle: the title, then " — sub_title" in `dim`.
+                Some((title, sub)) => Line::from(vec![
+                    Span::styled(title.to_owned(), head),
+                    Span::styled(
+                        format!(" — {sub}"),
+                        crate::theme::textual_dim(head.add_modifier(Modifier::DIM)),
+                    ),
+                ]),
+                None => Line::styled(line, head),
+            };
             frame.render_widget(
-                Paragraph::new(centered(&text, room_cells)).style(style(t.title, t.surface)),
+                Paragraph::new(line).style(head),
                 Rect::new(bar.x + 8, bar.y, room, 1),
             );
         }
@@ -1651,7 +1665,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                     .into()
             },
         )
-        .style(style(t.tool_text, t.background)),
+        .style(style(t.tool_text, t.screen())),
         areas[1],
     );
     let picker_height = if app.completion.is_open() && !app.themes_open && !app.approval_open {
@@ -1760,7 +1774,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 .take(height)
                 .collect::<Vec<_>>(),
         )
-        .style(style(t.foreground, t.background)),
+        .style(style(t.text(), t.screen())),
         Rect {
             width: text_width as u16,
             ..viewport
@@ -1853,7 +1867,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 .unwrap_or_default(),
             display_safe(&app.notice),
         ))
-        .style(style(t.title, t.background)),
+        .style(style(t.title, t.screen())),
         areas[3],
     );
     // Live composer sits one column in (Python's layout); its text width shrinks to match.
@@ -1912,7 +1926,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             } else {
                 "Message... (preview only; Enter adds a local mock turn)"
             },
-            style(t.title, t.surface),
+            if t.css.is_empty() {
+                style(t.title, t.surface)
+            } else {
+                // PromptInput's placeholder: $text-disabled over the input.
+                style(t.disabled_on(t.input()), t.input())
+            },
         )
     } else {
         Line::from(
@@ -1947,10 +1966,15 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         horizontal_top: "▔",
         horizontal_bottom: "▁",
     };
+    let (input_bg, input_border) = if t.css.is_empty() {
+        (t.surface, t.thinking_border)
+    } else {
+        (t.input(), t.input_border())
+    };
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_set(tall)
-        .border_style(style(t.thinking_border, t.surface));
+        .border_style(style(input_border, input_bg));
     if let Some(chat) = app.live.as_ref() {
         let lock = if presentation.autoscroll {
             " 🔒 "
@@ -1968,21 +1992,49 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         } else {
             " ⏸ pause "
         };
+        // #scroll-lock and #prompt-actions: $surface; the mic and pause chips: bold on
+        // $footer-background (input_controls.py, app.py .mic-button/.pause-button).
+        let chip = style(t.text(), t.surface_bg());
+        let button = style(t.text(), t.footer_bg()).add_modifier(Modifier::BOLD);
+        let edge = style(input_border, input_bg);
         block = block
             // One border cell between each chip and the corner, as Python draws it.
-            .title_top(Line::from(format!("{lock}▔")).right_aligned())
-            .title_bottom(Line::from(format!("{mic}{pause} ▁")).right_aligned());
+            .title_top(
+                Line::from(vec![Span::styled(lock, chip), Span::styled("▔", edge)]).right_aligned(),
+            )
+            .title_bottom(
+                Line::from(vec![
+                    Span::styled(mic, button),
+                    Span::styled(pause, button),
+                    Span::styled(" ", chip),
+                    Span::styled("▁", edge),
+                ])
+                .right_aligned(),
+            );
     } else {
         block = block.title_bottom(" F4 themes · F6 approval · Ctrl+Q ");
     }
     let composer = Paragraph::new(input_line)
-        .style(style(t.foreground, t.surface))
+        .style(style(t.text(), input_bg))
         .scroll((0, input_scroll as u16))
         .block(block);
     let mut composer_area = areas[4];
     composer_area.x += indent;
     composer_area.width -= 2 * indent; // a one-column margin on each side, like Python
     frame.render_widget(composer, composer_area);
+    if !t.css.is_empty() && composer_area.width >= 2 {
+        // Textual's tall border: the left edge "▊" is the screen in front of the border
+        // colour, the right edge "▎" the border colour in front of the screen.
+        let buf = frame.buffer_mut();
+        let right = composer_area.right() - 1;
+        for y in composer_area.top()..composer_area.bottom() {
+            if y >= buf.area.bottom() {
+                break;
+            }
+            buf[(composer_area.x, y)].set_style(style(t.screen(), input_border));
+            buf[(right, y)].set_style(style(input_border, t.screen()));
+        }
+    }
     if !app.approval_open && !app.has_live_input() && !app.themes_open {
         frame.set_cursor_position((
             areas[4].x + 1 + indent + (cursor_cells - input_scroll) as u16,
@@ -2002,7 +2054,34 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         footer_width,
     );
     app.footer.update_visible(&footer.actions);
-    let footer_style = style(t.footer_foreground, t.footer_background);
+    let footer_style = style(
+        t.var("footer-foreground", t.footer_foreground),
+        t.footer_bg(),
+    );
+    let neutral = t.footer_neutral();
+    let styled = !t.css.is_empty();
+    let field_style = |field: &crate::footer::FooterField| {
+        if !styled || field.style.is_empty() {
+            return footer_style;
+        }
+        // app.py neutral_style: an explicit footer-foreground replaces the two neutral
+        // greys on the status row (authority keeps its own colours).
+        let base = crate::theme::textual_style(field.style, footer_style);
+        match neutral {
+            Some(colour)
+                if field.key != crate::footer::FieldKey::Authority
+                    && (field.style.contains("#5c6370") || field.style.contains("#7d8799")) =>
+            {
+                base.fg(colour)
+            }
+            _ => base,
+        }
+    };
+    let separator_style = if styled {
+        footer_style.fg(neutral.unwrap_or(Color::Rgb(0x5c, 0x63, 0x70)))
+    } else {
+        footer_style
+    };
     let row = |row: &crate::footer::FooterRow| {
         // Python's footer starts at column 0 (its one cell of padding is on the right).
         let mut spans = vec![];
@@ -2011,7 +2090,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         }
         for (index, field) in row.fields.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::raw(row.separator));
+                spans.push(Span::styled(row.separator, separator_style));
             }
             let selected = field
                 .key
@@ -2022,7 +2101,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 if selected {
                     footer_style.add_modifier(Modifier::REVERSED | Modifier::BOLD)
                 } else {
-                    footer_style
+                    field_style(field)
                 },
             ));
         }
@@ -2043,7 +2122,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             } else {
                 "meters:off"
             },
-            footer_style,
+            // .task-manager-toggle: color $accent.
+            if styled {
+                footer_style.fg(t.accent())
+            } else {
+                footer_style
+            },
         ));
     }
     frame.render_widget(
@@ -2056,7 +2140,12 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
     {
         let w = version.width() as u16;
         frame.render_widget(
-            Paragraph::new(version).style(footer_style),
+            // .footer-version: color $text-muted.
+            Paragraph::new(version).style(if styled {
+                footer_style.fg(t.muted_on(t.footer_bg()))
+            } else {
+                footer_style
+            }),
             Rect::new(areas[5].right() - w, areas[5].y + 1, w, 1),
         );
     }

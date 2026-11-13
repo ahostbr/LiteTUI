@@ -370,19 +370,25 @@ struct Paint {
     error: Color,
     background: Color,
     warning: Color,
+    /// Textual's Button for the running theme (None for the preview catalog).
+    buttons: crate::picker_box::Buttons,
 }
 impl Paint {
     fn of(t: &Theme) -> Self {
+        // Textual's roles: $surface, $foreground, $text-muted over $surface, an unfocused
+        // input's `tall $border-blurred` (the focused one is $border, here `accent`).
+        let surface = t.surface_bg();
         Self {
-            surface: t.surface,
-            text: t.foreground,
-            muted: t.thinking_text,
-            border: t.thinking_border,
-            accent: t.primary,
-            panel: t.panel,
-            error: t.error,
-            background: t.background,
-            warning: t.title,
+            surface,
+            text: t.text(),
+            muted: t.muted_on(surface),
+            border: t.var("border-blurred", t.thinking_border),
+            accent: t.var("border", t.primary),
+            panel: t.var("panel", t.panel),
+            error: t.var("error", t.error),
+            background: t.screen(),
+            warning: t.var("warning", t.title),
+            buttons: crate::picker_box::Buttons::of(t),
         }
     }
 }
@@ -886,8 +892,13 @@ impl View {
         } else {
             p.background
         };
-        let face = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
-        let rim = Style::default().fg(p.border).bg(bg);
+        let (face, rim, bottom) = match p.buttons.get(variant, focused, disabled) {
+            Some(look) => (look.face, look.top, look.bottom),
+            None => {
+                let rim = Style::default().fg(p.border).bg(bg);
+                (Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD), rim, rim)
+            }
+        };
         let w = usize::from(width);
         let lw = label.width();
         let left = w.saturating_sub(lw) / 2;
@@ -903,7 +914,7 @@ impl View {
                 ),
                 face,
             )],
-            vec![(x, "▁".repeat(w), rim)],
+            vec![(x, "▁".repeat(w), bottom)],
         ]
     }
     fn control(

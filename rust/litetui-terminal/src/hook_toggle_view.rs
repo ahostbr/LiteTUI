@@ -198,7 +198,7 @@ impl View {
         frame.render_widget(Clear, rect);
         let block = Block::bordered()
             .title(format!(" Lifecycle hooks · {} ", self.scope.key()))
-            .style(Style::default().fg(theme.foreground).bg(theme.background));
+            .style(Style::default().fg(theme.text()).bg(theme.screen()));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
         self.visible = inner.width >= 25 && inner.height >= 6;

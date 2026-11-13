@@ -19,6 +19,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(219, 68, 68),
             footer_foreground: Color::Rgb(220, 216, 208),
             footer_background: Color::Rgb(20, 24, 34),
+            css: Default::default(),
         },
         Theme {
             name: "amber-ledger".into(),
@@ -36,6 +37,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(196, 69, 59),
             footer_foreground: Color::Rgb(239, 230, 214),
             footer_background: Color::Rgb(23, 18, 8),
+            css: Default::default(),
         },
         Theme {
             name: "ash".into(),
@@ -53,6 +55,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(208, 206, 200),
             footer_background: Color::Rgb(29, 29, 27),
+            css: Default::default(),
         },
         Theme {
             name: "atom-one-dark".into(),
@@ -70,6 +73,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(239, 98, 98),
             footer_foreground: Color::Rgb(171, 178, 191),
             footer_background: Color::Rgb(79, 86, 102),
+            css: Default::default(),
         },
         Theme {
             name: "catppuccin-frappe".into(),
@@ -87,6 +91,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(230, 130, 132),
             footer_foreground: Color::Rgb(198, 208, 245),
             footer_background: Color::Rgb(81, 87, 109),
+            css: Default::default(),
         },
         Theme {
             name: "catppuccin-macchiato".into(),
@@ -104,6 +109,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(237, 135, 150),
             footer_foreground: Color::Rgb(202, 211, 245),
             footer_background: Color::Rgb(73, 77, 100),
+            css: Default::default(),
         },
         Theme {
             name: "catppuccin-mocha".into(),
@@ -121,6 +127,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(242, 143, 173),
             footer_foreground: Color::Rgb(205, 214, 244),
             footer_background: Color::Rgb(69, 71, 90),
+            css: Default::default(),
         },
         Theme {
             name: "charcoal".into(),
@@ -138,6 +145,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(207, 210, 214),
             footer_background: Color::Rgb(31, 32, 35),
+            css: Default::default(),
         },
         Theme {
             name: "cockpit".into(),
@@ -155,6 +163,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(215, 115, 115),
             footer_foreground: Color::Rgb(242, 239, 234),
             footer_background: Color::Rgb(22, 22, 30),
+            css: Default::default(),
         },
         Theme {
             name: "dracula".into(),
@@ -172,6 +181,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(254, 85, 85),
             footer_foreground: Color::Rgb(248, 248, 242),
             footer_background: Color::Rgb(49, 52, 66),
+            css: Default::default(),
         },
         Theme {
             name: "dusk".into(),
@@ -189,6 +199,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(207, 69, 64),
             footer_foreground: Color::Rgb(240, 224, 216),
             footer_background: Color::Rgb(36, 26, 29),
+            css: Default::default(),
         },
         Theme {
             name: "flexoki".into(),
@@ -206,6 +217,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(174, 48, 41),
             footer_foreground: Color::Rgb(255, 252, 240),
             footer_background: Color::Rgb(40, 39, 38),
+            css: Default::default(),
         },
         Theme {
             name: "forest".into(),
@@ -223,6 +235,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(238, 68, 68),
             footer_foreground: Color::Rgb(230, 240, 230),
             footer_background: Color::Rgb(22, 32, 24),
+            css: Default::default(),
         },
         Theme {
             name: "graphite".into(),
@@ -240,6 +253,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(214, 214, 218),
             footer_background: Color::Rgb(26, 26, 29),
+            css: Default::default(),
         },
         Theme {
             name: "gruvbox".into(),
@@ -257,6 +271,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(250, 73, 52),
             footer_foreground: Color::Rgb(251, 241, 199),
             footer_background: Color::Rgb(80, 73, 69),
+            css: Default::default(),
         },
         Theme {
             name: "gunmetal".into(),
@@ -274,6 +289,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(194, 201, 210),
             footer_background: Color::Rgb(23, 27, 33),
+            css: Default::default(),
         },
         Theme {
             name: "iron".into(),
@@ -291,6 +307,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(196, 198, 201),
             footer_background: Color::Rgb(22, 24, 27),
+            css: Default::default(),
         },
         Theme {
             name: "lime".into(),
@@ -308,6 +325,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(243, 63, 94),
             footer_foreground: Color::Rgb(224, 234, 216),
             footer_background: Color::Rgb(24, 30, 24),
+            css: Default::default(),
         },
         Theme {
             name: "lite-suite".into(),
@@ -325,6 +343,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(191, 69, 58),
             footer_foreground: Color::Rgb(232, 228, 220),
             footer_background: Color::Rgb(27, 27, 29),
+            css: Default::default(),
         },
         Theme {
             name: "matrix".into(),
@@ -342,6 +361,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(254, 0, 0),
             footer_foreground: Color::Rgb(0, 255, 65),
             footer_background: Color::Rgb(0, 59, 0),
+            css: Default::default(),
         },
         Theme {
             name: "monokai".into(),
@@ -359,6 +379,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(248, 38, 114),
             footer_foreground: Color::Rgb(214, 214, 214),
             footer_background: Color::Rgb(62, 61, 50),
+            css: Default::default(),
         },
         Theme {
             name: "neo".into(),
@@ -376,6 +397,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(250, 113, 133),
             footer_foreground: Color::Rgb(240, 240, 240),
             footer_background: Color::Rgb(31, 31, 31),
+            css: Default::default(),
         },
         Theme {
             name: "nord".into(),
@@ -393,6 +415,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(190, 97, 106),
             footer_foreground: Color::Rgb(216, 222, 233),
             footer_background: Color::Rgb(67, 76, 94),
+            css: Default::default(),
         },
         Theme {
             name: "obsidian".into(),
@@ -410,6 +433,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(200, 200, 206),
             footer_background: Color::Rgb(17, 17, 20),
+            css: Default::default(),
         },
         Theme {
             name: "ocean".into(),
@@ -427,6 +451,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(247, 113, 113),
             footer_foreground: Color::Rgb(226, 232, 240),
             footer_background: Color::Rgb(30, 41, 59),
+            css: Default::default(),
         },
         Theme {
             name: "onyx".into(),
@@ -444,6 +469,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(220, 218, 212),
             footer_background: Color::Rgb(25, 25, 23),
+            css: Default::default(),
         },
         Theme {
             name: "oscura-midnight".into(),
@@ -461,6 +487,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(191, 69, 58),
             footer_foreground: Color::Rgb(232, 228, 220),
             footer_background: Color::Rgb(27, 27, 29),
+            css: Default::default(),
         },
         Theme {
             name: "pewter".into(),
@@ -478,6 +505,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(216, 219, 221),
             footer_background: Color::Rgb(30, 32, 34),
+            css: Default::default(),
         },
         Theme {
             name: "retro".into(),
@@ -495,6 +523,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(219, 38, 38),
             footer_foreground: Color::Rgb(254, 243, 199),
             footer_background: Color::Rgb(45, 34, 21),
+            css: Default::default(),
         },
         Theme {
             name: "rose-pine".into(),
@@ -512,6 +541,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(234, 111, 146),
             footer_foreground: Color::Rgb(224, 222, 244),
             footer_background: Color::Rgb(38, 35, 58),
+            css: Default::default(),
         },
         Theme {
             name: "rose-pine-moon".into(),
@@ -529,6 +559,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(234, 111, 146),
             footer_foreground: Color::Rgb(224, 222, 244),
             footer_background: Color::Rgb(57, 53, 82),
+            css: Default::default(),
         },
         Theme {
             name: "slate".into(),
@@ -546,6 +577,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(200, 204, 214),
             footer_background: Color::Rgb(28, 32, 40),
+            css: Default::default(),
         },
         Theme {
             name: "smoke".into(),
@@ -563,6 +595,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(155, 90, 82),
             footer_foreground: Color::Rgb(212, 208, 204),
             footer_background: Color::Rgb(32, 30, 29),
+            css: Default::default(),
         },
         Theme {
             name: "solarized-dark".into(),
@@ -580,6 +613,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(219, 50, 47),
             footer_foreground: Color::Rgb(131, 148, 150),
             footer_background: Color::Rgb(38, 139, 210),
+            css: Default::default(),
         },
         Theme {
             name: "textual-dark".into(),
@@ -597,6 +631,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(185, 60, 91),
             footer_foreground: Color::Rgb(224, 224, 224),
             footer_background: Color::Rgb(36, 47, 56),
+            css: Default::default(),
         },
         Theme {
             name: "tokyo-night".into(),
@@ -614,6 +649,7 @@ pub fn builtin_themes() -> Vec<Theme> {
             error: Color::Rgb(246, 118, 142),
             footer_foreground: Color::Rgb(169, 177, 214),
             footer_background: Color::Rgb(65, 72, 104),
+            css: Default::default(),
         },
     ]
 }

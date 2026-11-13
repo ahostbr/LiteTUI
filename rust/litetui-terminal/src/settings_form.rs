@@ -1421,18 +1421,23 @@ struct Paint {
     accent: Color,
     border: Color,
     error: Color,
+    /// Textual's Button for the running theme (None for the preview catalog).
+    buttons: crate::picker_box::Buttons,
 }
 impl Paint {
     fn of(t: &Theme) -> Self {
+        // Textual's roles (see hooks_dialog::Paint::of).
+        let surface = t.surface_bg();
         Self {
-            background: t.background,
-            surface: t.surface,
-            panel: t.panel,
-            text: t.foreground,
-            muted: t.thinking_text,
-            accent: t.primary,
-            border: t.thinking_border,
-            error: t.error,
+            background: t.screen(),
+            surface,
+            panel: t.var("panel", t.panel),
+            text: t.text(),
+            muted: t.muted_on(surface),
+            accent: t.var("border", t.primary),
+            border: t.var("border-blurred", t.thinking_border),
+            error: t.var("error", t.error),
+            buttons: crate::picker_box::Buttons::of(t),
         }
     }
 }
@@ -1642,18 +1647,24 @@ impl Layout<'_> {
     }
     fn button(&self, label: &str, x: u16, width: u16, focused: bool, disabled: bool) -> Rows3 {
         let p = self.paint;
-        let face = Style::default()
-            .fg(if disabled { p.muted } else { p.text })
-            .bg(if focused { p.accent } else { p.panel })
-            .add_modifier(Modifier::BOLD);
-        let top = Style::default()
-            .fg(p.border)
-            .bg(if focused { p.accent } else { p.panel });
+        let (face, top, bottom) = match p.buttons.get("default", focused, disabled) {
+            Some(look) => (look.face, look.top, look.bottom),
+            None => {
+                let face = Style::default()
+                    .fg(if disabled { p.muted } else { p.text })
+                    .bg(if focused { p.accent } else { p.panel })
+                    .add_modifier(Modifier::BOLD);
+                let top = Style::default()
+                    .fg(p.border)
+                    .bg(if focused { p.accent } else { p.panel });
+                (face, top, top)
+            }
+        };
         let w = usize::from(width);
         [
             vec![(x, "▔".repeat(w), top)],
             vec![(x, centered(&shown(label), w), face)],
-            vec![(x, "▁".repeat(w), top)],
+            vec![(x, "▁".repeat(w), bottom)],
         ]
     }
     fn push3(&mut self, rows: Rows3, target: Option<usize>, caret: Option<u16>) {
