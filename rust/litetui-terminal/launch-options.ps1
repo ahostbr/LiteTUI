@@ -4,12 +4,14 @@
 function Resolve-LiteTuiPython {
     param([string]$Source)
     if ($env:LITETUI_PYTHON) { return $env:LITETUI_PYTHON }
-    $candidates = @()
+    # The checkout's own venv first: a worktree synced from its own lock (the port's newer
+    # claude-agent-sdk, 2026-11-13) must not run on the main checkout's, which Python
+    # LiteTUI's run.bat re-syncs from develop. In the main checkout both are the same.
+    $candidates = @(Join-Path $Source '.venv/Scripts/python.exe')
     $common = & git -C $Source rev-parse --path-format=absolute --git-common-dir 2>$null
     if ($LASTEXITCODE -eq 0 -and $common) {
         $candidates += Join-Path (Split-Path $common -Parent) '.venv/Scripts/python.exe'
     }
-    $candidates += Join-Path $Source '.venv/Scripts/python.exe'
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return (Resolve-Path -LiteralPath $candidate).Path }
     }

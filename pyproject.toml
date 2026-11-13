@@ -57,7 +57,7 @@ litetui-monitor = "litetui.monitor.cli:main"
 
 [project.optional-dependencies]
 # Tested with the bundled Claude CLI 2.1.281; other backends import no SDK.
-claude = ["claude-agent-sdk==0.2.159"]
+claude = ["claude-agent-sdk==0.2.181"]
 
 [dependency-groups]
 # The tooling the gates need, declared rather than assumed present. The project

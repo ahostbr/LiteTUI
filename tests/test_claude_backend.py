@@ -309,6 +309,38 @@ async def test_catalog_keeps_cli_rows_first_and_adds_every_context_variant(monke
     assert "claude-haiku-5-5[1m]" not in keys
 
 
+@pytest.mark.asyncio
+async def test_the_picker_is_the_clis_own_rows_first_even_one_the_fallback_does_not_know(monkeypatch):
+    """Ryan 2026-11-13: "fable5.2 isnt there". The rows are the CLI's initialize metadata
+    (here CLI 2.1.323's, plus one invented model) and the fallback only fills in after them."""
+    from litetui import claude_backend
+
+    queried = [("default", "claude-opus-5-5"), ("opus", "claude-opus-5-5"),
+               ("fable", "claude-fable-5-2"), ("sonnet", "claude-sonnet-5-5"),
+               ("haiku", "claude-haiku-5-5"), ("claude-future-9-9", "claude-future-9-9")]
+
+    class _Session:
+        def __init__(self, options):
+            pass
+        async def start(self):
+            return {"models": [{"value": v, "resolvedModel": r} for v, r in queried]}
+        async def close(self):
+            pass
+
+    async def _options(self, **values):
+        return values
+
+    monkeypatch.setattr(claude_backend, "ClaudeSession", _Session)
+    monkeypatch.setattr(ClaudeBackend, "_options", _options)
+    backend = ClaudeBackend(Settings(backend="claude"))
+    keys = [row.key for row in await backend.list_models()]
+    assert keys[:len(queried)] == [v for v, _ in queried]      # the CLI's rows, in its order
+    assert "claude-future-9-9" in keys                           # not in the fallback, still shown
+    assert "claude-fable-5-2" in keys and len(keys) == len(set(keys))
+    assert backend.models["fable"]["resolvedModel"] == "claude-fable-5-2"
+    assert claude_backend.CLI_VERSION == "2.1.323"
+
+
 def test_effort_levels_come_from_cli_metadata_with_a_static_fallback():
     from litetui.claude_backend import STATIC_EFFORT
     backend = ClaudeBackend(Settings(backend="claude"))

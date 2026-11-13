@@ -9,8 +9,8 @@ import subprocess
 from litetui.claude_session import ClaudeSession
 from litetui.llm_backend import BackendError, ModelRow
 
-SDK_VERSION = "0.2.159"
-CLI_VERSION = "2.1.281"
+SDK_VERSION = "0.2.181"
+CLI_VERSION = "2.1.323"
 
 #: The prompt-cache lifetime LiteTUI pins for the main conversation (T911, the user
 #: 2026-09-24). CLI 2.1.281 reads CLAUDE_CODE_PROMPT_CACHE_TTL (code.claude.com
@@ -65,22 +65,22 @@ def seeded_append(seed, *, verbatim=False):
             "was written by you, in the previous session, from the full conversation. Treat it as "
             f"your own notes on everything before this point:\n\n{seed}")
 
-#: Every model spelling `claude --model` accepts, standard and 1M context.
-#: The CLI's initialize metadata is its own curated picker (five rows on CLI
-#: 2.1.281: default, opus[1m], claude-fable-5-1[1m], sonnet, haiku), so the
-#: queried list comes first and this fills in the rest. [1m] only where the CLI
-#: offers it: Opus 5.5, Fable 5.1 and Sonnet 5; Haiku has no 1M variant here.
-#: Haiku 5.5's ID and effort levels were read from installed CLI 2.1.293's
-#: initialize metadata; its explicit ID also served a native turn on bundled
-#: CLI 2.1.281. The bundled `haiku` alias still resolves to Haiku 4.5.
-# ponytail: static list, refresh from authoritative CLI metadata.
+#: The fallback behind the CLI's own picker. The CLI's initialize metadata comes first
+#: (ClaudeBackend.ensure_running) and this only fills in what it did not list, so it can
+#: add a row but never hide a newer one. Refreshed 2026-11-13 from bundled CLI 2.1.323's
+#: initialize rows (claude-agent-sdk 0.2.181): the aliases default/opus/fable/sonnet/haiku,
+#: the IDs they resolve to (Opus 5.5, Fable 5.2, Sonnet 5.5, Haiku 5.5), and its explicit
+#: IDs. 2.1.281 lacked Fable 5.2 (Ryan 2026-11-13: "fable5.2 isnt there"). The [1m]
+#: spellings are kept from the 2.1.281 list so a saved choice still resolves; 2.1.323's
+#: rows list none.
 STATIC_MODELS = (
-    "default", "opus", "opus[1m]", "fable", "fable[1m]", "sonnet", "sonnet[1m]", "haiku",
-    "claude-opus-5-5", "claude-opus-5-5[1m]",
-    "claude-fable-5-1", "claude-fable-5-1[1m]",
-    "claude-sonnet-5-5", "claude-sonnet-5-5[1m]",
-    "claude-sonnet-5", "claude-sonnet-5[1m]",
-    "claude-haiku-5-5", "claude-haiku-4-5-20251001",
+    "default", "opus", "fable", "sonnet", "haiku",
+    "claude-opus-5-5", "claude-fable-5-2", "claude-sonnet-5-5", "claude-haiku-5-5",
+    "claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5",
+    "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "opus[1m]", "fable[1m]", "sonnet[1m]", "claude-opus-5-5[1m]", "claude-fable-5-1[1m]",
+    "claude-sonnet-5-5[1m]", "claude-sonnet-5[1m]",
 )
 #: Effort levels for a STATIC_MODELS row the CLI did not describe. Every
 #: queried Opus/Fable/Sonnet row on CLI 2.1.281 reports exactly these, as does
