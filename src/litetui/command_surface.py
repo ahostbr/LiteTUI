@@ -328,6 +328,9 @@ def resolve(app, cmd):
             bare = token.lstrip("/")
             matches = [row for row in current["entries"] if row["kind"] == "skill"
                        and row["completion_order"] is not None and row["title"].lower() == bare]
+        if not matches:
+            # LiteTUI._handle_command's own line for a name that is no command and no skill.
+            raise ValueError(f"Unknown: {token} — try /help")
         if len(matches) != 1:
             raise ValueError("Command is unknown or ambiguous; select an exact catalog row")
         selected = matches[0]

@@ -424,9 +424,23 @@ fn raw_slash_draft_cannot_fall_back_to_provider_and_submit_empties_composer() {
         app.live.as_mut().unwrap().commands.take_intent(),
         Some(Intent::Raw("/UNKNOWN exact arguments".into()))
     );
-    app.observe_live(Observation::Commands(Update::Rejected("unknown".into())))
-        .unwrap();
+    app.observe_live(Observation::Commands(Update::Rejected(
+        "Unknown: /unknown — try /help".into(),
+    )))
+    .unwrap();
     assert!(app.live.as_mut().unwrap().take_submission().is_none());
+    // Python answers a typed unknown command in the chat log and opens nothing.
+    {
+        let chat = app.live.as_mut().unwrap();
+        assert!(!chat.commands.open);
+        assert_eq!(
+            chat.system_lines.last().map(|l| l.text.as_str()),
+            Some("Unknown: /unknown — try /help")
+        );
+    }
+    // A skill picked from the palette still prepares and submits only its verified prompt.
+    app.live.as_mut().unwrap().commands.open(false);
+    app.live.as_mut().unwrap().commands.take_intent();
     let p = prepared("trailing\n  ");
     app.observe_live(Observation::Commands(Update::Prepared {
         catalog: Box::new(catalog()),

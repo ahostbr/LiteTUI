@@ -561,3 +561,15 @@ async def test_sidecar_routes_only_supported_views_without_executing_plugin(comm
         assert result["native_action"] == "sidecar"
     with pytest.raises(ValueError):
         command_surface.resolve(app, raw_request(app, command="/sidecar arbitrary"))
+
+
+@pytest.mark.asyncio
+async def test_raw_unknown_command_is_pythons_own_line(command_app):
+    # LiteTUI._handle_command says "Unknown: <name> — try /help" in the chat log; the
+    # native frontend now shows the resolver's refusal there, so the words are the same.
+    app = command_app
+    custom_registry(app)
+    request = {key: value for key, value in selection(app, read(app)).items() if key != "row_id"}
+    with pytest.raises(ValueError) as refused:
+        command_surface.resolve(app, {**request, "command": "/NoSuchThing extra words"})
+    assert str(refused.value) == "Unknown: /nosuchthing — try /help"

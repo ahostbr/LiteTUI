@@ -645,6 +645,10 @@ pub struct View {
     /// A command typed while the background registry read was still out: sent when it settles,
     /// so that read's catalog is never taken as the command's answer.
     deferred_raw: Option<String>,
+    /// A typed slash command is being resolved; its refusal is a transcript line.
+    raw_pending: bool,
+    /// That refusal, for the chat to draw as Python draws a command's reply.
+    refused: Option<String>,
 }
 impl View {
     pub fn owns_input(&self) -> bool {
@@ -685,6 +689,7 @@ impl View {
         }
         self.open = true;
         self.waiting = true;
+        self.raw_pending = true;
         if self.prefetching && self.intent.take().is_some() {
             // The background read was never sent: the command replaces it.
             self.prefetching = false;
@@ -700,6 +705,10 @@ impl View {
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.intent.take()
+    }
+    /// A typed slash command's refusal ("Unknown: /x — try /help"), once.
+    pub fn take_refused(&mut self) -> Option<String> {
+        self.refused.take()
     }
     pub fn take_route_arguments(&mut self) -> String {
         std::mem::take(&mut self.route_arguments)
@@ -763,9 +772,17 @@ impl View {
             return;
         }
         let active = self.open;
+        let raw = std::mem::take(&mut self.raw_pending);
         self.waiting = false;
         self.intent = None;
         self.hide();
+        if raw && let Update::Rejected(reason) = &u {
+            // Python answers a typed command in the chat log ("Unknown: /x — try /help",
+            // a handler's refusal) and opens nothing.
+            self.refused = Some(reason.clone());
+            self.close();
+            return;
+        }
         if !active {
             if let Update::Catalog { catalog, .. } = u {
                 self.catalog = Some(with_local(catalog));

@@ -71,6 +71,9 @@ PROFILES = {
     "backend": {frontend: [("backend-open", ["/backend\r"], "none"), ("down-1", ["\x1b[B"], "none"),
                            ("down-2", ["\x1b[B"], "none"), ("enter", ["\r"], "none")]
                 for frontend in ("textual", "rust")},
+    # Parity item 4: an unknown slash command. Python says "Unknown: /nope — try /help" in the
+    # chat log and opens nothing.
+    "unknown": {frontend: [("unknown", ["/nope\r"], "none")] for frontend in ("textual", "rust")},
     # The theme creator's colour picker opens on a CLICK on a token field (settings_screen
     # on_click). Themes is reached from the tab bar by Left twice (the tabs wrap); the rest click
     # by on-screen text: "click:<text>" presses the left button on the first cell of the first

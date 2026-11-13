@@ -1547,6 +1547,10 @@ impl Chat {
                     other => {
                         self.commands.observe(other);
                         self.notice = self.commands.notice.clone();
+                        if let Some(line) = self.commands.take_refused() {
+                            self.system_line(line, false);
+                            self.notice.clear();
+                        }
                     }
                 }
             }
