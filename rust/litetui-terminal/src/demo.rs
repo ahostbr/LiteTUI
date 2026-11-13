@@ -298,16 +298,7 @@ impl Demo {
                 }
                 // /tasks: Python's command answers in the chat log and opens nothing.
                 Action::Work(crate::work_view::Destination::Tasks) => {
-                    if let Some(chat) = self.live.as_mut() {
-                        chat.tasks_command = Some(route_arguments.clone());
-                        // Nothing opens to cover the routing notice: Python leaves the row blank.
-                        if chat.notice == chat.commands.notice {
-                            if self.notice == chat.notice {
-                                self.notice.clear();
-                            }
-                            chat.notice.clear();
-                        }
-                    }
+                    self.python_command("/tasks", &route_arguments)
                 }
                 Action::Work(destination) => self.show_work(Some(destination)),
                 Action::Engine => {
@@ -356,7 +347,8 @@ impl Demo {
                 }
                 Action::AgentPreferences(focus) => self.open_agent_preferences(focus),
                 Action::ChatPause => self.open_chat_pause(),
-                Action::Glassbox => self.open_glassbox(&route_arguments),
+                // /glassbox: Python's own command (start/stop/status), answered in the chat.
+                Action::Glassbox => self.python_command("/glassbox", &route_arguments),
                 Action::Monitor => self.open_monitor(&route_arguments),
                 Action::Mark => self.open_mark(),
                 Action::Sidecar => self.open_sidecar(&route_arguments),
@@ -876,20 +868,18 @@ impl Demo {
             chat.settings.open_agent(Some(focus));
         }
     }
-    fn open_glassbox(&mut self, arguments: &str) {
-        if self.has_live_input() {
-            return;
-        }
-        self.open_settings();
-        if let Some(chat) = self.live.as_mut()
-            && chat.settings.open
-        {
-            let action = match arguments.trim().to_ascii_lowercase().as_str() {
-                "start" | "on" => Some("start"),
-                "stop" | "off" => Some("stop"),
-                _ => None,
-            };
-            chat.settings.open_glassbox(action);
+    /// A command Python answers in the chat log and opens nothing for (/tasks, /glassbox):
+    /// its own handler runs with the typed arguments (native_tasks_command.py).
+    pub fn python_command(&mut self, command: &str, arguments: &str) {
+        if let Some(chat) = self.live.as_mut() {
+            chat.tasks_command = Some((command.to_owned(), arguments.to_owned()));
+            // Nothing opens to cover the routing notice: Python leaves the row blank.
+            if chat.notice == chat.commands.notice {
+                if self.notice == chat.notice {
+                    self.notice.clear();
+                }
+                chat.notice.clear();
+            }
         }
     }
     /// `/modelcfg`: Python's ModelConfigScreen, drawn natively (calendar_dialog).

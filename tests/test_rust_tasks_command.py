@@ -6,8 +6,9 @@ import pytest
 from litetui import native_tasks_command as op
 
 
-def cmd(arguments, **extra):
-    return {"type": op.OPERATION, "id": "x", "version": 1, "arguments": arguments, **extra}
+def cmd(arguments, command="/tasks", **extra):
+    return {"type": op.OPERATION, "id": "x", "version": 1, "command": command,
+            "arguments": arguments, **extra}
 
 
 @pytest.mark.asyncio
@@ -24,8 +25,20 @@ async def test_each_verb_writes_the_handlers_own_line_and_answers_nothing_else(m
             assert said == [line], arguments
 
 
+@pytest.mark.asyncio
+async def test_glassbox_runs_pythons_handler_and_its_usage_line(make_app):
+    app = make_app()
+    async with app.run_test(size=(140, 45)):
+        said = []
+        app.system_message = lambda text, *a, **k: said.append(text)
+        app._system = app.system_message
+        assert op.dispatch(app, cmd("bogus", command="/glassbox")) == {"version": 1, "ran": True}
+        assert said == ["[glassbox] usage: /glassbox [start|stop|status]"]
+
+
 @pytest.mark.parametrize("bad", [
     {"version": 2}, {"arguments": 3}, {"arguments": "a\0b"}, {"arguments": "x" * 4097}, {"extra": 1},
+    {"command": "/settings"},
 ])
 def test_a_malformed_request_is_refused_before_the_handler_runs(bad):
     class App:

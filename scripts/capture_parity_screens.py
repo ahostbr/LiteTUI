@@ -154,6 +154,12 @@ PROFILES = {
                                 ("wheel", ["wheel:Context Length"] * 3, "none"),
                                 ("inference", ["click: Inference "], "none"), ("closed", ["\x1b"], "none")]
                      for frontend in ("textual", "rust")},
+    # /glassbox is Python's own command, answered in the chat: status, a bad verb (its usage
+    # line), bare (start: the local feed and the recorder), stop.
+    "glassboxverbs": {frontend: [("status", ["/glassbox status\r"], "none"),
+                                 ("bad", ["/glassbox bogus\r"], "none"),
+                                 ("start", ["/glassbox\r"], "none"), ("stop", ["/glassbox stop\r"], "none")]
+                      for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

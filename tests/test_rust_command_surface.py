@@ -362,9 +362,10 @@ async def test_registered_glassbox_routes_only_inspect_or_prefill_review(command
         raw = {k: v for k, v in request.items() if k != "row_id"}
         route = command_surface.resolve(app, {**raw, "command": "/glassbox " + arguments})
         assert route["native_action"] == "glassbox"
-    for arguments in ("reload", "start now", "status stop", "--port 9999", "on\x85off"):
-        with pytest.raises(ValueError, match="Glassbox accepts"):
-            command_surface.resolve(app, {**request, "arguments": arguments})
+    # Any other verb routes too: Python's own handler answers it with its usage line
+    # (native_tasks_command), and resolving it still starts and stops nothing.
+    for arguments in ("reload", "start now", "status stop", "--port 9999"):
+        assert command_surface.resolve(app, {**request, "arguments": arguments})["arguments"] == arguments
     assert gb._ENABLED is enabled and gb.SERVER is server and gb._RECORDER is recorder
     assert tree(app) == before
     old = app.plugins.commands["glassbox"]

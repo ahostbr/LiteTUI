@@ -2926,9 +2926,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             .map_err(io::Error::other)?;
                         execution_stop_deadline = Some(Instant::now() + Duration::from_secs(20));
                     }
-                    Input::TasksCommand(arguments) => {
+                    Input::TasksCommand(name, arguments) => {
                         let command = if turn.can_manage() {
-                            management.request_tasks_command(&arguments)
+                            management.request_tasks_command(&name, &arguments)
                         } else {
                             Err(io::Error::other(
                                 "Finish the current turn before using /tasks",
@@ -4126,8 +4126,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 pub enum Input {
     /// Read Python's held chat-log system lines (once, when the chat is ready).
     SystemLines,
-    /// /tasks with its typed arguments: Python's own handler.
-    TasksCommand(String),
+    /// /tasks or /glassbox with its typed arguments: Python's own handler.
+    TasksCommand(String, String),
     /// Render one card's answer as Python's Markdown at a width.
     Markdown {
         key: u64,
@@ -4588,12 +4588,12 @@ impl Interactive {
             .try_send(Input::Markdown { key, text, width })
             .map_err(io::Error::other)
     }
-    pub fn tasks_command(&self, arguments: String) -> io::Result<()> {
+    pub fn tasks_command(&self, command: String, arguments: String) -> io::Result<()> {
         if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
             return Err(io::Error::other("Runtime is quitting"));
         }
         self.commands
-            .try_send(Input::TasksCommand(arguments))
+            .try_send(Input::TasksCommand(command, arguments))
             .map_err(io::Error::other)
     }
     pub fn system_lines(&self) -> io::Result<()> {

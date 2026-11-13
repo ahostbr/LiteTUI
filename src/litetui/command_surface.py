@@ -410,8 +410,6 @@ def resolve(app, cmd):
             if len(nothing.encode("utf-8")) > 4000:  # the frontend reads at most 4096 bytes
                 nothing = nothing.encode("utf-8")[:3990].decode("utf-8", "ignore") + "…"
             raise ValueError(nothing)
-    if action == "glassbox" and arguments.strip().lower() not in {"", "status", "start", "on", "stop", "off"}:
-        raise ValueError("Glassbox accepts status, start/on or stop/off only; mutations require a fresh review")
     if action == "conversation_compact":
         if "\0" in arguments:
             raise ValueError("Compaction guidance cannot contain NUL")

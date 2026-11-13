@@ -4823,7 +4823,7 @@ impl Management {
     }
     /// /tasks: Python's handler with the typed arguments (native_tasks_command.py). Its
     /// answer is chat-log lines, which arrive as system_message events.
-    pub fn request_tasks_command(&mut self, arguments: &str) -> io::Result<Value> {
+    pub fn request_tasks_command(&mut self, name: &str, arguments: &str) -> io::Result<Value> {
         if !self.ready() {
             return Err(fail("Finish current work before using /tasks"));
         }
@@ -4837,7 +4837,9 @@ impl Management {
             .wire
             .register_request()
             .map_err(|_| fail("Cannot reserve the /tasks request"))?;
-        let mut command = json!({"type": TASKS_COMMAND, "version": 1, "arguments": arguments});
+        let mut command = json!({
+            "type": TASKS_COMMAND, "version": 1, "command": name, "arguments": arguments
+        });
         command["id"] = id.to_value();
         self.tasks_command = Some(id);
         Ok(command)

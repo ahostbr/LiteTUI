@@ -1173,7 +1173,10 @@ fn tasks_runs_pythons_own_command_with_every_verb_and_opens_nothing() {
     for arguments in ["", "list", "kill t1", "tail t1", "bogus"] {
         let app = routed_app("work_tasks", true, "custom", arguments);
         let chat = app.live.as_ref().unwrap();
-        assert_eq!(chat.tasks_command.as_deref(), Some(arguments));
+        assert_eq!(
+            chat.tasks_command.clone(),
+            Some(("/tasks".to_owned(), arguments.to_owned()))
+        );
         assert!(!chat.work.open, "{arguments:?} opened Work");
         assert!(app.notice.is_empty(), "{arguments:?}: {}", app.notice);
     }
