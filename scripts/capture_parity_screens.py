@@ -237,6 +237,7 @@ def run(frontend, args):
     screen = cf.TerminalCells(args.cols, args.rows)
     lock = threading.Lock()
     errors = []
+    stream = []  # the raw terminal output, for --raw (colours are replayed offline)
 
     def reader():
         try:
@@ -244,6 +245,8 @@ def run(frontend, args):
                 text = pty.read(65536)
                 with lock:
                     screen.feed(text)
+                    if args.raw:
+                        stream.append(text)
         except EOFError:
             pass
         except BaseException as error:  # noqa: BLE001 - recorded, the capture is then marked failed
@@ -262,6 +265,9 @@ def run(frontend, args):
         grid = settle(text)
         path = base / f"{len(shots):02d}-{name}.txt"
         path.write_text(grid, encoding="utf-8")
+        if args.raw:
+            with lock:
+                path.with_suffix(".ansi").write_text("".join(stream), encoding="utf-8", newline="")
         shots.append({"name": name, "file": path.name})
 
     try:
@@ -320,6 +326,8 @@ def main():
                         help="turn skills on with two fixture skills (the fixture must support it)")
     parser.add_argument("--mcp", action="store_true",
                         help="turn MCP on with no servers declared (the fixture must support it)")
+    parser.add_argument("--raw", action="store_true",
+                        help="also write each shot's whole terminal stream as <NN>-<name>.ansi")
     parser.add_argument("--frontends", default="textual,rust", help="comma list of textual, rust")
     parser.add_argument("--all-plugins", action="store_true",
                         help="load every plugin in the controlled runtime (needed for /settings)")

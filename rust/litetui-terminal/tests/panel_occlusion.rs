@@ -35,7 +35,8 @@ impl Panel {
     fn open(self, app: &mut Demo) {
         match self {
             Self::Engine => app.open_engine(),
-            Self::Commands => app.open_commands(),
+            // The source-registry panel (the header icon now opens Textual's palette).
+            Self::Commands => app.live.as_mut().unwrap().commands.open(false),
             Self::Backend => app.open_backend(),
             Self::Browser => app.open_browser(),
             Self::Models => app.open_models(m::Kind::Model),

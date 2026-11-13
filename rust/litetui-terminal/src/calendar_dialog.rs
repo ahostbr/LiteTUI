@@ -525,6 +525,19 @@ pub fn rich_style(spec: &str, base: Style) -> Style {
             "underline" => style = style.add_modifier(Modifier::UNDERLINED),
             "strike" => style = style.add_modifier(Modifier::CROSSED_OUT),
             "reverse" => style = style.add_modifier(Modifier::REVERSED),
+            // Rich's "not bold" (a help line under a bold option): the attribute is off.
+            "not" => {
+                let off = match words.next() {
+                    Some("bold") => Modifier::BOLD,
+                    Some("dim") => Modifier::DIM,
+                    Some("italic") => Modifier::ITALIC,
+                    Some("underline") => Modifier::UNDERLINED,
+                    Some("strike") => Modifier::CROSSED_OUT,
+                    Some("reverse") => Modifier::REVERSED,
+                    _ => Modifier::empty(),
+                };
+                style = style.remove_modifier(off);
+            }
             "on" => {
                 if let Some(c) = words.next().and_then(hex) {
                     style = style.bg(c);

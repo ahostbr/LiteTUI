@@ -528,7 +528,7 @@ fn staging_preflights_remaining_history_budget_without_replacing_draft() {
         app.observe_live(Observation::Complete).unwrap();
     }
     app.insert_text("original main draft");
-    app.open_commands();
+    app.live.as_mut().unwrap().commands.open(false);
     app.live.as_mut().unwrap().commands.take_intent();
     let p = prepared(&"y".repeat(1000));
     app.observe_live(Observation::Commands(Update::Prepared {
@@ -651,10 +651,11 @@ fn source_session_and_theme_routes_open_review_views_without_mutation_or_draft_l
         assert_eq!(app.composer.text(), "PRESERVE COMPOSER");
         assert!(app.live.as_ref().unwrap().rows.is_empty());
         if action == Action::Themes {
-            assert_eq!(
-                app.live.as_mut().unwrap().themes.take_intent(),
-                Some(litetui_terminal::theme_controls::Intent::Read)
-            );
+            // Python's Theme row: Textual's theme search (palette_dialog), not a panel.
+            assert!(matches!(
+                app.live.as_mut().unwrap().settings.palette.take_intent(),
+                Some(litetui_terminal::palette_dialog::Intent::Open { themes: true, .. })
+            ));
         } else {
             use litetui_terminal::{conversation_actions as a, conversation_browser as b};
             let expected = if action == Action::ConversationNew {

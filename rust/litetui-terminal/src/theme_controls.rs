@@ -843,6 +843,8 @@ pub struct View {
     pressed: Option<(u16, u16, usize)>,
     intent: Option<Intent>,
     picker: Option<Picker>,
+    /// A read the palette's theme pick asked for: no panel, no notice, no input taken.
+    silent: bool,
 }
 impl View {
     pub fn open(&mut self) {
@@ -858,7 +860,7 @@ impl View {
         self.refresh();
     }
     pub fn owns_input(&self) -> bool {
-        self.open || self.waiting
+        self.open || (self.waiting && !self.silent)
     }
     /// Read the source theme again without opening the panel (the palette's theme pick
     /// changed it in Python).
@@ -868,6 +870,7 @@ impl View {
         }
         self.intent = Some(Intent::Read);
         self.waiting = true;
+        self.silent = true;
     }
     pub fn is_open(&self) -> bool {
         self.open
@@ -935,6 +938,7 @@ impl View {
         self.hide();
     }
     pub fn observe(&mut self, update: Update) {
+        let silent = std::mem::take(&mut self.silent);
         self.waiting = false;
         self.executing = false;
         self.intent = None;
@@ -943,9 +947,12 @@ impl View {
             Update::Snapshot(s) => {
                 self.snapshot = Some(*s);
                 self.review = None;
-                self.notice =
+                self.notice = if silent {
+                    String::new()
+                } else {
                     "Source catalog loaded. Enter reviews a selection; F2 creates a custom theme."
-                        .into();
+                        .into()
+                };
             }
             Update::Review(r) if self.open => {
                 self.review = Some(*r);

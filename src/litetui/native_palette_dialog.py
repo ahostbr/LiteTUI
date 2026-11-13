@@ -39,43 +39,37 @@ def _palette(app):
     return None
 
 
-def _role(style) -> str:
-    """A Textual Style as the roles the frontend draws: bold, dim, underline, muted."""
-    words = []
-    if getattr(style, "bold", None):
-        words.append("bold")
-    if getattr(style, "dim", None):
-        words.append("dim")
-    if getattr(style, "underline", None):
-        words.append("underline")
-    fg = getattr(style, "foreground", None)
-    if fg is not None and getattr(fg, "a", 1) < 1:
-        words.append("muted")          # the help text: $text-muted over the option
-    return " ".join(words)
+def _rich(style) -> str:
+    """A Rich Style as its own spec ("bold #e0e0e0 on #141f27"), which the frontend parses."""
+    return "" if style is None else str(style)
 
 
-def _content_lines(content) -> list:
-    """A Content (or str) prompt as lines of {"text", "style"} runs."""
-    from textual.content import Content
+def _runs(strip) -> list:
+    """A rendered Strip as {"text", "style"} runs: Textual's own cells, colours resolved."""
+    return [{"text": seg.text, "style": _rich(seg.style)} for seg in strip if seg.text]
 
-    if not isinstance(content, Content):
-        content = Content(str(content))
+
+def _edge(widget, edge: str) -> str:
+    """A border edge's glyph style as Textual draws it: the border colour over the widget's
+    composited background."""
+    _kind, color = getattr(widget.styles, "border_" + edge)
+    base = widget.background_colors[1]
+    return f"{(base + color).hex6} on {base.hex6}".lower()
+
+
+def _options(listing) -> list:
+    """Every option as Textual renders it (OptionList.render_line's styles: padding 0 2, the
+    bold option text, the muted help, the blurred block cursor on the highlighted row)."""
     out = []
-    for line in content.split("\n"):
-        plain = line.plain
-        roles = [""] * len(plain)
-        for span in line.spans:
-            role = _role(span.style) if not isinstance(span.style, str) else span.style
-            role = {"b": "bold", "i": "", "u": "underline"}.get(role, role)
-            for i in range(max(0, span.start), min(len(plain), span.end)):
-                roles[i] = " ".join(w for w in (roles[i], role) if w).strip()
-        runs = []
-        for ch, role in zip(plain, roles):
-            if runs and runs[-1]["style"] == role:
-                runs[-1]["text"] += ch
-            else:
-                runs.append({"text": ch, "style": role})
-        out.append(runs)
+    for index in range(listing.option_count):
+        option = listing.get_option_at_index(index)
+        if option.disabled:
+            style = listing.get_visual_style("option-list--option", "option-list--option-disabled")
+        elif listing.highlighted == index:
+            style = listing.get_visual_style("option-list--option", "option-list--option-highlighted")
+        else:
+            style = listing.get_visual_style("option-list--option")
+        out.append([_runs(strip) for strip in listing._get_option_render(option, style)])
     return out
 
 
@@ -95,11 +89,22 @@ def snapshot(app) -> dict:
     box = screen.query_one("#--input")
     field = screen.query_one(CommandInput)
     icon = screen.query_one(SearchIcon)
+    backdrop = screen.styles.background
     out = {"version": VERSION, "kind": "palette_dialog", "screen": "themes" if _themes(screen) else "commands",
            "size": list(app.size), "theme": str(app.theme),
            "box": _region(box), "icon": _region(icon), "field": _region(field),
            "text": [field.content_region.x, field.content_region.y, field.content_region.width, 1],
-           "value": field.value, "placeholder": str(field.placeholder), "list": None}
+           "value": field.value, "cursor": field.cursor_position, "placeholder": str(field.placeholder),
+           # Textual's own colours for the active theme: `background: $background 60%` over
+           # the screen behind, the box and its hkey rule, the input's text, placeholder, cursor.
+           "paint": {"backdrop": backdrop.hex6.lower(),
+                     "backdrop_alpha": round(float(backdrop.a), 4),
+                     "box": _rich(box.rich_style), "rule": _edge(box, "top"),
+                     "text": _rich(field.rich_style),
+                     "placeholder": _rich(field.get_component_rich_style("input--placeholder")),
+                     "cursor": _rich(field.get_component_rich_style("input--cursor")),
+                     "icon": _rich(icon.rich_style)},
+           "list": None}
     listing = screen.query_one(CommandList)
     if listing.has_class("--visible") and listing.option_count:
         content = listing.scrollable_content_region
@@ -108,9 +113,12 @@ def snapshot(app) -> dict:
             "content": [content.x, content.y, content.width, content.height],
             "scroll_y": int(listing.scroll_offset.y), "max_scroll_y": int(listing.max_scroll_y),
             "bar": _region(listing.vertical_scrollbar) if listing.show_vertical_scrollbar else None,
+            "bar_rows": ([_runs(listing.vertical_scrollbar.render_line(y))
+                          for y in range(listing.vertical_scrollbar.size.height)]
+                         if listing.show_vertical_scrollbar else []),
+            "rule": _edge(listing, "bottom"),
             "highlighted": listing.highlighted,
-            "options": [_content_lines(listing.get_option_at_index(i).prompt)
-                        for i in range(listing.option_count)],
+            "options": _options(listing),
         }
     return out
 

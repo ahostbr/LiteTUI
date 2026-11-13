@@ -18,7 +18,7 @@ def act(action, query=None):
 
 
 def titles(snap):
-    return ["".join(r["text"] for r in option[0]) for option in snap["list"]["options"]]
+    return ["".join(r["text"] for r in option[0]).strip() for option in snap["list"]["options"]]
 
 
 @pytest.mark.asyncio
@@ -30,8 +30,12 @@ async def test_theme_row_opens_pythons_theme_search_and_a_pick_applies_and_close
         assert snap["screen"] == "commands" and snap["size"] == SIZE
         assert snap["placeholder"].startswith("Search for commands")
         assert "Theme · App" in titles(snap)
-        help_runs = snap["list"]["options"][titles(snap).index("Theme · App")][1]
-        assert any("muted" in run["style"] for run in help_runs)        # $text-muted help
+        option = snap["list"]["options"][titles(snap).index("Theme · App")]
+        assert option[0][1]["style"].startswith("bold ")                 # the option text, bold
+        help_runs = [run for run in option[1] if run["text"].strip()]
+        assert help_runs and help_runs[0]["style"].startswith("not bold #")  # $text-muted help
+        assert snap["paint"]["rule"] == "#0a0f13 on #141f27"             # hkey black 50%
+        assert snap["paint"]["backdrop"] == "#121212" and snap["paint"]["backdrop_alpha"] == 0.6
         snap = await dlg.dispatch(app, act(None, query="Theme"))
         assert titles(snap)[0].startswith("Theme")                       # Python's ranking
         snap = await dlg.dispatch(app, act({"key": "enter"}))

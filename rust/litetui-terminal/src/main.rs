@@ -4590,7 +4590,7 @@ mod tests {
     #[test]
     fn palette_opens_with_ctrl_backslash_and_no_live_f_key() {
         // Ryan 2026-11-12: no F-keys; one palette shortcut (some terminals send Ctrl+\ as Ctrl+4).
-        use litetui_terminal::{command_palette::Intent, live::Observation};
+        use litetui_terminal::{live::Observation, palette_dialog::Intent};
         for (code, modifiers, opens) in [
             (KeyCode::Char('\\'), KeyModifiers::CONTROL, true),
             (KeyCode::Char('4'), KeyModifiers::CONTROL, true),
@@ -4602,9 +4602,10 @@ mod tests {
             app.observe_live(Observation::Ready).unwrap();
             let mut router = KeyRouter::default();
             router.handle(&mut app, KeyEvent::new(code, modifiers));
-            let read = app.live.as_mut().unwrap().commands.take_intent();
+            // Textual's own CommandPalette (palette_dialog), as Python's header icon opens.
+            let read = app.live.as_mut().unwrap().settings.palette.take_intent();
             assert_eq!(
-                matches!(read, Some(Intent::Read { skills: false })),
+                matches!(read, Some(Intent::Open { themes: false, .. })),
                 opens,
                 "{code:?}"
             );
@@ -4621,7 +4622,8 @@ mod tests {
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("main composer draft");
         let mut router = KeyRouter::default();
-        app.open_commands();
+        // The source-registry panel (still the route for a palette row and the skills).
+        app.live.as_mut().unwrap().commands.open(false);
         assert_eq!(
             app.live.as_mut().unwrap().commands.take_intent(),
             Some(Intent::Read { skills: false })

@@ -39,8 +39,27 @@ pub struct Listing {
     pub scroll_y: u16,
     pub max_scroll_y: u16,
     pub bar: Option<Rect>,
+    /// The scrollbar as Textual rendered it, one row of runs per bar row.
+    pub bar_rows: Lines,
+    /// The `border-bottom: hkey black` glyph style.
+    pub rule: String,
     pub highlighted: Option<usize>,
+    /// Every option as Textual rendered it: runs with Rich style specs, padding included.
     pub options: Vec<Lines>,
+}
+
+/// Textual's own colours for the active theme (Rich style specs).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Paint {
+    /// `background: $background 60%`: blended over the screen behind.
+    pub backdrop: Color,
+    pub alpha: f32,
+    pub boxed: String,
+    pub rule: String,
+    pub text: String,
+    pub placeholder: String,
+    pub cursor: String,
+    pub icon: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -50,7 +69,9 @@ pub struct Snapshot {
     pub icon: Rect,
     pub text: Rect,
     pub value: String,
+    pub cursor: usize,
     pub placeholder: String,
+    pub paint: Paint,
     pub list: Option<Listing>,
 }
 
@@ -112,6 +133,8 @@ impl Answer {
                     Value::Null => None,
                     b => Some(region(b)?),
                 },
+                bar_rows: crate::calendar_dialog::lines(&l["bar_rows"])?,
+                rule: text(l, "rule")?,
                 highlighted: l["highlighted"].as_u64().map(|h| h as usize),
                 options: l["options"]
                     .as_array()
@@ -128,7 +151,26 @@ impl Answer {
             icon: region(&v["icon"])?,
             text: region(&v["text"])?,
             value: text(v, "value")?,
+            cursor: v["cursor"].as_u64().ok_or_else(bad)? as usize,
             placeholder: text(v, "placeholder")?,
+            paint: {
+                let p = &v["paint"];
+                Paint {
+                    backdrop: crate::calendar_dialog::rich_style(&text(p, "backdrop")?, Style::default())
+                        .fg
+                        .ok_or_else(bad)?,
+                    alpha: p["backdrop_alpha"]
+                        .as_f64()
+                        .filter(|a| (0.0..=1.0).contains(a))
+                        .ok_or_else(bad)? as f32,
+                    boxed: text(p, "box")?,
+                    rule: text(p, "rule")?,
+                    text: text(p, "text")?,
+                    placeholder: text(p, "placeholder")?,
+                    cursor: text(p, "cursor")?,
+                    icon: text(p, "icon")?,
+                }
+            },
             list,
         })))
     }
@@ -187,6 +229,9 @@ pub struct View {
     snapshot: Option<Snapshot>,
     /// The typed search, sent with the next act.
     query: Option<String>,
+    /// Keys pressed while an answer was in flight, sent in order after it (typing ahead of
+    /// Python's answer is the palette's normal use: "Theme" then Enter).
+    queued: Vec<Value>,
     intent: Option<Intent>,
     size: [u16; 2],
     hits: Vec<(Rect, usize)>,
@@ -238,6 +283,10 @@ impl View {
     }
     fn act(&mut self, action: Value) {
         if self.waiting {
+            // The typed search is already kept in `query`; a key waits its turn.
+            if !action.is_null() && self.queued.len() < 64 {
+                self.queued.push(action);
+            }
             return;
         }
         self.waiting = true;
@@ -251,9 +300,18 @@ impl View {
         self.waiting = false;
         match update {
             Update::Answer(Answer::Open(snapshot)) => {
-                self.query = None;
+                if self.query.as_deref() == Some(snapshot.value.as_str()) {
+                    self.query = None;
+                }
                 self.notice.clear();
                 self.snapshot = Some(*snapshot);
+                // What was typed or pressed meanwhile goes now, in order.
+                if !self.queued.is_empty() {
+                    let next = self.queued.remove(0);
+                    self.act(next);
+                } else if self.query.is_some() {
+                    self.act(Value::Null);
+                }
             }
             Update::Answer(Answer::Closed { theme, routed }) => {
                 *self = Self {
@@ -270,6 +328,8 @@ impl View {
                 };
             }
             Update::Rejected(reason) => {
+                self.queued.clear();
+                self.query = None;
                 if self.snapshot.is_none() {
                     *self = Self {
                         size: self.size,
@@ -290,7 +350,7 @@ impl View {
         }
     }
     pub fn paste(&mut self, pasted: &str) {
-        if !self.open || self.waiting {
+        if !self.open || self.snapshot.is_none() {
             return;
         }
         let mut q = self.typed();
@@ -299,7 +359,8 @@ impl View {
         self.act(Value::Null);
     }
     pub fn key(&mut self, key: KeyEvent) {
-        if key.kind == KeyEventKind::Release || !self.open || self.waiting {
+        // Before the first answer there is no palette to type into yet.
+        if key.kind == KeyEventKind::Release || !self.open || self.snapshot.is_none() {
             return;
         }
         let name = match key.code {
@@ -366,193 +427,190 @@ impl View {
             return;
         }
         let buf = frame.buffer_mut();
-        // `background: $background 60%` over the screen behind: dim what is there.
-        for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                let cell = &mut buf[(x, y)];
-                let style = cell.style().add_modifier(Modifier::DIM);
-                cell.set_style(style);
-            }
-        }
         let Some(s) = self.snapshot.clone() else {
+            // Textual pushes the palette screen at once; its box shows when ready.
+            backdrop(buf, area, theme.background, 0.6, theme);
             return;
         };
-        let panel = blend(theme.panel, theme.background, 0.25);
-        let fill = Style::default().fg(theme.foreground).bg(panel);
-        let rule = Style::default().fg(theme.thinking_border).bg(panel);
-        let muted = Style::default().fg(theme.thinking_text).bg(panel);
-        fill_rect(buf, s.boxed, fill);
-        // #--input: border hkey; the bottom rule goes when the list shows (--list-visible).
-        line(buf, s.boxed.x, s.boxed.y, s.boxed.width, "▔", rule);
+        let p = &s.paint;
+        backdrop(buf, area, p.backdrop, p.alpha, theme);
+        let rs = |spec: &str| textual_dim(crate::calendar_dialog::rich_style(spec, Style::default()));
+        let boxed = rs(&p.boxed);
+        fill_rect(buf, s.boxed, boxed);
+        // #--input: `border: hkey black 50%`; the bottom edge goes when the list shows.
+        line(buf, s.boxed.x, s.boxed.y, s.boxed.width, "▔", rs(&p.rule));
         if s.list.is_none() && s.boxed.height > 1 {
-            line(
-                buf,
-                s.boxed.x,
-                s.boxed.bottom() - 1,
-                s.boxed.width,
-                "▁",
-                rule,
-            );
+            line(buf, s.boxed.x, s.boxed.bottom() - 1, s.boxed.width, "▁", rs(&p.rule));
         }
-        buf.set_stringn(s.icon.x, s.icon.y, "🔎", 2, fill);
+        put(buf, s.icon.x, s.icon.y, "🔎", s.icon.right(), rs(&p.icon));
         let value = self.typed();
-        let (shown, style) = if value.is_empty() {
-            (s.placeholder.as_str(), muted)
+        let end = s.text.right();
+        if value.is_empty() {
+            // Textual's Input: the cursor sits on the placeholder's first cell.
+            let mut chars = s.placeholder.chars();
+            let first: String = chars.next().map(String::from).unwrap_or_else(|| " ".into());
+            let x = put(buf, s.text.x, s.text.y, &first, end, rs(&p.cursor));
+            put(buf, x, s.text.y, chars.as_str(), end, rs(&p.placeholder));
         } else {
-            (value.as_str(), fill)
-        };
-        buf.set_stringn(s.text.x, s.text.y, shown, usize::from(s.text.width), style);
+            let at = if self.query.is_some() { value.chars().count() } else { s.cursor };
+            let before: String = value.chars().take(at).collect();
+            let rest: String = value.chars().skip(at).collect();
+            let x = put(buf, s.text.x, s.text.y, &before, end, rs(&p.text));
+            let mut tail = rest.chars();
+            let under: String = tail.next().map(String::from).unwrap_or_else(|| " ".into());
+            let x = put(buf, x, s.text.y, &under, end, rs(&p.cursor));
+            put(buf, x, s.text.y, tail.as_str(), end, rs(&p.text));
+        }
         if let Some(l) = &s.list {
-            fill_rect(buf, l.region, fill);
-            // border-bottom: hkey
+            fill_rect(buf, l.region, boxed);
+            // CommandList `border-bottom: hkey black`.
             line(
                 buf,
                 l.region.x,
                 l.region.bottom().saturating_sub(1),
                 l.region.width,
                 "▁",
-                rule,
+                rs(&l.rule),
             );
-            let cursor = blend(theme.primary, panel, 0.3);
             let mut y = i32::from(l.content.y) - i32::from(l.scroll_y);
             for (index, option) in l.options.iter().enumerate() {
-                let lit = l.highlighted == Some(index);
-                let base = if lit {
-                    Style::default().fg(theme.foreground).bg(cursor)
-                } else {
-                    fill
-                };
                 let top = y;
-                for (row, runs) in option.iter().enumerate() {
-                    let yy = y + row as i32;
-                    if yy >= i32::from(l.content.y) && yy < i32::from(l.content.bottom()) {
-                        let yy = yy as u16;
-                        for x in l.content.left()..l.content.right() {
-                            buf[(x, yy)].set_symbol(" ").set_style(base);
-                        }
-                        // option: padding 0 2, text-style bold (the help line is not bold).
-                        let mut x = l.content.x + 2;
-                        let end = l.content.right().saturating_sub(2);
-                        for (text, role) in runs {
-                            let mut st = base;
-                            if row == 0 && !role.contains("muted") {
-                                st = st.add_modifier(Modifier::BOLD);
-                            }
-                            for w in role.split_whitespace() {
-                                st = match w {
-                                    "bold" => st.add_modifier(Modifier::BOLD),
-                                    "dim" => st.add_modifier(Modifier::DIM),
-                                    "underline" => st.add_modifier(Modifier::UNDERLINED),
-                                    "muted" => {
-                                        st.fg(theme.thinking_text).remove_modifier(Modifier::BOLD)
-                                    }
-                                    _ => st,
-                                };
-                            }
-                            for ch in text.chars() {
-                                let w = ch.width().unwrap_or(0) as u16;
-                                if w == 0 || x + w > end {
-                                    continue;
-                                }
-                                buf[(x, yy)].set_symbol(&ch.to_string()).set_style(st);
-                                x += w;
-                            }
+                for runs in option {
+                    if y >= i32::from(l.content.y) && y < i32::from(l.content.bottom()) {
+                        let mut x = l.content.x;
+                        for (text, style) in runs {
+                            x = put(buf, x, y as u16, text, l.content.right(), rs(style));
                         }
                     }
+                    y += 1;
                 }
-                let rows = option.len().max(1) as i32;
-                let visible = Rect::new(
-                    l.content.x,
-                    top.clamp(i32::from(l.content.y), i32::from(l.content.bottom())) as u16,
-                    l.content.width,
-                    0,
-                );
-                let bottom = (top + rows)
-                    .clamp(i32::from(l.content.y), i32::from(l.content.bottom()))
-                    as u16;
-                if bottom > visible.y {
-                    self.hits.push((
-                        Rect {
-                            height: bottom - visible.y,
-                            ..visible
-                        },
-                        index,
-                    ));
+                let low = top.clamp(i32::from(l.content.y), i32::from(l.content.bottom())) as u16;
+                let high = y.clamp(i32::from(l.content.y), i32::from(l.content.bottom())) as u16;
+                if high > low {
+                    self.hits
+                        .push((Rect::new(l.content.x, low, l.content.width, high - low), index));
                 }
-                y += rows;
             }
-            if l.max_scroll_y > 0
-                && let Some(bar) = l.bar
-            {
-                draw_bar(buf, bar, l.scroll_y, l.max_scroll_y, theme);
+            if let Some(bar) = l.bar {
+                for (row, runs) in l.bar_rows.iter().enumerate().take(usize::from(bar.height)) {
+                    let mut x = bar.x;
+                    for (text, style) in runs {
+                        x = put(buf, x, bar.y + row as u16, text, bar.right(), rs(style));
+                    }
+                }
             }
         }
         if !self.notice.is_empty() {
-            buf.set_stringn(
+            put(
+                buf,
                 s.boxed.x + 2,
                 s.boxed.bottom().saturating_sub(1),
                 &self.notice,
-                usize::from(s.boxed.width.saturating_sub(4)),
-                Style::default().fg(theme.error).bg(panel),
+                s.boxed.right().saturating_sub(2),
+                Style::default().fg(theme.error).bg(boxed.bg.unwrap_or(theme.panel)),
             );
         }
     }
+}
+
+/// Textual's `background: <colour> <alpha>` over what is already drawn: every cell's
+/// foreground and background blended toward it (the screen behind the palette).
+fn backdrop(buf: &mut Buffer, area: Rect, colour: Color, alpha: f32, theme: &Theme) {
+    let area = area.intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            let fg = match cell.fg {
+                Color::Reset => theme.foreground,
+                c => c,
+            };
+            let bg = match cell.bg {
+                Color::Reset => theme.background,
+                c => c,
+            };
+            cell.fg = blend(colour, fg, alpha);
+            cell.bg = blend(colour, bg, alpha);
+        }
+    }
+}
+
+/// Textual's compositor never emits DIM: it blends the foreground toward the background
+/// by DIM_FACTOR (0.66, `textual.filter.dim_color`, truncating) and drops the attribute.
+fn textual_dim(style: Style) -> Style {
+    match (style.add_modifier.contains(Modifier::DIM), style.fg, style.bg) {
+        (true, Some(Color::Rgb(fr, fg, fb)), Some(Color::Rgb(br, bg, bb))) => {
+            let mix = |b: u8, f: u8| (f32::from(b) + (f32::from(f) - f32::from(b)) * 0.66) as u8;
+            style
+                .fg(Color::Rgb(mix(br, fr), mix(bg, fg), mix(bb, fb)))
+                .remove_modifier(Modifier::DIM)
+        }
+        _ => style,
+    }
+}
+
+/// `text` from (x, y) in `style` alone (the cell's earlier attributes cleared), never past
+/// `end`. Returns the next x.
+fn put(buf: &mut Buffer, x: u16, y: u16, text: &str, end: u16, style: Style) -> u16 {
+    if y >= buf.area.bottom() {
+        return x;
+    }
+    let end = end.min(buf.area.right());
+    let mut x = x;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0) as u16;
+        if w == 0 {
+            continue;
+        }
+        if x + w > end {
+            break;
+        }
+        let cell = &mut buf[(x, y)];
+        cell.reset();
+        cell.set_symbol(&ch.to_string()).set_style(style);
+        for dx in 1..w {
+            let next = &mut buf[(x + dx, y)];
+            next.reset();
+            next.set_symbol("").set_style(style);
+        }
+        x += w;
+    }
+    x
 }
 
 fn fill_rect(buf: &mut Buffer, r: Rect, style: Style) {
     let r = r.intersection(buf.area);
     for y in r.top()..r.bottom() {
         for x in r.left()..r.right() {
-            buf[(x, y)].set_symbol(" ").set_style(style);
+            let cell = &mut buf[(x, y)];
+            cell.reset();
+            cell.set_symbol(" ").set_style(style);
         }
     }
 }
 fn line(buf: &mut Buffer, x: u16, y: u16, w: u16, glyph: &str, style: Style) {
-    if y >= buf.area.bottom() {
-        return;
-    }
-    for dx in 0..w {
-        if x + dx < buf.area.right() {
-            buf[(x + dx, y)].set_symbol(glyph).set_style(style);
-        }
-    }
+    put(buf, x, y, &glyph.repeat(usize::from(w)), x.saturating_add(w), style);
 }
-/// `a` over `b` at `t` (0..1), for RGB theme colours; anything else keeps `a`.
+/// `a` over `b` at `t` (0..1), for RGB theme colours; anything else keeps `b`.
 fn blend(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
         (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
             let mix = |x: u8, y: u8| (f32::from(x) * t + f32::from(y) * (1.0 - t)).round() as u8;
             Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
         }
-        _ => a,
-    }
-}
-fn draw_bar(buf: &mut Buffer, at: Rect, scroll_y: u16, max: u16, theme: &Theme) {
-    // The same eighth-block thumb as calendar_dialog's (Textual's render_bar).
-    let size = f64::from(at.height);
-    let virtual_size = size + f64::from(max);
-    if size <= 0.0 {
-        return;
-    }
-    let thumb = (size / (virtual_size / size)).max(1.0);
-    let position = (size - thumb) * (f64::from(scroll_y) / (virtual_size - size));
-    let (start, end) = (position as u16, (position + thumb).ceil() as u16);
-    for row in 0..at.height {
-        let on = row >= start && row < end;
-        let style = Style::default().bg(if on { theme.primary } else { theme.panel });
-        for dx in 0..at.width.max(1) {
-            if at.x + dx < buf.area.right() && at.y + row < buf.area.bottom() {
-                buf[(at.x + dx, at.y + row)]
-                    .set_symbol(" ")
-                    .set_style(style);
-            }
-        }
+        _ => b,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static PAINT: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+        json!({"backdrop": "#121212", "backdrop_alpha": 0.6, "box": "#e0e0e0 on #141f27",
+            "rule": "#0a0f13 on #141f27", "text": "#e0e0e0 on #141f27",
+            "placeholder": "#6d7479 on #141f27", "cursor": "reverse #e0e0e0 on #141f27",
+            "icon": "#000000 on #141f27"})
+    });
 
     #[test]
     fn a_closed_answer_names_the_routed_row_and_the_theme() {
@@ -584,7 +642,7 @@ mod tests {
     fn typing_sends_the_whole_search_and_keys_are_the_palettes() {
         let open = json!({"version": 1, "kind": "palette_dialog", "screen": "commands",
             "size": [140, 45], "theme": "x", "box": [0, 2, 140, 2], "icon": [2, 3, 2, 1],
-            "field": [4, 2, 135, 3], "text": [5, 3, 133, 1], "value": "", "placeholder": "Search for commands…",
+            "field": [4, 2, 135, 3], "text": [5, 3, 133, 1], "value": "", "placeholder": "Search for commands…", "cursor": 0, "paint": PAINT.clone(),
             "list": null});
         let mut view = View {
             size: [140, 45],
@@ -595,10 +653,41 @@ mod tests {
         view.observe(Update::Answer(Answer::parse(&open).unwrap()));
         view.key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT));
         assert!(matches!(view.take_intent(), Some(Intent::Act { query: Some(q), .. }) if q == "T"));
-        view.observe(Update::Answer(Answer::parse(&open).unwrap()));
+        let mut typed = open.clone();
+        typed["value"] = json!("T");
+        view.observe(Update::Answer(Answer::parse(&typed).unwrap()));
         view.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert!(
             matches!(view.take_intent(), Some(Intent::Act { action, .. }) if action == json!({"key": "down"}))
         );
+    }
+
+    #[test]
+    fn keys_typed_ahead_of_pythons_answer_are_kept_and_sent_in_order() {
+        let snap = |value: &str| {
+            json!({"version": 1, "kind": "palette_dialog", "screen": "commands",
+                "size": [140, 45], "theme": "x", "box": [0, 2, 140, 2], "icon": [2, 3, 2, 1],
+                "field": [4, 2, 135, 3], "text": [5, 3, 133, 1], "value": value,
+                "placeholder": "Search for commands…", "cursor": 0, "paint": PAINT.clone(), "list": null})
+        };
+        let mut view = View {
+            size: [140, 45],
+            ..View::default()
+        };
+        view.open(false);
+        view.take_intent();
+        view.observe(Update::Answer(Answer::parse(&snap("")).unwrap()));
+        for c in "Theme".chars() {
+            view.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Only the first key went; the rest waited for Python.
+        assert!(matches!(view.take_intent(), Some(Intent::Act { query: Some(q), .. }) if q == "T"));
+        assert_eq!(view.typed(), "Theme");
+        view.observe(Update::Answer(Answer::parse(&snap("T")).unwrap()));
+        assert!(matches!(view.take_intent(),
+            Some(Intent::Act { query: Some(q), action, .. }) if q == "Theme" && action == json!({"key": "enter"})));
+        view.observe(Update::Answer(Answer::parse(&snap("Theme")).unwrap()));
+        assert_eq!(view.take_intent(), None);
     }
 }
