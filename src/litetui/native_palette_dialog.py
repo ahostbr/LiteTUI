@@ -170,10 +170,16 @@ async def dispatch(app, cmd):
 
     operation = cmd["type"]
     if operation == PREFIX + "open":
-        _check(cmd, ("size",))
+        _check(cmd, ("size", "mode"))
+        if cmd["mode"] not in ("commands", "themes"):
+            raise ValueError("Palette mode is commands or themes")
         await _fit(app, _size(cmd))
         if _palette(app) is None:
-            app.action_command_palette()
+            # The header icon (commands), or the Theme row's own action (the theme search).
+            if cmd["mode"] == "themes":
+                app.action_change_theme()
+            else:
+                app.action_command_palette()
             await _settle(app)
             app._native_palette_screen = app.screen
             if _palette(app) is None:

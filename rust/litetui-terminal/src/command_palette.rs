@@ -769,6 +769,38 @@ impl View {
     pub fn take_intent(&mut self) -> Option<Intent> {
         self.intent.take()
     }
+    /// The native command palette (palette_dialog) picked the palette row titled `title`:
+    /// resolve it exactly as Enter on that row does here. False when no one palette row has
+    /// that title.
+    pub fn pick_title(&mut self, title: &str) -> bool {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return false;
+        };
+        let found: Vec<&Entry> = catalog
+            .entries
+            .iter()
+            .filter(|e| e.palette && e.title == title)
+            .collect();
+        let [row] = found.as_slice() else {
+            return false;
+        };
+        let row = (*row).clone();
+        let snapshot = catalog.snapshot.clone();
+        if row.action.is_none() {
+            self.notice = row.unavailable.clone();
+        } else if row.kind == "local" {
+            self.route = row.action;
+        } else {
+            self.open = true;
+            self.intent = Some(Intent::Resolve {
+                snapshot,
+                row: row.id.clone(),
+            });
+            self.waiting = true;
+            self.hide();
+        }
+        true
+    }
     /// A typed slash command's refusal ("Unknown: /x — try /help"), once.
     pub fn take_refused(&mut self) -> Option<String> {
         self.refused.take()

@@ -71,6 +71,7 @@ pub mod help_view;
 pub mod hooks_dialog;
 pub mod keys_panel;
 pub mod markdown;
+pub mod palette_dialog;
 pub mod prepared_skill;
 pub mod tool_list_view;
 

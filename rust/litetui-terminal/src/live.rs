@@ -3005,6 +3005,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let form = matches!(intent, crate::settings_view::Intent::Form(_));
                         let hooks = matches!(intent, crate::settings_view::Intent::Hooks(..));
                         let calendar = matches!(intent, crate::settings_view::Intent::Calendar(..));
+                        let palette = matches!(intent, crate::settings_view::Intent::Palette(_));
                         let compact_generation = match &intent {
                             crate::settings_view::Intent::Compaction(
                                 crate::compaction_settings::Intent::Read { generation }
@@ -3033,6 +3034,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             Err(error) => frontend.observe(Observation::Settings(if hooks {
                                 crate::settings_view::Update::Hooks(
                                     crate::hooks_dialog::Update::Rejected(error.to_string()),
+                                )
+                            } else if palette {
+                                crate::settings_view::Update::Palette(
+                                    crate::palette_dialog::Update::Rejected(error.to_string()),
                                 )
                             } else if calendar {
                                 crate::settings_view::Update::Calendar(

@@ -55,6 +55,8 @@ pub enum Intent {
     Hooks(crate::hooks_dialog::Kind, crate::hooks_dialog::Intent),
     /// `/cal`: Python's CalendarScreen chain, run in the source.
     Calendar(crate::calendar_dialog::Kind, crate::calendar_dialog::Intent),
+    /// The command palette: Textual's own CommandPalette, run in the source.
+    Palette(crate::palette_dialog::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -78,6 +80,7 @@ pub enum Update {
     Form(crate::settings_form::Update),
     Hooks(crate::hooks_dialog::Update),
     Calendar(crate::calendar_dialog::Update),
+    Palette(crate::palette_dialog::Update),
     CompactionEdited {
         update: crate::compaction_settings::Update,
         inspection: Snapshot,
@@ -261,6 +264,8 @@ pub struct View {
     pub hooks: crate::hooks_dialog::View,
     /// Python's CalendarScreen chain (calendar_dialog), opened by /cal.
     pub calendar: crate::calendar_dialog::View,
+    /// Textual's CommandPalette (palette_dialog), opened by the header icon and Theme.
+    pub palette: crate::palette_dialog::View,
     pub open: bool,
     pub waiting: bool,
     pub snapshot: Option<Snapshot>,
@@ -428,6 +433,7 @@ impl View {
             || self.form.owns_input()
             || self.hooks.owns_input()
             || self.calendar.owns_input()
+            || self.palette.owns_input()
     }
     /// `/hooks`: Python's HooksScreen.
     pub fn open_hooks(&mut self) {
@@ -449,9 +455,14 @@ impl View {
     pub fn take_intent(&mut self) -> Option<Intent> {
         let kind = self.hooks.kind;
         let screen = self.calendar.kind;
-        self.calendar
+        self.palette
             .take_intent()
-            .map(|intent| Intent::Calendar(screen, intent))
+            .map(Intent::Palette)
+            .or_else(|| {
+                self.calendar
+                    .take_intent()
+                    .map(|intent| Intent::Calendar(screen, intent))
+            })
             .or_else(|| {
                 self.hooks
                     .take_intent()
@@ -527,7 +538,8 @@ impl View {
         self.snapshot = None;
     }
     pub fn accepts_paste(&self) -> bool {
-        self.calendar.owns_input()
+        self.palette.owns_input()
+            || self.calendar.owns_input()
             || self.hooks.owns_input()
             || self.form.accepts_paste()
             || self.mcp.accepts_paste()
@@ -537,7 +549,9 @@ impl View {
             || self.voice.accepts_paste()
     }
     pub fn paste(&mut self, text: &str) {
-        if self.calendar.owns_input() {
+        if self.palette.owns_input() {
+            self.palette.paste(text);
+        } else if self.calendar.owns_input() {
             self.calendar.paste(text);
         } else if self.hooks.owns_input() {
             self.hooks.paste(text);
@@ -573,6 +587,10 @@ impl View {
             self.calendar.observe(update);
             return;
         }
+        if let Update::Palette(update) = update {
+            self.palette.observe(update);
+            return;
+        }
         if let Update::Form(update) = update {
             self.form.observe(update);
             self.notice = self.form.notice.clone();
@@ -605,7 +623,7 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
-            Update::Form(_) | Update::Hooks(_) | Update::Calendar(_) => {}
+            Update::Form(_) | Update::Hooks(_) | Update::Calendar(_) | Update::Palette(_) => {}
             Update::ModelPreferences(result) => {
                 self.model_preferences.update(result.map(|update| *update))
             }
@@ -680,6 +698,10 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.palette.owns_input() {
+            self.palette.key(key);
+            return;
+        }
         if self.calendar.owns_input() {
             self.calendar.key(key);
             return;
@@ -923,6 +945,10 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.palette.owns_input() {
+            self.palette.mouse(event);
+            return;
+        }
         if self.calendar.owns_input() {
             self.calendar.mouse(event);
             return;
@@ -1005,6 +1031,12 @@ impl View {
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         self.calendar.set_size(area);
+        self.palette.set_size(area);
+        if self.palette.owns_input() {
+            // Over the screen behind, as Textual's palette is (it dims it, not clears it).
+            self.palette.draw(frame, area, theme);
+            return;
+        }
         if self.calendar.owns_input() {
             self.calendar.draw(frame, area, theme);
             return;

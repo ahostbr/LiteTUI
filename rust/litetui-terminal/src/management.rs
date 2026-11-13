@@ -738,6 +738,8 @@ pub struct Management {
     tasks_command: Option<CommandId>,
     /// The /cal request in flight, and whether it closes.
     calendar: Option<(CommandId, crate::calendar_dialog::Kind, bool)>,
+    /// The command palette request in flight, and whether it closes.
+    palette: Option<(CommandId, bool)>,
     settings_snapshot: Option<settings::Snapshot>,
     settings_review: Option<settings::Review>,
     settings_generation: u64,
@@ -833,6 +835,7 @@ impl Default for Management {
             hooks_editor: None,
             tasks_command: None,
             calendar: None,
+            palette: None,
             settings_snapshot: None,
             settings_review: None,
             settings_generation: 0,
@@ -975,6 +978,7 @@ impl Management {
             && self.hooks_editor.is_none()
             && self.tasks_command.is_none()
             && self.calendar.is_none()
+            && self.palette.is_none()
             && self.backend.is_none()
             && self.browser.is_none()
             && self.control.is_none()
@@ -1539,6 +1543,29 @@ impl Management {
                 };
                 Ok(Step::Settings {
                     update: crate::settings_view::Update::Hooks(update),
+                    policy: None,
+                })
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .palette
+                .as_ref()
+                .is_some_and(|(pending, _)| Some(pending) == id.as_ref()) =>
+            {
+                let (_, closing) = self.palette.take().expect("palette pending");
+                use crate::palette_dialog::{Answer, Update};
+                let update = if frame["ok"] != true {
+                    Update::Rejected(text(&frame, "error", 4096)?.into())
+                } else if closing {
+                    Update::Closed
+                } else {
+                    Update::Answer(Answer::parse(&frame["result"])?)
+                };
+                Ok(Step::Settings {
+                    update: crate::settings_view::Update::Palette(update),
                     policy: None,
                 })
             }
@@ -3338,6 +3365,9 @@ impl Management {
         if let crate::settings_view::Intent::Calendar(kind, intent) = intent {
             return self.request_calendar(kind, intent);
         }
+        if let crate::settings_view::Intent::Palette(intent) = intent {
+            return self.request_palette(intent);
+        }
         if matches!(
             intent,
             crate::settings_view::Intent::Editor(_) | crate::settings_view::Intent::Compaction(_)
@@ -4791,6 +4821,29 @@ impl Management {
         let mut command = json!({"type": SYSTEM_LINES, "version": 1});
         command["id"] = id.to_value();
         self.system_lines = Some(id);
+        Ok(command)
+    }
+    /// The command palette: Textual's CommandPalette, run in the source (native_palette_dialog.py).
+    pub fn request_palette(&mut self, intent: crate::palette_dialog::Intent) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail("Finish current work before opening commands"));
+        }
+        self.ensure_drained()?;
+        if !crate::palette_dialog::OPERATIONS
+            .iter()
+            .all(|op| self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail(
+                "Runtime lacks the native command palette; update Python source",
+            ));
+        }
+        let mut command = intent.command();
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve the command palette request"))?;
+        command["id"] = id.to_value();
+        self.palette = Some((id, intent.closing()));
         Ok(command)
     }
     /// /cal: Python's CalendarScreen chain, run in the source (native_calendar_dialog.py).

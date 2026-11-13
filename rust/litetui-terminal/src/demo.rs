@@ -272,6 +272,15 @@ impl Demo {
                     .refilter(&self.completion_candidates, self.composer.text());
             }
         }
+        if let Some(title) = chat.settings.palette.take_routed()
+            && !chat.commands.pick_title(&title)
+        {
+            chat.notice = format!("{title}: no native route for this palette row yet.");
+        }
+        if chat.settings.palette.take_theme().is_some() {
+            // A theme pick ran in Python (app.theme, saved): read the effective theme again.
+            chat.themes.reread();
+        }
         let route = chat.commands.take_route();
         let route_arguments = chat.commands.take_route_arguments();
         if following {
@@ -365,7 +374,12 @@ impl Demo {
                 Action::Keys => self.toggle_keys(),
                 Action::ClearScreen => self.clear_screen(),
                 Action::Settings => self.open_settings_form(),
-                Action::Themes => self.open_themes(),
+                // The palette's Theme row: Textual's theme search (App.search_themes).
+                Action::Themes => {
+                    if let Some(chat) = self.live.as_mut() {
+                        chat.settings.palette.open(true);
+                    }
+                }
                 Action::SavedHistory => self.open_history(),
                 Action::HeldInput => self.open_queue(),
                 Action::ConversationNew => self.start_new_conversation(),
@@ -574,7 +588,8 @@ impl Demo {
                 self.notice = "Finish current work before opening commands.".into();
                 return;
             }
-            chat.commands.open(false);
+            // Textual's own CommandPalette (palette_dialog), as Python's header icon opens.
+            chat.settings.palette.open(false);
             self.themes_open = false;
             self.completion.dismiss();
             self.footer.leave();

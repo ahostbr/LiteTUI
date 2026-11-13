@@ -26,7 +26,7 @@ async def test_theme_row_opens_pythons_theme_search_and_a_pick_applies_and_close
     app = make_app()
     async with app.run_test(size=(80, 24)):
         before = str(app.theme)
-        snap = await dlg.dispatch(app, cmd("open", size=SIZE))
+        snap = await dlg.dispatch(app, cmd("open", size=SIZE, mode="commands"))
         assert snap["screen"] == "commands" and snap["size"] == SIZE
         assert snap["placeholder"].startswith("Search for commands")
         assert "Theme · App" in titles(snap)
@@ -48,13 +48,14 @@ async def test_theme_row_opens_pythons_theme_search_and_a_pick_applies_and_close
 async def test_any_other_row_closes_the_palette_and_names_the_row_for_the_native_route(make_app):
     app = make_app()
     async with app.run_test(size=(80, 24)):
-        await dlg.dispatch(app, cmd("open", size=SIZE))
+        await dlg.dispatch(app, cmd("open", size=SIZE, mode="commands"))
         snap = await dlg.dispatch(app, act(None, query="Settings"))
         assert titles(snap)[0].startswith("Settings")
         depth = len(app.screen_stack)
         snap = await dlg.dispatch(app, act({"key": "enter"}))
         assert snap["screen"] == "closed" and snap["routed"].startswith("Settings")
         assert len(app.screen_stack) == depth - 1                         # nothing else opened
-        snap = await dlg.dispatch(app, cmd("open", size=SIZE))
+        snap = await dlg.dispatch(app, cmd("open", size=SIZE, mode="themes"))
+        assert snap["screen"] == "themes"
         snap = await dlg.dispatch(app, act({"key": "escape"}))
         assert snap["screen"] == "closed" and "routed" not in snap

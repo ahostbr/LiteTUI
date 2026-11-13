@@ -860,6 +860,15 @@ impl View {
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting
     }
+    /// Read the source theme again without opening the panel (the palette's theme pick
+    /// changed it in Python).
+    pub fn reread(&mut self) {
+        if self.waiting {
+            return;
+        }
+        self.intent = Some(Intent::Read);
+        self.waiting = true;
+    }
     pub fn is_open(&self) -> bool {
         self.open
     }
