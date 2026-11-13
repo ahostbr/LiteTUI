@@ -240,7 +240,10 @@ class SettingsService:
                         if not isinstance(execution, dict):
                             raise ValueError('Invalid conversation execution snapshot')
                         execution_keys = {k for k, spec in SETTING_SPECS.items()
-                                          if spec.scope == SettingScope.CONVERSATION}
+                                          if spec.scope == SettingScope.CONVERSATION
+                                          # convo_settings.from_global (af595454): the subagent
+                                          # route stays inherited, never a materialized override.
+                                          and k != 'subagent_model'}
                         if execution_keys - execution.keys():
                             with coordinated_write(paths['global']):
                                 inherited = self.snapshot(conversation_id)
