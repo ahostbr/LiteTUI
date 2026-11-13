@@ -1803,6 +1803,102 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             areas[2].width.saturating_sub(4),
             picker_height,
         );
+        if !t.css.is_empty() {
+            // Python's #skill-ac: `border: round $primary; background: $surface`, around
+            // #skill-ac-list, an OptionList (`border: tall $border-blurred`, the Input keeps
+            // focus; padding 0 1; scrollbar-size 1 1). Each option is
+            // f"{name:<26}{tag:<11}{desc[:40]}", and Textual reads "[command]"/"[skill]" as
+            // markup, so the tag itself never shows: only its padding does.
+            let surface = t.surface_bg();
+            let buf = frame.buffer_mut();
+            let outer = picker_area;
+            let edge = style(t.var("primary", t.primary), surface);
+            let w = usize::from(outer.width.saturating_sub(2));
+            for y in outer.top()..outer.bottom() {
+                let row = if y == outer.top() {
+                    format!("╭{}╮", "─".repeat(w))
+                } else if y + 1 == outer.bottom() {
+                    format!("╰{}╯", "─".repeat(w))
+                } else {
+                    format!("│{}│", " ".repeat(w))
+                };
+                buf.set_string(outer.x, y, row, edge);
+            }
+            let list = Rect::new(
+                outer.x + 1,
+                outer.y + 1,
+                outer.width.saturating_sub(2),
+                outer.height.saturating_sub(2),
+            );
+            crate::picker_box::tall_edges(
+                buf,
+                list,
+                t.var("border-blurred", t.thinking_border),
+                surface,
+                surface,
+                t.text(),
+            );
+            let rows_area = Rect::new(
+                list.x + 1,
+                list.y + 1,
+                list.width.saturating_sub(2),
+                list.height.saturating_sub(2),
+            );
+            let total = app.completion.matches().len();
+            let shown = usize::from(rows_area.height);
+            let scrolling = total > shown;
+            // padding 0 1 on both sides; the scrollbar sits inside the right padding.
+            let content_x = rows_area.x + 1;
+            let text_w = rows_area.width.saturating_sub(2 + u16::from(scrolling));
+            let first = app.completion.scroll_for(shown);
+            let selected = app.completion.selected();
+            // OptionList > .option-list--option-highlighted (blurred): $foreground on
+            // $block-cursor-blurred-background.
+            let cursor = t.css_over("block-cursor-blurred-background", surface, t.panel);
+            for (row, candidate) in app.completion.matches().iter().enumerate().skip(first).take(shown) {
+                let y = rows_area.y + (row - first) as u16;
+                let tag = match candidate.kind {
+                    CompletionKind::Command => "[command]",
+                    CompletionKind::Skill => "[skill]",
+                };
+                let description: String = crate::live::terminal_text(&candidate.description)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(40)
+                    .collect();
+                let name = crate::live::terminal_text(&candidate.name);
+                let line = format!(
+                    "{name}{}{}{description}",
+                    " ".repeat(26usize.saturating_sub(name.width())),
+                    " ".repeat(11usize.saturating_sub(tag.width()))
+                );
+                let st = if row == selected {
+                    style(t.text(), cursor)
+                } else {
+                    style(t.text(), surface)
+                };
+                buf.set_string(rows_area.x, y, " ".repeat(usize::from(rows_area.width)), style(t.text(), surface));
+                buf.set_string(content_x, y, " ".repeat(usize::from(text_w)), st);
+                buf.set_stringn(content_x, y, &line, usize::from(text_w), st);
+            }
+            if scrolling {
+                crate::picker_box::scrollbar(
+                    buf,
+                    content_x + text_w,
+                    rows_area.y,
+                    rows_area.height,
+                    total,
+                    first,
+                    &t,
+                );
+            }
+            app.completion.record_view(
+                Rect::new(content_x, rows_area.y, text_w, rows_area.height),
+                first,
+            );
+        } else {
         let name_width = (picker_area.width.saturating_sub(2 + 11) as usize).min(26);
         let rows: Vec<_> = app
             .completion
@@ -1851,6 +1947,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             ),
             selection.offset(),
         );
+        }
     } else {
         app.completion.hide();
     }

@@ -20,6 +20,9 @@ pub struct CompletionPicker {
     selected: usize,
     view: Option<(Rect, usize)>,
     pressed: Option<usize>,
+    /// The first row shown, kept between frames: Textual's OptionList scrolls only as far as
+    /// the highlight needs.
+    first: usize,
 }
 impl CompletionPicker {
     /// Candidates must already be in the producer's source sort order. A stable
@@ -64,6 +67,17 @@ impl CompletionPicker {
                 .min(self.matches.len() - 1);
         }
     }
+    /// The first row to show in `rows` lines: unchanged unless the highlight left the window.
+    pub fn scroll_for(&mut self, rows: usize) -> usize {
+        let rows = rows.max(1);
+        if self.selected < self.first {
+            self.first = self.selected;
+        } else if self.selected >= self.first + rows {
+            self.first = self.selected + 1 - rows;
+        }
+        self.first = self.first.min(self.matches.len().saturating_sub(rows));
+        self.first
+    }
     /// Only rows actually rendered may be clicked; borders are excluded.
     pub fn record_view(&mut self, rows: Rect, first: usize) {
         if self.view != Some((rows, first)) {
@@ -97,6 +111,7 @@ impl CompletionPicker {
         false
     }
     pub fn dismiss(&mut self) {
+        self.first = 0;
         self.hide();
         self.matches.clear();
         self.selected = 0;
