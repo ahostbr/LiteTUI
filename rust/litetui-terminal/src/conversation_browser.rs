@@ -19,6 +19,8 @@ use unicode_segmentation::UnicodeSegmentation;
 pub const PAGE: &str = "gui.conversations.page";
 pub const OPEN: &str = "gui.conversations.open";
 pub const PREVIEW: &str = "gui.conversations.preview";
+/// Another agent's conversations, for /resume's third picker (conversation_page.agent_rows).
+pub const AGENT_ROWS: &str = "gui.conversations.native_agent_rows";
 pub const PAGE_SIZE: usize = 50;
 pub const CATALOG_LIMIT: usize = 10_000;
 pub const PAGE_BYTES: usize = 256 * 1024;
@@ -61,12 +63,28 @@ pub struct Page {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
-    ConfirmOpen { snapshot: String, action_id: String },
+    ConfirmOpen {
+        snapshot: String,
+        action_id: String,
+    },
     Action(crate::conversation_actions::Intent),
     Refresh,
-    Page { revision: u64, cursor: String },
-    Open { revision: u64, session: String },
-    Inspect { revision: u64, session: String },
+    Page {
+        revision: u64,
+        cursor: String,
+    },
+    Open {
+        revision: u64,
+        session: String,
+    },
+    Inspect {
+        revision: u64,
+        session: String,
+    },
+    /// Read another agent's conversations (Python's "<name>: choose a conversation").
+    AgentRows {
+        agent: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -76,6 +94,12 @@ pub enum Update {
     /// Only after correlated open + owned state + held-input verification.
     Opened {
         session: String,
+    },
+    /// Another agent's conversations: (conversation id or "new", label).
+    AgentRows {
+        agent: String,
+        name: String,
+        rows: Vec<(String, String)>,
     },
     Rejected(String),
 }
@@ -328,14 +352,20 @@ pub struct View {
     paging: bool,
     /// Why a pick did nothing, shown in the picker.
     line: Option<String>,
-    /// Another agent was picked: the window relaunches as it.
-    switch_to: Option<String>,
+    /// Another agent and one of its conversations (None: a new one) were picked: the window
+    /// relaunches as it.
+    switch_to: Option<(String, Option<String>)>,
+    /// The picked agent's name and conversations, while its picker is open.
+    other: Option<(String, Vec<(String, String)>)>,
+    other_selected: usize,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Stage {
     #[default]
     Agents,
     Conversations,
+    /// Another agent's conversations (Python's "<name>: choose a conversation").
+    OtherAgent,
 }
 impl View {
     /// A conversation id prefix from a command only moves the row cursor on the
@@ -387,8 +417,8 @@ impl View {
     pub fn owns_input(&self) -> bool {
         self.open || self.waiting || self.actions.owns_input()
     }
-    /// The agent the /resume picker chose to switch this window to, once.
-    pub fn take_switch(&mut self) -> Option<String> {
+    /// The agent (and conversation) the /resume pickers chose to switch this window to, once.
+    pub fn take_switch(&mut self) -> Option<(String, Option<String>)> {
         self.switch_to.take()
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
@@ -555,6 +585,12 @@ impl View {
                 self.finish();
                 self.notice = "Conversation and held input verified.".into();
             }
+            Update::AgentRows { name, rows, .. } => {
+                self.other = Some((name, rows));
+                self.other_selected = 0;
+                self.stage = Stage::OtherAgent;
+                self.line = None;
+            }
             Update::Rejected(error) => {
                 self.preselect = None;
                 self.pending_open = None;
@@ -671,6 +707,21 @@ impl View {
             }
             return;
         }
+        if self.stage == Stage::OtherAgent {
+            let last = self
+                .other
+                .as_ref()
+                .map_or(0, |(_, rows)| rows.len().saturating_sub(1));
+            match key.code {
+                KeyCode::Up => self.other_selected = self.other_selected.saturating_sub(1),
+                KeyCode::Down => self.other_selected = (self.other_selected + 1).min(last),
+                KeyCode::Home => self.other_selected = 0,
+                KeyCode::End => self.other_selected = last,
+                KeyCode::Enter if key.kind == KeyEventKind::Press => self.other_enter(),
+                _ => {}
+            }
+            return;
+        }
         if self.stage == Stage::Agents {
             let last = self
                 .page
@@ -775,6 +826,17 @@ impl View {
             _ => {}
         }
     }
+    /// The other agent's pick: relaunch as that agent, opening the conversation (or a new one).
+    fn other_enter(&mut self) {
+        let Some((name, rows)) = &self.other else {
+            return;
+        };
+        let Some((id, _)) = rows.get(self.other_selected) else {
+            return;
+        };
+        self.switch_to = Some((name.clone(), (id != "new").then(|| id.clone())));
+        self.close();
+    }
     /// The agent picker's pick: this agent's conversations, as Python's second picker.
     fn agent_enter(&mut self) {
         let Some(page) = &self.page else {
@@ -784,9 +846,11 @@ impl View {
             return;
         };
         if *id != page.agent {
-            // Python relaunches the window as that agent (convo._switch_window_to).
-            self.switch_to = Some(name.clone());
-            self.close();
+            // Python lists that agent's conversations, then relaunches the window as it.
+            self.intent = Some(Intent::AgentRows { agent: id.clone() });
+            self.waiting = true;
+            self.notice = format!("Reading {name}'s conversations…");
+            self.hide();
             return;
         }
         if page.entries.is_empty() {
@@ -853,6 +917,9 @@ impl View {
                         // Choosing an agent opens nothing, so a click picks it as in Python.
                         self.agent_selected = index;
                         self.agent_enter();
+                    } else if self.stage == Stage::OtherAgent {
+                        self.other_selected = index;
+                        self.other_enter();
                     } else {
                         // "Enter or click to select": a click opens, as in Python.
                         self.selected = index;
@@ -878,6 +945,33 @@ impl View {
             _ => self.pressed = None,
         }
     }
+    fn draw_other(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        name: String,
+        rows: Vec<(String, String)>,
+    ) {
+        let labels: Vec<String> = rows.iter().map(|(_, label)| line(label, 0)).collect();
+        let drawn = crate::picker_box::draw(
+            frame,
+            area,
+            theme,
+            &format!("{name}: choose a conversation"),
+            &labels,
+            self.other_selected,
+            &mut self.scroll,
+            &[],
+            crate::picker_box::HINT,
+        );
+        if self.geometry != Some(area) {
+            self.disarm();
+            self.geometry = Some(area);
+        }
+        self.hits = drawn.hits;
+        self.visible = self.open && !self.waiting && drawn.rect.width > 0;
+    }
     /// Python's /resume pickers (picker_box): "Choose an agent", then "Resume a conversation".
     fn draw_picker(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         self.visible = false;
@@ -893,6 +987,12 @@ impl View {
                 page.agents.iter().map(|(_, name)| name.clone()).collect(),
                 self.agent_selected,
             ),
+            (_, Stage::OtherAgent) => match &self.other {
+                Some((name, rows)) => {
+                    return self.draw_other(frame, area, theme, name.clone(), rows.clone());
+                }
+                None => ("Choose an agent", Vec::new(), 0),
+            },
             (Some(page), Stage::Conversations) => (
                 "Resume a conversation",
                 // Titles are source text: control characters stay literal.

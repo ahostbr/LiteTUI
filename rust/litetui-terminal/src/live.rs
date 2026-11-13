@@ -2223,6 +2223,15 @@ pub fn prepare_root(
         crate::resume::conversation_id(id)?;
         let root = options.data_root.canonicalize()?;
         crate::resume::validate_root(&root, options.tools_enabled)?;
+        if let Some(agent) = &options.agent {
+            // A resume as another agent (/resume's agent pick): only the seat changes.
+            let mut saved = crate::resume::read_settings(&root)?;
+            saved["seat_name"] = json!(agent);
+            fs::write(
+                root.join("settings.json"),
+                serde_json::to_vec_pretty(&saved)?,
+            )?;
+        }
         root
     } else if options.data_root.join(crate::resume::MARKER).is_file() {
         // Ryan 2026-11-12: one persistent root of the Rust frontend's own. A root this frontend

@@ -342,6 +342,9 @@ enum BrowserRequest {
         previous: Option<crate::conversation_browser::Page>,
         cursor: Option<String>,
     },
+    AgentRows {
+        agent: String,
+    },
     Open {
         preview: Option<Box<crate::history::Snapshot>>,
         target: String,
@@ -2453,6 +2456,24 @@ impl Management {
         }
         let (operation, request, mut command) = match intent {
             Intent::Action(_) | Intent::ConfirmOpen { .. } => unreachable!("handled action"),
+            Intent::AgentRows { agent } => {
+                if !self
+                    .operations
+                    .iter()
+                    .any(|op| op == crate::conversation_browser::AGENT_ROWS)
+                {
+                    return Err(fail(
+                        "Runtime cannot list another agent's conversations; update Python source",
+                    ));
+                }
+                (
+                    crate::conversation_browser::AGENT_ROWS,
+                    BrowserRequest::AgentRows {
+                        agent: agent.clone(),
+                    },
+                    json!({"version":1,"session_id":session,"agent_id":agent}),
+                )
+            }
             Intent::Inspect { .. } => {
                 return Err(fail(
                     "Inspect requires the separate Saved History read route",
@@ -2638,6 +2659,47 @@ impl Management {
                     },
                 });
                 Ok(Step::Write(command))
+            }
+            BrowserRequest::AgentRows { agent } => {
+                if !success {
+                    return Ok(Step::Browser(Update::Rejected(
+                        text(&frame, "error", 4096)?.to_owned(),
+                    )));
+                }
+                let result = &frame["result"];
+                let canonical = |id: &str| {
+                    id.len() == 36
+                        && id.bytes().enumerate().all(|(i, b)| {
+                            if [8, 13, 18, 23].contains(&i) {
+                                b == b'-'
+                            } else {
+                                b.is_ascii_hexdigit() && !b.is_ascii_uppercase()
+                            }
+                        })
+                };
+                if result["version"] != 1 || result["agent_id"] != json!(agent) {
+                    return Err(fail("Agent conversation rows belong to another agent"));
+                }
+                let name = text(result, "name", 1024)?.to_owned();
+                let rows = result["rows"]
+                    .as_array()
+                    .filter(|rows| !rows.is_empty() && rows.len() <= 200)
+                    .ok_or_else(|| fail("Invalid agent conversation rows"))?
+                    .iter()
+                    .map(|row| match row.as_array().map(Vec::as_slice) {
+                        Some([Value::String(id), Value::String(label)])
+                            if (id == "new" || canonical(id)) && label.len() <= 4096 =>
+                        {
+                            Ok((id.clone(), label.clone()))
+                        }
+                        _ => Err(fail("Invalid agent conversation row")),
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
+                Ok(Step::Browser(Update::AgentRows {
+                    agent: agent.clone(),
+                    name,
+                    rows,
+                }))
             }
             BrowserRequest::Page { previous, cursor } => {
                 if !success {

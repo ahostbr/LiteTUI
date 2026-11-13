@@ -336,7 +336,7 @@ def admission_refusal(app):
 # recovery operations, some of which are mutations despite being inspectable.
 INSPECTION = frozenset({
     "gui.hello", "gui.state", "gui.conversations.native_snapshot",
-    "gui.conversations.read", "gui.conversations.list", "gui.conversations.page", "gui.conversations.preview",
+    "gui.conversations.read", "gui.conversations.list", "gui.conversations.page", "gui.conversations.preview", "gui.conversations.native_agent_rows",
     "gui.history.native_snapshot", "gui.history.native_page", "gui.restored_input.list",
     "gui.work.native_snapshot", "gui.work.native_page", "gui.work.native_tail", "gui.work.native_calendar",
     "gui.settings.get", "gui.settings.native_snapshot", "gui.settings.native_compact_snapshot",

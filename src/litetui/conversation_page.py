@@ -243,6 +243,34 @@ def _picker_label(record, meta, messages):
             f"{ConversationRepository.label(meta, messages)}")
 
 
+MAX_AGENT_ROWS = 200
+
+
+def agent_rows(app, cmd):
+    """/resume's picker for ANOTHER agent (plugins/convo._open_convos_picker): its conversations,
+    newest first, as (conversation id, label); "Start a new conversation" when it has none.
+    Read only; the native frontend relaunches as that agent to open one."""
+    from litetui.agent_store import AgentStore
+    from litetui.storage_catalog import conversations
+
+    if type(cmd.get("version")) is not int or cmd["version"] != 1:
+        raise ValueError("Agent conversation rows require version 1")
+    current = valid_id(cmd.get("session_id"))
+    session, _store, authority = _scope(app, current)
+    agent = AgentStore(session.store.data_root).find_agent(agent_id=valid_id(cmd.get("agent_id")))
+    if agent.agent_id == authority.agent_id:
+        raise ValueError("This agent's conversations are the conversation picker's own rows")
+    rows = [(row.transcript, *ConversationRepository.read(row.transcript))
+            for row in conversations(session.store.data_root, agent_id=agent.agent_id)]
+    rows.sort(key=lambda row: row[0].stat().st_mtime, reverse=True)
+    items = [[valid_id(row[0].parent.name), _text(ConversationRepository.label(row[1], row[2]), 4096)]
+             for row in rows[:MAX_AGENT_ROWS]]
+    if not items:
+        items = [["new", "Start a new conversation"]]
+    return {"version": 1, "session_id": current, "agent_id": agent.agent_id,
+            "name": _text(agent.name, 1024), "rows": items}
+
+
 def _unchanged(app, session_id, before):
     after = _catalog(app, session_id)
     if (after[0] is not before[0] or after[1] is not before[1]

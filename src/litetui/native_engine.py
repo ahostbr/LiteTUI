@@ -29,7 +29,7 @@ LEGACY_MUTATIONS = frozenset({
 RECOVERY = frozenset({"gui.restored_input.cancel", "gui.restored_input.resolve", "gui.restored_input.reconcile"})
 READ_ONLY = frozenset({
     "gui.hello", "gui.state", "gui.conversations.read", "gui.conversations.list",
-    "gui.conversations.page", "gui.conversations.preview", "gui.restored_input.list",
+    "gui.conversations.page", "gui.conversations.preview", "gui.conversations.native_agent_rows", "gui.restored_input.list",
     "gui.work.get", "gui.work.cancel", "gui.diagnostics.get", "gui.themes.native_snapshot",
     "gui.history.native_snapshot", "gui.history.native_page",
     "gui.work.native_snapshot", "gui.work.native_page", "gui.work.native_tail", "gui.work.native_calendar",

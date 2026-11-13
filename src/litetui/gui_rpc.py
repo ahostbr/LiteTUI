@@ -46,7 +46,7 @@ OPERATIONS = (
     "settings.native_form", "settings.native_form_save", "settings.native_form_restore",
     "system_lines",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
-    "conversations.list", "conversations.page", "conversations.preview", "conversations.read", "conversations.open", "conversations.create",
+    "conversations.list", "conversations.page", "conversations.preview", "conversations.native_agent_rows", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
     "conversations.native_snapshot", "conversations.native_validate", "conversations.native_apply",
     "conversations.native_rewrite_snapshot", "conversations.native_rewrite_validate",
@@ -304,6 +304,10 @@ def _conversations(app, action, cmd):
         from litetui import conversation_page
 
         return conversation_page.page(app, cmd) if action == "page" else conversation_page.preview(app, cmd)
+    if action == "native_agent_rows":
+        from litetui import conversation_page
+
+        return conversation_page.agent_rows(app, cmd)
     if action == "list":
         session = getattr(app, '_agent_session', None)
         if session is not None:

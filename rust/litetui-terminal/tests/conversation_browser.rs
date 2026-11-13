@@ -56,7 +56,27 @@ fn picking_another_agent_hands_the_window_over_to_it() {
     assert!(draw(&mut v, 80, 30).contains("Choose an agent"));
     v.key(key(KeyCode::Down));
     v.key(key(KeyCode::Enter));
-    assert_eq!(v.take_switch().as_deref(), Some("Nova"));
+    // Python lists that agent's conversations first.
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::AgentRows {
+            agent: "22222222-2222-4222-8222-222222222222".into()
+        })
+    );
+    v.observe(Update::AgentRows {
+        agent: "22222222-2222-4222-8222-222222222222".into(),
+        name: "Nova".into(),
+        rows: vec![
+            (id(7), "Nova's first".into()),
+            (id(8), "Nova's second".into()),
+        ],
+    })
+    .unwrap();
+    let screen = draw(&mut v, 80, 30);
+    assert!(screen.contains("Nova: choose a conversation"), "{screen}");
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    assert_eq!(v.take_switch(), Some(("Nova".into(), Some(id(8)))));
     assert!(!v.open && v.take_intent().is_none());
 }
 fn view() -> View {

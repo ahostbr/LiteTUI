@@ -1397,25 +1397,53 @@ fn one_shot_profile(options: &mut litetui_terminal::live::Options) -> io::Result
 /// The next launch of an interactive window that is switching agents.
 struct Relaunch {
     agent: String,
+    /// The picked conversation of that agent; None opens a new one.
+    conversation: Option<String>,
     profile: Option<String>,
+    /// The backend and model selected now: Python's /agent-new creates the agent with them.
+    backend: String,
+    model: String,
 }
-/// The same arguments as a new launch: this agent, the profile already chosen, no `--resume`
-/// (that conversation belongs to the agent being left).
+/// The same arguments as a new launch: this agent, its picked conversation, the profile already
+/// chosen and the backend/model selected now. A different backend drops the launch's
+/// backend-specific options (base URL, server start and the like), which belonged to the old one.
 fn relaunch_args(args: &[String], next: &Relaunch) -> Vec<String> {
+    let rest = &args[1..];
+    let launch_backend = rest
+        .windows(2)
+        .find(|pair| pair[0] == "--backend")
+        .map(|pair| pair[1].as_str());
+    let kept: Vec<String> = if launch_backend == Some(next.backend.as_str()) {
+        rest.to_vec()
+    } else {
+        litetui_terminal::runtime_launch::LaunchOptions::extract(rest)
+            .map(|(_, plain)| plain)
+            .unwrap_or_else(|_| rest.to_vec())
+    };
     let mut out = vec![args[0].clone()];
-    let mut index = 1;
-    while index < args.len() {
+    let mut index = 0;
+    while index < kept.len() {
         if matches!(
-            args[index].as_str(),
-            "--agent" | "--resume" | "--tool-profile"
+            kept[index].as_str(),
+            "--agent" | "--resume" | "--tool-profile" | "--backend" | "--model"
         ) {
             index += 2;
             continue;
         }
-        out.push(args[index].clone());
+        out.push(kept[index].clone());
         index += 1;
     }
-    out.extend(["--agent".to_owned(), next.agent.clone()]);
+    out.extend([
+        "--backend".to_owned(),
+        next.backend.clone(),
+        "--model".to_owned(),
+        next.model.clone(),
+        "--agent".to_owned(),
+        next.agent.clone(),
+    ]);
+    if let Some(conversation) = &next.conversation {
+        out.extend(["--resume".to_owned(), conversation.clone()]);
+    }
     if let Some(profile) = &next.profile {
         out.extend(["--tool-profile".to_owned(), profile.clone()]);
     }
@@ -1793,9 +1821,19 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<O
     drop(terminal);
     drop(_guard);
     if outcome.is_ok()
-        && let Some(agent) = app.relaunch_agent.take()
+        && let Some((agent, conversation)) = app.relaunch_agent.take()
     {
-        return Ok(Some(Relaunch { agent, profile }));
+        let (backend, model) = app.live.as_ref().map_or_else(
+            || (String::new(), String::new()),
+            |chat| (chat.backend.clone(), chat.model.clone()),
+        );
+        return Ok(Some(Relaunch {
+            agent,
+            conversation,
+            profile,
+            backend,
+            model,
+        }));
     }
     println!(
         "Retained data root: {}",
@@ -1885,7 +1923,10 @@ mod tests {
         .collect();
         let next = Relaunch {
             agent: "Nova".into(),
+            conversation: None,
             profile: Some("autonomous".into()),
+            backend: "claude".into(),
+            model: "claude-sonnet-5-5".into(),
         };
         assert_eq!(
             relaunch_args(&args, &next),
@@ -1896,10 +1937,36 @@ mod tests {
                 "--start-server",
                 "--backend",
                 "claude",
+                "--model",
+                "claude-sonnet-5-5",
                 "--agent",
                 "Nova",
                 "--tool-profile",
                 "autonomous"
+            ]
+        );
+        // Another backend drops the old backend's launch options; a picked conversation resumes.
+        let next = Relaunch {
+            agent: "Nova".into(),
+            conversation: Some("00000000-0000-4000-8000-000000000002".into()),
+            profile: None,
+            backend: "lmstudio".into(),
+            model: "qwen".into(),
+        };
+        assert_eq!(
+            relaunch_args(&args, &next),
+            [
+                "--interactive",
+                "--python",
+                "py",
+                "--backend",
+                "lmstudio",
+                "--model",
+                "qwen",
+                "--agent",
+                "Nova",
+                "--resume",
+                "00000000-0000-4000-8000-000000000002"
             ]
         );
     }
@@ -1910,12 +1977,12 @@ mod tests {
         let mut app = Demo::live("custom".into(), "fixture".into());
         app.observe_live(Observation::Ready).unwrap();
         app.live.as_mut().unwrap().busy = true;
-        app.request_agent_switch("Nova");
+        app.request_agent_switch("Nova", None);
         assert!(app.relaunch_agent.is_none() && !app.command_quit);
         assert!(app.notice.contains("Finish or stop the current turn"));
         app.live.as_mut().unwrap().busy = false;
-        app.request_agent_switch("Nova");
-        assert_eq!(app.relaunch_agent.as_deref(), Some("Nova"));
+        app.request_agent_switch("Nova", None);
+        assert_eq!(app.relaunch_agent, Some(("Nova".into(), None)));
         assert!(app.command_quit);
         assert_eq!(
             app.live
