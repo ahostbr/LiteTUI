@@ -44,7 +44,7 @@ OPERATIONS = (
     "glassbox.native_snapshot", "glassbox.native_review", "glassbox.native_apply", "glassbox.native_readback",
     "hello", "state", "screen.native_mark", "voice.native_dictation", "voice.native_playback", "voice.native_catalog", "voice.native_action", "backends.list", "prompt.submit", "prompt.native_queue_review", "prompt.native_queue_apply", "prompt.native_send_review", "prompt.native_send_apply", "settings.get", "settings.validate", "settings.apply",
     "settings.native_form", "settings.native_form_save", "settings.native_form_restore",
-    "system_lines",
+    "system_lines", "markdown.native_render",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.native_agent_rows", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -1052,6 +1052,10 @@ def dispatch(app, cmd):
 async def async_dispatch(app, cmd):
     """Keep management work visible while awaiting a backend or approval."""
     operation = cmd["type"]
+    from litetui import native_markdown
+    if operation == native_markdown.OPERATION:
+        # A pure read of the reply's Markdown lines; answered whatever else is running.
+        return native_markdown.render(app, cmd)
     from litetui import native_claude_reset
     if operation in native_claude_reset.OPERATIONS:
         return await native_claude_reset.dispatch(app, cmd)

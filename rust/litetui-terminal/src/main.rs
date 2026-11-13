@@ -1752,6 +1752,13 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<O
                 let _ = runtime.system_lines();
             }
             if !quitting
+                && let Some((key, text, width)) =
+                    app.live.as_mut().expect("live").take_markdown_request()
+                && runtime.markdown(key, text, width).is_err()
+            {
+                app.live.as_mut().expect("live").markdown_unsent();
+            }
+            if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").settings.take_intent()
                 && let Err(error) = runtime.settings(intent)
             {

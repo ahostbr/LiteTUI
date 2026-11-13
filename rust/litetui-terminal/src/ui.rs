@@ -205,6 +205,24 @@ fn assistant_card(
     footer: &str,
     width: usize,
 ) {
+    assistant_card_with(t, lines, title, reasoning, answer, None, footer, width)
+}
+/// The answer's content width in a card at this transcript width (AnswerBody's region).
+pub(crate) fn answer_width(width: usize) -> u16 {
+    card_geometry(width).1.saturating_sub(6) as u16
+}
+/// The card, with the answer drawn from Python's Markdown lines when they are given.
+#[allow(clippy::too_many_arguments)]
+fn assistant_card_with(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    title: &str,
+    reasoning: &[String],
+    answer: &str,
+    rendered: Option<&crate::markdown::Lines>,
+    footer: &str,
+    width: usize,
+) {
     let (left, outer_width) = card_geometry(width);
     let inner_width = outer_width.saturating_sub(6);
     lines.push(card_top(t, title, left, outer_width));
@@ -248,7 +266,26 @@ fn assistant_card(
             style(t.thinking_border, t.surface),
         )]));
     }
-    if !answer.is_empty() {
+    if let Some(rendered) = rendered {
+        // Python's AnswerBody: Rich's Markdown lines, as rendered at this width.
+        for line in rendered {
+            let mut spans = Vec::new();
+            let mut used = 0;
+            for run in line {
+                let text = clip_label(&display_safe(&run.text), inner_width - used);
+                used += rendered_width(&text);
+                spans.push(Span::styled(text, run.style(t.foreground, t.surface)));
+                if used >= inner_width {
+                    break;
+                }
+            }
+            spans.push(Span::styled(
+                " ".repeat(inner_width - used),
+                style(t.foreground, t.surface),
+            ));
+            lines.push(outer_row(spans));
+        }
+    } else if !answer.is_empty() {
         for row in wrap(answer, inner_width) {
             lines.push(outer_row(vec![Span::styled(
                 padded(&row, inner_width),
@@ -262,8 +299,8 @@ fn assistant_card(
             style(t.foreground, t.surface),
         )])
     };
-    if !answer.is_empty() {
-        // The answer's last paragraph margin (Markdown), as in Python's card.
+    if rendered.is_none() && !answer.is_empty() {
+        // The answer's last paragraph margin (Rich's Markdown ends with a blank line).
         lines.push(blank());
     }
     if !footer.is_empty() {
@@ -1268,7 +1305,30 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                             });
                             continue;
                         }
-                        assistant_card(
+                        let md_width = answer_width(width);
+                        let streaming = matches!(
+                            row.state,
+                            crate::live_chat::ReplyState::Sending
+                                | crate::live_chat::ReplyState::Streaming
+                        );
+                        // While it streams the last render stands until the next one lands;
+                        // settled, only the render of this exact answer is drawn.
+                        let rendered = card
+                            .rendered
+                            .iter()
+                            .find(|r| {
+                                r.width == md_width
+                                    && (streaming
+                                        || r.key
+                                            == crate::live_chat::Chat::markdown_key(
+                                                row_index,
+                                                index,
+                                                &card.answer,
+                                                md_width,
+                                            ))
+                            })
+                            .map(|r| &r.lines);
+                        assistant_card_with(
                             t,
                             &mut lines,
                             &format!("▾ {}", display_safe(&chat.model)),
@@ -1290,6 +1350,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                                 )]
                             },
                             &display_safe(&card.answer),
+                            rendered,
                             if last_card == Some(index) {
                                 &state_text
                             } else {
@@ -1641,6 +1702,17 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         view = transcript(app, text_width);
     }
     let scrollbar = text_width < viewport.width as usize;
+    if let Some(chat) = app.live.as_mut() {
+        // The answers' Markdown is asked for at the width the cards have without the
+        // scrollbar first, then with it when the chat overflows, so the layout settles where
+        // Textual's does (a render at one width never decides the other's overflow).
+        let full = answer_width(viewport.width as usize);
+        chat.markdown_widths = if scrollbar {
+            vec![full, answer_width(text_width)]
+        } else {
+            vec![full]
+        };
+    }
     // Source `_autocollapse_offscreen`: while the follow lock holds, fold settled cards that end
     // above the line the view is about to settle on, in the same frame as the move.
     if presentation.autoscroll

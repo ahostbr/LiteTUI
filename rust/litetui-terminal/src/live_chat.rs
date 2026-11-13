@@ -70,8 +70,18 @@ impl Fold {
         true
     }
 }
+/// Python's Markdown lines for a card's answer (markdown.rs), as last rendered.
+#[derive(Clone, Debug, Default)]
+pub struct Rendered {
+    pub key: u64,
+    pub width: u16,
+    pub lines: crate::markdown::Lines,
+}
 #[derive(Default)]
 pub struct Card {
+    /// The answer's Markdown lines from Python, per width (with and without the chat's
+    /// scrollbar), when they have come back.
+    pub rendered: Vec<Rendered>,
     pub answer: String,
     pub reasoning: String,
     answer_units: usize,
@@ -248,6 +258,13 @@ pub struct Chat {
     pub splash: bool,
     /// Python's chat-log system lines, each anchored where it was mounted.
     pub system_lines: Vec<SystemLine>,
+    /// The widths an answer may be drawn at (the card's content without, then with, the
+    /// chat's scrollbar), set by the transcript; the first is asked for first.
+    pub markdown_widths: Vec<u16>,
+    /// The Markdown read in flight: its key and the card it is for.
+    markdown_flight: Option<(u64, usize, usize)>,
+    /// After a refused or unsent render, when to ask again (the raw answer shows meanwhile).
+    markdown_retry: Option<std::time::Instant>,
     /// Whether Python's held lines have been asked for, and when to ask again after a refusal.
     system_ask: SystemAsk,
     system_retry: Option<std::time::Instant>,
@@ -328,6 +345,47 @@ impl Chat {
     /// A system line of this frontend's own, drawn as Python's are.
     pub fn add_system_line(&mut self, text: String) {
         self.system_line(text, false);
+    }
+    /// One card's answer and width, as the key of its Markdown render.
+    pub fn markdown_key(row: usize, card: usize, answer: &str, width: u16) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (row, card, answer, width).hash(&mut h);
+        h.finish()
+    }
+    /// The next visible answer whose Python Markdown is missing or stale, newest first;
+    /// one read at a time.
+    pub fn take_markdown_request(&mut self) -> Option<(u64, String, u16)> {
+        if self.markdown_flight.is_some()
+            || self.markdown_widths.is_empty()
+            || !self.ready
+            || self.closed
+            || self
+                .markdown_retry
+                .is_some_and(|at| std::time::Instant::now() < at)
+        {
+            return None;
+        }
+        for &width in &self.markdown_widths {
+            for row in self.visible_row_range().rev() {
+                for (index, card) in self.rows[row].cards.iter().enumerate().rev() {
+                    if card.answer.is_empty() || card.fold.folded || width == 0 {
+                        continue;
+                    }
+                    let key = Self::markdown_key(row, index, &card.answer, width);
+                    if card.rendered.iter().any(|r| r.key == key) {
+                        continue;
+                    }
+                    self.markdown_flight = Some((key, row, index));
+                    return Some((key, card.answer.clone(), width));
+                }
+            }
+        }
+        None
+    }
+    /// The read could not be handed to the runtime; ask again on a later frame.
+    pub fn markdown_unsent(&mut self) {
+        self.markdown_flight = None;
     }
     /// Ask Python for its held chat-log lines: once, when ready and idle.
     pub fn take_system_lines_request(&mut self) -> bool {
@@ -480,6 +538,9 @@ impl Chat {
             connected: None,
             splash: true,
             system_lines: Vec::new(),
+            markdown_widths: Vec::new(),
+            markdown_flight: None,
+            markdown_retry: None,
             system_ask: SystemAsk::Wanted,
             system_retry: None,
             work: crate::work_view::View::default(),
@@ -1927,6 +1988,27 @@ impl Chat {
                 self.system_ask = SystemAsk::Done;
                 for (text, before_splash) in lines {
                     self.system_line(text, before_splash);
+                }
+            }
+            Observation::Markdown { key, width, lines } => {
+                let target = self.markdown_flight.take().filter(|(k, _, _)| *k == key);
+                match (target, lines) {
+                    (Some((_, row, card)), Some(lines)) => {
+                        if let Some(card) =
+                            self.rows.get_mut(row).and_then(|r| r.cards.get_mut(card))
+                        {
+                            card.rendered.retain(|r| r.width != width);
+                            if card.rendered.len() >= 2 {
+                                card.rendered.remove(0);
+                            }
+                            card.rendered.push(Rendered { key, width, lines });
+                        }
+                    }
+                    (_, None) => {
+                        self.markdown_retry =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    }
+                    _ => {}
                 }
             }
             Observation::SystemLinesRefused(_) => {

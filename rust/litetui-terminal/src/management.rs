@@ -279,6 +279,12 @@ pub enum Step {
     Backend(crate::backend_controls::Update),
     /// Python's chat-log system lines held until this client asked: (text, before splash).
     SystemLines(Vec<(String, bool)>),
+    /// Python's Markdown lines for one card's answer (native_markdown.py); None if refused.
+    Markdown {
+        key: u64,
+        width: u16,
+        lines: Option<crate::markdown::Lines>,
+    },
     BackendChanged(Box<crate::backend_controls::Changed>),
     Browser(crate::conversation_browser::Update),
     Opened(Box<crate::conversation_browser::Opened>),
@@ -718,6 +724,8 @@ pub struct Management {
     settings_form: Option<settings::FormPending>,
     /// The one gui.system_lines read.
     system_lines: Option<CommandId>,
+    /// The one gui.markdown.native_render read in flight: its id, card key and width.
+    markdown: Option<(CommandId, u64, u16)>,
     settings_snapshot: Option<settings::Snapshot>,
     settings_review: Option<settings::Review>,
     settings_generation: u64,
@@ -809,6 +817,7 @@ impl Default for Management {
             settings_edit: None,
             settings_form: None,
             system_lines: None,
+            markdown: None,
             settings_snapshot: None,
             settings_review: None,
             settings_generation: 0,
@@ -1479,6 +1488,22 @@ impl Management {
             } if self.system_lines.is_some() && self.system_lines.as_ref() == id.as_ref() => {
                 self.system_lines = None;
                 self.system_lines_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .markdown
+                .as_ref()
+                .is_some_and(|(pending, _, _)| Some(pending) == id.as_ref()) =>
+            {
+                let (_, key, width) = self.markdown.take().expect("markdown pending");
+                // Cosmetic: a refused or malformed render leaves the raw answer drawn.
+                let lines = (frame["ok"] == true)
+                    .then(|| crate::markdown::parse(&frame["result"], width).ok())
+                    .flatten();
+                Ok(Step::Markdown { key, width, lines })
             }
             Notice::Response {
                 id,
@@ -4680,6 +4705,30 @@ impl Management {
         let mut command = json!({"type": SYSTEM_LINES, "version": 1});
         command["id"] = id.to_value();
         self.system_lines = Some(id);
+        Ok(command)
+    }
+    /// Python's Markdown lines for one card's answer (native_markdown.py): a pure read, so
+    /// it may be asked while a turn runs; one at a time.
+    pub fn request_markdown(&mut self, key: u64, text: &str, width: u16) -> io::Result<Value> {
+        if self.phase != Phase::Active || self.closing || self.failed || self.markdown.is_some() {
+            return Err(fail("Markdown render cannot be asked now"));
+        }
+        if !self
+            .operations
+            .iter()
+            .any(|op| op == crate::markdown::OPERATION)
+        {
+            return Err(fail(
+                "Runtime lacks Markdown rendering; update Python source",
+            ));
+        }
+        let mut command = crate::markdown::request(text, width)?;
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve the Markdown read"))?;
+        command["id"] = id.to_value();
+        self.markdown = Some((id, key, width));
         Ok(command)
     }
     fn system_lines_response(&mut self, frame: Value) -> io::Result<Step> {

@@ -394,6 +394,12 @@ pub enum Observation {
     SystemLines(Vec<(String, bool)>),
     /// The read could not be sent now; the chat asks again later.
     SystemLinesRefused(String),
+    /// Python's Markdown lines for one card (None: refused or not sent).
+    Markdown {
+        key: u64,
+        width: u16,
+        lines: Option<crate::markdown::Lines>,
+    },
     /// Source-authoritative approval refusal; settled, but never successful.
     ApprovalStopped(String),
     Cancelled(String),
@@ -2865,6 +2871,22 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             .map_err(io::Error::other)?;
                         execution_stop_deadline = Some(Instant::now() + Duration::from_secs(20));
                     }
+                    Input::Markdown { key, text, width } => {
+                        // A pure read: allowed while a turn runs.
+                        match management.request_markdown(key, &text, width) {
+                            Ok(value) => owned
+                                .stdin
+                                .as_ref()
+                                .expect("owned stdin")
+                                .try_send(value)
+                                .map_err(io::Error::other)?,
+                            Err(_) => frontend.observe(Observation::Markdown {
+                                key,
+                                width,
+                                lines: None,
+                            })?,
+                        }
+                    }
                     Input::SystemLines => {
                         let command = if turn.can_manage() {
                             management.request_system_lines()
@@ -3703,6 +3725,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             deadline = None;
                         }
                     }
+                    Step::Markdown { key, width, lines } => {
+                        if !turn.closing {
+                            frontend.observe(Observation::Markdown { key, width, lines })?;
+                        }
+                    }
                     Step::SystemLines(lines) => {
                         if !turn.closing {
                             frontend.observe(Observation::SystemLines(lines))?;
@@ -3998,6 +4025,12 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 pub enum Input {
     /// Read Python's held chat-log system lines (once, when the chat is ready).
     SystemLines,
+    /// Render one card's answer as Python's Markdown at a width.
+    Markdown {
+        key: u64,
+        text: String,
+        width: u16,
+    },
     RuntimeControls(crate::runtime_controls_view::Intent),
     ScheduleDecision {
         proposal_id: String,
@@ -4156,7 +4189,7 @@ impl Frontend for OneShot {
                     writeln!(self.output, "\n[System: {}]", terminal_text(&text))?
                 }
             }
-            Observation::SystemLinesRefused(_) => {}
+            Observation::SystemLinesRefused(_) | Observation::Markdown { .. } => {}
             Observation::Cancelled(reason) => {
                 return Err(io::Error::other(format!(
                     "Turn cancelled: {}",
@@ -4440,6 +4473,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Work(intent))
+            .map_err(io::Error::other)
+    }
+    pub fn markdown(&self, key: u64, text: String, width: u16) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::Markdown { key, text, width })
             .map_err(io::Error::other)
     }
     pub fn system_lines(&self) -> io::Result<()> {
