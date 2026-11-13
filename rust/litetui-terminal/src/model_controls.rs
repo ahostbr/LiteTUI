@@ -55,6 +55,9 @@ pub struct Choices {
     pub message: Option<String>,
     /// What litetui/context_choice.ask needs for this backend; None for hosted providers.
     pub context: Option<Box<crate::backend_controls::ContextFacts>>,
+    /// The readback of a selection the runtime applied and kept: Python's picker closes on a
+    /// pick (picker.py `_selected` -> close_dialog), so the view closes on this one.
+    pub applied: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -244,6 +247,7 @@ impl Choices {
             note,
             message: None,
             context,
+            applied: false,
         })
     }
 }
@@ -394,6 +398,15 @@ impl View {
         self.hide();
         self.horizontal = 0;
         match update {
+            Update::Choices(menu) if menu.applied => {
+                // Enter applied and the runtime kept it: closed, as Python's picker is.
+                self.kind = Some(menu.kind);
+                self.notice = menu.message.clone().unwrap_or_default();
+                self.menu = Some(menu);
+                self.open = false;
+                self.preselect = None;
+                self.context_input = None;
+            }
             Update::Choices(menu) => {
                 self.kind = Some(menu.kind);
                 self.cursor = menu

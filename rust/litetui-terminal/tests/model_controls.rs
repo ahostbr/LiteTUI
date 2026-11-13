@@ -329,6 +329,68 @@ fn resize_and_pointer_changes_invalidate_hidden_confirmation() {
     v.key(key(KeyCode::Enter));
     assert!(matches!(v.take_intent(),Some(Intent::Select{value,..})if value=="model-A"));
 }
+/// Ryan 2026-11-13: "pressing enter on slash think dialog doesnt close it ... have to press
+/// enter then esc". Python's picker closes on a pick (picker.py `_selected` -> close_dialog);
+/// here Enter applies, and the verified readback must close the picker, not redraw it.
+/// A refused apply keeps it open with the refusal, so nothing is hidden.
+#[test]
+fn enter_applies_and_a_verified_readback_closes_the_picker_as_pythons_does() {
+    // (kind, rows down from the current one to the pick, the picked value)
+    for (kind, downs, value) in [(Kind::Thinking, 2, "high"), (Kind::Model, 1, "model-B")] {
+        for refused in [false, true] {
+            let mut m = connected();
+            let mut v = View::default();
+            v.open(kind);
+            let opened = m.request_control(v.take_intent().unwrap()).unwrap();
+            let first = if kind == Kind::Model {
+                models("model-A")
+            } else {
+                thinking(Value::Null)
+            };
+            let Step::Control(update) = reply(&mut m, &opened, first.clone()) else {
+                panic!()
+            };
+            v.observe(update);
+            draw(&mut v, 80, 24);
+            for _ in 0..downs {
+                v.key(key(KeyCode::Down));
+            }
+            v.key(key(KeyCode::Enter));
+            let intent = v.take_intent().expect("Enter applies the row");
+            assert!(matches!(&intent, Intent::Select { value: picked, .. } if picked == value));
+            // The apply, then its readback, as management answers them.
+            let cmd = m.request_control(intent).unwrap();
+            let Step::Write(read) = (if refused {
+                m.accept(json!({"type":"response","id":cmd["id"],"ok":false,"error":"refused"}))
+                    .unwrap()
+            } else if kind == Kind::Model {
+                reply(&mut m, &cmd, models(value))
+            } else {
+                reply(&mut m, &cmd, json!({"level": value}))
+            }) else {
+                panic!()
+            };
+            let readback = match (refused, kind) {
+                (true, _) => first,
+                (false, Kind::Model) => models(value),
+                (false, Kind::Thinking) => thinking(json!(value)),
+            };
+            let Step::Control(update) = reply(&mut m, &read, readback) else {
+                panic!()
+            };
+            v.observe(update);
+            if refused {
+                assert!(v.open, "{kind:?}: a refused apply must stay visible");
+                assert!(v.notice.contains("Request failed"), "{}", v.notice);
+            } else {
+                assert!(
+                    !v.owns_input(),
+                    "{kind:?}: Enter applied but the picker stayed open"
+                );
+            }
+        }
+    }
+}
 #[test]
 fn unsent_intent_can_be_closed_without_io_and_tab_only_reads() {
     let mut v = view();

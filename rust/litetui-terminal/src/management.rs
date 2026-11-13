@@ -2089,6 +2089,7 @@ impl Management {
             ));
         } else if pending.selection.is_some() {
             menu.message = Some(format!("Current setting: {}", menu.current));
+            menu.applied = true;
         }
         if menu.model != *model {
             self.require_work_identity_rebind()?;

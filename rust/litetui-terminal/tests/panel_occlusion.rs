@@ -144,6 +144,7 @@ impl Panel {
                 note: "Source choices".into(),
                 message: None,
                 context: None,
+                applied: false,
             })),
             Self::Backend => Observation::Backend(b::Update::Catalog(b::Catalog {
                 revision: 1,
