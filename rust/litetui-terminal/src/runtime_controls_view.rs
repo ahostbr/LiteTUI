@@ -47,6 +47,12 @@ pub struct View {
     scroll: usize,
     max_scroll: usize,
     pub notice: String,
+    /// /tools: Python's tool list, where a tick applies at once (the source's checks
+    /// still run: Review then Apply, with no review page shown).
+    list_mode: bool,
+    list: crate::tool_list_view::List,
+    /// A change sent from the list: a refusal re-reads the list once.
+    reread_on_reject: bool,
 }
 impl View {
     pub fn owns_input(&self) -> bool {
@@ -72,6 +78,49 @@ impl View {
         self.painted = false;
         self.notice = "Reading the current runtime choice…".into();
         self.intent = Some(Intent::Read(field));
+        self.list_mode = field == Field::ToolSelection;
+        self.reread_on_reject = false;
+        if self.list_mode {
+            self.list.reset();
+            self.notice.clear();
+        }
+    }
+    /// The list's own re-read after a change; keeps its focus, scroll and last snapshot.
+    fn reread(&mut self) {
+        self.waiting = true;
+        self.field = Some(Field::ToolSelection);
+        self.intent = Some(Intent::Read(Field::ToolSelection));
+    }
+    fn list_toggle(&mut self, target: crate::tool_list_view::Target) {
+        use crate::tool_list_view::Target;
+        if self.pending() {
+            return;
+        }
+        let Some(snapshot) = self.tool_snapshot.as_ref() else {
+            return;
+        };
+        let rows = &snapshot.tools.as_ref().expect("verified list").rows;
+        let change = match target {
+            Target::Switch => controls::Change::Tools(!snapshot.facts.tools_enabled),
+            Target::Tool(i) => match rows.get(i) {
+                Some(row) => controls::Change::ToolSelection {
+                    name: row.name.clone(),
+                    enabled: !row.enabled,
+                },
+                None => return,
+            },
+            Target::Scroll | Target::Close | Target::Dock => return,
+        };
+        if let Err(error) = snapshot.validate_request(&change) {
+            self.notice = error.to_string();
+            return;
+        }
+        let snapshot = snapshot.clone();
+        self.notice.clear();
+        self.field = Some(change.field());
+        self.waiting = true;
+        self.reread_on_reject = true;
+        self.intent = Some(Intent::Review { snapshot, change });
     }
     pub(crate) fn plan_choice(&mut self, desired: Option<bool>) {
         if self.field == Some(Field::Plan) && matches!(self.intent, Some(Intent::Read(Field::Plan)))
@@ -103,6 +152,64 @@ impl View {
         self.selected_apply = false;
         self.scroll = 0;
         self.painted_until = 0;
+        if self.list_mode {
+            match update {
+                Update::Snapshot { field, snapshot } if field == Field::ToolSelection => {
+                    self.reread_on_reject = false;
+                    if !self.open {
+                        return;
+                    }
+                    if let Some(reason) = snapshot.editable.get(&field).and_then(Option::as_deref) {
+                        self.notice = reason.to_owned();
+                    }
+                    self.tool_snapshot = Some(snapshot);
+                    return;
+                }
+                Update::Review(review) => {
+                    // Python's tick applies at once: no review page, the checks still run.
+                    self.waiting = true;
+                    self.intent = Some(Intent::Apply(review));
+                    return;
+                }
+                Update::Settled(readback) => {
+                    self.reread_on_reject = false;
+                    self.notice = match readback.release {
+                        controls::Release::Install => match readback.status {
+                            controls::Status::SessionOnly => format!(
+                                "Applied for this session; saving failed: {}",
+                                readback.wire["reason"].as_str().unwrap_or("unknown reason")
+                            ),
+                            _ => String::new(),
+                        },
+                        controls::Release::Unchanged => format!(
+                            "Not applied: {}",
+                            readback.wire["reason"]
+                                .as_str()
+                                .unwrap_or("source refused the change")
+                        ),
+                        controls::Release::Close => {
+                            self.tool_snapshot = None;
+                            self.list_mode = false;
+                            self.notice =
+                                "The change could not be verified. The runtime is closing.".into();
+                            return;
+                        }
+                    };
+                    if self.open {
+                        self.reread();
+                    }
+                    return;
+                }
+                Update::Rejected(reason) => {
+                    self.notice = reason;
+                    if std::mem::take(&mut self.reread_on_reject) && self.open {
+                        self.reread();
+                    }
+                    return;
+                }
+                Update::Snapshot { .. } => return,
+            }
+        }
         match update {
             Update::Snapshot { field, snapshot } => {
                 if !self.open || self.field != Some(field) {
@@ -176,6 +283,14 @@ impl View {
     }
     pub fn key(&mut self, key: KeyEvent) {
         if !self.open || key.kind != KeyEventKind::Press {
+            return;
+        }
+        if self.list_mode {
+            match self.list.key(key) {
+                crate::tool_list_view::Act::Close => self.close(),
+                crate::tool_list_view::Act::Toggle(target) => self.list_toggle(target),
+                crate::tool_list_view::Act::Nothing => {}
+            }
             return;
         }
         if key.code == KeyCode::BackTab && key.modifiers == KeyModifiers::SHIFT {
@@ -270,6 +385,14 @@ impl View {
         if !self.open {
             return;
         }
+        if self.list_mode {
+            match self.list.mouse(event) {
+                crate::tool_list_view::Act::Close => self.close(),
+                crate::tool_list_view::Act::Toggle(target) => self.list_toggle(target),
+                crate::tool_list_view::Act::Nothing => {}
+            }
+            return;
+        }
         match event.kind {
             MouseEventKind::ScrollUp => self.scroll = self.scroll.saturating_sub(3),
             MouseEventKind::ScrollDown => self.scroll = (self.scroll + 3).min(self.max_scroll),
@@ -279,6 +402,22 @@ impl View {
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if !self.open || area.width < 24 || area.height < 8 {
             self.hide();
+            return;
+        }
+        if self.list_mode {
+            frame.render_widget(Clear, area);
+            let notice = self.notice.clone();
+            match self.tool_snapshot.as_deref() {
+                Some(snapshot) => {
+                    self.list
+                        .draw(frame.buffer_mut(), area, snapshot, &notice, theme)
+                }
+                None => frame.buffer_mut().set_style(
+                    area,
+                    Style::default().fg(theme.foreground).bg(theme.background),
+                ),
+            }
+            self.painted = true;
             return;
         }
         let rect = Rect::new(

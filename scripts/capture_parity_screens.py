@@ -82,6 +82,14 @@ PROFILES = {
     # by on-screen text: "click:<text>" presses the left button on the first cell of the first
     # row showing <text>; "click:<text>@<dy>" clicks <dy> rows below it (an input's text line is
     # two rows under its label).
+    # /tools: a tick applies at once. Tab twice focuses the first tool, powershell (the Switch
+    # and then the scroll region are focus stops first), and Space ticks it; a click on bash's
+    # box ticks that one, and one on the Switch's top edge turns tools on (the fixture starts
+    # with them off). The data root's settings then say what was saved.
+    "tooltick": {frontend: [("tools-open", ["/tools\r"], "none"), ("space", ["\t", "\t", " "], "none"),
+                            ("click", ["click:▐X▌ bash"], "none"),
+                            ("switch", ["click:▊▔▔▔▔▔▔▔▔▎"], "none")]
+                 for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

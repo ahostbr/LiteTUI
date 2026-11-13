@@ -69,6 +69,7 @@ mod command_routes;
 pub mod help_view;
 pub mod keys_panel;
 pub mod prepared_skill;
+pub mod tool_list_view;
 
 pub mod engine_config;
 mod engine_config_view;

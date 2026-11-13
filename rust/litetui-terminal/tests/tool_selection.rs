@@ -128,7 +128,9 @@ fn unnegotiated_or_forged_tool_authority_is_refused() {
     );
 }
 #[test]
-fn painted_tool_selection_requires_complete_review_and_explicit_apply() {
+fn python_tool_list_tick_applies_at_once_through_the_sources_checks() {
+    // Python's /tools (tool_list.py): a tick is written the moment it is made, no Save and
+    // no review page. The runtime's Review and Apply still run, unseen, then the list re-reads.
     let c = &fixture()["success"];
     let b = binding(c);
     let s = r::Snapshot::parse_tool_list(&c["listing"], &b).unwrap();
@@ -150,35 +152,51 @@ fn painted_tool_selection_requires_complete_review_and_explicit_apply() {
         field: r::Field::ToolSelection,
         snapshot: Box::new(s.clone()),
     });
-    key(&mut v, KeyCode::Enter);
-    assert!(v.take_intent().is_none());
-    for _ in 0..index {
-        key(&mut v, KeyCode::Down);
-    }
     let frame = draw(&mut v);
-    assert!(
-        frame.contains("Global Tools:") && frame.contains("MCP tools are controlled per server")
-    );
-    key(&mut v, KeyCode::Enter);
+    assert!(frame.contains("Tools") && frame.contains(litetui_terminal::tool_list_view::GLOBAL));
+    assert!(frame.contains("powershell") && !frame.contains("selection_probe"));
+    assert!(frame.contains("Close") && frame.contains("Dock to side"));
+    assert!(!frame.contains("Review"), "no review page");
+    // Focus: the Switch, then the scroll region, then each tool (Textual's DOM order).
+    for _ in 0..index + 2 {
+        key(&mut v, KeyCode::Tab);
+    }
+    // Focusing a tool scrolls it into view, as Textual's focus does.
+    assert!(draw(&mut v).contains("selection_probe"));
+    key(&mut v, KeyCode::Char(' '));
     assert!(
         matches!(v.take_intent(),Some(view::Intent::Review{change:ref got,..}) if *got==change())
     );
     let review = r::Review::parse(&c["review"], &s, &change()).unwrap();
-    v.apply(view::Update::Review(Box::new(review)));
-    key(&mut v, KeyCode::Tab);
-    key(&mut v, KeyCode::Enter);
-    assert!(v.take_intent().is_none());
-    for _ in 0..100 {
-        draw(&mut v);
-        key(&mut v, KeyCode::PageDown);
-    }
-    draw(&mut v);
-    key(&mut v, KeyCode::Tab);
-    key(&mut v, KeyCode::Enter);
+    v.apply(view::Update::Review(Box::new(review.clone())));
     assert!(matches!(v.take_intent(), Some(view::Intent::Apply(_))));
+    let receipt = r::Receipt::parse(&c["result"], &review, "apply-selection").unwrap();
+    let read = r::Readback::parse(&c["readback"], &receipt).unwrap();
+    v.apply(view::Update::Settled(Box::new(read)));
+    assert!(matches!(
+        v.take_intent(),
+        Some(view::Intent::Read(r::Field::ToolSelection))
+    ));
+    // A refused change re-reads the list once; a refused read does not loop.
+    v.apply(view::Update::Snapshot {
+        field: r::Field::ToolSelection,
+        snapshot: Box::new(s.clone()),
+    });
+    key(&mut v, KeyCode::Char(' '));
+    assert!(v.take_intent().is_some());
+    v.apply(view::Update::Rejected("stale".into()));
+    assert!(matches!(
+        v.take_intent(),
+        Some(view::Intent::Read(r::Field::ToolSelection))
+    ));
+    v.apply(view::Update::Rejected("still stale".into()));
+    assert!(v.take_intent().is_none());
+    assert!(draw(&mut v).contains("still stale"));
+    key(&mut v, KeyCode::Esc);
+    assert!(!v.owns_input());
 }
 #[test]
-fn global_tools_remains_separate_and_readonly_inventory_cannot_toggle() {
+fn global_switch_stays_separate_and_readonly_inventory_cannot_toggle() {
     let c = &fixture()["success"];
     let b = binding(c);
     let mut listing = c["listing"].clone();
@@ -192,10 +210,14 @@ fn global_tools_remains_separate_and_readonly_inventory_cannot_toggle() {
         snapshot: Box::new(s),
     });
     draw(&mut v);
-    key(&mut v, KeyCode::Enter);
+    key(&mut v, KeyCode::Tab);
+    key(&mut v, KeyCode::Tab);
+    key(&mut v, KeyCode::Char(' '));
     assert!(v.take_intent().is_none());
-    draw(&mut v);
-    key(&mut v, KeyCode::Char('g'));
+    // Back to the Switch (first focus): Enter flips every tool, the separate global field.
+    key(&mut v, KeyCode::BackTab);
+    key(&mut v, KeyCode::BackTab);
+    key(&mut v, KeyCode::Enter);
     assert!(matches!(
         v.take_intent(),
         Some(view::Intent::Review {
