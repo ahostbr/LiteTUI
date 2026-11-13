@@ -692,64 +692,56 @@ fn rename_route_bound_and_command_specific_argument_policy_remain_strict() {
 }
 
 #[test]
-fn glassbox_registered_routes_prefill_review_only_and_preserve_draft() {
-    use litetui_terminal::{glassbox_controls::Request, settings_view};
-    for (arguments, expected) in [
-        ("", Request::Snapshot),
-        ("status", Request::Snapshot),
-        ("start", Request::Review("start".into())),
-        (" ON ", Request::Review("start".into())),
-        ("stop", Request::Review("stop".into())),
-        ("off", Request::Review("stop".into())),
-    ] {
-        let mut d = data();
-        d["entries"][0]["native_action"] = json!("glassbox");
-        d["entries"][0]["accepts_arguments"] = json!(true);
-        d["entries"][0]["tokens"] = json!(["glassbox", "/glassbox"]);
-        let c = Catalog::parse(&d, SESSION, AGENT, "custom", "model").unwrap();
-        let raw = format!("/glassbox {arguments}");
-        let mut rv = route_data(&c, Some(&raw));
-        rv["native_action"] = json!("glassbox");
-        rv["arguments"] = json!(arguments);
-        let route = Route::parse(&rv, &c, None, Some(&raw), "").unwrap();
-        assert_eq!(route.action, Action::Glassbox);
-        let mut app = Demo::live("custom".into(), "model".into());
-        app.live.as_mut().unwrap().ready = true;
-        app.insert_text("Exact draft 雪 ");
-        app.composer
-            .move_cursor(litetui_terminal::composer::Motion::WordLeft, true);
-        let caret = (
-            app.composer.before_cursor().to_owned(),
-            app.composer.selected_text().to_owned(),
-        );
-        app.live.as_mut().unwrap().commands.raw(&raw);
-        app.live.as_mut().unwrap().commands.take_intent();
-        app.observe_live(Observation::Commands(Update::Route {
-            catalog: c.clone(),
-            route,
-        }))
-        .unwrap();
-        assert_eq!(
-            app.live.as_mut().unwrap().settings.take_intent(),
-            Some(settings_view::Intent::Glassbox(Box::new(expected)))
-        );
-        app.live.as_mut().unwrap().settings.key(key(KeyCode::Enter));
-        assert_eq!(
-            app.live.as_mut().unwrap().settings.take_intent(),
-            None,
-            "no hidden apply before review result"
-        );
-        assert_eq!(app.composer.text(), "Exact draft 雪 ");
-        assert_eq!(
-            caret,
-            (
+fn glassbox_and_engine_route_every_verb_to_pythons_own_command_and_keep_the_draft() {
+    // Python's /glassbox and /engine answer in the chat log (native_tasks_command): any
+    // verb goes to the handler as typed, a bad one gets its usage line, nothing opens.
+    for (action, command) in [("glassbox", "/glassbox"), ("engine", "/engine")] {
+        for arguments in ["", "status", "start", " ON ", "stop", "reload", "start now"] {
+            let mut d = data();
+            d["entries"][0]["native_action"] = json!(action);
+            d["entries"][0]["accepts_arguments"] = json!(true);
+            d["entries"][0]["tokens"] = json!([&command[1..], command]);
+            let c = Catalog::parse(&d, SESSION, AGENT, "custom", "model").unwrap();
+            let raw = format!("{command} {arguments}");
+            let mut rv = route_data(&c, Some(&raw));
+            rv["native_action"] = json!(action);
+            rv["arguments"] = json!(arguments);
+            let route = Route::parse(&rv, &c, None, Some(&raw), "").unwrap();
+            let mut app = Demo::live("custom".into(), "model".into());
+            app.live.as_mut().unwrap().ready = true;
+            app.insert_text("Exact draft 雪 ");
+            app.composer
+                .move_cursor(litetui_terminal::composer::Motion::WordLeft, true);
+            let caret = (
                 app.composer.before_cursor().to_owned(),
-                app.composer.selected_text().to_owned()
-            )
-        );
-        for invalid in ["reload", "start now", "--port 9999", "status stop"] {
-            rv["arguments"] = json!(invalid);
-            assert!(Route::parse(&rv, &c, None, Some(&raw), "").is_err());
+                app.composer.selected_text().to_owned(),
+            );
+            app.live.as_mut().unwrap().commands.raw(&raw);
+            app.live.as_mut().unwrap().commands.take_intent();
+            app.observe_live(Observation::Commands(Update::Route {
+                catalog: c.clone(),
+                route,
+            }))
+            .unwrap();
+            let chat = app.live.as_mut().unwrap();
+            assert_eq!(
+                chat.tasks_command.clone(),
+                Some((command.to_owned(), arguments.to_owned())),
+                "{command} {arguments:?}"
+            );
+            assert_eq!(
+                chat.settings.take_intent(),
+                None,
+                "{command}: nothing opens"
+            );
+            assert_eq!(app.composer.text(), "Exact draft 雪 ");
+            assert_eq!(
+                caret,
+                (
+                    app.composer.before_cursor().to_owned(),
+                    app.composer.selected_text().to_owned()
+                )
+            );
         }
     }
 }
@@ -766,7 +758,6 @@ fn control_routes_keep_exact_arguments_and_reject_unrepresentable_intent() {
         ("model_load", true, "different-model", "bad\0model"),
         ("model_unload", true, "different-model", "bad\0model"),
         ("model_reconnect", false, "", "extra"),
-        ("engine", true, "STOP", "start 4"),
         ("plan", true, "off", "maybe"),
         ("plugin_reload", true, "exact_tool", "two tools"),
         ("hooks", false, "", "extra"),

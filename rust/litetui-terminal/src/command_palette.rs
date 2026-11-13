@@ -528,19 +528,10 @@ impl Route {
         if Some(action) != entry.action || (!arguments.is_empty() && !entry.arguments) {
             return Err(fail("Resolved command contradicts selected adapter"));
         }
-        if action == Action::Glassbox
-            && !matches!(
-                arguments.trim().to_ascii_lowercase().as_str(),
-                "" | "status" | "start" | "on" | "stop" | "off"
-            )
-        {
-            return Err(fail("Unknown Glassbox review command argument"));
-        }
+        // /glassbox and /engine are Python's own commands (native_tasks_command): its handler
+        // answers any verb, a bad one with its usage line, so no verb is refused here.
         let verb = arguments.trim().to_ascii_lowercase();
         match action {
-            Action::Engine if !matches!(verb.as_str(), "" | "status" | "start" | "stop") => {
-                return Err(fail("Unsupported engine command arguments"));
-            }
             Action::Plan if !matches!(verb.as_str(), "" | "on" | "off") => {
                 return Err(fail("Unsupported plan command arguments"));
             }

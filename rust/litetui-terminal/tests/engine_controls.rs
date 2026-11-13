@@ -700,9 +700,12 @@ fn reconnect_review_never_permits_remote_alias_loading_or_an_owned_process() {
 }
 
 #[test]
-fn engine_command_stop_never_falls_back_to_start_after_fresh_inspection() {
+fn engine_command_goes_to_pythons_own_handler_as_typed_and_opens_nothing() {
+    // Python's /engine (model_switch._cmd_engine) answers in the chat log: every verb goes
+    // to its handler as typed (stop stays stop), the engine panel does not open, and the
+    // draft is kept.
     use litetui_terminal::{command_palette as c, demo::Demo, live::Observation};
-    for argument in ["stop", "STOP", "start", "status", ""] {
+    for argument in ["stop", "STOP", "start", "status", "", "lanes 4"] {
         let mut app = Demo::live("strata".into(), "engine-model".into());
         app.live.as_mut().unwrap().ready = true;
         app.insert_text("preserved draft");
@@ -728,35 +731,15 @@ fn engine_command_stop_never_falls_back_to_start_after_fresh_inspection() {
             },
         }))
         .unwrap();
+        let chat = app.live.as_mut().unwrap();
         assert_eq!(
-            app.live.as_mut().unwrap().engine.take_intent(),
-            Some(Intent::Read)
+            chat.tasks_command.clone(),
+            Some(("/engine".to_owned(), argument.to_owned()))
         );
-        app.observe_live(Observation::Engine(Update::Snapshot(Box::new(snapshot()))))
-            .unwrap();
-        assert!(app.live.as_mut().unwrap().engine.take_intent().is_none());
-        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        terminal
-            .draw(|frame| litetui_terminal::ui::draw(frame, &mut app))
-            .unwrap();
-        app.live
-            .as_mut()
-            .unwrap()
-            .engine
-            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        let intent = app.live.as_mut().unwrap().engine.take_intent();
-        if argument.eq_ignore_ascii_case("stop") {
-            // This snapshot has no owned handle. A lost argument would validate Start.
-            assert!(intent.is_none());
-        } else {
-            assert!(matches!(
-                intent,
-                Some(Intent::Validate {
-                    action: Action::Start,
-                    ..
-                })
-            ));
-        }
+        assert!(
+            chat.engine.take_intent().is_none(),
+            "{argument:?}: the engine panel opened"
+        );
         assert_eq!(app.composer.text(), "preserved draft");
     }
 }

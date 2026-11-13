@@ -28,6 +28,16 @@ OPERATIONS = tuple(PREFIX + name for name in ("open", "act", "read", "close"))
 _KEYS = {"escape": "cancel", "ctrl+s": "apply"}
 
 
+def _wheel(widget, notches) -> None:
+    """A mouse wheel over a scrolling widget, as Textual handles it: each notch is the
+    widget's own _scroll_{down,up}_for_pointer (App.scroll_sensitivity_y lines)."""
+    if type(notches) is not int or not -20 <= notches <= 20 or notches == 0:
+        raise ValueError("Wheel notches are malformed")
+    step = widget._scroll_down_for_pointer if notches > 0 else widget._scroll_up_for_pointer
+    for _ in range(abs(notches)):
+        step(animate=False)
+
+
 def _screen(app):
     from litetui.plugins.model_switch import ModelConfigScreen
 
@@ -68,6 +78,8 @@ def walk(widget):
         content = widget.scrollable_content_region
         group.update(clip=[content.x, content.y, content.width, content.height],
                      scroll_y=int(widget.scroll_offset.y), max_scroll_y=int(widget.max_scroll_y))
+        if widget.show_vertical_scrollbar:
+            group["bar"] = _region(widget.vertical_scrollbar)
     return group
 
 
@@ -124,14 +136,17 @@ async def _act(app, screen, action) -> None:
             raise ValueError("That control cannot take focus")
         target.focus()
         return
-    if set(action) == {"scroll"}:
-        delta = action["scroll"]
-        if type(delta) is not int or not -100 <= delta <= 100:
-            raise ValueError("Model settings scroll is malformed")
+    if set(action) in ({"scroll"}, {"wheel"}):
         # The active tab's: a hidden pane keeps `display` on its children but no region.
         found = [w for w in screen.query(".set-scroll") if w.display and w.region.width > 0]
         if not found:
             raise ValueError("Nothing scrolls here")
+        if "wheel" in action:
+            _wheel(found[0], action["wheel"])
+            return
+        delta = action["scroll"]
+        if type(delta) is not int or not -100 <= delta <= 100:
+            raise ValueError("Model settings scroll is malformed")
         found[0].scroll_relative(y=delta, animate=False)
         return
     if set(action) == {"submit"}:

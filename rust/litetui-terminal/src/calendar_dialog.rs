@@ -63,6 +63,8 @@ impl Kind {
 }
 const MAX_ITEMS: usize = 1024;
 const MAX_LINES: usize = 400;
+/// A tab strip: (pane id, label, region) per tab, and the active pane.
+type TabStrip = (Vec<(String, String, Rect)>, Option<String>);
 /// The tab strip's place in the focus chain (Textual's Tabs widget has no id here).
 const TABS: &str = "@tabs";
 
@@ -114,6 +116,8 @@ pub enum Control {
         clip: Rect,
         scroll_y: u16,
         max_scroll_y: u16,
+        /// Where Textual drew its vertical scrollbar (its own width), when it shows one.
+        bar: Option<Rect>,
     },
     /// A TabbedContent's tab strip: (pane id, label, region) and the active pane.
     Tabs {
@@ -151,6 +155,8 @@ pub enum Screen {
         max_scroll_y: u16,
         focused: Option<String>,
         items: Vec<Item>,
+        /// The box's own scrollbar region, when Textual shows one.
+        bar: Option<Rect>,
     },
 }
 
@@ -301,6 +307,10 @@ fn item(v: &Value, depth: usize, count: &mut usize) -> io::Result<Item> {
                     clip: region(&v["clip"])?,
                     scroll_y: v["scroll_y"].as_u64().ok_or_else(bad)? as u16,
                     max_scroll_y: v["max_scroll_y"].as_u64().ok_or_else(bad)? as u16,
+                    bar: match v.get("bar") {
+                        None | Some(Value::Null) => None,
+                        Some(b) => Some(region(b)?),
+                    },
                 }
             } else {
                 Control::Line(items)
@@ -356,6 +366,10 @@ impl Snapshot {
                     scroll_y: v["scroll_y"].as_u64().ok_or_else(bad)? as u16,
                     max_scroll_y: v["max_scroll_y"].as_u64().ok_or_else(bad)? as u16,
                     focused: v["focused"].as_str().map(str::to_owned),
+                    bar: match v.get("bar") {
+                        None | Some(Value::Null) => None,
+                        Some(b) => Some(region(b)?),
+                    },
                     items: v["items"]
                         .as_array()
                         .ok_or_else(bad)?
@@ -700,7 +714,7 @@ impl View {
         );
         out
     }
-    fn tab_strip(&self) -> Option<(Vec<(String, String, Rect)>, Option<String>)> {
+    fn tab_strip(&self) -> Option<TabStrip> {
         self.items().into_iter().find_map(|i| match &i.control {
             Control::Tabs { tabs, active } if !tabs.is_empty() => {
                 Some((tabs.clone(), active.clone()))
@@ -1080,8 +1094,9 @@ impl View {
                     Hit::Tab(pane) => self.act(json!({"tab": pane})),
                 }
             }
-            MouseEventKind::ScrollDown if self.is_job() => self.act(json!({"scroll": 3})),
-            MouseEventKind::ScrollUp if self.is_job() => self.act(json!({"scroll": -3})),
+            // One notch: Python's own wheel handling (App.scroll_sensitivity_y lines).
+            MouseEventKind::ScrollDown if self.is_job() => self.act(json!({"wheel": 1})),
+            MouseEventKind::ScrollUp if self.is_job() => self.act(json!({"wheel": -1})),
             _ => {}
         }
     }
@@ -1151,6 +1166,7 @@ impl View {
                 scroll_y,
                 max_scroll_y,
                 items,
+                bar,
                 ..
             } => {
                 let focused = self.focused();
@@ -1171,7 +1187,9 @@ impl View {
                     *r = r.intersection(*content);
                 }
                 if *max_scroll_y > 0 {
-                    scrollbar(buf, *content, *scroll_y, *max_scroll_y, &p);
+                    let at =
+                        bar.unwrap_or(Rect::new(content.right(), content.y, 2, content.height));
+                    scrollbar(buf, at, *scroll_y, *max_scroll_y, &p);
                 }
             }
         }
@@ -1255,6 +1273,7 @@ impl View {
             clip,
             scroll_y,
             max_scroll_y,
+            bar,
         } = &item.control
         {
             // Cut the children to the container's own content area, as Textual does.
@@ -1269,7 +1288,8 @@ impl View {
                 }
             }
             if *max_scroll_y > 0 {
-                scrollbar(buf, *clip, *scroll_y, *max_scroll_y, p);
+                let at = bar.unwrap_or(Rect::new(clip.right(), clip.y, 2, clip.height));
+                scrollbar(buf, at, *scroll_y, *max_scroll_y, p);
             }
             return;
         }
@@ -1677,13 +1697,15 @@ fn clip_str(text: &str, cells: usize) -> String {
     clip(text, cells)
 }
 
-/// Textual's ScrollBarRender.render_bar (vertical, 2 wide) beside the content area.
-fn scrollbar(buf: &mut Buffer, content: Rect, scroll_y: u16, max_scroll_y: u16, p: &Paint) {
+/// Textual's ScrollBarRender.render_bar (vertical) in the scrollbar's own region: its rows
+/// are the window, its width Textual's scrollbar-size.
+fn scrollbar(buf: &mut Buffer, at: Rect, scroll_y: u16, max_scroll_y: u16, p: &Paint) {
     const BARS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", " "];
+    let content = at;
     let size = f64::from(content.height);
     let window = size;
     let virtual_size = size + f64::from(max_scroll_y);
-    let x = content.right();
+    let x = content.x;
     let back = p.panel;
     let bar = p.accent;
     if size <= 0.0 {
@@ -1718,7 +1740,7 @@ fn scrollbar(buf: &mut Buffer, content: Rect, scroll_y: u16, max_scroll_y: u16, 
         } else {
             (symbol, style)
         };
-        for dx in 0..2 {
+        for dx in 0..content.width.max(1) {
             if x + dx < buf.area.right() {
                 buf[(x + dx, y)].set_symbol(symbol).set_style(style);
             }

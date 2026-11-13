@@ -83,6 +83,16 @@ def _wrapped(text, width: int) -> list:
     return out
 
 
+def _wheel(widget, notches) -> None:
+    """A mouse wheel over a scrolling widget, as Textual handles it: each notch is the
+    widget's own _scroll_{down,up}_for_pointer (App.scroll_sensitivity_y lines)."""
+    if type(notches) is not int or not -20 <= notches <= 20 or notches == 0:
+        raise ValueError("Wheel notches are malformed")
+    step = widget._scroll_down_for_pointer if notches > 0 else widget._scroll_up_for_pointer
+    for _ in range(abs(notches)):
+        step(animate=False)
+
+
 def _region(widget) -> list:
     r = widget.region
     return [r.x, r.y, r.width, r.height]
@@ -241,6 +251,7 @@ def snapshot(app) -> dict:
     content = box.scrollable_content_region
     out.update(box=_region(box), content=[content.x, content.y, content.width, content.height],
                scroll_y=int(box.scroll_offset.y), max_scroll_y=int(box.max_scroll_y),
+               bar=_region(box.vertical_scrollbar) if box.show_vertical_scrollbar else None,
                focused=getattr(app.focused, "id", None),
                items=[e for e in (_with_regions(child, _item(child)) for child in box.children) if e is not None])
     return out
@@ -310,6 +321,9 @@ async def _act(app, top, action) -> None:
         if not isinstance(target, Input) or not target.display:
             raise ValueError("That field cannot be submitted")
         await target.action_submit()
+        return
+    if set(action) == {"wheel"} and name == "job":
+        _wheel(top.query_one("#job-box"), action["wheel"])
         return
     if set(action) == {"scroll"} and name == "job":
         delta = action["scroll"]
