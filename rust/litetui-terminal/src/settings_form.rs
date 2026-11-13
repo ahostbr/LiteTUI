@@ -125,7 +125,11 @@ pub enum Item {
         items: Vec<Item>,
         indent: bool,
     },
-    HooksEditor,
+    /// The Hooks tab's HooksEditor: Python gives it one row, where its status's first line
+    /// shows. Enter opens it whole (/hooks).
+    HooksEditor {
+        status: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
@@ -219,7 +223,9 @@ fn item(v: &Value, depth: usize, count: &mut usize, ids: &mut HashSet<String>) -
             items: children(v, count, ids)?,
             indent: flag(v, "indent")?,
         },
-        Some("hooks_editor") => Item::HooksEditor,
+        Some("hooks_editor") => Item::HooksEditor {
+            status: optional(v, "status")?.unwrap_or_default(),
+        },
         Some("switch") => control(v, Kind::Switch(flag(v, "value")?), ids)?,
         Some("textarea") => control(v, Kind::TextArea(string(v, "value")?), ids)?,
         Some("select") => {
@@ -710,7 +716,7 @@ impl View {
         fn visit(items: &[Item], out: &mut Vec<Target>) {
             for item in items {
                 match item {
-                    Item::HooksEditor => out.push(Target::Hooks),
+                    Item::HooksEditor { .. } => out.push(Target::Hooks),
                     Item::Control(c) => out.push(Target::Control(c.id.clone())),
                     Item::Button { id, .. } => out.push(Target::Button(id.clone())),
                     Item::Line(items) | Item::Row { items, .. } => visit(items, out),
@@ -1009,7 +1015,9 @@ impl View {
                     self.sections.insert(id, now);
                 }
                 Some(Target::Button(id)) => self.press(&id),
-                Some(Target::Hooks) => self.hand_over(Route::Hooks, "hooks"),
+                // Python's editor lives in the tab: Settings stays open under the hooks
+                // dialog (hooks_dialog), draft and all, and is there again when it closes.
+                Some(Target::Hooks) => self.route = Some(Route::Hooks),
                 Some(Target::Control(_)) => {
                     let Some(control) = self.focused_control().cloned() else {
                         return;
@@ -1778,17 +1786,19 @@ impl Layout<'_> {
                 let rows = self.button(label, x, w, self.focused(index), *disabled);
                 self.push3(rows, index, None);
             }
-            Item::HooksEditor => {
+            Item::HooksEditor { status } => {
+                // HooksEditor: padding 0 1 and its 2-column scrollbar inside the tab's width.
                 let index = self.target(&Target::Hooks);
-                let focused = self.focused(index);
-                let rows = self.button(
-                    "Open the hooks editor (/hooks)",
-                    x,
-                    Self::button_width("Open the hooks editor (/hooks)"),
-                    focused,
-                    false,
-                );
-                self.push3(rows, index, None);
+                let first = wrap(&shown(status), usize::from(width.saturating_sub(4)))
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
+                self.margin = false;
+                self.rows.push(Row {
+                    spans: vec![(x + 1, first, Style::default().fg(p.text).bg(p.surface))],
+                    target: index,
+                    caret: None,
+                });
             }
             Item::Row { items, indent } => {
                 let dx = if *indent { 4 } else { 0 };
@@ -2368,7 +2378,8 @@ impl View {
                 caret = Some((cx, y));
             }
         }
-        if max_scroll > 0 {
+        // A pane without a scroll region (Hooks) clips its rows and draws no scrollbar.
+        if scrolls && max_scroll > 0 {
             // Textual's ScrollBarRender.render_bar, vertical, in eighths of a cell.
             const BARS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", " "];
             let size = f64::from(height);

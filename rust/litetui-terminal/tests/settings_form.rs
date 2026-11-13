@@ -413,7 +413,8 @@ fn the_hooks_tab_opens_the_native_hooks_screen() {
     let mut v = form_json("settings_form");
     v["tabs"][1] = json!({"id": "tab-hooks", "label": "Hooks", "scroll": false, "items": [
         {"kind": "text", "text": "Scope, inventory, and hook actions are exposed by the lifecycle editor below.", "id": null, "classes": ["set-help"], "section": null},
-        {"kind": "hooks_editor", "section": null}
+        {"kind": "hooks_editor", "section": null,
+         "status": "Global: C:\\x\\hooks.json\nProject: C:\\w\\.litetui\\hooks.json\nEffective: none"}
     ]});
     let form = Form::parse(&v, "settings_form", S, "agent", "custom", "m").unwrap();
     let mut view = View::default();
@@ -425,14 +426,18 @@ fn the_hooks_tab_opens_the_native_hooks_screen() {
     key(&mut view, KeyCode::Tab);
     key(&mut view, KeyCode::Right);
     let rows = screen(&mut view, 140, 45);
-    assert!(
-        rows.iter()
-            .any(|r| r.contains("Open the hooks editor (/hooks)")),
-        "{rows:?}"
-    );
+    // Python gives the inline editor one row: its status's first line.
+    let line = rows
+        .iter()
+        .position(|r| r.contains("Global: C:\\x\\hooks.json"))
+        .unwrap_or_else(|| panic!("{rows:?}"));
+    assert!(!rows[line + 1].contains("Project:"), "{rows:?}");
     key(&mut view, KeyCode::Tab);
     key(&mut view, KeyCode::Enter);
-    assert!(!view.owns_input(), "the settings dialog closes");
+    assert!(
+        view.owns_input(),
+        "Settings stays open under the hooks dialog"
+    );
     assert!(view.take_hooks());
     assert!(!view.take_hooks(), "asked once");
 }

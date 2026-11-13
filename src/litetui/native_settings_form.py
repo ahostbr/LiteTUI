@@ -134,7 +134,10 @@ def _items(node, section, out, reviewed=(set(), False)):
                         "open": bool(child._open), "search": _search_text(spec), "fields": fields})
             continue
         if isinstance(child, HooksEditor):
-            out.append({"kind": "hooks_editor", "section": section})
+            # The tab gives the editor one row (height 1fr in an auto pane): its status text's
+            # first line is what shows.
+            status = child.query_one("#hook-status", Static)
+            out.append({"kind": "hooks_editor", "section": section, "status": _plain(status.content)})
             continue
         if isinstance(child, (Input, Select, Switch, TextArea)):
             if child.id:
