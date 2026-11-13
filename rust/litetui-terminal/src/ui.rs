@@ -233,9 +233,12 @@ fn assistant_card_with(
     let (left, outer_width) = card_geometry(width);
     let inner_width = outer_width.saturating_sub(6);
     lines.push(card_top(t, title, left, outer_width));
+    // .assistant-msg: `color: $text` over its $surface; .turn-stop-line `$text-muted`.
+    let text_fg = t.css_over("text", t.surface, t.foreground);
+    let muted_fg = t.css_over("text-muted", t.surface, t.thinking_text);
     let outer_row = |inside: Vec<Span<'static>>| {
         let mut row = vec![
-            Span::styled(" ".repeat(left), style(t.foreground, t.background)),
+            Span::styled(" ".repeat(left), style(t.foreground, t.screen())),
             Span::styled("│  ", style(t.assistant_border, t.surface)),
         ];
         row.extend(inside);
@@ -281,7 +284,7 @@ fn assistant_card_with(
             for run in line {
                 let text = clip_label(&display_safe(&run.text), inner_width - used);
                 used += rendered_width(&text);
-                spans.push(Span::styled(text, run.style(t.foreground, t.surface)));
+                spans.push(Span::styled(text, run.style(text_fg, t.surface)));
                 if used >= inner_width {
                     break;
                 }
@@ -296,7 +299,7 @@ fn assistant_card_with(
         for row in wrap(answer, inner_width) {
             lines.push(outer_row(vec![Span::styled(
                 padded(&row, inner_width),
-                style(t.foreground, t.surface),
+                style(text_fg, t.surface),
             )]));
         }
     }
@@ -315,7 +318,7 @@ fn assistant_card_with(
         for row in wrap(footer, inner_width) {
             lines.push(outer_row(vec![Span::styled(
                 padded(&row, inner_width),
-                style(t.thinking_text, t.surface).add_modifier(Modifier::ITALIC),
+                style(muted_fg, t.surface).add_modifier(Modifier::ITALIC),
             )]));
         }
     }
@@ -337,7 +340,7 @@ fn error_card(
     lines.push(card_top(t, "Error", left, outer_width));
     let outer_row = |text: String, style: Style| {
         Line::from(vec![
-            Span::styled(" ".repeat(left), self::style(t.foreground, t.background)),
+            Span::styled(" ".repeat(left), self::style(t.foreground, t.screen())),
             Span::styled("│  ", self::style(t.assistant_border, t.surface)),
             Span::styled(padded(&text, inner_width), style),
             Span::styled("  │", self::style(t.assistant_border, t.surface)),
@@ -345,13 +348,19 @@ fn error_card(
     };
     let plain = style(t.foreground, t.surface);
     lines.push(outer_row(String::new(), plain));
-    let red = style(t.error, t.surface).add_modifier(Modifier::BOLD);
+    // Python writes the failure as Rich "bold red", which Textual draws as #ff0000.
+    let red = style(
+        if t.css.is_empty() { t.error } else { Color::Rgb(0xff, 0, 0) },
+        t.surface,
+    )
+    .add_modifier(Modifier::BOLD);
     for row in crate::picker_box::wrap(message, inner_width) {
         lines.push(outer_row(row, red));
     }
     if !footer.is_empty() {
         lines.push(outer_row(String::new(), plain));
-        let muted = style(t.thinking_text, t.surface).add_modifier(Modifier::ITALIC);
+        let muted = style(t.css_over("text-muted", t.surface, t.thinking_text), t.surface)
+            .add_modifier(Modifier::ITALIC);
         for row in wrap(footer, inner_width) {
             lines.push(outer_row(row, muted));
         }
@@ -375,7 +384,7 @@ fn card_top(
 ) -> Line<'static> {
     let title = clip_label(title, outer_width.saturating_sub(6));
     Line::from(vec![
-        Span::styled(" ".repeat(left), style(t.foreground, t.background)),
+        Span::styled(" ".repeat(left), style(t.foreground, t.screen())),
         Span::styled("╭─ ", style(t.assistant_border, t.surface)),
         Span::styled(title.clone(), style(t.title, t.surface)),
         Span::styled(
@@ -401,14 +410,14 @@ fn user_card(
     let (left, right, pad) = if narrow { (0, 0, 1) } else { (8, 2, 2) };
     let outer = width.saturating_sub(left + right).max(12);
     let inner = outer.saturating_sub(2 + 2 * pad);
-    let bg = t.panel;
-    let border = style(t.primary, bg);
-    let margin = Span::styled(" ".repeat(left), style(t.foreground, t.background));
+    let bg = t.var("primary-darken-3", t.panel);
+    let border = style(t.var("primary", t.primary), bg);
+    let margin = Span::styled(" ".repeat(left), style(t.foreground, t.screen()));
     let title = clip_label(title, outer.saturating_sub(6));
     lines.push(Line::from(vec![
         margin.clone(),
         Span::styled("╭─ ", border),
-        Span::styled(title.clone(), style(t.title, bg)),
+        Span::styled(title.clone(), style(t.var("primary-lighten-2", t.title), bg)),
         Span::styled(
             format!(
                 " {}╮",
@@ -428,7 +437,7 @@ fn user_card(
                     padded(text, inner),
                     " ".repeat(pad)
                 ),
-                style(t.foreground, bg),
+                style(t.css_over("text", bg, t.foreground), bg),
             ),
             Span::styled("│", border),
         ])
@@ -452,14 +461,13 @@ fn margin_above(lines: &mut Vec<Line<'static>>) {
     }
 }
 fn card_bottom(t: &crate::theme::Theme, left: usize, outer_width: usize) -> Line<'static> {
-    Line::styled(
-        format!(
-            "{}╰{}╯",
-            " ".repeat(left),
-            "─".repeat(outer_width.saturating_sub(2))
+    Line::from(vec![
+        Span::styled(" ".repeat(left), style(t.foreground, t.screen())),
+        Span::styled(
+            format!("╰{}╯", "─".repeat(outer_width.saturating_sub(2))),
+            style(t.assistant_border, t.surface),
         ),
-        style(t.assistant_border, t.surface),
-    )
+    ])
 }
 /// A folded assistant card is its border and title row only (source: collapsed `AssistantMessage`).
 fn folded_card(t: &crate::theme::Theme, lines: &mut Vec<Line<'static>>, title: &str, width: usize) {
