@@ -113,7 +113,9 @@ def test_new_llama_backend_never_spawns_or_falls_back_to_another_endpoint(tmp_pa
 
 def test_switch_never_silently_changes_incompatible_thinking(tmp_path):
     report, _root = launch(tmp_path, case="thinking", thinking="high")
-    assert report["result"]["status"] == "failed" and report["result"]["close_required"]
+    # A switch that fails its checks before publication is a refusal: the session stays
+    # usable (cc57c5a9, Ryan's LM Studio switch that ended his session, 2026-11-12).
+    assert report["result"]["status"] == "refused" and not report["result"]["close_required"]
     assert not report["result"]["mutated"] and report["home_unchanged"]
     assert report["before"]["thinking"] == report["after"]["thinking"] == "high"
     assert report["requests"] == []
@@ -121,6 +123,6 @@ def test_switch_never_silently_changes_incompatible_thinking(tmp_path):
 
 def test_missing_target_model_fails_closed_without_publishing_fallback(tmp_path):
     report, _root = launch(tmp_path, case="missing-model")
-    assert report["result"]["status"] == "failed" and report["result"]["close_required"]
+    assert report["result"]["status"] == "refused" and not report["result"]["close_required"]
     assert not report["result"]["mutated"] and report["home_unchanged"]
     assert report["before"] == report["after"] and report["requests"] == []
