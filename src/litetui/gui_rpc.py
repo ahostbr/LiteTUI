@@ -46,6 +46,7 @@ OPERATIONS = (
     "settings.native_form", "settings.native_form_save", "settings.native_form_restore",
     "system_lines", "markdown.native_render",
     "hooks.native_editor_open", "hooks.native_editor_act", "hooks.native_editor_read", "hooks.native_editor_close",
+    "mcp.native_dialog_open", "mcp.native_dialog_act", "mcp.native_dialog_read", "mcp.native_dialog_close",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.native_agent_rows", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -1187,6 +1188,9 @@ async def _async_dispatch(app, cmd):
     from litetui import native_hooks_editor
     if operation in native_hooks_editor.OPERATIONS:
         return await native_hooks_editor.dispatch(app, cmd)
+    from litetui import native_mcp_dialog
+    if operation in native_mcp_dialog.OPERATIONS:
+        return await native_mcp_dialog.dispatch(app, cmd)
     from litetui import native_system_lines
     if operation == native_system_lines.OPERATION:
         return native_system_lines.read(app, cmd)

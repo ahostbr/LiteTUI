@@ -70,15 +70,16 @@ def _select_index(select):
 
 
 def _item(widget):
-    from textual.containers import Horizontal
+    from textual.containers import Horizontal, ScrollableContainer
     from textual.widgets import Button, Input, Label, Select, Static, Switch, TextArea
 
     if not widget.display:
         return None
     base = {"id": widget.id, "disabled": bool(widget.disabled)}
+    classes = sorted(c for c in widget.classes if not c.startswith("-"))
     if isinstance(widget, Horizontal):
         children = [item for item in map(_item, widget.children) if item is not None]
-        return {"kind": "line", "items": children}
+        return {"kind": "line", "id": widget.id, "classes": classes, "items": children}
     if isinstance(widget, Button):
         return {"kind": "button", "label": _plain(widget.label), "variant": widget.variant, **base}
     if isinstance(widget, Select):
@@ -90,10 +91,14 @@ def _item(widget):
         return {"kind": "textarea", "value": widget.text, **base}
     if isinstance(widget, Input):
         return {"kind": "input", "value": widget.value, "placeholder": _plain(widget.placeholder), **base}
+    if isinstance(widget, ScrollableContainer) and not isinstance(widget, (Input, TextArea)):
+        # A nested scroll region (the MCP dialog's server rows), with its children.
+        children = [item for item in map(_item, widget.children) if item is not None]
+        return {"kind": "scroll", "id": widget.id, "items": children}
     if isinstance(widget, Label):
-        return {"kind": "label", "text": _plain(widget.content), **base}
+        return {"kind": "label", "text": _plain(widget.content), "classes": classes, **base}
     if isinstance(widget, Static):
-        return {"kind": "text", "text": _plain(widget.content), **base}
+        return {"kind": "text", "text": _plain(widget.content), "classes": classes, **base}
     return None
 
 
