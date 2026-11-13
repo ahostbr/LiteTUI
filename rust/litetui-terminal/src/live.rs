@@ -3004,7 +3004,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
                         let form = matches!(intent, crate::settings_view::Intent::Form(_));
                         let hooks = matches!(intent, crate::settings_view::Intent::Hooks(..));
-                        let calendar = matches!(intent, crate::settings_view::Intent::Calendar(_));
+                        let calendar = matches!(intent, crate::settings_view::Intent::Calendar(..));
                         let compact_generation = match &intent {
                             crate::settings_view::Intent::Compaction(
                                 crate::compaction_settings::Intent::Read { generation }

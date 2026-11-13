@@ -737,7 +737,7 @@ pub struct Management {
     /// The /tasks command in flight.
     tasks_command: Option<CommandId>,
     /// The /cal request in flight, and whether it closes.
-    calendar: Option<(CommandId, bool)>,
+    calendar: Option<(CommandId, crate::calendar_dialog::Kind, bool)>,
     settings_snapshot: Option<settings::Snapshot>,
     settings_review: Option<settings::Review>,
     settings_generation: u64,
@@ -1549,16 +1549,18 @@ impl Management {
             } if self
                 .calendar
                 .as_ref()
-                .is_some_and(|(pending, _)| Some(pending) == id.as_ref()) =>
+                .is_some_and(|(pending, _, _)| Some(pending) == id.as_ref()) =>
             {
-                let (_, closing) = self.calendar.take().expect("calendar pending");
+                let (_, kind, closing) = self.calendar.take().expect("calendar pending");
                 use crate::calendar_dialog::{Snapshot, Update};
                 let update = if frame["ok"] != true {
                     Update::Rejected(text(&frame, "error", 4096)?.into())
                 } else if closing {
                     Update::Closed
+                } else if frame["result"]["screen"] == "remote" {
+                    Update::Remote
                 } else {
-                    Update::Snapshot(Snapshot::parse(&frame["result"])?.map(Box::new))
+                    Update::Snapshot(Snapshot::parse_kind(&frame["result"], kind)?.map(Box::new))
                 };
                 Ok(Step::Settings {
                     update: crate::settings_view::Update::Calendar(update),
@@ -3333,8 +3335,8 @@ impl Management {
         if let crate::settings_view::Intent::Hooks(kind, intent) = intent {
             return self.request_hooks_editor(kind, intent);
         }
-        if let crate::settings_view::Intent::Calendar(intent) = intent {
-            return self.request_calendar(intent);
+        if let crate::settings_view::Intent::Calendar(kind, intent) = intent {
+            return self.request_calendar(kind, intent);
         }
         if matches!(
             intent,
@@ -4794,13 +4796,15 @@ impl Management {
     /// /cal: Python's CalendarScreen chain, run in the source (native_calendar_dialog.py).
     pub fn request_calendar(
         &mut self,
+        kind: crate::calendar_dialog::Kind,
         intent: crate::calendar_dialog::Intent,
     ) -> io::Result<Value> {
         if !self.ready() {
-            return Err(fail("Finish current work before opening the calendar"));
+            return Err(fail("Finish current work before opening this dialog"));
         }
         self.ensure_drained()?;
-        if !crate::calendar_dialog::OPERATIONS
+        if !kind
+            .operations()
             .iter()
             .all(|op| self.operations.iter().any(|v| v == op))
         {
@@ -4808,13 +4812,13 @@ impl Management {
                 "Runtime lacks the native calendar; update Python source",
             ));
         }
-        let mut command = intent.command();
+        let mut command = intent.command_for(kind);
         let id = self
             .wire
             .register_request()
             .map_err(|_| fail("Cannot reserve the calendar request"))?;
         command["id"] = id.to_value();
-        self.calendar = Some((id, intent.closing()));
+        self.calendar = Some((id, kind, intent.closing()));
         Ok(command)
     }
     /// /tasks: Python's handler with the typed arguments (native_tasks_command.py). Its

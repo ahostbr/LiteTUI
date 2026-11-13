@@ -128,7 +128,8 @@ async def _act(app, screen, action) -> None:
         delta = action["scroll"]
         if type(delta) is not int or not -100 <= delta <= 100:
             raise ValueError("Model settings scroll is malformed")
-        found = [w for w in screen.query(".set-scroll") if w.display]
+        # The active tab's: a hidden pane keeps `display` on its children but no region.
+        found = [w for w in screen.query(".set-scroll") if w.display and w.region.width > 0]
         if not found:
             raise ValueError("Nothing scrolls here")
         found[0].scroll_relative(y=delta, animate=False)

@@ -278,6 +278,15 @@ impl Demo {
             self.live.as_mut().expect("live").latest_live_page();
             self.scroll = usize::MAX;
         }
+        if self
+            .live
+            .as_mut()
+            .is_some_and(|chat| std::mem::take(&mut chat.settings.calendar.remote))
+        {
+            // /modelcfg on a remote backend: Python's answer is its effort picker, which
+            // this frontend reaches through its own model preferences route.
+            self.open_model_preferences();
+        }
         if let Some(action) = route {
             use crate::command_palette::Action;
             match action {
@@ -362,7 +371,8 @@ impl Demo {
                 Action::ConversationResume => self.open_resume(&route_arguments),
                 Action::Claude => self.open_claude(&route_arguments)?,
                 Action::Mcp => self.open_mcp(&route_arguments),
-                Action::ModelPreferences => self.open_model_preferences(),
+                // Bare /modelcfg: Python's ModelConfigScreen (calendar_dialog::Kind::ModelConfig).
+                Action::ModelPreferences => self.open_modelcfg_dialog(),
                 Action::Help => self.open_help(false),
                 Action::Keys => self.toggle_keys(),
                 Action::ClearScreen => self.clear_screen(),
@@ -880,6 +890,22 @@ impl Demo {
                 _ => None,
             };
             chat.settings.open_glassbox(action);
+        }
+    }
+    /// `/modelcfg`: Python's ModelConfigScreen, drawn natively (calendar_dialog).
+    pub fn open_modelcfg_dialog(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting {
+                self.notice = "Finish current work before opening model settings.".into();
+                return;
+            }
+            chat.settings.open_modelcfg_dialog();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
         }
     }
     /// `/cal`: Python's CalendarScreen chain, drawn natively (calendar_dialog).

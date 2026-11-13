@@ -30,8 +30,41 @@ pub const OPERATIONS: [&str; 4] = [
     "gui.calendar.native_dialog_read",
     "gui.calendar.native_dialog_close",
 ];
-const MAX_ITEMS: usize = 256;
+/// The same four for /modelcfg (native_modelcfg_dialog.py).
+pub const MODELCFG_OPERATIONS: [&str; 4] = [
+    "gui.modelcfg.native_dialog_open",
+    "gui.modelcfg.native_dialog_act",
+    "gui.modelcfg.native_dialog_read",
+    "gui.modelcfg.native_dialog_close",
+];
+
+/// Which Python dialog this view draws (both are answered as screen regions).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// /cal: CalendarScreen, DayScreen, JobScreen (scheduler_ui.py).
+    #[default]
+    Calendar,
+    /// /modelcfg: ModelConfigScreen (model_switch.py).
+    ModelConfig,
+}
+impl Kind {
+    pub fn operations(self) -> [&'static str; 4] {
+        match self {
+            Kind::Calendar => OPERATIONS,
+            Kind::ModelConfig => MODELCFG_OPERATIONS,
+        }
+    }
+    fn snapshot_kind(self) -> &'static str {
+        match self {
+            Kind::Calendar => "calendar_dialog",
+            Kind::ModelConfig => "modelcfg_dialog",
+        }
+    }
+}
+const MAX_ITEMS: usize = 1024;
 const MAX_LINES: usize = 400;
+/// The tab strip's place in the focus chain (Textual's Tabs widget has no id here).
+const TABS: &str = "@tabs";
 
 /// One styled run: its text and Rich's style string ("bold #ba3c5b", "dim #e0e0e0").
 pub type Run = (String, String);
@@ -75,6 +108,18 @@ pub enum Control {
         text: String,
     },
     Line(Vec<Item>),
+    /// A scrolling container: its children are cut to `clip`, with its own scrollbar.
+    Clip {
+        items: Vec<Item>,
+        clip: Rect,
+        scroll_y: u16,
+        max_scroll_y: u16,
+    },
+    /// A TabbedContent's tab strip: (pane id, label, region) and the active pane.
+    Tabs {
+        tabs: Vec<(String, String, Rect)>,
+        active: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -176,7 +221,7 @@ fn part(v: &Value) -> io::Result<Part> {
 }
 fn item(v: &Value, depth: usize, count: &mut usize) -> io::Result<Item> {
     *count += 1;
-    if *count > MAX_ITEMS || depth > 2 {
+    if *count > MAX_ITEMS || depth > 8 {
         return Err(bad());
     }
     let control = match v.get("kind").and_then(Value::as_str) {
@@ -243,14 +288,40 @@ fn item(v: &Value, depth: usize, count: &mut usize) -> io::Result<Item> {
             value: v["value"].as_i64().ok_or_else(bad)?,
             text: text(v, "text")?,
         },
-        Some("line") => Control::Line(
-            v["items"]
+        Some("line") => {
+            let items = v["items"]
                 .as_array()
                 .ok_or_else(bad)?
                 .iter()
                 .map(|i| item(i, depth + 1, count))
+                .collect::<io::Result<Vec<_>>>()?;
+            if v.get("clip").is_some() {
+                Control::Clip {
+                    items,
+                    clip: region(&v["clip"])?,
+                    scroll_y: v["scroll_y"].as_u64().ok_or_else(bad)? as u16,
+                    max_scroll_y: v["max_scroll_y"].as_u64().ok_or_else(bad)? as u16,
+                }
+            } else {
+                Control::Line(items)
+            }
+        }
+        Some("tabs") => Control::Tabs {
+            tabs: v["tabs"]
+                .as_array()
+                .filter(|t| t.len() <= 32)
+                .ok_or_else(bad)?
+                .iter()
+                .map(|t| {
+                    let id = text(t, "id")?;
+                    let pane = id.strip_prefix("--content-tab-").unwrap_or(&id).to_owned();
+                    Ok((pane, text(t, "label")?, region(&t["region"])?))
+                })
                 .collect::<io::Result<Vec<_>>>()?,
-        ),
+            active: v["active"]
+                .as_str()
+                .map(|a| a.strip_prefix("--content-tab-").unwrap_or(a).to_owned()),
+        },
         _ => return Err(bad()),
     };
     Ok(Item {
@@ -263,7 +334,10 @@ fn item(v: &Value, depth: usize, count: &mut usize) -> io::Result<Item> {
 impl Snapshot {
     /// The top screen, or None when the chain has closed (the month's own q or Escape).
     pub fn parse(v: &Value) -> io::Result<Option<Self>> {
-        if v["version"] != 1 || v["kind"] != "calendar_dialog" {
+        Self::parse_kind(v, Kind::Calendar)
+    }
+    pub fn parse_kind(v: &Value, kind: Kind) -> io::Result<Option<Self>> {
+        if v["version"] != 1 || v["kind"] != kind.snapshot_kind() {
             return Err(bad());
         }
         let screen = match v["screen"].as_str() {
@@ -273,10 +347,11 @@ impl Snapshot {
                 side: part(&v["side"])?,
                 hints: part(&v["hints"])?,
             },
-            Some(kind @ ("day" | "job")) => {
+            Some(name @ ("day" | "job" | "form")) => {
                 let mut count = 0;
                 Screen::Form {
-                    job: kind == "job",
+                    // The job form and /modelcfg scroll in Python as focus moves.
+                    job: name != "day",
                     content: region(&v["content"])?,
                     scroll_y: v["scroll_y"].as_u64().ok_or_else(bad)? as u16,
                     max_scroll_y: v["max_scroll_y"].as_u64().ok_or_else(bad)? as u16,
@@ -330,7 +405,10 @@ pub enum Intent {
 }
 impl Intent {
     pub fn command(&self) -> Value {
-        let [open, act, read, close] = OPERATIONS;
+        self.command_for(Kind::Calendar)
+    }
+    pub fn command_for(&self, kind: Kind) -> Value {
+        let [open, act, read, close] = kind.operations();
         match self {
             Intent::Open { size } => json!({"type": open, "version": 1, "size": size}),
             Intent::Read { size } => json!({"type": read, "version": 1, "size": size}),
@@ -352,6 +430,8 @@ impl Intent {
 pub enum Update {
     /// The top screen, or None once the chain has closed itself.
     Snapshot(Option<Box<Snapshot>>),
+    /// /modelcfg on a remote backend: Python's answer is an effort picker, not this screen.
+    Remote,
     Closed,
     Rejected(String),
 }
@@ -364,10 +444,14 @@ enum Hit {
     Option(String, usize),
     Tick(String, i64),
     Drop(usize),
+    Tab(String),
 }
 
 #[derive(Default)]
 pub struct View {
+    pub kind: Kind,
+    /// Set when /modelcfg met a remote backend: the frontend opens its effort route.
+    pub remote: bool,
     pub open: bool,
     waiting: bool,
     snapshot: Option<Snapshot>,
@@ -478,11 +562,15 @@ impl View {
         self.size = [area.width, area.height];
     }
     pub fn open(&mut self) {
+        self.open_kind(Kind::Calendar);
+    }
+    pub fn open_kind(&mut self, kind: Kind) {
         if self.waiting {
             return;
         }
         let size = self.size();
         *self = Self {
+            kind,
             open: true,
             waiting: true,
             size,
@@ -539,6 +627,14 @@ impl View {
                 }
                 self.cursor = self.text_of_focus().map_or(0, |t| t.chars().count());
             }
+            Update::Remote => {
+                *self = Self {
+                    kind: self.kind,
+                    size: self.size,
+                    remote: true,
+                    ..Self::default()
+                };
+            }
             Update::Snapshot(None) | Update::Closed => {
                 if self.open && matches!(update, Update::Snapshot(None)) {
                     // The month closed itself in Python; the session is over there too.
@@ -570,7 +666,10 @@ impl View {
         fn visit<'a>(items: &'a [Item], out: &mut Vec<&'a Item>) {
             for i in items {
                 match &i.control {
-                    Control::Line(children) => visit(children, out),
+                    Control::Line(children)
+                    | Control::Clip {
+                        items: children, ..
+                    } => visit(children, out),
                     _ => out.push(i),
                 }
             }
@@ -587,11 +686,27 @@ impl View {
     }
     /// Textual's focus chain on the day or job screen: its focusable widgets in order.
     fn stops(&self) -> Vec<String> {
-        self.items()
-            .into_iter()
-            .filter(|i| !i.disabled && !matches!(i.control, Control::Text { .. }))
-            .filter_map(|i| i.id.clone())
-            .collect()
+        let mut out: Vec<String> = Vec::new();
+        if self.tab_strip().is_some() {
+            out.push(TABS.to_owned());
+        }
+        out.extend(
+            self.items()
+                .into_iter()
+                .filter(|i| {
+                    !i.disabled && !matches!(i.control, Control::Text { .. } | Control::Tabs { .. })
+                })
+                .filter_map(|i| i.id.clone()),
+        );
+        out
+    }
+    fn tab_strip(&self) -> Option<(Vec<(String, String, Rect)>, Option<String>)> {
+        self.items().into_iter().find_map(|i| match &i.control {
+            Control::Tabs { tabs, active } if !tabs.is_empty() => {
+                Some((tabs.clone(), active.clone()))
+            }
+            _ => None,
+        })
     }
     fn focused(&self) -> Option<String> {
         self.stops().get(self.focus).cloned()
@@ -660,7 +775,7 @@ impl View {
         }
         self.focus = index % stops.len();
         self.cursor = self.text_of_focus().map_or(0, |t| t.chars().count());
-        if self.is_job() {
+        if self.is_job() && stops[self.focus] != TABS {
             let id = stops[self.focus].clone();
             self.act(json!({"focus": id}));
         }
@@ -795,6 +910,26 @@ impl View {
         );
         match key.code {
             KeyCode::Esc => self.act(json!({"key": "escape"})),
+            // /modelcfg: Ctrl+S is Python's apply (a loaded model reloads).
+            KeyCode::Char('s')
+                if self.kind == Kind::ModelConfig && key.modifiers == KeyModifiers::CONTROL =>
+            {
+                self.act(json!({"key": "ctrl+s"}))
+            }
+            KeyCode::Left | KeyCode::Right if self.focused().as_deref() == Some(TABS) => {
+                if let Some((tabs, active)) = self.tab_strip() {
+                    let at = tabs
+                        .iter()
+                        .position(|(p, _, _)| Some(p) == active.as_ref())
+                        .unwrap_or(0);
+                    let next = if key.code == KeyCode::Left {
+                        (at + tabs.len() - 1) % tabs.len()
+                    } else {
+                        (at + 1) % tabs.len()
+                    };
+                    self.act(json!({"tab": tabs[next].0}));
+                }
+            }
             KeyCode::Tab if key.modifiers.is_empty() => self.step_focus(1),
             KeyCode::BackTab => self.step_focus(-1),
             // The day popup's keys (n new, q close), when the list or Dock has focus.
@@ -942,6 +1077,7 @@ impl View {
                         }
                     }
                     Hit::Drop(_) => {}
+                    Hit::Tab(pane) => self.act(json!({"tab": pane})),
                 }
             }
             MouseEventKind::ScrollDown if self.is_job() => self.act(json!({"scroll": 3})),
@@ -1111,7 +1247,71 @@ impl View {
         let r = item.region;
         let is_focus = item.id.is_some() && item.id.as_deref() == focused;
         let visible = r.intersection(content);
-        if visible.is_empty() && !matches!(item.control, Control::Line(_)) {
+        if visible.is_empty() && !matches!(item.control, Control::Line(_) | Control::Clip { .. }) {
+            return;
+        }
+        if let Control::Clip {
+            items,
+            clip,
+            scroll_y,
+            max_scroll_y,
+        } = &item.control
+        {
+            // Cut the children to the container's own content area, as Textual does.
+            let cut = clip.intersection(content);
+            let mut inner = buf.clone();
+            for child in items {
+                self.draw_item(&mut inner, child, cut, focused, p);
+            }
+            for y in cut.top()..cut.bottom() {
+                for x in cut.left()..cut.right() {
+                    buf[(x, y)] = inner[(x, y)].clone();
+                }
+            }
+            if *max_scroll_y > 0 {
+                scrollbar(buf, *clip, *scroll_y, *max_scroll_y, p);
+            }
+            return;
+        }
+        if let Control::Tabs { tabs, active } = &item.control {
+            let label = Style::default().fg(p.muted).bg(p.surface);
+            let lit = Style::default()
+                .fg(p.text)
+                .bg(p.surface)
+                .add_modifier(Modifier::BOLD);
+            let bar = Style::default().fg(p.border).bg(p.surface);
+            let hot = Style::default().fg(p.accent).bg(p.surface);
+            let line = r.y + 1;
+            for x in r.left()..r.right() {
+                if line < buf.area.bottom() {
+                    buf[(x, line)].set_symbol("━").set_style(bar);
+                }
+            }
+            for (pane, text, t) in tabs {
+                let on = active.as_ref() == Some(pane);
+                buf.set_stringn(
+                    t.x,
+                    t.y,
+                    format!(" {text} "),
+                    usize::from(t.width),
+                    if on { lit } else { label },
+                );
+                if on && line < buf.area.bottom() {
+                    // Textual's Underline: the active label in the accent, the bars capped.
+                    let (start, end) = (t.x + 1, t.x + 1 + text.width() as u16);
+                    for x in start..end.min(r.right()) {
+                        buf[(x, line)].set_symbol("━").set_style(hot);
+                    }
+                    if start > r.x {
+                        buf[(start - 1, line)].set_symbol("╸").set_style(bar);
+                    }
+                    if end < r.right() {
+                        buf[(end, line)].set_symbol("╺").set_style(bar);
+                    }
+                }
+                self.hits
+                    .push((t.intersection(content), Hit::Tab(pane.clone())));
+            }
             return;
         }
         let surface = Style::default().fg(p.text).bg(p.surface);
@@ -1125,9 +1325,33 @@ impl View {
                     self.draw_item(buf, child, content, focused, p);
                 }
             }
+            Control::Clip { .. } | Control::Tabs { .. } => {}
             Control::Text { text, classes } => {
                 let id = item.id.as_deref().unwrap_or("");
-                let style = if id.ends_with("-title") {
+                // .set-label, .set-label-inline and .set-help: padding-left 1.
+                let indent = u16::from(
+                    classes
+                        .iter()
+                        .any(|c| c == "set-label" || c == "set-label-inline" || c == "set-help"),
+                );
+                let style = if id == "set-title" {
+                    Style::default()
+                        .fg(p.accent)
+                        .bg(p.surface)
+                        .add_modifier(Modifier::BOLD)
+                } else if classes
+                    .iter()
+                    .any(|c| c == "set-label" || c == "set-label-inline")
+                {
+                    Style::default()
+                        .fg(p.text)
+                        .bg(p.surface)
+                        .add_modifier(Modifier::BOLD)
+                } else if id == "set-sub" || classes.iter().any(|c| c == "set-help") {
+                    muted
+                } else if id == "mc-error" {
+                    Style::default().fg(p.error).bg(p.surface)
+                } else if id.ends_with("-title") {
                     Style::default()
                         .fg(p.error)
                         .bg(p.surface)
@@ -1149,14 +1373,15 @@ impl View {
                 } else {
                     surface
                 };
-                for (i, line) in crate::picker_box::wrap(text, usize::from(r.width))
+                let width = r.width.saturating_sub(indent);
+                for (i, line) in crate::picker_box::wrap(text, usize::from(width))
                     .iter()
                     .enumerate()
                     .take(usize::from(r.height))
                 {
                     let y = r.y + i as u16;
                     if y >= content.top() && y < content.bottom() {
-                        buf.set_stringn(r.x, y, line, usize::from(r.width), style);
+                        buf.set_stringn(r.x + indent, y, line, usize::from(width), style);
                     }
                 }
             }

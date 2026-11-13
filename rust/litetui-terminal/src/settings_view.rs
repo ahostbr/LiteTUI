@@ -54,7 +54,7 @@ pub enum Intent {
     /// `/hooks` and the Settings Hooks tab (and `/mcp`): Python's dialog, run in the source.
     Hooks(crate::hooks_dialog::Kind, crate::hooks_dialog::Intent),
     /// `/cal`: Python's CalendarScreen chain, run in the source.
-    Calendar(crate::calendar_dialog::Intent),
+    Calendar(crate::calendar_dialog::Kind, crate::calendar_dialog::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -437,15 +437,21 @@ impl View {
     pub fn open_calendar(&mut self) {
         self.calendar.open();
     }
+    /// Bare `/modelcfg`: Python's ModelConfigScreen (the same region-drawn view).
+    pub fn open_modelcfg_dialog(&mut self) {
+        self.calendar
+            .open_kind(crate::calendar_dialog::Kind::ModelConfig);
+    }
     /// Bare `/mcp`: Python's MCPListBody.
     pub fn open_mcp_dialog(&mut self) {
         self.hooks.open_kind(crate::hooks_dialog::Kind::Mcp);
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
         let kind = self.hooks.kind;
+        let screen = self.calendar.kind;
         self.calendar
             .take_intent()
-            .map(Intent::Calendar)
+            .map(|intent| Intent::Calendar(screen, intent))
             .or_else(|| {
                 self.hooks
                     .take_intent()

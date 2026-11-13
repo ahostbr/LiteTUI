@@ -148,6 +148,12 @@ PROFILES = {
                            ("saved", ["\r"], "none"), ("month", ["\x1b"], "none"),
                            ("closed", ["q"], "none")]
                 for frontend in ("textual", "rust")},
+    # /modelcfg is Python's ModelConfigScreen: click the Load tab, wheel its pane, click
+    # Inference, then Escape. NEVER Ctrl+S here: applying reloads a loaded model.
+    "modelcfgtabs": {frontend: [("modelcfg-open", ["/modelcfg\r"], "none"), ("load", ["click: Load "], "none"),
+                                ("wheel", ["wheel:Context Length"] * 3, "none"),
+                                ("inference", ["click: Inference "], "none"), ("closed", ["\x1b"], "none")]
+                     for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),
