@@ -310,7 +310,11 @@ impl Buttons {
                 (
                     bg,
                     t.css_value("button-color-foreground"),
-                    t.var(&format!("{name}-lighten-3"), bg),
+                    // Textual: -primary's top rim is lighten-3, -warning/-error/-success lighten-2.
+                    t.var(
+                        &format!("{name}-lighten-{}", if name == "primary" { 3 } else { 2 }),
+                        bg,
+                    ),
                     t.var(&format!("{name}-darken-3"), bg),
                 )
             };
@@ -348,7 +352,16 @@ impl Buttons {
         if disabled
             && let (Some(fg), Some(bg)) = (look.face.fg, look.face.bg)
         {
-            look.face = look.face.fg(crate::theme::blend(bg, fg, 0.6));
+            // Button:disabled `text-opacity: 0.6`, then App's `*:disabled:can-focus { opacity:
+            // 0.7 }` toward the background; the rims come out at 0.7 twice (measured against
+            // Python's own cells: e0 -> 6f, 2d -> 25, 0d -> 15 on 1e).
+            use crate::theme::blend;
+            look.face = look.face.fg(blend(bg, blend(bg, fg, 0.6), 0.7));
+            for rim in [&mut look.top, &mut look.bottom] {
+                if let Some(c) = rim.fg {
+                    *rim = rim.fg(blend(bg, c, 0.49));
+                }
+            }
         }
         Some(look)
     }

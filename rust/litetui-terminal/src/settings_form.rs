@@ -69,6 +69,14 @@ fn id(v: &Value) -> io::Result<String> {
     Ok(id)
 }
 /// Everything shown comes from Python; never let it drive the terminal.
+/// A Button's variant as Python sent it (an older source sends none: the default look).
+fn variant(v: &Value) -> String {
+    v.get("variant")
+        .and_then(Value::as_str)
+        .filter(|s| matches!(*s, "default" | "primary" | "warning" | "error" | "success"))
+        .unwrap_or("default")
+        .to_owned()
+}
 fn shown(text: &str) -> String {
     terminal_text(text).replace('\t', "    ")
 }
@@ -119,6 +127,7 @@ pub enum Item {
         id: String,
         label: String,
         disabled: bool,
+        variant: String,
     },
     Line(Vec<Item>),
     Row {
@@ -144,6 +153,8 @@ pub struct Button {
     pub id: String,
     pub label: String,
     pub disabled: bool,
+    /// Textual's Button variant (default, primary, warning, error).
+    pub variant: String,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Form {
@@ -217,6 +228,7 @@ fn item(v: &Value, depth: usize, count: &mut usize, ids: &mut HashSet<String>) -
             id: id(v)?,
             label: string(v, "label")?,
             disabled: flag(v, "disabled")?,
+            variant: variant(v),
         },
         Some("line") => Item::Line(children(v, count, ids)?),
         Some("row") => Item::Row {
@@ -327,6 +339,7 @@ impl Form {
                     id: id(b)?,
                     label: string(b, "label")?,
                     disabled: flag(b, "disabled")?,
+                    variant: variant(b),
                 })
             })
             .collect::<io::Result<_>>()?;
@@ -1423,6 +1436,29 @@ struct Paint {
     error: Color,
     /// Textual's Button for the running theme (None for the preview catalog).
     buttons: crate::picker_box::Buttons,
+    /// The running theme carries Python's CSS (the preview catalog keeps the old look).
+    styled: bool,
+    /// .set-label: bold `$text`; #set-title: bold `$primary-lighten-2`; a placeholder
+    /// `$text-disabled`; a focused input's `background-tint: $foreground 5%`.
+    label: Color,
+    title: Color,
+    placeholder: Color,
+    tint: Color,
+    /// Tab `$foreground 50%`; Tabs:focus's active tab in the block cursor; the Underline bar.
+    tab: Color,
+    cursor: Style,
+    bar_rest: Color,
+    bar_rest_focused: Color,
+    bar_hot: Color,
+    /// .switch--slider: `$panel` (on: `$success`) over `$panel-darken-2`.
+    slider_track: Color,
+    slider_off: Color,
+    slider_on: Color,
+    /// `$scrollbar` on `$scrollbar-background`.
+    sbar: Color,
+    sbar_back: Color,
+    /// SelectCurrent's arrow: `$foreground 50%`.
+    arrow: Color,
 }
 impl Paint {
     fn of(t: &Theme) -> Self {
@@ -1438,6 +1474,28 @@ impl Paint {
             border: t.var("border-blurred", t.thinking_border),
             error: t.var("error", t.error),
             buttons: crate::picker_box::Buttons::of(t),
+            styled: !t.css.is_empty(),
+            label: t.css_over("text", surface, t.foreground),
+            title: t.var("primary-lighten-2", t.primary),
+            placeholder: t.disabled_on(surface),
+            tint: if t.css.is_empty() { surface } else { t.input() },
+            tab: t.css_alpha("foreground", 50.0, surface, t.thinking_text),
+            cursor: {
+                let bg = t.var("block-cursor-background", t.primary);
+                Style::default()
+                    .fg(t.css_over("block-cursor-foreground", bg, t.background))
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD)
+            },
+            bar_rest: t.css_alpha("foreground", 10.0, surface, t.thinking_border),
+            bar_rest_focused: t.css_alpha("foreground", 30.0, surface, t.thinking_border),
+            bar_hot: t.var("block-cursor-background", t.primary),
+            slider_track: t.var("panel-darken-2", surface),
+            slider_off: t.var("panel", t.thinking_border),
+            slider_on: t.var("success", t.primary),
+            sbar: t.var("scrollbar", t.thinking_border),
+            sbar_back: t.var("scrollbar-background", surface),
+            arrow: t.css_alpha("foreground", 50.0, surface, t.foreground),
         }
     }
 }
@@ -1548,21 +1606,43 @@ impl Layout<'_> {
     ) -> Rows3 {
         let inner = usize::from(width.saturating_sub(2));
         let body = inner.saturating_sub(4 + right.width());
+        // Textual's tall border: the left "▊" is the box's $surface in front of the border
+        // colour, the right "▎" the border colour in front of it.
+        let p = self.paint;
+        let (left, side) = match (p.styled, edge.fg) {
+            (true, Some(border)) => (
+                Style::default().fg(p.surface).bg(border),
+                Style::default().fg(border).bg(p.surface),
+            ),
+            _ => (edge, edge),
+        };
         [
             vec![
-                (x, "▊".into(), edge),
+                (x, "▊".into(), left),
                 (x + 1, "▔".repeat(inner), edge),
-                (x + 1 + inner as u16, "▎".into(), edge),
+                (x + 1 + inner as u16, "▎".into(), side),
             ],
+            if p.styled && !right.is_empty() {
+                // The Select's arrow in its own colour.
+                let arrow_x = x + 3 + body as u16;
+                vec![
+                    (x, "▊".into(), left),
+                    (x + 1, format!("  {}", pad(text, body)), style),
+                    (arrow_x, right.into(), style.fg(p.arrow)),
+                    (arrow_x + right.width() as u16, "  ".into(), style),
+                    (x + 1 + inner as u16, "▎".into(), side),
+                ]
+            } else {
+                vec![
+                    (x, "▊".into(), left),
+                    (x + 1, format!("  {}{right}  ", pad(text, body)), style),
+                    (x + 1 + inner as u16, "▎".into(), side),
+                ]
+            },
             vec![
-                (x, "▊".into(), edge),
-                (x + 1, format!("  {}{right}  ", pad(text, body)), style),
-                (x + 1 + inner as u16, "▎".into(), edge),
-            ],
-            vec![
-                (x, "▊".into(), edge),
+                (x, "▊".into(), left),
                 (x + 1, "▁".repeat(inner), edge),
-                (x + 1 + inner as u16, "▎".into(), edge),
+                (x + 1 + inner as u16, "▎".into(), side),
             ],
         ]
     }
@@ -1577,24 +1657,39 @@ impl Layout<'_> {
         let p = self.paint;
         let focused = self.focused(index);
         let dim = control.disabled;
+        let inside = if focused { p.tint } else { p.surface };
         let edge = Style::default()
             .fg(if focused { p.accent } else { p.border })
-            .bg(p.surface);
+            .bg(inside);
         let text_style = Style::default()
             .fg(if dim { p.muted } else { p.text })
-            .bg(p.surface);
-        let muted = Style::default().fg(p.muted).bg(p.surface);
+            .bg(inside);
+        let muted = Style::default()
+            .fg(if p.styled { p.placeholder } else { p.muted })
+            .bg(inside);
         match &control.kind {
             Kind::Switch(_) => {
                 let on = self.view.switch(control);
                 let mut rows = self.tall(x, 10, "", "", text_style, edge);
-                let slider = Style::default().bg(if on { p.accent } else { p.border });
-                let track = Style::default().bg(p.surface);
+                let (slider, track) = if p.styled {
+                    (
+                        Style::default().bg(if on { p.slider_on } else { p.slider_off }),
+                        Style::default().bg(p.slider_track),
+                    )
+                } else {
+                    (
+                        Style::default().bg(if on { p.accent } else { p.border }),
+                        Style::default().bg(p.surface),
+                    )
+                };
+                // Switch: padding 0 2 around a 4-cell slider (the track) with its 2-cell thumb.
+                let (left, side) = (rows[1][0].2, rows[1][2].2);
                 rows[1] = vec![
-                    (x, "▊".into(), edge),
-                    (x + 1, "        ".into(), track),
+                    (x, "▊".into(), left),
+                    (x + 1, "        ".into(), Style::default().bg(inside)),
+                    (x + 3, "    ".into(), track),
                     (x + if on { 5 } else { 3 }, "  ".into(), slider),
-                    (x + 9, "▎".into(), edge),
+                    (x + 9, "▎".into(), side),
                 ];
                 (rows, None)
             }
@@ -1646,8 +1741,19 @@ impl Layout<'_> {
         (label.width() as u16 + 2).max(16)
     }
     fn button(&self, label: &str, x: u16, width: u16, focused: bool, disabled: bool) -> Rows3 {
+        self.button_variant(label, "default", x, width, focused, disabled)
+    }
+    fn button_variant(
+        &self,
+        label: &str,
+        variant: &str,
+        x: u16,
+        width: u16,
+        focused: bool,
+        disabled: bool,
+    ) -> Rows3 {
         let p = self.paint;
-        let (face, top, bottom) = match p.buttons.get("default", focused, disabled) {
+        let (face, top, bottom) = match p.buttons.get(variant, focused, disabled) {
             Some(look) => (look.face, look.top, look.bottom),
             None => {
                 let face = Style::default()
@@ -1713,6 +1819,11 @@ impl Layout<'_> {
                 let face = Style::default()
                     .fg(if focused { p.background } else { p.accent })
                     .bg(bg);
+                // SettingsSectionHeader is a Button: Textual's default look when styled.
+                let (face, edge, bottom_edge) = match p.buttons.get("default", focused, false) {
+                    Some(look) => (look.face, look.top, look.bottom),
+                    None => (face, edge, edge),
+                };
                 self.margin();
                 let w = usize::from(width);
                 self.push3(
@@ -1723,7 +1834,7 @@ impl Layout<'_> {
                             format!(" {} ", centered(&shown(&label), w.saturating_sub(2))),
                             face,
                         )],
-                        vec![(x, "▁".repeat(w), edge)],
+                        vec![(x, "▁".repeat(w), bottom_edge)],
                     ],
                     index,
                     None,
@@ -1748,7 +1859,7 @@ impl Layout<'_> {
                 x + 1,
                 clip(&shown(text), usize::from(width.saturating_sub(1))),
                 Style::default()
-                    .fg(p.text)
+                    .fg(p.label)
                     .bg(p.surface)
                     .add_modifier(Modifier::BOLD),
             ),
@@ -1791,10 +1902,12 @@ impl Layout<'_> {
                 id,
                 label,
                 disabled,
+                variant,
             } => {
                 let index = self.target(&Target::Button(id.clone()));
                 let w = Self::button_width(label);
-                let rows = self.button(label, x, w, self.focused(index), *disabled);
+                let rows =
+                    self.button_variant(label, variant, x, w, self.focused(index), *disabled);
                 self.push3(rows, index, None);
             }
             Item::HooksEditor { status } => {
@@ -1857,7 +1970,7 @@ impl Layout<'_> {
                                 cx + 1,
                                 shown(text),
                                 Style::default()
-                                    .fg(p.text)
+                                    .fg(p.label)
                                     .bg(p.surface)
                                     .add_modifier(Modifier::BOLD),
                             ));
@@ -1884,10 +1997,18 @@ impl Layout<'_> {
                             id,
                             label,
                             disabled,
+                            variant,
                         } => {
                             let index = self.target(&Target::Button(id.clone()));
                             let w = Self::button_width(label);
-                            let rows = self.button(label, cx, w, self.focused(index), *disabled);
+                            let rows = self.button_variant(
+                                label,
+                                variant,
+                                cx,
+                                w,
+                                self.focused(index),
+                                *disabled,
+                            );
                             for (row, spans) in block.iter_mut().zip(rows) {
                                 row.extend(spans);
                             }
@@ -2145,7 +2266,7 @@ impl View {
             top,
             clip(&shown(&form.title), w.into()),
             Style::default()
-                .fg(p.accent)
+                .fg(if p.styled { p.title } else { p.accent })
                 .bg(p.surface)
                 .add_modifier(Modifier::BOLD),
         );
@@ -2170,13 +2291,20 @@ impl View {
             .chars()
             .skip(if self.query.is_empty() { 0 } else { start })
             .collect();
+        let search_inside = if self.focus == Focus::Search { p.tint } else { p.surface };
+        let query_style = query_style.bg(search_inside);
+        let query_style = if self.query.is_empty() && p.styled {
+            query_style.fg(p.placeholder)
+        } else {
+            query_style
+        };
         let search_edge = Style::default()
             .fg(if self.focus == Focus::Search {
                 p.accent
             } else {
                 p.border
             })
-            .bg(p.surface);
+            .bg(search_inside);
         let search_rows = probe.tall(x0, search, &query, "", query_style, search_edge);
         let clear = probe.button("Clear", x0 + w - 16, 16, self.focus == Focus::Clear, false);
         for (i, (a, b)) in search_rows.iter().zip(clear.iter()).enumerate() {
@@ -2220,7 +2348,16 @@ impl View {
         let strip = cx - x0;
         let centre = f64::from(ax - x0) + f64::from(*acells) / 2.0 - f64::from(w) / 2.0;
         let shift = (centre.max(0.0) as u16).min(strip.saturating_sub(w));
-        let underline = Style::default().fg(p.border).bg(p.surface);
+        let tabs_focused = self.focus == Focus::Tabs;
+        let underline = Style::default()
+            .fg(if !p.styled {
+                p.border
+            } else if tabs_focused {
+                p.bar_rest_focused
+            } else {
+                p.bar_rest
+            })
+            .bg(p.surface);
         buf.set_string(x0, tabs_y + 1, "━".repeat(w.into()), underline);
         for (i, sx, label, cells) in &spans {
             let start = sx.saturating_sub(shift);
@@ -2236,11 +2373,15 @@ impl View {
             let cells = &(*cells - hidden as u16);
             let visible = clip(&tail, usize::from(x0 + w - sx));
             let active = *i == self.tab;
-            let style = if active {
+            let style = if active && p.styled && tabs_focused {
+                p.cursor
+            } else if active {
                 Style::default()
                     .fg(p.text)
                     .bg(p.surface)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(if p.styled { Modifier::empty() } else { Modifier::BOLD })
+            } else if p.styled {
+                Style::default().fg(p.tab).bg(p.surface)
             } else {
                 muted
             };
@@ -2251,7 +2392,9 @@ impl View {
             ));
             if active {
                 let accent = Style::default()
-                    .fg(if self.focus == Focus::Tabs {
+                    .fg(if p.styled {
+                        p.bar_hot
+                    } else if self.focus == Focus::Tabs {
                         p.accent
                     } else {
                         p.text
@@ -2289,7 +2432,14 @@ impl View {
                 break;
             }
             let shown_w = bw.min(x0 + w - bx);
-            let rows = probe.button(&b.label, bx, bw, self.focus == Focus::Button(i), b.disabled);
+            let rows = probe.button_variant(
+                &b.label,
+                &b.variant,
+                bx,
+                bw,
+                self.focus == Focus::Button(i),
+                b.disabled,
+            );
             painted.push((rows, shown_w));
             button_hits.push((Rect::new(bx, buttons_y, shown_w, 3), Hit::Button(i)));
             bx += bw + 2;
@@ -2402,8 +2552,18 @@ impl View {
             let (start_index, start_bar) = (start / 8, start % 8);
             let (end_index, end_bar) = (end / 8, end % 8);
             let column = x0 + cw;
-            let track = Style::default().fg(p.border).bg(p.surface);
-            let solid = Style::default().fg(p.surface).bg(p.border);
+            let (bar, back) = if p.styled {
+                (p.sbar, p.sbar_back)
+            } else {
+                (p.border, p.surface)
+            };
+            let track = Style::default().fg(bar).bg(back);
+            let solid = Style::default().fg(back).bg(bar);
+            if p.styled {
+                for i in 0..usize::from(height) {
+                    buf.set_string(column, content_top + i as u16, " ", Style::default().bg(back));
+                }
+            }
             for i in start_index..end_index.min(usize::from(height)) {
                 buf.set_string(column, content_top + i as u16, " ", solid);
             }

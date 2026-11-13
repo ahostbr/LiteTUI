@@ -145,7 +145,8 @@ def _items(node, section, out, reviewed=(set(), False)):
             continue
         if isinstance(child, Button):
             out.append({"kind": "button", "id": child.id, "label": _plain(child.label),
-                        "disabled": bool(child.disabled), "section": section})
+                        "disabled": bool(child.disabled), "variant": str(child.variant),
+                        "section": section})
             continue
         if isinstance(child, Label):
             out.append({"kind": "label", "text": _plain(child.content),
@@ -188,7 +189,8 @@ def _walk(app, screen):
         scroll = any(child.has_class("set-scroll") for child in pane.children)
         tabs.append({"id": pane.id, "label": _plain(tabbed.get_tab(pane.id).label), "items": items,
                      "scroll": scroll})
-    buttons = [{"id": b.id, "label": _plain(b.label), "disabled": bool(b.disabled)}
+    buttons = [{"id": b.id, "label": _plain(b.label), "disabled": bool(b.disabled),
+                "variant": str(b.variant)}
                for b in body.query_one("#set-buttons").query(Button)]
     def text(selector):
         return _plain(body.query_one(selector, Static).content)

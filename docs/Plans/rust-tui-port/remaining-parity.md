@@ -11,6 +11,8 @@ Two Rust behaviours that Python does not have stay, by Ryan's choice ("Keep both
 
 Everything else is 1:1 with Python. MCP at start follows the saved setting, as Python's does (same message: "From saved setting").
 
+**To fix (Sentinel 23a7bd23):** an MCP server added in /mcp after launch shows "excluded · not available to this seat (--mcp-servers)" in Rust, where Python tries to connect it at once. The Rust launch passes `--mcp-servers all`, and the seat's server set is fixed when it starts, so a later server falls outside it. Same on the binary before the MCP-at-start change.
+
 ## Successor handoff - November 11, 2026
 
 Sentinel requested this committed handoff for an Opus 5.5 successor. This is not task completion. Work only in `<worktree>`, branch `work/rust-tui-OpenBolt`; `<projects>/LiteSuite` is the desktop development checkout, not the Rust-port checkout. The last preceding checkpoint is `33d9aca1` (reviewed sensitivity evidence); implemented product remains `c6a643fa4a353b52792a3b286ba33c85d65df9c4`. Resolve this handoff commit with `git log -1 --format=%H -- docs/Plans/rust-tui-port/remaining-parity.md`; Sentinel receives its exact SHA. No merge, push, release, cutover, installation or worktree deletion is authorized.
