@@ -3,6 +3,8 @@
 One line per item, newest section at the top. The portfolio board (`<projects>/scripts/portfolio.py`)
 reads the first open line of this file, so keep the next thing to do at the top.
 
+- [ ] Investigate pre-existing failures reproduced with develop dependencies: cp1252 diagnostic-print errors in footer meters [120]/[160] and settings_live (U+1F534), plus the separate image-viewer settle failure; all also fail with the security-updated lock.
+
 ## Compaction — completed 2026-09-14
 
 Original observations: 27B seat, 2026-09-06, conversation
