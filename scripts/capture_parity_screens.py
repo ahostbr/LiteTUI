@@ -111,6 +111,12 @@ PROFILES = {
     # and fails any other ("Something went wrong talking to the model server.").
     "turns": {frontend: [("normal", ["PERF hello\r"], "none"), ("failed", ["not a fixture prompt\r"], "none")]
               for frontend in ("textual", "rust")},
+    # /hooks is Python's HooksEditor: New adds new-hook (unsaved), the wheel scrolls the editor,
+    # Save hooks writes the project hooks.json. Each shot is after one step.
+    "hooksedit": {frontend: [("hooks-open", ["/hooks\r"], "none"), ("new", ["click:New"], "none"),
+                             ("wheel", ["wheel:Close@-5"] * 25, "none"),
+                             ("save", ["click:Save hooks"], "none")]
+                  for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

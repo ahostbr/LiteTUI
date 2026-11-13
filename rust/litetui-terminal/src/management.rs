@@ -728,6 +728,8 @@ pub struct Management {
     system_lines: Option<CommandId>,
     /// The one gui.markdown.native_render read in flight: its id, card key and width.
     markdown: Option<(CommandId, u64, u16)>,
+    /// The hooks editor request in flight (native_hooks_editor.py), and whether it closes.
+    hooks_editor: Option<(CommandId, bool)>,
     settings_snapshot: Option<settings::Snapshot>,
     settings_review: Option<settings::Review>,
     settings_generation: u64,
@@ -820,6 +822,7 @@ impl Default for Management {
             settings_form: None,
             system_lines: None,
             markdown: None,
+            hooks_editor: None,
             settings_snapshot: None,
             settings_review: None,
             settings_generation: 0,
@@ -959,6 +962,7 @@ impl Management {
             && self.settings.is_none()
             && self.settings_edit.is_none()
             && self.settings_form.is_none()
+            && self.hooks_editor.is_none()
             && self.backend.is_none()
             && self.browser.is_none()
             && self.control.is_none()
@@ -1490,6 +1494,29 @@ impl Management {
             } if self.system_lines.is_some() && self.system_lines.as_ref() == id.as_ref() => {
                 self.system_lines = None;
                 self.system_lines_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .hooks_editor
+                .as_ref()
+                .is_some_and(|(pending, _)| Some(pending) == id.as_ref()) =>
+            {
+                let (_, closing) = self.hooks_editor.take().expect("hooks pending");
+                use crate::hooks_dialog::{Snapshot, Update};
+                let update = if frame["ok"] != true {
+                    Update::Rejected(text(&frame, "error", 4096)?.into())
+                } else if closing {
+                    Update::Closed
+                } else {
+                    Update::Snapshot(Box::new(Snapshot::parse(&frame["result"])?))
+                };
+                Ok(Step::Settings {
+                    update: crate::settings_view::Update::Hooks(update),
+                    policy: None,
+                })
             }
             Notice::Response {
                 id,
@@ -3255,6 +3282,9 @@ impl Management {
         if let crate::settings_view::Intent::Form(intent) = intent {
             return self.request_settings_form(intent);
         }
+        if let crate::settings_view::Intent::Hooks(intent) = intent {
+            return self.request_hooks_editor(intent);
+        }
         if matches!(
             intent,
             crate::settings_view::Intent::Editor(_) | crate::settings_view::Intent::Compaction(_)
@@ -4708,6 +4738,37 @@ impl Management {
         let mut command = json!({"type": SYSTEM_LINES, "version": 1});
         command["id"] = id.to_value();
         self.system_lines = Some(id);
+        Ok(command)
+    }
+    /// Python's HooksEditor, run in the source (native_hooks_editor.py): open, act, read, close.
+    pub fn request_hooks_editor(
+        &mut self,
+        intent: crate::hooks_dialog::Intent,
+    ) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail("Finish current work before using hooks"));
+        }
+        self.ensure_drained()?;
+        if ![
+            crate::hooks_dialog::OPEN,
+            crate::hooks_dialog::ACT,
+            crate::hooks_dialog::READ,
+            crate::hooks_dialog::CLOSE,
+        ]
+        .iter()
+        .all(|op| self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail(
+                "Runtime lacks the native hooks editor; update Python source",
+            ));
+        }
+        let mut command = intent.command();
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve the hooks editor request"))?;
+        command["id"] = id.to_value();
+        self.hooks_editor = Some((id, intent.closing()));
         Ok(command)
     }
     /// Python's Markdown lines for one card's answer (native_markdown.py): a pure read, so

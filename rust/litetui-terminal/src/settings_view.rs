@@ -51,6 +51,8 @@ pub enum Intent {
     Compaction(crate::compaction_settings::Intent),
     /// `/settings`: Python's own dialog as data (settings_form).
     Form(crate::settings_form::Intent),
+    /// `/hooks` and the Settings Hooks tab: Python's HooksEditor, run in the source.
+    Hooks(crate::hooks_dialog::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -72,6 +74,7 @@ pub enum Update {
     Editor(crate::settings_editor::Update),
     Compaction(crate::compaction_settings::Update),
     Form(crate::settings_form::Update),
+    Hooks(crate::hooks_dialog::Update),
     CompactionEdited {
         update: crate::compaction_settings::Update,
         inspection: Snapshot,
@@ -251,6 +254,8 @@ pub struct View {
     pub editor: crate::settings_editor::View,
     pub compaction: crate::compaction_settings::View,
     pub form: crate::settings_form::View,
+    /// Python's HooksScreen (hooks_dialog), over the settings form when opened from it.
+    pub hooks: crate::hooks_dialog::View,
     pub open: bool,
     pub waiting: bool,
     pub snapshot: Option<Snapshot>,
@@ -416,11 +421,17 @@ impl View {
             || self.editor.owns_input()
             || self.compaction.owns_input()
             || self.form.owns_input()
+            || self.hooks.owns_input()
+    }
+    /// `/hooks`: Python's HooksScreen.
+    pub fn open_hooks(&mut self) {
+        self.hooks.open();
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
-        self.form
+        self.hooks
             .take_intent()
-            .map(Intent::Form)
+            .map(Intent::Hooks)
+            .or_else(|| self.form.take_intent().map(Intent::Form))
             .or_else(|| self.editor.take_intent().map(Intent::Editor))
             .or_else(|| self.compaction.take_intent().map(Intent::Compaction))
             .or_else(|| self.intent.take())
@@ -490,7 +501,8 @@ impl View {
         self.snapshot = None;
     }
     pub fn accepts_paste(&self) -> bool {
-        self.form.accepts_paste()
+        self.hooks.owns_input()
+            || self.form.accepts_paste()
             || self.mcp.accepts_paste()
             || self.editor.editing()
             || self.compaction.accepts_paste()
@@ -498,7 +510,9 @@ impl View {
             || self.voice.accepts_paste()
     }
     pub fn paste(&mut self, text: &str) {
-        if self.form.owns_input() {
+        if self.hooks.owns_input() {
+            self.hooks.paste(text);
+        } else if self.form.owns_input() {
             self.form.paste(text);
         } else if self.mcp.open {
             self.mcp.paste(text);
@@ -522,6 +536,10 @@ impl View {
         }
     }
     pub fn observe(&mut self, update: Update) {
+        if let Update::Hooks(update) = update {
+            self.hooks.observe(update);
+            return;
+        }
         if let Update::Form(update) = update {
             self.form.observe(update);
             self.notice = self.form.notice.clone();
@@ -554,7 +572,7 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
-            Update::Form(_) => {}
+            Update::Form(_) | Update::Hooks(_) => {}
             Update::ModelPreferences(result) => {
                 self.model_preferences.update(result.map(|update| *update))
             }
@@ -629,6 +647,10 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.hooks.owns_input() {
+            self.hooks.key(key);
+            return;
+        }
         if self.form.owns_input() {
             self.form.key(key);
             if !self.form.owns_input() {
@@ -864,6 +886,10 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.hooks.owns_input() {
+            self.hooks.mouse(event);
+            return;
+        }
         if self.form.owns_input() {
             self.form.mouse(event);
             if !self.form.owns_input() {
@@ -937,6 +963,10 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if self.hooks.owns_input() {
+            self.hooks.draw(frame, area, theme);
+            return;
+        }
         if self.form.owns_input() {
             self.form.draw(frame, area, theme);
             return;

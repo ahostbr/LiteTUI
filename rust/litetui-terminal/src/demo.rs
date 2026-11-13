@@ -281,6 +281,8 @@ impl Demo {
         if let Some(action) = route {
             use crate::command_palette::Action;
             match action {
+                // /hooks: Python's HooksScreen (hooks_dialog), not the Work view's list.
+                Action::Work(crate::work_view::Destination::Hooks) => self.open_hooks_dialog(),
                 Action::Work(destination) => self.show_work(Some(destination)),
                 Action::Engine => {
                     self.open_engine();
@@ -863,6 +865,22 @@ impl Demo {
             chat.settings.open_glassbox(action);
         }
     }
+    /// `/hooks`: Python's HooksScreen, drawn natively (hooks_dialog).
+    pub fn open_hooks_dialog(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting {
+                self.notice = "Finish current work before opening hooks.".into();
+                return;
+            }
+            chat.settings.open_hooks();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
+        }
+    }
     /// The settings dialog's Hooks tab: the native hooks screen, as /hooks opens it.
     pub fn open_hooks_from_settings(&mut self) {
         if self
@@ -870,7 +888,9 @@ impl Demo {
             .as_mut()
             .is_some_and(|chat| chat.settings.take_hooks_request())
         {
-            self.show_work(Some(crate::work_view::Destination::Hooks));
+            if let Some(chat) = self.live.as_mut() {
+                chat.settings.open_hooks();
+            }
         } else if self
             .live
             .as_mut()

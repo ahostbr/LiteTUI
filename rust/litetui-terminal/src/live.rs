@@ -2950,6 +2950,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             matches!(intent, crate::settings_view::Intent::RuntimeStatus);
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
                         let form = matches!(intent, crate::settings_view::Intent::Form(_));
+                        let hooks = matches!(intent, crate::settings_view::Intent::Hooks(_));
                         let compact_generation = match &intent {
                             crate::settings_view::Intent::Compaction(
                                 crate::compaction_settings::Intent::Read { generation }
@@ -2975,7 +2976,11 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                     .map_err(io::Error::other)?;
                                 deadline = Some(Instant::now() + options.timeout);
                             }
-                            Err(error) => frontend.observe(Observation::Settings(if form {
+                            Err(error) => frontend.observe(Observation::Settings(if hooks {
+                                crate::settings_view::Update::Hooks(
+                                    crate::hooks_dialog::Update::Rejected(error.to_string()),
+                                )
+                            } else if form {
                                 crate::settings_view::Update::Form(
                                     crate::settings_form::Update::Rejected(error.to_string()),
                                 )
