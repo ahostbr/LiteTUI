@@ -1816,17 +1816,11 @@ fn painted_button(
         } else if i + 1 == r.height && r.height > 1 {
             ("▁".repeat(w), Style::default().fg(np.border_bottom.unwrap_or(inside)).bg(inside))
         } else if i == r.height / 2 {
-            (
-                format!(
-                    "{}{}{}",
-                    " ".repeat(left),
-                    clip_str(label, w),
-                    " ".repeat(w.saturating_sub(left + lw))
-                ),
-                face,
-            )
+            // `text-style` styles the label's glyphs, not the padding around it.
+            buf.set_stringn(r.x, y, " ".repeat(w), w, face.remove_modifier(Modifier::REVERSED));
+            buf.set_stringn(r.x + left as u16, y, clip_str(label, w), w.saturating_sub(left), face);
+            continue;
         } else {
-            // `text-style` styles the label, not the button's blank rows.
             (" ".repeat(w), face.remove_modifier(Modifier::REVERSED))
         };
         buf.set_stringn(r.x, y, &text, w, style);

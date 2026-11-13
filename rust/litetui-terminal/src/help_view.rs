@@ -234,9 +234,10 @@ impl View {
             cx,
             rect.y + 2,
             "Commands & keys",
+            // #help-title: bold $primary-lighten-2.
             Style::default()
-                .fg(theme.title)
-                .bg(theme.surface)
+                .fg(theme.var("primary-lighten-2", theme.title))
+                .bg(theme.surface_bg())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         );
         // Scroll region: title 2 rows down, the button row (padding-top 1, 3 rows) and the

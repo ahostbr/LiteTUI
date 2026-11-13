@@ -53,7 +53,9 @@ def snapshot(app) -> dict:
     items = [entry for entry in map(_item, body.children) if entry is not None]
     busy = bool(getattr(app, "_mcp_maintenance", False))
     return {"version": VERSION, "kind": "mcp_dialog", "items": items, "testing": busy,
-            "disabled": bool(body.disabled)}
+            "disabled": bool(body.disabled),
+            # Python's own focus, which the frontend starts from (none: nothing is lit).
+            "focused": getattr(getattr(app, "focused", None), "id", None)}
 
 
 async def dispatch(app, cmd):

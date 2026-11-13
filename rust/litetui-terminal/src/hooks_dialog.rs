@@ -68,9 +68,12 @@ pub enum Entry {
         id: Option<String>,
         text: String,
         classes: Vec<String>,
+        /// Python's computed style for it (native_hooks_editor._paint), when sent.
+        style: Option<Style>,
     },
     Label {
         text: String,
+        style: Option<Style>,
     },
     Select {
         id: String,
@@ -139,6 +142,8 @@ impl Entry {
 pub struct Snapshot {
     pub entries: Vec<Entry>,
     pub testing: bool,
+    /// Python's focused widget at this snapshot (the dialog starts from it).
+    pub focused: Option<String>,
 }
 
 fn bad() -> io::Error {
@@ -187,6 +192,12 @@ fn entries(v: &Value, depth: usize, count: &mut usize) -> io::Result<Vec<Entry>>
         .map(|i| entry(i, depth + 1, count))
         .collect()
 }
+/// The entry's own style as Python's Textual computed it (`paint.style`), if sent.
+fn painted(v: &Value) -> Option<Style> {
+    v.get("paint")
+        .map(crate::theme::NodePaint::parse)
+        .and_then(|p| p.style)
+}
 fn entry(v: &Value, depth: usize, count: &mut usize) -> io::Result<Entry> {
     *count += 1;
     if *count > MAX_ENTRIES || depth > 3 {
@@ -198,9 +209,11 @@ fn entry(v: &Value, depth: usize, count: &mut usize) -> io::Result<Entry> {
             id: optional_id(v)?,
             text: text(v, "text")?,
             classes: classes(v)?,
+            style: painted(v),
         },
         Some("label") => Entry::Label {
             text: text(v, "text")?,
+            style: painted(v),
         },
         Some("select") => {
             let options = v
@@ -275,6 +288,7 @@ impl Snapshot {
         Ok(Self {
             entries,
             testing: v["testing"].as_bool().ok_or_else(bad)?,
+            focused: v.get("focused").and_then(Value::as_str).map(str::to_owned),
         })
     }
 }
@@ -332,6 +346,8 @@ pub struct View {
     /// Unsent edits: Input and TextArea text, the Switch's value.
     edits: BTreeMap<String, Value>,
     focus: usize,
+    /// Whether this open has taken Python's initial focus yet.
+    focus_taken: bool,
     cursor: usize,
     /// An open Select's option list: its id and the highlighted option.
     dropdown: Option<(String, usize)>,
@@ -372,6 +388,18 @@ struct Paint {
     warning: Color,
     /// Textual's Button for the running theme (None for the preview catalog).
     buttons: crate::picker_box::Buttons,
+    styled: bool,
+    /// A focused input's tint, a placeholder ($text-disabled), the Select arrow
+    /// ($foreground 50%), the Switch slider, and #mcp-add's `border-top` ($foreground 20%).
+    tint: Color,
+    placeholder: Color,
+    arrow: Color,
+    slider_track: Color,
+    slider_off: Color,
+    slider_on: Color,
+    rule: Color,
+    /// What lies behind a control: the hooks box's $surface, /mcp's screen.
+    outside: Color,
 }
 impl Paint {
     fn of(t: &Theme) -> Self {
@@ -389,6 +417,15 @@ impl Paint {
             background: t.screen(),
             warning: t.var("warning", t.title),
             buttons: crate::picker_box::Buttons::of(t),
+            styled: !t.css.is_empty(),
+            tint: if t.css.is_empty() { surface } else { t.input() },
+            placeholder: t.disabled_on(surface),
+            arrow: t.css_alpha("foreground", 50.0, surface, t.foreground),
+            slider_track: t.var("panel-darken-2", surface),
+            slider_off: t.var("panel", t.thinking_border),
+            slider_on: t.var("success", t.primary),
+            rule: t.css_alpha("foreground", 20.0, t.screen(), t.thinking_border),
+            outside: surface,
         }
     }
 }
@@ -466,7 +503,17 @@ impl View {
                 self.poll_at = testing
                     .then(|| std::time::Instant::now() + std::time::Duration::from_millis(400));
                 let stops = self.stops();
-                self.focus = self.focus.min(stops.len().saturating_sub(1));
+                if !self.focus_taken {
+                    // Textual's own initial focus: the stop Python focused, or none at all
+                    // (one past the stops: nothing is drawn focused until Tab or a click).
+                    self.focus_taken = true;
+                    let wanted = self.snapshot.as_ref().and_then(|s| s.focused.clone());
+                    self.focus = wanted
+                        .and_then(|id| stops.iter().position(|s| matches!(s, Stop::Control(c) if *c == id)))
+                        .unwrap_or(stops.len());
+                } else {
+                    self.focus = self.focus.min(stops.len());
+                }
                 self.cursor = self.text_of_focus().map_or(0, |t| t.chars().count());
             }
             Update::Closed => {
@@ -630,7 +677,12 @@ impl View {
         if n == 0 {
             return;
         }
-        self.focus = (self.focus as isize + delta).rem_euclid(n) as usize;
+        self.focus = if self.focus as isize >= n {
+            // Nothing focused yet: Tab lands on the first stop, Shift+Tab on the last.
+            if delta > 0 { 0 } else { (n - 1) as usize }
+        } else {
+            (self.focus as isize + delta).rem_euclid(n) as usize
+        };
         self.cursor = self.text_of_focus().map_or(0, |t| t.chars().count());
     }
     pub fn key(&mut self, key: KeyEvent) {
@@ -794,18 +846,18 @@ impl View {
         let surface = Style::default().fg(p.text).bg(p.surface);
         for e in self.snapshot.iter().flat_map(|s| s.entries.iter()) {
             match e {
-                Entry::Text { text, .. } => {
+                Entry::Text { text, style, .. } => {
                     for line in crate::picker_box::wrap(text, w) {
                         rows.push(Row {
-                            spans: vec![(0, line, surface)],
+                            spans: vec![(0, line, style.unwrap_or(surface))],
                         });
                     }
                 }
-                Entry::Label { text } => {
+                Entry::Label { text, style } => {
                     rows.push(Row::default());
                     for line in crate::picker_box::wrap(text, w) {
                         rows.push(Row {
-                            spans: vec![(0, line, surface)],
+                            spans: vec![(0, line, style.unwrap_or(surface))],
                         });
                     }
                 }
@@ -924,30 +976,42 @@ impl View {
         focused: bool,
         p: &Paint,
     ) -> Vec<Vec<(u16, String, Style)>> {
-        let edge = Style::default()
-            .fg(if focused { p.accent } else { p.border })
-            .bg(p.surface);
+        let inside = if focused { p.tint } else { p.surface };
+        let border = if focused { p.accent } else { p.border };
+        let edge = Style::default().fg(border).bg(inside);
+        // Textual's tall border: "▊" is the dialog's $surface in front of the border colour,
+        // "▎" the border colour in front of it.
+        let (left, right) = if p.styled {
+            (
+                Style::default().fg(p.outside).bg(border),
+                Style::default().fg(border).bg(p.outside),
+            )
+        } else {
+            (edge, edge)
+        };
         let text = Style::default()
             .fg(if e.disabled() { p.muted } else { p.text })
-            .bg(p.surface);
-        let muted = Style::default().fg(p.muted).bg(p.surface);
+            .bg(inside);
+        let muted = Style::default()
+            .fg(if p.styled { p.placeholder } else { p.muted })
+            .bg(inside);
         let inner = usize::from(width.saturating_sub(2));
         let tall = |body: String, style: Style| {
             vec![
                 vec![
-                    (0, "▊".into(), edge),
+                    (0, "▊".into(), left),
                     (1, "▔".repeat(inner), edge),
-                    (1 + inner as u16, "▎".into(), edge),
+                    (1 + inner as u16, "▎".into(), right),
                 ],
                 vec![
-                    (0, "▊".into(), edge),
+                    (0, "▊".into(), left),
                     (1, body, style),
-                    (1 + inner as u16, "▎".into(), edge),
+                    (1 + inner as u16, "▎".into(), right),
                 ],
                 vec![
-                    (0, "▊".into(), edge),
+                    (0, "▊".into(), left),
                     (1, "▁".repeat(inner), edge),
-                    (1 + inner as u16, "▎".into(), edge),
+                    (1 + inner as u16, "▎".into(), right),
                 ],
             ]
         };
@@ -955,16 +1019,21 @@ impl View {
             Entry::Switch { .. } => {
                 let on = self.switch_value(e);
                 let mut rows = tall(" ".repeat(inner), text);
-                rows[1] = vec![
-                    (0, "▊".into(), edge),
-                    (1, " ".repeat(inner), Style::default().bg(p.surface)),
-                    (
-                        if on { 5 } else { 3 },
-                        "  ".into(),
-                        Style::default().bg(if on { p.accent } else { p.border }),
-                    ),
-                    (9, "▎".into(), edge),
+                let (thumb, track) = if p.styled {
+                    (if on { p.slider_on } else { p.slider_off }, Some(p.slider_track))
+                } else {
+                    (if on { p.accent } else { p.border }, None)
+                };
+                let mut middle = vec![
+                    (0, "▊".into(), left),
+                    (1, " ".repeat(inner), Style::default().bg(inside)),
                 ];
+                if let Some(track) = track {
+                    middle.push((3, "    ".into(), Style::default().bg(track)));
+                }
+                middle.push((if on { 5 } else { 3 }, "  ".into(), Style::default().bg(thumb)));
+                middle.push((9, "▎".into(), right));
+                rows[1] = middle;
                 rows
             }
             Entry::Select {
@@ -974,12 +1043,24 @@ impl View {
                 ..
             } => {
                 let shown = value.and_then(|i| options.get(i)).cloned();
-                let style = if shown.is_some() { text } else { muted };
+                // SelectCurrent's prompt: $foreground 50%, like its arrow.
+                let style = if shown.is_some() {
+                    text
+                } else if p.styled {
+                    muted.fg(p.arrow)
+                } else {
+                    muted
+                };
                 let body = inner.saturating_sub(5);
-                tall(
+                let mut rows = tall(
                     format!("  {}▼  ", pad(shown.as_deref().unwrap_or(prompt), body)),
                     style,
-                )
+                );
+                if p.styled {
+                    // SelectCurrent's arrow in its own colour.
+                    rows[1].insert(2, (3 + body as u16, "▼".into(), style.fg(p.arrow)));
+                }
+                rows
             }
             Entry::Input { placeholder, .. } => {
                 let value = self.text_value(e).unwrap_or_default();
@@ -1003,16 +1084,16 @@ impl View {
                 let shown_rows = usize::from(TEXTAREA_ROWS - 2);
                 let body = inner.saturating_sub(2);
                 let mut out = vec![vec![
-                    (0, "▊".into(), edge),
+                    (0, "▊".into(), left),
                     (1, "▔".repeat(inner), edge),
-                    (1 + inner as u16, "▎".into(), edge),
+                    (1 + inner as u16, "▎".into(), right),
                 ]];
                 for i in 0..shown_rows {
                     let line = lines.get(i).copied().unwrap_or("");
                     out.push(vec![
-                        (0, "▊".into(), edge),
+                        (0, "▊".into(), left),
                         (1, format!(" {} ", pad(line, body)), text),
-                        (1 + inner as u16, "▎".into(), edge),
+                        (1 + inner as u16, "▎".into(), right),
                     ]);
                 }
                 out.push(vec![
@@ -1237,8 +1318,15 @@ impl View {
         let muted = Style::default().fg(p.muted).bg(p.background);
         for e in items {
             match e {
-                Entry::Text { text, classes, .. } => {
+                Entry::Text {
+                    text,
+                    classes,
+                    style: own,
+                    ..
+                } => {
                     let has = |c: &str| classes.iter().any(|k| k == c);
+                    let plain = own.unwrap_or(plain);
+                    let muted = own.unwrap_or(muted);
                     if has("mcp-name") {
                         // padding 1 0 0 0, bold.
                         rows.push(Row::default());
@@ -1249,7 +1337,9 @@ impl View {
                         }
                     } else {
                         // .mcp-detail / .mcp-error: padding 0 0 0 2.
-                        let style = if has("mcp-error") {
+                        let style = if own.is_some() {
+                            muted
+                        } else if has("mcp-error") {
                             Style::default().fg(p.error).bg(p.background)
                         } else {
                             muted
@@ -1296,7 +1386,11 @@ impl View {
     }
     /// Python's /mcp: MCPListBody in the modal host, full width and centred.
     fn draw_mcp(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let p = Paint::of(theme);
+        // MCPListBody fills the screen: its controls sit on $surface-darken-1.
+        let p = Paint {
+            outside: theme.screen(),
+            ..Paint::of(theme)
+        };
         frame.render_widget(Clear, area);
         let buf = frame.buffer_mut();
         let plain = Style::default().fg(p.text).bg(p.background);
@@ -1314,12 +1408,18 @@ impl View {
         let mut region: Option<(usize, Vec<Row>, Vec<Placed>)> = None;
         for e in &snapshot.entries {
             match e {
-                Entry::Text { id, text, .. } => {
+                Entry::Text {
+                    id,
+                    text,
+                    style: own,
+                    ..
+                } => {
                     let (style, pad) = match id.as_deref() {
                         Some("mcp-title") => (plain.add_modifier(Modifier::BOLD), true),
                         Some("mcp-note") => (muted, true),
                         _ => (plain, false),
                     };
+                    let style = own.unwrap_or(style);
                     for line in crate::picker_box::wrap(text, w) {
                         rows.push(Row {
                             spans: vec![(0, line, style)],
@@ -1343,7 +1443,9 @@ impl View {
                         spans: vec![(
                             0,
                             "─".repeat(w),
-                            Style::default().fg(p.border).bg(p.background),
+                            Style::default()
+                                .fg(if p.styled { p.rule } else { p.border })
+                                .bg(p.background),
                         )],
                     });
                     rows.push(Row::default());
@@ -1568,7 +1670,8 @@ mod tests {
         )));
         // Focus chain: scope, hook, New, the switch, the ID input, Close, Dock.
         assert_eq!(v.stops().len(), 7);
-        for _ in 0..4 {
+        // Python focuses nothing at open (no "focused" in the snapshot): Tab 1 lands on scope.
+        for _ in 0..5 {
             v.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         }
         v.key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
@@ -1642,7 +1745,8 @@ mod tests {
         assert_eq!(ids[0], Stop::Control("mcp-act-0-connect".into()));
         assert_eq!(ids[3], Stop::Control("mcp-close".into()));
         assert_eq!(ids[4], Stop::Dock);
-        for _ in 0..3 {
+        // Nothing focused at open (as Python): Tab 1 lands on Connect, Tab 4 on Close.
+        for _ in 0..4 {
             v.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         }
         v.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

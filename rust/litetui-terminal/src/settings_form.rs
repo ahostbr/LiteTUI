@@ -1443,6 +1443,8 @@ struct Paint {
     label: Color,
     title: Color,
     placeholder: Color,
+    /// The placeholder over a focused input's tint.
+    placeholder_focused: Color,
     tint: Color,
     /// Tab `$foreground 50%`; Tabs:focus's active tab in the block cursor; the Underline bar.
     tab: Color,
@@ -1478,6 +1480,7 @@ impl Paint {
             label: t.css_over("text", surface, t.foreground),
             title: t.var("primary-lighten-2", t.primary),
             placeholder: t.disabled_on(surface),
+            placeholder_focused: t.disabled_on(if t.css.is_empty() { surface } else { t.input() }),
             tint: if t.css.is_empty() { surface } else { t.input() },
             tab: t.css_alpha("foreground", 50.0, surface, t.thinking_text),
             cursor: {
@@ -1665,7 +1668,13 @@ impl Layout<'_> {
             .fg(if dim { p.muted } else { p.text })
             .bg(inside);
         let muted = Style::default()
-            .fg(if p.styled { p.placeholder } else { p.muted })
+            .fg(if !p.styled {
+                p.muted
+            } else if focused {
+                p.placeholder_focused
+            } else {
+                p.placeholder
+            })
             .bg(inside);
         match &control.kind {
             Kind::Switch(_) => {
@@ -2294,7 +2303,11 @@ impl View {
         let search_inside = if self.focus == Focus::Search { p.tint } else { p.surface };
         let query_style = query_style.bg(search_inside);
         let query_style = if self.query.is_empty() && p.styled {
-            query_style.fg(p.placeholder)
+            query_style.fg(if self.focus == Focus::Search {
+                p.placeholder_focused
+            } else {
+                p.placeholder
+            })
         } else {
             query_style
         };

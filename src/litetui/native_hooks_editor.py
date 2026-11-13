@@ -161,7 +161,9 @@ def snapshot(app) -> dict:
     testing = any(worker.group == "hook-test" and not worker.is_finished
                   for worker in getattr(editor, "workers", ()))
     return {"version": VERSION, "kind": "hooks_editor", "items": items, "testing": testing,
-            "disabled": bool(editor.disabled)}
+            "disabled": bool(editor.disabled),
+            # Python's own focus, which the frontend starts from (none: nothing is lit).
+            "focused": getattr(getattr(app, "focused", None), "id", None)}
 
 
 def _check(cmd, fields):
