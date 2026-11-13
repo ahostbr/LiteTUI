@@ -719,6 +719,7 @@ fn engine_command_stop_never_falls_back_to_start_after_fresh_inspection() {
                 entries: Vec::new(),
                 help_text: None,
                 key_table: None,
+                skills_picker: None,
             },
             route: c::Route {
                 row: "b".repeat(64),

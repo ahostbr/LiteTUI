@@ -462,6 +462,7 @@ fn catalog() -> c::Catalog {
         snapshot: "a".repeat(64),
         help_text: None,
         key_table: None,
+        skills_picker: None,
         entries: vec![c::Entry {
             id: "b".repeat(64),
             kind: "skill".into(),

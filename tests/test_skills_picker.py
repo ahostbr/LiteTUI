@@ -171,3 +171,24 @@ def test_an_empty_library_still_explains_where_it_looked(tmp_path: Path, monkeyp
     _cmd_skills(app, "/skills", "")
     assert not app.pushed, "opened an empty picker"
     assert app.said, "said nothing at all"
+
+
+def test_native_picker_is_the_picker_skills_opens(tmp_path: Path, monkeypatch) -> None:
+    """The Rust frontend draws skills_plugin.native_picker: the same title, labels, order and
+    hint as the PickerScreen _cmd_skills opens, each skill row carrying its catalog row id
+    and the report row none, plus the report the report row writes to the chat."""
+    from litetui import command_surface, paths
+    from litetui.plugins.skills_plugin import native_picker
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    app = _StubApp([_skill(tmp_path, "ls-mark"), _skill(tmp_path, "ls-arch")])
+    _cmd_skills(app, "/skills", "")
+    screen, _cb = app.pushed[0]
+    native = native_picker(app)
+    assert native["title"] == screen._title and native["hint"] == screen._hint
+    assert [row["label"] for row in native["rows"]] == [label for _id, label in screen._rows]
+    ids = {s.name: command_surface._skill_row(s)["id"] for s in app.skills}
+    assert [row["id"] for row in native["rows"]] == [None if key == _REPORT_ROW else ids[key]
+                                                    for key, _label in screen._rows]
+    assert native["report"].startswith("2 skill(s) from 1 library")
+    app.settings.skills_enabled = False
+    assert native_picker(app) is None

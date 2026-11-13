@@ -284,7 +284,9 @@ fn key(app: &mut Demo, mut key: KeyEvent) -> bool {
         return false;
     }
     if app.has_live_commands() {
-        app.live.as_mut().expect("commands").commands.key(key);
+        let chat = app.live.as_mut().expect("commands");
+        chat.commands.key(key);
+        chat.take_palette_line();
         return false;
     }
     if app.has_live_compact() {
@@ -1226,7 +1228,9 @@ fn mouse(app: &mut Demo, event: MouseEvent) {
             && !app.has_live_approval()
             && !app.has_live_question()
         {
-            app.live.as_mut().unwrap().commands.mouse(event);
+            let chat = app.live.as_mut().unwrap();
+            chat.commands.mouse(event);
+            chat.take_palette_line();
         }
         return;
     }
@@ -4645,6 +4649,7 @@ mod tests {
             }],
             help_text: None,
             key_table: None,
+            skills_picker: None,
         };
         app.observe_live(Observation::Commands(Update::Catalog {
             catalog: c,

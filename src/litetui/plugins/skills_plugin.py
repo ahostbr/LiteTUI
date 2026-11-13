@@ -152,10 +152,7 @@ def _cmd_skills(app, name: str, arg: str) -> None:
         # show, because it has no row. Say it out loud, briefly.
         app.system_message("\n".join(x for x in skipped if x.strip()))
 
-    rows = [(_REPORT_ROW, "Full report  —  roots, libraries, token cost, skipped folders")]
-    for s in sorted(app.skills, key=lambda s: s.name.lower()):
-        desc = (s.description or "(no description)").replace("\n", " ")
-        rows.append((s.name, f"{s.name}  [{s.source}]  —  {desc[:110]}"))
+    title, rows, hint = picker(app)
 
     def _picked(choice: str | None) -> None:
         if not choice:
@@ -165,13 +162,37 @@ def _cmd_skills(app, name: str, arg: str) -> None:
             return
         _invoke(app, choice)
 
-    pick(
-        app,
-        f"Skills ({len(app.skills)})",
-        rows,
-        _picked,
-        hint="↑↓ move · Enter or click to read one · Esc to cancel",
-    )
+    pick(app, title, rows, _picked, hint=hint)
+
+
+def picker(app) -> tuple[str, list[tuple[str, str]], str]:
+    """Bare /skills's picker: title, (key, label) rows with the report first, and hint."""
+    rows = [(_REPORT_ROW, "Full report  —  roots, libraries, token cost, skipped folders")]
+    for s in sorted(app.skills, key=lambda s: s.name.lower()):
+        desc = (s.description or "(no description)").replace("\n", " ")
+        rows.append((s.name, f"{s.name}  [{s.source}]  —  {desc[:110]}"))
+    return f"Skills ({len(app.skills)})", rows, "↑↓ move · Enter or click to read one · Esc to cancel"
+
+
+def native_picker(app) -> dict | None:
+    """The same picker for a native frontend, sent with the command catalog: each skill row
+    carries its catalog row id (the report row has none), plus what _cmd_skills writes to
+    the chat around it: the skipped-folder lines on opening and the report when chosen.
+    None when bare /skills has nothing to pick (nothing_to_pick says why)."""
+    if nothing_to_pick(app) is not None:
+        return None
+    from litetui import command_surface
+
+    title, rows, hint = picker(app)
+    ids = {s.name: command_surface._skill_row(s)["id"] for s in app.skills}
+    base = paths.data_root() / skills_mod.SKILLS_DIR_NAME
+    report = _skills_report(app, base)
+    if len(report.encode("utf-8")) > 60000:
+        report = report.encode("utf-8")[:59990].decode("utf-8", "ignore") + "…"
+    return {"title": title, "hint": hint,
+            "rows": [{"id": None if key == _REPORT_ROW else ids[key], "label": label} for key, label in rows],
+            "report": report,
+            "skipped": "\n".join(x for x in _skipped_lines(app, base) if x.strip())}
 
 
 def nothing_to_pick(app) -> str | None:

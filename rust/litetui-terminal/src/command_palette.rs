@@ -223,6 +223,55 @@ pub struct Catalog {
     pub help_text: Option<String>,
     /// /keys's table (native_keys.rows), when the source sends it.
     pub key_table: Option<Vec<crate::keys_panel::Row>>,
+    /// Bare /skills's picker (skills_plugin.native_picker), when there is one.
+    pub skills_picker: Option<SkillsPicker>,
+}
+/// Python's "Skills (N)" PickerBody: the report row (no id) then one row per skill.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkillsPicker {
+    pub title: String,
+    pub hint: String,
+    pub rows: Vec<(Option<String>, String)>,
+    pub report: String,
+    pub skipped: String,
+}
+impl SkillsPicker {
+    fn parse(v: &Value) -> io::Result<Option<Self>> {
+        let fail = || fail("Invalid skills picker");
+        let v = match v.get("skills_picker") {
+            None | Some(Value::Null) => return Ok(None),
+            Some(v @ Value::Object(_)) => v,
+            Some(_) => return Err(fail()),
+        };
+        let text = |v: &Value, name: &str, max: usize| -> io::Result<String> {
+            match v.get(name) {
+                Some(Value::String(s)) if s.len() <= max => Ok(s.clone()),
+                _ => Err(fail()),
+            }
+        };
+        let rows = match v.get("rows") {
+            Some(Value::Array(rows)) if !rows.is_empty() && rows.len() <= 4096 => rows,
+            _ => return Err(fail()),
+        };
+        let rows = rows
+            .iter()
+            .map(|row| {
+                let id = match row.get("id") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(s)) if !s.is_empty() && s.len() <= 256 => Some(s.clone()),
+                    _ => return Err(fail()),
+                };
+                Ok((id, text(row, "label", 4096)?))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok(Some(Self {
+            title: text(v, "title", 256)?,
+            hint: text(v, "hint", 256)?,
+            rows,
+            report: text(v, "report", 64 * 1024)?,
+            skipped: text(v, "skipped", 64 * 1024)?,
+        }))
+    }
 }
 impl Catalog {
     pub fn parse(
@@ -397,6 +446,7 @@ impl Catalog {
                 Some(_) => return Err(fail("Invalid help text")),
             },
             key_table: crate::keys_panel::parse(v)?,
+            skills_picker: SkillsPicker::parse(v)?,
         })
     }
     pub fn request(&self) -> Value {
@@ -630,6 +680,8 @@ enum Mode {
     Skills,
     Arguments,
     Preview,
+    /// Bare /skills: Python's "Skills (N)" picker.
+    Picker,
 }
 #[derive(Default)]
 pub struct View {
@@ -663,6 +715,11 @@ pub struct View {
     raw_pending: bool,
     /// That refusal, for the chat to draw as Python draws a command's reply.
     refused: Option<String>,
+    /// The picker's first visible wrapped line.
+    picker_scroll: usize,
+    /// A skill chosen in the picker: prepared and sent at once, as Python's _invoke does
+    /// (the source's checks still run; no preview page).
+    auto_submit: bool,
 }
 impl View {
     pub fn owns_input(&self) -> bool {
@@ -751,6 +808,7 @@ impl View {
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.auto_submit = false;
         let deferred = self.deferred_raw.take().is_some();
         if self.intent.take().is_some() || deferred {
             self.waiting = false;
@@ -828,7 +886,22 @@ impl View {
             }
             Update::Route { catalog, route } => {
                 self.catalog = Some(with_local(catalog));
-                if route.action == Action::Skills {
+                let picker = self
+                    .catalog
+                    .as_ref()
+                    .and_then(|c| c.skills_picker.as_ref())
+                    .filter(|_| route.arguments.trim().is_empty());
+                if route.action == Action::Skills && picker.is_some() {
+                    // Python's bare /skills: its picker, after the skipped-folder lines.
+                    let skipped = picker.map(|p| p.skipped.clone()).unwrap_or_default();
+                    if !skipped.is_empty() {
+                        self.refused = Some(skipped);
+                    }
+                    self.mode = Mode::Picker;
+                    self.selected = 0;
+                    self.picker_scroll = 0;
+                    self.notice.clear();
+                } else if route.action == Action::Skills {
                     self.mode = Mode::Skills;
                     self.query.clear();
                     self.selected = 0;
@@ -851,9 +924,23 @@ impl View {
                 self.mode = Mode::Preview;
                 self.notice =
                     "Prepared only. Review every page; Enter on the final page submits.".into();
+                if self.auto_submit {
+                    // Picked in Python's picker: the source verifies and the chat sends it.
+                    let digest = self.prepared.as_ref().expect("prepared").digest.clone();
+                    self.intent = Some(Intent::Submit { digest });
+                    self.waiting = true;
+                    self.notice.clear();
+                    self.hide();
+                }
             }
             Update::Verified(_) => unreachable!("Chat owns verified prompt submission"),
             Update::Rejected(reason) => {
+                if self.auto_submit {
+                    // Python says a failed skill load in the chat and opens nothing.
+                    self.refused = Some(reason);
+                    self.close();
+                    return;
+                }
                 self.notice = reason;
                 self.reviewed = false;
             }
@@ -916,6 +1003,35 @@ impl View {
         self.selected = index.min(self.rows().len().saturating_sub(1));
         self.pressed = None;
     }
+    fn picker_rows(&self) -> Vec<(Option<String>, String)> {
+        self.catalog
+            .as_ref()
+            .and_then(|c| c.skills_picker.as_ref())
+            .map(|p| p.rows.clone())
+            .unwrap_or_default()
+    }
+    /// Python's _picked: the report row writes the report to the chat; a skill is loaded and
+    /// sent at once (prepared by the source, verified, then submitted), with no preview.
+    fn pick(&mut self, index: usize) {
+        let Some(picker) = self.catalog.as_ref().and_then(|c| c.skills_picker.clone()) else {
+            return;
+        };
+        match picker.rows.get(index) {
+            Some((None, _)) => {
+                self.refused = Some(picker.report.clone());
+                self.close();
+            }
+            Some((Some(id), _)) => {
+                self.argument_row = Some(id.clone());
+                let _ = self.arguments.set("");
+                self.prepared = None;
+                self.auto_submit = true;
+                self.prepare();
+                self.notice.clear();
+            }
+            None => {}
+        }
+    }
     fn prepare(&mut self) {
         if let (Some(c), Some(row)) = (&self.catalog, &self.argument_row) {
             self.intent = Some(Intent::Prepare {
@@ -965,6 +1081,23 @@ impl View {
             return;
         }
         match self.mode {
+            Mode::Picker => {
+                let count = self.picker_rows().len();
+                match key.code {
+                    KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+                    KeyCode::Down => {
+                        self.selected = (self.selected + 1).min(count.saturating_sub(1))
+                    }
+                    KeyCode::PageUp => self.selected = self.selected.saturating_sub(8),
+                    KeyCode::PageDown => {
+                        self.selected = (self.selected + 8).min(count.saturating_sub(1))
+                    }
+                    KeyCode::Home => self.selected = 0,
+                    KeyCode::End => self.selected = count.saturating_sub(1),
+                    KeyCode::Enter if key.kind == KeyEventKind::Press => self.pick(self.selected),
+                    _ => {}
+                }
+            }
             Mode::Arguments => match key.code {
                 KeyCode::Enter if key.kind == KeyEventKind::Press => self.prepare(),
                 KeyCode::Char(c) => self.paste(&c.to_string()),
@@ -1075,6 +1208,20 @@ impl View {
         if self.mode == Mode::Arguments {
             return;
         }
+        if self.mode == Mode::Picker {
+            // OptionList: a click selects the row, which picks it.
+            if let MouseEventKind::Down(MouseButton::Left) = e.kind
+                && let Some(i) = self
+                    .hits
+                    .iter()
+                    .find(|(r, _)| r.contains((e.column, e.row).into()))
+                    .map(|(_, i)| *i)
+            {
+                self.selected = i;
+                self.pick(i);
+            }
+            return;
+        }
         let hit = self
             .hits
             .iter()
@@ -1094,8 +1241,30 @@ impl View {
     }
     pub fn draw(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.visible = false;
-        if !self.owns_input() {
+        if !self.owns_input() || self.auto_submit {
+            // A picked skill closes the picker at once, as Python's does.
             self.hide();
+            return;
+        }
+        if self.mode == Mode::Picker && !self.waiting {
+            let Some(picker) = self.catalog.as_ref().and_then(|c| c.skills_picker.clone()) else {
+                self.hide();
+                return;
+            };
+            let labels: Vec<String> = picker.rows.iter().map(|(_, l)| l.clone()).collect();
+            let drawn = crate::picker_box::draw(
+                f,
+                area,
+                theme,
+                &picker.title,
+                &labels,
+                self.selected,
+                &mut self.picker_scroll,
+                &[],
+                &picker.hint,
+            );
+            self.hits = drawn.hits;
+            self.visible = true;
             return;
         }
         if area.width < 42 || area.height < 18 {
@@ -1136,6 +1305,7 @@ impl View {
                 Mode::Skills => " Skills · exact source rows ",
                 Mode::Arguments => " Skill arguments · lossless draft ",
                 Mode::Preview => " Prepared skill · not submitted ",
+                Mode::Picker => " Skills ",
             })
             .style(Style::default().fg(theme.foreground).bg(theme.background))
             .border_style(Style::default().fg(theme.title));
@@ -1213,7 +1383,7 @@ impl View {
                 );
                 "Enter prepare · Alt+Enter newline".into()
             }
-            Mode::Palette | Mode::Skills => {
+            Mode::Palette | Mode::Skills | Mode::Picker => {
                 let rows = self.rows();
                 self.selected = self.selected.min(rows.len().saturating_sub(1));
                 let head = format!("Search: {} · {} matches", display(&self.query), rows.len());

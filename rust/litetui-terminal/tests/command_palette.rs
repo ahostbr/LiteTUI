@@ -1339,3 +1339,81 @@ fn command_typed_during_the_background_read_resolves_after_it_not_as_its_catalog
     });
     assert_eq!(v.take_intent(), None);
 }
+
+#[test]
+fn bare_skills_opens_pythons_picker_and_a_pick_sends_at_once() {
+    // Python's bare /skills (skills_plugin._cmd_skills): "Skills (N)" PickerBody, the Full
+    // report row first; the report goes to the chat, a skill is loaded and sent at once.
+    let mut d = data();
+    let skill = d["entries"][2]["id"].clone();
+    d["skills_picker"] = json!({"title":"Skills (1)",
+        "hint":"↑↓ move · Enter or click to read one · Esc to cancel",
+        "rows":[{"id":null,"label":"Full report  —  roots, libraries, token cost, skipped folders"},
+                {"id":skill,"label":"ExactSkill  [test]  —  Source description"}],
+        "report":"1 skill(s) from 1 library","skipped":""});
+    let c = Catalog::parse(&d, SESSION, AGENT, "custom", "model").unwrap();
+    let route = |v: &mut View| {
+        v.raw("/skills");
+        v.take_intent();
+        v.observe(Update::Route {
+            catalog: c.clone(),
+            route: Route {
+                row: c.entries[0].id.clone(),
+                action: Action::Skills,
+                arguments: String::new(),
+            },
+        });
+    };
+    let mut v = View::default();
+    route(&mut v);
+    let screen = draw(&mut v, 140, 45);
+    assert!(screen.contains("Skills (1)") && screen.contains("Full report"));
+    assert!(screen.contains("ExactSkill  [test]") && screen.contains("Enter or click to read one"));
+    // The first row is highlighted: Enter writes the report to the chat and closes.
+    v.key(key(KeyCode::Enter));
+    assert_eq!(
+        v.take_refused().as_deref(),
+        Some("1 skill(s) from 1 library")
+    );
+    assert!(!v.owns_input() && v.take_intent().is_none());
+    route(&mut v);
+    draw(&mut v, 140, 45);
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    match v.take_intent() {
+        Some(Intent::Prepare { row, arguments, .. }) => {
+            assert_eq!(row, c.entries[2].id);
+            assert!(arguments.is_empty());
+        }
+        other => panic!("expected the skill prepared, got {other:?}"),
+    }
+    let p = Prepared::parse(&prepared_data(&c, ""), &c, &c.entries[2].id, "").unwrap();
+    v.observe(Update::Prepared {
+        catalog: Box::new(c.clone()),
+        prepared: Box::new(p.clone()),
+    });
+    // No preview page: the source verifies it and the chat sends it.
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::Submit {
+            digest: p.digest.clone()
+        })
+    );
+    assert!(v.accepts_verified(&p));
+    assert!(!draw(&mut v, 140, 45).contains("Prepared skill"));
+    // A refused preparation is said in the chat, as Python says a failed skill load.
+    v.finish(); // as the chat settles the verified send
+    route(&mut v);
+    draw(&mut v, 140, 45);
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    v.take_intent();
+    v.observe(Update::Rejected(
+        "Skill source changed while preparing".into(),
+    ));
+    assert_eq!(
+        v.take_refused().as_deref(),
+        Some("Skill source changed while preparing")
+    );
+    assert!(!v.owns_input());
+}

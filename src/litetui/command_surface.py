@@ -235,6 +235,9 @@ def catalog(app, cmd):
     # /keys's table (Textual's KeyPanel rows for the current screen and focus).
     from litetui import native_keys
     result["key_table"] = native_keys.rows(app)
+    # Bare /skills's picker (skills_plugin.native_picker), when there is one.
+    from litetui.plugins.skills_plugin import native_picker
+    result["skills_picker"] = native_picker(app)
     _encoded(result)
     return result
 

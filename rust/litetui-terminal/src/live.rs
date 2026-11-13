@@ -2281,6 +2281,22 @@ pub fn prepare_root(
     })
 }
 
+/// A canonical Windows path without the verbatim prefix when it is a plain drive path
+/// (\\?\C:\x -> C:\x); a verbatim UNC or any other path is left as it is.
+fn plain_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.len() >= 3
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && rest[1..].starts_with(r":\") =>
+        {
+            PathBuf::from(rest)
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
 fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     if options.launch.engine_management && !options.prompt.is_empty() {
         return Err(io::Error::other(
@@ -2321,7 +2337,9 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
     let mut command = Command::new(&python);
     command
         .current_dir(&workspace)
-        .env("LITETUI_DATA_ROOT", &root)
+        // Python's own form of the path: canonicalize's \\?\ prefix showed in its messages
+        // ("[local] \\?\C:\..." in /skills's report).
+        .env("LITETUI_DATA_ROOT", plain_path(&root))
         .env("LITETUI_APPROVAL_HOST", "1")
         // A fresh owned child has its own identity and this frontend's approval route.
         .env_remove("LITETUI_OWNER")

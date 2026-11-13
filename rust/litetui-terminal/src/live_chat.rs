@@ -345,6 +345,13 @@ impl Chat {
     }
     /// LiteTUI.system_message: anchored after the rows so far. Python's own "Connected —
     /// model: X" is already drawn from `ready`, so its copy is not repeated.
+    /// A line the command palette queued from a key or click (Python's /skills report), now.
+    pub fn take_palette_line(&mut self) {
+        if let Some(line) = self.commands.take_refused() {
+            self.system_line(line, false);
+            self.notice.clear();
+        }
+    }
     fn system_line(&mut self, text: String, before_splash: bool) {
         if self.connected.as_deref() == Some(text.as_str()) {
             return;
@@ -595,6 +602,12 @@ impl Chat {
 
     pub fn submit(&mut self, prompt: &str) -> io::Result<()> {
         self.reserve_row(prompt, false)
+    }
+    /// Send `prompt` but show `shown` in its bubble (a loaded skill, as Python shows it).
+    pub fn submit_shown(&mut self, prompt: &str, shown: &str) -> io::Result<()> {
+        self.reserve_row(prompt, false)?;
+        self.rows.last_mut().expect("reserved row").prompt = shown.to_owned();
+        Ok(())
     }
     /// True while a source-owned foreground reply is running and can still take a queued message.
     pub fn midturn_foreground(&self) -> bool {
@@ -1540,7 +1553,14 @@ impl Chat {
                         }
                         self.commands.close();
                         self.commands.waiting = false;
-                        if let Err(error) = self.submit(&prepared.prompt) {
+                        // Python's _invoke: the model gets the whole skill, the bubble one line
+                        // ("Loaded skill: X", then the user's own words when they typed any).
+                        let shown = if prepared.arguments.is_empty() {
+                            format!("Loaded skill: {}", prepared.name)
+                        } else {
+                            format!("Loaded skill: {}\n\n{}", prepared.name, prepared.arguments)
+                        };
+                        if let Err(error) = self.submit_shown(&prepared.prompt, &shown) {
                             self.commands.open = true;
                             self.commands.observe(Update::Rejected(error.to_string()));
                             self.notice = self.commands.notice.clone();

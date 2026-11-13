@@ -100,6 +100,13 @@ PROFILES = {
                             ("plan-on", ["/plan on\r"], "none"), ("plan-on-again", ["/plan on\r"], "none"),
                             ("plan-bad", ["/plan maybe\r"], "none")]
                  for frontend in ("textual", "rust")},
+    # /skills with skills on (--skills): Python's "Skills (N)" picker, Down onto the first
+    # skill, Up and Enter on the Full report row (the report goes to the chat), then /skills,
+    # Down and Enter loads the first skill and sends it.
+    "skills": {frontend: [("skills-open", ["/skills\r"], "none"), ("down", ["\x1b[B"], "none"),
+                          ("report", ["\x1b[A", "\r"], "none"),
+                          ("enter", ["/skills\r", "\x1b[B", "\r"], "none")]
+               for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),
@@ -148,6 +155,8 @@ def run(frontend, args):
     env.update(LITETUI_PERF_CHUNKS="8", LITETUI_PERF_DELAY="0.001")  # the runtime accepts .001-.1 s
     if args.all_plugins:
         env["LITETUI_PERF_ALL_PLUGINS"] = "1"  # child_environment drops inherited LITETUI_* keys
+    if args.skills:
+        env["LITETUI_PERF_SKILLS"] = "1"  # skills on, two fixture skills in the private data root
     common = ["--backend", "custom", "--model", "perf-fixture", "--tool-profile", "strict", "--thinking-level",
               "default", "--server-mode", "connect", "--base-url", "http://127.0.0.1:45120/v1"]
     if frontend == "rust":
@@ -246,6 +255,8 @@ def main():
     parser.add_argument("--rows", type=int, default=45)
     parser.add_argument("--startup", type=float, default=240.0)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="screens")
+    parser.add_argument("--skills", action="store_true",
+                        help="turn skills on with two fixture skills (the fixture must support it)")
     parser.add_argument("--frontends", default="textual,rust", help="comma list of textual, rust")
     parser.add_argument("--all-plugins", action="store_true",
                         help="load every plugin in the controlled runtime (needed for /settings)")
