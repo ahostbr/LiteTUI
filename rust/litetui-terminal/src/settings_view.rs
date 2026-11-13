@@ -250,6 +250,9 @@ pub struct View {
     runtime_status: crate::inspection::View,
     mcp: crate::mcp_config::View,
     mcp_lifecycle: crate::mcp_lifecycle::View,
+    /// MCP at start from the saved setting, driven through the lifecycle (mcp_lifecycle::Startup).
+    startup_mcp: crate::mcp_lifecycle::Startup,
+    startup_binding: Option<crate::runtime_controls::Binding>,
     mcp_read_only: bool,
     model_preferences: crate::model_preferences::View,
     model_lifecycle: crate::model_lifecycle::View,
@@ -480,6 +483,27 @@ impl View {
     }
     /// A higher-priority prompt owns the frame, but the child and its pending
     /// transaction still belong to Settings. Only painted evidence expires.
+    /// A runtime policy arrived: a new identity with the MCP lifecycle arms the startup run
+    /// (Python starts each captured identity with MCP off).
+    pub fn saved_mcp_policy(&mut self, policy: &crate::runtime_controls::Policy) {
+        if !policy.binding.mcp_lifecycle
+            || self.startup_binding.as_ref().is_some_and(|b| {
+                b.identity == policy.binding.identity && b.work_instance == policy.binding.work_instance
+            })
+        {
+            return;
+        }
+        self.startup_binding = Some(policy.binding.clone());
+        self.startup_mcp.arm();
+    }
+    /// On an idle frame: send the startup run's first request, once.
+    pub fn kick_saved_mcp(&mut self) {
+        if self.intent.is_none() && !self.mcp_lifecycle.open && !self.owns_input()
+            && let Some(request) = self.startup_mcp.begin()
+        {
+            self.intent = Some(Intent::McpLifecycle(Box::new(request)));
+        }
+    }
     pub fn occlude(&mut self) {
         self.glassbox.hide();
         self.monitor.hide();
@@ -642,6 +666,11 @@ impl View {
             Update::Connection(result) => self.connection.update(result.map(|update| *update)),
             Update::Agent(result) => self.agent.update(result.map(|update| *update)),
             Update::Mcp(result) => self.mcp.update(result.map(|update| *update)),
+            Update::McpLifecycle(result) if self.startup_mcp.active() => {
+                if let Some(next) = self.startup_mcp.update(result.map(|update| *update)) {
+                    self.intent = Some(Intent::McpLifecycle(Box::new(next)));
+                }
+            }
             Update::McpLifecycle(result) => self.mcp_lifecycle.update(result.map(|update| *update)),
             Update::Glassbox(result) => self.glassbox.update(result.map(|update| *update)),
             Update::Sidecar(result) => {
@@ -819,6 +848,8 @@ impl View {
                 && self.mcp.can_switch()
             {
                 self.mcp = Default::default();
+                // The user's own /mcp takes over from a startup run still in flight.
+                self.startup_mcp.cancel();
                 self.mcp_lifecycle.open();
                 self.waiting = true;
                 self.intent = Some(Intent::McpLifecycle(Box::new(
@@ -1265,3 +1296,4 @@ impl View {
         self.visible = self.open && !self.waiting;
     }
 }
+

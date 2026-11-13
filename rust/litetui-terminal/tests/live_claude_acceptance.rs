@@ -589,6 +589,7 @@ fn real_claude_reads_a_file_compacts_with_tools_and_recalls_it() {
         prompt: String::new(),
         timeout: TURN,
         tools_enabled: true,
+        mcp_enabled: false,
         tool_profile: Some(litetui_terminal::tool_mode::Profile::Strict),
         workspace: Some(workspace.clone()),
     });

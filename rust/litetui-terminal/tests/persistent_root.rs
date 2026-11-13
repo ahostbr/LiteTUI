@@ -141,7 +141,8 @@ fn first_run_copies_the_python_settings_and_marks_the_root_as_rust() {
     // Ryan 2026-11-13: "agents says no tools". Python reads tools from its saved settings;
     // without --tools the launch keeps the copied setting instead of writing "off" over it.
     assert_eq!(saved["tools_enabled"], true);
-    assert_eq!(saved["mcp_enabled"], false);
+    // Ryan 2026-11-13: MCP "From saved setting", as Python starts.
+    assert_eq!(saved["mcp_enabled"], true);
     assert!(root.join("rust-frontend.json").is_file());
     assert!(root.join("mcp.json").is_file());
     // Conversations, agents and jobs are not settings: not copied.
@@ -192,6 +193,27 @@ fn without_tools_each_launch_keeps_the_saved_setting_and_an_explicit_flag_still_
     assert!(!off.tools_enabled && off.workspace.is_none());
     prepare_root(&off, Backend::Claude, Profile::Strict).unwrap();
     assert_eq!(settings(&root)["tools_enabled"], false);
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn mcp_at_start_follows_the_saved_setting() {
+    let base = scratch("mcp");
+    let python = python_root(&base);
+    let rust = base.join("LiteTUI-rust-data");
+    // First run: the Python settings it is seeded from (mcp_enabled true there).
+    let first = options(&rust, Some(&python));
+    assert!(first.mcp_enabled);
+    let root = prepare_root(&first, Backend::Claude, Profile::Strict).unwrap();
+    assert_eq!(settings(&root)["mcp_enabled"], true);
+    // Switched off in this root: the next launch keeps it off.
+    let mut saved = settings(&root);
+    saved["mcp_enabled"] = json!(false);
+    fs::write(root.join("settings.json"), serde_json::to_vec(&saved).unwrap()).unwrap();
+    let again = options(&root, None);
+    assert!(!again.mcp_enabled);
+    prepare_root(&again, Backend::Claude, Profile::Strict).unwrap();
+    assert_eq!(settings(&root)["mcp_enabled"], false);
     let _ = fs::remove_dir_all(&base);
 }
 

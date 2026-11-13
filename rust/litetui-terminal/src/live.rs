@@ -64,6 +64,8 @@ pub struct Options {
     pub prompt: String,
     pub timeout: Duration,
     pub tools_enabled: bool,
+    /// MCP at start: the saved `mcp_enabled`, as Python's own launch reads it.
+    pub mcp_enabled: bool,
     pub tool_profile: Option<crate::tool_mode::Profile>,
     pub workspace: Option<PathBuf>,
     pub resume: Option<String>,
@@ -231,9 +233,12 @@ impl Options {
         let tools_enabled = match tools_flag.as_deref() {
             Some("on") => true,
             Some("off") => false,
-            None => saved_tools(&data_root, seed_from.as_deref()).unwrap_or(false),
+            None => saved_setting(&data_root, seed_from.as_deref(), "tools_enabled").unwrap_or(false),
             Some(_) => return Err(io::Error::other("--tools must be on or off")),
         };
+        // Ryan 2026-11-13 (Sentinel a5717352): MCP "From saved setting", as Python starts.
+        let mcp_enabled =
+            saved_setting(&data_root, seed_from.as_deref(), "mcp_enabled").unwrap_or(false);
         let tool_profile = fields
             .remove("--tool-profile")
             .as_deref()
@@ -275,6 +280,7 @@ impl Options {
             prompt,
             timeout: Duration::from_secs(seconds),
             tools_enabled,
+            mcp_enabled,
             tool_profile,
             workspace,
             owner,
@@ -2086,14 +2092,14 @@ pub fn terminal_text(text: &str) -> String {
         .collect()
 }
 
-/// The saved `tools_enabled` a launch without `--tools` follows: this root's settings, or on
-/// a first run the Python settings it is seeded from.
-fn saved_tools(root: &Path, seed: Option<&Path>) -> Option<bool> {
+/// A saved boolean the launch follows (`tools_enabled` without `--tools`, `mcp_enabled`):
+/// this root's settings, or on a first run the Python settings it is seeded from.
+fn saved_setting(root: &Path, seed: Option<&Path>, key: &str) -> Option<bool> {
     let read = |dir: &Path| {
         fs::read(dir.join("settings.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|v| v["tools_enabled"].as_bool())
+            .and_then(|v| v[key].as_bool())
     };
     if root.join("settings.json").is_file() {
         read(root)
@@ -2102,7 +2108,9 @@ fn saved_tools(root: &Path, seed: Option<&Path>) -> Option<bool> {
     }
 }
 
-/// The launch's own keys over `saved`: backend, model, tools, profile, seat, MCP off. A fresh
+/// The launch's own keys over `saved`: backend, model, tools, profile, seat, and the saved
+/// MCP preference kept (the runtime itself starts MCP off under --mcp-lifecycle-version and the
+/// frontend turns it on through the lifecycle; see live_chat's startup MCP). A fresh
 /// unseeded root also takes the launch thinking level; a seeded or reused one keeps its own.
 fn launch_settings(
     saved: Value,
@@ -2121,7 +2129,7 @@ fn launch_settings(
         ("backend_chosen", json!(true)),
         ("user_name_asked", json!(true)),
         ("tools_enabled", json!(options.tools_enabled)),
-        ("mcp_enabled", json!(false)),
+        ("mcp_enabled", json!(options.mcp_enabled)),
         (
             "seat_name",
             json!(options.agent.as_deref().unwrap_or("RustLive")),
@@ -2999,6 +3007,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let model_lifecycle =
                             matches!(intent, crate::settings_view::Intent::ModelLifecycle(_));
                         let mcp = matches!(intent, crate::settings_view::Intent::Mcp(_));
+                        let mcp_lifecycle =
+                            matches!(intent, crate::settings_view::Intent::McpLifecycle(_));
                         let runtime_status =
                             matches!(intent, crate::settings_view::Intent::RuntimeStatus);
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
@@ -3065,6 +3075,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                                 crate::settings_view::Update::Agent(Err(error.to_string()))
                             } else if mcp {
                                 crate::settings_view::Update::Mcp(Err(error.to_string()))
+                            } else if mcp_lifecycle {
+                                crate::settings_view::Update::McpLifecycle(Err(error.to_string()))
                             } else if runtime_status {
                                 crate::settings_view::Update::RuntimeStatus(Err(error.to_string()))
                             } else if let Some(generation) = compact_generation {

@@ -1163,6 +1163,7 @@ impl Chat {
                 self.notice = self.runtime_controls.notice.clone();
             }
             Observation::RuntimePolicy(policy) => {
+                self.settings.saved_mcp_policy(&policy);
                 self.runtime_state.install_runtime_policy(policy.facts);
             }
             Observation::WorkLaunchStop {

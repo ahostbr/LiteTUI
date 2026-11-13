@@ -2,6 +2,15 @@
 
 The current checkpoint below governs status. Earlier audit notes are retained afterward as implementation context; their pending statements do not supersede the current evidence. The matching implementation summary is in [master.md](master.md).
 
+## Ryan-approved extras beyond Python (November 13, 2026)
+
+Two Rust behaviours that Python does not have stay, by Ryan's choice ("Keep both", his form answer relayed by Sentinel, message a5717352):
+
+- **`/tasks kill <id>`** stops a background task directly from the command.
+- **`/glassbox` run directly** (the command runs Python's own handler and answers in the chat).
+
+Everything else is 1:1 with Python. MCP at start follows the saved setting, as Python's does (same message: "From saved setting").
+
 ## Successor handoff - November 11, 2026
 
 Sentinel requested this committed handoff for an Opus 5.5 successor. This is not task completion. Work only in `<worktree>`, branch `work/rust-tui-OpenBolt`; `<projects>/LiteSuite` is the desktop development checkout, not the Rust-port checkout. The last preceding checkpoint is `33d9aca1` (reviewed sensitivity evidence); implemented product remains `c6a643fa4a353b52792a3b286ba33c85d65df9c4`. Resolve this handoff commit with `git log -1 --format=%H -- docs/Plans/rust-tui-port/remaining-parity.md`; Sentinel receives its exact SHA. No merge, push, release, cutover, installation or worktree deletion is authorized.

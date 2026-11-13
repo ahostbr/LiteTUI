@@ -277,6 +277,10 @@ impl Demo {
         {
             chat.notice = format!("{title}: no native route for this palette row yet.");
         }
+        if chat.ready && !chat.busy {
+            // MCP at start from the saved setting, through the lifecycle (settings_view).
+            chat.settings.kick_saved_mcp();
+        }
         if chat.settings.palette.take_theme().is_some() {
             // A theme pick ran in Python (app.theme, saved): read the effective theme again.
             chat.themes.reread();

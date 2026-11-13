@@ -628,6 +628,115 @@ impl Request {
         }
     }
 }
+/// MCP at start from the saved setting (Ryan 2026-11-13, Sentinel a5717352: "From saved
+/// setting"). Python boots with `_mcp_connect()` when mcp_enabled is saved on; the native
+/// runtime starts every captured identity with MCP off (native_mcp_lifecycle
+/// .apply_startup_overlay) and accepts MCP on only as a lifecycle transition, so the frontend
+/// turns it on through the lifecycle itself: enable, then connect each declared server, every
+/// step reviewed, applied and read back exactly as a user's own would be.
+#[derive(Default)]
+pub struct Startup {
+    armed: bool,
+    step: StartupStep,
+    tried: BTreeSet<String>,
+    /// A refused step (another management operation was still running) restarts the run from
+    /// List this many more times, each no sooner than `not_before`.
+    retries: u8,
+    not_before: Option<std::time::Instant>,
+}
+#[derive(Default, PartialEq, Eq, Debug)]
+enum StartupStep {
+    #[default]
+    Idle,
+    Waiting,
+    Done,
+}
+impl Startup {
+    /// A runtime policy with the MCP lifecycle for a new identity: run once for it.
+    pub fn arm(&mut self) {
+        *self = Self {
+            armed: true,
+            retries: 20,
+            ..Self::default()
+        };
+    }
+    pub fn active(&self) -> bool {
+        self.step == StartupStep::Waiting
+    }
+    pub fn cancel(&mut self) {
+        self.armed = false;
+        self.step = StartupStep::Done;
+    }
+    /// The first request, once armed and idle.
+    pub fn begin(&mut self) -> Option<Request> {
+        if !self.armed
+            || self.step != StartupStep::Idle
+            || self.not_before.is_some_and(|t| std::time::Instant::now() < t)
+        {
+            return None;
+        }
+        self.step = StartupStep::Waiting;
+        Some(Request::List)
+    }
+    /// The next step for a lifecycle reply, or None when the run is over.
+    pub fn update(&mut self, result: Result<Update, String>) -> Option<Request> {
+        let next = match result {
+            Ok(Update::List(s)) | Ok(Update::Settled(s, _, _)) => self.next(s),
+            Ok(Update::Review(r)) => Some(Request::Apply(r)),
+            Err(_) if self.retries > 0 => {
+                // Not idle yet (startup reads still in flight): start over from List later.
+                self.retries -= 1;
+                self.tried.clear();
+                self.step = StartupStep::Idle;
+                self.not_before =
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+                return None;
+            }
+            Err(_) => None,
+        };
+        if next.is_none() {
+            self.step = StartupStep::Done;
+            self.armed = false;
+        }
+        next
+    }
+    fn next(&mut self, s: Snapshot) -> Option<Request> {
+        if !s.saved {
+            return None;
+        }
+        if !s.enabled {
+            if !self.tried.insert("\0enable".into()) || !matches!(s.choice("enable", None), Ok(None))
+            {
+                return None;
+            }
+            return Some(Request::Review(Selection {
+                before: s,
+                action: "enable".into(),
+                target: None,
+            }));
+        }
+        // Python's _mcp_connect: every declared server that is not switched off.
+        let name = s
+            .rows
+            .iter()
+            .find(|r| {
+                !r.disabled
+                    && r.allowed
+                    && r.active.is_none()
+                    && !self.tried.contains(&r.name)
+                    && matches!(r.actions.get("connect"), Some(None))
+            })?
+            .name
+            .clone();
+        self.tried.insert(name.clone());
+        Some(Request::Review(Selection {
+            before: s,
+            action: "connect".into(),
+            target: Some(name),
+        }))
+    }
+}
+
 #[derive(Default)]
 pub struct View {
     pub open: bool,
@@ -981,6 +1090,70 @@ mod tests {
    "token":"1".repeat(64),"action":"enable","target":null,"before":"b".repeat(64),"after":"2".repeat(64),"apply_id":"apply","status":"completed",
    "policy_before":{"generation":0,"facts":p.facts.wire},"policy_after":{"generation":1,"facts":after}}).as_object().unwrap().clone());
         v
+    }
+    #[test]
+    fn startup_turns_a_saved_mcp_on_through_the_lifecycle_and_connects_each_server() {
+        let (id, p, mut v) = fixture();
+        let parse = |v: &Value| Snapshot::parse(v, &id, &p.binding.work_instance, &p).unwrap();
+        // Saved off: one List, then nothing.
+        let mut run = Startup::default();
+        assert_eq!(run.begin(), None, "not armed");
+        run.arm();
+        assert_eq!(run.begin(), Some(Request::List));
+        assert_eq!(run.update(Ok(Update::List(parse(&v)))), None);
+        assert!(!run.active());
+        // Saved on: enable, its review applied, then connect the declared server.
+        v["saved_enabled"] = json!(true);
+        run.arm();
+        assert_eq!(run.begin(), Some(Request::List));
+        let Some(Request::Review(selection)) = run.update(Ok(Update::List(parse(&v)))) else {
+            panic!("enable review expected");
+        };
+        assert_eq!((selection.action.as_str(), selection.target.as_deref()), ("enable", None));
+        let review = Review {
+            selection,
+            token: "1".repeat(64),
+        };
+        assert_eq!(
+            run.update(Ok(Update::Review(review.clone()))),
+            Some(Request::Apply(review))
+        );
+        let mut on = v.clone();
+        on["enabled"] = json!(true);
+        on["actions"]["enable"] = json!({"eligible": false, "reason": "Enabled"});
+        on["actions"]["disable"] = json!({"eligible": true, "reason": null});
+        on["rows"][0]["actions"]["connect"] = json!({"eligible": true, "reason": null});
+        // The settled state is read under the enabled policy (generation 1, MCP on).
+        let mut wire = p.facts.wire.clone();
+        wire["mcp_enabled"] = json!(true);
+        let p_on = Policy {
+            generation: 1,
+            facts: Facts::parse_mcp(&wire, Provider::Host, true).unwrap(),
+            ..p.clone()
+        };
+        let parse_on = |v: &Value| Snapshot::parse(v, &id, &p.binding.work_instance, &p_on).unwrap();
+        let Some(Request::Review(connect)) =
+            run.update(Ok(Update::Settled(parse_on(&on), p.clone(), "completed".into())))
+        else {
+            panic!("connect review expected");
+        };
+        assert_eq!(
+            (connect.action.as_str(), connect.target.as_deref()),
+            ("connect", Some("owned"))
+        );
+        // Each server once: a second settle with it still not connected ends the run.
+        assert_eq!(
+            run.update(Ok(Update::Settled(parse_on(&on), p.clone(), "failed".into()))),
+            None
+        );
+        assert!(!run.active());
+        // A refused first List (not idle yet) is retried on a later idle frame.
+        run.arm();
+        run.begin();
+        assert_eq!(run.update(Err("Finish current work".into())), None);
+        assert_eq!(run.begin(), None, "spaced out");
+        run.not_before = None;
+        assert_eq!(run.begin(), Some(Request::List));
     }
     #[test]
     fn capability_is_complete_and_startup_stays_off() {
