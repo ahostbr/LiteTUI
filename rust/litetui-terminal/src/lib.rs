@@ -55,6 +55,7 @@ pub mod conversation_browser;
 pub mod backend_controls;
 pub mod compaction_settings;
 pub mod connection_preferences;
+pub mod picker_box;
 pub mod runtime_launch;
 pub mod settings_editor;
 pub mod settings_form;

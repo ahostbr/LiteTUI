@@ -119,7 +119,7 @@ impl Panel {
             Self::Commands => "Prepared skill",
             Self::Backend => "Select the engine for this conversation",
             Self::Browser => "Conversations",
-            Self::Models => "Models",
+            Self::Models => "Select a model",
         }
     }
     fn late_reply(self, app: &mut Demo) {

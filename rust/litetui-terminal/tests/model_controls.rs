@@ -289,7 +289,7 @@ fn selector_requires_visible_fresh_intent_and_never_mutates_on_focus() {
     let mut v = view();
     v.key(key(KeyCode::Enter));
     assert!(v.take_intent().is_none());
-    assert!(draw(&mut v, 80, 24).contains("Models"));
+    assert!(draw(&mut v, 80, 24).contains("Select a model"));
     v.key(key(KeyCode::Down));
     assert!(v.take_intent().is_none());
     let mut repeat = key(KeyCode::Enter);
@@ -309,20 +309,21 @@ fn selector_requires_visible_fresh_intent_and_never_mutates_on_focus() {
 fn resize_and_pointer_changes_invalidate_hidden_confirmation() {
     let mut v = view();
     draw(&mut v, 80, 24);
+    // Python's picker at 80x24: the box's first row line is row 8, from column 4.
     v.mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: 3,
-        row: 5,
+        column: 10,
+        row: 8,
         modifiers: KeyModifiers::NONE,
     });
-    draw(&mut v, 35, 13);
+    draw(&mut v, 12, 6);
     v.key(key(KeyCode::Enter));
     assert!(v.take_intent().is_none());
     draw(&mut v, 80, 24);
     v.mouse(MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),
-        column: 3,
-        row: 5,
+        column: 10,
+        row: 8,
         modifiers: KeyModifiers::NONE,
     });
     v.key(key(KeyCode::Enter));
@@ -398,14 +399,10 @@ fn selector_uses_theme_background_and_escapes_metadata_across_compact_sizes() {
                 .map(|c| c.symbol())
                 .collect();
             assert!(!symbols.contains('\u{1b}') && !symbols.contains('\u{202e}'));
-            let selected = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .find(|c| c.symbol() == ">")
-                .unwrap();
-            assert_eq!(selected.bg, theme.background);
+            // Python's modal covers the screen in the theme background; the box is $surface.
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(0, 0)].bg, theme.background);
+            assert!(buffer.content.iter().any(|c| c.bg == theme.surface));
             v.key(key(KeyCode::Enter));
             assert!(matches!(v.take_intent(),Some(Intent::Select{value,..})if value=="model-A"));
         }
@@ -433,8 +430,9 @@ fn horizontal_inspection_reaches_every_source_field_without_losing_graphemes() {
         assert!(!text.contains('\u{1b}'));
         v.key(key(KeyCode::Right));
     }
-    // Python's "Select a model" picker has no separate current line: the current row carries "▸ ".
-    assert_eq!(found, [false, true, true, true]);
+    // Python's picker shows the title, the rows (wrapped, not scrolled sideways), the hint:
+    // no current line, no note, no status line. A 2000-cell row wraps past the 19 visible lines.
+    assert_eq!(found, [false, false, false, false]);
     // Inspection never changes or applies the selected source value.
     v.key(key(KeyCode::Enter));
     assert!(matches!(v.take_intent(), Some(Intent::Select { value, .. }) if value == "model-A"));

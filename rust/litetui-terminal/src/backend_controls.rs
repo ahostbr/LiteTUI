@@ -7,12 +7,7 @@ use crate::{
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Modifier, Style},
-    widgets::{Block, Borders, Clear, Paragraph},
-};
+use ratatui::{Frame, layout::Rect, style::Style};
 use serde_json::Value;
 use std::{collections::HashSet, io};
 use unicode_segmentation::UnicodeSegmentation;
@@ -377,6 +372,8 @@ pub struct View {
     hits: Vec<(Rect, usize)>,
     pressed: Option<usize>,
     preselect: Option<String>,
+    /// The picker's first visible wrapped line (picker_box keeps the cursor in view).
+    scroll: usize,
 }
 impl Default for View {
     fn default() -> Self {
@@ -397,6 +394,7 @@ impl Default for View {
             hits: Vec::new(),
             pressed: None,
             preselect: None,
+            scroll: 0,
         }
     }
 }
@@ -704,92 +702,40 @@ impl View {
             _ => self.pressed = None,
         }
     }
+    /// Python's picker (picker_box): the engine list, then the chosen engine's models.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
         self.visible = false;
-        if !self.owns_input() || area.width < 36 || area.height < 10 {
+        // Python closes the picker on a pick and opens the next one when its rows exist.
+        if !self.owns_input() || self.waiting {
             self.hide();
             return;
         }
-        self.hits.clear();
-        let (title, labels, cursor, current): (String, Vec<String>, usize, Option<usize>) =
-            match self.stage {
-                Stage::Engines => (
-                    ENGINE_TITLE.into(),
-                    self.catalog.as_ref().map_or_else(Vec::new, |c| {
-                        c.entries
-                            .iter()
-                            .map(|r| match &r.mark {
-                                Some(mark) => format!("{}  · {mark}", r.label),
-                                None => r.label.clone(),
-                            })
-                            .collect()
-                    }),
-                    self.selected,
-                    self.catalog
-                        .as_ref()
-                        .and_then(|c| c.entries.iter().position(|r| r.selected)),
-                ),
-                Stage::Models | Stage::Context => (
-                    MODEL_TITLE.into(),
-                    self.models.as_ref().map_or_else(Vec::new, |m| {
-                        m.rows.iter().map(|r| r.label.clone()).collect()
-                    }),
-                    self.model_selected,
-                    None,
-                ),
-            };
-        let width = area.width.saturating_sub(4).min(100);
-        let list_height = (labels.len() as u16).clamp(1, area.height.saturating_sub(8));
-        let context_rows = if self.stage == Stage::Context { 5 } else { 0 };
-        let height = (list_height + 5 + context_rows).min(area.height.saturating_sub(2));
-        let rect = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
-            width,
-            height,
-        );
-        frame.render_widget(Clear, rect);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .style(Style::default().fg(t.foreground).bg(t.background))
-            .border_style(Style::default().fg(t.title));
-        let inner = block.inner(rect);
-        frame.render_widget(block, rect);
-        frame.render_widget(
-            Paragraph::new(display(&title, 0)).style(Style::default().add_modifier(Modifier::BOLD)),
-            Rect::new(inner.x, inner.y, inner.width, 1),
-        );
-        let list = Rect::new(
-            inner.x,
-            inner.y + 1,
-            inner.width,
-            inner.height.saturating_sub(3 + context_rows),
-        );
-        let start = cursor.saturating_sub(usize::from(list.height).saturating_sub(1));
-        for (i, label) in labels
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(list.height as usize)
-        {
-            let hit = Rect::new(list.x, list.y + (i - start) as u16, list.width, 1);
-            let highlighted = i == cursor;
-            let style = if highlighted {
-                Style::default()
-                    .fg(t.background)
-                    .bg(t.title)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(t.foreground)
-            };
-            let marker = if current == Some(i) { "▸ " } else { "" };
-            frame.render_widget(
-                Paragraph::new(format!("{marker}{}", display(label, 0))).style(style),
-                hit,
-            );
-            if self.stage != Stage::Context {
-                self.hits.push((hit, i));
-            }
+        let (title, labels, cursor): (&str, Vec<String>, usize) = match self.stage {
+            Stage::Engines => (
+                ENGINE_TITLE,
+                self.catalog.as_ref().map_or_else(Vec::new, |c| {
+                    c.entries
+                        .iter()
+                        .map(|r| match &r.mark {
+                            Some(mark) => format!("{}  · {mark}", r.label),
+                            None => r.label.clone(),
+                        })
+                        .collect()
+                }),
+                self.selected,
+            ),
+            Stage::Models | Stage::Context => (
+                MODEL_TITLE,
+                self.models.as_ref().map_or_else(Vec::new, |m| {
+                    m.rows.iter().map(|r| r.label.clone()).collect()
+                }),
+                self.model_selected,
+            ),
+        };
+        let mut extra: Vec<(String, Style)> = Vec::new();
+        if !self.notice.is_empty() {
+            // A refused pick says why where the next attempt is made.
+            extra.push((self.notice.clone(), Style::default().fg(t.error)));
         }
         if self.stage == Stage::Context {
             let model = self
@@ -806,32 +752,36 @@ impl View {
             if let Some(last) = facts.and_then(|f| f.remembered.get(key)) {
                 hint.push_str(&format!(" Last used for this model: {}.", group(*last)));
             }
-            let y = list.bottom();
-            for (dy, line) in [
+            let plain = Style::default().fg(t.foreground);
+            extra.push((String::new(), plain));
+            extra.push((
                 format!("Context length for {} (tokens)", display(key, 0)),
-                hint,
-                format!("{}▏", display(self.editor.text(), 0)),
-                self.context_error.clone(),
-                "Enter: Set context · Esc: Keep current".into(),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                frame.render_widget(
-                    Paragraph::new(line),
-                    Rect::new(inner.x, y + dy as u16, inner.width, 1),
-                );
+                plain,
+            ));
+            extra.push((hint, Style::default().fg(t.thinking_text)));
+            extra.push((format!("{}▏", display(self.editor.text(), 0)), plain));
+            if !self.context_error.is_empty() {
+                extra.push((self.context_error.clone(), Style::default().fg(t.error)));
             }
+            extra.push(("Enter: Set context · Esc: Keep current".into(), plain));
         }
-        frame.render_widget(
-            Paragraph::new(PICKER_HINT).style(Style::default().fg(t.foreground)),
-            Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+        let drawn = crate::picker_box::draw(
+            frame,
+            area,
+            t,
+            title,
+            &labels,
+            cursor,
+            &mut self.scroll,
+            &extra,
+            PICKER_HINT,
         );
-        frame.render_widget(
-            Paragraph::new(display(&self.notice, 0)),
-            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-        );
-        self.visible = self.open && !self.waiting;
+        self.hits = if self.stage == Stage::Context {
+            Vec::new()
+        } else {
+            drawn.hits
+        };
+        self.visible = self.open && !self.waiting && drawn.rect.width > 0;
     }
 }
 

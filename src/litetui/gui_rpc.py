@@ -756,6 +756,11 @@ def dispatch(app, cmd):
         if model == app.model_id:
             thinking = thinking_capabilities(app)
             thinking["level"] = app.thinking_level
+            # /think's own picker rows and highlighted row (plugins/misc), so a native
+            # frontend shows what Python's picker shows.
+            from litetui.plugins.misc import UNSET, _thinking_rows
+            thinking["picker"] = [[level, label] for level, label in _thinking_rows(app)]
+            thinking["picker_current"] = app.thinking_level or UNSET
         else:
             reader = getattr(app.backend, "reasoning_levels", None)
             if not callable(reader) or model not in getattr(app.backend, "models", {}):

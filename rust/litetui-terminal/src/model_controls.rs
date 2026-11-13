@@ -3,13 +3,7 @@ use crate::{live::terminal_text, theme::Theme};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Modifier, Style},
-    text::Line,
-    widgets::{Block, Borders, Clear, Paragraph},
-};
+use ratatui::{Frame, layout::Rect, style::Style};
 use serde_json::Value;
 use std::{collections::HashSet, io};
 use unicode_segmentation::UnicodeSegmentation;
@@ -152,6 +146,42 @@ impl Choices {
                         })
                     })
                     .collect::<io::Result<Vec<_>>>()?;
+                // Python's /think picker rows (plugins/misc._thinking_rows) when the source sends
+                // them; its "unset" row is the "default" level.
+                let (current, rows) = match thinking.get("picker").and_then(Value::as_array) {
+                    Some(picker) if !picker.is_empty() && picker.len() <= 32 => {
+                        let level = |id: &str| {
+                            if id == "unset" {
+                                "default".to_owned()
+                            } else {
+                                id.to_owned()
+                            }
+                        };
+                        let rows = picker
+                            .iter()
+                            .map(|row| match row.as_array().map(Vec::as_slice) {
+                                Some([Value::String(id), Value::String(label)])
+                                    if !id.is_empty()
+                                        && id.len() <= 64
+                                        && label.len() <= 4096
+                                        && !label.chars().any(char::is_control) =>
+                                {
+                                    Ok(Choice {
+                                        value: level(id),
+                                        label: label.clone(),
+                                    })
+                                }
+                                _ => Err(fail("Invalid thinking picker row")),
+                            })
+                            .collect::<io::Result<Vec<_>>>()?;
+                        let current = thinking["picker_current"]
+                            .as_str()
+                            .map(level)
+                            .unwrap_or(current);
+                        (current, rows)
+                    }
+                    _ => (current, rows),
+                };
                 let source = text(thinking, "source", 1024)?;
                 let note = thinking
                     .get("note")
@@ -241,6 +271,8 @@ pub struct View {
     geometry: Option<Rect>,
     hits: Vec<(Rect, usize)>,
     pressed: Option<usize>,
+    /// The picker's first visible wrapped line (picker_box keeps the cursor in view).
+    scroll: usize,
     preselect: Option<String>,
     /// The context-length dialog that follows a model pick on a local backend.
     context_input: Option<String>,
@@ -518,106 +550,32 @@ impl View {
                 if self.pressed.take().is_some_and(|p| Some(p) == hit) {
                     self.cursor = hit.unwrap();
                     self.horizontal = 0;
+                    self.key(KeyEvent::from(KeyCode::Enter));
                 }
             }
             _ => {}
         }
     }
+    /// Python's picker (picker_box): /model is "Select a model", /think "Thinking level".
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
         self.visible = false;
-        if !self.owns_input() {
+        // Python opens the picker once its rows exist and closes it on a pick: nothing covers
+        // the chat while the choices are read or a selection applies.
+        if !self.owns_input() || self.waiting {
             self.hide();
             return;
         }
-        if area.width < 36 || area.height < 14 {
-            self.hide();
-            return;
-        }
-        let width = area.width.saturating_sub(2).min(92);
-        let height = area.height.saturating_sub(2).min(25);
-        let rect = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
-            width,
-            height,
-        );
-        if self.geometry != Some(rect) {
-            self.pressed = None;
-            self.geometry = Some(rect);
-        }
-        self.hits.clear();
-        frame.render_widget(Clear, rect);
         let title = if self.kind == Some(Kind::Thinking) {
-            " Thinking "
+            "Thinking level"
         } else {
-            " Models "
+            crate::backend_controls::MODEL_TITLE
         };
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .style(Style::default().fg(t.foreground).bg(t.background))
-            .border_style(Style::default().fg(t.title));
-        let inner = block.inner(rect);
-        frame.render_widget(block, rect);
-        let current = if self.kind == Some(Kind::Model) {
-            crate::backend_controls::MODEL_TITLE.to_owned()
-        } else {
-            self.current_label()
-        };
-        frame.render_widget(
-            Paragraph::new(display_line(&current, self.horizontal)),
-            Rect::new(inner.x, inner.y, inner.width, 1),
-        );
-        if let Some(menu) = &self.menu {
-            let note = display_line(&menu.note, self.horizontal);
-            frame.render_widget(
-                Paragraph::new(note),
-                Rect::new(inner.x, inner.y + 1, inner.width, 1),
-            );
-        }
-        let list = Rect::new(
-            inner.x,
-            inner.y + 2,
-            inner.width,
-            inner.height.saturating_sub(6),
-        );
-        if let Some(menu) = &self.menu {
-            let start = self
-                .cursor
-                .saturating_sub(usize::from(list.height).saturating_sub(1));
-            for (index, row) in menu
-                .rows
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(usize::from(list.height))
-            {
-                let selected = index == self.cursor;
-                let shown = display_line(&row.label, if selected { self.horizontal } else { 0 });
-                let line = Line::styled(
-                    format!(
-                        "{} {}{}",
-                        if selected { ">" } else { " " },
-                        if row.value == menu.current {
-                            "● "
-                        } else {
-                            ""
-                        },
-                        shown
-                    ),
-                    Style::default()
-                        .fg(if selected { t.title } else { t.foreground })
-                        .bg(t.background)
-                        .add_modifier(if selected {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
-                );
-                let hit = Rect::new(list.x, list.y + (index - start) as u16, list.width, 1);
-                frame.render_widget(Paragraph::new(line), hit);
-                self.hits.push((hit, index));
-            }
+        let rows: Vec<String> = self.menu.as_ref().map_or_else(Vec::new, |m| {
+            m.rows.iter().map(|r| r.label.clone()).collect()
+        });
+        let mut extra: Vec<(String, Style)> = Vec::new();
+        if self.menu.is_none() && !self.notice.is_empty() {
+            extra.push((self.notice.clone(), Style::default().fg(t.error)));
         }
         if let (Some(input), Some(menu)) = (&self.context_input, &self.menu) {
             let key = menu.rows.get(self.cursor).map_or("", |r| r.value.as_str());
@@ -630,47 +588,39 @@ impl View {
             if let Some(last) = facts.and_then(|f| f.remembered.get(key)) {
                 hint.push_str(&format!(" Last used for this model: {last}."));
             }
-            let box_area = Rect::new(
-                inner.x,
-                list.y + list.height.saturating_sub(6),
-                inner.width,
-                6.min(list.height),
-            );
-            frame.render_widget(Clear, box_area);
-            for (dy, line) in [
+            let plain = Style::default().fg(t.foreground);
+            extra.push((String::new(), plain));
+            extra.push((
                 format!("Context length for {} (tokens)", display_line(key, 0)),
-                hint,
-                format!("{input}▏"),
-                self.context_error.clone(),
-                "Enter: Set context · Esc: Keep current".into(),
-            ]
-            .into_iter()
-            .enumerate()
-            .take(usize::from(box_area.height))
-            {
-                frame.render_widget(
-                    Paragraph::new(line),
-                    Rect::new(box_area.x, box_area.y + dy as u16, box_area.width, 1),
-                );
+                plain,
+            ));
+            extra.push((hint, Style::default().fg(t.thinking_text)));
+            extra.push((format!("{input}▏"), plain));
+            if !self.context_error.is_empty() {
+                extra.push((self.context_error.clone(), Style::default().fg(t.error)));
             }
+            extra.push(("Enter: Set context · Esc: Keep current".into(), plain));
         }
-        let status = display_line(&self.notice, self.horizontal);
-        frame.render_widget(
-            Paragraph::new(status),
-            Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+        let drawn = crate::picker_box::draw(
+            frame,
+            area,
+            t,
+            title,
+            &rows,
+            self.cursor,
+            &mut self.scroll,
+            &extra,
+            crate::picker_box::HINT,
         );
-        frame.render_widget(
-            Paragraph::new(if self.kind == Some(Kind::Model) {
-                crate::backend_controls::PICKER_HINT
-            } else {
-                "↑↓ choose · ←→ inspect · Enter apply"
-            }),
-            Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
-        );
-        frame.render_widget(
-            Paragraph::new("Tab models/thinking · R refresh"),
-            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-        );
-        self.visible = self.open && !self.waiting;
+        if self.geometry != Some(drawn.rect) {
+            self.pressed = None;
+            self.geometry = Some(drawn.rect);
+        }
+        self.hits = if self.context_input.is_some() {
+            Vec::new()
+        } else {
+            drawn.hits
+        };
+        self.visible = self.open && !self.waiting && drawn.rect.width > 0;
     }
 }

@@ -142,10 +142,12 @@ fn engine_picker_reads_like_python_with_readiness_marks() {
         text.contains("Select the engine for this conversation"),
         "{text}"
     );
+    // Python's engine picker highlights the current engine's row; it adds no marker.
     assert!(
-        text.contains("▸ Custom server  · set URL in /settings"),
+        text.contains("Custom server  · set URL in /settings"),
         "{text}"
     );
+    assert!(!text.contains("▸ Custom server"), "{text}");
     assert!(text.contains("LM Studio  · installed"), "{text}");
     assert!(
         text.contains("↑↓ move · Enter or click to select · Esc to cancel"),
