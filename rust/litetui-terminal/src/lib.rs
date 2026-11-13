@@ -67,6 +67,7 @@ pub mod claude_reset;
 pub mod command_palette;
 mod command_routes;
 pub mod help_view;
+pub mod keys_panel;
 pub mod prepared_skill;
 
 pub mod engine_config;

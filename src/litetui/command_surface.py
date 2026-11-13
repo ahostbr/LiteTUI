@@ -232,6 +232,9 @@ def catalog(app, cmd):
     # /help's own text (help_plugin.help_text), so a native frontend shows what /help shows.
     from litetui.plugins.help_plugin import help_text
     result["help_text"] = _text(help_text(app), 64 * 1024)
+    # /keys's table (Textual's KeyPanel rows for the current screen and focus).
+    from litetui import native_keys
+    result["key_table"] = native_keys.rows(app)
     _encoded(result)
     return result
 

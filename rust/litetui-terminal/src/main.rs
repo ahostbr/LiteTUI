@@ -1137,6 +1137,11 @@ fn mouse(app: &mut Demo, event: MouseEvent) {
         }
         return;
     }
+    // Python's key panel is not modal: the wheel over it scrolls it, the rest of the app
+    // works beside it.
+    if !app.has_live_approval() && !app.has_live_question() && app.keys.mouse(event) {
+        return;
+    }
     if app.help.open {
         // Python's HelpScreen: Close takes a click; the wheel scrolls the text.
         app.help.mouse(event);
@@ -4632,6 +4637,7 @@ mod tests {
                 source: Some("test".into()),
             }],
             help_text: None,
+            key_table: None,
         };
         app.observe_live(Observation::Commands(Update::Catalog {
             catalog: c,

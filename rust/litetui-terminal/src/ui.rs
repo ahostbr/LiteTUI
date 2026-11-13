@@ -1314,7 +1314,9 @@ fn fold_off_screen(app: &mut Demo, folds: &[FoldSpan], top: usize) -> bool {
 
 pub fn draw(frame: &mut Frame, app: &mut Demo) {
     let t = app.palette().clone();
-    let area = frame.area();
+    let full = frame.area();
+    // Python's /keys panel docks on the right; the app lays out beside it.
+    let area = app.keys.app_area(full);
     if app.live.is_some() {
         app.compact_display.resize(area.width);
     }
@@ -1824,6 +1826,15 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
             Rect::new(areas[5].right() - w, areas[5].y, w, 1),
         );
     }
+    let key_rows = app
+        .live
+        .as_ref()
+        .and_then(|chat| chat.commands.catalog.as_ref())
+        .and_then(|c| c.key_table.clone())
+        .unwrap_or_default();
+    app.keys.draw(frame.buffer_mut(), full, &key_rows, &t);
+    // Dialogs are screens over the whole terminal, the key panel included, as in Textual.
+    let area = full;
     if app.approval_open {
         approval(frame, app, area);
     }

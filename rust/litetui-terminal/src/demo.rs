@@ -53,6 +53,8 @@ pub struct Demo {
     pub theme_query: String,
     pub theme_cursor: usize,
     pub help: crate::help_view::View,
+    /// /keys: Python's key panel, docked on the right.
+    pub keys: crate::keys_panel::Panel,
 }
 
 impl Default for Demo {
@@ -70,6 +72,7 @@ impl Default for Demo {
             theme_query: String::new(),
             theme_cursor: 0,
             help: Default::default(),
+            keys: Default::default(),
             tools: vec![
                 Tool {
                     name: "grep",
@@ -342,7 +345,7 @@ impl Demo {
                 Action::Mcp => self.open_mcp(&route_arguments),
                 Action::ModelPreferences => self.open_model_preferences(),
                 Action::Help => self.open_help(false),
-                Action::Keys => self.open_help(true),
+                Action::Keys => self.toggle_keys(),
                 Action::ClearScreen => self.clear_screen(),
                 Action::Settings => self.open_settings_form(),
                 Action::Themes => self.open_themes(),

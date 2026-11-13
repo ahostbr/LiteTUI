@@ -718,6 +718,7 @@ fn engine_command_stop_never_falls_back_to_start_after_fresh_inspection() {
                 snapshot: "a".repeat(64),
                 entries: Vec::new(),
                 help_text: None,
+                key_table: None,
             },
             route: c::Route {
                 row: "b".repeat(64),

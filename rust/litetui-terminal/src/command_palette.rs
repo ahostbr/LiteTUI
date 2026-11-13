@@ -221,6 +221,8 @@ pub struct Catalog {
     pub entries: Vec<Entry>,
     /// /help's own text (help_plugin.help_text), when the source sends it.
     pub help_text: Option<String>,
+    /// /keys's table (native_keys.rows), when the source sends it.
+    pub key_table: Option<Vec<crate::keys_panel::Row>>,
 }
 impl Catalog {
     pub fn parse(
@@ -394,6 +396,7 @@ impl Catalog {
                 Some(Value::String(text)) if text.len() <= 64 * 1024 => Some(text.clone()),
                 Some(_) => return Err(fail("Invalid help text")),
             },
+            key_table: crate::keys_panel::parse(v)?,
         })
     }
     pub fn request(&self) -> Value {

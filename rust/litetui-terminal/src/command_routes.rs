@@ -115,6 +115,33 @@ impl Demo {
         self.completion.dismiss();
         self.footer.leave();
     }
+    /// /keys toggles Python's key panel when the source sends its table; an older source
+    /// gets this frontend's own key list.
+    pub(crate) fn toggle_keys(&mut self) {
+        if self.has_live_input() || self.live.is_none() {
+            return;
+        }
+        let table = self
+            .live
+            .as_ref()
+            .and_then(|chat| chat.commands.catalog.as_ref())
+            .is_some_and(|c| c.key_table.is_some());
+        if table {
+            self.keys.toggle();
+            // The panel is not a dialog, so nothing covers the routing notice: Python's
+            // /keys leaves the spare row blank.
+            if let Some(chat) = self.live.as_mut()
+                && chat.notice == chat.commands.notice
+            {
+                if self.notice == chat.notice {
+                    self.notice.clear();
+                }
+                chat.notice.clear();
+            }
+        } else {
+            self.open_help(true);
+        }
+    }
     /// Display only, like the source command: no history, row or provider state changes.
     pub(crate) fn clear_screen(&mut self) {
         if self.has_live_input() {
