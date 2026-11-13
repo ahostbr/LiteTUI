@@ -125,6 +125,10 @@ fn real_claude_two_turns_keep_conversation_and_exit_the_owned_job() {
                     return Err(std::io::Error::other(format!("Unexpected engine operation in Claude smoke: {}", paid_startup::describe(&event))));
                 }
                 Ok(Observation::Submission { .. }) => {}
+                // Python's chat-log lines (native_system_lines.py) are presentation only.
+                Ok(Observation::SystemLine { .. }
+                | Observation::SystemLines(_)
+                | Observation::SystemLinesRefused(_)) => {}
                 Ok(Observation::Ready) => {
                     if !saw_ready_facts {
                         return Err(std::io::Error::other("validated facts must precede Ready"));

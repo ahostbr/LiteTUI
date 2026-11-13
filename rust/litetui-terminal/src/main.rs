@@ -1669,6 +1669,10 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<(
                     let _ = runtime.quit();
                 }
             }
+            if !quitting && app.live.as_mut().expect("live").take_system_lines_request() {
+                // Python's held chat-log lines; a failed send only means quitting.
+                let _ = runtime.system_lines();
+            }
             if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").settings.take_intent()
                 && let Err(error) = runtime.settings(intent)

@@ -20,6 +20,7 @@ mod rewrite;
 pub use rewrite::{Changed as RewriteChanged, Prepared as RewritePrepared};
 
 const GENERATION: u64 = 1;
+const SYSTEM_LINES: &str = "gui.system_lines";
 // One foreground request, its separately correlated execution Stop, and one
 // genuine Work settlement read can overlap. Their controllers each retain one
 // slot; increasing correlation capacity does not authorize another mutation.
@@ -28,6 +29,8 @@ const MAX_PENDING_REQUESTS: usize = 3;
 // Unknown producers remain fatal rather than being silently discarded.
 const MIRRORED: &[&str] = &[
     "ready",
+    // Python's chat-log system lines, once this client has asked (native_system_lines.py).
+    "system_message",
     "model_state",
     "usage",
     "turn_start",
@@ -274,6 +277,8 @@ pub enum Step {
         policy: Option<Value>,
     },
     Backend(crate::backend_controls::Update),
+    /// Python's chat-log system lines held until this client asked: (text, before splash).
+    SystemLines(Vec<(String, bool)>),
     BackendChanged(Box<crate::backend_controls::Changed>),
     Browser(crate::conversation_browser::Update),
     Opened(Box<crate::conversation_browser::Opened>),
@@ -708,6 +713,8 @@ pub struct Management {
     command_prepared: Option<crate::prepared_skill::Prepared>,
     settings_edit: Option<settings::Pending>,
     settings_form: Option<settings::FormPending>,
+    /// The one gui.system_lines read.
+    system_lines: Option<CommandId>,
     settings_snapshot: Option<settings::Snapshot>,
     settings_review: Option<settings::Review>,
     settings_generation: u64,
@@ -798,6 +805,7 @@ impl Default for Management {
             command_prepared: None,
             settings_edit: None,
             settings_form: None,
+            system_lines: None,
             settings_snapshot: None,
             settings_review: None,
             settings_generation: 0,
@@ -1465,6 +1473,14 @@ impl Management {
                 id,
                 matched: true,
                 frame,
+            } if self.system_lines.is_some() && self.system_lines.as_ref() == id.as_ref() => {
+                self.system_lines = None;
+                self.system_lines_response(frame)
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
             } if self
                 .settings_form
                 .as_ref()
@@ -1526,6 +1542,10 @@ impl Management {
                     return self.work_lifecycle_event(&frame, authority);
                 }
                 self.validate_event(&frame, &event)?;
+                if event["type"] == "system_message" {
+                    // A chat-log line is shown whatever owned operation is running.
+                    return Ok(Step::Event(event));
+                }
                 if self
                     .browser
                     .as_ref()
@@ -1560,6 +1580,13 @@ impl Management {
     fn validate_event(&mut self, frame: &Value, event: &Value) -> io::Result<()> {
         if event.get("rewrite_origin").is_some() || event.get("compact_origin").is_some() {
             return Err(fail("Runtime supplied reserved native rewrite metadata"));
+        }
+        if event["type"] == "system_message" {
+            // Python's chat-log lines come in any state, owned operations included; they
+            // change no authority here (live.rs checks their shape).
+            crate::stream::required_uuid4(frame, "event_id")
+                .map_err(|_| fail("System line lacks emission identity"))?;
+            return Ok(());
         }
         let (session, backend, model, _) = self.expected.as_ref().expect("begun");
         if let Some(pending) = &self.conversation
@@ -4573,6 +4600,48 @@ impl Management {
         } else {
             Ok(Step::Initialized(snapshot))
         }
+    }
+    /// Python's chat-log system lines (src/litetui/native_system_lines.py): one read once the
+    /// startup reads are done; after its reply, later lines arrive as `system_message` events.
+    pub fn request_system_lines(&mut self) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail("Finish current work before reading system lines"));
+        }
+        self.ensure_drained()?;
+        if !self.operations.iter().any(|op| op == SYSTEM_LINES) {
+            return Err(fail("Runtime lacks system lines; update Python source"));
+        }
+        let id = self
+            .wire
+            .register_read()
+            .map_err(|_| fail("Cannot reserve the system lines read"))?;
+        let mut command = json!({"type": SYSTEM_LINES, "version": 1});
+        command["id"] = id.to_value();
+        self.system_lines = Some(id);
+        Ok(command)
+    }
+    fn system_lines_response(&mut self, frame: Value) -> io::Result<Step> {
+        if frame["ok"] != true {
+            // Cosmetic: a refused read leaves the transcript without Python's lines.
+            return Ok(Step::SystemLines(Vec::new()));
+        }
+        let result = &frame["result"];
+        let lines = result["lines"]
+            .as_array()
+            .filter(|l| result["version"] == 1 && l.len() <= 256)
+            .ok_or_else(|| fail("Malformed system lines"))?;
+        lines
+            .iter()
+            .map(
+                |line| match (line["text"].as_str(), line["before_splash"].as_bool()) {
+                    (Some(text), Some(before)) if text.len() <= 16 * 1024 => {
+                        Ok((text.to_owned(), before))
+                    }
+                    _ => Err(fail("Malformed system line")),
+                },
+            )
+            .collect::<io::Result<Vec<_>>>()
+            .map(Step::SystemLines)
     }
     pub fn request_theme(&mut self, intent: crate::theme_controls::Intent) -> io::Result<Value> {
         use crate::theme_controls::{Intent, SAVE, SNAPSHOT, VALIDATE};

@@ -129,6 +129,21 @@ impl ToolView {
         }
     }
 }
+/// One of Python's chat-log system lines (`.system-msg`): above the splash, or after
+/// `after_row` turn rows (0 = right under the start lines).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemLine {
+    pub text: String,
+    pub before_splash: bool,
+    pub after_row: usize,
+}
+const MAX_SYSTEM_LINES: usize = 512;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SystemAsk {
+    Wanted,
+    Sent,
+    Done,
+}
 pub struct Row {
     render_units: usize,
     pub image_name: Option<String>,
@@ -231,6 +246,11 @@ pub struct Chat {
     pub connected: Option<String>,
     /// The start banner shows until /new clears the chat, as Python's does.
     pub splash: bool,
+    /// Python's chat-log system lines, each anchored where it was mounted.
+    pub system_lines: Vec<SystemLine>,
+    /// Whether Python's held lines have been asked for, and when to ask again after a refusal.
+    system_ask: SystemAsk,
+    system_retry: Option<std::time::Instant>,
     pub work: crate::work_view::View,
     pub settings: crate::settings_view::View,
     pub backend_controls: crate::backend_controls::View,
@@ -304,6 +324,35 @@ impl Chat {
     /// Absolute retained indices; no row, operation ID, or source bytes are rebased.
     pub fn visible_row_range(&self) -> std::ops::Range<usize> {
         self.live_page().0
+    }
+    /// Ask Python for its held chat-log lines: once, when ready and idle.
+    pub fn take_system_lines_request(&mut self) -> bool {
+        if self.system_ask != SystemAsk::Wanted
+            || !self.ready
+            || self.busy
+            || self
+                .system_retry
+                .is_some_and(|at| std::time::Instant::now() < at)
+        {
+            return false;
+        }
+        self.system_ask = SystemAsk::Sent;
+        true
+    }
+    /// LiteTUI.system_message: anchored after the rows so far. Python's own "Connected —
+    /// model: X" is already drawn from `ready`, so its copy is not repeated.
+    fn system_line(&mut self, text: String, before_splash: bool) {
+        if self.connected.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        if self.system_lines.len() >= MAX_SYSTEM_LINES {
+            self.system_lines.remove(0);
+        }
+        self.system_lines.push(SystemLine {
+            text,
+            before_splash,
+            after_row: self.rows.len(),
+        });
     }
     pub fn show_live_history(&self) -> bool {
         self.live_page().1
@@ -419,6 +468,9 @@ impl Chat {
             theme_status: "Theme: local fallback; source pending".into(),
             connected: None,
             splash: true,
+            system_lines: Vec::new(),
+            system_ask: SystemAsk::Wanted,
+            system_retry: None,
             work: crate::work_view::View::default(),
             settings: crate::settings_view::View::default(),
             backend_controls: crate::backend_controls::View::default(),
@@ -1693,6 +1745,7 @@ impl Chat {
                     let session = changed.snapshot.session.clone();
                     self.install_conversation(changed.snapshot, changed.history, changed.queue);
                     self.splash = false;
+                    self.system_lines.clear();
                     self.connected = Some(format!("New conversation — {session}"));
                     self.notice.clear();
                 } else {
@@ -1837,6 +1890,21 @@ impl Chat {
             }
             Observation::Information(info) => {
                 self.notice = info;
+            }
+            Observation::SystemLine {
+                text,
+                before_splash,
+            } => self.system_line(text, before_splash),
+            Observation::SystemLines(lines) => {
+                self.system_ask = SystemAsk::Done;
+                for (text, before_splash) in lines {
+                    self.system_line(text, before_splash);
+                }
+            }
+            Observation::SystemLinesRefused(_) => {
+                self.system_ask = SystemAsk::Wanted;
+                self.system_retry =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
             }
             Observation::ApprovalStopped(reason) => {
                 self.settle(crate::live::TerminalOutcome::ApprovalStopped(reason))?

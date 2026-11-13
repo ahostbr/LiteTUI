@@ -2185,6 +2185,7 @@ class LiteTUI(App):
         from litetui.splash import Splash
 
         self.query_one("#chat-log", VerticalScroll).mount(Splash(LITETUI_SPLASH))
+        self._splash_mounted = True
 
     @staticmethod
     def _hosted_seat() -> bool:
@@ -7483,6 +7484,9 @@ class LiteTUI(App):
         log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(shown), classes="system-msg"))
         self._scroll_down()
+        # A native frontend draws its own transcript: send it the same line.
+        from litetui import native_system_lines
+        native_system_lines.observe(self, shown)
 
     # Compatibility alias. Keeps the 62 in-file call sites and every not-yet-
     # migrated plugin working while S1 lands in two commits (arrival here,

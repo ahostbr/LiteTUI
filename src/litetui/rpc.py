@@ -128,6 +128,10 @@ def publish_management_result(app: LiteTUI, cmd: dict[str, Any], result: Any) ->
     finally:
         _required_publication.reset(token)
     background_input.finish_publication(app, ticket)
+    if cmd.get("type") == "gui.system_lines":
+        # Only now, after its reply: later transcript system lines go out as events.
+        from litetui import native_system_lines
+        native_system_lines.after_read(app)
 
 
 # Legacy stdio uses different operation names, but the same hold policy:

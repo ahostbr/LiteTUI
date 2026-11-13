@@ -352,6 +352,16 @@ pub enum Observation {
     Reasoning(String),
     ReasoningSnapshot(String),
     Information(String),
+    /// One of Python's chat-log system lines (LiteTUI.system_message), and whether it came
+    /// before the start splash was mounted.
+    SystemLine {
+        text: String,
+        before_splash: bool,
+    },
+    /// The lines Python held until this frontend asked: (text, before splash).
+    SystemLines(Vec<(String, bool)>),
+    /// The read could not be sent now; the chat asks again later.
+    SystemLinesRefused(String),
     /// Source-authoritative approval refusal; settled, but never successful.
     ApprovalStopped(String),
     Cancelled(String),
@@ -1952,6 +1962,23 @@ impl Turn {
                 self.native_turn_bytes += bytes;
                 Ok(Observation::Information("Codex native turn started".into()))
             }
+            // Python's transcript system line (native_system_lines.py), in any state.
+            "system_message" => {
+                let text = event["text"]
+                    .as_str()
+                    .filter(|t| t.len() <= 16 * 1024)
+                    .ok_or_else(|| fail("Malformed system line"))?;
+                let before_splash = event["before_splash"]
+                    .as_bool()
+                    .ok_or_else(|| fail("Malformed system line"))?;
+                if event["version"] != 1 {
+                    return Err(fail("Unsupported system line version"));
+                }
+                Ok(Observation::SystemLine {
+                    text: text.to_owned(),
+                    before_splash,
+                })
+            }
             // These source-defined observations have no authority in this frontend.
             // Print their kind, rather than silently discarding unsupported state.
             "model_state" | "usage" | "native_usage" | "native_event" => {
@@ -2776,6 +2803,26 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             .map_err(io::Error::other)?;
                         execution_stop_deadline = Some(Instant::now() + Duration::from_secs(20));
                     }
+                    Input::SystemLines => {
+                        let command = if turn.can_manage() {
+                            management.request_system_lines()
+                        } else {
+                            Err(io::Error::other("A turn is running"))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend
+                                .observe(Observation::SystemLinesRefused(error.to_string()))?,
+                        }
+                    }
                     Input::Settings(intent) => {
                         let voice = matches!(intent, crate::settings_view::Intent::Voice(_));
                         let presentation =
@@ -3594,6 +3641,13 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             deadline = None;
                         }
                     }
+                    Step::SystemLines(lines) => {
+                        if !turn.closing {
+                            frontend.observe(Observation::SystemLines(lines))?;
+                            check_deadline(deadline)?;
+                            deadline = None;
+                        }
+                    }
                     Step::Backend(update) => {
                         if !turn.closing {
                             frontend.observe(Observation::Backend(update))?;
@@ -3880,8 +3934,13 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 }
 
 pub enum Input {
+    /// Read Python's held chat-log system lines (once, when the chat is ready).
+    SystemLines,
     RuntimeControls(crate::runtime_controls_view::Intent),
-    ScheduleDecision { proposal_id: String, accept: bool },
+    ScheduleDecision {
+        proposal_id: String,
+        accept: bool,
+    },
     Compact(Box<crate::conversation_compact::Intent>),
     Rewrite(Box<crate::conversation_rewrite::Intent>),
     History(crate::history_view::Intent),
@@ -3897,7 +3956,9 @@ pub enum Input {
     Browser(crate::conversation_browser::Intent),
     ImagePrompt(String, crate::image::Review),
     Prompt(String),
-    Abort { prompt_id: String },
+    Abort {
+        prompt_id: String,
+    },
     Approve(crate::approvals::Decision),
     Answer(crate::questions::Decision),
     Quit,
@@ -4025,6 +4086,15 @@ impl Frontend for OneShot {
             Observation::Information(kind) | Observation::ConversationUnverified(kind) => {
                 writeln!(self.output, "\n[Runtime: {}]", terminal_text(&kind))?
             }
+            Observation::SystemLine { text, .. } => {
+                writeln!(self.output, "\n[System: {}]", terminal_text(&text))?
+            }
+            Observation::SystemLines(lines) => {
+                for (text, _) in lines {
+                    writeln!(self.output, "\n[System: {}]", terminal_text(&text))?
+                }
+            }
+            Observation::SystemLinesRefused(_) => {}
             Observation::Cancelled(reason) => {
                 return Err(io::Error::other(format!(
                     "Turn cancelled: {}",
@@ -4308,6 +4378,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Work(intent))
+            .map_err(io::Error::other)
+    }
+    pub fn system_lines(&self) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::SystemLines)
             .map_err(io::Error::other)
     }
     pub fn settings(&self, intent: crate::settings_view::Intent) -> io::Result<()> {

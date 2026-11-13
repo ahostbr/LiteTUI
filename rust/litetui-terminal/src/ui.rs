@@ -655,6 +655,38 @@ fn stop_line(
     };
     row.timing.line(ending, presentation)
 }
+/// Python's `.system-msg`: muted italic, centred, `margin: 0 4`, wrapped at the words.
+fn system_line(t: &crate::theme::Theme, lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    let room = width.saturating_sub(8).max(1);
+    let style = style(t.thinking_text, t.background).add_modifier(Modifier::ITALIC);
+    for paragraph in display_safe(text).split('\n') {
+        let mut line = String::new();
+        let mut rows = Vec::new();
+        for word in paragraph.split(' ') {
+            let candidate = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if candidate.width() <= room || line.is_empty() {
+                line = candidate;
+            } else {
+                rows.push(std::mem::take(&mut line));
+                line = word.to_owned();
+            }
+            while line.width() > room {
+                let head = clip_label(&line, room);
+                line = line[head.len()..].to_owned();
+                rows.push(head);
+            }
+        }
+        rows.push(line);
+        for row in rows {
+            // Textual centres each line inside the margins.
+            lines.push(Line::styled(format!("    {}", centered(&row, room)), style));
+        }
+    }
+}
 /// Textual's centering, `(width - text) // 2` cells of padding. Ratatui's Center rounds the
 /// other way for odd remainders, one column right of Python.
 fn centered(text: &str, width: usize) -> String {
@@ -741,6 +773,9 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
         // below it (centered, muted, italic system line); both scroll with the chat.
         if !chat.has_older_live_page() {
             let muted = style(t.thinking_text, t.background);
+            for line in chat.system_lines.iter().filter(|l| l.before_splash) {
+                system_line(t, &mut lines, &line.text, width);
+            }
             if let Some(banner) = chat.runtime_state.banner().filter(|_| chat.splash) {
                 for row in splash_rows(banner, width) {
                     lines.push(Line::styled(centered(&row, width), muted));
@@ -754,6 +789,13 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                     ),
                     muted.add_modifier(Modifier::ITALIC),
                 ));
+            }
+            for line in chat
+                .system_lines
+                .iter()
+                .filter(|l| !l.before_splash && l.after_row == 0)
+            {
+                system_line(t, &mut lines, &line.text, width);
             }
         }
         if chat.has_older_live_page() || chat.has_newer_live_page() {
@@ -788,7 +830,12 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
             );
             lines.push(Line::raw(""));
         }
-        if let Some(descriptor) = chat.history.as_ref().and_then(|h| h.descriptor.as_ref()) {
+        if let Some(descriptor) = chat
+            .history
+            .as_ref()
+            .and_then(|h| h.descriptor.as_ref())
+            .filter(|d| d.counts.non_system > 0)
+        {
             tool_body(
                 t,
                 &mut lines,
@@ -1138,6 +1185,13 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                     width,
                 );
                 lines.push(Line::raw(""));
+            }
+            for line in chat
+                .system_lines
+                .iter()
+                .filter(|l| !l.before_splash && l.after_row == row_index + 1)
+            {
+                system_line(t, &mut lines, &line.text, width);
             }
         }
         return Transcript {
