@@ -146,6 +146,11 @@ VALUE_FLAGS: dict[str, str] = {
     "draft_p_min": "spec-draft-p-min",
     "mmproj": "mmproj",
     "chat_template_file": "chat-template-file",
+    # Prompt-cache flags (T1306-B). Router-wide defaults come from settings
+    # (llama_cache_ram_mib, llama_slot_prompt_similarity) via the ini's [*]
+    # section; a per-model value here overrides them.
+    "cache_ram": "cache-ram",                     # MiB of host RAM prompt cache
+    "slot_similarity": "slot-prompt-similarity",  # LCP share needed to reuse a slot
 }
 
 #: Booleans. Written ``ini-key = true/false``; the router emits the
@@ -156,6 +161,7 @@ BOOL_FLAGS: dict[str, str] = {
     "kv_offload": "kv-offload",
     "kv_unified": "kv-unified",
     "context_shift": "context-shift",
+    "cache_idle_slots": "cache-idle-slots",   # router default: llama_cache_idle_slots
 }
 
 FLAG_FOR: dict[str, str] = {**VALUE_FLAGS, **BOOL_FLAGS}
@@ -743,6 +749,23 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
         f"; engine: {configured_build(settings)}",
         "",
     ]
+    # 🔴 ROUTER-WIDE PROMPT-CACHE DEFAULTS GO IN [*], NEVER ON THE ROUTER ARGV
+    # (T1306-B). llama.cpp cascades the [*] section UNDER every model section
+    # (common/preset.cpp:356-358 and :479-487; server-models.cpp:299-302 at
+    # b9360, :747-749 at b12078), so a per-model value still wins. The router's
+    # own argv is merged OVER every model last (server-models.cpp:315-318,
+    # :774 at b12078) and would beat what the user typed for one model.
+    # Census-gated per flag; an empty census (no --help answer) proves no flag,
+    # so nothing is written. Measured cause and defaults: prefix-audit P2.
+    router_defaults = {
+        "cache_ram": settings.llama_cache_ram_mib,
+        "slot_similarity": settings.llama_slot_prompt_similarity,
+        "cache_idle_slots": settings.llama_cache_idle_slots,
+    }
+    shared = [_ini_line(k, v) for k, v in sorted(router_defaults.items())
+              if v is not None and FLAG_FOR[k] in flags]
+    if shared:
+        lines += ["[*]", *shared, ""]
     for row in sorted(rows, key=lambda r: r.key):
         if row.path is None:
             continue
@@ -780,12 +803,17 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             ini_key = FLAG_FOR.get(k)
             if ini_key is None or (flags and ini_key not in flags):
                 raise IniUnexpressible(k, model=row.key)
-            if k in BOOL_FLAGS:
-                lines.append(f"{ini_key} = {'true' if v else 'false'}")
-            else:
-                lines.append(f"{ini_key} = {v}")
+            lines.append(_ini_line(k, v))
         lines.append("")
     return "\n".join(lines)
+
+
+def _ini_line(key: str, value) -> str:
+    """One ini line for a cfg key. Booleans are written true/false and the
+    router emits the --flag / --no-flag argv itself."""
+    if key in BOOL_FLAGS:
+        return f"{FLAG_FOR[key]} = {'true' if value else 'false'}"
+    return f"{FLAG_FOR[key]} = {value}"
 
 
 def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -> Path:
