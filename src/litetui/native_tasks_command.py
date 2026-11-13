@@ -1,6 +1,8 @@
-"""/tasks and /glassbox for the native frontend: Python's own commands, run as typed.
+"""/tasks, /glassbox and /engine for the native frontend: Python's own commands, run as typed.
 
-Neither opens anything in Python. /tasks (plugins/tasks_plugin._cmd_tasks) answers in the
+None of them opens anything in Python. /engine (plugins/model_switch._cmd_engine) reports,
+starts, stops or re-lanes the NInfer, Strata or Xolotl process LiteTUI may own, or says
+which backend to pick first, all in the chat log. /tasks (plugins/tasks_plugin._cmd_tasks) answers in the
 chat log (the task list or "no background tasks", a tail, a kill's result, its usage
 line); /glassbox (plugins/glassbox_plugin._cmd_glassbox) starts or stops the recorder and
 its local feed and says so ("[glassbox] serving http://127.0.0.1:7580/events", "recording
@@ -18,9 +20,10 @@ MAX_ARGUMENTS = 4096
 
 def _handlers():
     from litetui.plugins.glassbox_plugin import _cmd_glassbox
+    from litetui.plugins.model_switch import _cmd_engine
     from litetui.plugins.tasks_plugin import _cmd_tasks
 
-    return {"/tasks": _cmd_tasks, "/glassbox": _cmd_glassbox}
+    return {"/tasks": _cmd_tasks, "/glassbox": _cmd_glassbox, "/engine": _cmd_engine}
 
 
 def dispatch(app, cmd) -> dict:

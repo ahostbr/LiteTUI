@@ -301,12 +301,8 @@ impl Demo {
                     self.python_command("/tasks", &route_arguments)
                 }
                 Action::Work(destination) => self.show_work(Some(destination)),
-                Action::Engine => {
-                    self.open_engine();
-                    if let Some(chat) = self.live.as_mut() {
-                        chat.engine.select_command(&route_arguments);
-                    }
-                }
+                // /engine: Python's own command (status, start, stop, lanes), answered in the chat.
+                Action::Engine => self.python_command("/engine", &route_arguments),
                 Action::Plan => {
                     self.open_runtime_controls(crate::runtime_controls_view::Field::Plan);
                     let desired = match route_arguments.trim().to_ascii_lowercase().as_str() {

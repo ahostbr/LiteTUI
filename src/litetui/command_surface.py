@@ -421,8 +421,6 @@ def resolve(app, cmd):
         native_system_prompt.validate_argument(arguments)
     if action in {"model_load", "model_unload"} and len(arguments.strip().encode("utf-8")) > 1024:
         raise ValueError("Model lifecycle target exceeds the review budget")
-    if action == "engine" and arguments.strip().lower() not in {"", "status", "start", "stop"}:
-        raise ValueError("Engine command supports status, start or stop; lane arguments require the engine configuration control")
     if action == "plan" and arguments.strip().lower() not in {"", "on", "off"}:
         # _cmd_plan's own line.
         raise ValueError(f"/plan takes no argument, or on/off — not {arguments.strip().lower()!r}")

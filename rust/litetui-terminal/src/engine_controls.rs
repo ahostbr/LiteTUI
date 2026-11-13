@@ -771,11 +771,6 @@ impl View {
         }
         self.hide();
     }
-    pub(crate) fn select_command(&mut self, verb: &str) {
-        if matches!(self.intent, Some(Intent::Read)) {
-            self.selected = usize::from(verb.trim().eq_ignore_ascii_case("stop"));
-        }
-    }
     pub fn owns_input(&self) -> bool {
         self.open
     }

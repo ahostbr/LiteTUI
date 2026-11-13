@@ -402,6 +402,8 @@ async def test_registered_control_commands_preserve_intent_without_callbacks(com
         ("/reconnect", "model_reconnect", ""),
         ("/engine STOP", "engine", "STOP"), ("/engine start", "engine", "start"),
         ("/engine status", "engine", "status"), ("/hooks", "hooks", ""),
+        # /engine is Python's own command: lanes and a start count go to its handler too.
+        ("/engine start 4", "engine", "start 4"), ("/engine lanes 4", "engine", "lanes 4"),
         ("/reload-plugins", "plugin_reload", ""),
         ("/reload-plugins skills", "plugin_reload", "skills"),
         ("/reload-plugins exact_tool", "plugin_reload", "exact_tool"),
@@ -412,7 +414,6 @@ async def test_registered_control_commands_preserve_intent_without_callbacks(com
         route = command_surface.resolve(app, {**base, "command": command})
         assert (route["command"], route["native_action"], route["arguments"]) == (command, action, arguments)
     for command, reason in [
-        ("/engine start 4", "lane arguments"), ("/engine lanes 4", "configuration"),
         ("/plan maybe", "or on/off — not"), ("/reload-plugins two targets", "one exact"),
         ("/compact bad\0hint", "NUL"), ("/hooks extra", "arguments"),
         ("/job every minute", "arguments"), ("/reconnect extra", "arguments"),

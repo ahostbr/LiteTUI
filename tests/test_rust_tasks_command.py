@@ -36,6 +36,16 @@ async def test_glassbox_runs_pythons_handler_and_its_usage_line(make_app):
         assert said == ["[glassbox] usage: /glassbox [start|stop|status]"]
 
 
+@pytest.mark.asyncio
+async def test_engine_runs_pythons_handler_which_names_the_backend_to_pick_first(make_app):
+    app = make_app()
+    async with app.run_test(size=(140, 45)):
+        said = []
+        app.system_message = lambda text, *a, **k: said.append(text)
+        assert op.dispatch(app, cmd("status", command="/engine")) == {"version": 1, "ran": True}
+        assert len(said) == 1 and said[0].startswith("/engine drives the")
+
+
 @pytest.mark.parametrize("bad", [
     {"version": 2}, {"arguments": 3}, {"arguments": "a\0b"}, {"arguments": "x" * 4097}, {"extra": 1},
     {"command": "/settings"},
