@@ -265,6 +265,8 @@ pub struct Chat {
     pub markdown_widths: Vec<u16>,
     /// The Markdown read in flight: its key and the card it is for.
     markdown_flight: Option<(u64, usize, usize)>,
+    /// /tasks with its typed arguments, for Python's own handler (sent by the pump).
+    pub tasks_command: Option<String>,
     /// After a refused or unsent render, when to ask again (the raw answer shows meanwhile).
     markdown_retry: Option<std::time::Instant>,
     /// Whether Python's held lines have been asked for, and when to ask again after a refusal.
@@ -542,6 +544,7 @@ impl Chat {
             system_lines: Vec::new(),
             markdown_widths: Vec::new(),
             markdown_flight: None,
+            tasks_command: None,
             markdown_retry: None,
             system_ask: SystemAsk::Wanted,
             system_retry: None,

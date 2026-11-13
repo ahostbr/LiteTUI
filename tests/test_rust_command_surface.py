@@ -84,9 +84,13 @@ async def test_work_routes_only_accept_inspection_and_preserve_callback_ownershi
         assert (route["command"], route["native_action"]) == (command, action)
     jobs = next(e for e in catalog["entries"] if e["kind"] == "palette" and e["title"] == "Scheduled jobs")
     assert command_surface.resolve(app, {**request, "row_id": jobs["id"]})["native_action"] == "work_jobs"
-    for command in ("/cron run saved", "/tasks kill id", "/loop clear", "/goal start something", "/cal run"):
+    for command in ("/cron run saved", "/loop clear", "/goal start something", "/cal run"):
         with pytest.raises(ValueError, match="inspection|arguments"):
             command_surface.resolve(app, {**request, "command": command})
+    # /tasks is Python's own command (native_tasks_command): every verb routes, as typed.
+    for command in ("/tasks kill id", "/tasks tail id", "/tasks bogus"):
+        route = command_surface.resolve(app, {**request, "command": command})
+        assert (route["native_action"], route["arguments"]) == ("work_tasks", command.split(" ", 1)[1])
     assert tree(app) == before
 
 

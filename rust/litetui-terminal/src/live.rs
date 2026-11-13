@@ -2897,6 +2897,30 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             .map_err(io::Error::other)?;
                         execution_stop_deadline = Some(Instant::now() + Duration::from_secs(20));
                     }
+                    Input::TasksCommand(arguments) => {
+                        let command = if turn.can_manage() {
+                            management.request_tasks_command(&arguments)
+                        } else {
+                            Err(io::Error::other(
+                                "Finish the current turn before using /tasks",
+                            ))
+                        };
+                        match command {
+                            Ok(value) => {
+                                owned
+                                    .stdin
+                                    .as_ref()
+                                    .expect("owned stdin")
+                                    .try_send(value)
+                                    .map_err(io::Error::other)?;
+                                deadline = Some(Instant::now() + options.timeout);
+                            }
+                            Err(error) => frontend.observe(Observation::SystemLine {
+                                text: error.to_string(),
+                                before_splash: false,
+                            })?,
+                        }
+                    }
                     Input::Markdown { key, text, width } => {
                         // A pure read: allowed while a turn runs.
                         match management.request_markdown(key, &text, width) {
@@ -2951,6 +2975,7 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                         let editing = matches!(intent, crate::settings_view::Intent::Editor(_));
                         let form = matches!(intent, crate::settings_view::Intent::Form(_));
                         let hooks = matches!(intent, crate::settings_view::Intent::Hooks(..));
+                        let calendar = matches!(intent, crate::settings_view::Intent::Calendar(_));
                         let compact_generation = match &intent {
                             crate::settings_view::Intent::Compaction(
                                 crate::compaction_settings::Intent::Read { generation }
@@ -2979,6 +3004,10 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             Err(error) => frontend.observe(Observation::Settings(if hooks {
                                 crate::settings_view::Update::Hooks(
                                     crate::hooks_dialog::Update::Rejected(error.to_string()),
+                                )
+                            } else if calendar {
+                                crate::settings_view::Update::Calendar(
+                                    crate::calendar_dialog::Update::Rejected(error.to_string()),
                                 )
                             } else if form {
                                 crate::settings_view::Update::Form(
@@ -3768,6 +3797,18 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
                             deadline = None;
                         }
                     }
+                    Step::TasksCommand(refused) => {
+                        if !turn.closing {
+                            check_deadline(deadline)?;
+                            deadline = None;
+                            if let Some(text) = refused {
+                                frontend.observe(Observation::SystemLine {
+                                    text,
+                                    before_splash: false,
+                                })?;
+                            }
+                        }
+                    }
                     Step::Backend(update) => {
                         if !turn.closing {
                             frontend.observe(Observation::Backend(update))?;
@@ -4056,6 +4097,8 @@ fn drive(options: Options, frontend: &mut impl Frontend) -> io::Result<()> {
 pub enum Input {
     /// Read Python's held chat-log system lines (once, when the chat is ready).
     SystemLines,
+    /// /tasks with its typed arguments: Python's own handler.
+    TasksCommand(String),
     /// Render one card's answer as Python's Markdown at a width.
     Markdown {
         key: u64,
@@ -4514,6 +4557,14 @@ impl Interactive {
         }
         self.commands
             .try_send(Input::Markdown { key, text, width })
+            .map_err(io::Error::other)
+    }
+    pub fn tasks_command(&self, arguments: String) -> io::Result<()> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Runtime is quitting"));
+        }
+        self.commands
+            .try_send(Input::TasksCommand(arguments))
             .map_err(io::Error::other)
     }
     pub fn system_lines(&self) -> io::Result<()> {

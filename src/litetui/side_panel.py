@@ -926,6 +926,10 @@ def refuse_over_rpc(app, what: str) -> bool:
     """
     if not getattr(app, "_rpc", False):
         return False
+    if getattr(app, "_native_dialog_driving", False):
+        # A native frontend is drawing this dialog chain and acting in it
+        # (native_calendar_dialog): its keyboard IS attached, for that act only.
+        return False
     app.system_message(
         f"{what} is a keyboard dialog, and this session is headless (--rpc). It "
         f"was NOT opened: a screen here waits on a keyboard that is not attached "

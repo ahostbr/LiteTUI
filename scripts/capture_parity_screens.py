@@ -128,6 +128,26 @@ PROFILES = {
                            ("added", ["\t", "\r"], "none"),
                            ("closed", ["click:Close"], "none")]
                 for frontend in ("textual", "rust")},
+    # /tasks is Python's own command: it answers in the chat log and opens nothing. Every verb
+    # (bare, list, tail and kill of an unknown id, a bad verb) runs Python's handler.
+    "tasksverbs": {frontend: [("bare", ["/tasks\r"], "none"), ("list", ["/tasks list\r"], "none"),
+                              ("tail", ["/tasks tail nope\r"], "none"), ("kill", ["/tasks kill nope\r"], "none"),
+                              ("bad", ["/tasks bogus\r"], "none")]
+                   for frontend in ("textual", "rust")},
+    # /cal is Python's CalendarScreen: click today (marked with a dot), the day popup's
+    # n opens the new-job editor, Escape twice back to the month, Right to next month, q.
+    "calday": {frontend: [("cal-open", ["/cal\r"], "none"), ("day", ["click:•"], "none"),
+                          ("job", ["n"], "none"), ("job-back", ["\x1b"], "none"), ("day-back", ["\x1b"], "none"),
+                          ("next-month", ["\x1b[C"], "none"), ("closed", ["q"], "none")]
+               for frontend in ("textual", "rust")},
+    # A job made through /cal: today's popup, n, type the prompt, Enter saves (JobBody's
+    # Input.Submitted), the day lists it, Escape shows it in the month and the JOBS pane.
+    # The job store in the data root then says what was saved.
+    "calsave": {frontend: [("cal-open", ["/cal\r"], "none"), ("day", ["click:•"], "none"),
+                           ("job", ["n"], "none"), ("typed", ["calendar parity job"], "none"),
+                           ("saved", ["\r"], "none"), ("month", ["\x1b"], "none"),
+                           ("closed", ["q"], "none")]
+                for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

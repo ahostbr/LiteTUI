@@ -53,6 +53,8 @@ pub enum Intent {
     Form(crate::settings_form::Intent),
     /// `/hooks` and the Settings Hooks tab (and `/mcp`): Python's dialog, run in the source.
     Hooks(crate::hooks_dialog::Kind, crate::hooks_dialog::Intent),
+    /// `/cal`: Python's CalendarScreen chain, run in the source.
+    Calendar(crate::calendar_dialog::Intent),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -75,6 +77,7 @@ pub enum Update {
     Compaction(crate::compaction_settings::Update),
     Form(crate::settings_form::Update),
     Hooks(crate::hooks_dialog::Update),
+    Calendar(crate::calendar_dialog::Update),
     CompactionEdited {
         update: crate::compaction_settings::Update,
         inspection: Snapshot,
@@ -256,6 +259,8 @@ pub struct View {
     pub form: crate::settings_form::View,
     /// Python's HooksScreen (hooks_dialog), over the settings form when opened from it.
     pub hooks: crate::hooks_dialog::View,
+    /// Python's CalendarScreen chain (calendar_dialog), opened by /cal.
+    pub calendar: crate::calendar_dialog::View,
     pub open: bool,
     pub waiting: bool,
     pub snapshot: Option<Snapshot>,
@@ -422,10 +427,15 @@ impl View {
             || self.compaction.owns_input()
             || self.form.owns_input()
             || self.hooks.owns_input()
+            || self.calendar.owns_input()
     }
     /// `/hooks`: Python's HooksScreen.
     pub fn open_hooks(&mut self) {
         self.hooks.open_kind(crate::hooks_dialog::Kind::Hooks);
+    }
+    /// `/cal`: Python's CalendarScreen.
+    pub fn open_calendar(&mut self) {
+        self.calendar.open();
     }
     /// Bare `/mcp`: Python's MCPListBody.
     pub fn open_mcp_dialog(&mut self) {
@@ -433,9 +443,14 @@ impl View {
     }
     pub fn take_intent(&mut self) -> Option<Intent> {
         let kind = self.hooks.kind;
-        self.hooks
+        self.calendar
             .take_intent()
-            .map(|intent| Intent::Hooks(kind, intent))
+            .map(Intent::Calendar)
+            .or_else(|| {
+                self.hooks
+                    .take_intent()
+                    .map(|intent| Intent::Hooks(kind, intent))
+            })
             .or_else(|| self.form.take_intent().map(Intent::Form))
             .or_else(|| self.editor.take_intent().map(Intent::Editor))
             .or_else(|| self.compaction.take_intent().map(Intent::Compaction))
@@ -506,7 +521,8 @@ impl View {
         self.snapshot = None;
     }
     pub fn accepts_paste(&self) -> bool {
-        self.hooks.owns_input()
+        self.calendar.owns_input()
+            || self.hooks.owns_input()
             || self.form.accepts_paste()
             || self.mcp.accepts_paste()
             || self.editor.editing()
@@ -515,7 +531,9 @@ impl View {
             || self.voice.accepts_paste()
     }
     pub fn paste(&mut self, text: &str) {
-        if self.hooks.owns_input() {
+        if self.calendar.owns_input() {
+            self.calendar.paste(text);
+        } else if self.hooks.owns_input() {
             self.hooks.paste(text);
         } else if self.form.owns_input() {
             self.form.paste(text);
@@ -543,6 +561,10 @@ impl View {
     pub fn observe(&mut self, update: Update) {
         if let Update::Hooks(update) = update {
             self.hooks.observe(update);
+            return;
+        }
+        if let Update::Calendar(update) = update {
+            self.calendar.observe(update);
             return;
         }
         if let Update::Form(update) = update {
@@ -577,7 +599,7 @@ impl View {
         self.hide();
         self.scroll = 0;
         match update {
-            Update::Form(_) | Update::Hooks(_) => {}
+            Update::Form(_) | Update::Hooks(_) | Update::Calendar(_) => {}
             Update::ModelPreferences(result) => {
                 self.model_preferences.update(result.map(|update| *update))
             }
@@ -652,6 +674,10 @@ impl View {
         self.pressed = None;
     }
     pub fn key(&mut self, key: KeyEvent) {
+        if self.calendar.owns_input() {
+            self.calendar.key(key);
+            return;
+        }
         if self.hooks.owns_input() {
             self.hooks.key(key);
             return;
@@ -891,6 +917,10 @@ impl View {
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.calendar.owns_input() {
+            self.calendar.mouse(event);
+            return;
+        }
         if self.hooks.owns_input() {
             self.hooks.mouse(event);
             return;
@@ -968,6 +998,11 @@ impl View {
         }
     }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.calendar.set_size(area);
+        if self.calendar.owns_input() {
+            self.calendar.draw(frame, area, theme);
+            return;
+        }
         if self.hooks.owns_input() {
             self.hooks.draw(frame, area, theme);
             return;

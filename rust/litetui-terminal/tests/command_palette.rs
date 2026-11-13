@@ -1167,6 +1167,19 @@ fn mcp_routes_reuse_the_settings_panel_and_list_is_inspection_only() {
 }
 
 #[test]
+fn tasks_runs_pythons_own_command_with_every_verb_and_opens_nothing() {
+    // Python's /tasks answers in the chat log (list, tail, kill, usage): each verb goes to
+    // its handler as typed, nothing opens, and the routing notice is not left behind.
+    for arguments in ["", "list", "kill t1", "tail t1", "bogus"] {
+        let app = routed_app("work_tasks", true, "custom", arguments);
+        let chat = app.live.as_ref().unwrap();
+        assert_eq!(chat.tasks_command.as_deref(), Some(arguments));
+        assert!(!chat.work.open, "{arguments:?} opened Work");
+        assert!(app.notice.is_empty(), "{arguments:?}: {}", app.notice);
+    }
+}
+
+#[test]
 fn help_and_keys_overlay_list_the_live_catalog_and_native_keys_read_only() {
     for (action, first) in [
         ("help", "Commands (live source registry)"),

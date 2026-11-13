@@ -607,7 +607,8 @@ impl Route {
             let verb = arguments.trim();
             let lower = verb.to_ascii_lowercase();
             let inspection = match destination {
-                Destination::Tasks => verb == "list",
+                // /tasks runs Python's own handler, every verb as in Python.
+                Destination::Tasks => true,
                 Destination::Jobs => matches!(lower.as_str(), "list" | "ls"),
                 Destination::Loops => matches!(lower.as_str(), "list" | "ls" | "status"),
                 Destination::Goal => matches!(lower.as_str(), "status" | "show"),

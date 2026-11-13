@@ -21,6 +21,8 @@ pub use rewrite::{Changed as RewriteChanged, Prepared as RewritePrepared};
 
 const GENERATION: u64 = 1;
 const SYSTEM_LINES: &str = "gui.system_lines";
+/// /tasks: Python's own handler, run as typed (native_tasks_command.py).
+const TASKS_COMMAND: &str = "gui.tasks.native_command";
 // One foreground request, its separately correlated execution Stop, and one
 // genuine Work settlement read can overlap. Their controllers each retain one
 // slot; increasing correlation capacity does not authorize another mutation.
@@ -281,6 +283,8 @@ pub enum Step {
     Backend(crate::backend_controls::Update),
     /// Python's chat-log system lines held until this client asked: (text, before splash).
     SystemLines(Vec<(String, bool)>),
+    /// /tasks ran in Python (its lines came as system_message events), or why it did not.
+    TasksCommand(Option<String>),
     /// Python's Markdown lines for one card's answer (native_markdown.py); None if refused.
     Markdown {
         key: u64,
@@ -730,6 +734,10 @@ pub struct Management {
     markdown: Option<(CommandId, u64, u16)>,
     /// The hooks editor (or /mcp dialog) request in flight, which dialog, and whether it closes.
     hooks_editor: Option<(CommandId, crate::hooks_dialog::Kind, bool)>,
+    /// The /tasks command in flight.
+    tasks_command: Option<CommandId>,
+    /// The /cal request in flight, and whether it closes.
+    calendar: Option<(CommandId, bool)>,
     settings_snapshot: Option<settings::Snapshot>,
     settings_review: Option<settings::Review>,
     settings_generation: u64,
@@ -823,6 +831,8 @@ impl Default for Management {
             system_lines: None,
             markdown: None,
             hooks_editor: None,
+            tasks_command: None,
+            calendar: None,
             settings_snapshot: None,
             settings_review: None,
             settings_generation: 0,
@@ -963,6 +973,8 @@ impl Management {
             && self.settings_edit.is_none()
             && self.settings_form.is_none()
             && self.hooks_editor.is_none()
+            && self.tasks_command.is_none()
+            && self.calendar.is_none()
             && self.backend.is_none()
             && self.browser.is_none()
             && self.control.is_none()
@@ -1499,6 +1511,18 @@ impl Management {
                 id,
                 matched: true,
                 frame,
+            } if self.tasks_command.is_some() && self.tasks_command.as_ref() == id.as_ref() => {
+                self.tasks_command = None;
+                Ok(Step::TasksCommand(if frame["ok"] == true {
+                    None
+                } else {
+                    Some(text(&frame, "error", 4096)?.into())
+                }))
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
             } if self
                 .hooks_editor
                 .as_ref()
@@ -1515,6 +1539,29 @@ impl Management {
                 };
                 Ok(Step::Settings {
                     update: crate::settings_view::Update::Hooks(update),
+                    policy: None,
+                })
+            }
+            Notice::Response {
+                id,
+                matched: true,
+                frame,
+            } if self
+                .calendar
+                .as_ref()
+                .is_some_and(|(pending, _)| Some(pending) == id.as_ref()) =>
+            {
+                let (_, closing) = self.calendar.take().expect("calendar pending");
+                use crate::calendar_dialog::{Snapshot, Update};
+                let update = if frame["ok"] != true {
+                    Update::Rejected(text(&frame, "error", 4096)?.into())
+                } else if closing {
+                    Update::Closed
+                } else {
+                    Update::Snapshot(Snapshot::parse(&frame["result"])?.map(Box::new))
+                };
+                Ok(Step::Settings {
+                    update: crate::settings_view::Update::Calendar(update),
                     policy: None,
                 })
             }
@@ -3285,6 +3332,9 @@ impl Management {
         if let crate::settings_view::Intent::Hooks(kind, intent) = intent {
             return self.request_hooks_editor(kind, intent);
         }
+        if let crate::settings_view::Intent::Calendar(intent) = intent {
+            return self.request_calendar(intent);
+        }
         if matches!(
             intent,
             crate::settings_view::Intent::Editor(_) | crate::settings_view::Intent::Compaction(_)
@@ -4738,6 +4788,53 @@ impl Management {
         let mut command = json!({"type": SYSTEM_LINES, "version": 1});
         command["id"] = id.to_value();
         self.system_lines = Some(id);
+        Ok(command)
+    }
+    /// /cal: Python's CalendarScreen chain, run in the source (native_calendar_dialog.py).
+    pub fn request_calendar(
+        &mut self,
+        intent: crate::calendar_dialog::Intent,
+    ) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail("Finish current work before opening the calendar"));
+        }
+        self.ensure_drained()?;
+        if !crate::calendar_dialog::OPERATIONS
+            .iter()
+            .all(|op| self.operations.iter().any(|v| v == op))
+        {
+            return Err(fail(
+                "Runtime lacks the native calendar; update Python source",
+            ));
+        }
+        let mut command = intent.command();
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve the calendar request"))?;
+        command["id"] = id.to_value();
+        self.calendar = Some((id, intent.closing()));
+        Ok(command)
+    }
+    /// /tasks: Python's handler with the typed arguments (native_tasks_command.py). Its
+    /// answer is chat-log lines, which arrive as system_message events.
+    pub fn request_tasks_command(&mut self, arguments: &str) -> io::Result<Value> {
+        if !self.ready() {
+            return Err(fail("Finish current work before using /tasks"));
+        }
+        self.ensure_drained()?;
+        if !self.operations.iter().any(|op| op == TASKS_COMMAND) {
+            return Err(fail(
+                "Runtime lacks the native /tasks; update Python source",
+            ));
+        }
+        let id = self
+            .wire
+            .register_request()
+            .map_err(|_| fail("Cannot reserve the /tasks request"))?;
+        let mut command = json!({"type": TASKS_COMMAND, "version": 1, "arguments": arguments});
+        command["id"] = id.to_value();
+        self.tasks_command = Some(id);
         Ok(command)
     }
     /// Python's HooksEditor, run in the source (native_hooks_editor.py): open, act, read, close.

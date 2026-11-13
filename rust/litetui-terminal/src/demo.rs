@@ -283,6 +283,23 @@ impl Demo {
             match action {
                 // /hooks: Python's HooksScreen (hooks_dialog), not the Work view's list.
                 Action::Work(crate::work_view::Destination::Hooks) => self.open_hooks_dialog(),
+                // /cal: Python's CalendarScreen (calendar_dialog), not the Work view's month.
+                Action::Work(crate::work_view::Destination::Calendar) => {
+                    self.open_calendar_dialog()
+                }
+                // /tasks: Python's command answers in the chat log and opens nothing.
+                Action::Work(crate::work_view::Destination::Tasks) => {
+                    if let Some(chat) = self.live.as_mut() {
+                        chat.tasks_command = Some(route_arguments.clone());
+                        // Nothing opens to cover the routing notice: Python leaves the row blank.
+                        if chat.notice == chat.commands.notice {
+                            if self.notice == chat.notice {
+                                self.notice.clear();
+                            }
+                            chat.notice.clear();
+                        }
+                    }
+                }
                 Action::Work(destination) => self.show_work(Some(destination)),
                 Action::Engine => {
                     self.open_engine();
@@ -863,6 +880,22 @@ impl Demo {
                 _ => None,
             };
             chat.settings.open_glassbox(action);
+        }
+    }
+    /// `/cal`: Python's CalendarScreen chain, drawn natively (calendar_dialog).
+    pub fn open_calendar_dialog(&mut self) {
+        if self.has_live_input() {
+            return;
+        }
+        if let Some(chat) = self.live.as_mut() {
+            if !chat.ready || chat.busy || chat.closed || chat.quitting {
+                self.notice = "Finish current work before opening the calendar.".into();
+                return;
+            }
+            chat.settings.open_calendar();
+            self.themes_open = false;
+            self.completion.dismiss();
+            self.footer.leave();
         }
     }
     /// `/hooks`: Python's HooksScreen, drawn natively (hooks_dialog).

@@ -1759,6 +1759,12 @@ fn run_interactive(mut options: litetui_terminal::live::Options) -> io::Result<O
                 app.live.as_mut().expect("live").markdown_unsent();
             }
             if !quitting
+                && let Some(arguments) = app.live.as_mut().expect("live").tasks_command.take()
+                && let Err(error) = runtime.tasks_command(arguments)
+            {
+                app.notice = error.to_string();
+            }
+            if !quitting
                 && let Some(intent) = app.live.as_mut().expect("live").settings.take_intent()
                 && let Err(error) = runtime.settings(intent)
             {

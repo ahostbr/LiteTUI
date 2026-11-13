@@ -71,12 +71,25 @@ def _select_index(select):
 
 def _item(widget):
     from textual.containers import Horizontal, ScrollableContainer
-    from textual.widgets import Button, Input, Label, Select, Static, Switch, TextArea
+    from textual.widgets import Button, Input, Label, OptionList, Select, Static, Switch, TextArea
+
+    from litetui.ticker import NumberTicker
 
     if not widget.display:
         return None
     base = {"id": widget.id, "disabled": bool(widget.disabled)}
     classes = sorted(c for c in widget.classes if not c.startswith("-"))
+    if isinstance(widget, NumberTicker):
+        # A Horizontal of -, its Input and +: one control (the calendar's job form).
+        shown = widget.query_one(Input).value
+        return {"kind": "ticker", "value": widget.value, "text": shown, "min": widget.lo,
+                "max": widget.hi, "classes": classes, **base}
+    if isinstance(widget, OptionList):
+        from litetui.native_calendar_dialog import _lines
+
+        options = [{"id": option.id, "disabled": bool(option.disabled), "lines": _lines(option.prompt)}
+                   for option in (widget.get_option_at_index(i) for i in range(widget.option_count))]
+        return {"kind": "options", "options": options, "highlighted": widget.highlighted, **base}
     if isinstance(widget, Horizontal):
         children = [item for item in map(_item, widget.children) if item is not None]
         return {"kind": "line", "id": widget.id, "classes": classes, "items": children}
@@ -122,11 +135,15 @@ def _set(editor, values):
     """The frontend's edits to Inputs, the Switch and TextAreas, which handlers read on a press."""
     from textual.widgets import Input, Switch, TextArea
 
+    from litetui.ticker import NumberTicker
+
     if not isinstance(values, dict) or len(values) > MAX_VALUES:
         raise ValueError("Hooks editor values are malformed")
     for wid, value in values.items():
         widget = editor.query_one(f"#{wid}")
-        if isinstance(widget, Switch) and type(value) is bool:
+        if isinstance(widget, NumberTicker) and type(value) is int:
+            widget.set_value(value)
+        elif isinstance(widget, Switch) and type(value) is bool:
             widget.value = value
         elif isinstance(widget, TextArea) and isinstance(value, str) and len(value.encode()) <= MAX_VALUE:
             widget.load_text(value)

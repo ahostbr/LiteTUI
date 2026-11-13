@@ -430,9 +430,10 @@ def resolve(app, cmd):
         raise ValueError(f"/plan takes no argument, or on/off — not {arguments.strip().lower()!r}")
     if action == "plugin_reload" and arguments and (arguments.strip() != arguments or len(arguments.split()) != 1):
         raise ValueError("Plugin reload accepts one exact tool name or skills; select it in the refresh control")
-    if arguments and action in _WORK_INSPECTION:
+    # /tasks runs Python's own handler (native_tasks_command), every verb as in Python.
+    if arguments and action in _WORK_INSPECTION and action != "work_tasks":
         verb = arguments.strip()
-        if (verb if action == "work_tasks" else verb.lower()) not in _WORK_INSPECTION[action]:
+        if verb.lower() not in _WORK_INSPECTION[action]:
             raise ValueError("Open Work and review this action there. This command accepts inspection verbs only.")
     if arguments != "" and action in _NO_ARGUMENTS:
         raise ValueError(_NO_ARGUMENTS[action])

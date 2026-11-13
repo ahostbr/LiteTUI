@@ -62,6 +62,7 @@ pub mod settings_form;
 pub mod settings_picker;
 pub mod settings_view;
 
+pub mod calendar_dialog;
 pub mod chat_pause;
 pub mod claude_reset;
 pub mod command_palette;

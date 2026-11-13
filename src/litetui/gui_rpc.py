@@ -47,6 +47,9 @@ OPERATIONS = (
     "system_lines", "markdown.native_render",
     "hooks.native_editor_open", "hooks.native_editor_act", "hooks.native_editor_read", "hooks.native_editor_close",
     "mcp.native_dialog_open", "mcp.native_dialog_act", "mcp.native_dialog_read", "mcp.native_dialog_close",
+    "tasks.native_command",
+    "calendar.native_dialog_open", "calendar.native_dialog_act", "calendar.native_dialog_read",
+    "calendar.native_dialog_close",
     "prompt.native_pause_review", "prompt.native_pause_apply", "prompt.native_pause_readback",
     "conversations.list", "conversations.page", "conversations.preview", "conversations.native_agent_rows", "conversations.read", "conversations.open", "conversations.create",
     "conversations.rename", "conversations.edit", "conversations.retry", "conversations.compact",
@@ -1191,6 +1194,12 @@ async def _async_dispatch(app, cmd):
     from litetui import native_mcp_dialog
     if operation in native_mcp_dialog.OPERATIONS:
         return await native_mcp_dialog.dispatch(app, cmd)
+    from litetui import native_tasks_command
+    if operation == native_tasks_command.OPERATION:
+        return native_tasks_command.dispatch(app, cmd)
+    from litetui import native_calendar_dialog
+    if operation in native_calendar_dialog.OPERATIONS:
+        return await native_calendar_dialog.dispatch(app, cmd)
     from litetui import native_system_lines
     if operation == native_system_lines.OPERATION:
         return native_system_lines.read(app, cmd)

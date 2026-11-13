@@ -333,7 +333,8 @@ impl Management {
             | view::Intent::Sidecar(_)
             | view::Intent::ModelLifecycle(_)
             | view::Intent::Form(_)
-            | view::Intent::Hooks(..) => {
+            | view::Intent::Hooks(..)
+            | view::Intent::Calendar(_) => {
                 return Err(fail("Expected a reviewed settings editor operation"));
             }
         };
