@@ -146,6 +146,10 @@ async def dispatch(app, cmd):
     operation = cmd["type"]
     if operation == PREFIX + "open":
         _check(cmd, ("size",))
+        if getattr(app.backend, "remote", False):
+            # Python's /modelcfg on a remote backend is a reasoning-effort picker, not this
+            # screen: say so, open nothing, and the frontend keeps its own effort route.
+            return {"version": VERSION, "kind": "modelcfg_dialog", "screen": "remote"}
         await _fit(app, _size(cmd))
         if _screen(app) is None:
             # Python's own /modelcfg, with the frontend as the keyboard.
@@ -156,8 +160,9 @@ async def dispatch(app, cmd):
             finally:
                 app._native_dialog_driving = False
             if not isinstance(app.screen, ModelConfigScreen):
+                # "No model selected — …": Python said why in the chat log; nothing opened.
                 await _restore(app)
-                raise ValueError("The model settings did not open")
+                return {"version": VERSION, "kind": "modelcfg_dialog", "screen": "closed"}
             app._native_modelcfg_screen = app.screen
             await _settled(app)
         return snapshot(app)
