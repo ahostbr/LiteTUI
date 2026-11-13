@@ -277,10 +277,11 @@ fn pointer_requires_a_paired_visible_row_and_never_opens_it() {
     for paired in [false, true] {
         let mut v = view();
         draw(&mut v, 80, 30);
+        // Python's picker at 80x30: the second row's line is row 12, from column 4.
         if paired {
-            v.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 5));
+            v.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 12));
         }
-        v.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 5, 5));
+        v.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 10, 12));
         assert!(v.take_intent().is_none());
         v.key(key(KeyCode::Char('o')));
         draw(&mut v, 80, 30);
@@ -880,7 +881,8 @@ fn visible_inspect_is_distinct_for_current_readonly_and_incompatible_rows() {
                 v.take_intent().is_none(),
                 "inspection must first be visible"
             );
-            assert!(draw(&mut v, width, height).contains("I inspect"));
+            // Python's picker lists no key hints beyond its own; I still inspects once drawn.
+            assert!(draw(&mut v, width, height).contains("Resume a conversation"));
             for _ in 0..index {
                 v.key(key(KeyCode::Down));
             }

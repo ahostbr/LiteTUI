@@ -223,10 +223,24 @@ def _summary(app, authority, record, remaining):
            "agent_name": _text(authority.name, 1024),
            "title": _text(ConversationRepository.label(meta, messages), 4096),
            "message_count": len(messages), "updated_at": record.updated_at,
-           "current": current, "can_open": not reason, "reason": reason}
+           "current": current, "can_open": not reason, "reason": reason,
+           "picker_label": _text(_picker_label(record, meta, messages), 4096)}
     if _stamp(_unlinked(record.path))[0] != record.stamp:
         raise ValueError("Conversation changed while reading its catalog page")
     return row
+
+
+def _picker_label(record, meta, messages):
+    """The row /resume's own picker shows (plugins/convo._open_convos_picker), word for word."""
+    from litetui.plugins.convo import _convo_meta_bits
+
+    stamp, turns, badge = _convo_meta_bits(record.path, messages)
+    who = str(meta.get("agent_name") or "")[:10]
+    aid = str(meta.get("agent_id") or "")[:8]
+    owner = f"{who} {aid}".strip() or "\u2014"
+    return (f"{stamp}  {record.session_id[:8]}  {owner:<19}  {turns:>3} msg{badge}  "
+            f"{ConversationRepository.fmt_size(record.stamp[0]):>7}  "
+            f"{ConversationRepository.label(meta, messages)}")
 
 
 def _unchanged(app, session_id, before):
@@ -260,7 +274,12 @@ def page(app, cmd):
         remaining -= record.stamp[0]
     _unchanged(app, current, before)
     end = offset + len(rows)
+    # /resume's first picker, "Choose an agent": every ready owned agent, by name.
+    from litetui.agent_store import AgentStore
+    agents = [[agent.agent_id, _text(agent.name, 1024)]
+              for agent in AgentStore(before[0].store.data_root).list_agents()][:256]
     result = {"session_id": current, "agent_id": authority.agent_id, "snapshot": snapshot,
+              "agents": agents,
               "offset": offset, "total": len(records), "entries": rows,
               "previous_cursor": _cursor(current, authority.agent_id, snapshot, max(0, offset - PAGE_SIZE))
               if offset else None,

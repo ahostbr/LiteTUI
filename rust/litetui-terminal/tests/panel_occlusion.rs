@@ -118,7 +118,7 @@ impl Panel {
             Self::Engine => "Owned engine",
             Self::Commands => "Prepared skill",
             Self::Backend => "Select the engine for this conversation",
-            Self::Browser => "Conversations",
+            Self::Browser => "Resume a conversation",
             Self::Models => "Select a model",
         }
     }
@@ -190,9 +190,11 @@ impl Panel {
                     current: false,
                     can_open: true,
                     reason: String::new(),
+                    label: "Other conversation".into(),
                 }],
                 previous: None,
                 next: None,
+                agents: Vec::new(),
             })),
             Self::Commands => {
                 let catalog = catalog();

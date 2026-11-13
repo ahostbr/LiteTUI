@@ -42,6 +42,8 @@ pub struct Entry {
     pub current: bool,
     pub can_open: bool,
     pub reason: String,
+    /// The row Python's /resume picker shows (conversation_page._picker_label), else the title.
+    pub label: String,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Page {
@@ -54,6 +56,8 @@ pub struct Page {
     pub entries: Vec<Entry>,
     pub previous: Option<String>,
     pub next: Option<String>,
+    /// /resume's first picker: every ready owned agent (id, name).
+    pub agents: Vec<(String, String)>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
@@ -184,11 +188,17 @@ impl Page {
             if !can_open && reason.trim().is_empty() {
                 return Err(fail("Unavailable conversation lacks a source reason"));
             }
+            let title = text(row, "title", 4096, false)?;
+            let label = match row.get("picker_label") {
+                None => title.clone(),
+                Some(_) => text(row, "picker_label", 4096, false)?,
+            };
             entries.push(Entry {
                 session: id,
                 agent: owner,
                 agent_name: text(row, "agent_name", 1024, false)?,
-                title: text(row, "title", 4096, false)?,
+                label,
+                title,
                 message_count: count(row, "message_count", 1u64 << 53)?,
                 updated_at,
                 current: current_row,
@@ -196,6 +206,24 @@ impl Page {
                 reason,
             });
         }
+        let agents = match value.get("agents") {
+            None => Vec::new(),
+            Some(list) => list
+                .as_array()
+                .filter(|l| l.len() <= 256)
+                .ok_or_else(|| fail("Invalid agent list"))?
+                .iter()
+                .map(|pair| match pair.as_array().map(Vec::as_slice) {
+                    Some([Value::String(id), Value::String(name)])
+                        if !name.is_empty() && name.len() <= 1024 =>
+                    {
+                        identity(&serde_json::json!({ "id": id }), "id")
+                            .map(|id| (id, name.clone()))
+                    }
+                    _ => Err(fail("Invalid agent list entry")),
+                })
+                .collect::<io::Result<Vec<_>>>()?,
+        };
         Ok(Self {
             revision,
             session: current,
@@ -206,6 +234,7 @@ impl Page {
             entries,
             previous,
             next,
+            agents,
         })
     }
     /// A page may replace its predecessor only for that offered cursor/snapshot.
@@ -290,6 +319,21 @@ pub struct View {
     preview_pages: usize,
     preview_seen: Vec<bool>,
     preselect: Option<String>,
+    /// Python's two pickers: an agent, then one of its conversations.
+    stage: Stage,
+    agent_selected: usize,
+    /// The picker's first visible wrapped line (picker_box keeps the cursor in view).
+    scroll: usize,
+    /// A page read for PgUp/PgDn keeps the conversation picker.
+    paging: bool,
+    /// Why a pick did nothing, shown in the picker.
+    line: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Stage {
+    #[default]
+    Agents,
+    Conversations,
 }
 impl View {
     /// A conversation id prefix from a command only moves the row cursor on the
@@ -422,6 +466,8 @@ impl View {
         self.hide();
     }
     fn disarm(&mut self) {
+        // A new selection or arming clears the last pick's reason.
+        self.line = None;
         self.preview_page = 0;
         self.preview_seen.clear();
         self.armed = false;
@@ -472,6 +518,24 @@ impl View {
             Update::Action(_) => unreachable!("handled action"),
             Update::Page(page) => {
                 self.selected = page.entries.iter().position(|row| row.current).unwrap_or(0);
+                // `/resume <id>` names a conversation of this agent: Python skips the agent picker.
+                let named = self.preselect.is_some();
+                if !std::mem::take(&mut self.paging) && !named {
+                    self.stage = if page.agents.is_empty() {
+                        Stage::Conversations
+                    } else {
+                        Stage::Agents
+                    };
+                    self.agent_selected = page
+                        .agents
+                        .iter()
+                        .position(|(id, _)| *id == page.agent)
+                        .unwrap_or(0);
+                }
+                if named {
+                    self.stage = Stage::Conversations;
+                }
+                self.line = None;
                 self.notice = "Choose a saved conversation. Nothing has been opened.".into();
                 self.apply_preselection(&page);
                 self.page = Some(page);
@@ -531,6 +595,7 @@ impl View {
                 revision: page.revision,
                 cursor: cursor.clone(),
             });
+            self.paging = true;
             self.waiting = true;
             self.notice = "Reading the selected catalogue page…".into();
             self.hide();
@@ -592,6 +657,22 @@ impl View {
                     self.hide();
                 }
                 _ => self.disarm(),
+            }
+            return;
+        }
+        if self.stage == Stage::Agents {
+            let last = self
+                .page
+                .as_ref()
+                .map_or(0, |p| p.agents.len().saturating_sub(1));
+            match key.code {
+                KeyCode::Up => self.agent_selected = self.agent_selected.saturating_sub(1),
+                KeyCode::Down => self.agent_selected = (self.agent_selected + 1).min(last),
+                KeyCode::Home => self.agent_selected = 0,
+                KeyCode::End => self.agent_selected = last,
+                KeyCode::Enter if key.kind == KeyEventKind::Press => self.agent_enter(),
+                KeyCode::Char('r') if key.kind == KeyEventKind::Press => self.open(),
+                _ => {}
             }
             return;
         }
@@ -675,7 +756,44 @@ impl View {
                     self.hide();
                 }
             }
+            // Enter on a row asks "Open this conversation?"; the drawn question's Enter opens.
+            KeyCode::Enter if key.kind == KeyEventKind::Press && !self.armed => self.arm_selected(),
             _ => {}
+        }
+    }
+    /// The agent picker's pick: this agent's conversations, as Python's second picker.
+    fn agent_enter(&mut self) {
+        let Some(page) = &self.page else {
+            return;
+        };
+        let Some((id, name)) = page.agents.get(self.agent_selected) else {
+            return;
+        };
+        if *id != page.agent {
+            // Python relaunches the window as that agent (convo._switch_window_to).
+            self.line = Some(format!(
+                "{name}: opening another agent's conversations is not available in the Rust frontend yet."
+            ));
+            return;
+        }
+        if page.entries.is_empty() {
+            self.line = Some("Nothing to resume.".into());
+            return;
+        }
+        self.selected = page.entries.iter().position(|e| e.current).unwrap_or(0);
+        self.stage = Stage::Conversations;
+        self.line = None;
+    }
+    /// Arm the highlighted conversation (as O does); opening needs the drawn question's Enter.
+    fn arm_selected(&mut self) {
+        let Some(row) = self.selected() else {
+            return;
+        };
+        if row.can_open && !row.current {
+            self.armed = true;
+            self.line = None;
+        } else {
+            self.line = Some(row.reason.clone());
         }
     }
     pub fn mouse(&mut self, event: MouseEvent) {
@@ -706,8 +824,16 @@ impl View {
                     .take()
                     .is_some_and(|pressed| Some(pressed) == hit)
                 {
-                    self.selected = hit.expect("paired hit");
+                    let index = hit.expect("paired hit");
                     self.horizontal = 0;
+                    if self.stage == Stage::Agents {
+                        // Choosing an agent opens nothing, so a click picks it as in Python.
+                        self.agent_selected = index;
+                        self.agent_enter();
+                    } else {
+                        // A click only selects a conversation; opening is never a click.
+                        self.selected = index;
+                    }
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -728,10 +854,78 @@ impl View {
             _ => self.pressed = None,
         }
     }
+    /// Python's /resume pickers (picker_box): "Choose an agent", then "Resume a conversation".
+    fn draw_picker(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.visible = false;
+        // Python opens each picker once its rows exist.
+        if !self.owns_input() || self.waiting {
+            self.hide();
+            return;
+        }
+        let (title, rows, highlighted): (&str, Vec<String>, usize) = match (&self.page, self.stage)
+        {
+            (Some(page), Stage::Agents) => (
+                "Choose an agent",
+                page.agents.iter().map(|(_, name)| name.clone()).collect(),
+                self.agent_selected,
+            ),
+            (Some(page), Stage::Conversations) => (
+                "Resume a conversation",
+                // Titles are source text: control characters stay literal.
+                page.entries.iter().map(|e| line(&e.label, 0)).collect(),
+                self.selected,
+            ),
+            (None, _) => ("Choose an agent", Vec::new(), 0),
+        };
+        let mut extra = Vec::new();
+        let why = self
+            .line
+            .clone()
+            .or_else(|| self.page.is_none().then(|| self.notice.clone()))
+            .filter(|l| !l.is_empty());
+        if let Some(why) = why {
+            extra.push((why, Style::default().fg(theme.error)));
+        }
+        let question = self
+            .armed
+            .then(|| self.selected().map(|row| row.session.clone()))
+            .flatten();
+        if let Some(id) = &question {
+            let plain = Style::default().fg(theme.foreground);
+            extra.push((String::new(), plain));
+            extra.push((
+                "Open this conversation?".into(),
+                plain.add_modifier(Modifier::BOLD),
+            ));
+            extra.push((id.clone(), plain));
+            extra.push(("Enter: open | Esc: cancel".into(), plain));
+        }
+        let drawn = crate::picker_box::draw(
+            frame,
+            area,
+            theme,
+            title,
+            &rows,
+            highlighted,
+            &mut self.scroll,
+            &extra,
+            crate::picker_box::HINT,
+        );
+        if self.geometry != Some(area) {
+            self.disarm();
+            self.geometry = Some(area);
+        }
+        self.hits = drawn.hits;
+        self.visible = self.open && !self.waiting && drawn.rect.width > 0;
+        self.confirmation_visible = self.visible && question.is_some();
+    }
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if self.actions.owns_input() {
             self.actions.draw(frame, area, theme);
             return;
+        }
+        if self.preview.is_none() {
+            return self.draw_picker(frame, area, theme);
         }
         self.visible = false;
         if !self.owns_input() || area.width < 36 || area.height < 14 {

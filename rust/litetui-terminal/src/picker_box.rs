@@ -94,6 +94,14 @@ pub fn draw(
     }
     let cw = bw - 6; // border 1 + padding 2, each side
     let tw = usize::from(cw.saturating_sub(2)); // OptionList padding 0 1
+    let extra: Vec<(String, Style)> = extra
+        .iter()
+        .flat_map(|(text, style)| {
+            wrap(&terminal_text(text), usize::from(cw))
+                .into_iter()
+                .map(move |line| (line, *style))
+        })
+        .collect();
     // Wrapped option lines, each with its row index.
     let mut lines: Vec<(usize, String)> = Vec::new();
     for (index, row) in rows.iter().enumerate() {
@@ -119,9 +127,7 @@ pub fn draw(
         }
     }
     *scroll = (*scroll).min(lines.len().saturating_sub(list_h));
-    let box_h = (fixed + list_h as u16)
-        .min(body.max(fixed))
-        .min(area.height);
+    let box_h = (fixed + list_h as u16).min(body).min(area.height);
     let body_top = area.y + (area.height - body.min(area.height)) / 2;
     // A box taller than the 80% body (a short terminal) still stays on the screen.
     let top = (body_top + body.saturating_sub(box_h) / 2).min(area.bottom() - box_h);
@@ -185,8 +191,8 @@ pub fn draw(
         hits.push((Rect::new(cx, y, cw, 1), *index));
     }
     let mut y = list_top + list_h as u16;
-    for (text, style) in extra {
-        put(buf, cx, y, &terminal_text(text), style.bg(t.surface));
+    for (text, style) in &extra {
+        put(buf, cx, y, text, style.bg(t.surface));
         y += 1;
     }
     put(buf, cx, y + 1, &terminal_text(hint), muted);
