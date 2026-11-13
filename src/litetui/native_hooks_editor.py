@@ -69,6 +69,41 @@ def _select_index(select):
         return ""
 
 
+def _hex(color) -> str:
+    return color.hex6.lower()
+
+
+def _paint(widget) -> dict:
+    """The widget's colours as Textual computes them for the running theme (CSS cascade,
+    focus, hover, disabled), so the native frontend draws Python's colours rather than
+    guessing them from ids and classes. `style` is the widget's own Rich style (its text
+    colour over its composited background); `outside`/`inside` are the backgrounds behind
+    and of the widget; `border_<edge>` the border colours; the rest component styles."""
+    try:
+        outside, inside = widget.background_colors
+        out = {"style": str(widget.rich_style), "outside": _hex(outside), "inside": _hex(inside),
+               "focused": bool(widget.has_focus)}
+        for edge in ("top", "bottom", "left", "right"):
+            kind, color = getattr(widget.styles, "border_" + edge)
+            if kind:
+                out["border_" + edge] = _hex(outside + color)
+        for name, component in (("placeholder", "input--placeholder"), ("cursor", "input--cursor"),
+                                ("slider", "switch--slider"), ("toggle", "toggle--button"),
+                                ("option", "option-list--option"),
+                                ("highlighted", "option-list--option-highlighted")):
+            if component in widget.COMPONENT_CLASSES:
+                if name == "highlighted":
+                    style = widget.get_visual_style("option-list--option", component).rich_style
+                elif name == "option":
+                    style = widget.get_visual_style(component).rich_style
+                else:
+                    style = widget.get_component_rich_style(component)
+                out[name] = str(style)
+        return out
+    except Exception:  # noqa: BLE001 - a paint is a hint; the frontend has its own fallback
+        return {}
+
+
 def _item(widget):
     from textual.containers import Horizontal, ScrollableContainer
     from textual.widgets import Button, Input, Label, OptionList, Select, Static, Switch, TextArea
@@ -77,7 +112,7 @@ def _item(widget):
 
     if not widget.display:
         return None
-    base = {"id": widget.id, "disabled": bool(widget.disabled)}
+    base = {"id": widget.id, "disabled": bool(widget.disabled), "paint": _paint(widget)}
     classes = sorted(c for c in widget.classes if not c.startswith("-"))
     if isinstance(widget, NumberTicker):
         # A Horizontal of -, its Input and +: one control (the calendar's job form).
@@ -96,6 +131,11 @@ def _item(widget):
     if isinstance(widget, Button):
         return {"kind": "button", "label": _plain(widget.label), "variant": widget.variant, **base}
     if isinstance(widget, Select):
+        from textual.widgets._select import SelectCurrent
+
+        current = next(iter(widget.query(SelectCurrent)), None)
+        if current is not None:
+            base["paint"] = _paint(current)
         return {"kind": "select", "prompt": _plain(widget.prompt), "options": _options(widget),
                 "value": _select_index(widget), **base}
     if isinstance(widget, Switch):

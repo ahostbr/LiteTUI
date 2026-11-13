@@ -62,10 +62,14 @@ def _lines(text) -> list:
     out = []
     for line in text.split("\n", allow_blank=True):
         runs = []
+        # Text.render yields a span-less Text without its own base style (Rich applies it in
+        # __rich_console__): put the base under every segment, as the console does.
+        base = console.get_style(line.style) if line.style else None
         for seg in line.render(console):
             if not seg.text:
                 continue
-            style = str(seg.style) if seg.style else ""
+            combined = base + seg.style if base is not None and seg.style else (seg.style or base)
+            style = str(combined) if combined else ""
             if runs and runs[-1]["style"] == style:
                 runs[-1]["text"] += seg.text
             else:
@@ -221,8 +225,11 @@ def _with_regions(widget, entry):
 def _dock(screen):
     from litetui.side_panel import SwapButton
 
+    from litetui.native_hooks_editor import _paint
+
     found = [b for b in screen.query(SwapButton) if b.display]
-    return {"region": _region(found[0]), "label": str(found[0].label)} if found else None
+    return ({"region": _region(found[0]), "label": str(found[0].label), "paint": _paint(found[0])}
+            if found else None)
 
 
 def snapshot(app) -> dict:

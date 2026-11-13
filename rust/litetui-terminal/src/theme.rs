@@ -188,11 +188,89 @@ impl Theme {
     }
 }
 
+/// One widget's colours as Python's Textual computed them (native_hooks_editor._paint): its
+/// own style, the backgrounds behind (`outside`) and of it (`inside`), its border colours and
+/// the component styles it has. Every field is optional: an older source sends none, and the
+/// frontend then keeps its own look.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodePaint {
+    pub style: Option<ratatui::style::Style>,
+    pub outside: Option<Color>,
+    pub inside: Option<Color>,
+    pub border_top: Option<Color>,
+    pub border_bottom: Option<Color>,
+    pub border_left: Option<Color>,
+    pub border_right: Option<Color>,
+    pub placeholder: Option<ratatui::style::Style>,
+    pub cursor: Option<ratatui::style::Style>,
+    pub slider: Option<ratatui::style::Style>,
+    pub toggle: Option<ratatui::style::Style>,
+    pub option: Option<ratatui::style::Style>,
+    pub highlighted: Option<ratatui::style::Style>,
+    pub focused: bool,
+}
+impl NodePaint {
+    pub fn parse(v: &serde_json::Value) -> Self {
+        let text = |key: &str| {
+            v.get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| s.len() <= 256)
+        };
+        let colour = |key: &str| {
+            text(key).and_then(Css::parse).map(|c| {
+                let (r, g, b) = c.rgb;
+                Color::Rgb(r, g, b)
+            })
+        };
+        let style = |key: &str| text(key).map(|s| textual_style(s, ratatui::style::Style::default()));
+        Self {
+            style: style("style"),
+            outside: colour("outside"),
+            inside: colour("inside"),
+            border_top: colour("border_top"),
+            border_bottom: colour("border_bottom"),
+            border_left: colour("border_left"),
+            border_right: colour("border_right"),
+            placeholder: style("placeholder"),
+            cursor: style("cursor"),
+            slider: style("slider"),
+            toggle: style("toggle"),
+            option: style("option"),
+            highlighted: style("highlighted"),
+            focused: v.get("focused").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        }
+    }
+    /// Textual's tall side edges over the rows of `r` inside `clip`: the left "▊" is the
+    /// outside in front of the border colour, the right "▎" the border colour in front of the
+    /// outside.
+    pub fn tall_sides(&self, buf: &mut ratatui::buffer::Buffer, r: ratatui::layout::Rect, clip: ratatui::layout::Rect) {
+        use ratatui::style::Style;
+        let (Some(outside), Some(left), Some(right)) = (self.outside, self.border_left, self.border_right) else {
+            return;
+        };
+        if r.width < 2 {
+            return;
+        }
+        for y in r.top()..r.bottom() {
+            if y < clip.top() || y >= clip.bottom() || y >= buf.area.bottom() {
+                continue;
+            }
+            if r.x >= clip.left() && r.x < clip.right() && r.x < buf.area.right() {
+                buf[(r.x, y)].set_symbol("▊").set_style(Style::default().fg(outside).bg(left));
+            }
+            let x = r.right() - 1;
+            if x >= clip.left() && x < clip.right() && x < buf.area.right() {
+                buf[(x, y)].set_symbol("▎").set_style(Style::default().fg(right).bg(outside));
+            }
+        }
+    }
+}
+
 /// A Rich style spec as Textual paints it over `base` (fg/bg defaults): Textual's
 /// compositor never emits DIM, it blends the foreground toward the background by
 /// DIM_FACTOR 0.66 (`textual.filter.dim_color`, truncating) and drops the attribute.
 pub fn textual_style(spec: &str, base: ratatui::style::Style) -> ratatui::style::Style {
-    textual_dim(crate::calendar_dialog::rich_style(spec, base))
+    crate::calendar_dialog::rich_style(spec, base)
 }
 /// Textual's dim, resolved (see `textual_style`).
 pub fn textual_dim(style: ratatui::style::Style) -> ratatui::style::Style {

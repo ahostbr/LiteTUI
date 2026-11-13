@@ -354,6 +354,39 @@ impl Buttons {
     }
 }
 
+/// Textual's `tall` border around `rect`, as Textual draws it: the left edge "▊" is the
+/// colour outside in front of the border colour, the right edge "▎" the border colour in
+/// front of the outside, the top "▔" and bottom "▁" the border colour over the inside, and the
+/// inside filled.
+pub fn tall_edges(
+    buf: &mut ratatui::buffer::Buffer,
+    rect: Rect,
+    border: ratatui::style::Color,
+    inside: ratatui::style::Color,
+    outside: ratatui::style::Color,
+    text: ratatui::style::Color,
+) {
+    let rect = rect.intersection(buf.area);
+    if rect.width < 2 || rect.height == 0 {
+        return;
+    }
+    let inner = usize::from(rect.width - 2);
+    let left = Style::default().fg(outside).bg(border);
+    let right = Style::default().fg(border).bg(outside);
+    for y in rect.top()..rect.bottom() {
+        let (fill, style) = if y == rect.top() && rect.height > 1 {
+            ("▔", Style::default().fg(border).bg(inside))
+        } else if y + 1 == rect.bottom() && rect.height > 1 {
+            ("▁", Style::default().fg(border).bg(inside))
+        } else {
+            (" ", Style::default().fg(text).bg(inside))
+        };
+        buf.set_string(rect.x, y, "▊", left);
+        buf.set_string(rect.x + 1, y, fill.repeat(inner), style);
+        buf.set_string(rect.right() - 1, y, "▎", right);
+    }
+}
+
 /// Textual's thick border on $surface (#picker-box, #help-box): the box filled, its edges drawn.
 pub fn thick_box(buf: &mut ratatui::buffer::Buffer, rect: Rect, t: &Theme) {
     let surface = Style::default().fg(t.text()).bg(t.surface_bg());
@@ -429,6 +462,12 @@ pub fn scrollbar(
     let track = Style::default().fg(bar).bg(back);
     let solid = Style::default().fg(back).bg(bar);
     let rows = usize::from(height);
+    if !t.css.is_empty() {
+        // Textual paints the whole track in the scrollbar background.
+        for i in 0..rows {
+            buf.set_string(column, top + i as u16, " ", Style::default().fg(bar).bg(back));
+        }
+    }
     for i in start_index..end_index.min(rows) {
         buf.set_string(column, top + i as u16, " ", solid);
     }

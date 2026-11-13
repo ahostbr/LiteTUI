@@ -212,7 +212,9 @@ impl List {
         }
         self.tools = inventory.rows.len();
         self.focus = self.focus.min(self.tools + 3);
-        let muted = Style::default().fg(t.thinking_text).bg(t.background);
+        // #tl-note, .tl-auth, #tl-mcp: $text-muted over the screen.
+        let screen = t.screen();
+        let muted = Style::default().fg(t.muted_on(screen)).bg(screen);
         let note = wrap(NOTE, w);
         let mcp = (inventory.dynamic_sources > 0).then(|| {
             wrap(
@@ -265,25 +267,47 @@ impl List {
         y += 2;
         // #tl-global: the Switch (padding 0 2, a 4-cell slider) and its label.
         let focused = |index: usize| self.focus == index;
-        let edge = |on: bool| if on { t.primary } else { t.thinking_border };
+        // Switch and Checkbox: `tall $border-blurred` on $surface; `:focus` is `tall $border`
+        // with `background-tint: $foreground 5%`.
+        let styled = !t.css.is_empty();
+        let edge = |on: bool| {
+            if on {
+                t.var("border", t.primary)
+            } else {
+                t.var("border-blurred", t.thinking_border)
+            }
+        };
+        let inside = |on: bool| if on && styled { t.input() } else { t.surface_bg() };
         let switch = Rect::new(area.x, y, 10, 3);
         if y + 3 <= bottom {
-            tall(buf, switch, edge(focused(0)), t);
+            if styled {
+                crate::picker_box::tall_edges(buf, switch, edge(focused(0)), inside(focused(0)), screen, t.text());
+            } else {
+                tall(buf, switch, edge(focused(0)), t);
+            }
             let on = snapshot.facts.tools_enabled;
-            let track = Style::default().bg(t.panel);
-            let thumb = Style::default().bg(if on { t.title } else { t.thinking_border });
+            // .switch--slider: $panel (on: $success) over $panel-darken-2.
+            let track = Style::default().bg(t.var("panel-darken-2", t.panel));
+            let thumb = Style::default().bg(if on {
+                t.var("success", t.title)
+            } else {
+                t.var("panel", t.thinking_border)
+            });
             buf.set_string(area.x + 3, y + 1, "    ", track);
             buf.set_string(area.x + 3 + if on { 2 } else { 0 }, y + 1, "  ", thumb);
             self.hits.push((switch, Target::Switch));
         }
         put(buf, area.x + 11, y + 1, GLOBAL, base);
         y += 4;
+        // #tl-global's `border-bottom: solid $foreground 20%`.
         put(
             buf,
             area.x,
             y,
             &"─".repeat(w),
-            Style::default().fg(t.thinking_border).bg(t.background),
+            Style::default()
+                .fg(t.css_alpha("foreground", 20.0, screen, t.thinking_border))
+                .bg(screen),
         );
         y += 2;
         for line in &note {
@@ -317,25 +341,55 @@ impl List {
                     2 => "▁",
                     _ => " ",
                 };
-                let style = Style::default().fg(edge(focused(index + 2))).bg(t.surface);
-                buf.set_string(
-                    checkbox.x,
-                    yy,
-                    format!("▊{}▎", fill.repeat(usize::from(label_w + 7))),
-                    style,
-                );
+                let is_focused = focused(index + 2);
+                let bg = inside(is_focused);
+                if styled {
+                    let row = Rect::new(checkbox.x, yy, label_w + 9, 1);
+                    let border = edge(is_focused);
+                    // One row of the tall border (the row's own top/middle/bottom part).
+                    let mut part = |glyph: &str, style: Style| {
+                        buf.set_string(row.x + 1, yy, glyph.repeat(usize::from(label_w + 7)), style);
+                    };
+                    part(
+                        fill,
+                        Style::default()
+                            .fg(if dy == 1 { t.text() } else { border })
+                            .bg(bg),
+                    );
+                    buf.set_string(row.x, yy, "▊", Style::default().fg(screen).bg(border));
+                    buf.set_string(row.right() - 1, yy, "▎", Style::default().fg(border).bg(screen));
+                } else {
+                    let style = Style::default().fg(edge(is_focused)).bg(t.surface);
+                    buf.set_string(
+                        checkbox.x,
+                        yy,
+                        format!("▊{}▎", fill.repeat(usize::from(label_w + 7))),
+                        style,
+                    );
+                }
                 if dy == 1 {
-                    let side = Style::default().fg(t.panel).bg(t.surface);
+                    // .toggle--button: $panel behind the X, `$text-success` when on and
+                    // `$panel-darken-2` when off; the half blocks are the button's colour
+                    // on the checkbox's own background.
+                    let panel = t.var("panel", t.panel);
+                    let side = Style::default().fg(panel).bg(bg);
                     let inner = Style::default()
-                        .fg(if tool.enabled { t.title } else { t.background })
-                        .bg(t.panel);
+                        .fg(if tool.enabled {
+                            t.css_over("text-success", panel, t.title)
+                        } else {
+                            t.var("panel-darken-2", t.background)
+                        })
+                        .bg(panel);
                     buf.set_string(checkbox.x + 2, yy, "▐", side);
                     buf.set_string(checkbox.x + 3, yy, "X", inner);
                     buf.set_string(checkbox.x + 4, yy, "▌", side);
                     let label = if focused(index + 2) {
-                        Style::default().fg(t.background).bg(t.primary)
+                        let cursor = t.var("block-cursor-background", t.primary);
+                        Style::default()
+                            .fg(t.css_over("block-cursor-foreground", cursor, t.background))
+                            .bg(cursor)
                     } else {
-                        Style::default().fg(t.foreground).bg(t.surface)
+                        Style::default().fg(t.text()).bg(bg)
                     };
                     buf.set_string(checkbox.x + 6, yy, &tool.name, label);
                 }
@@ -407,7 +461,7 @@ impl List {
                 x,
                 y + 1,
                 &shown,
-                Style::default().fg(t.error).bg(t.background),
+                Style::default().fg(t.var("error", t.error)).bg(screen),
             );
         }
     }

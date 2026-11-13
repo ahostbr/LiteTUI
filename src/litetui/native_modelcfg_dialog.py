@@ -62,7 +62,9 @@ def walk(widget):
         active = widget.active_tab
         return {"kind": "tabs", "id": widget.id, "region": _region(widget),
                 "tabs": [{"id": tab.id, "label": str(tab.label), "region": _region(tab)} for tab in tabs],
-                "active": active.id if active is not None else None}
+                "active": active.id if active is not None else None,
+                # Tabs:focus draws the active tab in the block cursor and a brighter bar.
+                "paint": {"focused": bool(widget.has_focus)}}
     if isinstance(widget, (Button, Select, Switch, TextArea, Input, Label, Static, OptionList,
                            NumberTicker)):
         entry = _item(widget)

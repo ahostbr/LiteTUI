@@ -132,6 +132,8 @@ pub struct Item {
     pub region: Rect,
     pub disabled: bool,
     pub control: Control,
+    /// Python's computed colours for this widget (native_hooks_editor._paint).
+    pub paint: crate::theme::NodePaint,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -164,7 +166,8 @@ pub enum Screen {
 pub struct Snapshot {
     pub frame: Rect,
     pub boxed: Rect,
-    pub dock: Option<(Rect, String)>,
+    /// The SwapButton: its region, label and Python's colours (it holds focus at open).
+    pub dock: Option<(Rect, String, crate::theme::NodePaint)>,
     pub screen: Screen,
 }
 
@@ -339,6 +342,10 @@ fn item(v: &Value, depth: usize, count: &mut usize) -> io::Result<Item> {
         region: region(&v["region"])?,
         disabled: v.get("disabled").and_then(Value::as_bool).unwrap_or(false),
         control,
+        paint: v
+            .get("paint")
+            .map(crate::theme::NodePaint::parse)
+            .unwrap_or_default(),
     })
 }
 impl Snapshot {
@@ -386,7 +393,13 @@ impl Snapshot {
             .ok_or_else(bad)?;
         let dock = match &v["dock"] {
             Value::Null => None,
-            d => Some((region(&d["region"])?, text(d, "label")?)),
+            d => Some((
+                region(&d["region"])?,
+                text(d, "label")?,
+                d.get("paint")
+                    .map(crate::theme::NodePaint::parse)
+                    .unwrap_or_default(),
+            )),
         };
         Ok(Some(Self {
             frame: Rect::new(
@@ -496,6 +509,13 @@ struct Paint {
     /// `$scrollbar` on `$scrollbar-background`.
     bar: Color,
     bar_back: Color,
+    /// Tab `color: $foreground 50%`; Tabs:focus's active tab in the block cursor; the
+    /// Underline bar's `$foreground 10%` (30% under Tabs:focus) and its `$block-cursor-background`.
+    tab: Color,
+    cursor: Style,
+    bar_rest: Color,
+    bar_rest_focused: Color,
+    bar_hot: Color,
 }
 impl Paint {
     fn of(t: &Theme) -> Self {
@@ -513,6 +533,17 @@ impl Paint {
             buttons: crate::picker_box::Buttons::of(t),
             bar: t.var("scrollbar", t.primary),
             bar_back: t.var("scrollbar-background", t.panel),
+            tab: t.css_alpha("foreground", 50.0, surface, t.thinking_text),
+            cursor: {
+                let bg = t.var("block-cursor-background", t.primary);
+                Style::default()
+                    .fg(t.css_over("block-cursor-foreground", bg, t.foreground))
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD)
+            },
+            bar_rest: t.css_alpha("foreground", 10.0, surface, t.thinking_border),
+            bar_rest_focused: t.css_alpha("foreground", 30.0, surface, t.thinking_border),
+            bar_hot: t.var("block-cursor-background", t.primary),
         }
     }
 }
@@ -520,6 +551,10 @@ impl Paint {
 /// Rich's style string on top of `base`: bold, dim, italic, underline, strike, reverse, a
 /// `#rrggbb` colour and `on #rrggbb`.
 pub fn rich_style(spec: &str, base: Style) -> Style {
+    // Textual's compositor never emits DIM: it resolves it into a colour (theme::textual_dim).
+    crate::theme::textual_dim(rich_style_raw(spec, base))
+}
+fn rich_style_raw(spec: &str, base: Style) -> Style {
     let mut style = base;
     let mut words = spec.split_whitespace();
     let hex = |w: &str| -> Option<Color> {
@@ -1216,10 +1251,13 @@ impl View {
                 }
             }
         }
-        if let Some((r, label)) = &snapshot.dock
+        if let Some((r, label, np)) = &snapshot.dock
             && !matches!(snapshot.screen, Screen::Form { .. })
         {
-            button(buf, *r, label, "default", false, false, &p, boxed);
+            button(buf, *r, label, "default", np.focused, false, &p, boxed);
+            if let (Some(face), Some(inside)) = (np.style, np.inside) {
+                painted_button(buf, *r, label, face.bg(inside), np, boxed);
+            }
         }
         if !self.notice.is_empty() {
             buf.set_stringn(
@@ -1317,13 +1355,17 @@ impl View {
             return;
         }
         if let Control::Tabs { tabs, active } = &item.control {
-            let label = Style::default().fg(p.muted).bg(p.surface);
-            let lit = Style::default()
-                .fg(p.text)
-                .bg(p.surface)
-                .add_modifier(Modifier::BOLD);
-            let bar = Style::default().fg(p.border).bg(p.surface);
-            let hot = Style::default().fg(p.accent).bg(p.surface);
+            let focused = item.paint.focused;
+            let label = Style::default().fg(p.tab).bg(p.surface);
+            let lit = if focused {
+                p.cursor
+            } else {
+                Style::default().fg(p.text).bg(p.surface)
+            };
+            let bar = Style::default()
+                .fg(if focused { p.bar_rest_focused } else { p.bar_rest })
+                .bg(p.surface);
+            let hot = Style::default().fg(p.bar_hot).bg(p.surface);
             let line = r.y + 1;
             for x in r.left()..r.right() {
                 if line < buf.area.bottom() {
@@ -1357,11 +1399,23 @@ impl View {
             }
             return;
         }
-        let surface = Style::default().fg(p.text).bg(p.surface);
-        let muted = Style::default().fg(p.muted).bg(p.surface);
-        let edge = Style::default()
+        let mut surface = Style::default().fg(p.text).bg(p.surface);
+        let mut muted = Style::default().fg(p.muted).bg(p.surface);
+        let mut edge = Style::default()
             .fg(if is_focus { p.accent } else { p.border })
             .bg(p.surface);
+        // Python's own colours for this widget, when the source sent them.
+        let np = &item.paint;
+        if let Some(style) = np.style {
+            let inside = np.inside.or(style.bg).unwrap_or(p.surface);
+            surface = style.bg(inside);
+            if let Some(placeholder) = np.placeholder {
+                muted = placeholder.bg(inside);
+            }
+            if let Some(border) = np.border_top {
+                edge = Style::default().fg(border).bg(inside);
+            }
+        }
         match &item.control {
             Control::Line(children) => {
                 for child in children {
@@ -1377,7 +1431,9 @@ impl View {
                         .iter()
                         .any(|c| c == "set-label" || c == "set-label-inline" || c == "set-help"),
                 );
-                let style = if id == "set-title" {
+                let style = if let Some(style) = item.paint.style {
+                    style
+                } else if id == "set-title" {
                     Style::default()
                         .fg(p.accent)
                         .bg(p.surface)
@@ -1450,6 +1506,7 @@ impl View {
                     style,
                     content,
                 );
+                np.tall_sides(buf, r, content);
                 self.hits
                     .push((visible, Hit::Control(item.id.clone().unwrap_or_default())));
             }
@@ -1475,6 +1532,7 @@ impl View {
                     }
                 }
                 tall_lines(buf, r, edge, &lines, style, content);
+                np.tall_sides(buf, r, content);
                 self.hits
                     .push((visible, Hit::Control(item.id.clone().unwrap_or_default())));
             }
@@ -1488,27 +1546,37 @@ impl View {
                     surface,
                     content,
                 );
+                np.tall_sides(buf, r, content);
                 let y = r.y + 1;
                 if y >= content.top() && y < content.bottom() {
                     let knob = if on { r.x + 5 } else { r.x + 3 };
-                    buf.set_stringn(
-                        knob,
-                        y,
-                        "  ",
-                        2,
-                        Style::default().bg(if on { p.accent } else { p.border }),
-                    );
+                    // .switch--slider: the thumb in its colour over its background track.
+                    let (thumb, track) = match np.slider {
+                        Some(slider) => (slider.fg, slider.bg),
+                        None => (Some(if on { p.accent } else { p.border }), None),
+                    };
+                    if let Some(track) = track {
+                        buf.set_stringn(r.x + 3, y, "    ", 4, Style::default().bg(track));
+                    }
+                    if let Some(thumb) = thumb {
+                        buf.set_stringn(knob, y, "  ", 2, Style::default().bg(thumb));
+                    }
                 }
                 self.hits
                     .push((visible, Hit::Control(item.id.clone().unwrap_or_default())));
             }
             Control::Button { label, variant } => {
                 button(buf, r, label, variant, is_focus, item.disabled, p, content);
+                if let (Some(face), Some(inside)) = (np.style, np.inside) {
+                    // Python's own face and tall rims for this button.
+                    painted_button(buf, r, label, face.bg(inside), np, content);
+                }
                 self.hits
                     .push((visible, Hit::Control(item.id.clone().unwrap_or_default())));
             }
             Control::Options { options, .. } => {
                 tall_rows_clipped(buf, r, edge, content);
+                np.tall_sides(buf, r, content);
                 let id = item.id.clone().unwrap_or_default();
                 let shown = usize::from(r.height.saturating_sub(2));
                 for (row, (index, option)) in options.iter().enumerate().take(shown).enumerate() {
@@ -1517,7 +1585,11 @@ impl View {
                         continue;
                     }
                     let lit = self.highlight == Some(index);
-                    let base = if option.disabled {
+                    let base = if let (false, true, Some(style)) = (option.disabled, lit, np.highlighted) {
+                        style
+                    } else if let (false, false, Some(style)) = (option.disabled, lit, np.option) {
+                        style
+                    } else if option.disabled {
                         muted
                     } else if lit && is_focus {
                         Style::default()
@@ -1717,6 +1789,45 @@ fn button(
             )
         } else {
             (" ".repeat(w), face)
+        };
+        buf.set_stringn(r.x, y, &text, w, style);
+    }
+}
+/// A Button in Python's own colours: the face, and tall rims in its border colours.
+fn painted_button(
+    buf: &mut Buffer,
+    r: Rect,
+    label: &str,
+    face: Style,
+    np: &crate::theme::NodePaint,
+    clip: Rect,
+) {
+    let inside = face.bg.unwrap_or(Color::Reset);
+    let w = usize::from(r.width);
+    let lw = label.width();
+    let left = w.saturating_sub(lw) / 2;
+    for i in 0..r.height {
+        let y = r.y + i;
+        if y < clip.top() || y >= clip.bottom() {
+            continue;
+        }
+        let (text, style) = if i == 0 && r.height > 1 {
+            ("▔".repeat(w), Style::default().fg(np.border_top.unwrap_or(inside)).bg(inside))
+        } else if i + 1 == r.height && r.height > 1 {
+            ("▁".repeat(w), Style::default().fg(np.border_bottom.unwrap_or(inside)).bg(inside))
+        } else if i == r.height / 2 {
+            (
+                format!(
+                    "{}{}{}",
+                    " ".repeat(left),
+                    clip_str(label, w),
+                    " ".repeat(w.saturating_sub(left + lw))
+                ),
+                face,
+            )
+        } else {
+            // `text-style` styles the label, not the button's blank rows.
+            (" ".repeat(w), face.remove_modifier(Modifier::REVERSED))
         };
         buf.set_stringn(r.x, y, &text, w, style);
     }
