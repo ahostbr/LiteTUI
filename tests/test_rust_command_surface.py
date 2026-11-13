@@ -392,7 +392,7 @@ async def test_registered_control_commands_preserve_intent_without_callbacks(com
         assert (route["command"], route["native_action"], route["arguments"]) == (command, action, arguments)
     for command, reason in [
         ("/engine start 4", "lane arguments"), ("/engine lanes 4", "configuration"),
-        ("/plan maybe", "on, off"), ("/reload-plugins two targets", "one exact"),
+        ("/plan maybe", "or on/off — not"), ("/reload-plugins two targets", "one exact"),
         ("/compact bad\0hint", "NUL"), ("/hooks extra", "arguments"),
         ("/job every minute", "arguments"), ("/reconnect extra", "arguments"),
     ]:

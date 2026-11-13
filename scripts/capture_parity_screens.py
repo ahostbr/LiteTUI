@@ -94,6 +94,12 @@ PROFILES = {
     # via Sentinel: "Ctrl+T, no page"). Each shot is the chat after one key.
     "quickkeys": {frontend: [("ctrl-t", ["\x14"], "none"), ("shift-tab", ["\x1b[Z"], "none")]
                   for frontend in ("textual", "rust")},
+    # Plan mode changes at once too: Ctrl+P (\x10) toggles, /plan toggles, /plan on sets (a
+    # second /plan on changes and says nothing), and a bad argument gets _cmd_plan's line.
+    "plankeys": {frontend: [("ctrl-p", ["\x10"], "none"), ("plan", ["/plan\r"], "none"),
+                            ("plan-on", ["/plan on\r"], "none"), ("plan-on-again", ["/plan on\r"], "none"),
+                            ("plan-bad", ["/plan maybe\r"], "none")]
+                 for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

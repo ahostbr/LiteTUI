@@ -3396,7 +3396,6 @@ mod tests {
         ] {
             let mut app = live_approval_app();
             app.composer.select_all();
-            let selected = app.composer.selected_text().to_owned();
             let mut router = KeyRouter::default();
             router.handle(&mut app, shortcut);
             assert_eq!(
@@ -3420,13 +3419,9 @@ mod tests {
                     .text(),
                 "answer"
             );
-            if expected == Field::Plan {
-                assert_eq!(app.composer.selected_text(), selected);
-            } else {
-                // Ctrl+T and Shift+Tab open no page (Python toggles at once), so the composer
-                // keeps its keys and the paste replaced the selected draft, as in Python.
-                assert_eq!(app.composer.text(), "unowned paste");
-            }
+            // Ctrl+T, Shift+Tab and Ctrl+P open no page (Python changes them at once), so the
+            // composer keeps its keys and the paste replaced the selected draft, as in Python.
+            assert_eq!(app.composer.text(), "unowned paste");
             assert!(app.live.as_ref().unwrap().rows.len() == 1);
         }
     }

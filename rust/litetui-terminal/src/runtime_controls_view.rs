@@ -55,8 +55,8 @@ pub struct View {
     list: crate::tool_list_view::List,
     /// A change sent from the list: a refusal re-reads the list once.
     reread_on_reject: bool,
-    /// Ctrl+T and Shift+Tab: Python toggles at once with no page, so nothing is drawn and
-    /// the composer keeps the keys; the runtime's Read, Review and Apply still run.
+    /// Ctrl+T, Shift+Tab, Ctrl+P and /plan: Python changes them at once with no page, so
+    /// nothing is drawn and the composer keeps the keys; Read, Review and Apply still run.
     quick: bool,
     /// What opened a quick authority change, for Python's own line.
     source: Option<&'static str>,
@@ -87,7 +87,7 @@ impl View {
         self.intent = Some(Intent::Read(field));
         self.list_mode = field == Field::ToolSelection;
         self.reread_on_reject = false;
-        self.quick = matches!(field, Field::Tools | Field::Profile);
+        self.quick = matches!(field, Field::Tools | Field::Profile | Field::Plan);
         self.source = None;
         if self.list_mode || self.quick {
             self.list.reset();
@@ -190,6 +190,19 @@ impl View {
                     let (change, source) = match field {
                         Field::Tools => {
                             (controls::Change::Tools(!snapshot.facts.tools_enabled), None)
+                        }
+                        Field::Plan => {
+                            let on = self
+                                .desired_plan
+                                .take()
+                                .unwrap_or(!snapshot.facts.plan_mode);
+                            if on == snapshot.facts.plan_mode {
+                                // `/plan on` when it is already on: Python's set_plan_mode
+                                // changes and says nothing.
+                                self.finish_quick();
+                                return;
+                            }
+                            (controls::Change::Plan(on), None)
                         }
                         _ => (
                             controls::Change::Profile(snapshot.next_profile),

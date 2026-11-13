@@ -413,7 +413,8 @@ def resolve(app, cmd):
     if action == "engine" and arguments.strip().lower() not in {"", "status", "start", "stop"}:
         raise ValueError("Engine command supports status, start or stop; lane arguments require the engine configuration control")
     if action == "plan" and arguments.strip().lower() not in {"", "on", "off"}:
-        raise ValueError("Plan accepts on, off or no argument to toggle")
+        # _cmd_plan's own line.
+        raise ValueError(f"/plan takes no argument, or on/off — not {arguments.strip().lower()!r}")
     if action == "plugin_reload" and arguments and (arguments.strip() != arguments or len(arguments.split()) != 1):
         raise ValueError("Plugin reload accepts one exact tool name or skills; select it in the refresh control")
     if arguments and action in _WORK_INSPECTION:
