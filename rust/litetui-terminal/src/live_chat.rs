@@ -2583,14 +2583,12 @@ impl Chat {
             "Turn ended. Checking saved input before another prompt."
         } else if row.state == ReplyState::Refused {
             "Input was not started. Submit again explicitly to continue; Ctrl+Q quits."
-        } else if row.state == ReplyState::Failed {
-            "Turn failed. Partial output retained. Check recovery before retrying; Ctrl+Q quits."
-        } else if row.state == ReplyState::Cancelled {
-            "Turn cancelled. Partial output retained. Type another prompt; Ctrl+Q quits."
         } else if row.state == ReplyState::ApprovalStopped {
             "Turn stopped for approval. Type another prompt; Ctrl+Q quits."
         } else {
-            "Reply completed. Type another prompt; Ctrl+Q quits."
+            // Python says nothing below the chat when a turn completes, fails or is
+            // cancelled; the card says it (the stop line, the Error card).
+            ""
         }
         .into();
         self.refresh_rewrite_busy();

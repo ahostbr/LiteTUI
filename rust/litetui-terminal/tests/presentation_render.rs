@@ -153,7 +153,8 @@ fn stop_line_follows_its_switches_for_completed_and_stopped_turns() {
     let mut app = live();
     finished(&mut app, Some(38.24), Observation::Complete);
     let shown = frame(&mut app, 110, 50);
-    assert!(shown.contains("Completed · stop"), "{shown}");
+    // Python's card ends with its stop line only, no state words.
+    assert!(!shown.contains("Completed · stop"), "{shown}");
     let line = shown
         .lines()
         .find(|line| line.contains("Cooked for"))
@@ -173,7 +174,7 @@ fn stop_line_follows_its_switches_for_completed_and_stopped_turns() {
         json!({"show_stop_line": false, "show_stop_time": true}),
     );
     let hidden = frame(&mut app, 110, 50);
-    assert!(!hidden.contains("Cooked for") && hidden.contains("Completed · stop"));
+    assert!(!hidden.contains("Cooked for") && !hidden.contains("Completed · stop"));
 
     let mut stopped = live();
     finished(&mut stopped, None, Observation::Cancelled("by user".into()));

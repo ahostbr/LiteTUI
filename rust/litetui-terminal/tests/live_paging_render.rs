@@ -65,7 +65,9 @@ fn paging_draws_absolute_rows_and_keeps_all_old_text_and_the_composer() {
     let buffer = draw(&mut app, 140);
     let first = format!("ROW{:05}", latest.start);
     assert!(text(&buffer).contains(&first));
-    let y = line_with(&buffer, &first);
+    // The prompt is Python's card: its title row (the click target) is the top border, two
+    // rows above the text (border, padding row, text).
+    let y = line_with(&buffer, &first) - 2;
     assert!(
         app.compact_display
             .click(mouse(MouseEventKind::Down(MouseButton::Left), 4, y))

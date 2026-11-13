@@ -256,19 +256,63 @@ fn assistant_card(
             )]));
         }
     }
-    lines.push(outer_row(vec![Span::styled(
-        " ".repeat(inner_width),
-        style(t.foreground, t.surface),
-    )]));
-    for row in wrap(footer, inner_width) {
-        lines.push(outer_row(vec![Span::styled(
-            format!(
-                "{}{row}",
-                " ".repeat(inner_width.saturating_sub(rendered_width(&row)))
-            ),
-            style(t.title, t.surface),
-        )]));
+    let blank = || {
+        outer_row(vec![Span::styled(
+            " ".repeat(inner_width),
+            style(t.foreground, t.surface),
+        )])
+    };
+    if !answer.is_empty() {
+        // The answer's last paragraph margin (Markdown), as in Python's card.
+        lines.push(blank());
     }
+    if !footer.is_empty() {
+        lines.push(blank());
+        for row in wrap(footer, inner_width) {
+            lines.push(outer_row(vec![Span::styled(
+                padded(&row, inner_width),
+                style(t.thinking_text, t.surface).add_modifier(Modifier::ITALIC),
+            )]));
+        }
+    }
+    lines.push(blank());
+    lines.push(card_bottom(t, left, outer_width));
+    lines.push(Line::raw(""));
+}
+/// Python's failed turn: the assistant card titled "Error", the message bold red, then the
+/// stop line ("stopped after 0.0s") after a blank row.
+fn error_card(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    message: &str,
+    footer: &str,
+    width: usize,
+) {
+    let (left, outer_width) = card_geometry(width);
+    let inner_width = outer_width.saturating_sub(6);
+    lines.push(card_top(t, "Error", left, outer_width));
+    let outer_row = |text: String, style: Style| {
+        Line::from(vec![
+            Span::styled(" ".repeat(left), self::style(t.foreground, t.background)),
+            Span::styled("│  ", self::style(t.assistant_border, t.surface)),
+            Span::styled(padded(&text, inner_width), style),
+            Span::styled("  │", self::style(t.assistant_border, t.surface)),
+        ])
+    };
+    let plain = style(t.foreground, t.surface);
+    lines.push(outer_row(String::new(), plain));
+    let red = style(t.error, t.surface).add_modifier(Modifier::BOLD);
+    for row in crate::picker_box::wrap(message, inner_width) {
+        lines.push(outer_row(row, red));
+    }
+    if !footer.is_empty() {
+        lines.push(outer_row(String::new(), plain));
+        let muted = style(t.thinking_text, t.surface).add_modifier(Modifier::ITALIC);
+        for row in wrap(footer, inner_width) {
+            lines.push(outer_row(row, muted));
+        }
+    }
+    lines.push(outer_row(String::new(), plain));
     lines.push(card_bottom(t, left, outer_width));
     lines.push(Line::raw(""));
 }
@@ -285,19 +329,83 @@ fn card_top(
     left: usize,
     outer_width: usize,
 ) -> Line<'static> {
-    let title = clip_label(title, outer_width.saturating_sub(5));
+    let title = clip_label(title, outer_width.saturating_sub(6));
     Line::from(vec![
         Span::styled(" ".repeat(left), style(t.foreground, t.background)),
         Span::styled("╭─ ", style(t.assistant_border, t.surface)),
         Span::styled(title.clone(), style(t.title, t.surface)),
         Span::styled(
             format!(
-                "{}╮",
-                "─".repeat(outer_width.saturating_sub(rendered_width(&title) + 4))
+                " {}╮",
+                "─".repeat(outer_width.saturating_sub(rendered_width(&title) + 5))
             ),
             style(t.assistant_border, t.surface),
         ),
     ])
+}
+/// Python's `.user-msg` (app.py CSS): margin 1 2 0 8, padding 1 2, a round $primary border
+/// whose title is "▾ You"; folded (`.collapsed`), the title row "▸ You · preview" and the
+/// bottom border only. Below 78 columns the margins go and the padding is 1 1 (`-narrow`).
+fn user_card(
+    t: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+    title: &str,
+    body: Option<&str>,
+    width: usize,
+) {
+    let narrow = width < 78;
+    let (left, right, pad) = if narrow { (0, 0, 1) } else { (8, 2, 2) };
+    let outer = width.saturating_sub(left + right).max(12);
+    let inner = outer.saturating_sub(2 + 2 * pad);
+    let bg = t.panel;
+    let border = style(t.primary, bg);
+    let margin = Span::styled(" ".repeat(left), style(t.foreground, t.background));
+    let title = clip_label(title, outer.saturating_sub(6));
+    lines.push(Line::from(vec![
+        margin.clone(),
+        Span::styled("╭─ ", border),
+        Span::styled(title.clone(), style(t.title, bg)),
+        Span::styled(
+            format!(
+                " {}╮",
+                "─".repeat(outer.saturating_sub(rendered_width(&title) + 5))
+            ),
+            border,
+        ),
+    ]));
+    let row = |text: &str| {
+        Line::from(vec![
+            margin.clone(),
+            Span::styled("│", border),
+            Span::styled(
+                format!(
+                    "{}{}{}",
+                    " ".repeat(pad),
+                    padded(text, inner),
+                    " ".repeat(pad)
+                ),
+                style(t.foreground, bg),
+            ),
+            Span::styled("│", border),
+        ])
+    };
+    if let Some(body) = body {
+        lines.push(row(""));
+        for text in crate::picker_box::wrap(body, inner) {
+            lines.push(row(&text));
+        }
+        lines.push(row(""));
+    }
+    lines.push(Line::from(vec![
+        margin,
+        Span::styled(format!("╰{}╯", "─".repeat(outer.saturating_sub(2))), border),
+    ]));
+}
+/// Textual's margin-top 1 between chat-log children: one blank row, never two.
+fn margin_above(lines: &mut Vec<Line<'static>>) {
+    if lines.last().is_some_and(|line| line.width() > 0) {
+        lines.push(Line::raw(""));
+    }
 }
 fn card_bottom(t: &crate::theme::Theme, left: usize, outer_width: usize) -> Line<'static> {
     Line::styled(
@@ -936,6 +1044,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                 }
             } else {
                 let label = if row.source_owned { "Source" } else { "You" };
+                margin_above(&mut lines);
                 headers.push(Header {
                     line: lines.len(),
                     span: None,
@@ -945,29 +1054,21 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                     },
                 });
                 if row.prompt_fold.folded {
-                    lines.push(Line::styled(
-                        clip_label(
-                            &format!(
-                                "▸ {label} · {}",
-                                crate::compact_display::summary(&row.prompt, 80)
-                            ),
-                            width.saturating_sub(2),
-                        ),
-                        style(t.foreground, t.background),
-                    ));
+                    let preview = crate::compact_display::summary(&row.prompt, 80);
+                    let title = if preview.is_empty() {
+                        format!("▸ {label}")
+                    } else {
+                        format!("▸ {label} · {preview}")
+                    };
+                    user_card(t, &mut lines, &title, None, width);
                 } else {
-                    for (n, text) in wrap(
-                        &format!("{label}: {}", display_safe(&row.prompt)),
-                        width.saturating_sub(4),
-                    )
-                    .into_iter()
-                    .enumerate()
-                    {
-                        lines.push(Line::styled(
-                            format!("{}{text}", if n == 0 { "▾ " } else { "  " }),
-                            style(t.foreground, t.background),
-                        ));
-                    }
+                    user_card(
+                        t,
+                        &mut lines,
+                        &format!("▾ {label}"),
+                        Some(&display_safe(&row.prompt)),
+                        width,
+                    );
                 }
                 if let Some(name) = row.image_name.as_ref().filter(|_| !row.prompt_fold.folded) {
                     headers.push(Header {
@@ -1021,15 +1122,39 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                 }
             };
             let settled = stop_line(row, &presentation);
-            let state_text = match &settled {
-                Some(line) => format!("{state}\n{line}"),
-                None => state.to_owned(),
+            // Python's card shows no state words for an ordinary turn: while it runs, nothing;
+            // settled, its stop line. Rust's own states with no Python twin keep their words.
+            let quiet = matches!(
+                row.state,
+                crate::live_chat::ReplyState::Sending
+                    | crate::live_chat::ReplyState::Streaming
+                    | crate::live_chat::ReplyState::Complete
+                    | crate::live_chat::ReplyState::Failed
+                    | crate::live_chat::ReplyState::Cancelled
+            );
+            let state_text = match (&settled, quiet) {
+                (Some(line), true) => line.clone(),
+                (None, true) => String::new(),
+                (Some(line), false) => format!("{state}\n{line}"),
+                (None, false) => state.to_owned(),
             };
+            let failed = row.state == crate::live_chat::ReplyState::Failed;
             let last_card = row.items.iter().rev().find_map(|item| match item {
                 crate::live_chat::Item::Card(index) => Some(*index),
                 _ => None,
             });
-            if row.cards.is_empty() {
+            let mut error_drawn = false;
+            if row.cards.is_empty() && failed {
+                // Python's failed turn before any answer is still its "Error" card.
+                error_card(
+                    t,
+                    &mut lines,
+                    &display_safe(row.stop_reason.as_deref().unwrap_or("Turn failed")),
+                    &state_text,
+                    width,
+                );
+                error_drawn = true;
+            } else if row.cards.is_empty() {
                 tool_body(t, &mut lines, &state_text, t.tool_text, width);
                 lines.push(Line::raw(""));
             }
@@ -1072,16 +1197,12 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                             // only opens the reviewed saved history.
                             let speak = row.state == crate::live_chat::ReplyState::Complete
                                 && !card.answer.is_empty();
-                            let preview = crate::compact_display::summary(&card.answer, 80);
+                            // AssistantMessage._header_text: the model name (a summary joins it
+                            // when one lands), Speak first when folded; no preview.
                             let title = format!(
-                                "▸ {}Assistant · {}{}",
+                                "▸ {}{}",
                                 if speak { "♫ Speak · " } else { "" },
                                 display_safe(&chat.model),
-                                if preview.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" · {preview}")
-                                }
                             );
                             let (left, outer) = card_geometry(width);
                             if speak {
@@ -1129,10 +1250,28 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                                 },
                             });
                         }
+                        if failed && last_card == Some(index) {
+                            // Python replaces the failed card's body with the error, bold red,
+                            // and retitles it "Error" (app.py _stream).
+                            error_drawn = true;
+                            error_card(
+                                t,
+                                &mut lines,
+                                &display_safe(row.stop_reason.as_deref().unwrap_or("Turn failed")),
+                                &state_text,
+                                width,
+                            );
+                            folds.push(FoldSpan {
+                                row: row_index,
+                                target: Target::Card(index),
+                                end: lines.len(),
+                            });
+                            continue;
+                        }
                         assistant_card(
                             t,
                             &mut lines,
-                            &format!("▾ Assistant · {}", display_safe(&chat.model)),
+                            &format!("▾ {}", display_safe(&chat.model)),
                             &if !thinking {
                                 Vec::new()
                             } else if expanded {
@@ -1166,7 +1305,7 @@ fn transcript(app: &Demo, width: usize) -> Transcript {
                     }
                 }
             }
-            if let Some(reason) = &row.stop_reason {
+            if let Some(reason) = row.stop_reason.as_ref().filter(|_| !error_drawn) {
                 tool_body(
                     t,
                     &mut lines,
@@ -1492,8 +1631,16 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         app.transcript_selection.clear();
         app.transcript_rows = page;
     }
-    let mut view = transcript(app, viewport.width as usize);
     let height = viewport.height as usize;
+    // #chat-log's 1-column scrollbar: when the chat overflows, Textual narrows the content by
+    // the scrollbar and draws it at the right edge (padding 1 1, scrollbar-size 1 1).
+    let mut text_width = viewport.width as usize;
+    let mut view = transcript(app, text_width);
+    if app.live.is_some() && view.lines.len() > height && text_width > 36 {
+        text_width -= 1;
+        view = transcript(app, text_width);
+    }
+    let scrollbar = text_width < viewport.width as usize;
     // Source `_autocollapse_offscreen`: while the follow lock holds, fold settled cards that end
     // above the line the view is about to settle on, in the same frame as the move.
     if presentation.autoscroll
@@ -1505,7 +1652,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         && fold_off_screen(app, &view.folds, view.lines.len().saturating_sub(height))
     {
         app.transcript_selection.clear();
-        view = transcript(app, viewport.width as usize);
+        view = transcript(app, text_width);
     }
     let Transcript {
         lines,
@@ -1525,6 +1672,7 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         app.follow_selection = false;
     }
     app.scroll = app.scroll.min(app.max_scroll);
+    let total = lines.len();
     frame.render_widget(
         Paragraph::new(
             lines
@@ -1534,8 +1682,22 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
                 .collect::<Vec<_>>(),
         )
         .style(style(t.foreground, t.background)),
-        viewport,
+        Rect {
+            width: text_width as u16,
+            ..viewport
+        },
     );
+    if scrollbar {
+        crate::picker_box::scrollbar(
+            frame.buffer_mut(),
+            viewport.x + text_width as u16,
+            viewport.y,
+            viewport.height,
+            total,
+            app.scroll,
+            &t,
+        );
+    }
     if selectable {
         app.compact_display.set_hits(viewport, app.scroll, &headers);
         app.transcript_selection

@@ -64,8 +64,10 @@ fn live_view_renders_real_rows_in_existing_geometry_without_fixtures() {
         "Rust LIVE",
         "real question",
         "actual reply",
-        "Assistant",
-        "Streaming",
+        // Python's cards: "▾ You" on the prompt's border, the model's name on the reply's,
+        // and no state words while it streams.
+        "╭─ ▾ You ",
+        "╭─ ▾ claude-sonnet-5-5 ",
         "╭",
         "╰",
     ] {
@@ -251,7 +253,7 @@ fn approval_stop_preserves_partial_content_and_reason_across_followup_and_shutdo
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(cells.contains("Stopped · approval") && cells.contains("Completed · stop"));
+    assert!(cells.contains("Stopped · approval") && !cells.contains("Completed · stop"));
     assert!(cells.contains(r"Denied \u{1b}[2J\u{202e}write"));
 }
 
@@ -522,10 +524,15 @@ fn source_refusal_and_failure_render_without_completion_or_automatic_retry() {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(text.contains(if failed { "Failed" } else { "Not started" }));
+        // Python's failed turn is its "Error" card: the error replaces the partial answer.
+        assert!(text.contains(if failed {
+            "╭─ Error "
+        } else {
+            "Not started"
+        }));
         assert!(text.contains("\\u{1b}[31m"));
         if failed {
-            assert!(text.contains("PARTIAL ANSWER"));
+            assert!(!text.contains("PARTIAL ANSWER"));
         }
         assert!(!text.contains("Completed · stop"));
         assert_eq!(app.composer.text(), "UNSENT DRAFT");

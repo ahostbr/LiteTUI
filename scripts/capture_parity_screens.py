@@ -107,6 +107,10 @@ PROFILES = {
                           ("report", ["\x1b[A", "\r"], "none"),
                           ("enter", ["/skills\r", "\x1b[B", "\r"], "none")]
                for frontend in ("textual", "rust")},
+    # The transcript cards: the fixture provider streams its reply to a prompt starting with PERF
+    # and fails any other ("Something went wrong talking to the model server.").
+    "turns": {frontend: [("normal", ["PERF hello\r"], "none"), ("failed", ["not a fixture prompt\r"], "none")]
+              for frontend in ("textual", "rust")},
     "picker": {frontend: [("settings-open", ["/settings\r"], "none"), ("themes", ["\t", "\t", "\x1b[D", "\x1b[D"], "none"),
                           ("tokens", ["click:Palette tokens"], "none"),
                           ("scrolled", ["wheel:New theme name"] * 4, "none"),

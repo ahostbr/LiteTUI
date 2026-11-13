@@ -6142,23 +6142,26 @@ mod card_fold_tests {
         let mut app = ready();
         turn(&mut app, "question text", "answer body words");
         let open = text(&mut app, 100, 30);
-        assert!(open.contains("▾ You: question text"), "{open}");
-        assert!(open.contains("▾ Assistant · m"), "{open}");
-        click(&mut app, 100, 30, "▾ You: question text", 8);
+        assert!(
+            open.contains("╭─ ▾ You ") && open.contains("│  question text"),
+            "{open}"
+        );
+        assert!(open.contains("╭─ ▾ m "), "{open}");
+        click(&mut app, 100, 30, "╭─ ▾ You ", 12);
         let prompt = text(&mut app, 100, 30);
         assert!(prompt.contains("▸ You · question text"), "{prompt}");
-        assert!(!prompt.contains("You: question text"), "{prompt}");
+        assert!(!prompt.contains("│  question text"), "{prompt}");
         assert!(prompt.contains("answer body words"));
-        click(&mut app, 100, 30, "▾ Assistant · m", 30);
+        click(&mut app, 100, 30, "╭─ ▾ m ", 30);
         let card = text(&mut app, 100, 30);
-        assert!(card.contains("▸ ♫ Speak · Assistant · m · answer body words"));
-        assert!(!card.contains("Completed · stop"), "{card}");
+        assert!(card.contains("▸ ♫ Speak · m "));
+        assert!(!card.contains("answer body words"), "{card}");
         assert_eq!(folded(&app), [(true, true)]);
         click(&mut app, 100, 30, "▸ You · question text", 8);
-        click(&mut app, 100, 30, "▸ ♫ Speak · Assistant", 60);
+        click(&mut app, 100, 30, "▸ ♫ Speak · m ", 60);
         assert_eq!(folded(&app), [(false, false)]);
         let again = text(&mut app, 100, 30);
-        assert!(again.contains("▾ You: question text") && again.contains("Completed · stop"));
+        assert!(again.contains("│  question text") && again.contains("answer body words"));
     }
 
     #[test]
@@ -6166,10 +6169,7 @@ mod card_fold_tests {
         let mut app = ready();
         turn(&mut app, "question text", "answer body words");
         let (lines, term) = screen(&mut app, 100, 30);
-        let row = lines
-            .iter()
-            .position(|l| l.contains("▾ You: question text"))
-            .unwrap() as u16;
+        let row = lines.iter().position(|l| l.contains("╭─ ▾ You ")).unwrap() as u16;
         for (kind, column) in [
             (MouseEventKind::Down(MouseButton::Left), 4),
             (MouseEventKind::Up(MouseButton::Left), 9),
@@ -6190,13 +6190,13 @@ mod card_fold_tests {
         let mut app = ready();
         turn(&mut app, "see this", "spoken answer");
         app.live.as_mut().unwrap().rows[0].image_name = Some("shot.png".into());
-        click(&mut app, 100, 30, "▾ Assistant · m", 30);
+        click(&mut app, 100, 30, "╭─ ▾ m ", 30);
         let folded_title = text(&mut app, 100, 30);
-        assert!(folded_title.contains("▸ ♫ Speak · Assistant · m"));
+        assert!(folded_title.contains("▸ ♫ Speak · m "));
         // Outside the label a click still unfolds, so Speak is a narrow target.
         click(&mut app, 100, 30, "▸ ♫ Speak", 60);
         assert_eq!(folded(&app), [(false, false)]);
-        click(&mut app, 100, 30, "▾ Assistant · m", 30);
+        click(&mut app, 100, 30, "╭─ ▾ m ", 30);
         assert!(!app.live.as_ref().unwrap().saved_history.is_open());
         click(&mut app, 100, 30, "▸ ♫ Speak", 9);
         assert_eq!(folded(&app), [(false, true)]);
@@ -6218,7 +6218,7 @@ mod card_fold_tests {
         assert!(!text(&mut app, 100, 30).contains("Speak"));
         app.live.as_mut().unwrap().rows[0].image_name = Some("a.png".into());
         assert!(text(&mut app, 100, 30).contains("[Image: a.png]"));
-        click(&mut app, 100, 30, "▾ You: question", 5);
+        click(&mut app, 100, 30, "╭─ ▾ You ", 12);
         assert!(!text(&mut app, 100, 30).contains("a.png"));
     }
 
@@ -6233,7 +6233,7 @@ mod card_fold_tests {
         );
         // The newest answer is the one being read.
         assert!(!state[4].1, "{state:?}");
-        assert!(text(&mut app, 100, 24).contains("▾ Assistant · m"));
+        assert!(text(&mut app, 100, 24).contains("╭─ ▾ m "));
         // A card the reader reopened is not folded again.
         let hit = litetui_terminal::compact_display::HeaderHit {
             row: 0,
