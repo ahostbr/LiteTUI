@@ -31,7 +31,7 @@ $backendArgs = @(Get-LiteTuiLaunchArguments $PSBoundParameters)
 if ($Backend -ne 'claude' -and -not $PSBoundParameters.ContainsKey('Model')) {
     throw 'Selecting another backend requires an explicit -Model'
 }
-if ($Tools -eq 'on' -and [string]::IsNullOrWhiteSpace($Workspace)) {
+if ($PSBoundParameters.ContainsKey('Tools') -and $Tools -eq 'on' -and [string]::IsNullOrWhiteSpace($Workspace)) {
     throw 'Tools on requires -Workspace naming the directory to work in'
 }
 $agentArgs = @()
@@ -44,6 +44,9 @@ if (-not [string]::IsNullOrWhiteSpace($Resume)) {
 if ([string]::IsNullOrWhiteSpace($Model)) { throw 'Model must name the saved or newly selected model' }
 $profileArgs = @()
 if ($PSBoundParameters.ContainsKey('ToolProfile')) { $profileArgs = @('--tool-profile', $ToolProfile) }
+# No -Tools: the saved setting decides, as Python LiteTUI's does (Ryan 2026-11-13).
+$toolArgs = @()
+if ($PSBoundParameters.ContainsKey('Tools')) { $toolArgs = @('--tools', $Tools) }
 $workspaceArgs = @()
 if (-not [string]::IsNullOrWhiteSpace($Workspace)) {
     $resolvedWorkspace = (Resolve-Path -LiteralPath $Workspace).Path
@@ -65,5 +68,5 @@ $root = if ([string]::IsNullOrWhiteSpace($DataRoot)) {
     [System.IO.Path]::GetFullPath($DataRoot)
 }
 Write-Host "Rust LiteTUI data: $root"
-& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 --tools $Tools @profileArgs @workspaceArgs @resumeArgs @agentArgs @seedArgs @backendArgs
+& "$PSScriptRoot/target/debug/litetui-rs.exe" --interactive --python $Python --source $source --data-root $root --backend $Backend --model $Model --timeout 180 @toolArgs @profileArgs @workspaceArgs @resumeArgs @agentArgs @seedArgs @backendArgs
 if ($LASTEXITCODE -ne 0) { throw "Live runtime failed: $LASTEXITCODE (data retained at $root)" }

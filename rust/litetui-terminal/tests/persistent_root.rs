@@ -138,7 +138,9 @@ fn first_run_copies_the_python_settings_and_marks_the_root_as_rust() {
     // The launch's own keys, and marked as the Rust frontend's.
     assert_eq!(saved["backend"], "claude");
     assert_eq!(saved["seat_name"], "RustLive");
-    assert_eq!(saved["tools_enabled"], false);
+    // Ryan 2026-11-13: "agents says no tools". Python reads tools from its saved settings;
+    // without --tools the launch keeps the copied setting instead of writing "off" over it.
+    assert_eq!(saved["tools_enabled"], true);
     assert_eq!(saved["mcp_enabled"], false);
     assert!(root.join("rust-frontend.json").is_file());
     assert!(root.join("mcp.json").is_file());
@@ -146,6 +148,50 @@ fn first_run_copies_the_python_settings_and_marks_the_root_as_rust() {
     assert!(!root.join(".agents").exists() && !root.join("jobs.json").exists());
     // The Python data is untouched.
     assert_eq!(snapshot(&python), before);
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn without_tools_each_launch_keeps_the_saved_setting_and_an_explicit_flag_still_wins() {
+    let base = scratch("tools");
+    let python = python_root(&base);
+    let rust = base.join("LiteTUI-rust-data");
+    let first = options(&rust, Some(&python));
+    // Python's tools run in the directory it was started in (run.bat: cd to its source).
+    assert!(first.tools_enabled);
+    assert_eq!(
+        first.workspace.as_deref(),
+        Some(Path::new("C:/fixture/source"))
+    );
+    let root = prepare_root(&first, Backend::Claude, Profile::Strict).unwrap();
+    // A later launch of the same root, still without --tools: the saved setting decides.
+    let again = options(&root, None);
+    assert!(again.tools_enabled);
+    prepare_root(&again, Backend::Claude, Profile::Strict).unwrap();
+    assert_eq!(settings(&root)["tools_enabled"], true);
+    // --tools off is still honoured, and saved, as before.
+    let mut args: Vec<String> = [
+        "--python",
+        "C:/fixture/python.exe",
+        "--source",
+        "C:/fixture/source",
+        "--backend",
+        "claude",
+        "--model",
+        "claude-sonnet-5-5",
+        "--tool-profile",
+        "strict",
+        "--tools",
+        "off",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.extend(["--data-root".into(), root.display().to_string()]);
+    let off = Options::parse(&args).unwrap();
+    assert!(!off.tools_enabled && off.workspace.is_none());
+    prepare_root(&off, Backend::Claude, Profile::Strict).unwrap();
+    assert_eq!(settings(&root)["tools_enabled"], false);
     let _ = fs::remove_dir_all(&base);
 }
 

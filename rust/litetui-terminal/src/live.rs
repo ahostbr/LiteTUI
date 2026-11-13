@@ -198,8 +198,8 @@ impl Options {
                 .ok_or_else(|| io::Error::other(format!("Missing {name}")))
         };
         let python = required("--python")?.into();
-        let source = required("--source")?.into();
-        let data_root = required("--data-root")?.into();
+        let source: PathBuf = required("--source")?.into();
+        let data_root: PathBuf = required("--data-root")?.into();
         let backend = required("--backend")?;
         let model = required("--model")?;
         let prompt_provided = fields.contains_key("--prompt");
@@ -224,10 +224,15 @@ impl Options {
                 "--seed-from must be an absolute directory",
             ));
         }
-        let tools_enabled = match fields.remove("--tools").as_deref().unwrap_or("off") {
-            "on" => true,
-            "off" => false,
-            _ => return Err(io::Error::other("--tools must be on or off")),
+        // Ryan 2026-11-13: "agents says no tools". Python reads tools from its saved settings
+        // (run.bat passes no flag); so without --tools this root's saved setting decides, or on
+        // its first run the Python settings it is seeded from. The flag still wins when given.
+        let tools_flag = fields.remove("--tools");
+        let tools_enabled = match tools_flag.as_deref() {
+            Some("on") => true,
+            Some("off") => false,
+            None => saved_tools(&data_root, seed_from.as_deref()).unwrap_or(false),
+            Some(_) => return Err(io::Error::other("--tools must be on or off")),
         };
         let tool_profile = fields
             .remove("--tool-profile")
@@ -235,11 +240,19 @@ impl Options {
             .map(crate::tool_mode::Profile::parse)
             .transpose()?;
         let workspace = fields.remove("--workspace").map(PathBuf::from);
-        if tools_enabled && workspace.as_ref().is_none_or(|p| !p.is_absolute()) {
+        if tools_flag.as_deref() == Some("on")
+            && workspace.as_ref().is_none_or(|p| !p.is_absolute())
+        {
             return Err(io::Error::other(
                 "Tools on requires an explicit absolute --workspace",
             ));
         }
+        // Tools from the saved setting work where Python's do: the directory it runs from,
+        // its own source tree (run.bat changes to it before starting).
+        let workspace = match workspace {
+            None if tools_enabled && tools_flag.is_none() => Some(source.clone()),
+            other => other,
+        };
         let seconds: u64 = fields
             .remove("--timeout")
             .unwrap_or_else(|| "180".into())
@@ -2071,6 +2084,22 @@ pub fn terminal_text(text: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The saved `tools_enabled` a launch without `--tools` follows: this root's settings, or on
+/// a first run the Python settings it is seeded from.
+fn saved_tools(root: &Path, seed: Option<&Path>) -> Option<bool> {
+    let read = |dir: &Path| {
+        fs::read(dir.join("settings.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|v| v["tools_enabled"].as_bool())
+    };
+    if root.join("settings.json").is_file() {
+        read(root)
+    } else {
+        seed.and_then(read)
+    }
 }
 
 /// The launch's own keys over `saved`: backend, model, tools, profile, seat, MCP off. A fresh
