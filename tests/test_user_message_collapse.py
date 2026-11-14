@@ -78,6 +78,38 @@ async def test_offscreen_user_folds_in_same_follow_pass_and_stays_reopened():
 
 
 @pytest.mark.asyncio
+async def test_card_not_yet_laid_out_is_not_folded_as_offscreen():
+    # The /skills load mounts the user card and starts the turn in one synchronous call, so the
+    # follow pass ran before layout: both cards measured y=0 height=0, and 0 <= 0 read as
+    # "scrolled above the viewport", folding a card that was on screen.
+    # The skills picker's dismiss callback runs that call while the modal still covers the chat.
+    from textual.screen import ModalScreen
+
+    app = CardApp()
+    cards = {}
+
+    def picked(_choice):
+        log = app.query_one("#chat-log")
+        cards["user"] = app._user_bubble("Loaded skill: alpha-fixture", False)
+        log.mount(AssistantMessage())
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        modal = ModalScreen()
+        app.push_screen(modal, picked)
+        await pilot.pause()
+        # A follow pass already queued while the picker is open runs right after the dismiss
+        # callback mounts both cards, before the chat screen has laid them out.
+        app._scroll_down()
+        modal.dismiss("alpha-fixture")
+        for _ in range(4):
+            await pilot.pause()
+        user = cards["user"]
+        assert user.virtual_region.height > 0
+        assert not user.collapsed
+        assert not user._autocollapsed
+
+
+@pytest.mark.asyncio
 async def test_queued_x_removes_only_clicked_duplicate_and_cannot_send_it(monkeypatch):
     from litetui import hook_host
 
