@@ -188,7 +188,12 @@ class Settings:
     strata_prompt_cache: int | None = None
     strata_prompt_cache_every: int | None = None
     strata_prompt_cache_tail: str | None = None
-    strata_conversation_cache_mib: int | None = None
+    #: On by default (T1306-A, prefix-cache audit P1): engine 0.1.41 parks a displaced conversation
+    #: only with this budget ("default 0 = off"), so every card summary made the next turn re-read the
+    #: whole prompt (224 times, 2,260 s of 2,955 s prefill in strata-uncensored_iq3_xxs.log). 8192 MiB
+    #: is the 0.2.10 engine's own auto-size ceiling. Never sent to an engine without the flag
+    #: (strata_engine.launch_plan). 0 = off, None = as the model's config.
+    strata_conversation_cache_mib: int | None = 8192
     strata_conversation_cache_slots: int | None = None
     strata_conversation_cache_min_free_mib: int | None = None
     strata_session_min_free_mib: int | None = None
@@ -237,7 +242,10 @@ class Settings:
     strata_fit_max_tokens: str | None = None
     strata_aliases: str | None = None
     strata_anthropic_thinking: str | None = None
-    strata_effort_position: str | None = None
+    #: "end" by default (T1306-A, audit P6): the template writes the effort sentence at the top of the
+    #: system turn, so a change of effort re-read the whole prompt. The server checks the engine for
+    #: --tail-role-token itself and keeps "start" on one without it. None = as the model's config.
+    strata_effort_position: str | None = "end"
     strata_reasoning_budget_tokens: int | None = None
     strata_reasoning_loop_recovery: str | None = None
     strata_reasoning_close_retry: str | None = None
@@ -348,6 +356,21 @@ class Settings:
     #: already fill this class of GPU, and the OOM of 2026-08-21 is why
     #: memory ceilings are set here rather than discovered by crashing.
     llama_models_max: int = 2
+    #: Prompt-cache defaults for every model OUR router serves, written to the
+    #: preset ini's [*] section; a per-model Load value wins. They apply on the
+    #: next router spawn. Measured cause (prefix-audit P2, T1306-B): after a
+    #: ~200-token side call the b9360 router saved the idle conversation to an
+    #: 8192 MiB RAM cache that a 74k-127k hybrid entry (9.5-12.7 GiB) cannot fit
+    #: beside anything, and re-read it from token 0: 12 times, 595 s of 1,628 s.
+    #: --cache-ram MiB. Never -1: that caps the cache at n_ctx tokens in total.
+    llama_cache_ram_mib: int = 32768
+    #: --slot-prompt-similarity. A side call shares ~40 tokens with the main
+    #: prompt (~0.2) and took its slot at upstream's 0.10. Never 0.0, which
+    #: turns similarity selection off.
+    llama_slot_prompt_similarity: float = 0.5
+    #: --cache-idle-slots. Off keeps an idle conversation in VRAM while another
+    #: slot runs, instead of moving it to the RAM cache on every new task.
+    llama_cache_idle_slots: bool = False
     #: Per-model Load-tab overrides {model_key: {"ctx": …, "ngl": …, ...}} —
     #: key vocabulary is llm_backend.FLAG_FOR, edited via /modelcfg.
     llama_load_settings: dict = field(default_factory=dict)
@@ -363,6 +386,23 @@ class Settings:
     #: lmstudio SDK sync-API timeout. Its default (60s) is shorter than a
     #: large model's load; a timeout mid-load reads as a failure that isn't.
     lms_load_timeout_s: int = 600
+    #: T1306-E (prefix-cache audit P8): save the conversation's prompt cache when an engine LiteTUI
+    #: started stops cleanly, and put it back before that conversation's next request after the
+    #: next start (prefix_persist.py). Strata ON: its engine refuses a session from another model
+    #: or engine configuration itself. llama.cpp OFF: b9360 refuses /slots with an mmproj loaded,
+    #: saves no hybrid checkpoints (a Qwen3.5/3.8 restore re-reads anyway) and checks no identity.
+    slot_persist_strata: bool = True
+    slot_persist_llama: bool = False
+    #: Blank = <data root>/.slot-saves (one folder per engine inside). Only LiteTUI's own lt-*
+    #: save files are ever deleted, and partial ones only in a folder LiteTUI created (marker file).
+    slot_persist_dir: str = ""
+    #: Disk cap for all saves of one engine; the oldest go first. One 74k-token hybrid state
+    #: with its checkpoints is ~9.5 GiB (REPORT.md section 2), so 32 holds about three.
+    slot_persist_cap_gib: int = 32
+    #: At a stop the engine usually holds the card summary, not the conversation; the last
+    #: main request is then re-sent (max_tokens 1) to put it back, for at most this long
+    #: (Prefix 431d0c21: 10 s, the user is quitting). Past it nothing is saved.
+    slot_persist_replay_s: int = 10
 
     # ── Generation ───────────────────────────────────────────────────────────
     #: Response budget WITH tools enabled. The agent loop needs headroom for
@@ -541,6 +581,19 @@ class Settings:
     #: Effort used for the compaction call. "off" is the cheap ideal but is the
     #: value that gets silently dropped; see compact_max_tokens.
     compact_thinking_level: ThinkingLevel = "low"
+    #: Backends whose server keeps a prompt prefix cache that any change near the
+    #: start of the prompt throws away. On these, a compaction re-sends the last
+    #: chat request unchanged (message 0, tools array, reasoning effort) plus ONE
+    #: final user message, and the rebuild keeps message 0 byte-identical, so the
+    #: server reuses the whole conversation instead of re-reading it (NInfer,
+    #: measured: 128,138 of 129,122 tokens reused in 1.4 s, against 230-405 s).
+    #: On these backends compact_thinking_level is NOT used: the chat turn's own
+    #: effort is sent, because templates render it at token ~0.
+    #: "custom" is left out: it is any OpenAI-compatible URL, often remote, where
+    #: the bigger request is billed and nothing says a cache exists.
+    prefix_cache_backends: list[str] = field(
+        default_factory=lambda: ["ninfer", "llamacpp", "strata", "xolotl", "lmstudio"]
+    )
 
     # ── Auto-compaction ──────────────────────────────────────────────────────
     autocompact_enabled: bool = True

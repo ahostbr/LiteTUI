@@ -146,6 +146,11 @@ VALUE_FLAGS: dict[str, str] = {
     "draft_p_min": "spec-draft-p-min",
     "mmproj": "mmproj",
     "chat_template_file": "chat-template-file",
+    # Prompt-cache flags (T1306-B). Router-wide defaults come from settings
+    # (llama_cache_ram_mib, llama_slot_prompt_similarity) via the ini's [*]
+    # section; a per-model value here overrides them.
+    "cache_ram": "cache-ram",                     # MiB of host RAM prompt cache
+    "slot_similarity": "slot-prompt-similarity",  # LCP share needed to reuse a slot
 }
 
 #: Booleans. Written ``ini-key = true/false``; the router emits the
@@ -156,9 +161,32 @@ BOOL_FLAGS: dict[str, str] = {
     "kv_offload": "kv-offload",
     "kv_unified": "kv-unified",
     "context_shift": "context-shift",
+    "cache_idle_slots": "cache-idle-slots",   # router default: llama_cache_idle_slots
 }
 
 FLAG_FOR: dict[str, str] = {**VALUE_FLAGS, **BOOL_FLAGS}
+
+#: 🔴 b12078 REMOVED --mmap AND --mlock for ONE `--load-mode MODE` (T1306-F;
+#: b12078 19e8a86fe common/arg.cpp:2642-2658: auto|none|mmap|mlock|mmap+mlock|dio).
+#: The two Load-tab booleans stay the vocabulary; on a build whose census has
+#: load-mode but not the old pair they are written as one load-mode line. A key
+#: left unset takes b9360's default so the model loads as it did there:
+#: common/common.h:548 `use_mmap = true`, :550 `use_mlock = false` (6b4e4bd58).
+_LOAD_MODE_DEFAULTS = {"mmap": True, "mlock": False}
+_LOAD_MODES = {(True, True): "mmap+mlock", (True, False): "mmap",
+               (False, True): "mlock", (False, False): "none"}
+
+
+def _speaks_load_mode(flags: frozenset[str]) -> bool:
+    return "load-mode" in flags and not {"mmap", "mlock"} <= flags
+
+
+def load_key_expressible(key: str, flags: frozenset[str]) -> bool:
+    """Can the installed build carry this Load-tab key? An empty census proves
+    nothing, so nothing is called n/a on it."""
+    if not flags or FLAG_FOR.get(key, "") in flags:
+        return True
+    return key in _LOAD_MODE_DEFAULTS and "load-mode" in flags
 
 
 @dataclass(frozen=True)
@@ -743,6 +771,24 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
         f"; engine: {configured_build(settings)}",
         "",
     ]
+    # 🔴 ROUTER-WIDE PROMPT-CACHE DEFAULTS GO IN [*], NEVER ON THE ROUTER ARGV
+    # (T1306-B). llama.cpp cascades the [*] section UNDER every model section
+    # (common/preset.cpp:356-358 and :479-487; server-models.cpp:299-302 at
+    # b9360, :747-749 at b12078), so a per-model value still wins. The router's
+    # own argv is merged OVER every model last (server-models.cpp:315-318,
+    # :774 at b12078) and would beat what the user typed for one model.
+    # Census-gated per flag; an empty census (no --help answer) proves no flag,
+    # so nothing is written. Measured cause and defaults: prefix-audit P2.
+    # getattr: a settings object without these fields (an embedder's, a test double) means "not set".
+    router_defaults = {
+        "cache_ram": getattr(settings, "llama_cache_ram_mib", None),
+        "slot_similarity": getattr(settings, "llama_slot_prompt_similarity", None),
+        "cache_idle_slots": getattr(settings, "llama_cache_idle_slots", None),
+    }
+    shared = [_ini_line(k, v) for k, v in sorted(router_defaults.items())
+              if v is not None and FLAG_FOR[k] in flags]
+    if shared:
+        lines += ["[*]", *shared, ""]
     for row in sorted(rows, key=lambda r: r.key):
         if row.path is None:
             continue
@@ -773,6 +819,11 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             auto, _found = sibling_mmproj(row.path)
             if auto:
                 cfg = {**cfg, "mmproj": auto}
+        load_mode = None
+        if _speaks_load_mode(flags) and any(cfg.get(k) is not None for k in _LOAD_MODE_DEFAULTS):
+            chosen = tuple(bool(d if cfg.get(k) is None else cfg[k]) for k, d in _LOAD_MODE_DEFAULTS.items())
+            load_mode = _LOAD_MODES[chosen]
+            cfg = {k: v for k, v in cfg.items() if k not in _LOAD_MODE_DEFAULTS}
         for k in sorted(cfg):
             v = cfg[k]
             if v is None:
@@ -780,12 +831,19 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             ini_key = FLAG_FOR.get(k)
             if ini_key is None or (flags and ini_key not in flags):
                 raise IniUnexpressible(k, model=row.key)
-            if k in BOOL_FLAGS:
-                lines.append(f"{ini_key} = {'true' if v else 'false'}")
-            else:
-                lines.append(f"{ini_key} = {v}")
+            lines.append(_ini_line(k, v))
+        if load_mode is not None:
+            lines.append(f"load-mode = {load_mode}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _ini_line(key: str, value) -> str:
+    """One ini line for a cfg key. Booleans are written true/false and the
+    router emits the --flag / --no-flag argv itself."""
+    if key in BOOL_FLAGS:
+        return f"{FLAG_FOR[key]} = {'true' if value else 'false'}"
+    return f"{FLAG_FOR[key]} = {value}"
 
 
 def write_preset_ini(rows: list[ModelRow], settings, dest: Path | None = None) -> Path:
@@ -827,6 +885,8 @@ class _Owned:
     proc: object            # ttyguard.popen handle for OUR router (None = attached)
     log_path: Path
     log_file: object
+    #: The preset ini the router was started with: the launch identity of a saved slot (T1306-E).
+    ini: Path | None = None
 
 
 #: Which of llama-server's two control planes is answering. See the module
@@ -978,6 +1038,9 @@ class LlamaCppBackend(_VramGate):
         self._owned: _Owned | None = None
         self._rows: list[ModelRow] = []
         self._shape: str | None = None      # probed per connect, see _probe_shape
+        from . import prefix_persist
+        #: Prompt cache across router restarts (T1306-E); off unless slot_persist_llama.
+        self.slot_persistence = prefix_persist.SlotPersistence(prefix_persist.LlamaSlots(self))
 
     # -- identity ---------------------------------------------------------
 
@@ -1185,6 +1248,8 @@ class LlamaCppBackend(_VramGate):
         return self._spawn(preset=preset) if preset is not None else self._spawn()
 
     def _spawn(self, *, preset: Path | None = None) -> str:
+        from . import prefix_persist
+
         binary = llama_executable(self._settings)
         if not binary.exists():
             raise BackendError(
@@ -1215,6 +1280,8 @@ class LlamaCppBackend(_VramGate):
                 "--port", port,
                 "--models-max", str(self._settings.llama_models_max),
                 "--no-models-autoload",
+                *prefix_persist.llama_launch_args(
+                    self._settings, lambda: configured_flags(self._settings)),
             ],
             stdin=subprocess.DEVNULL,
             stdout=log_file,
@@ -1224,7 +1291,8 @@ class LlamaCppBackend(_VramGate):
         deadline = time.monotonic() + ROUTER_START_TIMEOUT_S
         while time.monotonic() < deadline:
             if _healthy(self._host):
-                self._owned = _Owned(proc, log_path, log_file)
+                self._owned = _Owned(proc, log_path, log_file, ini=Path(ini))
+                self.slot_persistence.note_start()
                 self._attached_host = None
                 self._attached_owner = None
                 self._shape = _SHAPE_ROUTER
@@ -1350,6 +1418,10 @@ class LlamaCppBackend(_VramGate):
             pass
         if self._owned is owned:                    # clear ONLY if still the same object
             self._owned = None
+        try:
+            self.slot_persistence.note_stopped()     # nothing writes now: drop partial saves
+        except Exception:  # noqa: BLE001 - bookkeeping never fails a stop
+            pass
         return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
                                 tree="unknown", pid=pid, retained=False, error=error)
 

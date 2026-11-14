@@ -15,6 +15,8 @@ from pathlib import Path
 from litetui.owner_mode import OwnerModeError
 
 UNRECORDED = object()
+#: The MEMORY slot every legacy (unrecorded-provenance) prompt was composed with.
+LEGACY_MEMORY_ORDER = 10
 
 
 def capture(app) -> dict:
@@ -43,7 +45,9 @@ def _host_prefixes(app, *, native: bool) -> list[str]:
 
     bases = [""]
     for section in app.plugins.sections_sorted():
-        if section.order >= PROMPT_ORDER["MEMORY"]:
+        # Legacy prompts were composed with MEMORY at slot 10 (before T1306-D moved it last), so the address is
+        # read where it was written: after BASE/[PLAN] and before the tools text.
+        if section.order >= LEGACY_MEMORY_ORDER:
             break
         if section.owner != "host" or section.order not in (PROMPT_ORDER["BASE"], PROMPT_ORDER["PLAN"]):
             return []

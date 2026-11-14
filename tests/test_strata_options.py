@@ -30,7 +30,9 @@ def _cfg(**extra):
 
 
 def _settings(**values):
-    return Settings(**values)
+    """Every catalog option blank (as configured), then `values`: these tests pin how `apply` writes an
+    option, not which options have a default (that is test_strata_prefix_defaults.py)."""
+    return Settings(**{**{name: None for name in so.FIELD_NAMES}, **values})
 
 
 # ── the catalog is one table that every place agrees with ──────────────────────
@@ -245,7 +247,7 @@ def test_launch_writes_the_copy_with_the_option_and_leaves_the_install_file_alon
 
 def test_launch_with_no_option_still_serves_the_install_file(tmp_path, monkeypatch):
     settings, path = _install(tmp_path, monkeypatch)
-    argv, _root, _cfg, _host = eng.launch_plan(Settings(strata_root=settings.strata_root))
+    argv, _root, _cfg, _host = eng.launch_plan(_settings(strata_root=settings.strata_root))
     assert argv[argv.index("--config") + 1] == str(path)
 
 

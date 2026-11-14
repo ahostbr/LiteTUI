@@ -455,6 +455,15 @@ def _cmd_engine(app, name: str, arg: str) -> None:
 
         async def _stop_work(target=backend):
             try:
+                # T1306-E: save the conversation's prompt cache while the engine is still up.
+                from litetui import prefix_persist
+
+                persist = prefix_persist.for_backend(target)
+                if persist is not None and persist.wants_save():
+                    app.system_message("Saving the conversation cache before the stop…")
+                    said = await prefix_persist.save_before_stop(app, target)
+                    if said:
+                        app.system_message(said)
                 app.system_message(await agent_preparation.await_preparation(target.stop_engine))
             except asyncio.CancelledError:
                 raise                       # await_preparation already joined the thread
@@ -872,6 +881,9 @@ _LOAD_FIELDS: list[tuple] = [
     ("mlock", "Keep Model in Memory", "tri", None),
     ("mmap", "Try mmap()", "tri", None),
     ("context_shift", "Context Shift", "tri", None),
+    ("cache_ram", "Prompt Cache RAM (MiB)", "int", "router default"),
+    ("slot_similarity", "Slot Similarity", "float", "router default"),
+    ("cache_idle_slots", "Move Idle Slots to RAM", "tri", None),
     ("seed", "Seed", "int", "random"),
     ("rope_base", "RoPE Frequency Base", "float", "auto"),
     ("rope_scale", "RoPE Frequency Scale", "float", "auto"),
@@ -1083,8 +1095,7 @@ class ModelConfigBody(Widget):
                         auto_mmproj, mmproj_found = self._sibling_projector()
                         for key, label, kind, extra in _LOAD_FIELDS:
                             editable = on_llama or key == "ctx"
-                            flag = llm_backend.FLAG_FOR.get(key, "")
-                            missing = bool(flags) and flag not in flags
+                            missing = not llm_backend.load_key_expressible(key, flags)
                             note = (
                                 f"n/a in installed build ({llm_backend.configured_build(app.settings)})"
                                 if missing else

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -83,6 +84,7 @@ from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
 # ⚠️ It buys a shorter app.py and nothing else: same API surface, same method
 # count on LiteTUI, same plugin reach-through.
 from litetui.now_card import NowCard
+from litetui.tool_advert import ToolAdvert
 from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AnswerBody,
     AssistantMessage,
@@ -1900,6 +1902,8 @@ class LiteTUI(App):
         # failure would be swallowed by per-plugin isolation, turning a
         # broken checkout into a silent half-boot.
         self.plugins = plugins_mod.PluginRegistry()
+        # T1306-D: the tool advertisement, frozen per conversation on a prefix-cache backend (litetui.tool_advert).
+        self._tool_advert = ToolAdvert()
         # The host's own prompt sections, registered BEFORE plugins so slot
         # collisions land on the intruder, not the floor. Renders read self.*
         # LIVE — a /reconnect or convo switch changes the next composition.
@@ -2399,6 +2403,31 @@ class LiteTUI(App):
             # an error on the way out.
             return
         await await_subtree_composed(screen)
+
+    def exit(self, result=None, return_code: int = 0, message=None) -> None:
+        """Every quit (Ctrl+Q, /quit, an RPC shutdown, a relaunch) comes through here first.
+
+        T1306-E: when an engine LiteTUI started holds a conversation worth keeping, its prompt
+        cache is saved BEFORE Textual's exit takes effect, so a second quit or Ctrl+C is still
+        read and skips the save at once (prefix_persist.defer_exit). `_shutdown` is too late for
+        that: it runs after the message loop has stopped reading keys."""
+        from litetui import prefix_persist
+
+        def real_exit() -> None:
+            App.exit(self, result, return_code, message)
+
+        if prefix_persist.defer_exit(self, real_exit):
+            return
+        real_exit()
+
+    def action_help_quit(self) -> None:
+        """Ctrl+C. While the quit-time cache save runs, it skips the save and quits now."""
+        from litetui import prefix_persist
+
+        if prefix_persist.quit_save_running(self):
+            self.exit()
+            return
+        super().action_help_quit()
 
     async def _shutdown(self) -> None:
         """Settle the tree before Textual prunes it, then shut down normally.
@@ -3160,12 +3189,21 @@ class LiteTUI(App):
         return tool_context.render_summary(name, raw, pointer, summary)
 
     def _prefix_cache_backend(self) -> bool:
-        """True on a backend whose server keeps a prefix cache that any change to the prompt's start throws away (NInfer)."""
+        """True on a backend whose server keeps a prefix cache that any change to the prompt's start throws away.
+
+        The backends are the `prefix_cache_backends` setting (T1306-C; default NInfer, llama.cpp, Strata, Xolotl, LM Studio).
+        It gates the compaction request and the rebuild that keeps message 0 byte-identical."""
+        return getattr(self.backend, "name", "") in self.settings.prefix_cache_backends
+
+    def _resident_builtins_backend(self) -> bool:
+        """True where the built-in deferred tools ride from the first request (plugins/tool_search.py). NInfer only: widening
+        it adds ~2,600 tokens of window to every request, and tool advertisement is P5's decision, not compaction's."""
         return getattr(self.backend, "name", "") == "ninfer"
 
     def _remember_chat_tools(self) -> list[dict]:
         """The tools a chat request advertises, kept so a compaction can send the SAME array (prefix cache)."""
-        self._last_chat_tools = self._all_tools()
+        advert = getattr(self, "_tool_advert", None)
+        self._last_chat_tools = advert.tools(self) if advert is not None else self._all_tools()
         return self._last_chat_tools
 
     def _all_tools(self) -> list[dict]:
@@ -3854,6 +3892,8 @@ class LiteTUI(App):
         from litetui.store_identity import capture
         self._prompt_store_identity = capture(self)
         self._store_injected = False
+        if getattr(self, "_tool_advert", None) is not None:
+            self._tool_advert.reset(self.plugins)  # a rebuilt message 0 takes a fresh tool snapshot (T1306-D)
         return self._compose_system_text()
 
     def _compose_system_text(self, *, replace=None) -> str:
@@ -4009,7 +4049,10 @@ class LiteTUI(App):
             if message.get("litetui_prompt_version") == 2:
                 # Prefix is host-owned; its frozen index/lore/store suffix is opaque.
                 # Recomposition does not reset or reread the store receipt.
-                messages[index] = {**message, "content": self._compose_system_text() + content[len(original):]}
+                advert = getattr(self, "_tool_advert", None)
+                with advert.capturing() if advert is not None else contextlib.nullcontext():
+                    prefix = self._compose_system_text()
+                messages[index] = {**message, "content": prefix + content[len(original):]}
                 continue
             start = message.get("litetui_prompt_ordinary_start")
             if start is None and old_ordinary:
@@ -9495,6 +9538,10 @@ class LiteTUI(App):
                 # No timeout here — the user is watching and asked for this
                 # turn, so a model that is loading is worth waiting out.
                 await self._ensure_chat_ready()
+                # T1306-E: before the first main request after an owned engine start, put back
+                # the saved prompt cache whose prompt is a prefix of this one (never a load).
+                from litetui import prefix_persist
+                await prefix_persist.restore_before_main(self, kwargs)
                 # A closure, not the bound method: test fakes deepcopy their
                 # kwargs, and deepcopying a bound method copies the whole app.
                 stream = await model_transport.for_app(self).create(
@@ -9862,6 +9909,10 @@ class LiteTUI(App):
             for event in rpc_deltas:
                 self._rpc_emit(event)
             _iteration += 1  # failed requests do not spend the tool-round budget
+            if request_usage is not None:
+                # T1306-E: the request a clean-stop save must cover, and the one a replay re-sends.
+                from litetui import prefix_persist
+                prefix_persist.note_main(self.backend, kwargs, request_usage)
             retry_kwargs = None
             retry_budget = model_transport.CodexRequestRetry() if recover_request else None
 

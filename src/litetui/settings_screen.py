@@ -934,6 +934,58 @@ class SettingsBody(Widget):
                             "the SDK's 60s default.",
                             placeholder="600",
                         )
+                        yield self._section_header("model-prompt-cache")
+                        yield from self._text_row(
+                            "llama_cache_ram_mib", "Prompt cache RAM, MiB (--cache-ram)",
+                            "System RAM our router keeps for saved conversations. A 127k "
+                            "conversation is about 12.7 GiB, more than upstream's 8192. "
+                            "Applies on the router's next start.",
+                            placeholder="32768",
+                        )
+                        yield from self._text_row(
+                            "llama_slot_prompt_similarity", "Slot similarity (--slot-prompt-similarity)",
+                            "Share of a request that must match a slot to reuse it. A short side "
+                            "call scores about 0.2 against the conversation, so 0.5 keeps it out of "
+                            "the conversation's slot. Applies on the router's next start.",
+                            placeholder="0.5",
+                        )
+                        yield from self._switch_row(
+                            "llama_cache_idle_slots", "Move idle slots to RAM (--cache-idle-slots)",
+                            "Off keeps an idle conversation in GPU memory while another request runs. "
+                            "On moves it to the RAM cache on every new request and copies it back. "
+                            "Applies on the router's next start.",
+                        )
+                        yield self._section_header("model-slot-persist")
+                        yield from self._switch_row(
+                            "slot_persist_strata", "Strata: keep the prompt cache across restarts",
+                            "On by default. When LiteTUI stops the Strata engine it started (quit or /engine stop), the "
+                            "conversation's cache is saved to disk and put back before that conversation's next request "
+                            "after the next start. The engine refuses a save from another model or configuration. "
+                            "Applies on the next /engine start.",
+                        )
+                        yield from self._switch_row(
+                            "slot_persist_llama", "llama.cpp: keep the prompt cache across restarts",
+                            "Off by default. llama.cpp b9360 refuses slot saves when a vision projector is loaded, and on "
+                            "Qwen3.5/3.8 a restored slot has no checkpoints, so the next turn re-reads anyway. Useful only for "
+                            "plain text models. Applies when LiteTUI next starts its router.",
+                        )
+                        yield from self._text_row(
+                            "slot_persist_dir", "Save folder",
+                            "Blank uses .slot-saves in LiteTUI's data folder. Only LiteTUI's own save files (lt-*) are ever "
+                            "deleted, and partial ones only in a folder LiteTUI created. A save is GBs (a 74k-token conversation is about 9.5 GiB).",
+                            placeholder="blank, or D:/litetui-cache",
+                        )
+                        yield from self._text_row(
+                            "slot_persist_cap_gib", "Size cap per engine (GiB)",
+                            "The oldest saves are deleted first once this is reached.",
+                            placeholder="32",
+                        )
+                        yield from self._text_row(
+                            "slot_persist_replay_s", "Re-read limit at a stop (s)",
+                            "At a stop the engine usually holds the last card summary, so the conversation is re-sent once "
+                            "to save it. Past this many seconds nothing is saved. Quit again or Ctrl+C to skip the save.",
+                            placeholder="10",
+                        )
 
                         # ── Generation ───────────────────────────────────────────────
                 # T893 — THE USER: "ninfer settings should have their own new tab ... next to
@@ -1412,6 +1464,15 @@ class SettingsBody(Widget):
                             "owner_domain_cap", "Owner DOMAIN.md cap",
                             "Owner mode only: characters of DOMAIN.md injected at conversation start.",
                         )
+                        yield self._section_header("compact-prefix-cache")
+                        yield from self._text_row(
+                            "prefix_cache_backends", "Prefix-cache backends",
+                            "Comma-separated backend names. On these a compaction re-sends the "
+                            "last chat request unchanged plus one message, and keeps message 0, "
+                            "so the engine reuses what it holds instead of re-reading the whole "
+                            "prompt. They use the chat's thinking level, not the compact one.",
+                            placeholder="ninfer, llamacpp, strata, xolotl, lmstudio",
+                        )
 
                         # ── Capabilities ─────────────────────────────────────────────
                 with TabPane("Capabilities", id="tab-capabilities"):
@@ -1876,6 +1937,10 @@ class SettingsBody(Widget):
             raise ValueError("tool_context_threshold_chars: must be >= 0")
         if out.llama_models_max < 0:
             raise ValueError("llama_models_max: 0 means unlimited; below that is nothing")
+        if out.llama_cache_ram_mib < 0:
+            raise ValueError("llama_cache_ram_mib: 0 turns the cache off; -1 caps it at the context size, so not here")
+        if not 0 < out.llama_slot_prompt_similarity <= 1:
+            raise ValueError("llama_slot_prompt_similarity: above 0 and at most 1 (0 turns slot matching off)")
         if out.lms_load_timeout_s < 30:
             raise ValueError("lms_load_timeout_s: under 30s no large model can load")
         if hasattr(out, "tts_timeout"):
