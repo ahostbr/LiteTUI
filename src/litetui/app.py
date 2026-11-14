@@ -7833,6 +7833,11 @@ class LiteTUI(App):
                 region = card.virtual_region
             except Exception:
                 continue
+            # Not laid out yet (height 0, y 0): a pass queued while a modal covered the chat
+            # can run before the cards it just mounted are arranged, and 0 <= 0 would fold a
+            # card that is on screen (the /skills load). The next pass measures it.
+            if not region.height:
+                continue
             if region.y + region.height <= top:
                 card.autocollapse()
 
