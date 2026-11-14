@@ -1,16 +1,18 @@
 import json
 import pytest
+from _owned_seat import conversation_id, owned_session
 from litetui.conversation import ConversationRepository
 
 
 @pytest.fixture
 def store(tmp_path):
-    repository = ConversationRepository()
-    repository.convo_id = 'parent'
-    repository.convo_dir = tmp_path / '.convos' / 'parent'
-    repository.convo_path = repository.convo_dir / 'convo.jsonl'
+    # History writes need an owned agent session (e52007fe); owned folders are UUIDs.
+    repository = ConversationRepository(agent_session=owned_session(tmp_path))
+    cid = conversation_id('parent')
+    repository.stage(cid)
     repository.convo_dir.mkdir(parents=True)
-    repository.convo_path.write_text('{"type":"meta","id":"parent"}\n')
+    repository.convo_path.write_text(json.dumps({'type': 'meta', 'id': cid}) + '\n')
+    repository.pending = False  # materialized on disk, as test_agent_repository's owned cases do
     repository.acquire()
     yield repository
     repository.release()

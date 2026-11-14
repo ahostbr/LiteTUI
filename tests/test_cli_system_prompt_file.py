@@ -42,7 +42,11 @@ def test_cognitive_file_follows_role_in_initial_system_prompt(tmp_path, monkeypa
     monkeypatch.setattr("sys.argv", ["litetui", "--system-prompt-file", str(role),
                                  "--cognitive-file", str(architecture)])
     cli.main()
-    assert captured["system_prompt"] == "Worker doctrine\n\nTuring architecture"
+    # T0338 (d6bdf25f, 2026-10-17): the app composes the selected method into the seat's
+    # system message (seat_prompts.prepare, covered by the *_t0338 suites); the CLI hands
+    # the role text and the cognitive file over unchanged.
+    assert captured["system_prompt"] == "Worker doctrine"
+    assert captured["cognitive_file"] == str(architecture)
 
 
 def test_system_prompt_and_file_are_mutually_exclusive(tmp_path, monkeypatch, capsys):

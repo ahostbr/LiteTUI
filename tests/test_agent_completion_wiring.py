@@ -150,4 +150,6 @@ async def test_durable_completion_requires_materialized_storage_when_requested(t
     if materialized:
         assert result['storage']['transcript'] == str((directory / 'convo.jsonl').resolve())
     else:
-        assert 'transcript' in result['storage_error']
+        # e52007fe: conversation_evidence looks the child up in the catalog first, so an
+        # absent child is refused there, before any per-file (transcript) check.
+        assert 'Child conversation is absent or ambiguous' in result['storage_error']
