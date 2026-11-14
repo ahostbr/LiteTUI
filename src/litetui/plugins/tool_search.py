@@ -58,7 +58,9 @@ def _register(ctx) -> None:
     reg.deferred_static = DEFAULT_DEFERRED
     reg.defer_dynamic = True
     # NInfer: the built-ins ride from the first request (see PluginRegistry.static_resident); MCP tools stay deferred.
-    reg.static_resident = lambda: bool(getattr(app, "_prefix_cache_backend", lambda: False)())
+    # Its own predicate, NOT _prefix_cache_backend: widening compaction to every prefix-cache backend (T1306-C) must not
+    # also add ~2,600 tokens of window to every request there. Tool advertisement is decided by P5.
+    reg.static_resident = lambda: bool(getattr(app, "_resident_builtins_backend", lambda: False)())
     mcp = getattr(app, "mcp", None)
     ctx.tool(tool_schemas.load("tool_search"), lambda args: _run(reg, args, mcp), policy=READ_POLICY)
 

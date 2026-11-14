@@ -3160,7 +3160,15 @@ class LiteTUI(App):
         return tool_context.render_summary(name, raw, pointer, summary)
 
     def _prefix_cache_backend(self) -> bool:
-        """True on a backend whose server keeps a prefix cache that any change to the prompt's start throws away (NInfer)."""
+        """True on a backend whose server keeps a prefix cache that any change to the prompt's start throws away.
+
+        The backends are the `prefix_cache_backends` setting (T1306-C; default NInfer, llama.cpp, Strata, Xolotl, LM Studio).
+        It gates the compaction request and the rebuild that keeps message 0 byte-identical."""
+        return getattr(self.backend, "name", "") in self.settings.prefix_cache_backends
+
+    def _resident_builtins_backend(self) -> bool:
+        """True where the built-in deferred tools ride from the first request (plugins/tool_search.py). NInfer only: widening
+        it adds ~2,600 tokens of window to every request, and tool advertisement is P5's decision, not compaction's."""
         return getattr(self.backend, "name", "") == "ninfer"
 
     def _remember_chat_tools(self) -> list[dict]:
