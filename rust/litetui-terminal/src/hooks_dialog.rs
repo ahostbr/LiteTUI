@@ -497,6 +497,9 @@ impl View {
         match update {
             Update::Snapshot(snapshot) => {
                 let testing = snapshot.testing;
+                // Textual keeps focus on the same widget when the body re-renders (a new
+                // /mcp server row mounts controls ahead of the Add form), so follow the stop.
+                let held = self.focused();
                 self.snapshot = Some(*snapshot);
                 self.edits.clear();
                 self.notice.clear();
@@ -512,7 +515,9 @@ impl View {
                         .and_then(|id| stops.iter().position(|s| matches!(s, Stop::Control(c) if *c == id)))
                         .unwrap_or(stops.len());
                 } else {
-                    self.focus = self.focus.min(stops.len());
+                    self.focus = held
+                        .and_then(|stop| stops.iter().position(|s| *s == stop))
+                        .unwrap_or_else(|| self.focus.min(stops.len()));
                 }
                 self.cursor = self.text_of_focus().map_or(0, |t| t.chars().count());
             }
@@ -1722,6 +1727,26 @@ mod tests {
                 {"kind": "button", "id": "mcp-close", "label": "Close", "variant": "primary", "disabled": false}
             ]}
         ]})
+    }
+
+    #[test]
+    fn focus_follows_its_control_when_a_refresh_mounts_rows_ahead_of_it() {
+        // /mcp Add: Python keeps focus on #mcp-add-go while the new server's row (and its
+        // buttons) mounts above the form; the focus must not slide onto the name input.
+        let mut empty = mcp_snapshot();
+        empty["items"][1]["items"] = json!([]);
+        let mut v = View::default();
+        v.open_kind(Kind::Mcp);
+        v.take_intent();
+        v.observe(Update::Snapshot(Box::new(Snapshot::parse_kind(&empty, Kind::Mcp).unwrap())));
+        v.focus = v.stops().iter().position(|s| *s == Stop::Control("mcp-add-go".into())).unwrap();
+        v.observe(Update::Snapshot(Box::new(
+            Snapshot::parse_kind(&mcp_snapshot(), Kind::Mcp).unwrap(),
+        )));
+        assert_eq!(v.focused(), Some(Stop::Control("mcp-add-go".into())));
+        // A control that is gone keeps the old index rule, bounded by the new chain.
+        v.observe(Update::Snapshot(Box::new(Snapshot::parse_kind(&empty, Kind::Mcp).unwrap())));
+        assert_eq!(v.focused(), Some(Stop::Control("mcp-add-go".into())));
     }
 
     #[test]
