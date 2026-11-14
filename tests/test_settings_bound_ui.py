@@ -128,4 +128,4 @@ async def test_the_closing_note_says_how_a_restart_setting_applies(monkeypatch, 
         app._on_settings_saved(new)
     note = next(line for line in said if line.startswith('Settings saved'))
     assert 'strata_max_context' in note
-    assert 'apply on the next start' in note and '/engine stop' in note
+    assert 'apply on the next start' in note and '/engine restart' in note   # T1311
