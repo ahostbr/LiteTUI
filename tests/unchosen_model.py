@@ -13,5 +13,6 @@ def unchoose(app):
     app._agent_session.update_execution(backend=authority.backend, model=None,
                                         thinking_level=authority.thinking_level)
     app.model_id = ""
+    app._cli_initial_model = app._user_model_choice = None  # apply_backend_change clears both
     assert app._agent_session.authority.model is None
     return app

@@ -7,7 +7,7 @@ import inspect
 from dataclasses import asdict
 
 import pytest
-from test_rust_context_reader import app, armed, switch_app
+from test_rust_context_reader import app, armed, switch_app, unchosen
 
 from litetui import background_input as work
 from litetui import (
@@ -21,7 +21,7 @@ from litetui import (
 _CANONICAL_LM_LOAD = llm_backend.LMStudioBackend.load
 from litetui import native_model_lifecycle as models
 
-__all__ = ["app", "armed", "switch_app"]
+__all__ = ["app", "armed", "switch_app", "unchosen"]
 pytestmark = pytest.mark.asyncio
 
 
@@ -684,3 +684,25 @@ async def test_shutdown_waiter_cancellation_does_not_abandon_shared_close_retry(
         await asyncio.gather(*waiters, return_exceptions=True)
         await close()
         armed._native_model_lifecycle_clients.clear()
+
+
+async def test_reconnect_with_no_model_chosen_connects_and_stays_unchosen(unchosen, monkeypatch):
+    # Python's /reconnect (model_switch._cmd_reconnect) is prepare_reconnect + connect, and
+    # connect keeps an unchosen model unchosen with its "No model chosen" line.
+    prepare(unchosen)
+    # Python's connect ignores a pinned default while no model is chosen (App.connect).
+    unchosen.settings.pin_default_model, unchosen.settings.default_model = True, "pinned"
+    lines = []
+    monkeypatch.setattr(unchosen, "_system", lambda text, *a, **k: lines.append(text))
+    snap = await call(unchosen, "snapshot")
+    assert snap["target"] == snap["selected_model"] == "" and snap["model"] == ""
+    assert snap["actions"]["reconnect"] == {"eligible": True, "reason": None}
+    assert not snap["actions"]["load"]["eligible"] and not snap["actions"]["unload"]["eligible"]
+    with pytest.raises(ValueError, match=snap["actions"]["load"]["reason"]):
+        await call(unchosen, "review", revision=snap["revision"], action="load")
+    r = await review(unchosen)
+    a = await call(unchosen, "apply", token=r["token"])
+    value = await call(unchosen, "readback", token=r["token"], apply_id=a["apply_id"])
+    assert value["kind"] == "model_lifecycle_settled" and value["state"]["connected"]
+    assert unchosen.model_id == "" and unchosen._agent_session.authority.model is None
+    assert any(line.startswith("No model chosen for ") for line in lines), lines

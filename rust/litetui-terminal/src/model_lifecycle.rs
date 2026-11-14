@@ -152,6 +152,14 @@ impl Snapshot {
             return Err(bad());
         }
         let advertised = v["advertised"].as_bool().ok_or_else(bad)?;
+        // After /backend and before /model no model is chosen (Ryan 2026-11-12): the identity,
+        // target and selection are all "", and only reconnect can apply, as Python's /reconnect.
+        let unchosen = id.model.is_empty() && v["target"] == "" && v["selected_model"] == "";
+        let (target, selected) = if unchosen {
+            (String::new(), String::new())
+        } else {
+            (text(&v["target"], 1024)?, text(&v["selected_model"], 1024)?)
+        };
         keys(&v["actions"], &ACTIONS)?;
         let mut actions = BTreeMap::new();
         for a in ACTIONS {
@@ -167,7 +175,7 @@ impl Snapshot {
             };
             if eligible
                 && (!supported
-                    || !advertised
+                    || !advertised && !(unchosen && a == "reconnect")
                     || lifetime != "external"
                     || a != "reconnect" && id.backend == "custom"
                     || a == "load" && loaded != Some(false)
@@ -177,8 +185,6 @@ impl Snapshot {
             }
             actions.insert(a.into(), reason);
         }
-        let target = text(&v["target"], 1024)?;
-        let selected = text(&v["selected_model"], 1024)?;
         let models: Vec<String> = v["models"]
             .as_array()
             .filter(|rows| rows.len() <= 4096)
@@ -680,10 +686,17 @@ impl View {
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let mut lines = vec!["Model lifecycle".to_owned()];
         if let Some(s) = &self.data {
-            lines.push(format!("Target: {} · {}", s.target, s.backend));
+            let none = |m: &str| {
+                if m.is_empty() {
+                    "none chosen".to_owned()
+                } else {
+                    m.to_owned()
+                }
+            };
+            lines.push(format!("Target: {} · {}", none(&s.target), s.backend));
             lines.push(format!(
                 "Selected model: {} · {} advertised targets",
-                s.selected,
+                none(&s.selected),
                 s.models.len()
             ));
             lines.push(format!(
@@ -960,6 +973,43 @@ mod tests {
         assert_eq!(choice["context_mode"], "default");
         assert!(choice["context_value"].is_null());
         assert_eq!(choice["target"], "other");
+    }
+
+    #[test]
+    fn with_no_model_chosen_only_reconnect_is_eligible() {
+        let (mut id, mut v) = fixture();
+        id.model = String::new();
+        v["model"] = json!("");
+        v["target"] = json!("");
+        v["selected_model"] = json!("");
+        v["advertised"] = json!(false);
+        v["reported_loaded"] = json!(null);
+        v["context_length"] = json!(null);
+        v["actions"]["load"] =
+            json!({"eligible":false,"reason":"No model is chosen; use /model to choose one."});
+        let snapshot = Snapshot::parse(&v, &id, &"a".repeat(64)).unwrap();
+        assert_eq!(snapshot.actions["reconnect"], None);
+        for (field, value) in [
+            ("load", json!({"eligible":true,"reason":null})),
+            ("unload", json!({"eligible":true,"reason":null})),
+        ] {
+            let mut changed = v.clone();
+            changed["actions"][field] = value;
+            assert!(
+                Snapshot::parse(&changed, &id, &"a".repeat(64)).is_err(),
+                "{field}"
+            );
+        }
+        let mut chosen = v.clone();
+        chosen["selected_model"] = json!("chosen");
+        assert!(Snapshot::parse(&chosen, &id, &"a".repeat(64)).is_err());
+        let review = Request::Review(Selection {
+            before: snapshot,
+            action: "reconnect".into(),
+        })
+        .command(&id, &"a".repeat(64))
+        .unwrap();
+        assert_eq!(review["target"], "");
     }
 
     #[test]

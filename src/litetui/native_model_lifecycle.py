@@ -146,7 +146,8 @@ def _same(app, r):
         raise ValueError(
             "The reviewed runtime, model, endpoint or conversation changed"
         )
-    app._validate_owned_identity()
+    from litetui import background_input as work
+    work.validate_identity(app)
     if r.action == "unload" and r.invocation != (
         getattr(app, "_cli_initial_model", None), getattr(app, "_user_model_choice", None)
     ):
@@ -156,12 +157,17 @@ def _same(app, r):
 CHOICE_FIELDS = ("target", "context_mode", "context_value")
 
 
+def _unchosen(app):
+    """After /backend and before /model (Ryan 2026-11-12): Python's /reconnect still connects."""
+    return not app.model_id and app._agent_session.authority.model is None
+
+
 def _choice(app, cmd, r):
     source = r.snapshot if r is not None else cmd
     target = source.get("target", app.model_id)
     mode = source.get("context_mode", "inherit")
     value = source.get("context_value")
-    if (type(target) is not str or not target or len(target.encode("utf-8")) > 1024
+    if (type(target) is not str or not (target or _unchosen(app)) or len(target.encode("utf-8")) > 1024
             or any(ord(c) < 32 for c in target)
             or mode not in ("inherit", "default", "value")
             or (mode == "value" and (type(value) is not int or not 1 <= value <= 2147483647))
@@ -250,7 +256,8 @@ def _safe_start(app, backend):
     if selected is not None and selected != app.model_id:
         return "Reconnect would restore another model; resolve the current invocation selection first."
     if (
-        app.settings.pin_default_model
+        not _unchosen(app)
+        and app.settings.pin_default_model
         and app.settings.default_model != app.model_id
         and not (
             getattr(app, "_user_model_choice", None)
@@ -338,7 +345,7 @@ async def _inspect(app, cmd, op, fields, r=None):
     ctx = load.get("ctx")
     if ctx is not None and (type(ctx) is not int or not 1 <= ctx <= 2147483647):
         raise ValueError("Invalid configured context length")
-    if not advertised and reason is None:
+    if not advertised and reason is None and target:
         reason = "The selected model is not uniquely advertised by this endpoint."
     control_reason = reason
     if backend.name == "custom":
@@ -490,7 +497,8 @@ async def _connect(app, r):
             raise ValueError(
                 "Canonical connect did not settle the reviewed client/backend binding"
             )
-        if app.available_models.count(app.model_id) != 1:
+        if (not _unchosen(app) if r.snapshot["target"] == "" else
+                app.available_models.count(app.model_id) != 1):
             raise ValueError("Canonical connect did not retain the requested model")
     finally:
         # Retain before any await, including a context-child join that may fail.
