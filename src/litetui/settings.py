@@ -140,6 +140,10 @@ class Settings:
     #: --derive-session-keys: a request with no session key (Chat Completions has none) gets one derived from its instruction messages and
     #: first user message, so the conversation keeps a session lineage and live-session retention. A compaction starts a new key. OFF by default.
     ninfer_derive_session_keys: bool = False
+    #: Per-request `thinking_budget` (ninfer-serve serving.md:1160-1203): at this many thinking tokens the engine commits the early-close
+    #: guidance and </think>, and generation goes on to the answer or tool call. None or 0 = off (the engine rejects a value < 1, so 0 is
+    #: never sent). A request field, not a launch flag: no engine restart.
+    ninfer_thinking_budget: int | None = None
     #: Strata (https://github.com/Niko1221/Strata): Qwen3.8-Flash-Next on one GPU plus system
     #: RAM. Blank host = the chosen config's port on loopback (8080). Blank root = LiteSuite's
     #: install (~/.litesuite/llm/strata). Blank config = the ONE strata-<model>.json there;

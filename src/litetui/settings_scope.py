@@ -48,7 +48,7 @@ stt_model stt_mic stt_hotkey sidecar_enabled
 groq_api_key cerebras_api_key nvidia_api_key mistral_api_key github_models_token
 openrouter_api_key gemini_api_key ollama_api_key zai_api_key cloudflare_api_key
 longcat_api_key sealion_api_key anthropic_api_key anthropic_workspace_id
-slot_persist_cap_gib slot_persist_replay_s'''.split()
+slot_persist_cap_gib slot_persist_replay_s ninfer_thinking_budget'''.split()
 # seat_name is read at process start (agent_launch_context.ordinary names the next seat from the shared
 # file), so it is a DEFAULT. Filed under conversation it was saved into one conversation's snapshot and the
 # next launch never saw it (T0836).

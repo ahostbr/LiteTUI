@@ -1061,6 +1061,13 @@ class SettingsBody(Widget):
                                 "Pinned system RAM for KV moved off the GPU. Blank uses the engine's 8192.",
                                 placeholder="8192",
                             )
+                            yield self._section_header("ninfer-thinking")
+                            yield from self._text_row(
+                                "ninfer_thinking_budget", "NInfer: thinking budget (tokens)",
+                                "Close the model's thinking at this many tokens and let it answer (0 or blank: off). "
+                                "Sent with each request, so it applies at once; no engine restart.",
+                                placeholder="blank = off",
+                            )
                 with TabPane("Strata", id="tab-strata"):
                     with VerticalScroll(classes="set-scroll"):
                         yield self._section_header("strata-engine")

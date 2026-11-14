@@ -226,6 +226,7 @@ class TurnEngine:
         tools: list[dict] | None = None,
         backend_name: str = "",
         graded_thinking_models: tuple[str, ...] | list[str] = (),
+        thinking_budget: int | None = None,
     ) -> dict:
         """The request a normal streamed turn sends."""
         kwargs: dict = {
@@ -282,6 +283,8 @@ class TurnEngine:
         # is gated on the backend name (the same shape as the codex gate above).
         if backend_name == "ninfer":
             extra["return_progress"] = True
+            if thinking_budget and thinking_budget > 0:
+                extra["thinking_budget"] = int(thinking_budget)
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
@@ -317,6 +320,7 @@ class TurnEngine:
         graded_thinking_models: tuple[str, ...] | list[str] = (),
         supported_reasoning_levels: tuple[str, ...] | list[str] = (),
         model_reasoning_effort: str | None = None,
+        thinking_budget: int | None = None,
     ) -> dict:
         """The request a compaction turn sends.
 
@@ -344,6 +348,10 @@ class TurnEngine:
         # "prefill XX%" every other turn shows.
         if backend_name == "ninfer":
             extra_body["return_progress"] = True
+            # The engine ends thinking at the cap and goes on to the answer; a compaction that thinks to
+            # max_tokens would otherwise die with no summary. Never 0: the engine answers 400 to a value < 1.
+            if thinking_budget and thinking_budget > 0:
+                extra_body["thinking_budget"] = int(thinking_budget)
         kwargs: dict = {
             "model": model_id or "local-model",
             "messages": messages,

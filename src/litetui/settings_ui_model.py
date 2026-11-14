@@ -154,6 +154,7 @@ FIELD_DESCRIPTIONS = {
     "ninfer_kv_dtype": "NInfer cache format; higher precision needs more memory, smaller formats save it.",
     "ninfer_kv_capacity": "Shared NInfer cache capacity: blank follows context, auto fills remaining GPU memory.",
     "ninfer_host_kv_mib": "MiB of pinned system RAM for NInfer cache offloaded from the GPU.",
+    "ninfer_thinking_budget": "Close the model's thinking at this many tokens and let it answer (0 or blank: off).",
     "strata_host": "Address of a Strata server started separately; blank uses the install's own port.",
     "strata_root": "Folder Strata's setup prepared; blank uses the one LiteSuite's Model Hub installs.",
     "strata_config": "Prepared model (strata-<model>.json) served at the next Strata engine start.",
@@ -374,6 +375,11 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "ninfer", "NInfer", "ninfer-envelope", "Runtime envelope",
         "The startup flags that shape memory and parallel work.",
         ("ninfer_speed_preset", "ninfer_auto_long_anchors", "ninfer_derive_session_keys", "ninfer_max_context", "ninfer_max_concurrency", "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib"), scope="device", keywords=("context", "parallel", "concurrency", "KV", "speed", "preset", "prefill", "fastest", "experts", "RAM"),
+    ),
+    _section(
+        "ninfer", "NInfer", "ninfer-thinking", "Thinking",
+        "Sent with every request, so it applies at once; no engine restart.",
+        ("ninfer_thinking_budget",), scope="device", keywords=("thinking", "budget", "reasoning", "cut off", "think"),
     ),
     _section(
         "strata", "Strata", "strata-engine", "Engine",
