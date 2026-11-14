@@ -253,3 +253,77 @@ def test_effective_executable_follows_the_recipe_and_never_raises(tmp_path):
     assert eng.effective_executable(s) == exe
     eng.recipe_path(art).write_text("{bad", encoding="utf-8")
     assert eng.effective_executable(s) == eng.ninfer_executable(s)
+
+
+# ── T1310: upstream DSpine (a drafter artifact of its own) beside the old dflash-embedded DSpine ──
+
+def _two_builds(tmp_path):
+    old = tmp_path / "ninfer-all-dspine-76c35c85" / "ninfer-serve.exe"
+    new = tmp_path / "ninfer-all-c6a560d1" / "ninfer-serve.exe"
+    for exe in (old, new):
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"MZ")
+    return old, new
+
+
+def test_the_old_dflash_recipe_starts_exactly_as_before(tmp_path):
+    """Ryan's 290 tok/s setup: the fork build, the drafter inside the artifact's dflash component."""
+    old, _ = _two_builds(tmp_path)
+    art = _artifact(tmp_path / "g" / "swift15_nvfp4_dspine_p.ninfer", {"components": {"text": {}, "dflash": {}}})
+    args = ["--spec", "dflash", "--draft-tokens", "15", "--lm-head-draft", "--kv-dtype", "fp8",
+            "--max-concurrency", "2"]
+    eng.recipe_path(art).write_text(json.dumps(
+        {"version": 1, "executable": str(old), "modelId": "swift15-nvfp4-dspine", "args": args}), encoding="utf-8")
+    s = _Settings()
+    s.ninfer_artifact = str(art)
+    s.ninfer_max_context = 65536
+    _, cmd = _start(s, tmp_path)
+    assert cmd == [str(old), str(art), "--host", "127.0.0.1", "--port", "49260",
+                   "--model-id", "swift15-nvfp4-dspine", "--max-context", "65536", *args]
+    assert "--draft-model" not in cmd
+
+
+def test_a_dspine_recipe_passes_the_drafter_and_the_users_context(tmp_path):
+    _, new = _two_builds(tmp_path)
+    drafter = _artifact(tmp_path / "g" / "dspine" / "Qwen3.8-27B-DSpine-b16-q8.ninfer", {"components": {"dspine": {}}})
+    art = _artifact(tmp_path / "g" / "swift15_nvfp4_dspine_up.ninfer", {"components": {"text": {}, "dflash": {}}})
+    args = ["--spec", "dspine", "--draft-model", str(drafter), "--draft-tokens", "15", "--kv-dtype", "fp8",
+            "--max-concurrency", "2"]
+    eng.recipe_path(art).write_text(json.dumps(
+        {"version": 1, "executable": str(new), "modelId": "swift15-nvfp4-dspine-up", "args": args}), encoding="utf-8")
+    s = _Settings()
+    s.ninfer_artifact = str(art)
+    s.ninfer_max_context = 65536            # no maxContext in the recipe: his setting decides
+    _, cmd = _start(s, tmp_path)
+    assert cmd[0] == str(new)
+    assert cmd[cmd.index("--spec") + 1] == "dspine" and cmd.count("--spec") == 1
+    assert cmd[cmd.index("--draft-model") + 1] == str(drafter)
+    assert cmd[cmd.index("--max-context") + 1] == "65536"
+
+
+@pytest.mark.parametrize("args, says", [
+    (["--spec", "dspine", "--draft-model", "MISSING"], "--draft-model"),
+    (["--spec", "dspine", "--draft-tokens", "15"], "--spec dspine"),
+    (["--spec", "dspine", "--draft-model"], "--draft-model"),
+])
+def test_a_dspine_recipe_without_its_drafter_refuses_before_any_spawn(tmp_path, args, says):
+    _, new = _two_builds(tmp_path)
+    art = _artifact(tmp_path / "g" / "m.ninfer", {"components": {"text": {}}})
+    args = [str(tmp_path / "gone.ninfer") if a == "MISSING" else a for a in args]
+    eng.recipe_path(art).write_text(json.dumps({"version": 1, "executable": str(new), "args": args}),
+                                    encoding="utf-8")
+    s = _Settings()
+    s.ninfer_artifact = str(art)
+    spawned = []
+    with pytest.raises(BackendError) as err:
+        eng.start(s, healthy=lambda h: False, spawn=lambda *a, **k: spawned.append(a))
+    assert says in str(err.value) and "m.ninfer.launch.json" in str(err.value)
+    assert spawned == []
+
+
+def test_a_drafter_artifact_is_not_a_model_choice(tmp_path):
+    default = _default_dir(tmp_path)
+    _artifact(default / "model.ninfer", {"components": {"text": {}, "dflash": {}}})
+    _artifact(default / "drafter.ninfer", {"components": {"dspine": {}}})
+    (default / "unreadable.ninfer").write_bytes(b"x")        # no header: stays listed, as before
+    assert [p.name for p in eng.list_ninfer_artifacts()] == ["model.ninfer", "unreadable.ninfer"]

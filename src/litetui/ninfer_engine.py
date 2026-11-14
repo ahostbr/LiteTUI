@@ -162,8 +162,16 @@ def list_ninfer_artifacts() -> list[Path]:
             key = _same_path_key(path)
             if key not in seen:
                 seen.add(key)
-                found.append(path)
+                if not is_drafter_only(path):
+                    found.append(path)
     return sorted(found)
+
+
+def is_drafter_only(path: Path) -> bool:
+    """T1310: a DSpine drafter (`components` = only `dspine`) drafts beside a model and cannot be
+    served alone, so it is not a choice in the model list. A file whose header does not answer
+    stays listed."""
+    return artifact_components(read_artifact_directory(path)) == ("dspine",)
 
 
 def in_default_artifacts_dir(path: Path) -> bool:
@@ -222,6 +230,13 @@ def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
     max_context = body.get("maxContext")
     if max_context is not None and (not isinstance(max_context, int) or isinstance(max_context, bool) or max_context <= 0):
         raise bad("`maxContext` must be a positive integer")
+    # T1310: upstream's DSpine drafter is an artifact of its own (`--spec dspine --draft-model PATH`).
+    # A missing drafter would otherwise surface only at model load, after the weights are read.
+    draft_model = _arg_value(args, "--draft-model")
+    if "--draft-model" in args and not (isinstance(draft_model, str) and Path(draft_model).is_file()):
+        raise bad(f"`--draft-model` names {draft_model!r}, which is not a file")
+    if _arg_value(args, "--spec") == "dspine" and "--draft-model" not in args:
+        raise bad("`--spec dspine` needs `--draft-model PATH` (the drafter is its own artifact)")
     return LaunchRecipe(
         path=sidecar, executable=Path(exe.strip()),
         model_id=model_id.strip() if model_id else None, max_context=max_context, args=tuple(args),
