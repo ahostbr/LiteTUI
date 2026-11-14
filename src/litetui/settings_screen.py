@@ -1433,6 +1433,15 @@ class SettingsBody(Widget):
                             "owner_domain_cap", "Owner DOMAIN.md cap",
                             "Owner mode only: characters of DOMAIN.md injected at conversation start.",
                         )
+                        yield self._section_header("compact-prefix-cache")
+                        yield from self._text_row(
+                            "prefix_cache_backends", "Prefix-cache backends",
+                            "Comma-separated backend names. On these a compaction re-sends the "
+                            "last chat request unchanged plus one message, and keeps message 0, "
+                            "so the engine reuses what it holds instead of re-reading the whole "
+                            "prompt. They use the chat's thinking level, not the compact one.",
+                            placeholder="ninfer, llamacpp, strata, xolotl, lmstudio",
+                        )
 
                         # ── Capabilities ─────────────────────────────────────────────
                 with TabPane("Capabilities", id="tab-capabilities"):

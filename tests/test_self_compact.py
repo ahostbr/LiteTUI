@@ -164,7 +164,9 @@ async def test_real_round_compacts_after_all_results_and_resumes_with_handoff(ap
     results = [m for m in snapshots[1] if m["role"] == "tool"]
     assert [m["name"] for m in results] == ["self_compact", "read"]
     assert "confirmed evidence" in results[-1]["content"]
-    assert "self_compact" not in {s["function"]["name"] for s in requests[1].get("tools", [])}
+    # LM Studio keeps a prefix cache (prefix_cache_backends, T1306-C): the compaction re-sends the chat turn's tools array
+    # byte for byte, so self_compact rides in it. A call is still refused while compacting (the request guard, pinned above).
+    assert requests[1]["tools"] == requests[0]["tools"]
     assert ARGS["handoff"] in str(requests[2]["messages"])
     assert snapshots[2][-1]["content"] == WAKE_AFTER_COMPACT
     assert "Continue useful work" in str(snapshots[3])

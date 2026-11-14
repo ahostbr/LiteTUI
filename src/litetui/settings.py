@@ -564,6 +564,19 @@ class Settings:
     #: Effort used for the compaction call. "off" is the cheap ideal but is the
     #: value that gets silently dropped; see compact_max_tokens.
     compact_thinking_level: ThinkingLevel = "low"
+    #: Backends whose server keeps a prompt prefix cache that any change near the
+    #: start of the prompt throws away. On these, a compaction re-sends the last
+    #: chat request unchanged (message 0, tools array, reasoning effort) plus ONE
+    #: final user message, and the rebuild keeps message 0 byte-identical, so the
+    #: server reuses the whole conversation instead of re-reading it (NInfer,
+    #: measured: 128,138 of 129,122 tokens reused in 1.4 s, against 230-405 s).
+    #: On these backends compact_thinking_level is NOT used: the chat turn's own
+    #: effort is sent, because templates render it at token ~0.
+    #: "custom" is left out: it is any OpenAI-compatible URL, often remote, where
+    #: the bigger request is billed and nothing says a cache exists.
+    prefix_cache_backends: list[str] = field(
+        default_factory=lambda: ["ninfer", "llamacpp", "strata", "xolotl", "lmstudio"]
+    )
 
     # ── Auto-compaction ──────────────────────────────────────────────────────
     autocompact_enabled: bool = True

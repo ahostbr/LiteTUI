@@ -198,6 +198,7 @@ FIELD_DESCRIPTIONS = {
     "wake_after_compact": "Resume an in-flight agent loop after its conversation is compacted.",
     "compact_max_tokens": "Token budget for the summary; too little may be spent entirely on reasoning.",
     "compact_thinking_level": "Reasoning effort used when generating a compaction summary.",
+    "prefix_cache_backends": "Backends whose server keeps a prefix cache: compaction re-sends the last chat request plus one message, so the server reuses it.",
     "compact_max_tool_iters": "Maximum tool round-trips allowed while compaction writes its summary.",
     "owner_domain_cap": "Owner mode only: characters of DOMAIN.md injected at the start of a conversation; the oldest rows are cut first.",
     "clear_screen_after_compact": "Clear replaced transcript messages so the screen matches the model's context.",
@@ -451,6 +452,11 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "compaction", "Compaction", "compact-summary", "Summary budget",
         "Give the summary enough room to be useful and durable.",
         ("compact_max_tokens", "compact_thinking_level", "compact_max_tool_iters", "owner_domain_cap"), scope="conversation", keywords=("summary", "budget", "thinking", "tool rounds", "owner", "domain"),
+    ),
+    _section(
+        "compaction", "Compaction", "compact-prefix-cache", "Prefix cache",
+        "Let the engine reuse the conversation it already holds instead of re-reading it.",
+        ("prefix_cache_backends",), scope="device", keywords=("cache", "prefix", "prefill", "reuse", "speed", "engine", "backend"),
     ),
     _section(
         "compaction", "Compaction", "compact-transcript", "Transcript presentation",
