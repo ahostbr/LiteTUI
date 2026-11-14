@@ -107,6 +107,45 @@ class _KernelLease:
         self.release()
 
 
+def _has_unpublished_home(store: AgentStore) -> bool:
+    """A home create_fresh has reserved but not yet published (marker, or no settings.json)."""
+    try:
+        return any(entry.is_dir() and ((entry / INITIALIZING_NAME).exists()
+                                       or not (entry / SETTINGS_NAME).exists())
+                   for entry in _unlinked(store.root).iterdir())
+    except (OSError, StoreError):
+        return False
+
+
+def settled_catalog(store: AgentStore, read: Callable[[], T] | None = None) -> T:
+    """`read` (default: store.list_agents) of a catalog no other process is mid-way through.
+
+    create_fresh holds the catalog lease from its mkdir to the settings.json link, and the
+    store reads strictly (a half-made sibling fails the whole catalog closed). A launch that
+    read the catalog meanwhile failed: "Agent settings are absent or unreadable" (T1307,
+    about one in two when two agents were created at once). So on a refusal while some home
+    is unpublished, wait for that creator's lease and read again. An abandoned home (nobody
+    holds the lease) still fails exactly as before; a wait that cannot get the lease
+    re-raises the original refusal. create_fresh itself calls the store directly.
+    """
+    read = read or store.list_agents
+    try:
+        return read()
+    except StoreError as exc:
+        if not _has_unpublished_home(store):
+            raise
+        refusal = exc
+    try:
+        lease = _KernelLease(store.data_root / CATALOG_LEASE_NAME, timeout=10)
+        lease.acquire()
+    except OwnershipError:
+        raise refusal from None
+    try:
+        return read()
+    finally:
+        lease.release()
+
+
 @dataclass(frozen=True)
 class AgentAuthority:
     """Only settled folder-authoritative launch fields, not preferences/history."""
@@ -141,12 +180,12 @@ class AgentSession:
     @classmethod
     def acquire_existing(cls, store: AgentStore, *, name: str | None = None,
                          agent_id: str | None = None) -> AgentSession:
-        agent = store.find_agent(name=name, agent_id=agent_id)
+        agent = settled_catalog(store, lambda: store.find_agent(name=name, agent_id=agent_id))
         lease = _KernelLease(agent.directory / AGENT_LEASE_NAME)
         lease.acquire()
         try:
             # Re-resolve after the lock; caller objects/catalog pointers are not truth.
-            current = store.find_agent(agent_id=agent.agent_id)
+            current = settled_catalog(store, lambda: store.find_agent(agent_id=agent.agent_id))
             if (current.directory != agent.directory or current.name != agent.name
                     or current.settings != agent.settings):
                 raise StoreError("Agent authority changed during acquisition")

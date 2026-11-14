@@ -16,7 +16,8 @@ async def open_seat(app, agent_id: str, conversation_id: str | None) -> str:
     session = getattr(app, '_agent_session', None)
     root = session.store.data_root if session is not None else paths.data_root()
     store = AgentStore(root)
-    agent = store.find_agent(agent_id=valid_id(agent_id))
+    from litetui.agent_ownership import settled_catalog
+    agent = settled_catalog(store, lambda: store.find_agent(agent_id=valid_id(agent_id)))
     if session is not None and session.authority.agent_id == agent.agent_id:
         raise StoreError('This agent already owns the current seat')
     if conversation_id is not None:
