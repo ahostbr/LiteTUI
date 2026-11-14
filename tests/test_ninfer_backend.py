@@ -878,7 +878,7 @@ def test_an_owned_engine_is_stopped_for_a_generation_and_started_again(tmp_path,
         up["engine"] = False
         return TerminalShutdown(owned=True, attempted=True, main_exited=True, retained=False)
 
-    def start(settings, *, healthy, notice=None):
+    def start(settings, *, healthy, notice=None, **_):
         started.append(settings)
         up["engine"] = True
         return engine(8)

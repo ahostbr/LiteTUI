@@ -8801,6 +8801,14 @@ class LiteTUI(App):
         self.pending_image = None
         correlation = {"operation_id": getattr(self, "_gui_next_operation_id", None)} if source == "rpc" else {}
         correlation.update(claude_metadata)
+        from litetui import engine_autostart
+        if engine_autostart.should_hold(self, source):
+            # T1311 (Ryan: "Send auto-starts"): nothing is serving, so a person's send
+            # starts the chosen engine and goes once it has loaded. Same queue as below.
+            bubble = self._user_bubble(text, has_image, queued=True, image_path=image_path)
+            engine_autostart.hold(self, {"content": content, "text": text, "bubble": bubble,
+                                         "tool_profile": profile, "source": source, **correlation})
+            return
         if getattr(self, "_mcp_maintenance", False):
             # Do not start a turn while MCP maintenance is reconnecting servers:
             # queue the input (never lose it) — _flush_pending_input resends it
@@ -10269,6 +10277,8 @@ class LiteTUI(App):
             return
         if not self._pending_input:
             return
+        if getattr(self, "_engine_autostart", False):
+            return  # T1311: the engine start flushes the queue itself once it serves
         if self._chat_running() or getattr(self, "_mcp_maintenance", False):
             # Retry shortly — do not start a turn during MCP maintenance; the
             # queued input is preserved and resends once it clears.
@@ -11370,7 +11380,7 @@ class LiteTUI(App):
                                             "ninfer_artifact", "ninfer_executable")]
         if spawn:
             note += ("\n  " + ", ".join(spawn) + " apply on the next NInfer engine start "
-                     "— stop the running engine first (/engine stop), or it keeps "
+                     "— /engine restart applies them to the running engine, or it keeps "
                      "its current flags.")
         # Engine settings read only when the engine starts (Strata/Xolotl context, roots, models ...): the
         # running one keeps its flags, so say how to apply them rather than leave the control looking inert.
@@ -11379,7 +11389,7 @@ class LiteTUI(App):
                    and SETTING_SPECS[c].apply_timing == 'restart']
         if restart:
             note += ("\n  " + ", ".join(restart) + " apply on the next start — for an engine: "
-                     "/engine stop, then /engine start.")
+                     "/engine restart.")
         self._system(note)
 
     @staticmethod

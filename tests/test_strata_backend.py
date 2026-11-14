@@ -228,7 +228,7 @@ def test_start_goes_through_the_shared_lifecycle_and_the_strata_launcher(monkeyp
     owned = strata_engine.OwnedEngine(proc=type("P", (), {"pid": 7, "poll": lambda self: None})(),
                                       host=server["host"], log_path="log", log_file=None,
                                       model_id="flash", registered=False)
-    monkeypatch.setattr(strata_engine, "start", lambda settings, healthy, notice=None: owned)
+    monkeypatch.setattr(strata_engine, "start", lambda settings, healthy, notice=None, **_: owned)
     assert asyncio.run(backend.start_engine()) == f"started Strata pid 7 at {server['host']} (flash)"
     assert not backend.attached and "LiteTUI-owned" in backend.engine_status()
     with pytest.raises(BackendError, match="already tracked"):

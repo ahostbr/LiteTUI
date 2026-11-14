@@ -235,9 +235,10 @@ def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
     return argv, root, run_cfg, host
 
 
-def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngine:
+def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None,
+          cancel=None) -> OwnedEngine:
     """Spawn Xolotl's server for the chosen config and wait for it to load (strata_engine's
     `spawn_server`, with this launcher's plan, gate, log and timeout)."""
     return strata_engine.spawn_server(settings, healthy=healthy, spawn=spawn, notice=notice, label="Xolotl",
                                       plan=launch_plan, refuse=refuse_reason, log=log_path,
-                                      timeout=XOLOTL_START_TIMEOUT_S)
+                                      timeout=XOLOTL_START_TIMEOUT_S, progress=progress, cancel=cancel)

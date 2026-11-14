@@ -44,7 +44,7 @@ import urllib.request
 from pathlib import Path
 
 from . import ninfer_engine
-from .engine_lifecycle import OwnedEngineLifecycle
+from .engine_lifecycle import NOTHING_RUNNING, OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
 from .turn_engine import is_deepseek_model
 
@@ -368,19 +368,28 @@ class NInferBackend(OwnedEngineLifecycle):
         # An explicit address wins over discovery: a hand-started ninfer-serve
         # with no LiteSuite around has nothing to register itself in.
         explicit = str(getattr(self._settings, "ninfer_host", "") or "").strip().rstrip("/")
-        host = explicit or discover_ninfer_host()
-        if host is None:
+        if explicit:
+            if not self._health(explicit):
+                raise BackendError(
+                    f"the NInfer engine set as ninfer_host ({explicit}) is not answering /health — "
+                    "start it, or clear ninfer_host to use the registered engine.")
+            self._host = explicit
+            return "ok"
+        # T1311 (Ryan: "Clear dead engines"): a registration with no answer and no process is
+        # removed by the one shared helper and reads exactly like no registration at all. It
+        # used to say "may still be loading weights" about a port nothing listened on.
+        host = discover_ninfer_host()
+        state = ninfer_engine.registration_state(host, healthy=self._health)
+        if state == "loading":
+            raise BackendError(
+                f"the NInfer engine registered at {host} is still loading (a ninfer-serve process "
+                "exists but is not answering yet) — it serves once its weights are in.")
+        if state != "answering":
             raise BackendError(
                 "no NInfer engine is registered — start it from LiteSuite's "
                 "Model Hub (Settings → NInfer), or set ninfer_host "
                 "(LITETUI_NINFER_HOST) to a ninfer-serve you started by hand, "
                 "or /engine start to have LiteTUI start one."
-            )
-        if not self._health(host):
-            raise BackendError(
-                f"an NInfer engine is registered at {host} but is not answering "
-                "/health — it may still be loading weights (about 8 seconds) or "
-                "may have stopped."
             )
         self._host = host
         return "ok"
@@ -430,7 +439,7 @@ class NInferBackend(OwnedEngineLifecycle):
             reg = entry.get("baseUrl") if entry else discover_ninfer_host()
             if reg:
                 return f"the engine at {reg} was not started by LiteTUI — stop it where it was started (LiteSuite's Model Hub, or the shell that ran it)."
-            return "no engine is running."
+            return NOTHING_RUNNING
         host = self._owned.host
         result = self.shutdown()
         # The message must reflect the PROOF, not assume success: shutdown() returns a

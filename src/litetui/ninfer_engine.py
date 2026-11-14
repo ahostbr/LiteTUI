@@ -32,6 +32,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -86,8 +87,20 @@ NINFER_KV_DTYPES = ("bf16", "int8", "fp8", "nvfp4", "k8v4")
 #: NOW rather than at the timeout.
 NINFER_READY_MARKER = "listening on http://"
 NINFER_FAILURE_MARKERS = ("cannot bind", "server listen failed", "server failed during startup")
-#: weights 19.7 GiB took 8.3 s on this box (log 11:59:50); a cold disk is slower.
+#: How long the engine may print NOTHING NEW before a start is called stalled (T1311). Not a
+#: wall on the whole start: Edge0 reads 58 GB and warms CUDA graphs after that, so a fixed
+#: 180 s ended starts that were still making progress. Every new byte in the log restarts it.
 NINFER_START_TIMEOUT_S = 180
+#: What the start wait reads out of the log as progress (T1311, Ryan: "Send auto-starts",
+#: with Sentinel's constraint that the weight load shows progress). The engine prints, in
+#: order: `loading weights 82.7% | 45.0 GiB/54.4 GiB | ... | ETA 2.0s` (repeated),
+#: `weights ready`, `CUDA graphs ready`, `engine ready`, then the ready marker.
+_PROGRESS_RE = re.compile(r"loading weights\b[^\r\n]*|weights ready|CUDA graphs ready|engine ready", re.I)
+_PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+#: A weight-load line is reported once per this many percent, so a 58 GB read is ~10 lines.
+PROGRESS_STEP_PCT = 10
+#: The sentence a start ended by /engine stop raises with (the lifecycle rewords it).
+START_CANCELLED = "the start was cancelled by /engine stop"
 #: Refuse to start when the card shows less than this free (see module note).
 NINFER_MIN_FREE_MIB = 26 * 1024
 #: `--max-concurrency N` — "valid range 1..8", default 1 (serving.md:760). Whether the
@@ -730,6 +743,27 @@ def _log_event(text: str) -> None:
         pass
 
 
+def registration_state(reg: str | None, *, healthy) -> str:
+    """What the registered engine at `reg` is: "none", "answering", "loading" (silent, but a
+    ninfer-serve process exists) or "cleared" (silent and NO process: a dead entry, removed here).
+
+    THE ONE PLACE A DEAD REGISTRATION IS CLEARED (T1311). `refuse_reason` and the backend's
+    `ensure_running` both ask it. Ryan, 2026-11-14, after LiteTUI told him an engine at :54149
+    "may still be loading weights" when no ninfer process existed and nothing listened there:
+    "Clear dead engines". Measured 2026-09-17 13:2x as well: a holder killed with
+    TerminateProcess never ran its atexit, so the dead port stayed in LiteSuite's config.
+    """
+    if reg is None:
+        return "none"
+    if healthy(reg):
+        return "answering"
+    if engine_process_alive():
+        return "loading"
+    unregister_host(reg)
+    _log_event(f"cleared a dead registration at {reg} (silent on /health, no ninfer-serve process)")
+    return "cleared"
+
+
 def refuse_reason(settings, *, healthy) -> str | None:
     """Why a start must NOT happen, or None. Every path that puts a model in VRAM
     answers here first (the user 2026-09-10: check, ask, then load)."""
@@ -737,18 +771,14 @@ def refuse_reason(settings, *, healthy) -> str | None:
     if explicit and healthy(explicit):
         return f"an NInfer engine is already answering at {explicit} (ninfer_host) — attach to it; nothing was started."
     reg = registered_host()
-    if reg is not None:
-        if healthy(reg):
-            return f"an NInfer engine is already registered and answering at {reg} — attach to it; nothing was started."
-        if engine_process_alive():
-            # A process exists and is not answering yet: it is LOADING (weights take
-            # ~8 s, the port binds after). Starting a second one now is the VRAM bug.
-            return (f"an NInfer engine is registered at {reg} and still loading (a ninfer-serve process "
-                    "exists) — wait for it, then attach; nothing was started.")
-        # Registered, silent, and NO process: a stale entry. Measured 2026-09-17 13:2x — a
-        # holder killed with TerminateProcess never ran its atexit, so the dead port stayed
-        # in LiteSuite's config and would have refused every start forever.
-        unregister_host(reg)
+    state = registration_state(reg, healthy=healthy)
+    if state == "answering":
+        return f"an NInfer engine is already registered and answering at {reg} — attach to it; nothing was started."
+    if state == "loading":
+        # A process exists and is not answering yet: it is LOADING (weights take
+        # ~8 s, the port binds after). Starting a second one now is the VRAM bug.
+        return (f"an NInfer engine is registered at {reg} and still loading (a ninfer-serve process "
+                "exists) — wait for it, then attach; nothing was started.")
     free = gpu_free_mib()
     if free is not None and free < NINFER_MIN_FREE_MIB:
         return (f"only {free} MiB free on the GPU; the engine needs about {NINFER_MIN_FREE_MIB} MiB "
@@ -756,11 +786,15 @@ def refuse_reason(settings, *, healthy) -> str | None:
     return None
 
 
-def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngine:
+def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None,
+          cancel=None) -> OwnedEngine:
     """Spawn ninfer-serve with LiteSuite's argv, wait for its ready line, register it.
 
     `healthy(host) -> bool` and `spawn` are injected so the arms never touch the
     real card. Raises BackendError with the reason on every refusal or failure.
+
+    `progress(line)` gets the weight-load lines while it waits; `cancel` (a threading.Event)
+    set by /engine stop ends the wait and tree-kills what was spawned (T1311).
 
     `notice()` is called ONCE, immediately before the spawn, for a caller that
     wants to say "this will take a moment". It is here rather than in the caller
@@ -832,6 +866,10 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
     # 14:1x 2026-09-17: the log is APPENDED across spawns, so a marker from an earlier run
     # must not count — only bytes written after this spawn's header are this engine's.
     start_off = lp.stat().st_size
+    if cancel is not None and cancel.is_set():
+        log_file.close()
+        _log_event(f"REFUSED: {START_CANCELLED} before anything was spawned")
+        raise EngineStartFailed(START_CANCELLED)
     if notice is not None:
         notice()
     proc = spawn(
@@ -861,31 +899,90 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngin
             _log_event(f"job assign FAILED for pid {pid} — orphan protection is off for this engine")
             jobkill.close(job)
             job = None
-    deadline = time.monotonic() + NINFER_START_TIMEOUT_S
-    while time.monotonic() < deadline:
+    owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
+                        model_id=model_id, job=job, args=tuple(args))
+    outcome, _fresh = wait_for_ready(lp, start_off, proc, host, healthy=healthy,
+                                     ready_marker=NINFER_READY_MARKER, stall_s=NINFER_START_TIMEOUT_S,
+                                     interval=0.5, failure_markers=NINFER_FAILURE_MARKERS,
+                                     cancel=cancel, progress=progress)
+    if outcome == "ready":
+        register_host(host, pid=pid)
+        atexit.register(stop, owned)
+        return owned
+    if outcome == "cancelled":
+        _log_event(START_CANCELLED)
+        _fail_start(owned, START_CANCELLED)
+    if outcome.startswith("failed:"):
+        _fail_start(owned, f"ninfer-serve failed to start: {outcome[7:]} — {_log_tail(lp)}")
+    if outcome == "exited":
+        _fail_start(owned, f"ninfer-serve exited before it was ready — {_log_tail(lp)}")
+    _fail_start(owned, f"ninfer-serve did not become ready: it printed nothing new for "
+                       f"{NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
+
+
+def _progress_key(line: str):
+    """What makes a progress line worth reporting: its 10 % step while weights load,
+    otherwise the line itself (each phase is said once)."""
+    if line.lower().startswith("loading weights"):
+        m = _PERCENT_RE.search(line)
+        if m:
+            return ("weights", int(float(m.group(1)) // PROGRESS_STEP_PCT))
+    return line.lower()
+
+
+def latest_progress(fresh: str) -> str | None:
+    """The newest progress line in this spawn's output, or None. A progress bar may
+    rewrite itself with `\\r`, so lines are split on both."""
+    found = _PROGRESS_RE.findall(fresh.replace("\r", "\n"))
+    return found[-1].strip() if found else None
+
+
+def wait_for_ready(lp, start_off, proc, host, *, healthy, ready_marker, stall_s, interval,
+                   failure_markers=(), cancel=None, progress=None) -> tuple[str, str]:
+    """Wait for THIS spawn's ready line; the start wait every launcher shares (T1311).
+
+    Returns `(outcome, fresh)`: "ready", "failed:<marker>", "exited", "stalled" (no new
+    output for `stall_s`) or "cancelled" (`cancel` was set by /engine stop). `progress(line)`
+    is called from this thread for each new progress step (see `_progress_key`).
+
+    🔴 FOLLOWS PROGRESS, NOT A WALL. Every new byte restarts the stall window, so a 58 GB
+    read that prints a line every few seconds is never cut off; one that prints nothing is.
+    """
+    last_size, last_growth, reported = -1, time.monotonic(), None
+    fresh = ""
+    while True:
+        if cancel is not None and cancel.is_set():
+            return "cancelled", fresh
         try:
             with open(lp, "rb") as f:
                 f.seek(start_off)
                 fresh = f.read().decode("utf-8", "replace")
         except OSError:
-            fresh = ""
-        for marker in NINFER_FAILURE_MARKERS:
+            pass
+        now = time.monotonic()
+        if len(fresh) != last_size:
+            last_size, last_growth = len(fresh), now
+        for marker in failure_markers:
             if marker in fresh:
-                failed = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
-                                     model_id=model_id, job=job, args=tuple(args))
-                _fail_start(failed, f"ninfer-serve failed to start: {marker} — {_log_tail(lp)}")
-        if NINFER_READY_MARKER in fresh or healthy(host):
-            owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
-                                model_id=model_id, job=job, args=tuple(args))
-            register_host(host, pid=pid)
-            atexit.register(stop, owned)
-            return owned
+                return f"failed:{marker}", fresh
+        if ready_marker in fresh or healthy(host):
+            return "ready", fresh
+        if progress is not None:
+            line = latest_progress(fresh)
+            if line and _progress_key(line) != reported:
+                reported = _progress_key(line)
+                try:
+                    progress(line)
+                except Exception:  # noqa: BLE001 - a display failure never ends a start
+                    pass
         if getattr(proc, "poll", lambda: None)() is not None:
-            break
-        time.sleep(0.5)
-    failed = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
-                         model_id=model_id, job=job, args=tuple(args))
-    _fail_start(failed, f"ninfer-serve did not become ready in {NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
+            return "exited", fresh
+        if now - last_growth >= stall_s:
+            return "stalled", fresh
+        if cancel is not None:
+            cancel.wait(interval)
+        else:
+            time.sleep(interval)
 
 
 def _kill(proc) -> None:

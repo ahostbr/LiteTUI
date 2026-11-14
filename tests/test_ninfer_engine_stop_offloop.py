@@ -108,7 +108,7 @@ async def test_cancelled_start_holds_claim_until_join_and_keeps_owner(monkeypatc
         host = "http://h/v1"
         model_id = "m"
 
-    def fake_start(settings, *, healthy, notice=None):
+    def fake_start(settings, *, healthy, notice=None, **_):
         release.wait(2)
         return _Owned()
 

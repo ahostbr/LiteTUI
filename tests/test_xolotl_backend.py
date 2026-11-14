@@ -119,7 +119,7 @@ def test_start_goes_through_the_shared_lifecycle_and_the_xolotl_launcher(monkeyp
     owned = xolotl_engine.OwnedEngine(proc=type("P", (), {"pid": 9, "poll": lambda self: None})(),
                                       host=server["host"], log_path="log", log_file=None,
                                       model_id=MODEL, registered=False)
-    monkeypatch.setattr(xolotl_engine, "start", lambda settings, healthy, notice=None: owned)
+    monkeypatch.setattr(xolotl_engine, "start", lambda settings, healthy, notice=None, **_: owned)
     assert asyncio.run(backend.start_engine()) == f"started Xolotl pid 9 at {server['host']} ({MODEL})"
     assert "LiteTUI-owned Xolotl server" in backend.engine_status()
 

@@ -377,19 +377,21 @@ def _last_words(fresh: str, limit: int = 400) -> str:
     return " ".join(fresh.strip().splitlines()[-3:])[-limit:] or "(it printed nothing)"
 
 
-def start(settings, *, healthy, spawn=ttyguard.popen, notice=None) -> OwnedEngine:
+def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None,
+          cancel=None) -> OwnedEngine:
     """Spawn Strata's server for the chosen config and wait for it to load.
 
     `healthy(host) -> bool` and `spawn` are injected so the arms never load a model.
     `notice()` is called once, immediately before the spawn and never on a refusal (T865).
+    `progress`/`cancel`: see `ninfer_engine.start` (T1311).
     """
     return spawn_server(settings, healthy=healthy, spawn=spawn, notice=notice, label="Strata",
                         plan=launch_plan, refuse=refuse_reason, log=log_path,
-                        timeout=STRATA_START_TIMEOUT_S)
+                        timeout=STRATA_START_TIMEOUT_S, progress=progress, cancel=cancel)
 
 
 def spawn_server(settings, *, healthy, spawn, notice, label: str, plan, refuse, log,
-                 timeout: float) -> OwnedEngine:
+                 timeout: float, progress=None, cancel=None) -> OwnedEngine:
     """The start every engine behind Strata's `serve/server.py` shares (Strata, Xolotl):
     plan, refuse before anything spawns, spawn into the log, adopt the process into a
     kill-on-close job, wait for the server's ready line. The launcher passes its own
@@ -409,6 +411,9 @@ def spawn_server(settings, *, healthy, spawn, notice, label: str, plan, refuse, 
     log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')} ---\n{' '.join(argv)}\n")
     log_file.flush()
     start_off = lp.stat().st_size      # the log is appended across spawns: only this spawn's bytes count
+    if cancel is not None and cancel.is_set():
+        log_file.close()
+        _refuse(ninfer_engine.START_CANCELLED, log)
     if notice is not None:
         notice()
     proc = spawn(
@@ -425,23 +430,20 @@ def spawn_server(settings, *, healthy, spawn, notice, label: str, plan, refuse, 
         job = None
     owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file, model_id=model_id,
                         job=job, args=tuple(argv), registered=False)
-    deadline = time.monotonic() + timeout
-    fresh = ""
-    while time.monotonic() < deadline:
-        try:
-            with open(lp, "rb") as f:
-                f.seek(start_off)
-                fresh = f.read().decode("utf-8", "replace")
-        except OSError:
-            fresh = ""
-        if STRATA_READY_MARKER in fresh or healthy(host):
-            atexit.register(ninfer_engine.stop, owned)
-            return owned
-        if getattr(proc, "poll", lambda: None)() is not None:
-            ninfer_engine._fail_start(owned, f"{label} exited before it was ready — {_last_words(fresh)}")
-        time.sleep(1.0)
+    # The shared wait (T1311): a stall window, not a wall; /engine stop's cancel ends it.
+    outcome, fresh = ninfer_engine.wait_for_ready(lp, start_off, proc, host, healthy=healthy,
+                                                  ready_marker=STRATA_READY_MARKER, stall_s=timeout,
+                                                  interval=1.0, cancel=cancel, progress=progress)
+    if outcome == "ready":
+        atexit.register(ninfer_engine.stop, owned)
+        return owned
+    if outcome == "cancelled":
+        _log_event(ninfer_engine.START_CANCELLED, log)
+        ninfer_engine._fail_start(owned, ninfer_engine.START_CANCELLED)
+    if outcome == "exited":
+        ninfer_engine._fail_start(owned, f"{label} exited before it was ready — {_last_words(fresh)}")
     ninfer_engine._fail_start(
-        owned, f"{label} did not become ready in {timeout}s — {_last_words(fresh)}")
+        owned, f"{label} did not become ready: it printed nothing new for {timeout}s — {_last_words(fresh)}")
 
 
 def request_unload(host: str, timeout: float = 30.0) -> bool:
@@ -456,8 +458,14 @@ def request_unload(host: str, timeout: float = 30.0) -> bool:
         return False
 
 
+#: How long /engine stop lets the server unload itself before the tree kill (T1311). Ryan,
+#: 2026-11-14: "slash engine stop wouldnt even kill it had to close litetui completely". A
+#: stalled or busy server that never answers the unload used to hold the stop for 30 s.
+STOP_UNLOAD_GRACE_S = 5.0
+
+
 def terminate_owned(owned):
-    """Unload, then the shared terminal-shutdown proof (`ninfer_engine.terminate_owned`)."""
+    """Unload (a short grace), then the shared terminal-shutdown proof (`ninfer_engine.terminate_owned`)."""
     if owned.alive:
-        request_unload(owned.host)
+        request_unload(owned.host, timeout=STOP_UNLOAD_GRACE_S)
     return ninfer_engine.terminate_owned(owned)

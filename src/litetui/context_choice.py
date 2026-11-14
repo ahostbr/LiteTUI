@@ -176,7 +176,7 @@ def ask(app, backend: str, model_key: str, then: Callable[[int | None], None], *
         return
     title = f"Context length for {label or model_key} (tokens)"
     last = remembered(app.settings, backend, model_key)
-    hint = ("Applies on the next /engine start (stop a running engine first)." if backend in APPLIES_ON_ENGINE_START
+    hint = ("Applies on the next /engine start; /engine restart applies it to a running engine." if backend in APPLIES_ON_ENGINE_START
             else "The model is loaded at this size.")
     if last:
         hint += f" Last used for this model: {last:,}."

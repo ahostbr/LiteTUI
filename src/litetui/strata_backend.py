@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 
 from . import prefix_persist, strata_engine
-from .engine_lifecycle import OwnedEngineLifecycle
+from .engine_lifecycle import NOTHING_RUNNING, OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
 
 #: `reasoning_effort` as Strata's server accepts it (serve/server.py: "none, low, medium or high").
@@ -122,7 +122,7 @@ class StrataBackend(OwnedEngineLifecycle):
             if self._health_state(host) is not None:
                 return (f"the {self.label} server at {host} was not started by this LiteTUI — stop it where "
                         "it was started (its window, or the app that ran it).")
-            return "no engine is running."
+            return NOTHING_RUNNING
         host = self._owned.host
         result = self.shutdown()
         if getattr(result, "main_exited", False) and not getattr(result, "retained", True):

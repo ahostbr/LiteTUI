@@ -141,7 +141,7 @@ def test_engine_run_off_a_5090_never_says_ninfer(monkeypatch, tmp_path):
 
     assert other.said == ["/engine drives the Strata or Xolotl backend — /backend strata or /backend xolotl first."]
     assert strata.said[0].startswith("no Strata server at http://127.0.0.1:9.")
-    assert strata.said[1] == "/engine start | stop | status"
+    assert strata.said[1] == "/engine start | stop | restart | status"   # T1311
     assert not any("ninfer" in line.lower() for line in other.said + strata.said)
 
     # On a 5090 the same refusal names every engine.

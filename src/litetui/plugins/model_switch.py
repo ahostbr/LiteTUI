@@ -416,12 +416,12 @@ def _set_lanes(app, raw: str) -> str:
     settings_runtime.persist_or_raise(app, s)
     running = getattr(app.backend, "engine_concurrency", lambda: None)()
     tail = f"; the running engine has {running}" if running else ""
-    return (f"NInfer lanes set to {raw} — applies on the next /engine start{tail}. "
+    return (f"NInfer lanes set to {raw} — applies on the next /engine start (/engine restart applies it now){tail}. "
             "Lanes share the --max-context KV pool: no extra VRAM to speak of, less context each under load.")
 
 
 def _cmd_engine(app, name: str, arg: str) -> None:
-    """/engine start [N]|stop|status|lanes N — the NInfer, Strata or Xolotl process LiteTUI may own."""
+    """/engine start [N]|stop|restart|status|lanes N — the NInfer, Strata or Xolotl process LiteTUI may own."""
     backend = app.backend
     if getattr(backend, "name", "") not in llm_backend.ENGINE_BACKENDS:
         from litetui import gpu_gate
@@ -450,44 +450,36 @@ def _cmd_engine(app, name: str, arg: str) -> None:
         from litetui import agent_preparation
 
         if not backend.begin_stop():
-            app.system_message(f"{getattr(backend, 'label', 'NInfer')} engine is busy (a start or stop is already running) — try again shortly.")
+            # T1311 (Ryan: "slash engine stop wouldnt even kill it"): a start still waiting
+            # for its engine is ENDED — its own thread tree-kills what it spawned and the
+            # start's worker reports the proof. Only a stop already running is "busy".
+            if getattr(backend, "cancel_start", lambda: False)():
+                app.system_message(f"Stopping the {getattr(backend, 'label', 'NInfer')} engine that is still "
+                                   "starting — its process is killed now.")
+                return
+            app.system_message(f"{getattr(backend, 'label', 'NInfer')} engine is busy (a stop is already running) — try again shortly.")
             return
 
         async def _stop_work(target=backend):
             try:
-                # T1306-E: save the conversation's prompt cache while the engine is still up.
-                from litetui import prefix_persist
-
-                persist = prefix_persist.for_backend(target)
-                if persist is not None and persist.wants_save():
-                    app.system_message("Saving the conversation cache before the stop…")
-                    said = await prefix_persist.save_before_stop(app, target)
-                    if said:
-                        app.system_message(said)
-                app.system_message(await agent_preparation.await_preparation(target.stop_engine))
+                app.system_message(await _stop_and_say(app, target))
             except asyncio.CancelledError:
                 raise                       # await_preparation already joined the thread
             except Exception as exc:        # noqa: BLE001 - don't crash the loop; type-only
                 app.system_message(f"engine stop failed: {type(exc).__name__}")
 
-        def _report(e):
-            # run_guarded fails closed when it cannot schedule the worker (e set) or when
-            # the worker's task cannot be observed/attached (e None); the claim is already
-            # released either way, so say why the stop did not proceed.
-            if e is None:
-                app.system_message("engine stop could not be tracked — released the stop claim; try again.")
-            else:
-                app.system_message(f"could not start the engine-stop worker: {type(e).__name__}")
-
         agent_preparation.run_guarded(app, _stop_work(), group="ninfer-engine-stop",
-                                      cleanup=backend.end_stop, report=_report)
+                                      cleanup=backend.end_stop, report=_stop_report(app))
+        return
+    if verb == "restart":
+        _restart(app, backend)
         return
     if verb in ("lanes", "concurrency") and is_ninfer:
         app.system_message(_set_lanes(app, rest[0] if rest else ""))
         return
     if verb != "start":
-        app.system_message("/engine start [lanes] | stop | status | lanes N" if is_ninfer
-                           else "/engine start | stop | status")
+        app.system_message("/engine start [lanes] | stop | restart | status | lanes N" if is_ninfer
+                           else "/engine start | stop | restart | status")
         return
     if rest and is_ninfer:
         # `/engine start 4` — set the lanes, then start with them.
@@ -510,21 +502,107 @@ def _cmd_engine(app, name: str, arg: str) -> None:
     # no test saw it; what was wrong is the ORDER A PERSON READS THEM IN, and
     # only Sentinel driving the exe-missing arm found it. The launcher calls this
     # back immediately before the spawn, from its worker thread.
+    app.run_worker(start_and_connect(app, backend), exclusive=False, name="ninfer-engine-start")
+
+
+async def start_and_connect(app, backend):
+    """Start the engine, say how the load is going, then reconnect. Falsy when the start
+    failed (its words are already said); else the reconnect's worker (or True), to await.
+
+    The ONE start that /engine start, /engine restart and a send that auto-starts all use (T1311).
+    """
     def _starting() -> None:
         app.call_from_thread(
             app.system_message,
             getattr(backend, "start_notice", "Starting ninfer-serve — weights take about ten seconds…"))
 
-    async def _go():
-        try:
-            msg = await backend.start_engine(notice=_starting)
-        except llm_backend.BackendError as e:
-            app.system_message(str(e))
-            return
-        app.system_message(msg)
-        app.connect()
+    def _progress(line: str) -> None:
+        # Sentinel's constraint for T1311: show the weight load (Edge0 reads 58 GB).
+        app.call_from_thread(app.system_message, f"{getattr(backend, 'label', 'engine')}: {line}")
 
-    app.run_worker(_go(), exclusive=False, name="ninfer-engine-start")
+    try:
+        msg = await backend.start_engine(notice=_starting, progress=_progress)
+    except llm_backend.BackendError as e:
+        app.system_message(str(e))
+        return False
+    app.system_message(msg)
+    return app.connect() or True
+
+
+async def _stop_and_say(app, target) -> str:
+    """The stop half of /engine stop and /engine restart: save the prompt cache while the
+    engine is still up (T1306-E), then stop it off-loop. Returns the stop's sentence."""
+    from litetui import agent_preparation, prefix_persist
+
+    persist = prefix_persist.for_backend(target)
+    if persist is not None and persist.wants_save():
+        app.system_message("Saving the conversation cache before the stop…")
+        said = await prefix_persist.save_before_stop(app, target)
+        if said:
+            app.system_message(said)
+    return await agent_preparation.await_preparation(target.stop_engine)
+
+
+def _stop_report(app):
+    def _report(e):
+        # run_guarded fails closed when it cannot schedule the worker (e set) or when
+        # the worker's task cannot be observed/attached (e None); the claim is already
+        # released either way, so say why the stop did not proceed.
+        if e is None:
+            app.system_message("engine stop could not be tracked — released the stop claim; try again.")
+        else:
+            app.system_message(f"could not start the engine-stop worker: {type(e).__name__}")
+    return _report
+
+
+def _restart(app, backend) -> None:
+    """`/engine restart` — stop the engine this LiteTUI started, then start it again on the
+    CURRENT settings, so a changed context, lanes or flag is picked up (T1311).
+
+    Ryan, 2026-11-14: *"theres no slash engine restart"*; his pick: "Stop, then start with the
+    current model and settings". An engine LiteTUI did not start is refused in words: its
+    owner holds its approval and its VRAM. With nothing running it simply starts.
+    """
+    import asyncio
+
+    from litetui import agent_preparation
+    from litetui.engine_lifecycle import NOTHING_RUNNING
+
+    label = getattr(backend, "label", "NInfer")
+    if getattr(app, "_chat_running", lambda: False)():
+        app.system_message("Finish or stop the current turn before restarting the engine.")
+        return
+    if not backend.begin_stop():
+        app.system_message(f"the {label} engine is starting or stopping — /engine stop ends a start; "
+                           "/engine restart once it settles.")
+        return
+
+    async def _work(target=backend):
+        try:
+            if target._owned is None:
+                # Nothing of ours to stop: ask the stop what is there (it stops nothing it
+                # does not own) and start only when nothing is.
+                said = await agent_preparation.await_preparation(target.stop_engine)
+                if said != NOTHING_RUNNING:
+                    app.system_message("/engine restart restarts only an engine this LiteTUI started, "
+                                       f"so nothing was stopped or started: {said}")
+                    return
+                app.system_message(f"No {label} engine is running — starting one.")
+            else:
+                app.system_message(await _stop_and_say(app, target))
+                if target._owned is not None:
+                    app.system_message("/engine restart did not start a new engine: the old one did not "
+                                       "confirm it exited, and two would not fit. /engine stop, then /engine start.")
+                    return
+            target.end_stop()                # the stop half is done; the start claims its own
+            await start_and_connect(app, target)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - don't crash the loop; type-only
+            app.system_message(f"engine restart failed: {type(exc).__name__}")
+
+    agent_preparation.run_guarded(app, _work(), group="ninfer-engine-restart",
+                                  cleanup=backend.end_stop, report=_stop_report(app))
 
 
 def backend_rows(app) -> list[tuple[str, str]]:

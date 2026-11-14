@@ -18,6 +18,9 @@ import threading
 
 from .llm_backend import BackendError, _VramGate
 
+#: What `stop_engine` answers when nothing is running at all; `/engine restart` starts on it.
+NOTHING_RUNNING = "no engine is running."
+
 
 class OwnedEngineLifecycle(_VramGate):
     _engine = None
@@ -45,6 +48,25 @@ class OwnedEngineLifecycle(_VramGate):
         #: loop AND the spawn/stop worker threads. Held only for SYNC critical sections (no
         #: await inside), so it never stalls the loop; the long terminate_owned runs OUTSIDE it.
         self._lifecycle_lock = threading.Lock()
+        #: Set by /engine stop while a start is waiting for its engine (T1311): the launcher's
+        #: wait sees it, tree-kills what it spawned and raises. Cleared when a start claims.
+        self._start_cancel = threading.Event()
+
+    def cancel_start(self) -> bool:
+        """Ask the start in flight to end, killing what it spawned. False when none is.
+
+        🔴 Ryan, 2026-11-14: *"slash engine stop wouldnt even kill it had to close litetui
+        completely to me it was busy"*. `begin_stop` refuses while a start holds `_starting`
+        (correctly: a stop must not race the spawn thread for `_owned`), and the wait it was
+        refusing behind could last minutes. Stop now ends that wait instead of reporting busy;
+        the start's own thread does the kill, so `_owned` still has exactly one writer."""
+        with self._lifecycle_lock:
+            if not self._starting:
+                return False
+            if getattr(self, "_start_cancel", None) is None:   # a bare test double
+                self._start_cancel = threading.Event()
+            self._start_cancel.set()
+            return True
 
     def begin_stop(self) -> bool:
         """Claim a stop-in-progress, atomically under the lifecycle lock (no await inside).
@@ -162,12 +184,13 @@ class OwnedEngineLifecycle(_VramGate):
                 self._stopped_for_seat = False
                 self._stopping = False
 
-    async def start_engine(self, *, notice=None) -> str:
+    async def start_engine(self, *, notice=None, progress=None) -> str:
         """Spawn the engine under LiteTUI's VRAM gate; refuse if any engine is up.
 
         `notice()` is forwarded to the launcher, which calls it immediately before
-        the spawn and never on a refusal (T865). It runs on the worker thread, so a
-        UI caller must marshal it back itself.
+        the spawn and never on a refusal (T865). `progress(line)` gets the load's
+        progress lines (T1311). Both run on the worker thread, so a UI caller must
+        marshal them back itself.
         """
         from litetui import agent_preparation
 
@@ -189,11 +212,16 @@ class OwnedEngineLifecycle(_VramGate):
             if self._owned is not None:
                 raise BackendError(f"an owned {self.label} engine is already tracked — /engine stop it before starting another.")
             self._starting = True
+            cancel = getattr(self, "_start_cancel", None)
+            if cancel is None:
+                cancel = self._start_cancel = threading.Event()
+            cancel.clear()
         try:
             def _spawn_and_publish():
                 try:
                     owned = self._engine.start(
-                        self._settings, healthy=self._health, notice=notice)
+                        self._settings, healthy=self._health, notice=notice,
+                        progress=progress, cancel=cancel)
                 except self._engine.EngineStartFailed as exc:
                     # A failed start may leave a resident engine whose cleanup was not
                     # confirmed. PUBLISH the retained OwnedEngine (under the lock) so /engine
@@ -218,8 +246,27 @@ class OwnedEngineLifecycle(_VramGate):
                     raise BackendError(stopping)
                 # await_preparation runs the blocking spawn off-loop and JOINS the thread
                 # on cancellation (a raw to_thread would orphan it), then re-raises.
-                owned = await agent_preparation.await_preparation(_spawn_and_publish)
+                try:
+                    owned = await agent_preparation.await_preparation(_spawn_and_publish)
+                except BackendError as exc:
+                    if cancel.is_set():
+                        raise BackendError(self._cancelled_words(
+                            getattr(exc, "retained_owned", None) is not None)) from exc
+                    raise
+                if cancel.is_set():
+                    # The stop arrived as the engine came up: it was asked for, so honour it.
+                    result = await agent_preparation.await_preparation(self.shutdown)
+                    kept = getattr(result, "retained", True) or not getattr(result, "main_exited", False)
+                    raise BackendError(self._cancelled_words(kept))
             return f"started {self._process_name} pid {getattr(owned.proc, 'pid', '?')} at {owned.host} ({owned.model_id})"
         finally:
             with self._lifecycle_lock:
                 self._starting = False
+
+    def _cancelled_words(self, retained: bool) -> str:
+        """What /engine stop did to a start, from the launcher's proof (T1311)."""
+        if retained:
+            return (f"/engine stop ended the {self.label} start, but the {self._process_name} it spawned did "
+                    "NOT confirm it exited (it may still hold memory) — /engine stop again.")
+        return (f"/engine stop ended the {self.label} start: the {self._process_name} that was loading "
+                "is gone, and nothing is serving.")

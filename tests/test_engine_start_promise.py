@@ -83,7 +83,7 @@ class _Backend:
         self.refuse = refuse
         self.notice = None
 
-    async def start_engine(self, *, notice=None):
+    async def start_engine(self, *, notice=None, progress=None):
         self.notice = notice
         if self.refuse:
             raise BackendError(self.refuse)
