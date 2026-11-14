@@ -601,11 +601,19 @@ fn composer_or_preview_key(app: &mut Demo, key: KeyEvent) -> bool {
             if key.kind != KeyEventKind::Press {
                 return false;
             }
+            // Python (test_compact_pane_t1124): Ctrl+B (a priority binding) focuses the
+            // previous tool header only in compact mode and does nothing otherwise; Ctrl+E
+            // toggles the focused tool, and with the composer focused it is the Input's own
+            // line end. Rust's tool selection is that header focus.
+            let compact = app.compact_display.active();
             let chat = app.live.as_mut().expect("live shortcut");
+            if !compact {
+                chat.clear_tool_selection();
+            }
             let selected = if key.code == KeyCode::Char('b') {
-                chat.select_previous_tool()
+                compact && chat.select_previous_tool()
             } else {
-                chat.toggle_recent_tool_in_view(app.compact_display.active())
+                compact && chat.toggle_selected_tool()
             };
             if selected {
                 app.follow_selection = true;
@@ -5927,6 +5935,9 @@ mod live_keyboard_navigation_tests {
                 .lines()
                 .any(|l| l.contains("▸ Claude · ToolOne") && l.contains("reported failure"))
         );
+        // Ctrl+E toggles the tool whose header has focus (Ctrl+B first, as Python's
+        // test_compact_pane_t1124 does); with the composer focused it is the line end.
+        press(&mut app, &mut router, 'b');
         press(&mut app, &mut router, 'e');
         assert!(draw(&mut app, 120, 60).contains("complete result body"));
         press(&mut app, &mut router, 'g');
@@ -6014,8 +6025,10 @@ mod live_keyboard_navigation_tests {
         app.observe_live(Observation::Ready).unwrap();
         app.insert_text("draft stays");
         app.composer.move_cursor(Motion::Home, false);
+        // Normal width (Python test_compact_pane_t1124): Ctrl+B does nothing and Ctrl+E is the
+        // composer's own line end.
         press(&mut app, &mut router, 'b');
-        press(&mut app, &mut router, 'e'); // composer End when there are no observed tools
+        press(&mut app, &mut router, 'e');
         assert_eq!(app.composer.before_cursor(), "draft stays");
         app.composer.move_cursor(Motion::WordLeft, true);
         let selection = app.composer.selected_text().to_owned();
@@ -6041,11 +6054,16 @@ mod live_keyboard_navigation_tests {
             "NewRecord",
             Detail::Input("new arguments"),
         );
+        // Still normal width with tools on screen: Ctrl+B selects nothing.
         press(&mut app, &mut router, 'b');
-        let open = draw(&mut app, 110, 60);
-        assert!(open.contains("›▾ 🔧") && open.contains("NewRecord · {\"argument\":\"new arguments\"} ·"));
+        assert!(!app.live.as_ref().unwrap().has_tool_selection());
+        // Compact (Ctrl+G): Ctrl+B focuses the newest tool, Ctrl+E toggles the focused one,
+        // and a running call stays open (ToolMessage.set_expanded).
+        press(&mut app, &mut router, 'g');
+        press(&mut app, &mut router, 'b');
+        assert!(draw(&mut app, 110, 60).contains("› ▾ Host tool · NewRecord"));
         press(&mut app, &mut router, 'e');
-        assert!(!draw(&mut app, 110, 60).contains("Arguments"));
+        assert!(draw(&mut app, 110, 60).contains("new arguments"));
         record(
             &mut app,
             "same",
@@ -6053,10 +6071,7 @@ mod live_keyboard_navigation_tests {
             Detail::Result("new returned body", None),
         );
         let collapsed = draw(&mut app, 110, 60);
-        assert!(
-            collapsed.contains("NewRecord · {\"argument\":\"new arguments\"} · done ·")
-                && !collapsed.contains("new returned body")
-        );
+        assert!(collapsed.contains("outcome unknown") && !collapsed.contains("new returned body"));
         press(&mut app, &mut router, 'b');
         press(&mut app, &mut router, 'e');
         let small = draw(&mut app, 42, 18);
@@ -6064,7 +6079,7 @@ mod live_keyboard_navigation_tests {
         let full = draw(&mut app, 110, 60);
         assert!(full.contains("old returned body") && !full.contains("new returned body"));
         press(&mut app, &mut router, 'b');
-        assert!(draw(&mut app, 110, 60).contains("›▸ 🔧  NewRecord"));
+        assert!(draw(&mut app, 110, 60).contains("› ▸ Host tool · NewRecord"));
         app.open_work();
         press(&mut app, &mut router, 'e');
         assert!(app.live.as_ref().unwrap().work.owns_input());

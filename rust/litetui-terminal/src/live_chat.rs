@@ -660,6 +660,30 @@ impl Chat {
     pub fn select_previous_tool(&mut self) -> bool {
         self.focus_live_tool(true).is_some()
     }
+    /// Python's Ctrl+E on a focused tool header: toggle that tool (a running call stays open,
+    /// ToolMessage.set_expanded). False when no tool is selected.
+    pub fn toggle_selected_tool(&mut self) -> bool {
+        let Some((row, index)) = self
+            .rows
+            .iter()
+            .enumerate()
+            .skip(self.screen_cleared_rows)
+            .find_map(|(row, record)| record.tool_view.selected.map(|tool| (row, tool)))
+        else {
+            return false;
+        };
+        self.rows[row].toggle_tool(index)
+    }
+    /// Whether a tool header holds the keyboard focus (Ctrl+B in compact mode).
+    pub fn has_tool_selection(&self) -> bool {
+        self.rows.iter().any(|row| row.tool_view.selected.is_some())
+    }
+    /// Leaving compact mode: no tool header can hold focus there (Python's can_focus).
+    pub fn clear_tool_selection(&mut self) {
+        for row in &mut self.rows {
+            row.tool_view.selected = None;
+        }
+    }
     pub fn toggle_recent_tool(&mut self) -> bool {
         self.toggle_recent_tool_in_view(false)
     }

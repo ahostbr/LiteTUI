@@ -761,14 +761,12 @@ fn host_tool(
     let header_room = room.saturating_sub(2).max(1);
     let plain: String = parts.iter().map(|(text, _)| text.as_str()).collect();
     let mut cursor = 0;
-    // Rust's Ctrl+B selection (Python selects only in compact mode) marks the header padding.
-    let selected = row.tool_view.selected == Some(index);
-    for (n, fragment) in wrap(&plain, header_room).into_iter().enumerate() {
+    // No focus mark: outside compact mode Python's tool header cannot take focus.
+    for fragment in wrap(&plain, header_room) {
         let start = plain[cursor..].find(&fragment).map_or(cursor, |at| cursor + at);
         let end = start + fragment.len();
         cursor = end;
-        let pad = if selected && n == 0 { "›" } else { " " };
-        let mut inside = vec![Span::styled(pad, bold(t.title))];
+        let mut inside = vec![Span::styled(" ", bold(t.tool_text))];
         let mut offset = 0;
         for (text, part_style) in &parts {
             let (from, to) = (offset, offset + text.len());
