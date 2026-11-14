@@ -109,6 +109,7 @@ def release_all() -> None:
                 if store is not None:
                     store.release()
         finally:
+            _SESSIONS.clear()
             while _OPEN:
                 _OPEN.pop().release()
     finally:
@@ -118,3 +119,33 @@ def release_all() -> None:
                 stack.close()
         finally:
             _OBSERVER_APPS.clear()
+
+
+_SESSIONS: dict = {}
+
+
+def owned_session(root, name="LiteTUI", **authority):
+    """A real owned seat on `root` for settings/storage tests that need no app.
+
+    Conversation writes require one (e52007fe). One per root and seat name, so
+    two services in a test share a seat (a second ``ordinary`` there would find the
+    lease held and open a differently named home); released by release_all.
+    """
+    from litetui.agent_launch_context import ordinary
+    from litetui.settings import Settings
+
+    key = (str(root), name)
+    session = _SESSIONS.get(key)
+    if session is None:
+        cfg = Settings()
+        cfg.seat_name = name
+        session = _SESSIONS[key] = ordinary(root, cfg, notice=lambda _text: None, **authority)
+        _OPEN.append(session)
+    return session
+
+
+def conversation_id(name: str) -> str:
+    """Owned conversation folders are UUIDs; tests keep their readable names."""
+    import uuid
+
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"litetui-test-conversation:{name}"))
