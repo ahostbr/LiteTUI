@@ -46,6 +46,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -59,6 +60,14 @@ from . import runtime_log
 
 SCHEMA = 1
 NAME_PREFIX = "lt-"
+#: The only names `sweep` and `enforce_cap` ever touch: `lt-<hex>.state|.json`, plus one suffix the
+#: writer appends while writing (ours `.json.tmp`; Strata 0.1.41 writes `<name>.tmp` beside the final
+#: file: binary string ".tmp" next to "cannot create a temporary file beside"). Anything else in the
+#: folder is the user's and is left alone (Prefix 8fb5d719: slot_persist_dir can name any folder).
+_OURS = re.compile(r"^lt-[0-9a-f]+\.(?:state|json)(?:\.[A-Za-z0-9_-]+)?$")
+#: Written when LiteTUI CREATES an engine's save folder. A folder without it was not made by
+#: LiteTUI, so partial files in it are never swept.
+MARKER = ".litetui-slot-saves"
 STATE_SUFFIX = ".state"
 RECORD_SUFFIX = ".json"
 GIB = 1024 ** 3
@@ -171,10 +180,21 @@ def persist_root(settings) -> Path:
 
 # ── the folder ──────────────────────────────────────────────────────────────
 
+def ensure_folder(folder: Path) -> Path:
+    """Create an engine's save folder, marking it as LiteTUI's when LiteTUI is the one creating it.
+    An existing folder is used as it is and never gains the marker."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / MARKER).write_text("Saved engine prompt caches, written by LiteTUI (prefix_persist.py).\n",
+                                     encoding="utf-8")
+    return folder
+
+
 class SaveStore:
     """One engine's saves: `lt-<id>.state` (written by the engine) + `lt-<id>.json` (ours, written
-    only once the state's coverage is verified). The folder is LiteTUI's alone, so any file in it
-    that is not one half of a complete pair is a partial save and is deleted."""
+    only once the state's coverage is verified). Only names matching `_OURS` are ever deleted, and
+    the partial-file sweep runs only in a folder carrying LiteTUI's `MARKER`."""
 
     def __init__(self, folder: Path) -> None:
         self.folder = Path(folder)
@@ -200,6 +220,8 @@ class SaveStore:
             except (OSError, ValueError):
                 continue
             name = p.name[: -len(RECORD_SUFFIX)]
+            if not _OURS.match(p.name):
+                continue
             if isinstance(rec, dict) and rec.get("schema") == SCHEMA and rec.get("name") == name \
                     and self.state(name).is_file():
                 out.append(rec)
@@ -221,14 +243,18 @@ class SaveStore:
                 _log("delete_failed", f"{p}: {type(exc).__name__}")
 
     def sweep(self) -> list[str]:
-        """Delete every file that is not half of a complete pair; returns the file names removed.
+        """Delete OUR files (`_OURS`) that are not half of a complete pair; returns the names removed.
+        Nothing else is touched, and a folder without LiteTUI's MARKER is not swept at all.
         Call only while no save is being written (no owned engine, or before the first save)."""
         if not self.folder.is_dir():
+            return []
+        if not (self.folder / MARKER).is_file():
+            _log("sweep_refused", f"{self.folder} was not created by LiteTUI (no {MARKER}); nothing swept")
             return []
         complete = {r["name"] for r in self.records()}
         removed = []
         for p in self.folder.iterdir():
-            if not p.is_file():
+            if not p.is_file() or not _OURS.match(p.name):
                 continue
             stem = p.name[: -len(STATE_SUFFIX)] if p.name.endswith(STATE_SUFFIX) else \
                 p.name[: -len(RECORD_SUFFIX)] if p.name.endswith(RECORD_SUFFIX) else None
@@ -542,7 +568,7 @@ class SlotPersistence:
             _log("save_skipped", f"{label}: could not read the launch identity; nothing saved")
             return "the engine's launch identity could not be read; nothing saved"
         store = self.store()
-        store.folder.mkdir(parents=True, exist_ok=True)
+        ensure_folder(store.folder)
         name = store.new_name()
         started = time.monotonic()
         status, body = self.engine.post(slot, "save", name + STATE_SUFFIX, last.model, HTTP_TIMEOUT_S)
@@ -814,7 +840,7 @@ def strata_launch_args(settings, backend_name: str = "strata") -> list[str]:
     if probe.why_off() is not None:
         return []
     folder = probe.folder()
-    folder.mkdir(parents=True, exist_ok=True)
+    ensure_folder(folder)
     return ["--slot-save-path", str(folder.resolve())]
 
 
@@ -828,5 +854,5 @@ def llama_launch_args(settings, flags=None) -> list[str]:
         _log("launch_skipped", "llama.cpp: this llama-server build has no --slot-save-path")
         return []
     folder = persist_root(settings) / "llama"
-    folder.mkdir(parents=True, exist_ok=True)
+    ensure_folder(folder)
     return ["--slot-save-path", str(folder.resolve())]

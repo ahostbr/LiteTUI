@@ -254,7 +254,7 @@ def strata(tmp_path):
     settings = Settings(backend="strata", slot_persist_dir=str(tmp_path / "saves"))
     backend = StrataBackend(settings)
     folder = prefix_persist.persist_root(settings) / "strata"
-    folder.mkdir(parents=True)
+    prefix_persist.ensure_folder(folder)
     engine = FakeEngine("strata", folder, model="flash")
 
     def start(ctx: int = 150000):
@@ -442,7 +442,7 @@ def test_replay_over_the_cap_saves_nothing(tmp_path):
     settings = Settings(backend="strata", slot_persist_dir=str(tmp_path / "saves"), slot_persist_replay_s=1)
     backend = StrataBackend(settings)
     folder = prefix_persist.persist_root(settings) / "strata"
-    folder.mkdir(parents=True)
+    prefix_persist.ensure_folder(folder)
     engine = FakeEngine("strata", folder, model="flash")
     try:
         backend._owned, backend._host = _strata_owned(tmp_path, engine.url), engine.url
@@ -520,6 +520,41 @@ def test_a_partial_left_by_an_interrupted_save_is_swept_when_the_engine_stops(st
     assert _lt_files(strata.folder) == []
 
 
+FOREIGN = ("notes.txt", "model.gguf", "lt-notes.txt", "lt-mine.state", "lt-0123.statex", "LT-0123.state")
+
+
+def test_a_users_own_files_survive_the_sweep_and_the_cap(tmp_path):
+    """Prefix 8fb5d719: slot_persist_dir can name any folder. Only lt-<hex>.state|.json[.suffix] is ours."""
+    folder = prefix_persist.ensure_folder(tmp_path / "saves" / "strata")
+    for name in FOREIGN:
+        (folder / name).write_bytes(b"theirs" * 100)
+    store = SaveStore(folder)
+    store.state("lt-0aa").write_bytes(b"\0" * 1000)
+    store.commit({"schema": prefix_persist.SCHEMA, "name": "lt-0aa", "created": 1})
+    (folder / "lt-0bb.state").write_text("{}")                      # partial: ours, unpaired
+    assert store.sweep() == ["lt-0bb.state"]
+    assert store.enforce_cap(0) == ["lt-0aa"]                       # the cap empties OUR saves only
+    assert sorted(p.name for p in folder.iterdir()) == sorted(FOREIGN + (prefix_persist.MARKER,))
+
+
+def test_a_folder_litetui_did_not_create_is_never_swept(tmp_path):
+    folder = tmp_path / "users-folder"
+    folder.mkdir()
+    (folder / "lt-0123.state").write_text("{}")                     # looks like our partial
+    assert prefix_persist.ensure_folder(folder) == folder
+    assert not (folder / prefix_persist.MARKER).exists()            # an existing folder is not claimed
+    assert SaveStore(folder).sweep() == []
+    assert (folder / "lt-0123.state").is_file()
+
+
+def test_control_a_partial_in_litetuis_own_folder_is_still_removed(tmp_path):
+    folder = prefix_persist.ensure_folder(tmp_path / "saves" / "llama")
+    assert (folder / prefix_persist.MARKER).is_file()
+    (folder / "lt-0123.state").write_text("{}")
+    (folder / "lt-0123.json.tmp").write_text("{}")
+    assert sorted(SaveStore(folder).sweep()) == ["lt-0123.json.tmp", "lt-0123.state"]
+
+
 # ── attached engines, the cap, loads ────────────────────────────────────────
 
 def test_an_attached_server_gets_no_save_or_restore_call(strata):
@@ -540,13 +575,13 @@ def test_an_attached_server_gets_no_save_or_restore_call(strata):
 
 def test_the_size_cap_evicts_the_oldest_save_first(tmp_path):
     store = SaveStore(tmp_path)
-    for i, name in enumerate(("lt-a", "lt-b", "lt-c")):
+    for i, name in enumerate(("lt-0a", "lt-0b", "lt-0c")):
         store.state(name).write_bytes(b"\0" * 1000)
         store.commit({"schema": prefix_persist.SCHEMA, "name": name, "created": 100 + i})
-    over = sum(store.size(n) for n in ("lt-a", "lt-b", "lt-c")) - 1
-    assert store.enforce_cap(over, keep="lt-a") == ["lt-b"]     # oldest that is not the new save
-    assert [r["name"] for r in store.records()] == ["lt-a", "lt-c"]
-    assert store.enforce_cap(store.size("lt-a") - 1, keep="lt-a") == ["lt-c", "lt-a"]
+    over = sum(store.size(n) for n in ("lt-0a", "lt-0b", "lt-0c")) - 1
+    assert store.enforce_cap(over, keep="lt-0a") == ["lt-0b"]     # oldest that is not the new save
+    assert [r["name"] for r in store.records()] == ["lt-0a", "lt-0c"]
+    assert store.enforce_cap(store.size("lt-0a") - 1, keep="lt-0a") == ["lt-0c", "lt-0a"]
 
 
 def test_restore_never_loads_a_model_it_skips_when_the_model_is_unloaded(strata):
@@ -577,7 +612,7 @@ def test_llama_router_saves_the_slot_holding_the_conversation_and_restores_throu
     ini.write_text(f"[m1]\nmodel = {gguf.as_posix()}\nctx-size = 65536\n\n[m2]\nmodel = x\n")
     settings = Settings(backend="llamacpp", slot_persist_llama=True, slot_persist_dir=str(tmp_path / "saves"))
     folder = prefix_persist.persist_root(settings) / "llama"
-    folder.mkdir(parents=True)
+    prefix_persist.ensure_folder(folder)
     engine = FakeEngine("llama", folder, model="m1")
     try:
         backend = LlamaCppBackend(settings)
