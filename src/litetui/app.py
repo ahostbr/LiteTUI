@@ -10770,14 +10770,15 @@ class LiteTUI(App):
                 kwargs = TurnEngine.compact_request(
                     model_id=self.model_id,
                     messages=ask,
-                    max_tokens=(min(self.settings.compact_max_tokens, learned_cap)
-                                if learned_cap else self.settings.compact_max_tokens),
+                    max_tokens=self.settings.compact_max_tokens,
                     thinking_level=self.settings.compact_thinking_level,
                     tools_enabled=self.tools_enabled,
                     tools=compact_tools if compact_tools is not None else self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
                     graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                     thinking_budget=self.settings.ninfer_thinking_budget,
+                    pinned_effort=(getattr(self, "_last_chat_effort", None) if compact_tools is not None
+                                       else TurnEngine.UNPINNED),
                     supported_reasoning_levels=(
                         self.backend.reasoning_levels(self.model_id)
                         if hasattr(self.backend, "reasoning_levels") else ()
@@ -10788,6 +10789,8 @@ class LiteTUI(App):
                     ),
                 )
 
+                if learned_cap:  # the room a server named is a TOTAL: clamp after the thinking room is added
+                    kwargs["max_tokens"] = min(kwargs["max_tokens"], learned_cap)
                 if compact_tools is not None:
                     effort_body = dict(kwargs.get("extra_body") or {})
                     chat_effort = getattr(self, "_last_chat_effort", None)
@@ -10827,16 +10830,19 @@ class LiteTUI(App):
                                 compact_tools = self._last_chat_tools
                         except Exception:
                             ask, compact_tools = head_only_ask, None  # scoped-guidance error and the like: the plain head
+                        prior_max_tokens = kwargs["max_tokens"]  # the total this round already had; the raise below is on the base
                         kwargs = TurnEngine.compact_request(
                             model_id=self.model_id,
                             messages=ask,
-                            max_tokens=kwargs["max_tokens"],
+                            max_tokens=self.settings.compact_max_tokens,
                             thinking_level=self.settings.compact_thinking_level,
                             tools_enabled=self.tools_enabled,
                             tools=compact_tools if compact_tools is not None else self._all_tools(),
                             backend_name=self.backend.name,
                             graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
                             thinking_budget=self.settings.ninfer_thinking_budget,
+                            pinned_effort=(getattr(self, "_last_chat_effort", None) if compact_tools is not None
+                                               else TurnEngine.UNPINNED),
                             supported_reasoning_levels=(
                                 self.backend.reasoning_levels(self.model_id)
                                 if hasattr(self.backend, "reasoning_levels") else ()
@@ -10846,6 +10852,7 @@ class LiteTUI(App):
                                 if hasattr(self.backend, "request_overrides") else None
                             ),
                         )
+                        kwargs["max_tokens"] = min(kwargs["max_tokens"], prior_max_tokens)
                         if compact_tools is not None:
                             effort_body = dict(kwargs.get("extra_body") or {})
                             chat_effort = getattr(self, "_last_chat_effort", None)

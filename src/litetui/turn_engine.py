@@ -54,6 +54,29 @@ def is_deepseek_model(model_id: str | None) -> bool:
     return "deepseek" in (model_id or "").lower()
 
 
+#: compact_request's `pinned_effort` default: "the effort the request itself resolved" (None is a real value: no effort sent).
+_UNPINNED = object()
+
+
+def request_thinks(extra: dict, effort=_UNPINNED) -> bool:
+    """False only when the request turns thinking OFF: reasoning_effort "none" or enable_thinking false.
+
+    An omitted effort is thinking ON (NInfer's default; the DeepSeek note in _resolve_reasoning_effort). `effort`
+    overrides extra's own value, for the compaction that is re-pinned to the chat turn's effort afterwards."""
+    level = extra.get("reasoning_effort") if effort is _UNPINNED else effort
+    if level == "none":
+        return False
+    return (extra.get("chat_template_kwargs") or {}).get("enable_thinking") is not False
+
+
+def with_thinking_room(max_tokens, budget: int | None) -> int:
+    """`max_tokens` plus the thinking budget. NInfer counts thinking INSIDE max_tokens and its capacity is
+    min(requested, context left) (ninfer-all src/runtime/engine/effective_thinking_budget.h:26-42), so a budget
+    equal to max_tokens lets thinking eat the whole output and the reply ends with no answer (Ryan's Edge0
+    request #2: out = 16,384 = max_tokens). The answer keeps the room the caller asked for."""
+    return int(max_tokens) + int(budget)
+
+
 def side_call_reasoning_effort(
     level: str | None,
     backend_name: str,
@@ -283,14 +306,18 @@ class TurnEngine:
         # is gated on the backend name (the same shape as the codex gate above).
         if backend_name == "ninfer":
             extra["return_progress"] = True
-            if thinking_budget and thinking_budget > 0:
+            # Only a request that thinks: a non-thinking one gets no cap and no extra room.
+            if thinking_budget and thinking_budget > 0 and request_thinks(extra):
                 extra["thinking_budget"] = int(thinking_budget)
+                kwargs["max_tokens"] = with_thinking_room(kwargs["max_tokens"], thinking_budget)
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
 
     #: A summary under this many tokens is not worth retrying for.
     COMPACT_MIN_RETRY_TOKENS = 1024
+    #: compact_request(pinned_effort=...) default: use the effort the request itself resolved.
+    UNPINNED = _UNPINNED
 
     @staticmethod
     def max_tokens_hint(message: str) -> int | None:
@@ -321,6 +348,7 @@ class TurnEngine:
         supported_reasoning_levels: tuple[str, ...] | list[str] = (),
         model_reasoning_effort: str | None = None,
         thinking_budget: int | None = None,
+        pinned_effort=_UNPINNED,
     ) -> dict:
         """The request a compaction turn sends.
 
@@ -350,8 +378,11 @@ class TurnEngine:
             extra_body["return_progress"] = True
             # The engine ends thinking at the cap and goes on to the answer; a compaction that thinks to
             # max_tokens would otherwise die with no summary. Never 0: the engine answers 400 to a value < 1.
-            if thinking_budget and thinking_budget > 0:
+            # `pinned_effort`: the cache-friendly compaction is re-pinned to the chat turn's effort by the caller,
+            # so whether it thinks is decided by that effort, not by compact_thinking_level.
+            if thinking_budget and thinking_budget > 0 and request_thinks(extra_body, pinned_effort):
                 extra_body["thinking_budget"] = int(thinking_budget)
+                max_tokens = with_thinking_room(max_tokens, thinking_budget)
         kwargs: dict = {
             "model": model_id or "local-model",
             "messages": messages,
